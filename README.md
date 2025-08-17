@@ -30,7 +30,21 @@ That's what we tries to do: the usb protocol for ASR libraries.
 - use logging
 
 
-Core mission
-- provide standardized way to interact with different ASR models
-- AI native: AI knows (or can easily know) how to use `standard_asr`
+# A: 核心目标:
+- A.1: 做 ASR 推理领域的 usb 标准: 提供通用的接口，让 ASR 推理开发者，ASR 使用者，能有一个共同的标准，互相沟通。
+- A.2: 提供测试套件和周边工具，让 ASR 库开发者更好的开发好用，稳健，工程化的库
+- A.3: 适配过 Standard ASR 标准的代码，应该可以免配置直接跑任何 Standard ASR compliant 的模型。如果有额外配置项，需要用 pydantic 暴露出去，让 WebUI 和 GUI 和数据库能动态生成配置。
 
+
+
+---
+
+# Faq
+
+> But why do we need to support different ASR engines in our application? Why not just support whisper?
+
+- Different language have different SOTA ASR models. Whisper may be strong in some language and not in others.
+- GPU acceleration support varies across platforms.
+- AI world evolves fast... SOTA will be refreshed.
+
+With Standard ASR, write once, forget about it. Countless ASR engines are automatically supported.
