@@ -6,7 +6,7 @@
 >
 > Please test out standard library and give us feedback or your opinion. Let's shape the future of ASR library together!
 
-![standard_asr_concept](https://file%2B.vscode-resource.vscode-cdn.net/Users/tim/LocalData/coding/2025/Projects/standard_asr/docs/assets/concept.jpg?version%3D1754857567230)
+![standard_asr_concept](docs/assets/concept.jpg)
 
 
 ## Introduction

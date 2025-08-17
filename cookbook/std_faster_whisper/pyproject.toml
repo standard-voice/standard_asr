@@ -1,0 +1,9 @@
+[project]
+name = "std-faster-whisper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "faster-whisper>=1.2.0",
+]

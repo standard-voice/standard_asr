@@ -1,4 +1,5 @@
 
+repomix-output.xml
 # we are a library, so ignore lock files
 uv.lock
 
