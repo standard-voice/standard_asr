@@ -23,7 +23,7 @@ That's what we tries to do: the usb protocol for ASR libraries.
 ---
 
 
-
+- Strictly follows semantic versioning
 - Pydantic v2 to model ASR's settings
 - Fully async support
 - pytest

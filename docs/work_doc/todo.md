@@ -1,6 +1,6 @@
 
 
-![e](assets/stages.png)
+![e](../assets/stages.png)
 
 
 
