@@ -48,3 +48,11 @@ That's what we tries to do: the usb protocol for ASR libraries.
 - AI world evolves fast... SOTA will be refreshed.
 
 With Standard ASR, write once, forget about it. Countless ASR engines are automatically supported.
+
+
+# License
+
+This project is licensed under the Apache 2.0 License. Please checkout [LICENSE](./LICENSE) for more details.
+
+
+
