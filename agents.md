@@ -1,13 +1,6 @@
----
-alwaysApply: true
----
-`version: 2025.08.10-1`
+`version: 2025.08.28-1`
 
 # standard asr
-
-
----
-
 
 ## 1. Core Project Context
 
@@ -25,11 +18,10 @@ Some key files and directories:
 
 ```
 docs/                   # Documentation files
-.github/               # GitHub configuration files
-src/standard_asr/          # Core ASR library code
+.github/               # GitHub configuration files, inlcuding workflows
+src/standard_asr/          # Core library code
 pyproject.toml       # Project metadata and dependencies
 README.md            # Project overview and instructions
-uv.lock              # Dependency lock file
 ```
 
 
@@ -37,7 +29,6 @@ uv.lock              # Dependency lock file
 
   - **Simplicity and Readability:** Write code that is simple, clear, and easy to understand. Avoid unnecessary complexity or premature optimization. Follow the Zen of Python.
   - **Single Responsibility:** Each function, class, and module should do one thing and do it well.
-  - **Performance-Aware:** Be mindful of performance. Avoid blocking operations in async contexts. Use efficient data structures and algorithms where it matters.
   - **Adherence to Best Practices**: Write clean, testable, and robust code that follows modern Python 3.10+ idioms. Adhere to the best practices of our core libraries (FastAPI, Pydantic v2).
 
 ## 3. Detailed Coding Standards
@@ -84,9 +75,8 @@ uv.lock              # Dependency lock file
 ### 4.1. Dependency Management
 
   - First, try to solve the problem using the Python standard library or existing project dependencies defined in `pyproject.toml`.
-  - If a new dependency is required, it must have a compatible license and be well-maintained.
+  - If a new dependency is required, it must have a compatible license and be well-maintained. We must minimize the risks for supply chain attacks.
   - Use `uv add`, `uv remove`, `uv run` instead of pip to manage dependencies. If user uses conda, install uv with pip then.
-  - After adding a new dependency, in addition to `pyproject.toml`, you must add the dependency to `requirements.txt` as well.
 
 ### 4.2. Cross-Platform Compatibility
 
