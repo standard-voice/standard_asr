@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 class BaseConfig(BaseModel):
     """
     Base class for all ASR engine configuration models.
-    ASR Config provides the initialization parameters to configure an ASR engine.
+    ASR Config provides information about the initialization parameters needed to initialized an ASR engine.
 
     Attributes:
         engine (str): Discriminator identifying the target engine.
@@ -63,6 +63,8 @@ class BaseConfig(BaseModel):
     engine: str = Field(
         ..., description="Unique name of the ASR engine (discriminator)."
     )
+    
+    
 
     # if you want to add language options, remember to use supported_language from
     # your asr properties to validate input
