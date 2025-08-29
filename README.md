@@ -49,6 +49,13 @@ That's what we tries to do: the usb protocol for ASR libraries.
 
 With Standard ASR, write once, forget about it. Countless ASR engines are automatically supported.
 
+# Contribution
+Please review `CONTRIBUTING.md` file before you make your contribution.
+
+# Communication
+We use **Zulip** for development communication:
+- https://standard-voice.zulipchat.com
+
 # License
 
 This project is licensed under the Apache 2.0 License. Please checkout [LICENSE](./LICENSE) for more details.
