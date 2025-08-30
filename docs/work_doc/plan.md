@@ -83,12 +83,24 @@ ASR
 
 
 (asr_suite)
-- 提供许多 asr 的一个 library，可以用 `pip install asr_suite[asr_opt]` 来快速安装 asr。
+- ~~提供许多 asr 的一个 library，可以用 `pip install asr_suite[asr_opt]` 来快速安装 asr。~~ 把 asr 库全都放在一个 package 里作为可选项是不可能的，我们可以提供类似 ollama 这样的 cli 工具来快速安装和管理 asr 模块，但他们可能有许多注定不能被安装在一起。预设可能就是以隔离的 web 服务器安装在本地 (pipx 或 uvx?)
+
+
+文档里面应该要有个地方让使用或支持我们标准的开发者们往里面写自己的项目。
 
 
 
 
 版本更新时，server api，test 之类的东西可以是小版本更新，因为不影响
+
+
+一个 ASR provider 可能会支持很多模型，我们要让他们能够提供模型预设，又或者是不同模型可能要用不同类型的设置项？这个要怎么设计？
+
+
+注意到输入音频格式可能区别比较大，我们可能要... 有自动转换音频格式的 helper? 反正 properties 里面可能要写支持的格式，采样率等信息，另外做一些工作确保当音频格式不符时，可以报 warning 后自动用 ffmpeg 尝试转换。另外，如果音频根本不存在或无效，要有清晰的报错信息。
+
+
+用 feature flag 的方式，让调用者知道这个 ASR 支持什么功能 (streaming, word level timestamp, speaker diarization, etc) 到底会回传什么东西。
 
 
 
