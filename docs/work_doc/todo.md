@@ -7,8 +7,12 @@
 ## Draft Stage
 > draft stage 要完成一个 MVP，之后拿到 OLV 测试
 
-- working prototype
-    - 完成所有目标
+[ ] working prototype
+- [ ] 完整的核心
+    - [ ] Properties 设计
+    - [ ] Config 设计
+    - [ ] 
+
 - 文档
     - 开发人员协作
     - branch 规划

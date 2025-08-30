@@ -28,6 +28,10 @@ https://g.co/gemini/share/ddf9ef577e40
 
 做一个不包含任何实际 ASR 实现的灵活的框架，让开发者可以快速适配大量 ASR 模型，让 ASR 库可以轻松的支持我们标准 (或是我们自己适配成插件)。
 
+哲学:
+- P.1: 调用者友好: 调用 Standard ASR 库的代码，应该要能接近 0 配置的调用几乎所有的 Standard ASR compliant 模型。开发者可以完全不知道用户会使用什么 ASR 引擎，开发者只需要知道用户使用的是 Standard ASR compliant 的 ASR 库即可。
+- P.2: ASR 开发者友好: ASR 开发者和模型制作者，应该能在只懂最基础的 Python 的状况下，快速的适配 Standard ASR 标准。
+
 
 ## A.3 免配置运行
 为了达到这个目标
@@ -101,6 +105,9 @@ ASR
 
 
 用 feature flag 的方式，让调用者知道这个 ASR 支持什么功能 (streaming, word level timestamp, speaker diarization, etc) 到底会回传什么东西。
+
+
+asr 引擎加入新的自己的功能时，加到 extra 条目里面，如果未来标准化了，就迁移到标准做法。
 
 
 
