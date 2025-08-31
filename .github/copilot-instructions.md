@@ -1,4 +1,4 @@
-`version: 2025.08.28-1`
+`version: 2025.08.30-1`
 
 # standard asr
 
@@ -10,7 +10,6 @@ This project supports Python 3.10 and above. It is designed to be easy to use an
 
 
   - **Key Principles:**
-      - **Offline-Ready:** Core functionality MUST work without an internet connection.
       - **Separation of Concerns:** Strict frontend-backend separation.
       - **Clean code:** Clean, testable, maintainable code, follows best practices of python 3.10+ and does not write deprecated code.
 
