@@ -1,0 +1,36 @@
+site_name: Standard ASR
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.instant
+    - header.autohide
+    # - navigation.tabs 
+  favicon: assets/branding/icon.png
+  font:
+    text: Noto Sans
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - privacy
+  - offline
+
+extra_css:
+  - stylesheets/extra.css

@@ -9,6 +9,7 @@ authors = [
     { name = "Yi-Ting Chiu", email = "mytim710@gmail.com" },
 ]
 dependencies = [
+    "mkdocs-material>=9.6.18",
     "numpy>=1.24, <3",
     "pydantic>=2.5, <3",
 ]
