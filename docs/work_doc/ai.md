@@ -15,7 +15,7 @@ repomix
 ```
 
 或是去除一些不重要的/重复的内容...
-```repomix
-repomix --ignore "LICENSE,.gitignore,.github/copilot-instructions.md,NOTICE"
+```sh
+repomix --ignore "LICENSE,.gitignore,.github/copilot-instructions.md,NOTICE,docs/stylesheets,mkdocs.yml,.cache"
 ```
 
