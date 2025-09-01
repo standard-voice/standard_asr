@@ -23,3 +23,8 @@ repomix --ignore "LICENSE,.gitignore,.github/copilot-instructions.md,NOTICE,docs
 ```sh
 repomix --include "docs" --ignore "docs/stylesheets"
 ```
+
+只包含 Standard ASR 库代码
+```sh
+repomix --include "src/standard_asr, pyproject.toml, py.typed, tests, .github/workflows"
+```
