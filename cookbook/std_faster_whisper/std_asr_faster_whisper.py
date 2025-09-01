@@ -66,7 +66,6 @@ class FasterWhisperConfig(BaseConfig):
 
 
 class FasterWhisperASR(StandardASR):
-
     config: FasterWhisperConfig
 
     def __init__(

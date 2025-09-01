@@ -21,7 +21,6 @@ from pydantic import (
     Field,
 )
 import numpy as np
-from numpy.typing import DTypeLike
 
 
 class BaseProperties(BaseModel):

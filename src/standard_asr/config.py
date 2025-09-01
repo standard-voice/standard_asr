@@ -63,8 +63,6 @@ class BaseConfig(BaseModel):
     engine: str = Field(
         ..., description="Unique name of the ASR engine (discriminator)."
     )
-    
-    
 
     # if you want to add language options, remember to use supported_language from
     # your asr properties to validate input
