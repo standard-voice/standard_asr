@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import asyncio
-from typing import Protocol
+from typing import Protocol, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -32,7 +32,7 @@ class StandardASR(Protocol):
     # Use config to type the configuration of the ASR engine,
     # which should also be used in the constructor to validate the input configuration.
     config: BaseConfig
-    properties: BaseProperties
+    properties: ClassVar[BaseProperties]
 
     def transcribe(self, audio: NDArray[np.float32]) -> str:
         """
