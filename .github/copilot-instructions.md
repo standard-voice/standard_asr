@@ -1,4 +1,4 @@
-`version: 2025.08.30-1`
+`version: 2025.09.1-1`
 
 # standard asr
 
@@ -10,7 +10,6 @@ This project supports Python 3.10 and above. It is designed to be easy to use an
 
 
   - **Key Principles:**
-      - **Separation of Concerns:** Strict frontend-backend separation.
       - **Clean code:** Clean, testable, maintainable code, follows best practices of python 3.10+ and does not write deprecated code.
 
 Some key files and directories:
@@ -30,21 +29,21 @@ README.md            # Project overview and instructions
   - **Single Responsibility:** Each function, class, and module should do one thing and do it well.
   - **Adherence to Best Practices**: Write clean, testable, and robust code that follows modern Python 3.10+ idioms. Adhere to the best practices of our core libraries (FastAPI, Pydantic v2).
 
-## 3. Detailed Coding Standards
+## C. Code Style
 
-### 3.1. Formatting & Linting (Ruff)
+### C.1. Formatting & Linting (Ruff)
 
   - All Python code **MUST** be formatted with `uv run ruff format`.
   - All Python code **MUST** pass `uv run ruff check` without errors.
   - Import statements should be grouped by standard library, third-party, and local modules and sorted alphabetically (PEP 8).
 
-### 3.2. Naming Conventions (PEP 8)
+### C.2. Naming Conventions (PEP 8)
 
   - Use `snake_case` for all variables, functions, methods, and module names.
   - Use `PascalCase` for class names.
   - Choose descriptive names. Avoid single-letter names except for loop counters or well-known initialisms.
 
-### 3.3. Type Hints (CRITICAL)
+### C.3. Type Hints (CRITICAL)
 
   - Target Python 3.10+. Use modern type hint syntax.
   - **DO:** Use `|` for unions (e.g., `str | None`).
@@ -53,7 +52,7 @@ README.md            # Project overview and instructions
   - **DON'T:** Use capitalized types from `typing` (e.g., `List[int]`, `Dict[str, float]`).
   - All function and method signatures (arguments and return values) **MUST** have accurate type hints. If third party libraries made it impossible to fix type errors, suppress the type checker.
 
-### 3.4. Docstrings & Comments (CRITICAL)
+### C.4. Docstrings & Comments (CRITICAL)
 
   - All public modules, functions, classes, and methods **MUST** have a docstring in English.
   - Use the **Google Python Style** for docstrings.
@@ -64,20 +63,18 @@ README.md            # Project overview and instructions
     4.  (Optional but encouraged) `Raises:` section for any exceptions thrown.
   - All other code comments must also be in English.
 
-### 3.5. Logging
+### C.5. Logging
 
   - Use `logging` module for all informational or error output.
   - Log messages should be in English, clear, and informative. Use emoji when appropriate.
 
-## 4. Architectural Principles
-
-### 4.1. Dependency Management
+### C.6. Dependency Management
 
   - First, try to solve the problem using the Python standard library or existing project dependencies defined in `pyproject.toml`.
   - If a new dependency is required, it must have a compatible license and be well-maintained. We must minimize the risks for supply chain attacks.
   - Use `uv add`, `uv remove`, `uv run` instead of pip to manage dependencies. If user uses conda, install uv with pip then.
 
-### 4.2. Cross-Platform Compatibility
+### C.7. Cross-Platform Compatibility
 
-  - All core logic **MUST** run on macOS, Windows, and Linux.
+  - All core logic **MUST** run on at least macOS, Windows, and Linux.
   - If a feature is platform-specific (e.g., uses a Windows-only API) or hardware-specific (e.g., CUDA), it **MUST** be an optional component. The application should start and run core features even if that component is not available. Use graceful fallbacks or clear error messages.
