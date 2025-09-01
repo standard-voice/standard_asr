@@ -1,5 +1,7 @@
 # Standard ASR
 
+[![Checked with pyright](https://microsoft.github.io/pyright/img/pyright_badge.svg)](https://microsoft.github.io/pyright/)
+
 > ⚠️⚠️⚠️ Standard ASR is still work in progress!! Breaking changes may be introduced at any moment!!
 > 
 > For production use, please wait until `v1.0.0` release, where we will be stabilizing the APIs and enforce migration policy when breaking changes do happen. We strictly follow semantic versioning.
@@ -26,7 +28,7 @@ That's what we tries to do: the usb protocol for ASR libraries.
 - Strictly follows semantic versioning
 - Pydantic v2 to model ASR's settings
 - Fully async support
-- pytest
+- pytest (strict mode passed)
 - use logging
 
 

@@ -28,6 +28,28 @@ module-root = "src"
 module-name = "standard_asr"
 
 [tool.uv.workspace]
-members = [
-    "cookbook/std_faster_whisper",
-]
+members = ["cookbook/std_faster_whisper"]
+
+[tool.pyright]
+# 官方文档: https://github.com/microsoft/pyright/blob/main/docs/configuration.md
+typeCheckingMode = "strict"
+include = ["src/standard_asr"]
+pythonVersion = "3.10"
+
+# --- 报告级别的微调 (可选，但推荐) ---
+# 以下是一些在 strict 模式下，根据项目情况可能需要调整的选项。
+# 暂时我们可以保持默认，但了解它们很有用。
+
+reportMissingModuleSource = "warning"
+#   如果一个库没有类型信息 (也没有 @types stub)，是警告还是报错。
+#   对于库开发，设为 "error" 可以强迫你为所有依赖找到类型存根或自己创建。
+
+reportUnusedVariable = "error"
+#   报告未使用的变量。Ruff 也会做这个，但由类型检查器来做更精确。
+
+# reportPrivateUsage: bool | "warning" | "error" = "error"
+#   当外部代码访问了标记为 _private 或 __private 的成员时报错。
+#   这有助于强制执行良好的封装。
+
+reportUnknownMemberType = "error"
+#   当无法确定成员的类型时报错。这能消灭大量的隐式 `Any`。
