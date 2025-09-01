@@ -1,4 +1,11 @@
 
+# Setup
+We use uv as our dependency management, environment management, and build system.
+
+After installing uv, use the following to init our project with all dependency groups.
+```sh
+uv sync --all-extras --group dev 
+```
 
 ## Contribution Licensing
 

@@ -22,4 +22,26 @@ class ConfigError(StandardASRError, ValueError):
 
 class TranscriptionError(StandardASRError):
     """Raised when an error occurs during the transcription process."""
+
+    pass
+
+
+class AudioProcessingError(StandardASRError):
+    """
+    Raised when an error occurs during audio loading or processing.
+    This is typically raised by functions in the audio_loader module.
+    """
+
+    pass
+
+
+class FFmpegNotFoundError(AudioProcessingError, FileNotFoundError):
+    """Raised when FFmpeg is required but not found in the system `PATH`."""
+
+    pass
+
+
+class FFprobeNotFoundError(AudioProcessingError, FileNotFoundError):
+    """Raised when FFprobe is required but not found in the system `PATH`."""
+
     pass

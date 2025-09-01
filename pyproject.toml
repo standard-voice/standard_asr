@@ -4,15 +4,20 @@ version = "0.1.0"
 description = "USB protocol for speech recognition libraries"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
-authors = [
-    { name = "Yi-Ting Chiu", email = "mytim710@gmail.com" },
+license = { file = "LICENSE" }
+authors = [{ name = "Yi-Ting Chiu", email = "mytim710@gmail.com" }]
+dependencies = ["numpy>=1.24, <3", "pydantic>=2.5, <3"]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.404",
+    "pytest>=8.4.1",
+    "ruff>=0.12.11",
 ]
-dependencies = [
-    "mkdocs-material>=9.6.18",
-    "numpy>=1.24, <3",
-    "pydantic>=2.5, <3",
-]
+
+[project.optional-dependencies]
+audio = ["soundfile>=0.12", "scipy>=1.10"]
+docs = ["mkdocs-material>=9.6.18"]
 
 [build-system]
 requires = ["uv-build"]

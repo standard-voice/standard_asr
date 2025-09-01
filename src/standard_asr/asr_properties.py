@@ -27,9 +27,10 @@ from numpy.typing import DTypeLike
 class BaseProperties(BaseModel):
     """
     Base class for ASR engine properties.
-    ASR Properties provide metadata about the ASR engine, including its capabilities and configuration.
-    This metadata needs to be available before initializing the ASR engine, so users of standard asr can make informed decisions about which engine to use.
 
+    ASR Properties provide static metadata about an ASR engine, including its
+    capabilities and configuration requirements. This metadata is available
+    at the class level, before the engine is instantiated.
     """
 
     model_name: str = Field(..., description="Name of the ASR model.")
@@ -44,7 +45,16 @@ class BaseProperties(BaseModel):
         description="List of supported languages of this ASR engine in IETF BCP 47 format. If your ASR support other formats (like ISO 639-1), implement conversion in your code.",
     )
     supported_device: list[str]
-    audio_dtype: DTypeLike = Field(
-        np.float32,
-        description="Data type of the audio input. This is most likely float32 in audio field. Put None if unsure or unspecified.",
+    audio_dtype: str = Field(
+        "float32",
+        description="Data type of the audio input as string. This is most likely 'float32' in audio field.",
     )
+    supported_channels: list[int] = Field(
+        [1],
+        description="List of supported audio channel counts. e.g., [1] for mono, [1, 2] for mono and stereo.",
+    )
+
+    @property
+    def numpy_dtype(self) -> np.dtype[np.generic]:
+        """Get the numpy dtype object from the string representation."""
+        return np.dtype(self.audio_dtype)

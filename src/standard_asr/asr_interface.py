@@ -16,6 +16,7 @@ import asyncio
 from typing import Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .config import BaseConfig
 from .asr_properties import BaseProperties
@@ -33,29 +34,65 @@ class StandardASR(Protocol):
     config: BaseConfig
     properties: BaseProperties
 
-    def transcribe(self, audio: np.ndarray) -> str:
-        """Transcribe speech audio in numpy array format and return the transcription.
+    def transcribe(self, audio: NDArray[np.float32]) -> str:
+        """
+        Transcribes a pre-processed audio waveform into structured text.
+
+        This is the core transcription method. It strictly adheres to the
+        Standard ASR Audio Contract.
 
         Args:
-            audio: The numpy array of the audio data to transcribe.
+            audio (NDArray[np.float32]): The audio waveform, which MUST conform to the
+                following standard format:
+                - dtype: np.float32
+                - Sample Rate: 16,000 Hz
+                - Value Range: [-1.0, 1.0]
+                - Shape:
+                    - Mono: (n_samples,)
+                    - Multi-channel: (n_samples, n_channels)
+                The number of channels MUST be one of the values listed in the
+                ASR properties (`self.properties.supported_channels`).
+
+
+        Returns:
+            str: The transcribed text as a string.
+
+        Raises:
+            ValueError: If the input audio array's properties (e.g., shape)
+                do not match the engine's capabilities.
+            TranscriptionError: If the transcription process fails for any reason.
+        """
+        raise NotImplementedError(
+            "transcribe method must be implemented by subclasses."
+        )
+
+    async def transcribe_async(self, audio: NDArray[np.float32]) -> str:
+        """Asynchronously transcribes a pre-processed audio waveform into structured text.
+
+        By default, this runs the synchronous `transcribe` in a separate thread.
+        Implementations can override this method to provide a true async implementation.
+        This is the core asynchronous transcription method. It strictly adheres to the
+        Standard ASR Audio Contract.
+
+        Args:
+            audio (NDArray[np.float32]): The audio waveform, which MUST conform to the
+                following standard format:
+                - dtype: np.float32
+                - Sample Rate: 16,000 Hz
+                - Value Range: [-1.0, 1.0]
+                - Shape:
+                    - Mono: (n_samples,)
+                    - Multi-channel: (n_samples, n_channels)
+                The number of channels MUST be one of the values listed in the
+                ASR properties (`self.properties.supported_channels`).
 
         Returns:
             The transcription result as a string.
+
+        Raises:
+            ValueError: If the input audio array's properties (e.g., shape)
+                do not match the engine's capabilities.
+            TranscriptionError: If the transcription process fails for any reason.
         """
-        ...
-
-    async def transcribe_async(self, audio: np.ndarray) -> str:
-        """Asynchronously transcribe speech audio in numpy array format.
-
-        By default, this runs the synchronous transcribe in a coroutine.
-        Implementations can override this method to provide true async implementation.
-
-        Args:
-            audio: The numpy array of the audio data to transcribe.
-
-        Returns:
-            The transcription result as a string.
-        """
+        # Call the sync transcribe method in a separate thread
         return await asyncio.to_thread(self.transcribe, audio)
-
-
