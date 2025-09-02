@@ -51,11 +51,6 @@ jobs:
       - name: Install dependencies (dev group + audio extras)
         run: uv sync --all-extras --group dev
 
-      - name: Lint (Ruff)
-        run: |
-          uv run ruff check
-          uv run ruff format --check
-
       - name: Run tests
         env:
           PYTHONPATH: src
