@@ -16,7 +16,7 @@ repomix
 
 只包含文档正文和 Standard ASR 库的代码。
 ```sh
-repomix --ignore "LICENSE,.gitignore,.github/copilot-instructions.md,NOTICE,docs/stylesheets,mkdocs.yml,.cache"
+repomix --ignore "LICENSE,.python-version,.github/copilot-instructions.md,NOTICE,docs/stylesheets,mkdocs.yml,.cache"
 ```
 
 只包含文档正文
