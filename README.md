@@ -1,6 +1,8 @@
 # Standard ASR
 
 [![Checked with pyright](https://microsoft.github.io/pyright/img/pyright_badge.svg)](https://microsoft.github.io/pyright/)
+[![Static Badge](https://img.shields.io/badge/Join%20Chat-Zulip?style=flat&logo=zulip&label=Zulip&color=blue&link=https%3A%2F%2Fstandard-voice.zulipchat.com)](https://standard-voice.zulipchat.com)
+
 
 > ⚠️⚠️⚠️ Standard ASR is still work in progress!! Breaking changes may be introduced at any moment!!
 > 
