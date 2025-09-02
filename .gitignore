@@ -6,6 +6,9 @@ uv.lock
 # fuck macOS
 .DS_Store
 
+.vscode
+.idea
+
 # above are the custom .gitignore for the project
 # below is the basic python .gitignore file
 
