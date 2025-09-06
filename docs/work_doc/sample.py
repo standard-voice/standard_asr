@@ -7,4 +7,7 @@ whisper_instance: StandardASR = StandardWhisperModel()
 audio = b""
 
 whisper_instance.transcribe(audio)
-whisper_instance.transcribe_async(audio)
+whisper_instance.transcribe_async(audio, options={"language": "en-US"})
+whisper_instance.transcribe_async(
+    audio, options=whisper_instance.options(language="en-US")
+)
