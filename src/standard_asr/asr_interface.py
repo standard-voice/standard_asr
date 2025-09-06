@@ -18,7 +18,7 @@ from typing import Protocol, ClassVar
 import numpy as np
 from numpy.typing import NDArray
 
-from .config import BaseConfig
+from .asr_config import BaseConfig
 from .asr_properties import BaseProperties
 
 

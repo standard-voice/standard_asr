@@ -13,21 +13,8 @@
 # limitations under the License.
 
 """
-Configuration models for ASR engines.
-
-This module defines pydantic models used to configure supported Automatic Speech
-Recognition (ASR) engines (local and remote). A discriminated union (field
-'engine') enables ergonomic parsing of heterogeneous configuration payloads.
-
-Public API:
-- ModelType: Enum categorizing model locality.
-- BaseConfig: Abstract base for engine configs.
-- FasterWhisperConfig, AzureConfig: Concrete engine configs.
-- ASRConfig: Discriminated union type for any supported config.
-- parse_asr_config: Helper to parse arbitrary dicts into a concrete config.
+Base Configuration models for ASR engines.
 """
-
-from __future__ import annotations
 
 import logging
 
@@ -61,7 +48,7 @@ class BaseConfig(BaseModel):
     )
 
     engine: str = Field(
-        ..., description="Unique name of the ASR engine (discriminator)."
+        ..., description="Unique name of the ASR engine (discriminator or identifier)."
     )
 
     # if you want to add language options, remember to use supported_language from
