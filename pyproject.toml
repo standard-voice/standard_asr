@@ -13,7 +13,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.404",
+    "pyright>=1.1.405",
     "pytest>=8.4.1",
     "ruff>=0.12.11",
 ]
@@ -35,7 +35,7 @@ members = ["cookbook/std_faster_whisper"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src/standard_asr", "cookbook"]
+include = ["src/standard_asr"]
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"
