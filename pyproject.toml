@@ -35,7 +35,7 @@ members = ["cookbook/std_faster_whisper"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src/standard_asr"]
+include = ["src/standard_asr", "cookbook/std_faster_whisper"]
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"

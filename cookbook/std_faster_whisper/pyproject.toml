@@ -6,4 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "faster-whisper>=1.2.0",
+    "standard-asr>=0.1.0",
 ]
+[tool.uv.sources]
+standard-asr = { workspace = true }
