@@ -1,4 +1,4 @@
-name: Tests
+name: Tests & Coverage
 
 on:
   push:
@@ -32,29 +32,32 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-      - name: Cache uv
-        uses: actions/cache@v4
+        uses: astral-sh/setup-uv@v6
         with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install dependencies (dev group + audio extras)
         run: uv sync --all-extras --group dev
 
-      - name: Run tests
+      - name: Run tests with coverage
         env:
           PYTHONPATH: src
         run: |
-          uv run pytest -q --maxfail=1
+          uv run pytest
 
-
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml

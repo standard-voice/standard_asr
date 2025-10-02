@@ -29,9 +29,7 @@ from standard_asr.utils.audio_loader import (
     load_audio,
     normalize_audio,
 )
-from standard_asr.utils.audio_loader import (
-    _load_with_ffmpeg,
-)  # pyright: ignore[reportPrivateUsage]
+from standard_asr.utils.audio_loader import _load_with_ffmpeg  # pyright: ignore[reportPrivateUsage]
 from standard_asr.utils.save_utils import nparray_to_audio_file
 from standard_asr.exceptions import AudioProcessingError, FFmpegNotFoundError
 

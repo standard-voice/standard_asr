@@ -15,6 +15,7 @@ dependencies = [
 dev = [
     "pyright>=1.1.405",
     "pytest>=8.4.1",
+    "pytest-cov>=7.0.0",
     "ruff>=0.12.11",
 ]
 
@@ -35,8 +36,23 @@ members = ["cookbook/std_faster_whisper"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src/standard_asr", "cookbook/std_faster_whisper"]
+include = ["src/standard_asr", "tests", "cookbook/std_faster_whisper"]
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"
 reportUnknownMemberType = "error"
+
+[tool.pytest.ini_options]
+addopts = [
+    "-q",
+    "--maxfail=1",
+    "--cov=standard_asr",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=xml",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["standard_asr"]
+
