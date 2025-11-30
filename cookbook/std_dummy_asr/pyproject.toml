@@ -1,0 +1,22 @@
+[project]
+name = "std-dummy-asr"
+version = "0.0.1"
+description = "Lightweight Standard ASR plugin used for entrypoint demos and tests"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["standard-asr>=0.1.0"]
+
+[tool.uv.sources]
+standard-asr = { workspace = true }
+
+[project.entry-points."standard_asr.models"]
+"dummy/echo" = "std_dummy_asr.entrypoint:create_echo"
+"dummy/" = "std_dummy_asr.entrypoint:create_default"
+
+[build-system]
+requires = ["uv-build"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "src"
+module-name = "std_dummy_asr"

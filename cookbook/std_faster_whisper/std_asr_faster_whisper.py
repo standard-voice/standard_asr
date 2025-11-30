@@ -13,16 +13,13 @@
 # limitations under the License.
 
 from typing import Literal
-
-
-import numpy as np
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel  # type: ignore[stub]
 from pydantic import Field
 
 from standard_asr import BaseConfig, StandardASR
 
 
-class FasterWhisperConfig(BaseConfig):
+class FasterWhisperConfig(BaseConfig[Literal["faster-whisper"]]):
     """
     Configuration for the Faster-Whisper engine.
 
@@ -96,7 +93,7 @@ class FasterWhisperASR(StandardASR):
             compute_type=compute_type,
         )
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio) -> str:
         segments, info = self.model.transcribe(
             audio,
             beam_size=5,

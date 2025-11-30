@@ -35,11 +35,11 @@ module-root = "src"
 module-name = "standard_asr"
 
 [tool.uv.workspace]
-members = ["cookbook/std_faster_whisper"]
+members = ["cookbook/std_faster_whisper", "cookbook/std_dummy_asr"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src/standard_asr", "tests", "cookbook/std_faster_whisper"]
+include = ["src/standard_asr", "tests", "cookbook/std_faster_whisper", "cookbook/std_dummy_asr"]
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"
@@ -58,4 +58,3 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["standard_asr"]
-
