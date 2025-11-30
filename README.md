@@ -22,6 +22,23 @@ ASR integration code should be written once and only once. Application developer
 
 That's what we tries to do: the usb protocol for ASR libraries.
 
+## Entrypoint Quickstart
+
+Standard ASR discovers compliant plugins through the ``standard_asr.models``
+entrypoint group. Each plugin exposes one or more model presets using keys like
+``<engine_id>/<model_name>``. A tiny demo plugin ships in ``cookbook/std_dummy_asr``
+so you can try the workflow without extra dependencies:
+
+```bash
+uv run uv pip install -e cookbook/std_dummy_asr
+uv run standard-asr models list
+uv run standard-asr compliance entrypoints
+uv run python cookbook/sample_client.py
+```
+
+The sample client will discover the installed model, instantiate it, and print a
+synthetic transcript. Use this flow as a template when building your own plugin.
+
 
 
 ---
@@ -63,4 +80,3 @@ We use **Zulip** for development communication:
 # License
 
 This project is licensed under the Apache 2.0 License. Please checkout [LICENSE](./LICENSE) for more details.
-
