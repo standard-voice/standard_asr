@@ -27,9 +27,12 @@ class BaseProperties(BaseModel):
     """
     Base class for ASR engine properties.
 
+    Think of ASR Properties as the passport + resume for ASR engines.
+
     ASR Properties provide static metadata about an ASR engine, including its
-    capabilities and configuration requirements. This metadata is available
-    at the class level, before the engine is instantiated.
+    capabilities, hardware requirements, language supports, etc.
+
+    This metadata is available at the class level, before the engine is instantiated.
     """
 
     model_name: str = Field(..., description="Name of the ASR model.")
