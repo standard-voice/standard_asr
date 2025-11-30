@@ -50,3 +50,21 @@ class FFprobeNotFoundError(AudioProcessingError, FileNotFoundError):
     """Raised when FFprobe is required but not found in the system `PATH`."""
 
     pass
+
+
+class DiscoveryError(StandardASRError):
+    """Base class for discovery and plugin-related errors."""
+
+    pass
+
+
+class EntrypointValidationError(DiscoveryError, ValueError):
+    """Raised when an entry point name or metadata is invalid."""
+
+    pass
+
+
+class FactoryLoadError(DiscoveryError, ImportError):
+    """Raised when an entry point target cannot be imported or is not callable."""
+
+    pass
