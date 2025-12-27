@@ -15,11 +15,11 @@ from standard_asr.discovery import (
     ModelRegistry,
     ModelSpec,
     _gather_entry_points,  # pyright: ignore[reportPrivateUsage]
-    _validate_engine_id,  # pyright: ignore[reportPrivateUsage]
-    _validate_model_name,  # pyright: ignore[reportPrivateUsage]
     discover_models,
     parse_entrypoint_name,
     pep503_normalize,
+    validate_engine_id,
+    validate_model_name,
 )
 from standard_asr.exceptions import EntrypointValidationError, FactoryLoadError
 
@@ -145,14 +145,15 @@ def test_discover_models_invalid_name_raises_when_strict() -> None:
             group="standard_asr.models",
         )
     ]
-    with pytest.raises(Exception):
+    with pytest.raises(EntrypointValidationError) as excinfo:
         discover_models(eps=eps, strict=True)
+    assert "bad/name/with/slashes" in str(excinfo.value)
 
 
 def test_compliance_reports_expected_issues() -> None:
     eps = [
         EntryPoint(
-            name="good/model",
+            name="dummy/demo",
             value="tests.test_discovery:_dummy_factory",
             group="standard_asr.models",
         ),
@@ -206,12 +207,12 @@ def test_non_callable_factory_returns_string() -> None:
 
 def test_validate_engine_id_rejects_slash() -> None:
     with pytest.raises(EntrypointValidationError):
-        _validate_engine_id("bad/name")
+        validate_engine_id("bad/name")
 
 
 def test_validate_model_name_rejects_slash() -> None:
     with pytest.raises(EntrypointValidationError):
-        _validate_model_name("bad/name")
+        validate_model_name("bad/name")
 
 
 def test_validate_model_name_rejects_invalid_chars() -> None:
@@ -221,10 +222,9 @@ def test_validate_model_name_rejects_invalid_chars() -> None:
 
 def test_validate_engine_id_logs_guidance(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("INFO")
-    engine, model = parse_entrypoint_name("my_engine/model")
+    validate_engine_id("my_engine")
+    validate_model_name("model")
 
-    assert engine == "my_engine"
-    assert model == "model"
     assert any("PEP 503" in record.message for record in caplog.records)
 
 
@@ -434,3 +434,18 @@ def test_check_entrypoints_missing_metadata() -> None:
     errors = list(report.iter_level("error"))
     assert any("BaseProperties" in issue.message for issue in errors)
     assert any("BaseConfig" in issue.message for issue in errors)
+
+
+def test_check_entrypoints_model_id_mismatch() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_dummy_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    report = check_entrypoints(registry=registry, instantiate=True)
+
+    errors = list(report.iter_level("error"))
+    assert any("model_id" in issue.message for issue in errors)

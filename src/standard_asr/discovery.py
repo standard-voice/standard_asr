@@ -58,7 +58,17 @@ def pep503_normalize(name: str) -> str:
 
 
 def _validate_engine_id(engine_id: str) -> None:
-    """Validate and log guidance for an engine identifier."""
+    """Validate and log guidance for an engine identifier.
+
+    Args:
+        engine_id: Engine identifier string.
+
+    Returns:
+        None.
+
+    Raises:
+        EntrypointValidationError: If the engine identifier is invalid.
+    """
 
     if "/" in engine_id:
         raise EntrypointValidationError(
@@ -72,18 +82,28 @@ def _validate_engine_id(engine_id: str) -> None:
     canonical = pep503_normalize(engine_id)
     if canonical != engine_id:
         logger.info(
-            "ℹ️ engine_id %r is not PEP 503 normalized. Recommended form: %r.",
+            "engine_id %r is not PEP 503 normalized. Recommended form: %r.",
             engine_id,
             canonical,
         )
 
 
 def _validate_model_name(model_name: str) -> None:
-    """Validate and log guidance for a model name."""
+    """Validate and log guidance for a model name.
+
+    Args:
+        model_name: Model name string (may be empty for defaults).
+
+    Returns:
+        None.
+
+    Raises:
+        EntrypointValidationError: If the model name is invalid.
+    """
 
     if model_name == "":
         logger.warning(
-            "⚠️ model_name is empty for a standard_asr.models entry point. "
+            "model_name is empty for a standard_asr.models entry point. "
             "Empty names are allowed but discouraged; document the default clearly."
         )
         return
@@ -96,6 +116,36 @@ def _validate_model_name(model_name: str) -> None:
             "model_name contains unsupported characters. Allowed characters: "
             "letters, digits, '.', '_', '+', '%', ':', '-'."
         )
+
+
+def validate_engine_id(engine_id: str) -> None:
+    """Validate an engine identifier.
+
+    Args:
+        engine_id: Engine identifier string.
+
+    Returns:
+        None.
+
+    Raises:
+        EntrypointValidationError: If the engine identifier is invalid.
+    """
+    _validate_engine_id(engine_id)
+
+
+def validate_model_name(model_name: str) -> None:
+    """Validate a model name.
+
+    Args:
+        model_name: Model name string (may be empty for defaults).
+
+    Returns:
+        None.
+
+    Raises:
+        EntrypointValidationError: If the model name is invalid.
+    """
+    _validate_model_name(model_name)
 
 
 def parse_entrypoint_name(name: str) -> tuple[str, str]:
@@ -253,11 +303,11 @@ def discover_models(
 
     found = _gather_entry_points(eps)
     logger.debug(
-        "🔎 Discovering Standard ASR models: %d entry points located.", len(found)
+        "Discovering Standard ASR models: %d entry points located.", len(found)
     )
 
     specs: MutableMapping[str, ModelSpec] = {}
-    errors: list[Exception] = []
+    errors: list[str] = []
 
     for ep in found:
         if ep.group != ENTRYPOINT_GROUP:
@@ -270,16 +320,18 @@ def discover_models(
                 key=key, engine_id=engine_id, model_name=model_name, entry_point=ep
             )
         except EntrypointValidationError as exc:
-            message = f"❌ Invalid entry point name {ep.name!r} ({exc})."
+            dist = getattr(ep, "dist", None)
+            dist_label = f" (dist={dist})" if dist is not None else ""
+            message = f"Invalid entry point name {ep.name!r}{dist_label}: {exc}"
             if strict:
-                errors.append(exc)
+                errors.append(message)
             else:
                 logger.warning(message)
             continue
 
         if key in specs and on_conflict == "warn_keep_first":
             logger.warning(
-                "⚠️ Duplicate model key %r detected. Keeping %r; ignoring %r.",
+                "Duplicate model key %r detected. Keeping %r; ignoring %r.",
                 key,
                 specs[key].entry_point,
                 ep,
@@ -287,7 +339,7 @@ def discover_models(
             continue
         if key in specs and on_conflict == "replace":
             logger.warning(
-                "♻️ Duplicate model key %r detected. Replacing %r with %r.",
+                "Duplicate model key %r detected. Replacing %r with %r.",
                 key,
                 specs[key].entry_point,
                 ep,
@@ -296,10 +348,11 @@ def discover_models(
         specs[key] = spec
 
     if strict and errors:
-        raise errors[0]
+        joined = "\n".join(f"- {message}" for message in errors)
+        raise EntrypointValidationError("Invalid entry points detected:\n" + joined)
 
     registry = ModelRegistry(specs)
-    logger.info("✅ Discovered %d Standard ASR model(s).", len(registry))
+    logger.info("Discovered %d Standard ASR model(s).", len(registry))
     return registry
 
 

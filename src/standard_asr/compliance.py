@@ -218,6 +218,18 @@ def check_entrypoints(
                     model=name,
                 )
             )
+        else:
+            if properties.model_id != spec.key:
+                issues.append(
+                    ComplianceIssue(
+                        level="error",
+                        message=(
+                            "Instance properties.model_id does not match the entry point key "
+                            f"({properties.model_id!r} != {spec.key!r})."
+                        ),
+                        model=name,
+                    )
+                )
 
         config = getattr(instance, "config", None)
         if not isinstance(config, BaseConfig):

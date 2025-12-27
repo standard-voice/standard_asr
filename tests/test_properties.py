@@ -84,6 +84,50 @@ def test_properties_channel_validation_errors() -> None:
         BaseProperties(**data)
 
 
+def test_properties_engine_id_validation_errors() -> None:
+    data = _base_kwargs()
+    data["engine_id"] = "Bad/Engine"
+
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+
+def test_properties_model_name_validation_errors() -> None:
+    data = _base_kwargs()
+    data["model_name"] = "bad/name"
+
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+
+def test_properties_supported_devices_validation_errors() -> None:
+    data = _base_kwargs()
+    data["supported_devices"] = []
+
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+    data = _base_kwargs()
+    data["supported_devices"] = [""]
+
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+
+def test_properties_audio_dtype_validation_errors() -> None:
+    data = _base_kwargs()
+    data["audio_dtype"] = "not-a-dtype"
+
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+    data = _base_kwargs()
+    data["audio_dtype"] = "float64"
+
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+
 def test_properties_numpy_dtype_and_model_id() -> None:
     props = BaseProperties(**_base_kwargs())
 

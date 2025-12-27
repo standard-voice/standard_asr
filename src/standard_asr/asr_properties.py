@@ -23,6 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .features import FeatureFlag
 from .language import is_valid_bcp47, normalize_bcp47
+from .discovery import validate_engine_id, validate_model_name
+from .exceptions import EntrypointValidationError
 
 
 def _default_features() -> set[FeatureFlag]:
@@ -128,6 +130,90 @@ class BaseProperties(BaseModel):
         if not normalized:
             raise ValueError("supported_languages must not be empty.")
         return normalized
+
+    @field_validator("engine_id")
+    @classmethod
+    def _validate_engine_id_field(cls, value: str) -> str:
+        """Validate the engine identifier.
+
+        Args:
+            value: Engine identifier string.
+
+        Returns:
+            Validated engine identifier.
+
+        Raises:
+            ValueError: If the engine identifier is invalid.
+        """
+        try:
+            validate_engine_id(value)
+        except EntrypointValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
+
+    @field_validator("model_name")
+    @classmethod
+    def _validate_model_name_field(cls, value: str) -> str:
+        """Validate the model name.
+
+        Args:
+            value: Model name string (may be empty for defaults).
+
+        Returns:
+            Validated model name.
+
+        Raises:
+            ValueError: If the model name is invalid.
+        """
+        try:
+            validate_model_name(value)
+        except EntrypointValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
+
+    @field_validator("supported_devices")
+    @classmethod
+    def _validate_supported_devices(cls, value: list[str]) -> list[str]:
+        """Validate supported devices list.
+
+        Args:
+            value: List of supported device identifiers.
+
+        Returns:
+            Validated list of device identifiers.
+
+        Raises:
+            ValueError: If the list is empty or contains empty entries.
+        """
+        if not value:
+            raise ValueError("supported_devices must not be empty.")
+        if any(device == "" for device in value):
+            raise ValueError("supported_devices entries must not be empty.")
+        return value
+
+    @field_validator("audio_dtype")
+    @classmethod
+    def _validate_audio_dtype(cls, value: str) -> str:
+        """Validate the audio dtype.
+
+        Args:
+            value: Candidate dtype string.
+
+        Returns:
+            Normalized dtype string.
+
+        Raises:
+            ValueError: If dtype is invalid or unsupported.
+        """
+        try:
+            dtype = np.dtype(value)
+        except TypeError as exc:
+            raise ValueError("audio_dtype must be a valid NumPy dtype.") from exc
+        if dtype != np.dtype("float32"):
+            raise ValueError(
+                "audio_dtype must be 'float32' for the Standard ASR contract."
+            )
+        return dtype.name
 
     @field_validator("supported_sample_rates")
     @classmethod
