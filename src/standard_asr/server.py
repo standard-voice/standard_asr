@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from typing import Any
@@ -99,14 +100,13 @@ def create_app(registry: ModelRegistry | None = None):
         ImportError: If FastAPI dependencies are missing.
     """
     try:
-        from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+        from fastapi import FastAPI, File, Form, HTTPException
     except ImportError as exc:
         raise ImportError(
             "FastAPI dependencies are missing. Install with: "
             "pip install 'standard-asr[server]'."
         ) from exc
 
-    globals()["UploadFile"] = UploadFile
     app = FastAPI(title="Standard ASR")
     model_registry = registry or discover_models()
 
@@ -150,14 +150,14 @@ def create_app(registry: ModelRegistry | None = None):
     @app.post("/v1/transcribe", response_model=TranscribeResponse)
     async def transcribe_file(  # pyright: ignore[reportUnusedFunction]
         model: str = Form(...),
-        file: UploadFile = File(...),
+        file: bytes = File(...),
         options: str | None = Form(None),
     ) -> TranscribeResponse:
         """Transcribe audio from a multipart file upload.
 
         Args:
             model: Model key in ``engine/model`` format.
-            file: Uploaded audio file.
+            file: Uploaded audio payload.
             options: Optional JSON options string.
 
         Returns:
@@ -167,22 +167,21 @@ def create_app(registry: ModelRegistry | None = None):
             HTTPException: If decoding or transcription fails.
         """
         try:
-            raw = await file.read()
-            audio: NDArray[np.float32] = load_audio_from_bytes(raw)
+            audio = await asyncio.to_thread(load_audio_from_bytes, file)
             options_payload = json.loads(options) if options else None
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
-            asr = model_registry.create(model)
-            result = asr.transcribe(audio, options=options_payload)
+            asr = await asyncio.to_thread(model_registry.create, model)
+            result = await asyncio.to_thread(asr.transcribe, audio, options_payload)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         return TranscribeResponse(model=model, result=result)
 
     @app.post("/v1/transcribe:json", response_model=TranscribeResponse)
-    def transcribe_json(  # pyright: ignore[reportUnusedFunction]
+    async def transcribe_json(  # pyright: ignore[reportUnusedFunction]
         payload: TranscribeJsonRequest,
     ) -> TranscribeResponse:
         """Transcribe audio from a JSON payload.
@@ -197,13 +196,13 @@ def create_app(registry: ModelRegistry | None = None):
             HTTPException: If decoding or transcription fails.
         """
         try:
-            audio = _decode_audio_payload(payload.audio)
+            audio = await asyncio.to_thread(_decode_audio_payload, payload.audio)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
-            asr = model_registry.create(payload.model)
-            result = asr.transcribe(audio, options=payload.options)
+            asr = await asyncio.to_thread(model_registry.create, payload.model)
+            result = await asyncio.to_thread(asr.transcribe, audio, payload.options)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
