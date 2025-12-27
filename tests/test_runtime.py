@@ -1,6 +1,5 @@
 """Tests for runtime helpers."""
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +7,12 @@ import pytest
 
 from standard_asr.asr_properties import BaseProperties
 from standard_asr.exceptions import AudioProcessingError
-from standard_asr.runtime import allow_downloads, ensure_cache_dir, resolve_cache_dir, validate_audio_input
+from standard_asr.runtime import (
+    allow_downloads,
+    ensure_cache_dir,
+    resolve_cache_dir,
+    validate_audio_input,
+)
 
 
 class _Props(BaseProperties):
@@ -22,7 +26,7 @@ class _Props(BaseProperties):
     audio_dtype: str = "float32"
 
 
-def test_allow_downloads_env(monkeypatch) -> None:
+def test_allow_downloads_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("STANDARD_ASR_ALLOW_DOWNLOAD", raising=False)
     assert allow_downloads() is True
 
@@ -33,7 +37,7 @@ def test_allow_downloads_env(monkeypatch) -> None:
     assert allow_downloads() is True
 
 
-def test_cache_dir_override(monkeypatch, tmp_path: Path) -> None:
+def test_cache_dir_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", str(tmp_path))
     resolved = resolve_cache_dir()
     assert resolved == tmp_path
@@ -42,19 +46,29 @@ def test_cache_dir_override(monkeypatch, tmp_path: Path) -> None:
     assert ensured.exists()
 
 
-def test_cache_dir_defaults(monkeypatch, tmp_path: Path) -> None:
+def test_cache_dir_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
     resolved = resolve_cache_dir()
     assert isinstance(resolved, Path)
 
 
-def test_cache_dir_windows_fallback(monkeypatch, tmp_path: Path) -> None:
+def test_cache_dir_windows_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    monkeypatch.setattr(os, "name", "nt", raising=False)
 
-    resolved = resolve_cache_dir()
+    resolved = resolve_cache_dir(os_name="nt")
     assert resolved == tmp_path / "standard-asr"
+
+
+def test_cache_dir_windows_missing_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    resolved = resolve_cache_dir(os_name="nt")
+    assert resolved.name == "standard-asr"
 
 
 def test_validate_audio_input_channels() -> None:
@@ -76,6 +90,14 @@ def test_validate_audio_input_casts_dtype() -> None:
 def test_validate_audio_input_invalid_shape() -> None:
     props = _Props()
     audio = np.zeros((1, 2, 3), dtype=np.float32)
+
+    with pytest.raises(AudioProcessingError):
+        validate_audio_input(audio, props)
+
+
+def test_validate_audio_input_invalid_dtype_conversion() -> None:
+    props = _Props()
+    audio = np.array(["bad"], dtype=object)
 
     with pytest.raises(AudioProcessingError):
         validate_audio_input(audio, props)

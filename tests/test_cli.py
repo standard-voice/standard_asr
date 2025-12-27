@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from standard_asr import cli
 from standard_asr.compliance import ComplianceIssue, ComplianceReport
@@ -25,9 +26,15 @@ def _demo_registry() -> ModelRegistry:
     return discover_models(eps=eps, strict=True)
 
 
-def test_cli_models_list(monkeypatch, capsys) -> None:
+def test_cli_models_list(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     registry = _demo_registry()
-    monkeypatch.setattr(cli, "discover_models", lambda **_: registry)
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
 
     exit_code = cli.main(["models", "list"])
     output = capsys.readouterr().out
@@ -37,9 +44,32 @@ def test_cli_models_list(monkeypatch, capsys) -> None:
     assert "engine=alpha" in output
 
 
-def test_cli_models_show(monkeypatch, capsys) -> None:
+def test_cli_models_list_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = ModelRegistry({})
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+
+    exit_code = cli.main(["models", "list"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "No Standard ASR models were discovered." in output
+
+
+def test_cli_models_show(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     registry = _demo_registry()
-    monkeypatch.setattr(cli, "discover_models", lambda **_: registry)
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
 
     exit_code = cli.main(["models", "show", "alpha/first"])
     output = capsys.readouterr().out
@@ -49,7 +79,11 @@ def test_cli_models_show(monkeypatch, capsys) -> None:
     assert "alpha/first" in output
 
 
-def test_cli_models_cache(monkeypatch, capsys, tmp_path: Path) -> None:
+def test_cli_models_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
     monkeypatch.setattr(cli, "resolve_cache_dir", lambda: tmp_path)
 
     exit_code = cli.main(["models", "cache"])
@@ -59,10 +93,19 @@ def test_cli_models_cache(monkeypatch, capsys, tmp_path: Path) -> None:
     assert str(tmp_path) in output
 
 
-def test_cli_transcribe(monkeypatch, capsys) -> None:
+def test_cli_transcribe(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     registry = _demo_registry()
-    monkeypatch.setattr(cli, "discover_models", lambda **_: registry)
-    monkeypatch.setattr(cli, "load_audio", lambda _: np.zeros(16000, dtype=np.float32))
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    def _load_audio(_: object) -> NDArray[np.float32]:
+        return np.zeros(16000, dtype=np.float32)
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+    monkeypatch.setattr(cli, "load_audio", _load_audio)
 
     exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
     output = capsys.readouterr().out
@@ -71,7 +114,30 @@ def test_cli_transcribe(monkeypatch, capsys) -> None:
     assert "dummy" in output
 
 
-def test_cli_compliance_entrypoints_failure(monkeypatch, capsys) -> None:
+def test_cli_transcribe_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = _demo_registry()
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    def _load_audio(_: object) -> NDArray[np.float32]:
+        return np.zeros(16000, dtype=np.float32)
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+    monkeypatch.setattr(cli, "load_audio", _load_audio)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav", "--json"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert '"text"' in output
+
+
+def test_cli_compliance_entrypoints_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     registry = ModelRegistry({})
     report = ComplianceReport(
         registry=registry,
@@ -97,14 +163,69 @@ def test_cli_compliance_entrypoints_failure(monkeypatch, capsys) -> None:
     assert "alpha/first" in output
 
 
-def test_cli_serve_uses_server_module(monkeypatch) -> None:
+def test_cli_compliance_entrypoints_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = ModelRegistry({})
+    report = ComplianceReport(
+        registry=registry,
+        issues=[
+            ComplianceIssue(
+                level="warning",
+                message="Minor warning",
+                model="alpha/first",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "check_entrypoints",
+        lambda strict_discovery=False, instantiate=True: report,
+    )
+
+    exit_code = cli.main(["compliance", "entrypoints"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "passed" in output
+    assert "Warning" in output
+
+
+def test_cli_compliance_entrypoints_quiet(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = ModelRegistry({})
+    report = ComplianceReport(
+        registry=registry,
+        issues=[
+            ComplianceIssue(
+                level="warning",
+                message="Minor warning",
+                model="alpha/first",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "check_entrypoints",
+        lambda strict_discovery=False, instantiate=True: report,
+    )
+
+    exit_code = cli.main(["compliance", "entrypoints", "--quiet"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Warning" not in output
+
+
+def test_cli_serve_uses_server_module(monkeypatch: pytest.MonkeyPatch) -> None:
     module = types.ModuleType("standard_asr.server")
-    called = {}
+    called: dict[str, object] = {}
 
-    def _run(**kwargs):
-        called.update(kwargs)
+    def _run(**kwargs: object) -> None:
+        called.update(dict(kwargs))
 
-    module.run = _run
+    setattr(module, "run", _run)
 
     monkeypatch.setitem(__import__("sys").modules, "standard_asr.server", module)
 
@@ -115,9 +236,45 @@ def test_cli_serve_uses_server_module(monkeypatch) -> None:
     assert called["port"] == 9001
 
 
-def test_cli_models_prepare_calls_transcribe(monkeypatch, capsys) -> None:
+def test_cli_serve_missing_server_dependency(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "__package__", "standard_asr_missing")
+
+    exit_code = cli.main(["serve"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "dependencies are missing" in output
+
+
+def test_cli_serve_importerror_from_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = types.ModuleType("standard_asr.server")
+
+    def _run(**_: object) -> None:
+        raise ImportError("boom")
+
+    setattr(module, "run", _run)
+    monkeypatch.setitem(__import__("sys").modules, "standard_asr.server", module)
+
+    exit_code = cli.main(["serve"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "boom" in output
+
+
+def test_cli_models_prepare_calls_transcribe(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     registry = _demo_registry()
-    monkeypatch.setattr(cli, "discover_models", lambda **_: registry)
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
 
     exit_code = cli.main(["models", "prepare", "alpha/first"])
     output = capsys.readouterr().out
@@ -126,7 +283,9 @@ def test_cli_models_prepare_calls_transcribe(monkeypatch, capsys) -> None:
     assert "prepare" in output.lower()
 
 
-def test_cli_models_prepare_calls_prepare(monkeypatch, capsys) -> None:
+def test_cli_models_prepare_calls_prepare(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     class _PrepASR:
         def __init__(self) -> None:
             self.called = False
@@ -136,8 +295,15 @@ def test_cli_models_prepare_calls_prepare(monkeypatch, capsys) -> None:
 
     prep = _PrepASR()
     registry = _demo_registry()
-    monkeypatch.setattr(registry, "create", lambda *_: prep)
-    monkeypatch.setattr(cli, "discover_models", lambda **_: registry)
+
+    def _create(*_: object) -> _PrepASR:
+        return prep
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(registry, "create", _create)
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
 
     exit_code = cli.main(["models", "prepare", "alpha/first"])
     output = capsys.readouterr().out
@@ -148,9 +314,9 @@ def test_cli_models_prepare_calls_prepare(monkeypatch, capsys) -> None:
 
 
 def test_parse_options() -> None:
-    options = cli._parse_options('{"language": "en"}')
+    options = cli._parse_options('{"language": "en"}')  # pyright: ignore[reportPrivateUsage]
     assert isinstance(options, dict)
     assert options["language"] == "en"
 
     with pytest.raises(ValueError):
-        cli._parse_options("[1, 2, 3]")
+        cli._parse_options("[1, 2, 3]")  # pyright: ignore[reportPrivateUsage]

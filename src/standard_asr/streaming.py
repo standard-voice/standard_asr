@@ -71,7 +71,7 @@ class StreamingASR(Protocol):
         Raises:
             TranscriptionError: If transcription fails.
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
     async def transcribe_stream_async(
         self,
@@ -90,7 +90,7 @@ class StreamingASR(Protocol):
         Raises:
             TranscriptionError: If transcription fails.
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
 
 __all__ = ["StreamChunk", "StreamingASR"]
