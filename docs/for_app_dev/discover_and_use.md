@@ -34,9 +34,37 @@ import numpy as np
 registry = discover_models()
 asr = registry.create("dummy/echo")
 audio = np.zeros(16_000, dtype=np.float32)
-print(asr.transcribe(audio))
+result = asr.transcribe(audio)
+print(result.text)
 ```
 
 The same snippet is available at `cookbook/sample_client.py`. Replace the model
 key with any other discovered entry point to switch engines without changing
 your application logic.
+
+## Transcription Result
+
+`StandardASR.transcribe()` returns a structured `TranscriptionResult`:
+
+```python
+result = asr.transcribe(audio)
+print(result.text)
+```
+
+Use `result.segments` or `result.words` when the engine supports timestamps.
+
+## Passing Options
+
+```python
+from standard_asr import BaseTranscribeOptions
+
+options = BaseTranscribeOptions(language="en", word_timestamps=True)
+result = asr.transcribe(audio, options=options)
+```
+
+## CLI Quick Usage
+
+```bash
+standard-asr models list
+standard-asr transcribe dummy/echo path/to/audio.wav
+```

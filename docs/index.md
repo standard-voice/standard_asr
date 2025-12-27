@@ -1,17 +1,29 @@
-# Welcome to MkDocs
+# Standard ASR Documentation
 
-For full documentation visit [mkdocs.org](https://www.mkdocs.org).
+Standard ASR is the **USB‑C of ASR inference**: a unified interface that lets
+application developers integrate any ASR engine without rewriting integration
+code. It also gives ASR developers a clean, minimal standard and tooling so they
+can focus on models instead of infrastructure.
 
-## Commands
+## Quick Start (Local Demo)
 
-* `mkdocs new [dir-name]` - Create a new project.
-* `mkdocs serve` - Start the live-reloading docs server.
-* `mkdocs build` - Build the documentation site.
-* `mkdocs -h` - Print help message and exit.
+```bash
+uv run uv pip install -e cookbook/std_dummy_asr
+uv run standard-asr models list
+uv run standard-asr transcribe dummy/echo path/to/audio.wav
+```
 
-## Project layout
+## Key Docs
 
-    mkdocs.yml    # The configuration file.
-    docs/
-        index.md  # The documentation homepage.
-        ...       # Other markdown pages, images and other files.
+- Protocol & data models: `docs/spec/`
+- App developer guide: `docs/for_app_dev/discover_and_use.md`
+- ASR developer guide: `docs/for_asr_dev/plugin_entrypoints.md`
+- Cookbook examples: `cookbook/`
+
+## Principles
+
+- Application developer friendly (zero‑config, plug‑and‑play).
+- ASR developer friendly (clear spec + toolchain).
+- Optional heavy dependencies, lean core.
+
+See `docs/mission.md` and `docs/goals.md` for full project philosophy.

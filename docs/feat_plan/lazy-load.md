@@ -33,8 +33,7 @@ specification. Keep code and docs aligned when changes land.
 - Unset → **suggested default**: allowed in local/dev; set to `"0"` in API
   servers or CI where surprise downloads are undesirable.
 
-Recommended lookup helper (to be implemented in `standard_asr.runtime` or
-similar):
+Recommended lookup helper (implemented in `standard_asr.runtime.allow_downloads`):
 
 ```python
 import os

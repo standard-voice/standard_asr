@@ -14,7 +14,8 @@
 
 
 ## Introduction
-Standard ASR (Automatic Speech Recognition) is a protocol that attempts to standardize the way to interact with different ASR models. 
+Standard ASR (Automatic Speech Recognition) is a protocol that standardizes the
+way applications interact with different ASR models.
 
 Think of this as the USB-C for speech recognition libraries. We help standardize how the users of ASR libraries interact with ASR libraries, so application developers can use one code to interact with different ASR packages and models.
 
@@ -38,6 +39,35 @@ uv run python cookbook/sample_client.py
 
 The sample client will discover the installed model, instantiate it, and print a
 synthetic transcript. Use this flow as a template when building your own plugin.
+
+## Python Usage
+
+```python
+from standard_asr import discover_models
+import numpy as np
+
+registry = discover_models()
+asr = registry.create("dummy/echo")
+audio = np.zeros(16_000, dtype=np.float32)
+result = asr.transcribe(audio)
+print(result.text)
+```
+
+## CLI Quick Usage
+
+```bash
+standard-asr models list
+standard-asr transcribe dummy/echo path/to/audio.wav
+```
+
+## FastAPI Server (Optional)
+
+```bash
+pip install "standard-asr[server]"
+standard-asr serve --host 0.0.0.0 --port 8000
+```
+
+See `docs/spec/api.md` for API details.
 
 
 

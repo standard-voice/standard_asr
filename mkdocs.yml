@@ -34,3 +34,25 @@ plugins:
 
 extra_css:
   - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Introduction: intro.md
+  - Mission: mission.md
+  - Goals: goals.md
+  - Roadmap: roadmap.md
+  - App Developers:
+      - Discover & Use: for_app_dev/discover_and_use.md
+  - ASR Developers:
+      - Properties: for_asr_dev/properties.md
+      - Plugin Entrypoints: for_asr_dev/plugin_entrypoints.md
+  - Specs:
+      - Protocol: spec/protocol.md
+      - Results: spec/results.md
+      - Options: spec/options.md
+      - Properties: spec/properties.md
+      - Features: spec/features.md
+      - Streaming: spec/streaming.md
+      - CLI: spec/cli.md
+      - API: spec/api.md
+      - Download Policy: spec/download-policy.md

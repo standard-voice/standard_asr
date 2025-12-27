@@ -1,21 +1,53 @@
+# Properties for ASR Developers
 
+All Standard ASR engines **must** expose static metadata via `BaseProperties`.
+This is the contract that lets applications discover capabilities without
+instantiating the engine.
 
-All ASR Engines *MUST* declare properties.
+## Required Fields
 
-There are some required fields you must declare in properties filed:
+```python
+class BaseProperties(BaseModel):
+    engine_id: str
+    model_name: str
+    protocol_version: str
+    supported_languages: list[str]
+    supported_devices: list[str]
+    supported_sample_rates: list[int]
+    supported_channels: list[int]
+    audio_dtype: str
+    features: set[FeatureFlag]
+    description: str | None
+    extra: dict[str, Any]
+```
 
-- language
+### Notes
+- `engine_id` should be PEP 503 normalized.
+- `model_name` should match the entrypoint preset name.
+- `supported_languages` **must** use BCP 47 tags.
 
+## BCP 47 Language Tags
 
+We use BCP 47 because it can represent scripts and regions beyond ISO 639‑1.
+If your model requires a different language code, convert from BCP 47 in your
+engine implementation.
 
+Examples:
+- `en`
+- `zh-Hant`
+- `pt-BR`
 
+## Example Implementation
 
-## language
-
-![language_code](../assets/language_code.png)
-
-Language code must follow **IETF BCP 47 standard**. If your ASR engine requires different language code, use conversion helpers to convert the language code from IETF BCP 47 standard into your standard (eg. ISO 639-1).
-
-### Why not ISO 639-1?
-Most of the ASR models are trained with ISO 639-1. However, there are some ASR models accept different format of language code that includes information impossible to represent in ISO 639-1. BCP 47 is a much wider standard, so translation from BCP 47 into different language code is easy, and not vice versa.
-
+```python
+class MyEngineProperties(BaseProperties):
+    engine_id: str = "my-engine"
+    model_name: str = "default"
+    protocol_version: str = "0.2.0"
+    supported_languages: list[str] = ["en", "zh-Hant"]
+    supported_devices: list[str] = ["cpu", "cuda"]
+    supported_sample_rates: list[int] = [16000]
+    supported_channels: list[int] = [1]
+    audio_dtype: str = "float32"
+    features: set[FeatureFlag] = {FeatureFlag.WORD_TIMESTAMPS}
+```

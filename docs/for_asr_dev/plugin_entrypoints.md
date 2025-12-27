@@ -77,6 +77,17 @@ Helper APIs:
 - `pep503_normalize()` lets authors compute the canonical engine id.
 - `ModelRegistry.by_engine(engine_id)` lists all presets for a given engine.
 
+## Required Metadata
+
+Your factory must return an object that exposes:
+
+- `properties`: a `BaseProperties` instance (class attribute).
+- `config`: a `BaseConfig` instance (captured at initialization).
+- `transcribe(audio, options)` returning `TranscriptionResult`.
+- Accept `BaseTranscribeOptions | dict | None` and coerce into your options model.
+
+These are validated by `standard-asr compliance entrypoints`.
+
 ## CLI Support
 
 Install your plugin in the same environment and use the new CLI:
