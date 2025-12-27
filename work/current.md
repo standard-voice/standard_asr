@@ -221,10 +221,10 @@ Path: `cookbook/std_faster_whisper/`
 
 ---
 
-## 9) Post-Review Fixes (Latest Working Tree Changes)
+## 9) Post-Review Fixes (Latest Commits on This Branch)
 
-These are the fixes applied after the review feedback and are currently part of
-the working tree to be committed:
+These are the fixes applied after the review feedback and are now committed on
+this branch:
 
 - P0: Enforce audio normalization by capturing `validate_audio_input` return
   in cookbook engines:
@@ -329,4 +329,3 @@ review on:
 - `cookbook/std_dummy_asr` and `cookbook/std_faster_whisper`
 
 Then update `work/todo.csv` item 38 as completed.
-
