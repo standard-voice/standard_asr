@@ -27,8 +27,13 @@ Transcribe a local audio file and print text or JSON output.
 ### `standard-asr serve`
 Launch the FastAPI server.
 
+### Global Flags
+
+- `--debug`: emit stack traces for unexpected errors.
+
 ## 2. Output Conventions
 
 - Human‑readable console output by default.
 - JSON output for transcription with `--json`.
-- Clear error messages on failure.
+- Clear error messages on failure (stderr).
+- Exit codes: `0` success, `1` runtime/transcription failures, `2` usage or validation errors.

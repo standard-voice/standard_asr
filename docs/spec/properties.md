@@ -25,7 +25,10 @@ class BaseProperties(BaseModel):
 - `supported_languages` must use **BCP 47** tags.
 - `supported_sample_rates` must be positive integers.
 - `supported_channels` must be positive integers.
-- `engine_id` should be PEP 503 normalized (lowercase, `-` separators).
+- `engine_id` must follow the entrypoint naming rules and should be PEP 503 normalized.
+- `model_name` must follow the entrypoint naming rules (empty is allowed only for defaults).
+- `supported_devices` must be non-empty and contain non-empty identifiers.
+- `audio_dtype` must be `float32` to satisfy the Standard ASR audio contract.
 
 ## 3. Model Identifier
 
@@ -35,7 +38,8 @@ The fully qualified model identifier is:
 {engine_id}/{model_name}
 ```
 
-This must match the entry point name.
+This must match the entry point name. Compliance checks enforce this identity
+invariant to keep discovery, routing, and telemetry consistent.
 
 ## 4. Feature Flags
 

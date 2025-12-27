@@ -22,9 +22,16 @@ class BaseProperties(BaseModel):
 ```
 
 ### Notes
-- `engine_id` should be PEP 503 normalized.
-- `model_name` should match the entrypoint preset name.
+- `engine_id` must follow entrypoint naming rules and should be PEP 503 normalized.
+- `model_name` must match the entrypoint preset name (empty only for explicit defaults).
 - `supported_languages` **must** use BCP 47 tags.
+- `supported_devices` must be non-empty and contain non-empty identifiers.
+- `audio_dtype` must be `float32` to satisfy the Standard ASR audio contract.
+
+### Model Identity Invariant
+
+`BaseProperties.model_id` (computed as `{engine_id}/{model_name}`) must match
+the entry point key. Compliance checks will flag mismatches as errors.
 
 ## BCP 47 Language Tags
 

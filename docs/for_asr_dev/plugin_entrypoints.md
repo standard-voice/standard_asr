@@ -28,6 +28,10 @@ Multiple models per engine are encouraged. Each preset—quantised variants, mul
 
 Leaving `model_name` empty (key written as `engine_id/`) denotes the engine’s canonical default. The discovery API accepts empty names and logs a warning so authors remember to document what the default does. Supporting the default keeps today’s packages working while encouraging the new, explicit naming style.
 
+If you publish an explicit default (`engine_id/`), the factory **must** return an
+instance whose `properties.model_id` is exactly `engine_id/`. This invariant is
+validated by compliance checks.
+
 ## Declaring Entry Points
 
 ```toml
@@ -137,6 +141,7 @@ The `standard_asr.compliance.check_entrypoints()` helper powers our compliance t
 1. Entry points exist (no silent typos).
 2. Factories load successfully.
 3. Factories that can be invoked without arguments produce an object exposing `transcribe`.
+4. `properties.model_id` matches the entry point key.
 
 Plugin authors can integrate the check into their CI:
 

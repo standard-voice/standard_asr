@@ -56,7 +56,8 @@ contract:
   - Multi‑channel: `(n_samples, n_channels)`
 
 Engines should validate channel count against `properties.supported_channels`.
-Use `standard_asr.runtime.validate_audio_input()` to enforce the contract.
+Use `standard_asr.runtime.validate_audio_input()` to enforce the contract and
+**always assign its return value**, because it normalizes dtype and shape.
 
 ## 4. Transcription Output
 
