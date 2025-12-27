@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from importlib.metadata import EntryPoint
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 import pytest
 
+from standard_asr import BaseConfig, BaseProperties, TranscriptionResult
 from standard_asr.compliance import check_entrypoints
 from standard_asr.discovery import (
     discover_models,
@@ -16,12 +17,30 @@ from standard_asr.discovery import (
 from standard_asr.exceptions import EntrypointValidationError
 
 
+class _DummyConfig(BaseConfig[Literal["dummy"]]):
+    engine: Literal["dummy"] = "dummy"
+
+
+class _DummyProperties(BaseProperties):
+    engine_id: str = "dummy"
+    model_name: str = "demo"
+    protocol_version: str = "0.2.0"
+    supported_languages: list[str] = ["en"]
+    supported_devices: list[str] = ["cpu"]
+    supported_sample_rates: list[int] = [16000]
+    supported_channels: list[int] = [1]
+    audio_dtype: str = "float32"
+
+
 class _DummyASR:
+    properties: ClassVar[_DummyProperties] = _DummyProperties()
+
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
+        self.config = _DummyConfig(engine="dummy")
 
-    def transcribe(self, audio: Any) -> str:  # pragma: no cover - dummy implementation
-        return "dummy"
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="dummy")
 
 
 def _dummy_factory(**kwargs: Any) -> _DummyASR:
@@ -76,7 +95,6 @@ def test_discover_models_supports_multiple_entries() -> None:
     registry = discover_models(eps=eps, strict=True)
     assert registry.names() == ["alpha/first", "alpha/second", "beta/"]
     assert registry.by_engine("alpha") == ["alpha/first", "alpha/second"]
-    # Default model is represented by empty model name
     spec = registry.spec("beta/")
     assert spec.model_name == ""
 
@@ -108,12 +126,8 @@ def test_discover_models_invalid_name_raises_when_strict() -> None:
             group="standard_asr.models",
         )
     ]
-    try:
+    with pytest.raises(Exception):
         discover_models(eps=eps, strict=True)
-    except Exception:
-        pass
-    else:  # pragma: no cover - explicit failure message for readability
-        raise AssertionError("strict discovery should raise for invalid names")
 
 
 def test_compliance_reports_expected_issues() -> None:
@@ -137,7 +151,6 @@ def test_compliance_reports_expected_issues() -> None:
     registry = discover_models(eps=eps, strict=True)
     report = check_entrypoints(registry=registry, instantiate=True)
 
-    # Should emit a warning for the factory that needs an argument
     warnings = list(report.iter_level("warning"))
     assert any(issue.model == "needs-arg/model" for issue in warnings)
 
