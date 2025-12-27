@@ -1,8 +1,4 @@
-"""Compliance helpers for Standard ASR plugin authors.
-
-This module offers lightweight checks to ensure entry points exposed by an ASR
-plugin can be discovered and instantiated predictably.
-"""
+"""Compliance helpers for Standard ASR plugin authors."""
 
 from __future__ import annotations
 
@@ -10,6 +6,8 @@ import inspect
 from dataclasses import dataclass
 from typing import Iterable, Literal
 
+from .asr_config import BaseConfig
+from .asr_properties import BaseProperties
 from .discovery import ModelRegistry, discover_models
 from .exceptions import FactoryLoadError
 
@@ -23,7 +21,19 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class ComplianceIssue:
-    """Single compliance issue detected during validation."""
+    """Single compliance issue detected during validation.
+
+    Args:
+        level: Issue severity (error or warning).
+        message: Human-readable message.
+        model: Optional model identifier.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
 
     level: Literal["error", "warning"]
     message: str
@@ -32,21 +42,52 @@ class ComplianceIssue:
 
 @dataclass(frozen=True, slots=True)
 class ComplianceReport:
-    """Aggregate result returned by :func:`check_entrypoints`."""
+    """Aggregate result returned by :func:`check_entrypoints`.
+
+    Args:
+        registry: Model registry used for the check.
+        issues: Collected compliance issues.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
 
     registry: ModelRegistry
     issues: list[ComplianceIssue]
 
     @property
     def passed(self) -> bool:
-        """Return ``True`` when no errors were encountered."""
+        """Return ``True`` when no errors were encountered.
+
+        Args:
+            None.
+
+        Returns:
+            ``True`` when no error-level issues exist.
+
+        Raises:
+            None.
+        """
 
         return not any(issue.level == "error" for issue in self.issues)
 
     def iter_level(
         self, level: Literal["error", "warning"]
     ) -> Iterable[ComplianceIssue]:
-        """Yield issues matching *level*."""
+        """Yield issues matching *level*.
+
+        Args:
+            level: Severity level to filter.
+
+        Returns:
+            Iterable of matching issues.
+
+        Raises:
+            None.
+        """
 
         for issue in self.issues:
             if issue.level == level:
@@ -54,7 +95,17 @@ class ComplianceReport:
 
 
 def _can_call_without_args(factory: object) -> bool:
-    """Return ``True`` if *factory* can be invoked without arguments."""
+    """Return ``True`` if *factory* can be invoked without arguments.
+
+    Args:
+        factory: Entry point callable.
+
+    Returns:
+        ``True`` when the callable has no required parameters.
+
+    Raises:
+        None.
+    """
 
     try:
         signature = inspect.signature(factory)  # type: ignore[arg-type]
@@ -83,15 +134,15 @@ def check_entrypoints(
     """Validate that discovered entry points conform to expectations.
 
     Args:
-        registry: Optional pre-discovered registry. When omitted a new registry is
-            collected via :func:`discover_models`.
-        strict_discovery: Forwarded to :func:`discover_models` when *registry* is ``None``.
-        instantiate: When ``True`` the checker attempts to instantiate models that
-            require no mandatory arguments and verifies a ``transcribe`` attribute
-            exists on the resulting object.
+        registry: Optional pre-discovered registry.
+        strict_discovery: Fail on invalid entry points when discovering.
+        instantiate: If ``True``, instantiate zero-arg factories and verify metadata.
 
     Returns:
-        :class:`ComplianceReport` summarising findings.
+        Compliance report summarizing findings.
+
+    Raises:
+        None.
     """
 
     if registry is None:
@@ -124,7 +175,9 @@ def check_entrypoints(
             issues.append(
                 ComplianceIssue(
                     level="warning",
-                    message="Factory cannot be invoked without arguments; skipped instantiation check.",
+                    message=(
+                        "Factory cannot be invoked without arguments; skipped instantiation check."
+                    ),
                     model=name,
                 )
             )
@@ -148,7 +201,30 @@ def check_entrypoints(
             issues.append(
                 ComplianceIssue(
                     level="error",
-                    message="Factory did not return an object with a callable 'transcribe' attribute.",
+                    message=(
+                        "Factory did not return an object with a callable 'transcribe' attribute."
+                    ),
+                    model=name,
+                )
+            )
+            continue
+
+        properties = getattr(instance, "properties", None)
+        if not isinstance(properties, BaseProperties):
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message="Instance is missing a BaseProperties-compatible 'properties' attribute.",
+                    model=name,
+                )
+            )
+
+        config = getattr(instance, "config", None)
+        if not isinstance(config, BaseConfig):
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message="Instance is missing a BaseConfig-compatible 'config' attribute.",
                     model=name,
                 )
             )

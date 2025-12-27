@@ -1,19 +1,34 @@
-"""Command line entry point for Standard ASR developer utilities."""
+"""Command line entry point for Standard ASR utilities."""
 
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Callable, Iterable
+
+import numpy as np
 
 from .compliance import check_entrypoints
 from .discovery import discover_models
+from .options import BaseTranscribeOptions
+from .runtime import ensure_cache_dir, resolve_cache_dir
+from .utils.audio_loader import load_audio
 
 
 def _add_models_subcommands(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    """Register ``models`` subcommands."""
+    """Register ``models`` subcommands.
 
+    Args:
+        subparsers: Subparser collection for the root CLI.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
     models_parser = subparsers.add_parser(
         "models", help="Inspect discovered Standard ASR models."
     )
@@ -44,12 +59,41 @@ def _add_models_subcommands(
     )
     show_parser.set_defaults(func=_cmd_models_show)
 
+    cache_parser = models_sub.add_parser(
+        "cache", help="Show or create the Standard ASR cache directory."
+    )
+    cache_parser.add_argument(
+        "--ensure",
+        action="store_true",
+        help="Create the cache directory if it does not exist.",
+    )
+    cache_parser.set_defaults(func=_cmd_models_cache)
+
+    prepare_parser = models_sub.add_parser(
+        "prepare", help="Warm up a model (download/load weights if required)."
+    )
+    prepare_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
+    prepare_parser.add_argument(
+        "--options",
+        help="JSON string of transcription options passed to the engine.",
+    )
+    prepare_parser.set_defaults(func=_cmd_models_prepare)
+
 
 def _add_compliance_subcommands(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    """Register ``compliance`` subcommands."""
+    """Register ``compliance`` subcommands.
 
+    Args:
+        subparsers: Subparser collection for the root CLI.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
     compliance_parser = subparsers.add_parser(
         "compliance",
         help="Run compliance helpers to validate plugin behaviour.",
@@ -81,17 +125,96 @@ def _add_compliance_subcommands(
     ep_parser.set_defaults(func=_cmd_compliance_entrypoints, instantiate=True)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Construct the root argument parser for the CLI."""
+def _add_transcribe_subcommand(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """Register the ``transcribe`` subcommand.
 
-    parser = argparse.ArgumentParser(description="Standard ASR plugin utilities")
+    Args:
+        subparsers: Subparser collection for the root CLI.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
+    parser = subparsers.add_parser("transcribe", help="Transcribe an audio file.")
+    parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
+    parser.add_argument("audio", help="Path to audio file to transcribe.")
+    parser.add_argument(
+        "--options",
+        help="JSON string of transcription options passed to the engine.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full JSON transcription result.",
+    )
+    parser.set_defaults(func=_cmd_transcribe)
+
+
+def _add_serve_subcommand(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """Register the ``serve`` subcommand.
+
+    Args:
+        subparsers: Subparser collection for the root CLI.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
+    parser = subparsers.add_parser(
+        "serve", help="Start the FastAPI server for Standard ASR."
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
+    parser.add_argument("--port", type=int, default=8000, help="Bind port.")
+    parser.add_argument(
+        "--reload", action="store_true", help="Enable auto-reload for development."
+    )
+    parser.add_argument(
+        "--log-level", default="info", help="Uvicorn log level."
+    )
+    parser.set_defaults(func=_cmd_serve)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the root argument parser for the CLI.
+
+    Args:
+        None.
+
+    Returns:
+        Configured argument parser.
+
+    Raises:
+        None.
+    """
+    parser = argparse.ArgumentParser(description="Standard ASR utilities")
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_models_subcommands(subparsers)
     _add_compliance_subcommands(subparsers)
+    _add_transcribe_subcommand(subparsers)
+    _add_serve_subcommand(subparsers)
     return parser
 
 
 def _cmd_models_list(args: argparse.Namespace) -> int:
+    """Handle ``models list`` command.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
     registry = discover_models(strict=args.strict, on_conflict=args.on_conflict)
     names = registry.names()
     if not names:
@@ -108,6 +231,17 @@ def _cmd_models_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_models_show(args: argparse.Namespace) -> int:
+    """Handle ``models show`` command.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
     registry = discover_models(strict=args.strict)
     spec = registry.spec(args.name)
     model_label = spec.model_name or "<default>"
@@ -120,7 +254,62 @@ def _cmd_models_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_models_cache(args: argparse.Namespace) -> int:
+    """Handle ``models cache`` command.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
+    path = ensure_cache_dir() if args.ensure else resolve_cache_dir()
+    print(str(path))
+    return 0
+
+
+def _cmd_models_prepare(args: argparse.Namespace) -> int:
+    """Handle ``models prepare`` command.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
+    registry = discover_models()
+    asr = registry.create(args.name)
+
+    options = _parse_options(args.options)
+
+    prepare = getattr(asr, "prepare", None)
+    if callable(prepare):
+        prepare()
+    else:
+        dummy_audio = np.zeros(16_000, dtype=np.float32)
+        asr.transcribe(dummy_audio, options=options)
+    print("✅ Model prepare complete.")
+    return 0
+
+
 def _cmd_compliance_entrypoints(args: argparse.Namespace) -> int:
+    """Handle ``compliance entrypoints`` command.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
     report = check_entrypoints(
         strict_discovery=args.strict, instantiate=args.instantiate
     )
@@ -142,9 +331,93 @@ def _cmd_compliance_entrypoints(args: argparse.Namespace) -> int:
     return 0 if report.passed else 1
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point used by ``python -m standard_asr.cli`` or console script."""
+def _cmd_transcribe(args: argparse.Namespace) -> int:
+    """Handle ``transcribe`` command.
 
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
+    registry = discover_models()
+    asr = registry.create(args.name)
+
+    audio = load_audio(args.audio)
+    options = _parse_options(args.options)
+    result = asr.transcribe(audio, options=options)
+
+    if args.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        print(result.text)
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Handle ``serve`` command.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
+    try:
+        from .server import run
+    except ImportError:
+        print(
+            "FastAPI server dependencies are missing. Install with: "
+            "pip install 'standard-asr[server]'."
+        )
+        return 1
+
+    try:
+        run(host=args.host, port=args.port, reload=args.reload, log_level=args.log_level)
+    except ImportError as exc:
+        print(str(exc))
+        return 1
+    return 0
+
+
+def _parse_options(raw: str | None) -> BaseTranscribeOptions | dict[str, object] | None:
+    """Parse a JSON options string into a dict or ``BaseTranscribeOptions``.
+
+    Args:
+        raw: Raw JSON string.
+
+    Returns:
+        Parsed options object, or ``None``.
+
+    Raises:
+        ValueError: If JSON parsing fails.
+    """
+    if raw is None:
+        return None
+    payload = json.loads(raw)
+    if isinstance(payload, dict):
+        return payload
+    raise ValueError("Options JSON must decode to an object.")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point used by ``python -m standard_asr.cli`` or console script.
+
+    Args:
+        argv: Optional list of CLI arguments.
+
+    Returns:
+        Exit code.
+
+    Raises:
+        None.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
     command: Callable[[argparse.Namespace], int] = args.func

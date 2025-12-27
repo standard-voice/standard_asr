@@ -12,87 +12,77 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Protocol definitions for Standard ASR engines."""
+
 import asyncio
-from typing import Protocol, ClassVar
+from typing import Any, ClassVar, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .asr_config import BaseConfig
 from .asr_properties import BaseProperties
+from .options import BaseTranscribeOptions
+from .results import TranscriptionResult
 
 
 class StandardASR(Protocol):
-    """Protocol defining the interface for ASR (Automatic Speech Recognition) implementations.
+    """Protocol defining the interface for ASR implementations.
 
-    This protocol defines the expected methods that any ASR implementation should provide
-    for transcribing audio data.
+    Args:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
     """
 
-    # Use config to type the configuration of the ASR engine,
-    # which should also be used in the constructor to validate the input configuration.
     config: BaseConfig
     properties: ClassVar[BaseProperties]
 
-    def transcribe(self, audio: NDArray[np.float32]) -> str:
-        """
-        Transcribes a pre-processed audio waveform into structured text.
-
-        This is the core transcription method. It strictly adheres to the
-        Standard ASR Audio Contract.
+    def transcribe(
+        self,
+        audio: NDArray[np.float32],
+        options: BaseTranscribeOptions | dict[str, Any] | None = None,
+    ) -> TranscriptionResult:
+        """Transcribe a pre-processed audio waveform into structured text.
 
         Args:
-            audio (NDArray[np.float32]): The audio waveform, which MUST conform to the
-                following standard format:
-                - dtype: np.float32
-                - Sample Rate: 16,000 Hz
-                - Value Range: [-1.0, 1.0]
-                - Shape:
-                    - Mono: (n_samples,)
-                    - Multi-channel: (n_samples, n_channels)
-                The number of channels MUST be one of the values listed in the
-                ASR properties (`self.properties.supported_channels`).
-
+            audio: Audio waveform as ``np.float32`` following the Standard ASR contract.
+            options: Optional per-request inference options (model or dict).
 
         Returns:
-            str: The transcribed text as a string.
+            Structured transcription result.
 
         Raises:
-            ValueError: If the input audio array's properties (e.g., shape)
-                do not match the engine's capabilities.
-            TranscriptionError: If the transcription process fails for any reason.
+            ValueError: If input audio does not match engine capabilities.
+            TranscriptionError: If transcription fails.
         """
         raise NotImplementedError(
             "transcribe method must be implemented by subclasses."
         )
 
-    async def transcribe_async(self, audio: NDArray[np.float32]) -> str:
-        """Asynchronously transcribes a pre-processed audio waveform into structured text.
-
-        By default, this runs the synchronous `transcribe` in a separate thread.
-        Implementations can override this method to provide a true async implementation.
-        This is the core asynchronous transcription method. It strictly adheres to the
-        Standard ASR Audio Contract.
+    async def transcribe_async(
+        self,
+        audio: NDArray[np.float32],
+        options: BaseTranscribeOptions | dict[str, Any] | None = None,
+    ) -> TranscriptionResult:
+        """Asynchronously transcribe an audio waveform.
 
         Args:
-            audio (NDArray[np.float32]): The audio waveform, which MUST conform to the
-                following standard format:
-                - dtype: np.float32
-                - Sample Rate: 16,000 Hz
-                - Value Range: [-1.0, 1.0]
-                - Shape:
-                    - Mono: (n_samples,)
-                    - Multi-channel: (n_samples, n_channels)
-                The number of channels MUST be one of the values listed in the
-                ASR properties (`self.properties.supported_channels`).
+            audio: Audio waveform as ``np.float32`` following the Standard ASR contract.
+            options: Optional per-request inference options (model or dict).
 
         Returns:
-            The transcription result as a string.
+            Structured transcription result.
 
         Raises:
-            ValueError: If the input audio array's properties (e.g., shape)
-                do not match the engine's capabilities.
-            TranscriptionError: If the transcription process fails for any reason.
+            ValueError: If input audio does not match engine capabilities.
+            TranscriptionError: If transcription fails.
         """
-        # Call the sync transcribe method in a separate thread
-        return await asyncio.to_thread(self.transcribe, audio)
+        return await asyncio.to_thread(self.transcribe, audio, options)
+
+
+__all__ = ["StandardASR"]

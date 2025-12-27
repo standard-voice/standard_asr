@@ -16,15 +16,20 @@ standard-asr = "standard_asr.cli:main"
 
 [dependency-groups]
 dev = [
+    "fastapi>=0.110",
+    "httpx>=0.27",
     "pyright>=1.1.405",
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
+    "python-multipart>=0.0.9",
     "ruff>=0.12.11",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
 audio = ["soundfile>=0.12", "scipy>=1.10"]
 docs = ["mkdocs-material>=9.6.18"]
+server = ["fastapi>=0.110", "python-multipart>=0.0.9", "uvicorn>=0.30"]
 
 [build-system]
 requires = ["uv-build"]

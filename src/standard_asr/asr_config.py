@@ -12,40 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Base Configuration models for ASR engines.
-"""
+"""Base configuration models for ASR engines."""
 
 from __future__ import annotations
 
 import logging
 from typing import Generic, TypeVar
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-)
+from pydantic import BaseModel, ConfigDict, Field
 
 
 logger = logging.getLogger(__name__)
 
-# Generic type variable for engine name (discriminator)
 EngineNameT = TypeVar("EngineNameT", bound=str, covariant=True)
-
-# ------------ Base Configuration Model ------------
 
 
 class BaseConfig(BaseModel, Generic[EngineNameT]):
-    """
-    Base class for all ASR engine configuration models.
-    ASR Config provides information about the initialization parameters needed to initialized an ASR engine.
+    """Base class for ASR engine configuration models.
 
-    Attributes:
-        engine (str): Discriminator identifying the target engine.
+    Args:
+        engine: Discriminator identifying the target engine.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If validation fails.
     """
 
-    # properties for BaseConfig pydantic model
     model_config = ConfigDict(
         frozen=True,
         extra="forbid",
@@ -54,10 +48,8 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
     )
 
     engine: EngineNameT = Field(
-        ..., description="Unique name of the ASR engine (discriminator or identifier)."
-    )  #! 这玩意儿是不是应该放在 properties 里 而不是配置里？ 这玩意儿类似身份证名字啊，config 又不是身份证
+        ..., description="Unique name of the ASR engine (discriminator/identifier)."
+    )
 
-    # if you want to add language options, remember to use supported_language from
-    # your asr properties to validate input
 
-    # your custom properties
+__all__ = ["BaseConfig"]
