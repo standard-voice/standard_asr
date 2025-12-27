@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import traceback
 from typing import Any, Callable, Iterable, cast
 
 import numpy as np
 
 from .compliance import ComplianceIssue, check_entrypoints
 from .discovery import discover_models
+from .exceptions import (
+    AudioProcessingError,
+    ConfigError,
+    DiscoveryError,
+    EntrypointValidationError,
+    TranscriptionError,
+)
 from .options import BaseTranscribeOptions
 from .runtime import ensure_cache_dir, resolve_cache_dir
 from .utils.audio_loader import load_audio
@@ -185,6 +194,11 @@ def build_parser() -> argparse.ArgumentParser:
         None.
     """
     parser = argparse.ArgumentParser(description="Standard ASR utilities")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show stack traces for unexpected errors.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_models_subcommands(subparsers)
     _add_compliance_subcommands(subparsers)
@@ -413,7 +427,40 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command: Callable[[argparse.Namespace], int] = args.func
-    return command(args)
+    try:
+        return command(args)
+    except EntrypointValidationError as exc:
+        _print_error(str(exc))
+        return 2
+    except AudioProcessingError as exc:
+        _print_error(str(exc))
+        return 2
+    except (ConfigError, DiscoveryError, ValueError) as exc:
+        _print_error(str(exc))
+        return 2
+    except TranscriptionError as exc:
+        _print_error(str(exc))
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        _print_error(str(exc))
+        if args.debug:
+            traceback.print_exc()
+        return 1
+
+
+def _print_error(message: str) -> None:
+    """Print a CLI error message to stderr.
+
+    Args:
+        message: Error message to emit.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
+    print(message, file=sys.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover
