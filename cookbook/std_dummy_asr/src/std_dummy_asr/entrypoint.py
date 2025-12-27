@@ -6,7 +6,7 @@ from typing import Any
 
 from standard_asr import StandardASR
 
-from .engine import DummyASR
+from .engine import DummyASR, DummyDefaultASR
 
 
 def create_echo(**kwargs: Any) -> StandardASR:
@@ -38,4 +38,4 @@ def create_default(**kwargs: Any) -> StandardASR:
         ValueError: If configuration validation fails.
     """
 
-    return create_echo(**kwargs)
+    return DummyDefaultASR(**kwargs)

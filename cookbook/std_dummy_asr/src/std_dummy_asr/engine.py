@@ -68,6 +68,31 @@ class DummyASRProperties(BaseProperties):
     description: str | None = "Dummy echo engine for testing and demos."
 
 
+class DummyDefaultProperties(BaseProperties):
+    """Static metadata describing the default dummy ASR preset.
+
+    Args:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If validation fails.
+    """
+
+    engine_id: str = "dummy"
+    model_name: str = ""
+    protocol_version: str = "0.2.0"
+    supported_languages: list[str] = ["en"]
+    supported_devices: list[str] = ["cpu"]
+    supported_sample_rates: list[int] = [16000]
+    supported_channels: list[int] = [1, 2]
+    audio_dtype: str = "float32"
+    features: set[FeatureFlag] = set()
+    description: str | None = "Default dummy engine preset."
+
+
 class DummyASR(StandardASR):
     """Trivial ASR implementation that reports the input shape.
 
@@ -104,7 +129,7 @@ class DummyASR(StandardASR):
         Raises:
             ValueError: If the audio input is invalid.
         """
-        validate_audio_input(audio, self.properties)
+        audio = validate_audio_input(audio, self.properties)
         resolved_options = coerce_options(options, BaseTranscribeOptions)
 
         array = np.asarray(audio)
@@ -117,3 +142,19 @@ class DummyASR(StandardASR):
             language=resolved_options.language,
             metadata={"samples": samples},
         )
+
+
+class DummyDefaultASR(DummyASR):
+    """Default dummy preset whose model_id matches ``dummy/``.
+
+    Args:
+        message: Text prefix for the transcript.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If configuration validation fails.
+    """
+
+    properties: ClassVar[BaseProperties] = DummyDefaultProperties()

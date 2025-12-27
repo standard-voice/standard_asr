@@ -337,7 +337,7 @@ class FasterWhisperASR(StandardASR):
         Raises:
             TranscriptionError: If transcription fails or unsupported options are used.
         """
-        validate_audio_input(audio, self.properties)
+        audio = validate_audio_input(audio, self.properties)
         opts = coerce_options(options, FasterWhisperOptions)
 
         if opts.speaker_diarization:
