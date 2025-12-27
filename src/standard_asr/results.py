@@ -31,9 +31,9 @@ class Word(BaseModel):
     end: float = Field(..., description="Word end time in seconds.")
     text: str = Field(..., description="Word text.")
     probability: float | None = Field(
-        None, description="Optional probability score for the word."
+        default=None, description="Optional probability score for the word."
     )
-    speaker: str | None = Field(None, description="Optional speaker label.")
+    speaker: str | None = Field(default=None, description="Optional speaker label.")
     extra: dict[str, Any] = Field(
         default_factory=dict, description="Engine-specific extra data."
     )
@@ -67,20 +67,20 @@ class Segment(BaseModel):
     end: float = Field(..., description="Segment end time in seconds.")
     text: str = Field(..., description="Segment transcript text.")
     words: list[Word] | None = Field(
-        None, description="Word-level details for this segment."
+        default=None, description="Word-level details for this segment."
     )
-    speaker: str | None = Field(None, description="Optional speaker label.")
+    speaker: str | None = Field(default=None, description="Optional speaker label.")
     temperature: float | None = Field(
-        None, description="Optional decoding temperature."
+        default=None, description="Optional decoding temperature."
     )
     avg_logprob: float | None = Field(
-        None, description="Optional average log probability."
+        default=None, description="Optional average log probability."
     )
     compression_ratio: float | None = Field(
-        None, description="Optional compression ratio metric."
+        default=None, description="Optional compression ratio metric."
     )
     no_speech_prob: float | None = Field(
-        None, description="Optional no-speech probability."
+        default=None, description="Optional no-speech probability."
     )
     extra: dict[str, Any] = Field(
         default_factory=dict, description="Engine-specific extra data."
@@ -110,16 +110,16 @@ class TranscriptionResult(BaseModel):
 
     text: str = Field(..., description="Full transcript text.")
     language: str | None = Field(
-        None, description="Detected or forced language tag (BCP 47)."
+        default=None, description="Detected or forced language tag (BCP 47)."
     )
     duration: float | None = Field(
-        None, description="Audio duration in seconds, if available."
+        default=None, description="Audio duration in seconds, if available."
     )
     segments: list[Segment] | None = Field(
-        None, description="Segment-level details, if available."
+        default=None, description="Segment-level details, if available."
     )
     words: list[Word] | None = Field(
-        None, description="Flattened word-level details, if available."
+        default=None, description="Flattened word-level details, if available."
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,

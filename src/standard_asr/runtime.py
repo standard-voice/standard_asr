@@ -31,11 +31,14 @@ def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
     return value.strip().lower() in {"1", "true", "yes"}
 
 
-def resolve_cache_dir(env_var: str = "STANDARD_ASR_MODEL_DIR") -> Path:
+def resolve_cache_dir(
+    env_var: str = "STANDARD_ASR_MODEL_DIR", *, os_name: str | None = None
+) -> Path:
     """Resolve the Standard ASR model cache directory.
 
     Args:
         env_var: Environment variable that overrides the cache directory.
+        os_name: Optional OS name override (useful for testing).
 
     Returns:
         Path to the cache directory.
@@ -47,18 +50,23 @@ def resolve_cache_dir(env_var: str = "STANDARD_ASR_MODEL_DIR") -> Path:
     if override:
         return Path(override).expanduser()
 
-    if os.name == "nt":
+    name = os_name if os_name is not None else os.name
+
+    if name == "nt":
         root = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
         if root:
             return Path(root) / "standard-asr"
     return Path.home() / ".cache" / "standard-asr"
 
 
-def ensure_cache_dir(env_var: str = "STANDARD_ASR_MODEL_DIR") -> Path:
+def ensure_cache_dir(
+    env_var: str = "STANDARD_ASR_MODEL_DIR", *, os_name: str | None = None
+) -> Path:
     """Ensure the Standard ASR cache directory exists.
 
     Args:
         env_var: Environment variable that overrides the cache directory.
+        os_name: Optional OS name override (useful for testing).
 
     Returns:
         Path to the existing cache directory.
@@ -66,7 +74,7 @@ def ensure_cache_dir(env_var: str = "STANDARD_ASR_MODEL_DIR") -> Path:
     Raises:
         OSError: If the directory cannot be created.
     """
-    cache_dir = resolve_cache_dir(env_var=env_var)
+    cache_dir = resolve_cache_dir(env_var=env_var, os_name=os_name)
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -100,9 +108,7 @@ def validate_audio_input(
     elif array.ndim == 2:
         channels = int(array.shape[1])
     else:
-        raise AudioProcessingError(
-            "Audio must be 1D (mono) or 2D (multi-channel)."
-        )
+        raise AudioProcessingError("Audio must be 1D (mono) or 2D (multi-channel).")
 
     if channels not in properties.supported_channels:
         raise AudioProcessingError(

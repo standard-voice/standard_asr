@@ -6,6 +6,9 @@ import base64
 import json
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from .discovery import ModelRegistry, discover_models
@@ -57,7 +60,7 @@ class TranscribeJsonRequest(BaseModel):
         ..., description="Base64 data URI or raw base64-encoded audio payload."
     )
     options: dict[str, Any] | None = Field(
-        None, description="Optional transcription options."
+        default=None, description="Optional transcription options."
     )
 
 
@@ -103,11 +106,12 @@ def create_app(registry: ModelRegistry | None = None):
             "pip install 'standard-asr[server]'."
         ) from exc
 
+    globals()["UploadFile"] = UploadFile
     app = FastAPI(title="Standard ASR")
     model_registry = registry or discover_models()
 
     @app.get("/v1/health")
-    def health() -> dict[str, str]:
+    def health() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
         """Return basic service health.
 
         Args:
@@ -122,7 +126,7 @@ def create_app(registry: ModelRegistry | None = None):
         return {"status": "ok"}
 
     @app.get("/v1/models")
-    def list_models() -> list[ModelInfo]:
+    def list_models() -> list[ModelInfo]:  # pyright: ignore[reportUnusedFunction]
         """List discovered models.
 
         Args:
@@ -144,7 +148,7 @@ def create_app(registry: ModelRegistry | None = None):
         ]
 
     @app.post("/v1/transcribe", response_model=TranscribeResponse)
-    async def transcribe_file(
+    async def transcribe_file(  # pyright: ignore[reportUnusedFunction]
         model: str = Form(...),
         file: UploadFile = File(...),
         options: str | None = Form(None),
@@ -164,7 +168,7 @@ def create_app(registry: ModelRegistry | None = None):
         """
         try:
             raw = await file.read()
-            audio = load_audio_from_bytes(raw)
+            audio: NDArray[np.float32] = load_audio_from_bytes(raw)
             options_payload = json.loads(options) if options else None
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -178,7 +182,9 @@ def create_app(registry: ModelRegistry | None = None):
         return TranscribeResponse(model=model, result=result)
 
     @app.post("/v1/transcribe:json", response_model=TranscribeResponse)
-    def transcribe_json(payload: TranscribeJsonRequest) -> TranscribeResponse:
+    def transcribe_json(  # pyright: ignore[reportUnusedFunction]
+        payload: TranscribeJsonRequest,
+    ) -> TranscribeResponse:
         """Transcribe audio from a JSON payload.
 
         Args:
@@ -206,7 +212,7 @@ def create_app(registry: ModelRegistry | None = None):
     return app
 
 
-def _decode_audio_payload(payload: str) -> Any:
+def _decode_audio_payload(payload: str) -> NDArray[np.float32]:
     """Decode a base64 payload into a normalized audio array.
 
     Args:
@@ -259,4 +265,10 @@ def run(
     uvicorn.run(app, host=host, port=port, reload=reload, log_level=log_level)
 
 
-__all__ = ["ModelInfo", "TranscribeJsonRequest", "TranscribeResponse", "create_app", "run"]
+__all__ = [
+    "ModelInfo",
+    "TranscribeJsonRequest",
+    "TranscribeResponse",
+    "create_app",
+    "run",
+]

@@ -4,20 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, cast
 
 import numpy as np
 
-from .compliance import check_entrypoints
+from .compliance import ComplianceIssue, check_entrypoints
 from .discovery import discover_models
 from .options import BaseTranscribeOptions
 from .runtime import ensure_cache_dir, resolve_cache_dir
 from .utils.audio_loader import load_audio
 
 
-def _add_models_subcommands(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
+def _add_models_subcommands(subparsers: Any) -> None:
     """Register ``models`` subcommands.
 
     Args:
@@ -80,9 +78,7 @@ def _add_models_subcommands(
     prepare_parser.set_defaults(func=_cmd_models_prepare)
 
 
-def _add_compliance_subcommands(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
+def _add_compliance_subcommands(subparsers: Any) -> None:
     """Register ``compliance`` subcommands.
 
     Args:
@@ -125,9 +121,7 @@ def _add_compliance_subcommands(
     ep_parser.set_defaults(func=_cmd_compliance_entrypoints, instantiate=True)
 
 
-def _add_transcribe_subcommand(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
+def _add_transcribe_subcommand(subparsers: Any) -> None:
     """Register the ``transcribe`` subcommand.
 
     Args:
@@ -154,9 +148,7 @@ def _add_transcribe_subcommand(
     parser.set_defaults(func=_cmd_transcribe)
 
 
-def _add_serve_subcommand(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
+def _add_serve_subcommand(subparsers: Any) -> None:
     """Register the ``serve`` subcommand.
 
     Args:
@@ -176,9 +168,7 @@ def _add_serve_subcommand(
     parser.add_argument(
         "--reload", action="store_true", help="Enable auto-reload for development."
     )
-    parser.add_argument(
-        "--log-level", default="info", help="Uvicorn log level."
-    )
+    parser.add_argument("--log-level", default="info", help="Uvicorn log level.")
     parser.set_defaults(func=_cmd_serve)
 
 
@@ -319,7 +309,7 @@ def _cmd_compliance_entrypoints(args: argparse.Namespace) -> int:
     else:
         print("❌ Entry point compliance checks failed.")
 
-    def _emit(issues: Iterable, prefix: str) -> None:
+    def _emit(issues: Iterable[ComplianceIssue], prefix: str) -> None:
         for issue in issues:
             location = issue.model or "<registry>"
             print(f"{prefix} {location}: {issue.message}")
@@ -379,7 +369,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        run(host=args.host, port=args.port, reload=args.reload, log_level=args.log_level)
+        run(
+            host=args.host, port=args.port, reload=args.reload, log_level=args.log_level
+        )
     except ImportError as exc:
         print(str(exc))
         return 1
@@ -402,7 +394,7 @@ def _parse_options(raw: str | None) -> BaseTranscribeOptions | dict[str, object]
         return None
     payload = json.loads(raw)
     if isinstance(payload, dict):
-        return payload
+        return cast(dict[str, Any], payload)
     raise ValueError("Options JSON must decode to an object.")
 
 

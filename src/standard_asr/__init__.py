@@ -14,7 +14,12 @@ from .discovery import (
 from .features import FeatureFlag
 from .options import BaseTranscribeOptions
 from .results import Segment, TranscriptionResult, Word
-from .runtime import allow_downloads, ensure_cache_dir, resolve_cache_dir, validate_audio_input
+from .runtime import (
+    allow_downloads,
+    ensure_cache_dir,
+    resolve_cache_dir,
+    validate_audio_input,
+)
 from .streaming import StreamChunk, StreamingASR
 from .utils.audio_loader import (
     load_audio,

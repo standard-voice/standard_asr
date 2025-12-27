@@ -32,17 +32,17 @@ class BaseTranscribeOptions(BaseModel):
     )
 
     language: str | None = Field(
-        None, description="BCP 47 language tag to force, if supported."
+        default=None, description="BCP 47 language tag to force, if supported."
     )
     task: str = Field(
-        "transcribe",
+        default="transcribe",
         description="Task type (e.g., 'transcribe' or 'translate').",
     )
     word_timestamps: bool = Field(
-        False, description="Request word-level timestamps when supported."
+        default=False, description="Request word-level timestamps when supported."
     )
     speaker_diarization: bool = Field(
-        False, description="Request speaker diarization when supported."
+        default=False, description="Request speaker diarization when supported."
     )
     extra: dict[str, Any] = Field(
         default_factory=dict,

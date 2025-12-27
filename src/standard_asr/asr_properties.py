@@ -25,6 +25,22 @@ from .features import FeatureFlag
 from .language import is_valid_bcp47, normalize_bcp47
 
 
+def _default_features() -> set[FeatureFlag]:
+    """Return the default empty feature set.
+
+    Args:
+        None.
+
+    Returns:
+        Empty set of feature flags.
+
+    Raises:
+        None.
+    """
+
+    return set()
+
+
 class BaseProperties(BaseModel):
     """Base class for ASR engine properties.
 
@@ -79,11 +95,12 @@ class BaseProperties(BaseModel):
         description="Expected NumPy dtype name for audio input (e.g., float32).",
     )
     features: set[FeatureFlag] = Field(
-        default_factory=set,
+        default_factory=_default_features,
         description="Supported optional feature flags.",
     )
     description: str | None = Field(
-        None, description="Optional human-readable description of the engine/model."
+        default=None,
+        description="Optional human-readable description of the engine/model.",
     )
     extra: dict[str, Any] = Field(
         default_factory=dict, description="Engine-specific metadata."

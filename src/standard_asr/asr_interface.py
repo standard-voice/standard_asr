@@ -39,7 +39,7 @@ class StandardASR(Protocol):
         None.
     """
 
-    config: BaseConfig
+    config: BaseConfig[str]
     properties: ClassVar[BaseProperties]
 
     def transcribe(
@@ -60,7 +60,7 @@ class StandardASR(Protocol):
             ValueError: If input audio does not match engine capabilities.
             TranscriptionError: If transcription fails.
         """
-        raise NotImplementedError(
+        raise NotImplementedError(  # pragma: no cover
             "transcribe method must be implemented by subclasses."
         )
 

@@ -384,7 +384,7 @@ def _is_binary_io(obj: Any) -> TypeGuard[BinaryIO]:
 
 
 def load_audio_from_path(
-    path: str, target_sr: int, target_channels: int | None
+    path: str, target_sr: int = 16000, target_channels: int | None = 1
 ) -> NDArray[np.float32]:
     """Load audio from a filesystem path using layered fallbacks.
 
@@ -481,7 +481,7 @@ def load_audio_from_path(
 
 
 def load_audio_from_bytes(
-    data: bytes, target_sr: int, target_channels: int | None
+    data: bytes, target_sr: int = 16000, target_channels: int | None = 1
 ) -> NDArray[np.float32]:
     """Load audio from bytes and return a normalized waveform.
 
