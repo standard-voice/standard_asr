@@ -8,8 +8,11 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import Field
 
-from standard_asr import BaseConfig, StandardASR
+from standard_asr import BaseConfig, BaseTranscribeOptions, StandardASR, TranscriptionResult
 from standard_asr.asr_properties import BaseProperties
+from standard_asr.features import FeatureFlag
+from standard_asr.options import coerce_options
+from standard_asr.runtime import validate_audio_input
 
 
 class DummyASRConfig(BaseConfig[Literal["dummy"]]):
@@ -18,6 +21,12 @@ class DummyASRConfig(BaseConfig[Literal["dummy"]]):
     Args:
         engine: Discriminator identifying this engine (always ``"dummy"``).
         message: Text prefix inserted into the transcript.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If validation fails.
     """
 
     engine: Literal["dummy"] = "dummy"
@@ -32,29 +41,39 @@ class DummyASRConfig(BaseConfig[Literal["dummy"]]):
 class DummyASRProperties(BaseProperties):
     """Static metadata describing the dummy ASR engine.
 
-    Attributes:
-        model_name: Preset name advertised via entry points.
-        protocol_version: Protocol version implemented by this engine.
-        supported_language: Languages represented as IETF BCP 47 tags.
-        supported_device: Allowed compute targets.
-        audio_dtype: Numpy dtype string for accepted audio buffers.
-        supported_channels: Supported channel counts.
+    Args:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If validation fails.
     """
 
+    engine_id: str = "dummy"
     model_name: str = "echo"
-    protocol_version: str = "0.1.0"
-    supported_language: list[str] = ["en"]
-    supported_device: list[str] = ["cpu"]
-    audio_dtype: str = "float32"
+    protocol_version: str = "0.2.0"
+    supported_languages: list[str] = ["en"]
+    supported_devices: list[str] = ["cpu"]
+    supported_sample_rates: list[int] = [16000]
     supported_channels: list[int] = [1, 2]
+    audio_dtype: str = "float32"
+    features: set[FeatureFlag] = set()
+    description: str | None = "Dummy echo engine for testing and demos."
 
 
 class DummyASR(StandardASR):
     """Trivial ASR implementation that reports the input shape.
 
-    Attributes:
-        config: Instance configuration captured at construction time.
-        properties: Class-level metadata describing capabilities.
+    Args:
+        message: Text prefix for the transcript.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If configuration validation fails.
     """
 
     config: DummyASRConfig
@@ -63,16 +82,32 @@ class DummyASR(StandardASR):
     def __init__(self, message: str = "echo") -> None:
         self.config = DummyASRConfig(engine="dummy", message=message)
 
-    def transcribe(self, audio: NDArray[np.float32]) -> str:
+    def transcribe(
+        self,
+        audio: NDArray[np.float32],
+        options: BaseTranscribeOptions | dict[str, object] | None = None,
+    ) -> TranscriptionResult:
         """Return a short description of the provided audio buffer.
 
         Args:
             audio: Waveform array in ``float32`` format.
+            options: Optional transcription options (model or dict).
 
         Returns:
-            A synthetic transcript containing the configured prefix and sample count.
+            Standard ASR transcription result.
+
+        Raises:
+            ValueError: If the audio input is invalid.
         """
+        validate_audio_input(audio, self.properties)
+        resolved_options = coerce_options(options, BaseTranscribeOptions)
 
         array = np.asarray(audio)
         samples = int(array.size)
-        return f"{self.config.message}: {samples} samples"
+        text = f"{self.config.message}: {samples} samples"
+
+        return TranscriptionResult(
+            text=text,
+            language=resolved_options.language,
+            metadata={"samples": samples},
+        )

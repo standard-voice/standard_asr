@@ -18,7 +18,17 @@ from standard_asr import discover_models
 
 
 def main() -> None:
-    """Discover installed Standard ASR models and run a quick smoke test."""
+    """Discover installed Standard ASR models and run a quick smoke test.
+
+    Args:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        SystemExit: If no Standard ASR models are installed.
+    """
     logging.basicConfig(level=logging.INFO)
 
     registry = discover_models()
@@ -32,9 +42,9 @@ def main() -> None:
 
     asr = registry.create(target)
     dummy_audio = np.zeros(16_000, dtype=np.float32)
-    text = asr.transcribe(dummy_audio)
+    result = asr.transcribe(dummy_audio)
 
-    print(f"Transcript: {text}")
+    print(f"Transcript: {result.text}")
 
 
 if __name__ == "__main__":  # pragma: no cover - example script

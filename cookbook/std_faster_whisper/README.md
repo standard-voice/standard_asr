@@ -1,4 +1,15 @@
-std_faster_whisper is a sample implementation for Standard ASR Compliant faster whisper package.
-It is used to give insights for Standard ASR development.
+std_faster_whisper is a sample implementation of a Standard ASR compliant
+faster‑whisper engine. It demonstrates how to build a plugin that respects the
+Standard ASR protocol, options model, and lazy‑loading rules.
 
-In the future, Standard ASR Compliant ASR engines should be published in separate git repos and pypi packages.
+## Local Usage
+
+```bash
+uv run uv pip install -e cookbook/std_faster_whisper
+standard-asr models list
+standard-asr transcribe faster-whisper/whisper path/to/audio.wav
+```
+
+## Notes
+
+- The engine loads the model lazily on first transcription.\n- Downloads respect the `STANDARD_ASR_ALLOW_DOWNLOAD` policy.

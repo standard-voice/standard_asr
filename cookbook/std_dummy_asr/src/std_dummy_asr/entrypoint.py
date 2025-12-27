@@ -17,6 +17,9 @@ def create_echo(**kwargs: Any) -> StandardASR:
 
     Returns:
         Configured :class:`DummyASR` instance.
+
+    Raises:
+        ValueError: If configuration validation fails.
     """
 
     return DummyASR(**kwargs)
@@ -30,6 +33,9 @@ def create_default(**kwargs: Any) -> StandardASR:
 
     Returns:
         Configured :class:`DummyASR` instance.
+
+    Raises:
+        ValueError: If configuration validation fails.
     """
 
     return create_echo(**kwargs)

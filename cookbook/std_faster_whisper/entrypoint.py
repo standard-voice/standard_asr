@@ -17,6 +17,9 @@ def create(**kwargs: Any) -> StandardASR:
 
     Returns:
         Configured Standard ASR implementation.
+
+    Raises:
+        ValueError: If configuration validation fails.
     """
 
     return FasterWhisperASR(**kwargs)
