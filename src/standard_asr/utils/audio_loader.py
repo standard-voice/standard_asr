@@ -39,6 +39,10 @@ Dependencies and fallbacks:
 2) `soundfile` (if installed) for many formats and in-memory bytes
 3) FFmpeg subprocess fallback (requires ffmpeg in PATH)
 
+If `soundfile` succeeds but resampling requires `scipy` and it is missing, the
+loader falls back to FFmpeg (with a warning) so decoding can still succeed when
+FFmpeg is available.
+
 All functions emit clear exceptions with actionable messages and log helpful
 warnings when quality-affecting fallbacks are used.
 """
@@ -225,7 +229,7 @@ def normalize_audio(
                 ]
             else:  # Down-mix by truncation
                 logger.warning(
-                    "📢 Down-mixing from %d to %d channels by taking the first %d channels. "
+                    "Down-mixing from %d to %d channels by taking the first %d channels. "
                     "This may result in information loss. For high-quality down-mixing, "
                     "ensure your audio is processed via the FFmpeg backend.",
                     current_channels,
@@ -238,7 +242,7 @@ def normalize_audio(
     if not np.isfinite(processed_audio).all():
         bad_count = (~np.isfinite(processed_audio)).sum()
         logger.warning(
-            "🧹 Detected %d invalid samples (NaN/Inf) in audio; "
+            "Detected %d invalid samples (NaN/Inf) in audio; "
             "replacing with safe values.",
             int(bad_count),
         )
@@ -367,6 +371,9 @@ def _is_binary_io(obj: Any) -> TypeGuard[BinaryIO]:
     Returns:
         TypeGuard[BinaryIO]: ``True`` if ``obj`` appears to be a binary IO stream,
         otherwise ``False``.
+
+    Raises:
+        None.
     """
     try:
         if isinstance(obj, (io.BufferedIOBase, io.BytesIO, io.RawIOBase)):
@@ -407,7 +414,6 @@ def load_audio_from_path(
         AudioProcessingError: For unsupported/invalid WAV encodings via stdlib or
             for failures in decoding downstream.
         FFmpegNotFoundError: If FFmpeg is required but not present in the system ``PATH``.
-        ImportError: If resampling is needed and ``scipy`` is not installed.
     """
     # Basic parameter validation
     if target_sr <= 0:
@@ -468,7 +474,13 @@ def load_audio_from_path(
         audio, orig_sr = cast(
             tuple[NDArray[np.float32], int], sf_read(path, dtype="float32")
         )
-        return normalize_audio(audio, orig_sr, target_sr, target_channels)
+        try:
+            return normalize_audio(audio, orig_sr, target_sr, target_channels)
+        except ImportError:
+            logger.warning(
+                "Resampling requires scipy; falling back to FFmpeg for %s.", path
+            )
+            return _load_with_ffmpeg(path, target_sr, target_channels)
     except ImportError:
         logger.debug(
             "`soundfile` not installed, cannot load non-WAV formats without FFmpeg."
@@ -499,7 +511,6 @@ def load_audio_from_bytes(
 
     Raises:
         AudioProcessingError: If decoding fails or produces empty audio.
-        ImportError: If resampling is needed and ``scipy`` is not installed.
         FFmpegNotFoundError: If FFmpeg is required but not available.
     """
     # Basic parameter validation
@@ -517,7 +528,13 @@ def load_audio_from_bytes(
         audio, orig_sr = cast(
             tuple[NDArray[np.float32], int], sf_read(io.BytesIO(data), dtype="float32")
         )
-        return normalize_audio(audio, orig_sr, target_sr, target_channels)
+        try:
+            return normalize_audio(audio, orig_sr, target_sr, target_channels)
+        except ImportError:
+            logger.warning(
+                "Resampling requires scipy; falling back to FFmpeg for byte input."
+            )
+            return _load_with_ffmpeg(data, target_sr, target_channels)
     except ImportError:
         logger.debug(
             "`soundfile` not installed, cannot load from bytes without FFmpeg."
@@ -643,7 +660,7 @@ def _load_with_ffmpeg(
         if not np.isfinite(audio).all():
             bad_count = (~np.isfinite(audio)).sum()
             logger.warning(
-                "🧹 Detected %d invalid samples (NaN/Inf) from FFmpeg; replacing with safe values.",
+                "Detected %d invalid samples (NaN/Inf) from FFmpeg; replacing with safe values.",
                 int(bad_count),
             )
             audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -675,15 +692,21 @@ def _load_with_ffmpeg(
         ) from e
 
 
-def _probe_channels_with_ffprobe(source: str | bytes) -> int | None:
+def _probe_channels_with_ffprobe(
+    source: str | bytes, timeout: float = 5.0
+) -> int | None:
     """Probe the input's channel count using ``ffprobe``.
 
     Args:
         source (str | bytes): The same input accepted by FFmpeg: path or bytes.
+        timeout (float): Maximum seconds to wait for ffprobe.
 
     Returns:
         int | None: Detected number of channels, or ``None`` if ffprobe is not
         available or probing fails for any reason.
+
+    Raises:
+        None.
     """
     if shutil.which("ffprobe") is None:
         return None
@@ -699,7 +722,6 @@ def _probe_channels_with_ffprobe(source: str | bytes) -> int | None:
             "stream=channels",
             "-of",
             "default=noprint_wrappers=1:nokey=1",
-            "-i",
             "pipe:0",
         ]
         input_data = source
@@ -719,8 +741,12 @@ def _probe_channels_with_ffprobe(source: str | bytes) -> int | None:
         input_data = None
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, input=input_data, check=True)
+        proc = subprocess.run(
+            cmd, capture_output=True, input=input_data, check=True, timeout=timeout
+        )
         text = proc.stdout.decode().strip()
         return int(text) if text.isdigit() else None
+    except subprocess.TimeoutExpired:
+        return None
     except subprocess.CalledProcessError:
         return None

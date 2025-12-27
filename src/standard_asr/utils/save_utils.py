@@ -65,5 +65,5 @@ def nparray_to_audio_file(
             wf.setframerate(sample_rate)
             wf.writeframes(frames)
     except OSError as e:
-        logger.error(f"❌ Error writing audio to file {file_path}: {e}")
+        logger.error("Error writing audio to file %s: %s", file_path, e)
         raise

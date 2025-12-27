@@ -293,6 +293,45 @@ def test_load_audio_from_path_soundfile_exception(
     assert isinstance(out, np.ndarray)
 
 
+def test_load_audio_from_path_soundfile_missing_scipy_fallback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    module = types.ModuleType("soundfile")
+
+    def _read(path: str, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
+        return np.zeros(4, dtype=np.float32), 8000
+
+    setattr(module, "read", _read)
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", module)
+
+    real_import = builtins.__import__
+
+    def _import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name.startswith("scipy"):
+            raise ImportError("missing scipy")
+        return real_import(name, globals, locals, fromlist, level)
+
+    sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
+
+    def _fake_load(*_: object) -> NDArray[np.float32]:
+        return sentinel
+
+    caplog.set_level("WARNING")
+    monkeypatch.setattr(builtins, "__import__", _import)
+    monkeypatch.setattr(audio_loader, "_load_with_ffmpeg", _fake_load)
+
+    out = audio_loader.load_audio_from_path("dummy.flac", target_sr=16000)
+
+    assert out is sentinel
+    assert any("falling back to FFmpeg" in record.message for record in caplog.records)
+
+
 def test_load_audio_from_path_soundfile_import_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -394,6 +433,47 @@ def test_load_audio_from_bytes_soundfile_exception(
     out = audio_loader.load_audio_from_bytes(b"data")
 
     assert isinstance(out, np.ndarray)
+
+
+def test_load_audio_from_bytes_soundfile_missing_scipy_fallback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    module = types.ModuleType("soundfile")
+
+    def _read(
+        handle: io.BytesIO, dtype: str = "float32"
+    ) -> tuple[NDArray[np.float32], int]:
+        return np.zeros(4, dtype=np.float32), 8000
+
+    setattr(module, "read", _read)
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", module)
+
+    real_import = builtins.__import__
+
+    def _import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name.startswith("scipy"):
+            raise ImportError("missing scipy")
+        return real_import(name, globals, locals, fromlist, level)
+
+    sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
+
+    def _fake_load(*_: object) -> NDArray[np.float32]:
+        return sentinel
+
+    caplog.set_level("WARNING")
+    monkeypatch.setattr(builtins, "__import__", _import)
+    monkeypatch.setattr(audio_loader, "_load_with_ffmpeg", _fake_load)
+
+    out = audio_loader.load_audio_from_bytes(b"data", target_sr=16000)
+
+    assert out is sentinel
+    assert any("falling back to FFmpeg" in record.message for record in caplog.records)
 
 
 def test_load_with_ffmpeg_empty_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -569,6 +649,20 @@ def test_probe_channels_ffprobe_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
     assert audio_loader._probe_channels_with_ffprobe(b"data") == 2  # pyright: ignore[reportPrivateUsage]
+
+
+def test_probe_channels_ffprobe_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired("ffprobe", 5.0)
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+
+    assert audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav") is None  # pyright: ignore[reportPrivateUsage]
 
 
 def test_probe_channels_ffprobe_path_non_digit(monkeypatch: pytest.MonkeyPatch) -> None:
