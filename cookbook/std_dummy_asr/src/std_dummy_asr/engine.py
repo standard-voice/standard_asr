@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import Field
 
-from standard_asr import BaseConfig, BaseTranscribeOptions, StandardASR, TranscriptionResult
+from standard_asr import (
+    BaseConfig,
+    BaseTranscribeOptions,
+    StandardASR,
+    TranscriptionResult,
+)
 from standard_asr.asr_properties import BaseProperties
 from standard_asr.features import FeatureFlag
 from standard_asr.options import coerce_options
@@ -76,8 +81,8 @@ class DummyASR(StandardASR):
         ValueError: If configuration validation fails.
     """
 
-    config: DummyASRConfig
-    properties: ClassVar[DummyASRProperties] = DummyASRProperties()
+    config: BaseConfig[str]
+    properties: ClassVar[BaseProperties] = DummyASRProperties()
 
     def __init__(self, message: str = "echo") -> None:
         self.config = DummyASRConfig(engine="dummy", message=message)
@@ -104,7 +109,8 @@ class DummyASR(StandardASR):
 
         array = np.asarray(audio)
         samples = int(array.size)
-        text = f"{self.config.message}: {samples} samples"
+        config = cast(DummyASRConfig, self.config)
+        text = f"{config.message}: {samples} samples"
 
         return TranscriptionResult(
             text=text,

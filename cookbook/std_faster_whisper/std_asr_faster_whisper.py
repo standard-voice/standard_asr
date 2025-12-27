@@ -17,13 +17,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, ClassVar, Iterable, Literal, Sequence, TYPE_CHECKING
+from typing import Any, ClassVar, Iterable, Literal, Sequence, TYPE_CHECKING, cast
 
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import Field
 
-from standard_asr import BaseConfig, BaseTranscribeOptions, StandardASR, TranscriptionResult
+from standard_asr import (
+    BaseConfig,
+    BaseTranscribeOptions,
+    StandardASR,
+    TranscriptionResult,
+)
 from standard_asr.asr_properties import BaseProperties
 from standard_asr.exceptions import DiscoveryError, TranscriptionError
 from standard_asr.features import FeatureFlag
@@ -33,7 +38,7 @@ from standard_asr.results import Segment, Word
 from standard_asr.runtime import allow_downloads, validate_audio_input
 
 if TYPE_CHECKING:  # pragma: no cover
-    from faster_whisper import WhisperModel
+    from faster_whisper import WhisperModel  # pyright: ignore[reportMissingTypeStubs]
 
 
 class FasterWhisperConfig(BaseConfig[Literal["faster-whisper"]]):
@@ -65,15 +70,11 @@ class FasterWhisperConfig(BaseConfig[Literal["faster-whisper"]]):
         "large-v3",
         description="Model size/name or local path for faster-whisper.",
     )
-    device: str = Field(
-        "auto", description="Compute device (cpu, cuda, auto)."
-    )
+    device: str = Field("auto", description="Compute device (cpu, cuda, auto).")
     device_index: int | list[int] = Field(
         0, description="Device index or list of indices."
     )
-    compute_type: str = Field(
-        "default", description="Quantization/precision type."
-    )
+    compute_type: str = Field("default", description="Quantization/precision type.")
     cpu_threads: int = Field(
         0,
         description="CPU threads for inference (0 uses runtime defaults).",
@@ -84,9 +85,7 @@ class FasterWhisperConfig(BaseConfig[Literal["faster-whisper"]]):
     download_root: str | None = Field(
         None, description="Optional download/cache directory."
     )
-    local_files_only: bool = Field(
-        False, description="Disable downloads when True."
-    )
+    local_files_only: bool = Field(False, description="Disable downloads when True.")
     revision: str | None = Field(
         None, description="Optional Hugging Face model revision."
     )
@@ -138,71 +137,79 @@ class FasterWhisperOptions(BaseTranscribeOptions):
         ValueError: If validation fails.
     """
 
-    beam_size: int = Field(5, description="Beam size for decoding.")
-    best_of: int = Field(5, description="Candidates sampled when temperature > 0.")
-    patience: float = Field(1.0, description="Beam search patience.")
-    length_penalty: float = Field(1.0, description="Length penalty for decoding.")
-    repetition_penalty: float = Field(1.0, description="Repetition penalty.")
-    no_repeat_ngram_size: int = Field(0, description="N-gram repetition size.")
+    beam_size: int = Field(default=5, description="Beam size for decoding.")
+    best_of: int = Field(
+        default=5, description="Candidates sampled when temperature > 0."
+    )
+    patience: float = Field(default=1.0, description="Beam search patience.")
+    length_penalty: float = Field(
+        default=1.0, description="Length penalty for decoding."
+    )
+    repetition_penalty: float = Field(default=1.0, description="Repetition penalty.")
+    no_repeat_ngram_size: int = Field(default=0, description="N-gram repetition size.")
     temperature: float | Sequence[float] | None = Field(
-        None, description="Sampling temperature(s)."
+        default=None, description="Sampling temperature(s)."
     )
     compression_ratio_threshold: float | None = Field(
-        2.4, description="Compression ratio threshold."
+        default=2.4, description="Compression ratio threshold."
     )
     log_prob_threshold: float | None = Field(
-        -1.0, description="Log probability threshold."
+        default=-1.0, description="Log probability threshold."
     )
     no_speech_threshold: float | None = Field(
-        0.6, description="No speech probability threshold."
+        default=0.6, description="No speech probability threshold."
     )
     condition_on_previous_text: bool = Field(
-        True, description="Use previous text as prompt."
+        default=True, description="Use previous text as prompt."
     )
     prompt_reset_on_temperature: float = Field(
-        0.5, description="Prompt reset threshold for temperature."
+        default=0.5, description="Prompt reset threshold for temperature."
     )
     initial_prompt: str | Iterable[int] | None = Field(
-        None, description="Optional prompt text or token IDs."
+        default=None, description="Optional prompt text or token IDs."
     )
-    prefix: str | None = Field(None, description="Optional prefix text.")
-    suppress_blank: bool = Field(True, description="Suppress blank outputs.")
+    prefix: str | None = Field(default=None, description="Optional prefix text.")
+    suppress_blank: bool = Field(default=True, description="Suppress blank outputs.")
     suppress_tokens: list[int] | None = Field(
         default_factory=lambda: [-1],
         description="Token IDs to suppress.",
     )
-    without_timestamps: bool = Field(False, description="Disable timestamps.")
-    max_initial_timestamp: float = Field(1.0, description="Max initial timestamp.")
-    word_timestamps: bool = Field(False, description="Enable word timestamps.")
+    without_timestamps: bool = Field(default=False, description="Disable timestamps.")
+    max_initial_timestamp: float = Field(
+        default=1.0, description="Max initial timestamp."
+    )
+    word_timestamps: bool = Field(default=False, description="Enable word timestamps.")
     prepend_punctuations: str = Field(
-        "\"'“¿([{-", description="Punctuations to prepend."
+        default="\"'“¿([{-", description="Punctuations to prepend."
     )
     append_punctuations: str = Field(
-        "\"'.。,，!！?？:：”)]}、", description="Punctuations to append."
+        default="\"'.。,，!！?？:：”)]}、", description="Punctuations to append."
     )
-    multilingual: bool = Field(False, description="Enable per-segment language detection.")
-    vad_filter: bool = Field(False, description="Enable VAD filtering.")
+    multilingual: bool = Field(
+        default=False, description="Enable per-segment language detection."
+    )
+    vad_filter: bool = Field(default=False, description="Enable VAD filtering.")
     vad_parameters: dict[str, Any] | None = Field(
-        None, description="Optional VAD parameters dict."
+        default=None, description="Optional VAD parameters dict."
     )
     max_new_tokens: int | None = Field(
-        None, description="Max new tokens per chunk."
+        default=None, description="Max new tokens per chunk."
     )
     chunk_length: float | None = Field(
-        None, description="Override chunk length (seconds)."
+        default=None, description="Override chunk length (seconds)."
     )
     clip_timestamps: str | list[float] = Field(
-        "0", description="Clip timestamps to process."
+        default="0", description="Clip timestamps to process."
     )
     hallucination_silence_threshold: float | None = Field(
-        None, description="Hallucination silence threshold."
+        default=None, description="Hallucination silence threshold."
     )
-    hotwords: str | None = Field(None, description="Hotwords/hint phrases.")
+    hotwords: str | None = Field(default=None, description="Hotwords/hint phrases.")
     language_detection_threshold: float = Field(
-        0.5, description="Language detection confidence threshold."
+        default=0.5, description="Language detection confidence threshold."
     )
     language_detection_segments: int = Field(
-        1, description="Segments to consider for language detection."
+        default=1, description="Segments to consider for language detection."
     )
 
 
@@ -249,8 +256,8 @@ class FasterWhisperASR(StandardASR):
         ValueError: If configuration validation fails.
     """
 
-    config: FasterWhisperConfig
-    properties: ClassVar[FasterWhisperProperties] = FasterWhisperProperties()
+    config: BaseConfig[str]
+    properties: ClassVar[BaseProperties] = FasterWhisperProperties()
 
     def __init__(self, **kwargs: Any) -> None:
         self.config = FasterWhisperConfig(engine="faster-whisper", **kwargs)
@@ -272,25 +279,26 @@ class FasterWhisperASR(StandardASR):
             return
 
         try:
-            from faster_whisper import WhisperModel
+            from faster_whisper import WhisperModel  # pyright: ignore[reportMissingTypeStubs]
         except Exception as exc:  # noqa: BLE001
             raise DiscoveryError(
                 "faster-whisper is not installed. Install with 'pip install faster-whisper'."
             ) from exc
 
-        local_only = self.config.local_files_only or not allow_downloads()
+        config = cast(FasterWhisperConfig, self.config)
+        local_only = config.local_files_only or not allow_downloads()
         try:
             self._model = WhisperModel(
-                model_size_or_path=self.config.model_path,
-                device=self.config.device,
-                device_index=self.config.device_index,
-                compute_type=self.config.compute_type,
-                cpu_threads=self.config.cpu_threads,
-                num_workers=self.config.num_workers,
-                download_root=self.config.download_root,
+                model_size_or_path=config.model_path,
+                device=config.device,
+                device_index=config.device_index,
+                compute_type=config.compute_type,
+                cpu_threads=config.cpu_threads,
+                num_workers=config.num_workers,
+                download_root=config.download_root,
                 local_files_only=local_only,
-                revision=self.config.revision,
-                use_auth_token=self.config.use_auth_token,
+                revision=config.revision,
+                use_auth_token=config.use_auth_token,
             )
         except Exception as exc:  # noqa: BLE001
             raise DiscoveryError(
@@ -333,7 +341,9 @@ class FasterWhisperASR(StandardASR):
         opts = coerce_options(options, FasterWhisperOptions)
 
         if opts.speaker_diarization:
-            raise TranscriptionError("Speaker diarization is not supported by faster-whisper.")
+            raise TranscriptionError(
+                "Speaker diarization is not supported by faster-whisper."
+            )
 
         self._ensure_model_loaded()
         if self._model is None:
@@ -346,7 +356,8 @@ class FasterWhisperASR(StandardASR):
             normalized = normalize_bcp47(opts.language)
             language = normalized.split("-", maxsplit=1)[0]
 
-        segments, info = self._model.transcribe(
+        model = cast(Any, self._model)
+        segments, info = model.transcribe(
             audio,
             language=language,
             task=opts.task,
