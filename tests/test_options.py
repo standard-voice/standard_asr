@@ -10,7 +10,9 @@ def test_coerce_options_default() -> None:
 
 
 def test_coerce_options_from_mapping() -> None:
-    options = coerce_options({"language": "en", "word_timestamps": True}, BaseTranscribeOptions)
+    options = coerce_options(
+        {"language": "en", "word_timestamps": True}, BaseTranscribeOptions
+    )
     assert options.language == "en"
     assert options.word_timestamps is True
 
