@@ -8,6 +8,7 @@
 
 ## Quick Summary
 
+- New to Standard ASR? Read `docs/for_asr_dev/adapting_engine.md` first.
 - Entry point group: `standard_asr.models`.
 - Name format: `<engine_id>/<model_name>`.
 - `engine_id` should match your distribution name after [PEP 503](https://peps.python.org/pep-0503/) normalization.

@@ -44,6 +44,7 @@ nav:
   - App Developers:
       - Discover & Use: for_app_dev/discover_and_use.md
   - ASR Developers:
+      - Adapt an Engine: for_asr_dev/adapting_engine.md
       - Properties: for_asr_dev/properties.md
       - Plugin Entrypoints: for_asr_dev/plugin_entrypoints.md
   - Specs:

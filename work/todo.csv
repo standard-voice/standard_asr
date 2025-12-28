@@ -37,3 +37,6 @@ id,area,task,status,notes
 36,qa,"[x] Run ruff/pyright/pytest after fixes",done,"ruff/pyright/pytest run with 100% coverage"
 37,docs,"[x] Write work/current.md catch-up doc (since commit 5ccf0b240e822db2a664416bee509e0dbd8d6265)",done,"work/current.md added with detailed change log and validation steps"
 38,qa,"[x] Self code review of new changes",done,"reviewed server, audio_loader, properties, discovery, CLI paths"
+39,docs,"[x] Draft plan for ASR engine adaptation guide",done,"plan drafted then removed per request"
+40,docs,"[x] Write ASR engine adaptation guide",done,"docs/for_asr_dev/adapting_engine.md"
+41,docs,"[x] Cross-link adaptation guide from intro/entrypoint docs",done,"docs/intro.md + docs/for_asr_dev/plugin_entrypoints.md"
