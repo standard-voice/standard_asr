@@ -14,4 +14,4 @@ id,area,task,status,notes
 13,validation,"[x] Run standard-asr compliance entrypoints and record output",done,"standard_asr_user/README.md"
 14,validation,"[x] Transcribe standard_asr_user/harvard.wav via faster-whisper/distil-small.en; record transcript and expected match",done,"standard_asr_user/README.md"
 15,docs,"[x] Capture any Standard ASR improvement ideas in work/standard_asr_improvements.md",done,"standard_asr/work/standard_asr_improvements.md"
-16,qa,"[ ] Final criteria review + mark todo complete",pending,""
+16,qa,"[x] Final criteria review + mark todo complete",done,"work/criteria.md updated"
