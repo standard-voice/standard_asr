@@ -15,3 +15,4 @@ id,area,task,status,notes
 14,validation,"[x] Transcribe standard_asr_user/harvard.wav via faster-whisper/distil-small.en; record transcript and expected match",done,"standard_asr_user/README.md"
 15,docs,"[x] Capture any Standard ASR improvement ideas in work/standard_asr_improvements.md",done,"standard_asr/work/standard_asr_improvements.md"
 16,qa,"[x] Final criteria review + mark todo complete",done,"work/criteria.md updated"
+17,qa,"[x] Fix py.typed placement so pyright strict can resolve standard_asr types",done,"moved to standard_asr/src/standard_asr/py.typed"
