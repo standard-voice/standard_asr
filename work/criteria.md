@@ -1,54 +1,53 @@
-# Standard ASR Acceptance Criteria (v0)
+# Standard ASR Integration Acceptance Criteria (faster-whisper + user validation)
 
-This checklist defines the minimum acceptance criteria for completing the current
-implementation scope of Standard ASR. It is derived from the mission, goals, and
-roadmap in `docs/mission.md`, `docs/goals.md`, `docs/misc.md`, and `docs/roadmap.md`.
+This checklist defines the acceptance criteria for adding Standard ASR support
+inside the `faster-whisper` library and validating it end-to-end in
+`standard_asr_user`. It is derived from the project mission/goals and the
+current Standard ASR specification.
 
 ## 1) Mission & Philosophy Alignment
-- [ ] The interface is **application‑developer friendly**: zero‑config usage works for any
-      compliant plugin and switching engines does not require code changes.
-- [ ] The interface is **ASR‑developer friendly**: plugin authors can implement a compliant
-      engine with minimal boilerplate and clear guidance.
-- [ ] The core package stays lightweight; heavy dependencies are optional.
+- [ ] App-dev friendly: Standard ASR discovery + usage is zero-config and
+      documented with clear steps.
+- [ ] ASR-dev friendly: the adapter is minimal, clean, and follows the Standard
+      ASR contract without extra boilerplate.
+- [ ] Integration keeps faster-whisper lean; Standard ASR dependency remains
+      optional.
 
-## 2) Standard Interface & Data Contract
-- [ ] `StandardASR` defines a stable, typed interface for sync/async transcription.
-- [ ] Audio input contract is documented and validated (float32, 16kHz, channel count).
-- [ ] Output format is standardized via a `TranscriptionResult` model (text + optional
-      segments/words + metadata + `extra`).
-- [ ] Optional features (streaming, word timestamps, diarization, translation) are
-      standardized via feature flags and documented.
+## 2) Standard ASR Adapter in faster-whisper
+- [ ] A Standard ASR adapter (e.g., `StandardWhisperModel`) exists with
+      Pydantic config/options, proper `properties`, and `transcribe` mapping to
+      `TranscriptionResult`.
+- [ ] Lazy-loading is enforced; model weights are not downloaded in `__init__`.
+- [ ] Download policy respects `STANDARD_ASR_ALLOW_DOWNLOAD`.
+- [ ] Audio validation follows Standard ASR contract (`float32`, 16 kHz, mono).
 
-## 3) Properties, Config, and Options
-- [ ] Every engine exposes **static** `properties` with validated language tags (BCP‑47),
-      device support, audio constraints, and feature flags.
-- [ ] Engine initialization config is modeled with Pydantic v2 and is discoverable for UI.
-- [ ] Per‑request inference options are modeled with Pydantic v2 and are discoverable for UI.
-- [ ] Plugins can expose extra (non‑standard) fields without breaking the core protocol.
+## 3) Entry Points & Packaging
+- [ ] `standard_asr.models` entry points are declared for
+      `faster-whisper/whisper` and `faster-whisper/distil-small.en`.
+- [ ] Entry point factories return instances whose `properties.model_id` matches
+      the entry point key.
+- [ ] Optional extra is provided for Standard ASR dependencies.
 
-## 4) Plugin Discovery & Compliance
-- [ ] Entrypoint discovery (`standard_asr.models`) remains stable and documented.
-- [ ] Compliance helpers validate entry points **and** minimum interface metadata.
-- [ ] Lazy‑loading policy is implemented and enforced via a shared helper.
+## 4) Documentation & Proof
+- [ ] faster-whisper docs explain Standard ASR usage and installation.
+- [ ] Proof steps are documented, including `standard-asr models list` and
+      `standard-asr compliance entrypoints`.
+- [ ] Standard ASR documentation reference is linked for compliance guidance.
 
-## 5) Tooling & Developer Experience
-- [ ] CLI supports model discovery, compliance checks, and basic transcription.
-- [ ] A FastAPI server can expose any compliant plugin as a REST API (optional deps).
-- [ ] Model management helpers exist (cache path, download policy, prepare/warmup).
+## 5) Tests & Quality
+- [ ] Unit tests validate adapter behavior and entrypoint metadata without
+      downloading models.
+- [ ] Code review completed for faster-whisper changes.
+- [ ] Tests, linter, and type checker are run for affected projects.
 
-## 6) Cookbook & Examples
-- [ ] Cookbook contains a **faster‑whisper** compliant plugin that respects lazy‑load rules.
-- [ ] Dummy plugin remains functional and up‑to‑date with the new protocol.
-- [ ] Sample client shows discovery → create → transcribe workflow.
+## 6) standard_asr_user End-to-End Validation
+- [ ] `standard_asr_user` is an initialized uv project with required deps.
+- [ ] `harvard.wav` is transcribed via Standard ASR using
+      `faster-whisper/distil-small.en`.
+- [ ] Transcript matches expected text and result is recorded.
 
-## 7) Documentation
-- [ ] Design docs exist for: protocol, properties, config/options, results, feature flags,
-      lazy‑load/download policy, CLI, and API server.
-- [ ] App‑dev and ASR‑dev guides are complete and reflect current APIs.
-- [ ] README and MkDocs index are updated with correct quickstart guidance.
-
-## 8) Quality & Verification
-- [ ] 100% test coverage for `standard_asr` package (pytest + coverage).
-- [ ] Pyright strict passes.
-- [ ] Ruff format + check pass.
-- [ ] Final criteria review completed and documented.
+## 7) Traceability
+- [ ] `work/todo.csv` is complete with all tasks checked off.
+- [ ] Final criteria review performed and documented.
+- [ ] Any discovered Standard ASR improvements are captured in
+      `work/standard_asr_improvements.md`.
