@@ -101,20 +101,21 @@ def ensure_datatype(audio: NDArray[Any], data_type: DTypeLike) -> NDArray[Any]: 
 def ensure_datatype(
     audio: NDArray[Any], data_type: DTypeLike = np.float32
 ) -> NDArray[Any]:
-    """Ensure a NumPy array uses the specified dtype, returning a view when possible.
-
-    This helper normalizes the dtype of an input array. If the array already has
-    the requested dtype, the same array (not a copy) is returned. Otherwise a
-    cast is performed with ``copy=False`` semantics when feasible.
+    """Convert a NumPy array to the specified dtype (default: ``float32``).
 
     Args:
-        audio (NDArray[Any]): The input array.
-        data_type (DTypeLike): Target dtype. Accepts forms like ``"float32"``,
-            ``np.float32``, ``np.dtype(np.float32)``. Defaults to ``np.float32``.
+        audio: Input NumPy array of any dtype.
+        data_type: Target dtype (e.g., ``"float32"``, ``np.float32``). Default: ``np.float32``.
 
     Returns:
-        NDArray[Any]: The same array if dtypes already match; otherwise a view or
-        minimally-copied array with the requested dtype.
+        NumPy array with the requested dtype. Returns a view (no copy) if already matching.
+
+    Raises:
+        TypeError: If ``data_type`` is not a valid NumPy dtype.
+
+    Example:
+        >>> audio = ensure_datatype(raw_audio)  # -> float32
+        >>> audio = ensure_datatype(raw_audio, "float64")  # -> float64
     """
     # Compute the target dtype for runtime comparison; helps static checkers
     target_dtype: np.dtype[np.generic] = np.dtype(data_type)
@@ -129,47 +130,42 @@ def normalize_audio(
     target_sr: int = 16000,
     target_channels: int | None = 1,
 ) -> NDArray[np.float32]:
-    """Normalize a raw waveform to the Standard ASR audio contract.
+    """Normalize a raw waveform to the Standard ASR audio format.
 
-    This function validates basic parameters, optionally resamples, converts
-    channels, cleans up invalid values, and enforces the output dtype and
-    amplitude range. Input ``audio`` may be 1D (mono) or 2D with shape
-    ``(n_samples, n_channels)``. The returned array is:
+    **Standard ASR Audio Format:**
 
-    - dtype: ``np.float32``
-    - shape: ``(n_samples,)`` for mono, ``(n_samples, n_channels)`` for multi
-    - values: clipped to ``[-1.0, 1.0]``
-
-    Resampling:
-    - Performed with ``scipy.signal.resample_poly`` when ``original_sr != target_sr``.
-    - If ``scipy`` is not installed and resampling is required, an ``ImportError``
-      is raised with guidance on how to install the dependency.
-
-    Channel handling:
-    - ``target_channels is None``: preserve the input channel count.
-    - ``target_channels == 1``: downmix by arithmetic mean across channels.
-    - ``target_channels > 1`` and input has fewer channels: upmix by replication.
-    - ``target_channels < input_channels``: truncate to the first ``target_channels``
-      (for high-quality mixing, load via FFmpeg instead).
-
-    Invalid values:
-    - Any NaN/Inf values encountered are replaced by safe values (NaN->0.0,
-      +Inf->1.0, -Inf->-1.0), and a warning is logged.
+    - **dtype:** ``np.float32``
+    - **Sample rate:** ``16000`` Hz (configurable)
+    - **Channels:** Mono ``(n_samples,)`` or multi-channel ``(n_samples, n_channels)``
+    - **Value range:** ``[-1.0, 1.0]``
 
     Args:
-        audio (NDArray[Any]): Input waveform (1D mono or 2D multi-channel). The
-            dtype is converted to ``np.float32``.
-        original_sr (int): The original sample rate of ``audio``. Must be > 0.
-        target_sr (int): Desired sample rate (default ``16000``). Must be > 0.
-        target_channels (int | None): Desired channel count. ``1`` for mono,
-            ``2`` for stereo, or ``None`` to preserve channels.
+        audio: Input waveform, 1D ``(n_samples,)`` or 2D ``(n_samples, n_channels)``.
+            Any dtype (will be converted to ``float32``).
+        original_sr: Sample rate of the input audio (Hz). Must be > 0.
+        target_sr: Target sample rate. Default: ``16000`` Hz.
+        target_channels: Target channel count. ``1`` = mono (default), ``2`` = stereo,
+            ``None`` = preserve original.
 
     Returns:
-        NDArray[np.float32]: A waveform matching the Standard ASR audio contract.
+        Normalized waveform: ``np.float32``, resampled to ``target_sr``, with
+        ``target_channels`` channels, values clipped to ``[-1.0, 1.0]``.
 
     Raises:
-        AudioProcessingError: If parameters are invalid or the input is empty.
-        ImportError: If resampling is needed but ``scipy`` is not installed.
+        AudioProcessingError: Invalid parameters or empty audio.
+        ImportError: Resampling requires ``scipy`` (``pip install scipy``).
+
+    Note:
+        **Resampling:** Uses ``scipy.signal.resample_poly`` for high-quality conversion.
+
+        **Channel conversion:**
+
+        - Stereo → Mono: arithmetic mean of channels.
+        - Mono → Stereo: channel replication.
+        - Multi-channel down-mix: truncates to first N channels (for better quality,
+          use FFmpeg path via ``load_audio``).
+
+        **Invalid values:** NaN/Inf are sanitized (NaN→0.0, ±Inf→±1.0) with a warning.
     """
     processed_audio: NDArray[np.float32] = ensure_datatype(audio, "float32")
     # Basic parameter validation
@@ -263,48 +259,56 @@ def load_audio(
     target_sr: int = 16000,
     target_channels: int | None = 1,
 ) -> NDArray[np.float32]:
-    """Load audio from many sources and return a normalized waveform array.
+    """Load audio from given source and convert to Standard ASR format.
 
-    Loading strategy (in order):
-    1) When a string is provided and starts with ``data:...;base64,``, decode the
-       base64 payload and treat it as bytes.
-    2) If the string represents an existing path, open it as a file path.
-    3) Otherwise, treat the string as a file path (which may raise ``FileNotFoundError``).
-    4) For bytes-like (``bytes``, ``bytearray``, ``memoryview``) and BinaryIO,
-       first try ``soundfile`` (if installed), then fall back to FFmpeg.
+    **Accepts:** File path, ``bytes``, ``pathlib.Path``, base64 data URI, or file-like object.
 
-    Contract guarantees for the returned array:
-    - dtype: ``np.float32``
-    - sr: ``target_sr`` (default 16000 Hz)
-    - range: within ``[-1.0, 1.0]``
-    - shape: ``(n_samples,)`` for mono; ``(n_samples, n_channels)`` for multi
+    **Returns:** ``np.float32`` array, 16kHz mono by default, values in ``[-1.0, 1.0]``.
+
+    This is the main entry point for loading audio. It handles format detection,
+    decoding, resampling, and channel conversion automatically.
 
     Args:
-        source (str | bytes | bytearray | memoryview | pathlib.Path | BinaryIO):
-            The audio source. Supports filesystem paths, bytes-like objects, base64
-            data URIs, and binary file-like streams.
-        target_sr (int): Target sample rate. Audio will be resampled if necessary.
-        target_channels (int | None): Target number of channels: ``1`` for mono,
-            ``2`` for stereo, or ``None`` to preserve input channels.
+        source: Audio input. Supported types:
+
+            - ``str``: File path (``"audio.mp3"``) or base64 data URI (``"data:audio/wav;base64,..."``).
+            - ``bytes`` / ``bytearray`` / ``memoryview``: Raw audio file bytes.
+            - ``pathlib.Path``: File path object.
+            - ``BinaryIO``: File-like object opened in binary mode.
+
+        target_sr: Output sample rate in Hz. Default: ``16000``.
+        target_channels: Output channels. ``1`` = mono (default), ``2`` = stereo, ``None`` = preserve.
 
     Returns:
-        NDArray[np.float32]: Waveform normalized to the Standard ASR audio contract.
+        Waveform as ``np.float32`` array:
+
+        - Shape: ``(n_samples,)`` for mono, ``(n_samples, n_channels)`` for multi-channel.
+        - Sample rate: ``target_sr`` Hz.
+        - Values: Clipped to ``[-1.0, 1.0]``.
 
     Raises:
-        FileNotFoundError: If a provided path cannot be found/opened.
-        AudioProcessingError: If loading or processing fails.
-        ImportError: If a required optional dependency is missing for the chosen path.
-        FFmpegNotFoundError: If FFmpeg fallback is required but not available.
-        TypeError: If ``source`` is of an unsupported type.
+        AudioProcessingError: Invalid parameters or decoding/processing failures,
+            including missing or unreadable paths.
+        FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        ImportError: Resampling requires ``scipy`` when using the stdlib WAV loader.
+        TypeError: Unsupported source type.
 
-    Notes:
-        - Only data URIs (``data:...;base64,``) are auto-detected as base64. Raw base64
-          strings are not implicitly decoded. To load raw base64, decode it manually and
-          pass the resulting bytes to this function or use ``load_audio_from_bytes``.
-        - For BinaryIO sources, this function reads from the current stream position and
-          does not seek to the beginning.
-        - FFmpeg fallback buffers the entire decoded audio in memory. For very long audio
-          consider chunked or streaming approaches.
+    Example:
+        >>> audio = load_audio("speech.mp3")  # Load from file
+        >>> audio = load_audio(audio_bytes)   # Load from bytes
+        >>> audio = load_audio(Path("~/audio.wav"), target_sr=8000)  # Custom sample rate
+
+    Note:
+        **Decoding priority:**
+        - File paths: stdlib ``wave`` → ``soundfile`` → FFmpeg subprocess.
+        - Bytes/data URIs/BinaryIO: ``soundfile`` → FFmpeg subprocess.
+
+        **Base64:** Only data URIs (``data:...;base64,...``) are auto-detected.
+        For raw base64 strings (eg. ``YmFT...Y0``), decode manually: ``load_audio(base64.b64decode(s))``.
+
+        **BinaryIO:** Reads from the current stream position; does not seek to the beginning.
+
+        **Formats:** WAV, MP3, FLAC, OGG, and any format supported by FFmpeg.
     """
     if target_sr <= 0:
         raise AudioProcessingError(f"target_sr must be > 0, got {target_sr}")
@@ -358,19 +362,13 @@ def load_audio(
 
 
 def _is_binary_io(obj: Any) -> TypeGuard[BinaryIO]:
-    """Best-effort check that an object is a binary IO returning bytes-like data.
-
-    The check succeeds for common binary IO classes or for any object whose
-    ``read(0)`` returns a bytes-like object. Text IO is rejected. If a stream does
-    not support zero-length reads or raises during probing, the function returns
-    ``False`` to avoid misclassification.
+    """Check if an object is a binary IO stream (internal helper).
 
     Args:
-        obj (Any): An arbitrary object to evaluate.
+        obj: Any object to check.
 
     Returns:
-        TypeGuard[BinaryIO]: ``True`` if ``obj`` appears to be a binary IO stream,
-        otherwise ``False``.
+        ``True`` if ``obj`` is a binary IO (returns bytes on read), ``False`` otherwise.
 
     Raises:
         None.
@@ -393,27 +391,29 @@ def _is_binary_io(obj: Any) -> TypeGuard[BinaryIO]:
 def load_audio_from_path(
     path: str, target_sr: int = 16000, target_channels: int | None = 1
 ) -> NDArray[np.float32]:
-    """Load audio from a filesystem path using layered fallbacks.
+    """Load audio from a file path and convert to Standard ASR format.
 
-    Order of loaders:
-    1) WAV via stdlib ``wave`` for 8-bit unsigned PCM and 16-bit signed PCM
-    2) ``soundfile`` if available (supports many formats)
-    3) FFmpeg subprocess fallback
+    **Accepts:** File path as string (e.g., ``"speech.mp3"``, ``"~/audio.wav"``).
+
+    **Returns:** ``np.float32`` array, resampled and channel-converted.
 
     Args:
-        path (str): Filesystem path to an audio file. ``~`` is expanded.
-        target_sr (int): Desired sample rate for output, must be > 0.
-        target_channels (int | None): Desired channel count. ``None`` preserves
-            the original number of channels.
+        path: Path to audio file. Supports ``~`` expansion.
+        target_sr: Output sample rate (Hz). Default: ``16000``.
+        target_channels: Output channels. ``1`` = mono, ``2`` = stereo, ``None`` = preserve.
 
     Returns:
-        NDArray[np.float32]: Standardized waveform adhering to the audio contract.
+        Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
-        FileNotFoundError: If the file does not exist or is inaccessible.
-        AudioProcessingError: For unsupported/invalid WAV encodings via stdlib or
-            for failures in decoding downstream.
-        FFmpegNotFoundError: If FFmpeg is required but not present in the system ``PATH``.
+        AudioProcessingError: Decoding failed, including missing or unreadable files.
+        FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        ImportError: Resampling requires ``scipy`` when using the stdlib WAV loader.
+
+    Note:
+        **Decoding priority:** stdlib ``wave`` (WAV) → ``soundfile`` → FFmpeg.
+
+        For broader format support, install ``soundfile`` or ensure FFmpeg is in PATH.
     """
     # Basic parameter validation
     if target_sr <= 0:
@@ -495,23 +495,26 @@ def load_audio_from_path(
 def load_audio_from_bytes(
     data: bytes, target_sr: int = 16000, target_channels: int | None = 1
 ) -> NDArray[np.float32]:
-    """Load audio from bytes and return a normalized waveform.
+    """Load audio from raw bytes and convert to Standard ASR format.
 
-    Strategy:
-    - Prefer ``soundfile`` (if installed) for robust container/codec support.
-    - Fall back to FFmpeg subprocess when necessary.
+    **Accepts:** Audio file content as ``bytes`` (e.g., from ``file.read()``, HTTP response).
+
+    **Returns:** ``np.float32`` array, resampled and channel-converted.
 
     Args:
-        data (bytes): Raw bytes containing an audio file/stream.
-        target_sr (int): Target sample rate; must be > 0.
-        target_channels (int | None): Target channel count, or ``None`` to preserve.
+        data: Raw bytes of an audio file (any format: WAV, MP3, FLAC, etc.).
+        target_sr: Output sample rate (Hz). Default: ``16000``.
+        target_channels: Output channels. ``1`` = mono, ``2`` = stereo, ``None`` = preserve.
 
     Returns:
-        NDArray[np.float32]: Standardized waveform adhering to the audio contract.
+        Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
-        AudioProcessingError: If decoding fails or produces empty audio.
-        FFmpegNotFoundError: If FFmpeg is required but not available.
+        AudioProcessingError: Decoding failed or empty audio.
+        FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+
+    Note:
+        **Decoding priority:** ``soundfile`` → FFmpeg. Install one for format support.
     """
     # Basic parameter validation
     if target_sr <= 0:
@@ -554,31 +557,20 @@ def _load_with_ffmpeg(
     target_channels: int | None,
     timeout: float = 120.0,
 ) -> NDArray[np.float32]:
-    """Load audio using an FFmpeg subprocess as the ultimate fallback.
-
-    This function invokes FFmpeg to decode audio and emit 32-bit float
-    little-endian PCM (``f32le``) to stdout. If ``target_channels`` is ``None``,
-    it attempts to detect the input channel count via ``ffprobe`` first and fall
-    back to mono when probing is unavailable.
-
-    The output is normalized to the Standard ASR audio contract. Multi-channel
-    output is reshaped to ``(n_samples, n_channels)`` from the flat buffer.
+    """Decode audio via FFmpeg subprocess (internal fallback).
 
     Args:
-        source (str | bytes): A filesystem path or raw bytes of an audio file.
-        target_sr (int): Target sample rate (Hz).
-        target_channels (int | None): Target number of channels or ``None`` to
-            preserve when possible.
-        timeout (float): Maximum seconds to allow FFmpeg to run before aborting.
+        source: File path or raw bytes.
+        target_sr: Output sample rate (Hz).
+        target_channels: Output channels, or ``None`` to auto-detect via ffprobe.
+        timeout: Max seconds before aborting. Default: ``120.0``.
 
     Returns:
-        NDArray[np.float32]: Waveform array with dtype ``float32`` and shape per
-        the audio contract.
+        Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
-        FFmpegNotFoundError: If FFmpeg is not found in ``PATH``.
-        AudioProcessingError: On FFmpeg errors, timeouts, empty output or shape
-            inconsistencies.
+        FFmpegNotFoundError: FFmpeg not in PATH.
+        AudioProcessingError: Decoding failed, timeout, or empty output.
     """
     if shutil.which("ffmpeg") is None:
         raise FFmpegNotFoundError(
@@ -695,15 +687,14 @@ def _load_with_ffmpeg(
 def _probe_channels_with_ffprobe(
     source: str | bytes, timeout: float = 5.0
 ) -> int | None:
-    """Probe the input's channel count using ``ffprobe``.
+    """Detect audio channel count via ffprobe (internal helper).
 
     Args:
-        source (str | bytes): The same input accepted by FFmpeg: path or bytes.
-        timeout (float): Maximum seconds to wait for ffprobe.
+        source: File path or raw bytes.
+        timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        int | None: Detected number of channels, or ``None`` if ffprobe is not
-        available or probing fails for any reason.
+        Number of channels, or ``None`` if ffprobe unavailable or detection failed.
 
     Raises:
         None.

@@ -1,9 +1,19 @@
-"""Plugin discovery utilities for Standard ASR models.
+"""Plugin discovery system for Standard ASR models in the current Python environment.
 
-This module implements discovery for entry points defined under the
-``standard_asr.models`` group. Entry point names must follow the format
-``<engine_id>/<model_name>`` where ``model_name`` may be empty to denote the
-engine's default model.
+**Quick Start:**
+
+    >>> from standard_asr import discover_models
+    >>> registry = discover_models()
+    >>> asr = registry.create("faster-whisper/large-v3")
+
+**Key Concepts:**
+
+- **Entry Point Group:** ``standard_asr.models``
+- **Entry Point Name:** ``<engine_id>/<model_name>`` (e.g., ``faster-whisper/large-v3``)
+- **ModelRegistry:** Container of all discovered ASR engine factories.
+- **ModelSpec:** Metadata for a single entry point.
+
+**For Plugin Authors:** See ``docs/for_asr_dev/plugin_entrypoints.md``.
 """
 
 from __future__ import annotations
@@ -35,7 +45,15 @@ ENTRYPOINT_GROUP: str = "standard_asr.models"
 
 
 class ASRFactory(Protocol):
-    """Callable protocol describing Standard ASR model factories."""
+    """Callable that creates a ``StandardASR`` instance.
+
+    Plugin entry points must resolve to a callable matching this protocol.
+    Typically a function or class constructor that accepts optional configuration.
+
+    Example:
+        >>> def create_asr(**kwargs) -> StandardASR:
+        ...     return MyASREngine(**kwargs)
+    """
 
     def __call__(self, *args: Any, **kwargs: Any) -> "StandardASR": ...
 
@@ -177,7 +195,18 @@ def parse_entrypoint_name(name: str) -> tuple[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class ModelSpec:
-    """Immutable specification describing a discovered ASR model entry point."""
+    """Metadata for a discovered ASR model entry point.
+
+    Attributes:
+        key: Full entry point name (``engine_id/model_name``).
+        engine_id: Engine identifier (e.g., ``faster-whisper``).
+        model_name: Model preset name (e.g., ``large-v3``), or empty for default.
+        entry_point: The underlying ``importlib.metadata.EntryPoint`` object.
+
+    Note:
+        Instances are created by ``discover_models()``. Use ``load_factory()``
+        to get the callable that constructs the ASR engine.
+    """
 
     key: str
     engine_id: str
@@ -185,15 +214,14 @@ class ModelSpec:
     entry_point: EntryPoint
 
     def load_factory(self) -> ASRFactory:
-        """Load and validate the target callable for this entry point.
+        """Load the factory callable for this entry point.
 
         Returns:
-            A callable that constructs a ``StandardASR`` implementation.
+            Callable that creates a ``StandardASR`` instance when invoked.
 
         Raises:
-            FactoryLoadError: If loading fails or the target is not callable.
+            FactoryLoadError: Entry point failed to load or is not callable.
         """
-
         try:
             target = self.entry_point.load()
         except Exception as exc:  # noqa: BLE001
@@ -208,26 +236,77 @@ class ModelSpec:
 
 @final
 class ModelRegistry:
-    """Immutable registry of all discovered Standard ASR model factories."""
+    """Container for discovered ASR engine factories.
+
+    ModelRegistry holds the results of plugin discovery and provides methods to
+    list, query, and instantiate ASR engines. It does **not** perform discovery
+    itself—use ``discover_models()`` to create a populated registry.
+
+    **Typical Usage:**
+
+        >>> from standard_asr import discover_models
+        >>> registry = discover_models()
+        >>>
+        >>> # List all available models
+        >>> registry.names()  # ['faster-whisper/large-v3', 'whisper/base', ...]
+        >>>
+        >>> # Create an ASR instance
+        >>> asr = registry.create("faster-whisper/large-v3", device="cuda")
+        >>> result = asr.transcribe(audio)
+
+    **Key Methods:**
+
+    - ``names()``: List all discovered model keys.
+    - ``by_engine(engine_id)``: List models for a specific engine.
+    - ``create(name, **kwargs)``: Instantiate an ASR engine.
+    - ``spec(name)``: Get metadata for a model.
+
+    Note:
+        Use ``discover_models()`` to create a ModelRegistry. Do not instantiate directly
+        unless you're providing custom entry points for testing.
+    """
 
     def __init__(self, specs: Mapping[str, ModelSpec]) -> None:
+        """Initialize with a mapping of model specs (internal use)."""
         self._specs: dict[str, ModelSpec] = dict(specs)
 
     def names(self) -> list[str]:
-        """Return discovered model keys sorted lexicographically."""
+        """List all discovered model keys, sorted alphabetically.
 
+        Returns:
+            List of model keys (e.g., ``['faster-whisper/large-v3', 'whisper/base']``).
+        """
         return sorted(self._specs.keys())
 
     def by_engine(self, engine_id: str) -> list[str]:
-        """Return model keys associated with *engine_id*."""
+        """List all model keys for a specific engine.
 
+        Args:
+            engine_id: Engine identifier (e.g., ``faster-whisper``).
+
+        Returns:
+            List of matching model keys, sorted alphabetically.
+
+        Example:
+            >>> registry.by_engine("faster-whisper")
+            ['faster-whisper/', 'faster-whisper/large-v3', 'faster-whisper/small']
+        """
         return sorted(
             key for key, spec in self._specs.items() if spec.engine_id == engine_id
         )
 
     def spec(self, name: str) -> ModelSpec:
-        """Return the :class:`ModelSpec` for *name* (``engine/model``)."""
+        """Get metadata for a model.
 
+        Args:
+            name: Model key in ``engine_id/model_name`` format.
+
+        Returns:
+            ``ModelSpec`` containing entry point metadata.
+
+        Raises:
+            EntrypointValidationError: Model not found or invalid name format.
+        """
         engine_id, model_name = parse_entrypoint_name(name)
         key = f"{engine_id}/{model_name}"
         try:
@@ -239,22 +318,42 @@ class ModelRegistry:
             ) from exc
 
     def get_factory(self, name: str) -> ASRFactory:
-        """Retrieve the callable factory for *name*."""
+        """Get the factory callable for a model (without instantiating).
 
+        Args:
+            name: Model key in ``engine_id/model_name`` format.
+
+        Returns:
+            Callable that creates a ``StandardASR`` instance.
+
+        Raises:
+            EntrypointValidationError: Model not found.
+            FactoryLoadError: Entry point failed to load.
+        """
         return self.spec(name).load_factory()
 
     def create(self, name: str, /, *args: Any, **kwargs: Any) -> "StandardASR":
-        """Instantiate a Standard ASR implementation for *name*.
+        """Create an ASR engine instance.
+
+        This is the **primary method** for instantiating ASR engines. It loads the
+        factory and invokes it with the provided arguments.
 
         Args:
-            name: Entry point key in ``engine/model`` format.
-            *args: Positional arguments forwarded to the factory.
-            **kwargs: Keyword arguments forwarded to the factory.
+            name: Model key (e.g., ``"faster-whisper/large-v3"``).
+            *args: Positional arguments passed to the factory.
+            **kwargs: Keyword arguments passed to the factory (e.g., ``device="cuda"``).
 
         Returns:
-            Instance created by the target callable.
-        """
+            ``StandardASR`` instance ready for transcription.
 
+        Raises:
+            EntrypointValidationError: Model not found.
+            FactoryLoadError: Factory failed to load or execute.
+
+        Example:
+            >>> asr = registry.create("faster-whisper/large-v3", device="cuda")
+            >>> result = asr.transcribe(audio)
+        """
         factory = self.get_factory(name)
         return factory(*args, **kwargs)
 
@@ -269,8 +368,7 @@ class ModelRegistry:
 
 
 def _gather_entry_points(eps: Iterable[EntryPoint] | None = None) -> EntryPoints:
-    """Return entry points for the Standard ASR models group."""
-
+    """Gather entry points from the standard_asr.models group (internal)."""
     if eps is not None:
         return EntryPoints(list(eps))
     return entry_points(group=ENTRYPOINT_GROUP)
@@ -282,20 +380,33 @@ def discover_models(
     strict: bool = False,
     on_conflict: str = "warn_keep_first",
 ) -> ModelRegistry:
-    """Discover installed Standard ASR model entry points.
+    """Discover all installed ASR plugins and return a registry.
+
+    This is the **main entry point** for the plugin discovery system. It scans
+    the ``standard_asr.models`` entry point group and returns a ``ModelRegistry``
+    containing all discovered ASR engine factories.
 
     Args:
-        eps: Optional iterable of entry points to inspect (primarily for testing).
-        strict: When ``True`` invalid entry points cause an immediate error.
-        on_conflict: Conflict strategy - ``warn_keep_first`` (default) keeps the first
-            discovered entry; ``replace`` swaps to the latest entry while warning.
+        eps: Custom entry points for testing. Leave ``None`` for normal discovery.
+        strict: If ``True``, raise on invalid entry points. Default: ``False`` (warn only).
+        on_conflict: How to handle duplicate model keys:
+
+            - ``"warn_keep_first"``: Keep first, warn about duplicates (default).
+            - ``"replace"``: Use latest, warn about replacement.
 
     Returns:
-        Populated :class:`ModelRegistry` instance.
+        ``ModelRegistry`` containing all discovered models.
 
     Raises:
-        EntrypointValidationError: When ``strict`` is true and invalid entries exist.
-        ValueError: If ``on_conflict`` is not a supported value.
+        EntrypointValidationError: (strict mode) Invalid entry points detected.
+        ValueError: Unknown ``on_conflict`` value.
+
+    Example:
+        >>> from standard_asr import discover_models
+        >>> registry = discover_models()
+        >>> print(registry.names())
+        ['faster-whisper/large-v3', 'whisper/base', ...]
+        >>> asr = registry.create("faster-whisper/large-v3")
     """
 
     if on_conflict not in {"warn_keep_first", "replace"}:

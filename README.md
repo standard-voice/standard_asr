@@ -14,14 +14,36 @@
 
 
 ## Introduction
-Standard ASR (Automatic Speech Recognition) is a protocol that standardizes the
-way applications interact with different ASR models.
 
-Think of this as the USB-C for speech recognition libraries. We help standardize how the users of ASR libraries interact with ASR libraries, so application developers can use one code to interact with different ASR packages and models.
+**Standard ASR** is a universal protocol that standardizes how applications interact with Automatic Speech Recognition (ASR) engines.
 
-ASR integration code should be written once and only once. Application developers should not be writing new code when new ASR packages got released. One code should work with any ASR models, because they all do one thing: transcribe audio into text.
+> **Think of it as USB for speech recognition** — a common interface that lets any application work with any ASR engine, seamlessly.
 
-That's what we tries to do: the usb protocol for ASR libraries.
+### Why Standard ASR?
+
+**Write once, run with any ASR engine.** Instead of writing custom integration code for every ASR library, you write it once against the Standard ASR protocol. Your application automatically works with any compliant ASR engine — today's and tomorrow's.
+
+**ASR engines as plug-and-play modules.** With a standard protocol, ASR models become true plugins. Your application stays completely agnostic of which engine it uses. Each engine declares its capabilities, and your app adapts dynamically. Support the latest models on day one — without changing a single line of code.
+
+**Future-proof your application.** The AI landscape evolves rapidly. New engines emerge, others become obsolete. Standard ASR ensures your application survives these changes effortlessly.
+
+### Who Benefits?
+
+**For ASR engine developers & researchers:**
+- Focus on what matters — building better models — not boilerplate code
+- Get CLI, Web API, and testing tools for free by implementing one interface
+- Ship professional, production-ready packages with minimal engineering effort
+- Reach every application in the Standard ASR ecosystem instantly
+
+**For application developers:**
+- Write ASR integration code once; it works with all compliant engines
+- Zero vendor lock-in — switch providers without rewriting business logic
+- Escape dependency hell with clean, isolated plugin architecture
+- Automatic model discovery — your app adapts to whatever the user installs
+
+**For end users:**
+- Access cutting-edge models faster as integration barriers disappear
+- Choose any ASR engine that fits your language or domain — not what developers picked for you
 
 ## Entrypoint Quickstart
 
@@ -86,6 +108,15 @@ See `docs/spec/api.md` for API details.
 - A.2: 提供测试套件和周边工具，让 ASR 库开发者更好的开发好用，稳健，工程化的库
 - A.3: 适配过 Standard ASR 标准的代码，应该可以免配置直接跑任何 Standard ASR compliant 的模型。如果有额外配置项，需要用 pydantic 暴露出去，让 WebUI 和 GUI 和数据库能动态生成配置。
 
+
+Standard ASR:
+- 不是一个包含所有 ASR 模型或所有 ASR 模型的 adapter 的库。Standard ASR 只定义协议和接口并提供配套工具。与具体 ASR 引擎的适配，应该由 ASR 引擎的开发者 (或者 ASR 引擎的 fork) 来完成。
+
+许多 ASR 包尝试去做一个工具箱，把所有 ASR 模型都塞进去。我们尝试做 ASR 模型和应用开发者的桥梁，提供共同的语言来相互交流。
+
+为什么不把所有 ASR 模型都塞到 standard asr 中，让开发者自己选要用什么模型？
+- It doesn't scale. Many ASR models are licensed under GPL or AGPL or resctrictive license. Many ASR engines also have conflicting dependencies. In addition, centralized solutions like this creates a giant maintainence overhead, whereas standard asr gives the maintainence back to the ASR developers.
+- One of our core goals is to give the right to choose ASR model to the end user. There should be no code changes or maintainers attention required for applications to use new ASR models.
 
 
 ---
