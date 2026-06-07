@@ -44,6 +44,61 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_BODY_BYTES: int = 16 * 1024 * 1024
 
 
+class _BodySizeLimitMiddleware:
+    """Pure-ASGI middleware that rejects over-large request bodies (413).
+
+    Implemented as raw ASGI rather than a ``BaseHTTPMiddleware`` so it inspects
+    only the ``Content-Length`` header and never buffers or re-streams the body.
+    A ``BaseHTTPMiddleware`` here would consume the request stream and break
+    multipart ``request.form()`` parsing on starlette < 0.40 (the well-known
+    BaseHTTPMiddleware body bug), which the lower-bounds CI lane caught.
+
+    Args:
+        app: The wrapped ASGI application.
+        max_body_bytes: Maximum accepted body size in bytes.
+    """
+
+    def __init__(self, app: Any, max_body_bytes: int) -> None:
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        """Reject the request with 413/400 on a bad/oversize Content-Length.
+
+        Args:
+            scope: The ASGI connection scope.
+            receive: The ASGI receive callable.
+            send: The ASGI send callable.
+        """
+        if scope.get("type") == "http":
+            from fastapi.responses import JSONResponse
+
+            for name, value in scope.get("headers", []):
+                if name != b"content-length":
+                    continue
+                try:
+                    declared = int(value)
+                except ValueError:
+                    await JSONResponse(
+                        status_code=400,
+                        content={"detail": "Invalid Content-Length header."},
+                    )(scope, receive, send)
+                    return
+                if declared > self.max_body_bytes:
+                    await JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": (
+                                f"Request body too large: {declared} bytes exceeds "
+                                f"the {self.max_body_bytes}-byte limit."
+                            )
+                        },
+                    )(scope, receive, send)
+                    return
+                break
+        await self.app(scope, receive, send)
+
+
 class ModelInfo(BaseModel):
     """Serializable model info for API responses.
 
@@ -59,7 +114,10 @@ class ModelInfo(BaseModel):
         ValueError: If validation fails.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # `model_name` is a deliberate API field; opt out of pydantic's `model_`
+    # protected namespace so it does not warn (the warning fires on older
+    # pydantic, e.g. the lower-bounds lane's 2.5).
+    model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
 
     key: str = Field(..., description="Model key in 'engine/model' format.")
     engine_id: str = Field(..., description="Engine identifier.")
@@ -133,7 +191,7 @@ def create_app(
     if max_body_bytes <= 0:
         raise ValueError("max_body_bytes must be a positive integer.")
     try:
-        from fastapi import FastAPI, File, Form, HTTPException, Request
+        from fastapi import FastAPI, File, Form, HTTPException
     except ImportError as exc:
         raise ImportError(
             "FastAPI dependencies are missing. Install with: pip install 'standard-asr[server]'."
@@ -142,39 +200,9 @@ def create_app(
     app = FastAPI(title="Standard ASR")
     model_registry = registry or discover_models()
 
-    @app.middleware("http")
-    async def _limit_body_size(request: Request, call_next: Any) -> Any:  # pyright: ignore[reportUnusedFunction]
-        """Reject over-large request bodies before they are read into memory.
-
-        Args:
-            request: The inbound request.
-            call_next: The next ASGI handler.
-
-        Returns:
-            The downstream response, or a ``413`` JSON response.
-        """
-        from fastapi.responses import JSONResponse
-
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                declared = int(content_length)
-            except ValueError:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "Invalid Content-Length header."},
-                )
-            if declared > max_body_bytes:
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": (
-                            f"Request body too large: {declared} bytes exceeds the "
-                            f"{max_body_bytes}-byte limit."
-                        )
-                    },
-                )
-        return await call_next(request)
+    # Pure-ASGI body-size guard (see _BodySizeLimitMiddleware): rejects over-large
+    # bodies via Content-Length before they are read, without buffering the body.
+    app.add_middleware(_BodySizeLimitMiddleware, max_body_bytes=max_body_bytes)
 
     @app.get("/v1/health")
     def health() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]

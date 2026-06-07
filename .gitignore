@@ -1,7 +1,8 @@
 reference
 repomix-output.xml
-# we are a library, so ignore lock files
-uv.lock
+# uv.lock IS committed (dependency policy D1): it gives the repo reproducible
+# dev/CI environments. It is not published in the wheel and does not affect
+# downstream resolution (pyproject.toml's ranges are the downstream contract).
 
 # fuck macOS
 .DS_Store

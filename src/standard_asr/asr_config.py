@@ -111,6 +111,10 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         extra="forbid",
         str_strip_whitespace=True,
         validate_assignment=True,
+        # Engine configs commonly carry `model_*` fields (e.g. `model_path`).
+        # Opt out of pydantic's `model_` protected namespace so subclasses do not
+        # warn (the warning fires on older pydantic, e.g. the lower-bounds 2.5).
+        protected_namespaces=(),
     )
 
     engine: EngineNameT = Field(

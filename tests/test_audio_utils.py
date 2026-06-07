@@ -39,10 +39,8 @@ def create_sine_wave(
 ) -> NDArray[np.float32]:
     """Create a test sine wave."""
     n_samples = int(sr * duration)
-    t: NDArray[np.float32] = np.arange(n_samples, dtype=np.float32) / np.float32(sr)
-    omega: np.float32 = np.float32(2.0 * np.pi * 440.0)
-    raw = np.sin(omega * t)
-    sine = raw.astype(np.float32, copy=False)
+    t = (np.arange(n_samples, dtype=np.float32) / sr).astype(np.float32)
+    sine = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
 
     if channels == 1:
         return sine
@@ -101,7 +99,9 @@ def test_nan_inf_cleanup():
     assert cleaned[1] == 0.0  # NaN -> 0
     assert cleaned[2] == 1.0  # +Inf -> 1
     assert cleaned[3] == -1.0  # -Inf -> -1
-    assert cleaned[4] == 0.3  # Good value preserved
+    # float32(0.3) != float64 0.3; use approx (NEP 50 makes the exact compare
+    # pass on numpy 2.x but fail on 1.26 — see the lower-bounds lane).
+    assert cleaned[4] == pytest.approx(0.3)  # Good value preserved
 
 
 def test_mono_stereo_shapes():

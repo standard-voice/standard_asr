@@ -50,7 +50,10 @@ class ProviderParams(BaseModel):
     layer regardless of the strict / best_effort policy.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # Engine params subclasses may carry `model_*` knobs; opt out of pydantic's
+    # `model_` protected namespace so they do not warn (the warning fires on
+    # older pydantic, e.g. the lower-bounds 2.5).
+    model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
 
 
 class RuntimeParams(BaseModel):
