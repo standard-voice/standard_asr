@@ -1,27 +1,63 @@
+# Dependabot version updates (dependency-policy channel 2). We use Dependabot,
+# not Renovate, to keep the trust surface minimal and GitHub-native (ADR D2).
 version: 2
+
 updates:
-  # Keep GitHub Actions hash pins fresh. Dependabot bumps the SHA and the
-  # trailing `# vX.Y.Z` comment together, so we stay SHA-pinned (required by
-  # our zizmor unpinned-uses policy) while still receiving security updates.
+  # ---- GitHub Actions: keep SHA pins fresh ----------------------------------
+  # Dependabot bumps the pinned SHA and the trailing `# vX.Y.Z` comment together,
+  # so we stay fully SHA-pinned (required by our zizmor unpinned-uses policy)
+  # while still receiving action security/maintenance updates.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
     commit-message:
-      prefix: "ci"
+      prefix: ci
+    cooldown:
+      default-days: 7 # ADR D6: let a release settle before we adopt it.
     groups:
-      actions:
+      github-actions:
         patterns:
           - "*"
 
-  # Keep Python dependencies (managed via uv / pyproject.toml) up to date.
+  # ---- Python dependencies (managed by uv) ----------------------------------
+  #
+  # ADR D3 — the bot updates uv.lock and MUST NOT narrow the pyproject.toml
+  # compatibility contract. Dependabot's `versioning-strategy: lockfile-only` is
+  # not yet supported for the uv ecosystem (dependabot/dependabot-core#12162), so
+  # we deliberately do NOT set it (TODO(verify): add it once that ships). We get
+  # the same outcome structurally instead: every direct dependency declares a
+  # lower-bound-only range with no speculative upper cap (ADR D4), so in-range
+  # upgrades never fall outside the constraint and Dependabot only rewrites the
+  # lock, leaving [project.dependencies] untouched.
+  #
+  # The sanctioned exception is Dependabot *security* updates (a separate
+  # channel, enabled in repo settings): when no in-range fix exists they MAY
+  # raise a floor in pyproject. That is the one time the contract moves.
   - package-ecosystem: uv
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
     commit-message:
-      prefix: "deps"
+      prefix: deps
+    cooldown:
+      default-days: 7 # ADR D6.
     groups:
-      python:
+      # Dev/test/lint/typing tooling churns frequently and is low blast-radius:
+      # batch it into a single PR.
+      dev-dependencies:
+        dependency-type: development
         patterns:
           - "*"
+      # Runtime minor/patch bumps are low-risk; batch them too.
+      runtime-minor-patch:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"
+      # Runtime MAJOR bumps match no group on purpose, so each lands in its own
+      # PR for deliberate, isolated review.
