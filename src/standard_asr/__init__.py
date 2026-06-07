@@ -3,7 +3,15 @@
 
 """Standard ASR package."""
 
-from .asr_config import BaseConfig
+from .asr_config import (
+    BaseConfig,
+    CredentialsConfigMixin,
+    DeviceConfigMixin,
+    DownloadConfigMixin,
+    LanguageConfigMixin,
+    env_var_name,
+    secret_field,
+)
 from .asr_interface import StandardASR
 from .asr_properties import BaseProperties
 from .audio_format import AudioFormat
@@ -76,9 +84,13 @@ __all__ = [
     "ComplianceReport",
     "ConversionOp",
     "ConversionPlan",
+    "CredentialsConfigMixin",
     "DeclaredCapabilities",
+    "DeviceConfigMixin",
     "Diagnostic",
+    "DownloadConfigMixin",
     "InputKind",
+    "LanguageConfigMixin",
     "ModelRegistry",
     "ModelSpec",
     "NoViablePath",
@@ -98,6 +110,7 @@ __all__ = [
     "coerce_audio_input",
     "discover_models",
     "ensure_cache_dir",
+    "env_var_name",
     "load_audio",
     "load_audio_from_bytes",
     "load_audio_from_path",
@@ -107,6 +120,7 @@ __all__ = [
     "parse_entrypoint_name",
     "pep503_normalize",
     "resolve_cache_dir",
+    "secret_field",
     "to_srt",
     "to_vtt",
 ]
