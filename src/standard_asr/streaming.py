@@ -77,6 +77,20 @@ DEFAULT_AUDIO_QUEUE_MAXSIZE = 256
 DEFAULT_AUDIO_HISTORY_MAXLEN = 256
 
 
+async def _cancel_all_tasks() -> None:
+    """Cancel and await every task on the running loop except the caller.
+
+    Used by the sync bridge during teardown so no task is destroyed while
+    pending (which would emit a warning under ``-W error``).
+    """
+    current = asyncio.current_task()
+    tasks = [task for task in asyncio.all_tasks() if task is not current]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def validate_stable_until(text: str, stable_until: int) -> bool:
     """Return whether ``stable_until`` is a valid frozen-prefix boundary.
 
@@ -1124,17 +1138,29 @@ class SyncSession:
         self._loop.run_forever()
 
     def _shutdown(self) -> None:
-        """Stop the owned loop and join the thread, forcing close on timeout."""
+        """Cancel pending tasks, stop the loop, join the thread, and close it.
+
+        Cancelling + awaiting outstanding tasks (e.g. a hung ``__aenter__``)
+        before stopping avoids "Task was destroyed but it is pending" warnings,
+        and closing the loop avoids the ``BaseEventLoop.__del__`` resource
+        warning — both of which would otherwise surface (and fail ``-W error``).
+        """
         if self._closed:
             return
         self._closed = True
+        # Best-effort: cancel and await all outstanding tasks on the loop thread
+        # so nothing is destroyed while pending. A truly blocking (non-awaiting)
+        # adapter can't be cancelled cooperatively; the join timeout is the
+        # backstop for that pathological case.
+        try:
+            future = asyncio.run_coroutine_threadsafe(_cancel_all_tasks(), self._loop)
+            future.result(timeout=5.0)
+        except Exception:  # noqa: BLE001 - teardown is best-effort
+            pass
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5.0)
-        if self._thread.is_alive():  # pragma: no cover - defensive teardown
-            # The loop did not stop in time; close it from here so the daemon
-            # thread cannot keep running work against a half-torn-down session.
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._thread.join(timeout=1.0)
+        if not self._thread.is_alive():
+            self._loop.close()
 
     def _submit(self, coro: Any, *, timeout: float | None) -> Any:
         """Run a coroutine on the owned loop and wait, bounded by ``timeout``.

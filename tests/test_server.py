@@ -7,6 +7,7 @@ import builtins
 from importlib.metadata import EntryPoint
 from typing import Any, ClassVar, Literal
 
+import httpx
 import numpy as np
 import pytest
 from numpy.typing import NDArray
@@ -149,11 +150,11 @@ def test_create_app_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
 
     client = TestClient(app)
 
-    response = client.get("/v1/health")
+    response: httpx.Response = client.get("/v1/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
-    models = client.get("/v1/models")
+    models: httpx.Response = client.get("/v1/models")
     assert models.status_code == 200
     assert models.json()[0]["key"] == "dummy/echo"
 
@@ -161,7 +162,7 @@ def test_create_app_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
         "model": "dummy/echo",
         "audio": base64.b64encode(b"fake").decode("utf-8"),
     }
-    transcribe = client.post("/v1/transcribe:json", json=payload)
+    transcribe: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert transcribe.status_code == 200
     assert transcribe.json()["result"]["text"] == "dummy"
 
@@ -176,7 +177,7 @@ def test_transcribe_json_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     real_decode = server_module._decode_audio_payload  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(server_module, "_decode_audio_payload", _raise_value_error_str)
     payload = {"model": "dummy/echo", "audio": "bad"}
-    response = client.post("/v1/transcribe:json", json=payload)
+    response: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert response.status_code == 400
 
     monkeypatch.setattr(server_module, "_decode_audio_payload", real_decode)
@@ -197,7 +198,7 @@ def test_transcribe_json_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
         "model": "dummy/echo",
         "audio": base64.b64encode(b"fake").decode("utf-8"),
     }
-    response = client_fail.post("/v1/transcribe:json", json=payload)
+    response: httpx.Response = client_fail.post("/v1/transcribe:json", json=payload)
     assert response.status_code == 500
 
 
@@ -212,12 +213,12 @@ def test_transcribe_file_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     data = {"model": "dummy/echo"}
-    response = client.post("/v1/transcribe", data=data, files=files)
+    response: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
     assert response.status_code == 200
     assert response.json()["result"]["text"] == "dummy"
 
     monkeypatch.setattr(server_module, "load_audio_from_bytes", _raise_value_error_bytes)
-    response = client.post("/v1/transcribe", data=data, files=files)
+    response: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
     assert response.status_code == 400
 
     eps = [
@@ -232,7 +233,7 @@ def test_transcribe_file_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     client_fail = TestClient(app_fail)
 
     monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
-    response = client_fail.post("/v1/transcribe", data=data, files=files)
+    response: httpx.Response = client_fail.post("/v1/transcribe", data=data, files=files)
     assert response.status_code == 500
 
 
@@ -305,7 +306,7 @@ def test_capabilities_endpoint() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp = client.get("/v1/capabilities/dummy/echo")
+    resp: httpx.Response = client.get("/v1/capabilities/dummy/echo")
     assert resp.status_code == 200
     body = resp.json()
     assert body["batch"]["language"]["runtime_override"]["supported"] is True
@@ -317,7 +318,7 @@ def test_capabilities_endpoint_unknown_model() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp = client.get("/v1/capabilities/nope/missing")
+    resp: httpx.Response = client.get("/v1/capabilities/nope/missing")
     assert resp.status_code == 404
 
 
@@ -327,7 +328,7 @@ def test_params_schema_endpoint() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp = client.get("/v1/params-schema/dummy/echo")
+    resp: httpx.Response = client.get("/v1/params-schema/dummy/echo")
     assert resp.status_code == 200
     schema = resp.json()
     assert "beam" in schema.get("properties", {})
@@ -354,7 +355,7 @@ def test_transcribe_client_error_maps_to_422(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
     assert "word_timestamps" in resp.json()["detail"]
 
@@ -368,7 +369,7 @@ def test_transcribe_unknown_model_maps_to_404(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {"model": "nope/missing", "audio": base64.b64encode(b"fake").decode()}
-    resp = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 404
 
 
@@ -384,7 +385,7 @@ def test_transcribe_500_does_not_leak_internal_detail(
     monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     detail = resp.json()["detail"]
     assert "/secret/internal/path" not in detail
@@ -400,7 +401,7 @@ def test_body_size_limit_returns_413() -> None:
 
     big = base64.b64encode(b"x" * 1024).decode()
     payload = {"model": "dummy/echo", "audio": big}
-    resp = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 413
 
 
@@ -419,10 +420,10 @@ def test_capabilities_no_instantiation(monkeypatch: pytest.MonkeyPatch) -> None:
     app = server_module.create_app(registry=_registry_for("_no_instantiate_factory"))
     client = TestClient(app)
 
-    caps = client.get("/v1/capabilities/dummy/echo")
+    caps: httpx.Response = client.get("/v1/capabilities/dummy/echo")
     assert caps.status_code == 200
     assert caps.json()["batch"]["language"]["runtime_override"]["supported"] is True
 
-    schema = client.get("/v1/params-schema/dummy/echo")
+    schema: httpx.Response = client.get("/v1/params-schema/dummy/echo")
     assert schema.status_code == 200
     assert "beam" in schema.json().get("properties", {})

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import types
 from importlib.metadata import EntryPoint
 from pathlib import Path
@@ -376,7 +377,10 @@ def test_cli_serve_uses_server_module(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cli_serve_missing_server_dependency(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "__package__", "standard_asr_missing")
+    # Simulate the server module failing to import (deterministic, no import
+    # warnings): a None entry in sys.modules makes `from .server import run`
+    # raise ImportError, exercising the missing-server-deps branch.
+    monkeypatch.setitem(sys.modules, "standard_asr.server", None)
 
     exit_code = cli.main(["serve"])
     output = capsys.readouterr().out
