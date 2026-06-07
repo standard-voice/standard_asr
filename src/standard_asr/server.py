@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from .discovery import ModelRegistry, discover_models

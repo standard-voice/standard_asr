@@ -29,7 +29,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 

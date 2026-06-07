@@ -47,7 +47,8 @@ from .discovery import (
     parse_entrypoint_name,
     pep503_normalize,
 )
-from .language import AUTO
+from .doctor import DoctorReport, diagnose
+from .language import AUTO, effective_candidate_languages, effective_language
 from .renderers import to_srt, to_vtt
 from .results import (
     ChannelResult,
@@ -94,6 +95,7 @@ __all__ = [
     "DeclaredCapabilities",
     "DeviceConfigMixin",
     "Diagnostic",
+    "DoctorReport",
     "DownloadConfigMixin",
     "EngineBase",
     "InputKind",
@@ -118,7 +120,10 @@ __all__ = [
     "can_accept",
     "check_entrypoints",
     "coerce_audio_input",
+    "diagnose",
     "discover_models",
+    "effective_candidate_languages",
+    "effective_language",
     "ensure_cache_dir",
     "env_var_name",
     "load_audio",

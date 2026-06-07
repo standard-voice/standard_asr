@@ -11,7 +11,6 @@ from .asr_properties import BaseProperties
 from .discovery import ModelRegistry, discover_models
 from .exceptions import FactoryLoadError
 
-
 __all__ = [
     "ComplianceIssue",
     "ComplianceReport",
@@ -214,7 +213,10 @@ def check_entrypoints(
             issues.append(
                 ComplianceIssue(
                     level="error",
-                    message="Instance is missing a BaseProperties-compatible 'properties' attribute.",
+                    message=(
+                        "Instance is missing a BaseProperties-compatible "
+                        "'properties' attribute."
+                    ),
                     model=name,
                 )
             )

@@ -18,20 +18,20 @@ import base64
 import io
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import numpy as np
 import pytest
-from typing import Any, cast
 from numpy.typing import NDArray
 
+from standard_asr.exceptions import AudioProcessingError, FFmpegNotFoundError
 from standard_asr.utils.audio_loader import (
+    _load_with_ffmpeg,  # pyright: ignore[reportPrivateUsage]
     load_audio,
     normalize_audio,
 )
-from standard_asr.utils.audio_loader import _load_with_ffmpeg  # pyright: ignore[reportPrivateUsage]
 from standard_asr.utils.save_utils import nparray_to_audio_file
-from standard_asr.exceptions import AudioProcessingError, FFmpegNotFoundError
 
 
 def create_sine_wave(

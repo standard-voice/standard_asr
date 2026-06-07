@@ -10,18 +10,20 @@ import pytest
 from standard_asr.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
+    FlagCap,
     GuidanceCaps,
     LanguageCaps,
     PhraseHintsCap,
     PromptCap,
-    FlagCap,
 )
 from standard_asr.exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from standard_asr.param_gating import gate_params
 from standard_asr.runtime_params import ProviderParams, RuntimeParams
 
 
-def _caps(*, prompt: bool = False, phrase_hints: bool = False, override: bool = False) -> DeclaredCapabilities:
+def _caps(
+    *, prompt: bool = False, phrase_hints: bool = False, override: bool = False
+) -> DeclaredCapabilities:
     return DeclaredCapabilities(
         batch=BatchCapabilities(
             language=LanguageCaps(runtime_override=FlagCap(supported=override)),

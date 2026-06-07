@@ -1,60 +1,41 @@
-`version: 2025.09.1-1`
+# Standard ASR
 
-# standard asr
+Standard ASR is a **Python library that defines and enforces a universal interface protocol for ASR (speech-to-text) inference**. Think USB-C for speech recognition, or what the OpenAI Chat Completion API did for LLMs: once a protocol becomes the common language, any new engine that adopts it is **instantly usable by every application in the ecosystem** — and any application that speaks it can use **any compliant engine** without changing a line of code.
 
-## 1. Core Project Context
+**What this repo contains:**
+- A **runtime library** (`standard-asr`): audio input negotiation & conversion, capability discovery & gating, structured diagnostics, streaming session management, plugin discovery via entry points.
+- A **toolchain**: CLI, FastAPI server (expose any engine over HTTP/WS), compliance test suite.
+- **No ASR models.** Each engine is a separate pip-installable plugin package (e.g. `std-faster-whisper`, `std-openai`) that implements the standard interface. Standard ASR discovers installed plugins automatically.
 
-This is a standard ASR (Automatic Speech Recognition) library that provides a simple interface for interacting with various ASR models. It supports many popular ASR models and allows developers to easily transcribe audio into text.
+**What this repo does NOT contain:** speech recognition code, model weights, or training. We build the bridge, not the endpoints.
 
-This project supports Python 3.10 and above. It is designed to be easy to use and integrate into existing applications.
+**We are currently in pre-release stage.** Always choose the long-term optimal design over backwards compatibility.
 
+## Stakeholders — consider all three in every decision
 
-**Key Principles:**
-  - **Clean code:** Clean, testable, maintainable code, follows best practices of python 3.10+ and does not write deprecated code.
-  - **Follow guiding principles and mission:** Strictly follows design philosophies, goals, and missions stated in `docs/mission.md`, `docs/misc.md`, and `docs/goals.md`. Use these as the guide and 验收清单 in designing and code reviewing stage. DX, elegancy and the stated mission and goals are the top priorities in this project.
+- **App developers** (primary users): one stable interface for all engines. No vendor lock-in. Zero-config discovery.
+- **ASR engine authors**: low barrier to publish a compliant plugin. Implement one interface → get CLI, Web API, compliance tests for free — and your engine is instantly compatible with every Standard ASR application, no per-app integration needed. Focus on models, not plumbing.
+- **End users**: choose the best ASR for their language or domain — install a plugin, use it immediately, no app changes needed.
 
-Some key files and directories:
+## Philosophy
 
-```
-docs/                   # Documentation files
-.github/               # GitHub configuration files, inlcuding workflows
-src/standard_asr/          # Core library code
-pyproject.toml       # Project metadata and dependencies
-README.md            # Project overview and instructions
-```
+- **Code is the contract.** Public API signatures, types, and docstrings are promises. A developer should understand behavior from the code alone. Every name is a design decision.
+- **DX above all.** Optimize for the app developer. Zero-config, zero-surprise, zero-ambiguity. Battery-included where it helps (audio loading, SRT/VTT renderers), but keep heavy deps optional (`[audio]`, `[server]`).
+- **Explicit > implicit.** Silent wrong results are the cardinal sin. When in doubt, fail loudly or emit a structured diagnostic — never silently degrade. When DX convenience and explicitness conflict, **correctness wins** (a loud error the developer can fix beats a silent wrong transcript).
+- **Standard-library rigor.** This is infrastructure others build on for 10 years. Types complete, boundaries sharp, error paths explicit, no implicit behavior.
+- **Security by default.** Credentials use `SecretStr`. URLs validated (HTTPS, no SSRF). Unsafe options require explicit opt-in.
 
-## 1. Overarching Coding Philosophy
+## Rules
 
-**Adherence to Best Practices**: Write clean, testable, and robust code with proper design patterns that follows modern Python 3.10+ idioms. Adhere to the best practices of our core libraries (FastAPI, Pydantic v2).
-
-Tech Stack
-- astral uv: `uv add`, `uv remove`, `uv run`
-- fastapi, pydantic v2, ruff, pyright strict, pytest with 100% test cov.
-
-Code style
-- Google python style docstring in English for everything.
-- Docstrings **MUST** include summary, args, returns, and raises.
-- Use English for all comments and logs.
-- Use `logging` module.
-- Use Python standard library or existing project dependencies defined in `pyproject.toml`.
-
-All core logic **MUST** runs on macOS, Windows, and Linux.
-
-Documentation
-- write clear, verbose, comprehensive documentation in `docs`. Always consider mission, goals, stakeholders, and the characteristics and goals of the people who will read our documentation.
-
-Comprehensive tests
-
-Everything we do are for the mission stated in `docs/mission.md` and `docs/goals.md`. If some of the documented things conflict with each other, ASK ME.
-
-
-## 工作方式
-
-先写核心验收文档 `work/criteria.md`，设计方案 `work/plan.md`，根据验收文档审查设计方案，再写 todo `work/todo.csv`，然后把所有 todo 完成。todo 中要包含所有任务，比如文档，所有的 implementation 任务，完成某个 feat 任务之后的代码审查，测试，和完成所有任务之后最后的 criteria 验收，所有改动要与 mission 和 goals 高度对齐。把东西写成带 tick box 的 todo 项目，方便追踪进度。
-
-在合适的时候，往 git 中提交改动。遵守 conventional commit 规范。如果在 git changes 中发现并非由你做出的改动，分析那些改动之后，分批进行提交。
-
-在提交之前，总是审核代码，运行测试，linter, type checker，审核 todo 完成状况，并且再看看 todo 是否需要更新或添加更多 todo。最终提交时，分批提交，让 commit 原子化。
-
-**总是主动更新 todo.csv，并把 todo.csv 中的所有任务都做完**
-
+- Python 3.10+. Cross-platform (macOS, Windows, Linux).
+- `uv` for deps. Pydantic v2 for data models. FastAPI for server.
+- `ruff` + `pyright` strict + `pytest` with 100% coverage target.
+- `ruff` rule `NPY201` enabled. CI tests against numpy 1.26 AND latest 2.x.
+- Google-style docstrings (English): summary, args, returns, raises.
+- English for all code, comments, logs. `logging` module — no `print`.
+- SPDX license header on every `.py` file:
+  ```python
+  # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+  # SPDX-License-Identifier: Apache-2.0
+  ```
+- Commits: imperative mood, concise. One logical change per commit.

@@ -9,6 +9,7 @@ import subprocess
 import types
 import wave
 from pathlib import Path
+
 import numpy as np
 import pytest
 from numpy.typing import NDArray

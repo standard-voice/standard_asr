@@ -1,6 +1,17 @@
-"""Tests for BCP 47 language helpers."""
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
 
-from standard_asr.language import is_valid_bcp47, normalize_bcp47
+"""Tests for BCP 47 language helpers and resolution."""
+
+import pytest
+
+from standard_asr.language import (
+    AUTO,
+    effective_candidate_languages,
+    effective_language,
+    is_valid_bcp47,
+    normalize_bcp47,
+)
 
 
 def test_normalize_bcp47() -> None:
@@ -16,3 +27,151 @@ def test_is_valid_bcp47() -> None:
     assert is_valid_bcp47("") is False
     assert is_valid_bcp47("en--US") is False
     assert is_valid_bcp47("en@US") is False
+
+
+def test_effective_language_runtime_override() -> None:
+    assert (
+        effective_language(
+            "fr", "en", has_language_axis=True, runtime_override_supported=True
+        )
+        == "fr"
+    )
+
+
+def test_effective_language_falls_back_to_default() -> None:
+    assert (
+        effective_language(
+            "fr", "en", has_language_axis=True, runtime_override_supported=False
+        )
+        == "en"
+    )
+
+
+def test_effective_language_no_axis() -> None:
+    assert (
+        effective_language(
+            None, None, has_language_axis=False, runtime_override_supported=False
+        )
+        is None
+    )
+
+
+def test_effective_candidates_not_auto() -> None:
+    result, diags = effective_candidate_languages(
+        "en",
+        ["ja"],
+        None,
+        candidate_supported=True,
+        detectable_languages=["ja"],
+        max_count=3,
+        strict=True,
+    )
+    assert result is None
+    assert diags == []
+
+
+def test_effective_candidates_unsupported_diagnostic() -> None:
+    result, diags = effective_candidate_languages(
+        AUTO,
+        ["ja"],
+        None,
+        candidate_supported=False,
+        detectable_languages=["ja"],
+        max_count=3,
+        strict=True,
+    )
+    assert result is None
+    assert diags[0].code == "candidate_languages_ignored"
+
+
+def test_effective_candidates_dedup_and_order() -> None:
+    result, _ = effective_candidate_languages(
+        AUTO,
+        ["ja", "en", "ja"],
+        None,
+        candidate_supported=True,
+        detectable_languages=["en", "ja", "ko"],
+        max_count=3,
+        strict=True,
+    )
+    assert result == ["ja", "en"]
+
+
+def test_effective_candidates_rejects_auto() -> None:
+    with pytest.raises(ValueError):
+        effective_candidate_languages(
+            AUTO,
+            ["auto"],
+            None,
+            candidate_supported=True,
+            detectable_languages=["en"],
+            max_count=3,
+            strict=True,
+        )
+
+
+def test_effective_candidates_strict_non_detectable_raises() -> None:
+    with pytest.raises(ValueError):
+        effective_candidate_languages(
+            AUTO,
+            ["zz"],
+            None,
+            candidate_supported=True,
+            detectable_languages=["en"],
+            max_count=3,
+            strict=True,
+        )
+
+
+def test_effective_candidates_best_effort_drops_non_detectable() -> None:
+    result, diags = effective_candidate_languages(
+        AUTO,
+        ["en", "zz"],
+        None,
+        candidate_supported=True,
+        detectable_languages=["en"],
+        max_count=3,
+        strict=False,
+    )
+    assert result == ["en"]
+    assert any(d.code == "candidate_language_dropped" for d in diags)
+
+
+def test_effective_candidates_strict_over_max_raises() -> None:
+    with pytest.raises(ValueError):
+        effective_candidate_languages(
+            AUTO,
+            ["en", "ja", "ko"],
+            None,
+            candidate_supported=True,
+            detectable_languages=["en", "ja", "ko"],
+            max_count=2,
+            strict=True,
+        )
+
+
+def test_effective_candidates_best_effort_truncates() -> None:
+    result, diags = effective_candidate_languages(
+        AUTO,
+        ["en", "ja", "ko"],
+        None,
+        candidate_supported=True,
+        detectable_languages=["en", "ja", "ko"],
+        max_count=2,
+        strict=False,
+    )
+    assert result == ["en", "ja"]
+    assert any(d.code == "candidate_languages_truncated" for d in diags)
+
+
+def test_effective_candidates_defaults_when_no_request() -> None:
+    result, _ = effective_candidate_languages(
+        AUTO,
+        None,
+        ["en"],
+        candidate_supported=True,
+        detectable_languages=["en"],
+        max_count=3,
+        strict=True,
+    )
+    assert result == ["en"]

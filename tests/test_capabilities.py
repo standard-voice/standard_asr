@@ -13,7 +13,6 @@ from standard_asr.capabilities import (
     FlagCap,
     GuidanceCaps,
     LanguageCaps,
-    PhraseHintsCap,
     PromptCap,
     ReconnectCap,
     StreamingCapabilities,

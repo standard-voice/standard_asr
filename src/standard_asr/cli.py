@@ -203,7 +203,39 @@ def build_parser() -> argparse.ArgumentParser:
     _add_compliance_subcommands(subparsers)
     _add_transcribe_subcommand(subparsers)
     _add_serve_subcommand(subparsers)
+    _add_doctor_subcommand(subparsers)
     return parser
+
+
+def _add_doctor_subcommand(subparsers: Any) -> None:
+    """Register the ``doctor`` subcommand.
+
+    Args:
+        subparsers: Subparser collection for the root CLI.
+
+    Returns:
+        None.
+    """
+    parser = subparsers.add_parser(
+        "doctor", help="Diagnose plugin dependency (numpy) conflicts."
+    )
+    parser.set_defaults(func=_cmd_doctor)
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Handle the ``doctor`` command.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Exit code (``1`` if a conflict was detected, else ``0``).
+    """
+    from .doctor import diagnose, format_report
+
+    report = diagnose()
+    print(format_report(report))
+    return 1 if report.has_conflict else 0
 
 
 def _cmd_models_list(args: argparse.Namespace) -> int:

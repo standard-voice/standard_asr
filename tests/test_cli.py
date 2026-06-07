@@ -6,9 +6,7 @@ import types
 from importlib.metadata import EntryPoint
 from pathlib import Path
 
-import numpy as np
 import pytest
-from numpy.typing import NDArray
 
 from standard_asr import cli
 from standard_asr.compliance import ComplianceIssue, ComplianceReport

@@ -7,10 +7,10 @@ from typing import Any, ClassVar, Literal
 
 import pytest
 
+import standard_asr.compliance as compliance
 from standard_asr import BaseConfig, BaseProperties, TranscriptionResult
 from standard_asr.audio_input import InputKind
 from standard_asr.compliance import check_entrypoints
-import standard_asr.compliance as compliance
 from standard_asr.discovery import (
     ENTRYPOINT_GROUP,
     ModelRegistry,

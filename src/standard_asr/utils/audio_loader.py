@@ -55,8 +55,7 @@ import pathlib
 import shutil
 import subprocess
 import wave
-from typing import Any, BinaryIO, TypeGuard, cast
-from typing import overload, Literal
+from typing import Any, BinaryIO, Literal, TypeGuard, cast, overload
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
@@ -190,7 +189,10 @@ def normalize_audio(
     if original_sr != target_sr:
         try:
             from math import gcd
-            from scipy.signal import resample_poly as _resample_poly  # pyright: ignore[reportMissingTypeStubs,reportUnknownVariableType]
+
+            from scipy.signal import (
+                resample_poly as _resample_poly,  # pyright: ignore[reportMissingTypeStubs,reportUnknownVariableType]
+            )
 
             g = gcd(original_sr, target_sr)
             up, down = target_sr // g, original_sr // g
@@ -279,13 +281,15 @@ def load_audio(
     Args:
         source: Audio input. Supported types:
 
-            - ``str``: File path (``"audio.mp3"``) or base64 data URI (``"data:audio/wav;base64,..."``).
+            - ``str``: File path (``"audio.mp3"``) or base64 data URI
+              (``"data:audio/wav;base64,..."``).
             - ``bytes`` / ``bytearray`` / ``memoryview``: Raw audio file bytes.
             - ``pathlib.Path``: File path object.
             - ``BinaryIO``: File-like object opened in binary mode.
 
         target_sr: Output sample rate in Hz. Default: ``16000``.
-        target_channels: Output channels. ``1`` = mono (default), ``2`` = stereo, ``None`` = preserve.
+        target_channels: Output channels. ``1`` = mono (default), ``2`` = stereo,
+            ``None`` = preserve.
 
     Returns:
         Waveform as ``np.float32`` array:
@@ -312,7 +316,8 @@ def load_audio(
         - Bytes/data URIs/BinaryIO: ``soundfile`` → FFmpeg subprocess.
 
         **Base64:** Only data URIs (``data:...;base64,...``) are auto-detected.
-        For raw base64 strings (eg. ``YmFT...Y0``), decode manually: ``load_audio(base64.b64decode(s))``.
+        For raw base64 strings (eg. ``YmFT...Y0``), decode manually:
+        ``load_audio(base64.b64decode(s))``.
 
         **BinaryIO:** Reads from the current stream position; does not seek to the beginning.
 

@@ -23,13 +23,13 @@ import re
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, EntryPoints, entry_points
 from typing import (
+    TYPE_CHECKING,
     Any,
     Iterable,
     Iterator,
     Mapping,
     MutableMapping,
     Protocol,
-    TYPE_CHECKING,
     final,
 )
 
@@ -229,7 +229,8 @@ class ModelSpec:
             raise FactoryLoadError(message) from exc
         if not callable(target):
             raise FactoryLoadError(
-                f"Entry point target for {self.key!r} is not callable (got {type(target).__name__})."
+                f"Entry point target for {self.key!r} is not callable "
+                f"(got {type(target).__name__})."
             )
         return target  # type: ignore[return-value]
 
