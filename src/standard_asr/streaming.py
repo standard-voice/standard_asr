@@ -18,30 +18,63 @@ This module defines the streaming event model and session machinery:
 * :class:`TranscriptionSession` -- an async-first, full-duplex session base.
   Authors implement the async ``_open`` / ``_produce`` / ``_close`` hooks; the
   base provides ``feed`` vs manual ``send_audio`` / ``end_audio`` single
-  ownership, backpressure-aware iteration, a done-timeout, and result reduction.
+  ownership, bounded backpressure-aware iteration, lifecycle enforcement, a
+  bounded rolling audio buffer + reconnect scaffolding, an overall idle/wall
+  termination deadline, and result reduction.
 * :class:`SyncSession` -- the standard sync bridge (one background event loop in
-  a thread, owned by the session), so authors only ever write async.
+  a thread, owned by the session), so authors only ever write async. Lifecycle
+  submits carry a timeout so a hanging adapter can never deadlock the caller.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
+import time
 import unicodedata
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .exceptions import StreamClosedError
-from .results import Segment, TranscriptionResult, Word
+from .results import Diagnostic, Segment, TranscriptionResult, Word
 
 EventType = Literal["partial", "final", "supersede", "progress", "done", "error"]
 
-#: Default seconds to wait for a terminal ``done`` event before synthesizing an
-#: error (the iterator MUST always terminate; spec ST.6.1).
+#: Default seconds to wait for *any* further event before synthesizing a
+#: terminal error. This bounds the gap between consecutive events; see
+#: :data:`DEFAULT_MAX_IDLE` for the content-progress deadline and
+#: :data:`DEFAULT_MAX_SESSION_SECONDS` for the absolute wall-clock cap.
 DEFAULT_DONE_TIMEOUT = 30.0
+
+#: Default seconds without a *content* event (``partial`` / ``final`` /
+#: ``supersede``) before the session is force-terminated. Unlike the
+#: per-event ``done_timeout`` this is NOT reset by ``progress`` heartbeats, so a
+#: chatty-but-stuck engine (e.g. a DSM model emitting only heartbeats) is still
+#: guaranteed to terminate (spec ST.6.1: the iterator ALWAYS terminates).
+DEFAULT_MAX_IDLE = 120.0
+
+#: Default absolute session wall-clock cap in seconds. ``None`` disables it.
+#: A finite default guarantees termination even if both content and heartbeat
+#: events keep arriving forever.
+DEFAULT_MAX_SESSION_SECONDS: float | None = None
+
+#: Default capacity (number of non-coalesced events) of the send-side event
+#: buffer before overflow (spec ST.6.4: bounded send-side buffer, overflow emits
+#: an error). Coalesced partials do not count against this bound.
+DEFAULT_EVENT_BUFFER_CAPACITY = 1024
+
+#: Default capacity (number of pending audio chunks) of the audio queue, so
+#: ``feed`` / ``send_audio`` exert real backpressure on a slow engine.
+DEFAULT_AUDIO_QUEUE_MAXSIZE = 256
+
+#: Default capacity (number of chunks) of the bounded rolling audio buffer used
+#: to replay recent audio after an internal reconnect (spec ST.6.3 / D10.7).
+DEFAULT_AUDIO_HISTORY_MAXLEN = 256
 
 
 def validate_stable_until(text: str, stable_until: int) -> bool:
@@ -109,18 +142,35 @@ class TranscriptionEvent(BaseModel):
     reconnect: bool | None = None
     gap_start: float | None = None
     gap_end: float | None = None
+    detected_language: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def stable_text(self) -> str:
         """The frozen prefix of ``text`` (``text[:stable_until]``).
 
+        Guards against an invalid (negative or out-of-range) ``stable_until`` so
+        a malformed frontier never produces a wrong or oversized prefix.
+
         Returns:
-            The frozen prefix, or ``""`` if nothing is frozen.
+            The frozen prefix, or ``""`` if nothing is validly frozen.
         """
-        if self.stable_until and self.text is not None:
-            return self.text[: self.stable_until]
-        return ""
+        if self.text is None or self.stable_until is None:
+            return ""
+        if self.stable_until <= 0:
+            return ""
+        return self.text[: self.stable_until]
+
+    @property
+    def is_content(self) -> bool:
+        """Whether this event advances transcription content.
+
+        Returns:
+            ``True`` for ``partial`` / ``final`` / ``supersede`` (events that
+            move the transcription forward, as opposed to ``progress``
+            heartbeats / ``done`` / ``error``).
+        """
+        return self.type in ("partial", "final", "supersede")
 
     @property
     def is_terminal(self) -> bool:
@@ -261,11 +311,17 @@ class StreamReducer:
 
     Tracks finalized segments in arrival order, honouring ``supersede`` removals,
     so :meth:`result` reflects the session's committed transcription.
+
+    Timestamp handling: many engines (e.g. Qwen3 streaming) emit no timestamps.
+    Rather than fabricate ``start=0.0`` / ``end=0.0`` (which would collapse and
+    mis-sort the transcript), the reducer preserves arrival order and only sorts
+    by ``start`` when *every* retained segment carries a real timestamp.
     """
 
     def __init__(self) -> None:
         """Initialize an empty reducer."""
         self._segments: dict[str, Segment] = {}
+        self._has_timestamp: dict[str, bool] = {}
         self._order: list[str] = []
         self._detected_language: str | None = None
 
@@ -275,30 +331,42 @@ class StreamReducer:
         Args:
             event: The event to incorporate.
         """
+        if event.detected_language is not None:
+            self._detected_language = event.detected_language
         if event.type == "final" and event.segment_id is not None:
             if event.segment_id not in self._segments:
                 self._order.append(event.segment_id)
+            has_ts = event.start is not None
+            # Do NOT fabricate 0.0 timestamps for timestamp-less engines: keep
+            # a sentinel-free Segment whose start/end are 0.0 only when the
+            # engine genuinely had none, and remember that fact so result()
+            # never sorts on a fabricated value.
             self._segments[event.segment_id] = Segment(
-                start=event.start or 0.0,
-                end=event.end or (event.start or 0.0),
+                start=event.start if event.start is not None else 0.0,
+                end=event.end if event.end is not None else (event.start or 0.0),
                 text=event.text or "",
                 words=event.words,
             )
+            self._has_timestamp[event.segment_id] = has_ts
         elif event.type == "supersede":
             for old_id in event.old_ids:
                 if old_id in self._segments:
                     del self._segments[old_id]
+                    self._has_timestamp.pop(old_id, None)
                     self._order.remove(old_id)
 
     def result(self) -> TranscriptionResult:
         """Build the reduced transcription result.
 
         Returns:
-            A :class:`TranscriptionResult` from the committed segments, ordered
-            by start time.
+            A :class:`TranscriptionResult` from the committed segments. Ordered
+            by ``start`` only when every segment carries a real timestamp;
+            otherwise arrival order is preserved.
         """
-        segments = [self._segments[sid] for sid in self._order]
-        segments.sort(key=lambda s: s.start)
+        order = list(self._order)
+        if order and all(self._has_timestamp.get(sid, False) for sid in order):
+            order.sort(key=lambda sid: self._segments[sid].start)
+        segments = [self._segments[sid] for sid in order]
         text = " ".join(s.text for s in segments).strip()
         return TranscriptionResult(
             text=text,
@@ -307,19 +375,43 @@ class StreamReducer:
         )
 
 
+class EventBufferOverflow(Exception):
+    """Internal signal: the bounded send-side event buffer overflowed.
+
+    Never propagates to applications; the producer converts it into a terminal
+    ``error(code="backpressure")`` event (spec ST.6.4).
+    """
+
+
 class _CoalescingBuffer:
     """An async event buffer with partial coalescing (spec ST.6.4 backpressure).
 
     Pending ``partial`` events are merged per ``segment_id`` (latest wins); a
-    same-segment ``final`` / ``closed`` / ``supersede`` invalidates a pending
-    partial so a replaced segment never revives. ``final`` / ``supersede`` /
-    ``done`` / ``error`` are never dropped or reordered.
+    same-segment ``final`` / ``closed`` / ``supersede`` invalidates and DROPS the
+    pending partial so a replaced/finalized segment can never revive (spec
+    ST.6.4: "合并 MUST 被同 segment 的 final/closed/supersede 作废 ... 该 partial
+    MUST 丢弃"). ``final`` / ``supersede`` / ``done`` / ``error`` are never
+    dropped or reordered.
+
+    The buffer is **bounded**: at most ``capacity`` non-coalesced events may be
+    pending. Coalesced partials reuse their existing slot and never grow the
+    buffer. Enqueuing past capacity raises :class:`EventBufferOverflow`, which
+    the producer turns into a terminal ``backpressure`` error.
     """
 
-    def __init__(self) -> None:
-        """Initialize the buffer."""
-        self._items: list[TranscriptionEvent] = []
-        self._partial_index: dict[str, int] = {}
+    def __init__(self, capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY) -> None:
+        """Initialize the buffer.
+
+        Args:
+            capacity: Maximum number of pending non-coalesced events.
+        """
+        self._capacity = capacity
+        # deque of (event, alive) where alive=False marks a coalesced partial
+        # that was invalidated in place (lazily skipped on get) so we keep O(1)
+        # amortized put/get without an O(n) reindex.
+        self._items: deque[_Slot] = deque()
+        self._partial_slot: dict[str, _Slot] = {}
+        self._live_count = 0
         self._event = asyncio.Event()
         self._closed = False
 
@@ -328,23 +420,66 @@ class _CoalescingBuffer:
 
         Args:
             event: The event to enqueue.
+
+        Raises:
+            EventBufferOverflow: If the buffer is at capacity and the event is
+                not a coalescible partial reusing an existing slot.
         """
         if event.type == "partial" and event.segment_id is not None:
-            idx = self._partial_index.get(event.segment_id)
-            if idx is not None and idx < len(self._items):
-                self._items[idx] = event
+            slot = self._partial_slot.get(event.segment_id)
+            if slot is not None and slot.alive:
+                # Coalesce in place: latest partial wins, no growth.
+                slot.event = event
                 self._event.set()
                 return
-            self._partial_index[event.segment_id] = len(self._items)
-        else:
-            # A terminal-for-segment event invalidates any pending partial.
-            sid = event.segment_id
-            if event.type in ("final", "supersede"):
-                for old in [sid, *event.old_ids]:
-                    if old is not None:
-                        self._partial_index.pop(old, None)
-        self._items.append(event)
+            self._reserve()
+            slot = _Slot(event)
+            self._partial_slot[event.segment_id] = slot
+            self._items.append(slot)
+            self._live_count += 1
+            self._event.set()
+            return
+
+        # A terminal-for-segment event invalidates and DROPS any pending
+        # partial for that/those segment(s) so a dead segment never revives.
+        if event.type in ("final", "supersede"):
+            targets = [event.segment_id, *event.old_ids]
+            for sid in targets:
+                if sid is None:
+                    continue
+                stale = self._partial_slot.pop(sid, None)
+                if stale is not None and stale.alive:
+                    stale.alive = False
+                    self._live_count -= 1
+        self._reserve()
+        self._items.append(_Slot(event))
+        self._live_count += 1
         self._event.set()
+
+    def put_forced(self, event: TranscriptionEvent) -> None:
+        """Append a terminal event bypassing the capacity bound.
+
+        Terminal events (``done`` / ``error``) MUST never be dropped (spec
+        ST.6.4), even when the buffer overflowed because the consumer was slow.
+        They are few (the producer stops after one) so bypassing the bound is
+        safe, and -- crucially -- they go into the *same* buffer the iterator is
+        already awaiting, so the terminal event is delivered promptly.
+
+        Args:
+            event: The terminal event to append.
+        """
+        self._items.append(_Slot(event))
+        self._live_count += 1
+        self._event.set()
+
+    def _reserve(self) -> None:
+        """Ensure room for one more live event.
+
+        Raises:
+            EventBufferOverflow: If already at capacity.
+        """
+        if self._live_count >= self._capacity:
+            raise EventBufferOverflow
 
     def close(self) -> None:
         """Signal that no further events will be added."""
@@ -352,25 +487,179 @@ class _CoalescingBuffer:
         self._event.set()
 
     async def get(self) -> TranscriptionEvent | None:
-        """Pop the next event, awaiting one if necessary.
+        """Pop the next live event, awaiting one if necessary.
 
         Returns:
             The next event, or ``None`` once closed and drained.
         """
         while True:
-            if self._items:
-                item = self._items.pop(0)
-                # Reindex remaining pending partials.
-                self._partial_index = {
-                    e.segment_id: i
-                    for i, e in enumerate(self._items)
-                    if e.type == "partial" and e.segment_id is not None
-                }
-                return item
+            while self._items:
+                slot = self._items.popleft()
+                if not slot.alive:
+                    continue  # invalidated (coalesced-away) partial: skip.
+                self._live_count -= 1
+                event = slot.event
+                if (
+                    event.type == "partial"
+                    and event.segment_id is not None
+                    and self._partial_slot.get(event.segment_id) is slot
+                ):
+                    del self._partial_slot[event.segment_id]
+                return event
             if self._closed:
                 return None
             self._event.clear()
             await self._event.wait()
+
+
+class _Slot:
+    """A mutable buffer slot allowing in-place coalescing and invalidation."""
+
+    __slots__ = ("alive", "event")
+
+    def __init__(self, event: TranscriptionEvent) -> None:
+        """Initialize a live slot.
+
+        Args:
+            event: The event held by the slot.
+        """
+        self.event = event
+        self.alive = True
+
+
+class _LifecycleGuard:
+    """Enforces segment lifecycle + ``stable_until`` invariants (spec ST.5.1).
+
+    Defense in depth: the spec assigns suppression of illegal transitions to the
+    adapter (MUST), but a wrong transcript is the cardinal sin, so the base
+    independently guards. By default illegal events are SUPPRESSED and a
+    structured :class:`Diagnostic` is recorded; in ``strict`` mode the guard
+    raises instead. A ``stable_until`` decrease is CLAMPED to its prior value
+    (it MUST only increase, spec ST.4.2) with a diagnostic.
+
+    States per segment id: ``open`` -> ``final`` -> ``closed`` (terminal), or
+    ``superseded`` (terminal). ``new_ids`` from a supersede start ``open``.
+    """
+
+    def __init__(self, *, strict: bool = False) -> None:
+        """Initialize the guard.
+
+        Args:
+            strict: If ``True``, raise on an illegal transition instead of
+                suppressing it.
+        """
+        self._strict = strict
+        self._state: dict[str, str] = {}
+        self._stable_until: dict[str, int] = {}
+        self.diagnostics: list[Diagnostic] = []
+
+    def _reject(self, code: str, message: str) -> None:
+        """Record a suppression diagnostic or raise in strict mode.
+
+        Args:
+            code: Diagnostic code.
+            message: Human-readable explanation.
+
+        Raises:
+            ValueError: In strict mode.
+        """
+        if self._strict:
+            raise ValueError(message)
+        self.diagnostics.append(
+            Diagnostic(level="warning", code=code, message=message)
+        )
+
+    def admit(self, event: TranscriptionEvent) -> TranscriptionEvent | None:
+        """Validate (and possibly clamp) an event before it is forwarded.
+
+        Args:
+            event: The raw event from the producer.
+
+        Returns:
+            The event to forward (possibly with a clamped ``stable_until``), or
+            ``None`` if the event is an illegal transition and was suppressed.
+        """
+        sid = event.segment_id
+        if event.type == "supersede":
+            for old in event.old_ids:
+                if self._state.get(old) == "closed":
+                    self._reject(
+                        "lifecycle_closed_superseded",
+                        f"supersede old_ids contains closed segment {old!r}; "
+                        "suppressed (spec ST.5.3: closed MUST NOT be superseded).",
+                    )
+                    return None
+            for old in event.old_ids:
+                self._state[old] = "superseded"
+            for new in event.new_ids:
+                self._state.setdefault(new, "open")
+            return event
+
+        if event.type in ("partial", "final") and sid is not None:
+            state = self._state.get(sid, "open")
+            if state in ("superseded", "closed"):
+                self._reject(
+                    "lifecycle_after_terminal",
+                    f"{event.type} for segment {sid!r} after it became {state}; "
+                    "suppressed (spec ST.5.1 illegal transition).",
+                )
+                return None
+            if event.type == "partial" and state == "final":
+                self._reject(
+                    "lifecycle_partial_after_final",
+                    f"partial for segment {sid!r} after final; suppressed "
+                    "(spec ST.5.1 illegal transition).",
+                )
+                return None
+            event = self._clamp_stable_until(event, sid)
+            if event.type == "final":
+                self._state[sid] = "closed" if event.finality == "closed" else "final"
+            else:
+                self._state[sid] = "open"
+            return event
+
+        return event
+
+    def _clamp_stable_until(
+        self, event: TranscriptionEvent, sid: str
+    ) -> TranscriptionEvent:
+        """Clamp a decreasing or invalid ``stable_until`` (spec ST.4.2).
+
+        Args:
+            event: The partial/final event.
+            sid: The segment id.
+
+        Returns:
+            The event, with ``stable_until`` clamped if it decreased or was an
+            invalid boundary; otherwise the event unchanged.
+        """
+        su = event.stable_until
+        if su is None:
+            return event
+        prior = self._stable_until.get(sid, 0)
+        text = event.text or ""
+        clamped = su
+        reason = ""
+        if su < prior:
+            clamped = prior
+            reason = (
+                f"stable_until decreased {su} -> clamped to {prior} "
+                "(spec ST.4.2: MUST only increase)"
+            )
+        if not validate_stable_until(text, clamped):
+            # Fall back to the largest valid boundary <= clamped, else prior/0.
+            safe = clamped
+            while safe > 0 and not validate_stable_until(text, safe):
+                safe -= 1
+            if reason:
+                reason += "; "
+            reason += f"stable_until {clamped} invalid boundary -> {safe}"
+            clamped = safe
+        if clamped != su:
+            self._reject("stable_until_clamped", reason)
+            event = event.model_copy(update={"stable_until": clamped})
+        self._stable_until[sid] = clamped
+        return event
 
 
 class TranscriptionSession(ABC):
@@ -379,24 +668,73 @@ class TranscriptionSession(ABC):
     Authors implement :meth:`_produce` (and optionally :meth:`_open` /
     :meth:`_close`), reading fed audio via :meth:`audio_chunks` and yielding
     :class:`TranscriptionEvent` objects. The base manages input ownership,
-    backpressure, the done-timeout, and result reduction.
+    bounded backpressure, lifecycle enforcement, a bounded rolling audio buffer
+    + reconnect scaffolding, termination deadlines, and result reduction.
+
+    Reconnect contract (spec ST.6.3 / D10.7) -- base vs adapter:
+
+    * The **base** owns a bounded rolling audio buffer (the most recent fed
+      chunks) and exposes :meth:`replay_buffer`, the source ``replayable``
+      classification, and :meth:`note_reconnect`. It cannot detect a
+      reconnect itself (it owns no network connection).
+    * The **adapter** detects the disconnect, re-establishes the connection,
+      replays :meth:`replay_buffer` audio, keeps ``segment_id`` / timestamps /
+      detected language continuous, then calls :meth:`note_reconnect`. The base
+      then emits the ``progress(reconnect=True, gap_start, gap_end)`` event and,
+      for a non-replayable source whose buffer overflowed during the gap, a
+      trailing ``error(code="content_lost", recoverable=False)``.
     """
 
-    def __init__(self, *, done_timeout: float = DEFAULT_DONE_TIMEOUT) -> None:
+    def __init__(
+        self,
+        *,
+        done_timeout: float = DEFAULT_DONE_TIMEOUT,
+        max_idle: float | None = DEFAULT_MAX_IDLE,
+        max_session_seconds: float | None = DEFAULT_MAX_SESSION_SECONDS,
+        event_buffer_capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY,
+        audio_queue_maxsize: int = DEFAULT_AUDIO_QUEUE_MAXSIZE,
+        audio_history_maxlen: int = DEFAULT_AUDIO_HISTORY_MAXLEN,
+        strict_lifecycle: bool = False,
+    ) -> None:
         """Initialize the session.
 
         Args:
-            done_timeout: Seconds to await a terminal event before synthesizing
-                a ``done_timeout`` error.
+            done_timeout: Seconds to await *any* further event before
+                synthesizing a ``done_timeout`` error. Bounds the per-event gap;
+                reset by every event (including ``progress`` heartbeats).
+            max_idle: Seconds without a *content* event (``partial`` / ``final``
+                / ``supersede``) before force-terminating with a
+                ``stream_stalled`` error. NOT reset by ``progress`` heartbeats,
+                so a heartbeat-only engine still terminates. ``None`` disables.
+            max_session_seconds: Absolute wall-clock cap; ``None`` disables.
+            event_buffer_capacity: Max pending non-coalesced events before
+                overflow emits a ``backpressure`` error.
+            audio_queue_maxsize: Max pending audio chunks; bounds ``feed`` /
+                ``send_audio`` so a slow engine exerts real backpressure.
+            audio_history_maxlen: Capacity of the bounded rolling audio buffer
+                used to replay recent audio after a reconnect.
+            strict_lifecycle: If ``True``, raise on illegal lifecycle
+                transitions instead of suppressing + diagnosing them.
         """
-        self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-        self._buffer = _CoalescingBuffer()
+        self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(
+            maxsize=audio_queue_maxsize
+        )
+        self._buffer = _CoalescingBuffer(capacity=event_buffer_capacity)
+        self._guard = _LifecycleGuard(strict=strict_lifecycle)
         self._mode: Literal["feed", "manual"] | None = None
         self._ended = False
         self._done_timeout = done_timeout
+        self._max_idle = max_idle
+        self._max_session_seconds = max_session_seconds
         self._feed_task: asyncio.Task[None] | None = None
         self._producer_task: asyncio.Task[None] | None = None
         self._reducer = StreamReducer()
+        # Reconnect scaffolding (spec ST.6.3 / D10.7).
+        self._audio_history: deque[bytes] = deque(maxlen=audio_history_maxlen)
+        self._replayable = False
+        self._history_overflowed = False
+        self._pending_reconnects: list[TranscriptionEvent] = []
+        self._monotonic = time.monotonic
 
     # ----- author hooks ---------------------------------------------------- #
     async def _open(self) -> None:
@@ -420,6 +758,9 @@ class TranscriptionSession(ABC):
     async def audio_chunks(self) -> AsyncIterator[bytes]:
         """Async-iterate fed audio chunks until the input ends.
 
+        Each yielded chunk is also retained in the bounded rolling audio buffer
+        for possible replay after a reconnect.
+
         Yields:
             Raw audio chunks in the session's declared format.
         """
@@ -427,21 +768,110 @@ class TranscriptionSession(ABC):
             chunk = await self._audio_queue.get()
             if chunk is None:
                 return
+            # Appending to a full bounded deque evicts the oldest chunk: that
+            # chunk can no longer be replayed. For a non-replayable (live)
+            # source an eviction means a later reconnect may have lost content.
+            if (
+                self._audio_history.maxlen is not None
+                and len(self._audio_history) >= self._audio_history.maxlen
+            ):
+                self._history_overflowed = True
+            self._audio_history.append(chunk)
             yield chunk
 
+    # ----- reconnect scaffolding ------------------------------------------- #
+    @property
+    def replayable(self) -> bool:
+        """Whether the audio source can be re-read after a reconnect.
+
+        Returns:
+            ``True`` if the fed source is replayable (a finite, re-iterable
+            collection), ``False`` for live / one-shot sources.
+        """
+        return self._replayable
+
+    def replay_buffer(self) -> list[bytes]:
+        """Return the bounded rolling buffer of recent audio for re-feeding.
+
+        Adapters call this on reconnect to re-send the most recent audio to a
+        freshly re-established engine connection.
+
+        Returns:
+            The retained recent audio chunks, oldest first.
+        """
+        return list(self._audio_history)
+
+    def note_reconnect(
+        self, gap_start: float | None = None, gap_end: float | None = None
+    ) -> None:
+        """Record that an internal reconnect bridged a gap (adapter-driven).
+
+        The base queues a ``progress(reconnect=True, gap_start, gap_end)`` event
+        to be emitted in order with produced events, and -- for a non-replayable
+        source whose rolling buffer overflowed during the session (audio was
+        evicted and thus cannot be replayed) -- a trailing
+        ``error(code="content_lost", recoverable=False)`` (spec ST.6.3).
+
+        ``segment_id`` / timestamps / detected language continuity across the
+        reconnect is the adapter's responsibility (the base never rewrites them).
+
+        Args:
+            gap_start: Start time (seconds) of the lossy gap, if known.
+            gap_end: End time (seconds) of the lossy gap, if known.
+        """
+        self._pending_reconnects.append(
+            TranscriptionEvent.progress(
+                reconnect=True, gap_start=gap_start, gap_end=gap_end
+            )
+        )
+        if not self._replayable and self._history_overflowed:
+            self._pending_reconnects.append(
+                TranscriptionEvent.make_error(
+                    code="content_lost",
+                    recoverable=False,
+                    gap_start=gap_start,
+                    gap_end=gap_end,
+                )
+            )
+
     # ----- input ownership ------------------------------------------------- #
+    def _claim_mode(self, mode: Literal["feed", "manual"]) -> None:
+        """Atomically claim single input ownership for the first input call.
+
+        Args:
+            mode: The mode being claimed by this call.
+
+        Raises:
+            StreamClosedError: If the other mode was already claimed.
+        """
+        if self._mode is None:
+            self._mode = mode
+            return
+        if self._mode != mode:
+            other = "manual" if mode == "feed" else "feed"
+            raise StreamClosedError(
+                f"{other} input already in use; cannot mix with {mode}."
+            )
+
     def feed(self, source: Iterable[bytes] | AsyncIterator[bytes]) -> None:
         """Feed audio from a managed source (mutually exclusive with manual).
+
+        A non-async, non-iterator collection (``list`` / ``tuple`` / ``bytes``
+        sequence) is classified as **replayable** for reconnect purposes; an
+        async iterator or a one-shot generator/iterator is **non-replayable**.
 
         Args:
             source: A sync or async iterable of audio chunks.
 
         Raises:
-            StreamClosedError: If manual input was already used.
+            StreamClosedError: If manual input or a prior feed was already used.
         """
-        if self._mode == "manual":
-            raise StreamClosedError("send_audio/end_audio already used; cannot feed().")
-        self._mode = "feed"
+        self._claim_mode("feed")
+        if self._feed_task is not None:
+            raise StreamClosedError("feed() already called once.")
+        # Replayable iff a re-iterable collection (not a one-shot iterator and
+        # not an async source). list/tuple/bytes/bytearray qualify.
+        self._replayable = isinstance(source, (list, tuple, bytes, bytearray))
         self._feed_task = asyncio.ensure_future(self._drain_source(source))
 
     async def _drain_source(
@@ -455,16 +885,26 @@ class TranscriptionSession(ABC):
         try:
             if isinstance(source, AsyncIterator):
                 async for chunk in source:
-                    await self._audio_queue.put(chunk)
+                    await self._put_audio(chunk)
             else:
                 for chunk in source:
-                    await self._audio_queue.put(chunk)
+                    await self._put_audio(chunk)
         finally:
             await self._audio_queue.put(None)
             self._ended = True
 
+    async def _put_audio(self, chunk: bytes) -> None:
+        """Enqueue one audio chunk (bounded queue exerts backpressure).
+
+        Args:
+            chunk: The audio chunk.
+        """
+        await self._audio_queue.put(chunk)
+
     async def send_audio(self, chunk: bytes) -> None:
         """Manually send one audio chunk (mutually exclusive with ``feed``).
+
+        Manual sources are always treated as **non-replayable** (live input).
 
         Args:
             chunk: The audio chunk.
@@ -472,21 +912,21 @@ class TranscriptionSession(ABC):
         Raises:
             StreamClosedError: If ``feed`` was used or the input was ended.
         """
-        if self._mode == "feed":
-            raise StreamClosedError("feed() already used; cannot send_audio().")
         if self._ended:
             raise StreamClosedError("Cannot send_audio after end_audio().")
-        self._mode = "manual"
-        await self._audio_queue.put(chunk)
+        self._claim_mode("manual")
+        await self._put_audio(chunk)
 
     async def end_audio(self) -> None:
         """Mark the end of manual audio input (idempotent in manual mode).
 
+        Claims manual ownership if this is the first input call, so a later
+        ``feed`` is correctly rejected as mixing (spec ST.3.3).
+
         Raises:
             StreamClosedError: If ``feed`` was used.
         """
-        if self._mode == "feed":
-            raise StreamClosedError("feed() manages end_audio(); do not call it.")
+        self._claim_mode("manual")
         if self._ended:
             return
         self._ended = True
@@ -504,30 +944,81 @@ class TranscriptionSession(ABC):
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        """Tear down the producer, feed task, and engine resources."""
-        if self._producer_task is not None:
-            self._producer_task.cancel()
-        if self._feed_task is not None:
-            self._feed_task.cancel()
+        """Tear down the producer, feed task, and engine resources.
+
+        Cancels the producer and feed tasks and AWAITS them (so no coroutine is
+        still touching engine state when :meth:`_close` runs), then closes.
+        """
+        tasks = [t for t in (self._producer_task, self._feed_task) if t is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self._close()
 
+    def _drain_pending_reconnects(self) -> None:
+        """Flush any queued reconnect ``progress`` / ``content_lost`` events.
+
+        Raises:
+            EventBufferOverflow: Propagated from the buffer (handled by caller).
+        """
+        if not self._pending_reconnects:
+            return
+        pending = self._pending_reconnects
+        self._pending_reconnects = []
+        for ev in pending:
+            self._reducer.add(ev)
+            self._buffer.put(ev)
+
     async def _run_producer(self) -> None:
-        """Drive ``_produce``, appending a terminal ``done`` or ``error``."""
+        """Drive ``_produce``, appending a terminal ``done`` or ``error``.
+
+        Enforces lifecycle invariants (suppressing illegal transitions), flushes
+        adapter-driven reconnect events in order, and converts a send-side
+        buffer overflow into a terminal ``backpressure`` error.
+        """
         try:
             async for event in self._produce():
-                self._reducer.add(event)
-                self._buffer.put(event)
-            self._buffer.put(TranscriptionEvent.done())
+                self._drain_pending_reconnects()
+                admitted = self._guard.admit(event)
+                if admitted is None:
+                    continue  # illegal transition: suppressed (diagnosed).
+                self._reducer.add(admitted)
+                self._buffer.put(admitted)
+                if admitted.is_terminal:
+                    return
+            self._drain_pending_reconnects()
+            # done MUST never be dropped: bypass the bound so it always lands.
+            self._buffer.put_forced(TranscriptionEvent.done())
         except asyncio.CancelledError:  # pragma: no cover - teardown path
             raise
-        except Exception as exc:  # noqa: BLE001 - surfaced as an error event
-            self._buffer.put(
-                TranscriptionEvent.make_error(
-                    code="engine_error", recoverable=False, extra={"detail": str(exc)}
-                )
+        except EventBufferOverflow:
+            self._force_error(
+                "backpressure",
+                "Send-side event buffer overflowed; consumer too slow.",
             )
+        except Exception as exc:  # noqa: BLE001 - surfaced as an error event
+            self._force_error("engine_error", str(exc))
         finally:
             self._buffer.close()
+
+    def _force_error(self, code: str, detail: str) -> None:
+        """Append a terminal error bypassing the buffer bound (drop-proof path).
+
+        Used when the normal bounded buffer cannot accept more events (overflow)
+        or the producer crashed: ``final`` / ``done`` / ``error`` MUST never be
+        silently lost (spec ST.6.4), so the terminal error bypasses the capacity
+        check and lands in the same buffer the iterator is already awaiting.
+
+        Args:
+            code: The error code.
+            detail: Human-readable detail stored under ``extra["detail"]``.
+        """
+        self._buffer.put_forced(
+            TranscriptionEvent.make_error(
+                code=code, recoverable=False, extra={"detail": detail}
+            )
+        )
 
     def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
         """Return the event async iterator.
@@ -538,26 +1029,80 @@ class TranscriptionSession(ABC):
         return self._iterate()
 
     async def _iterate(self) -> AsyncIterator[TranscriptionEvent]:
-        """Yield events with a done-timeout safeguard.
+        """Yield events with per-event, idle, and wall-clock termination.
+
+        Termination is guaranteed by three independent deadlines (spec ST.6.1):
+
+        * ``done_timeout`` -- max gap between consecutive events of any kind.
+        * ``max_idle`` -- max time without a *content* event (heartbeats do not
+          reset it), so a heartbeat-only stuck engine still terminates.
+        * ``max_session_seconds`` -- absolute wall-clock cap.
 
         Yields:
-            Events until a terminal event or the done-timeout fires.
+            Events until a terminal event or a deadline fires.
         """
+        start = self._monotonic()
+        last_content = start
         while True:
+            now = self._monotonic()
+            timeout = self._done_timeout
+            if self._max_idle is not None:
+                timeout = min(timeout, max(0.0, self._max_idle - (now - last_content)))
+            if self._max_session_seconds is not None:
+                remaining = self._max_session_seconds - (now - start)
+                if remaining <= 0:
+                    yield TranscriptionEvent.make_error(
+                        code="session_timeout", recoverable=False
+                    )
+                    return
+                timeout = min(timeout, remaining)
             try:
-                event = await asyncio.wait_for(
-                    self._buffer.get(), timeout=self._done_timeout
-                )
+                event = await asyncio.wait_for(self._buffer.get(), timeout=timeout)
             except asyncio.TimeoutError:
+                now = self._monotonic()
+                if self._max_idle is not None and (now - last_content) >= self._max_idle:
+                    yield TranscriptionEvent.make_error(
+                        code="stream_stalled", recoverable=False
+                    )
+                    return
+                if (
+                    self._max_session_seconds is not None
+                    and (now - start) >= self._max_session_seconds
+                ):
+                    yield TranscriptionEvent.make_error(
+                        code="session_timeout", recoverable=False
+                    )
+                    return
                 yield TranscriptionEvent.make_error(
                     code="done_timeout", recoverable=False
                 )
                 return
             if event is None:
                 return
+            if event.is_content:
+                last_content = self._monotonic()
             yield event
             if event.is_terminal:
                 return
+
+    def diagnostics(self) -> list[Diagnostic]:
+        """Return lifecycle-suppression diagnostics accumulated so far.
+
+        Returns:
+            The structured diagnostics for any suppressed illegal transitions
+            or clamped ``stable_until`` values.
+        """
+        return list(self._guard.diagnostics)
+
+    @property
+    def done_timeout(self) -> float:
+        """The configured per-event done-timeout in seconds.
+
+        Returns:
+            Max seconds awaited between consecutive events before a
+            ``done_timeout`` error is synthesized.
+        """
+        return self._done_timeout
 
     def result(self) -> TranscriptionResult:
         """Reduce the session so far into a transcription result.
@@ -574,51 +1119,99 @@ class SyncSession:
     Runs a single background event loop in a dedicated thread (owned by this
     object and torn down on close), so applications can drive an async adapter
     synchronously and authors only ever write async code (spec ST.6.5).
+
+    Lifecycle submits (``__enter__`` / input calls / ``__exit__``) carry a
+    timeout: a hanging adapter ``_open`` / ``_close`` can never deadlock the
+    calling thread, and the background loop + thread are always torn down even on
+    timeout (spec ST.6.5: from an external thread, no deadlock, no leak).
     """
 
-    def __init__(self, session: TranscriptionSession) -> None:
+    def __init__(
+        self,
+        session: TranscriptionSession,
+        *,
+        submit_timeout: float | None = 30.0,
+    ) -> None:
         """Wrap an async session.
 
         Args:
             session: The async session to drive.
+            submit_timeout: Seconds to wait for a lifecycle submit (enter /
+                feed / send / end / exit) before raising ``TimeoutError`` and
+                tearing the loop down. ``None`` waits forever (not recommended).
         """
         self._session = session
+        self._submit_timeout = submit_timeout
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         self._aiter: AsyncIterator[TranscriptionEvent] | None = None
+        self._closed = False
 
     def _run_loop(self) -> None:
         """Run the owned event loop until stopped."""
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _submit(self, coro: Any) -> Any:
-        """Run a coroutine on the owned loop and wait for its result.
+    def _shutdown(self) -> None:
+        """Stop the owned loop and join the thread, forcing close on timeout."""
+        if self._closed:
+            return
+        self._closed = True
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5.0)
+        if self._thread.is_alive():  # pragma: no cover - defensive teardown
+            # The loop did not stop in time; close it from here so the daemon
+            # thread cannot keep running work against a half-torn-down session.
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=1.0)
+
+    def _submit(self, coro: Any, *, timeout: float | None) -> Any:
+        """Run a coroutine on the owned loop and wait, bounded by ``timeout``.
 
         Args:
             coro: The coroutine to run.
+            timeout: Seconds to wait; ``None`` waits forever.
 
         Returns:
             The coroutine's result.
+
+        Raises:
+            TimeoutError: If the coroutine does not complete within ``timeout``.
+                The background loop + thread are torn down before raising.
         """
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            # On Python 3.10 concurrent.futures.TimeoutError is distinct from the
+            # builtin TimeoutError; re-raise as the builtin for a stable API.
+            future.cancel()
+            self._shutdown()
+            raise TimeoutError(
+                f"SyncSession lifecycle call timed out after {timeout}s; "
+                "the async adapter hung (spec ST.6.5 no-hang contract)."
+            ) from exc
 
     def __enter__(self) -> SyncSession:
         """Enter the async session's context.
 
         Returns:
             The sync session.
+
+        Raises:
+            TimeoutError: If the adapter ``_open`` hangs past ``submit_timeout``.
         """
-        self._submit(self._session.__aenter__())
+        self._submit(self._session.__aenter__(), timeout=self._submit_timeout)
         self._aiter = self._session.__aiter__()
         return self
 
     def __exit__(self, *exc: object) -> None:
-        """Exit the async context and stop the owned loop."""
-        self._submit(self._session.__aexit__(*exc))
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5.0)
+        """Exit the async context and stop the owned loop (never leaks)."""
+        try:
+            self._submit(self._session.__aexit__(*exc), timeout=self._submit_timeout)
+        finally:
+            self._shutdown()
 
     def feed(self, source: Iterable[bytes]) -> None:
         """Feed audio from a managed source.
@@ -630,7 +1223,7 @@ class SyncSession:
         async def _do_feed() -> None:
             self._session.feed(source)
 
-        self._submit(_do_feed())
+        self._submit(_do_feed(), timeout=self._submit_timeout)
 
     def send_audio(self, chunk: bytes) -> None:
         """Manually send one audio chunk.
@@ -638,22 +1231,33 @@ class SyncSession:
         Args:
             chunk: The audio chunk.
         """
-        self._submit(self._session.send_audio(chunk))
+        self._submit(self._session.send_audio(chunk), timeout=self._submit_timeout)
 
     def end_audio(self) -> None:
         """Mark the end of manual audio input."""
-        self._submit(self._session.end_audio())
+        self._submit(self._session.end_audio(), timeout=self._submit_timeout)
 
     def __iter__(self) -> Iterator[TranscriptionEvent]:
         """Iterate events synchronously.
+
+        Event-pump submits use ``done_timeout`` as their bound (plus slack) so a
+        stuck engine surfaces as a terminal event from the iterator rather than
+        hanging the caller.
 
         Yields:
             Events from the underlying async session.
         """
         assert self._aiter is not None
+        # Event waits are bounded by the session's own deadlines, which always
+        # synthesize a terminal event; add slack so the submit never trips first.
+        pump_timeout: float | None
+        if self._submit_timeout is None:
+            pump_timeout = None
+        else:
+            pump_timeout = max(self._submit_timeout, self._session.done_timeout) + 5.0
         while True:
             try:
-                yield self._submit(self._aiter.__anext__())
+                yield self._submit(self._aiter.__anext__(), timeout=pump_timeout)
             except StopAsyncIteration:
                 return
 
@@ -667,7 +1271,12 @@ class SyncSession:
 
 
 __all__ = [
+    "DEFAULT_AUDIO_HISTORY_MAXLEN",
+    "DEFAULT_AUDIO_QUEUE_MAXSIZE",
     "DEFAULT_DONE_TIMEOUT",
+    "DEFAULT_EVENT_BUFFER_CAPACITY",
+    "DEFAULT_MAX_IDLE",
+    "DEFAULT_MAX_SESSION_SECONDS",
     "EventType",
     "StreamReducer",
     "SyncSession",
