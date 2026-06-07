@@ -126,7 +126,9 @@ class BaseProperties(BaseModel):
 
     @field_validator("accepted_sample_rates")
     @classmethod
-    def _validate_sample_rates(cls, value: list[int] | str) -> list[int] | str:
+    def _validate_sample_rates(
+        cls, value: list[int] | Literal["any"]
+    ) -> list[int] | Literal["any"]:
         """Validate the accepted sample-rate list.
 
         Args:

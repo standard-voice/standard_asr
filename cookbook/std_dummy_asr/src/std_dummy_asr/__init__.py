@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Dummy Standard ASR plugin used for entrypoint demos and tests."""
 
 from .engine import (

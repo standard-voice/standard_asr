@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Entrypoint targets exposed under ``standard_asr.models``."""
 
 from __future__ import annotations
