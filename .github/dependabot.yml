@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Keep GitHub Actions hash pins fresh. Dependabot bumps the SHA and the
+  # trailing `# vX.Y.Z` comment together, so we stay SHA-pinned (required by
+  # our zizmor unpinned-uses policy) while still receiving security updates.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Keep Python dependencies (managed via uv / pyproject.toml) up to date.
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+    groups:
+      python:
+        patterns:
+          - "*"
