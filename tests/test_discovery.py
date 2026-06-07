@@ -8,6 +8,7 @@ from typing import Any, ClassVar, Literal
 import pytest
 
 from standard_asr import BaseConfig, BaseProperties, TranscriptionResult
+from standard_asr.audio_input import InputKind
 from standard_asr.compliance import check_entrypoints
 import standard_asr.compliance as compliance
 from standard_asr.discovery import (
@@ -32,11 +33,10 @@ class _DummyProperties(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "demo"
     protocol_version: str = "0.2.0"
-    supported_languages: list[str] = ["en"]
-    supported_devices: list[str] = ["cpu"]
-    supported_sample_rates: list[int] = [16000]
-    supported_channels: list[int] = [1]
-    audio_dtype: str = "float32"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] = [16000]
+    selectable_languages: list[str] = ["en"]
 
 
 class _DummyASR:

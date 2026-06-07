@@ -1,16 +1,18 @@
-"""Runtime helpers for Standard ASR engines."""
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+"""Runtime helpers for Standard ASR engines.
+
+Download-policy and cache-directory resolution helpers used by engines during
+lazy model loading (spec, section "Init Config", rule IC.9). Audio input
+validation now lives in the negotiation layer
+(:mod:`standard_asr.audio_negotiation`), not here.
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
-
-import numpy as np
-from numpy.typing import NDArray
-
-from .asr_properties import BaseProperties
-from .exceptions import AudioProcessingError
 
 
 def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
@@ -21,9 +23,6 @@ def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
 
     Returns:
         ``True`` when downloads are allowed, otherwise ``False``.
-
-    Raises:
-        None.
     """
     value = os.getenv(env_var)
     if value is None:
@@ -79,48 +78,8 @@ def ensure_cache_dir(
     return cache_dir
 
 
-def validate_audio_input(
-    audio: NDArray[Any], properties: BaseProperties
-) -> NDArray[np.float32]:
-    """Validate audio input against Standard ASR properties.
-
-    Args:
-        audio: Input audio array.
-        properties: Engine properties that describe supported formats.
-
-    Returns:
-        The same audio array cast to ``np.float32`` if needed.
-
-    Raises:
-        AudioProcessingError: If dtype or channel count is unsupported.
-    """
-    array = np.asarray(audio)
-    if array.dtype != properties.numpy_dtype:
-        try:
-            array = array.astype(properties.numpy_dtype, copy=False)
-        except (TypeError, ValueError) as exc:
-            raise AudioProcessingError(
-                "Audio dtype is not compatible with engine requirements."
-            ) from exc
-
-    if array.ndim == 1:
-        channels = 1
-    elif array.ndim == 2:
-        channels = int(array.shape[1])
-    else:
-        raise AudioProcessingError("Audio must be 1D (mono) or 2D (multi-channel).")
-
-    if channels not in properties.supported_channels:
-        raise AudioProcessingError(
-            f"Audio has {channels} channel(s); supported channels are {properties.supported_channels}."
-        )
-
-    return array.astype(np.float32, copy=False)
-
-
 __all__ = [
     "allow_downloads",
     "ensure_cache_dir",
     "resolve_cache_dir",
-    "validate_audio_input",
 ]

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import re
 
+#: Reserved token meaning "let the engine auto-detect the language".
+#: This is NOT a BCP-47 tag; it is a Standard ASR reserved word.
+AUTO = "auto"
+
 _BCP47_RE = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 _PRIVATE_USE_RE = re.compile(r"^(?:x|i)(?:-[A-Za-z0-9]{1,8})+$", re.IGNORECASE)
 
@@ -51,4 +55,4 @@ def is_valid_bcp47(tag: str) -> bool:
     return _BCP47_RE.match(normalized) is not None
 
 
-__all__ = ["is_valid_bcp47", "normalize_bcp47"]
+__all__ = ["AUTO", "is_valid_bcp47", "normalize_bcp47"]

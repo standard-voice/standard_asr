@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from standard_asr import BaseConfig, BaseProperties, StandardASR, TranscriptionResult
+from standard_asr.audio_input import InputKind
 
 
 class _AsyncConfig(BaseConfig[Literal["dummy"]]):
@@ -19,11 +20,10 @@ class _AsyncProperties(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "async"
     protocol_version: str = "0.2.0"
-    supported_languages: list[str] = ["en"]
-    supported_devices: list[str] = ["cpu"]
-    supported_sample_rates: list[int] = [16000]
-    supported_channels: list[int] = [1]
-    audio_dtype: str = "float32"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] = [16000]
+    selectable_languages: list[str] = ["en"]
 
 
 class _AsyncASR(StandardASR):

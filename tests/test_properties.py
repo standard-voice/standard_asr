@@ -1,135 +1,115 @@
-"""Tests for BaseProperties validation helpers."""
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for BaseProperties validation."""
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Any
 
 import pytest
 
 from standard_asr.asr_properties import BaseProperties
+from standard_asr.audio_input import InputKind
 
 
-class _BaseKwargs(TypedDict):
-    engine_id: str
-    model_name: str
-    protocol_version: str
-    supported_languages: list[str]
-    supported_devices: list[str]
-    supported_sample_rates: list[int]
-    supported_channels: list[int]
-    audio_dtype: str
-
-
-def _base_kwargs() -> _BaseKwargs:
+def _base_kwargs() -> dict[str, Any]:
     return {
         "engine_id": "engine",
         "model_name": "model",
         "protocol_version": "0.2.0",
-        "supported_languages": ["en-US"],
-        "supported_devices": ["cpu"],
-        "supported_sample_rates": [16000],
-        "supported_channels": [1],
-        "audio_dtype": "float32",
+        "accepted_input": {InputKind.ARRAY},
+        "native_sample_rate": 16000,
+        "accepted_sample_rates": [16000],
+        "selectable_languages": ["en-US"],
     }
 
 
-def test_properties_language_normalization() -> None:
+def test_selectable_language_normalization() -> None:
     data = _base_kwargs()
-    data["supported_languages"] = ["EN_us"]
-
+    data["selectable_languages"] = ["EN_us", "auto"]
+    data["detectable_languages"] = ["en"]
     props = BaseProperties(**data)
+    assert props.selectable_languages == ["en-us", "auto"]
+    assert props.supports_auto is True
+    assert props.has_language_axis is True
 
-    assert props.supported_languages == ["en-us"]
 
-
-def test_properties_language_validation_errors() -> None:
+def test_invalid_selectable_language_raises() -> None:
     data = _base_kwargs()
-    data["supported_languages"] = ["bad@@tag"]
-
-    with pytest.raises(ValueError):
-        BaseProperties(**data)
-
-    data = _base_kwargs()
-    data["supported_languages"] = []
-
+    data["selectable_languages"] = ["bad@@tag"]
     with pytest.raises(ValueError):
         BaseProperties(**data)
 
 
-def test_properties_sample_rate_validation_errors() -> None:
+def test_no_language_axis_is_allowed() -> None:
     data = _base_kwargs()
-    data["supported_sample_rates"] = []
+    data["selectable_languages"] = []
+    props = BaseProperties(**data)
+    assert props.has_language_axis is False
 
-    with pytest.raises(ValueError):
+
+def test_auto_requires_detectable() -> None:
+    data = _base_kwargs()
+    data["selectable_languages"] = ["auto"]
+    data["detectable_languages"] = []
+    with pytest.raises(ValueError, match="detectable_languages"):
         BaseProperties(**data)
 
+
+def test_detectable_rejects_auto_token() -> None:
     data = _base_kwargs()
-    data["supported_sample_rates"] = [0]
-
-    with pytest.raises(ValueError):
-        BaseProperties(**data)
-
-
-def test_properties_channel_validation_errors() -> None:
-    data = _base_kwargs()
-    data["supported_channels"] = []
-
-    with pytest.raises(ValueError):
-        BaseProperties(**data)
-
-    data = _base_kwargs()
-    data["supported_channels"] = [-1]
-
+    data["detectable_languages"] = ["auto"]
     with pytest.raises(ValueError):
         BaseProperties(**data)
 
 
-def test_properties_engine_id_validation_errors() -> None:
+def test_accepted_input_must_be_nonempty() -> None:
+    data = _base_kwargs()
+    data["accepted_input"] = set()
+    with pytest.raises(ValueError, match="accepted_input"):
+        BaseProperties(**data)
+
+
+def test_accepted_sample_rates_any() -> None:
+    data = _base_kwargs()
+    data["accepted_sample_rates"] = "any"
+    props = BaseProperties(**data)
+    assert props.self_describes_sample_rate is True
+
+
+def test_accepted_sample_rates_validation() -> None:
+    data = _base_kwargs()
+    data["accepted_sample_rates"] = []
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+    data = _base_kwargs()
+    data["accepted_sample_rates"] = [0]
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+
+def test_native_sample_rate_positive() -> None:
+    data = _base_kwargs()
+    data["native_sample_rate"] = 0
+    with pytest.raises(ValueError):
+        BaseProperties(**data)
+
+
+def test_engine_id_validation_errors() -> None:
     data = _base_kwargs()
     data["engine_id"] = "Bad/Engine"
-
     with pytest.raises(ValueError):
         BaseProperties(**data)
 
 
-def test_properties_model_name_validation_errors() -> None:
+def test_model_name_validation_errors() -> None:
     data = _base_kwargs()
     data["model_name"] = "bad/name"
-
     with pytest.raises(ValueError):
         BaseProperties(**data)
 
 
-def test_properties_supported_devices_validation_errors() -> None:
-    data = _base_kwargs()
-    data["supported_devices"] = []
-
-    with pytest.raises(ValueError):
-        BaseProperties(**data)
-
-    data = _base_kwargs()
-    data["supported_devices"] = [""]
-
-    with pytest.raises(ValueError):
-        BaseProperties(**data)
-
-
-def test_properties_audio_dtype_validation_errors() -> None:
-    data = _base_kwargs()
-    data["audio_dtype"] = "not-a-dtype"
-
-    with pytest.raises(ValueError):
-        BaseProperties(**data)
-
-    data = _base_kwargs()
-    data["audio_dtype"] = "float64"
-
-    with pytest.raises(ValueError):
-        BaseProperties(**data)
-
-
-def test_properties_numpy_dtype_and_model_id() -> None:
+def test_model_id() -> None:
     props = BaseProperties(**_base_kwargs())
-
-    assert props.numpy_dtype.name == "float32"
     assert props.model_id == "engine/model"
