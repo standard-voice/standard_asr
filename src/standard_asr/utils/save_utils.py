@@ -1,29 +1,123 @@
-# Copyright 2025 The Standard ASR Authors
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+"""Utility helpers for encoding audio.
 
-#     http://www.apache.org/licenses/LICENSE-2.0
+Two helpers live here:
 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""Utility helpers for saving audio and common engine tasks.
-
-This module currently contains a small helper for writing a normalized NumPy
-array to a WAV file using standard library facilities.
+* :func:`nparray_to_audio_file` -- write a waveform to a WAV file on disk,
+  preserving channel count (legacy convenience).
+* :func:`encode_array_to_wav_bytes` -- encode a waveform to an in-memory WAV
+  byte buffer in canonical form (16-bit PCM LE, **mono**), used by the audio
+  negotiation layer when an array must be delivered to a file/bytes-only engine
+  (spec, section "Audio Input & Sample Rate", rule R4).
 """
+
+from __future__ import annotations
+
+import io
+import logging
+import wave
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
 
-import logging
+from ..exceptions import AudioProcessingError
 
 logger = logging.getLogger(__name__)
+
+
+def _to_int16_pcm(audio: NDArray[np.floating]) -> NDArray[np.int16]:
+    """Convert a float waveform in ``[-1, 1]`` to signed 16-bit PCM.
+
+    Clipping happens *before* the cast (NumPy 1.x/2.x defensive; see the
+    dependencies spec section DEP.2).
+
+    Args:
+        audio: Float waveform array.
+
+    Returns:
+        Signed 16-bit PCM array.
+    """
+    clipped = np.clip(audio, -1.0, 1.0)
+    return (clipped * 32767.0).astype(np.int16)
+
+
+@dataclass(frozen=True)
+class WavEncodeResult:
+    """Result of encoding a waveform to canonical WAV bytes.
+
+    Args:
+        data: The encoded WAV byte payload.
+        sample_rate: Sample rate written, in Hz.
+        downmixed: Whether multi-channel input was downmixed to mono.
+        quantized: Whether a lossy float->int16 quantization was applied.
+    """
+
+    data: bytes
+    sample_rate: int
+    downmixed: bool
+    quantized: bool
+
+
+def encode_array_to_wav_bytes(
+    audio: NDArray[np.floating],
+    sample_rate: int,
+    *,
+    max_file_size: int | None = None,
+) -> WavEncodeResult:
+    """Encode a waveform to an in-memory canonical WAV byte buffer.
+
+    The output is always WAV / 16-bit PCM LE / **mono** (the canonical encoded
+    form). Multi-channel input is downmixed by averaging channels. The encode
+    never touches disk. When ``max_file_size`` is given, the encoded size is
+    pre-checked and a clear local error is raised before returning if exceeded.
+
+    Args:
+        audio: Float waveform. Mono is 1D; multi-channel is
+            ``(n_samples, n_channels)``.
+        sample_rate: Sample rate of the waveform in Hz.
+        max_file_size: Optional maximum encoded size in bytes.
+
+    Returns:
+        A :class:`WavEncodeResult` with the encoded bytes and conversion flags.
+
+    Raises:
+        AudioProcessingError: If the audio is not 1D/2D, or the encoded size
+            exceeds ``max_file_size``.
+    """
+    array = np.asarray(audio)
+    if array.ndim == 1:
+        downmixed = False
+        mono = array
+    elif array.ndim == 2:
+        downmixed = array.shape[1] > 1
+        mono = array.mean(axis=1) if downmixed else array.reshape(-1)
+    else:
+        raise AudioProcessingError("Audio must be 1D (mono) or 2D (multi-channel).")
+
+    pcm = _to_int16_pcm(mono)
+    frames = pcm.tobytes()
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 2 bytes = 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(frames)
+    data = buffer.getvalue()
+
+    if max_file_size is not None and len(data) > max_file_size:
+        raise AudioProcessingError(
+            f"Encoded audio is {len(data)} bytes, which exceeds the engine's "
+            f"max_file_size of {max_file_size} bytes. Provide a shorter clip or "
+            "use an engine without this limit."
+        )
+
+    return WavEncodeResult(
+        data=data, sample_rate=sample_rate, downmixed=downmixed, quantized=True
+    )
 
 
 def nparray_to_audio_file(
@@ -31,25 +125,21 @@ def nparray_to_audio_file(
 ) -> None:
     """Write a float32 waveform to a WAV file as 16-bit PCM.
 
-    The input is treated as a Standard ASR–normalized waveform (dtype
+    The input is treated as a Standard ASR-normalized waveform (dtype
     ``np.float32``, values in roughly ``[-1.0, 1.0]``). Values are clipped to
     ``[-1, 1]`` and linearly mapped to signed 16-bit PCM for storage. Mono input
-    uses 1 channel; 2D input is interpreted as ``(n_samples, n_channels)``.
+    uses 1 channel; 2D input is interpreted as ``(n_samples, n_channels)`` and
+    its channel count is preserved.
 
     Args:
-        audio (NDArray[np.float32]): Waveform array to save. Mono can be 1D.
-        file_path (str): Destination path for the ``.wav`` file.
-        sample_rate (int): Sample rate to write (Hz). Defaults to ``16000``.
+        audio: Waveform array to save. Mono can be 1D.
+        file_path: Destination path for the ``.wav`` file.
+        sample_rate: Sample rate to write (Hz). Defaults to ``16000``.
 
     Raises:
         OSError: If writing to ``file_path`` fails (permissions, disk, etc.).
     """
-    import wave
-
-    # Make sure the audio is in the range [-1, 1]
-    audio = np.clip(audio, -1, 1)
-    # Convert the audio to 16-bit PCM
-    audio_integer: NDArray[np.int16] = (audio * 32767).astype(np.int16)
+    audio_integer = _to_int16_pcm(audio)
 
     if audio_integer.ndim == 1:
         channels = 1
@@ -67,3 +157,10 @@ def nparray_to_audio_file(
     except OSError as e:
         logger.error("Error writing audio to file %s: %s", file_path, e)
         raise
+
+
+__all__ = [
+    "WavEncodeResult",
+    "encode_array_to_wav_bytes",
+    "nparray_to_audio_file",
+]

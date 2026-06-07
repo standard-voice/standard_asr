@@ -40,6 +40,55 @@ class AudioProcessingError(StandardASRError):
     pass
 
 
+class IncompatibleAudioInputError(AudioProcessingError):
+    """Raised when no viable conversion path exists for the provided audio.
+
+    This happens when the shape an application provides cannot be negotiated
+    into any shape the engine accepts (e.g. a local array given to an engine
+    that only accepts a server-fetchable URL).
+
+    Args:
+        provided: Human-readable description of the provided input shape.
+        accepted: The engine's accepted input kinds.
+        hint: Actionable guidance for resolving the mismatch.
+    """
+
+    def __init__(self, provided: str, accepted: object, hint: str) -> None:
+        self.provided = provided
+        self.accepted = accepted
+        self.hint = hint
+        super().__init__(
+            f"Cannot deliver {provided} to an engine that accepts {accepted}. {hint}"
+        )
+
+
+class UnsupportedFeatureError(StandardASRError):
+    """Raised in strict mode when a requested standard feature is unsupported.
+
+    In best_effort mode the unsupported parameter is ignored and a structured
+    diagnostic is returned instead of raising.
+    """
+
+    pass
+
+
+class InvalidProviderParamError(StandardASRError, ValueError):
+    """Raised when ``provider_params`` are invalid for the target engine.
+
+    Unlike standard-set parameters, ``provider_params`` errors are always raised
+    regardless of strict / best_effort -- they indicate a code-level bug (such
+    as passing one engine's params model to another after a swap).
+    """
+
+    pass
+
+
+class StreamClosedError(StandardASRError):
+    """Raised when audio is fed to a streaming session after it was closed."""
+
+    pass
+
+
 class FFmpegNotFoundError(AudioProcessingError, FileNotFoundError):
     """Raised when FFmpeg is required but not found in the system `PATH`."""
 

@@ -596,18 +596,19 @@ def _load_with_ffmpeg(
     cmd = [
         "ffmpeg",
         "-nostdin",  # Prevent FFmpeg from waiting for stdin
-        "-vn",
-        "-sn",
-        "-dn",
         "-nostats",
         "-loglevel",
         "error",
         "-threads",
         "0",  # Use optimal number of threads
-        "-map",
-        "a:0",  # Explicitly select the first audio stream
         "-i",
         "pipe:0" if isinstance(source, bytes) else source,
+        # Output options (must follow the input):
+        "-vn",
+        "-sn",
+        "-dn",
+        "-map",
+        "a:0",  # Explicitly select the first audio stream
         "-f",
         "f32le",  # Output format: 32-bit floating-point, little-endian
         "-ac",
