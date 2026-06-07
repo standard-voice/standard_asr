@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Entry point targets for the std-faster-whisper plugin demo."""
 
 from __future__ import annotations

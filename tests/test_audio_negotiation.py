@@ -265,6 +265,18 @@ def test_validate_url_resolved_public_host_passes(monkeypatch: pytest.MonkeyPatc
     validate_fetchable_url("https://audio.example.com/a.wav")
 
 
+def test_validate_url_resolved_unparseable_address_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defense in depth: if the system resolver returns a malformed address string,
+    # re-parsing it raises ValueError and the URL is rejected, not trusted.
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("not-an-ip-address"))
+    with pytest.raises(UnsafeAudioUrlError, match="unparseable resolved address"):
+        validate_fetchable_url("https://weird.example.com/a.wav")
+
+
 def test_validate_url_resolved_private_host_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     # DNS rebinding defense: a name that resolves to a private address is rejected
     # even though the name itself is not an IP literal.

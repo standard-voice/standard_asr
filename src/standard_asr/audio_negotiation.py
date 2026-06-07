@@ -138,8 +138,10 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         addr = info[4][0]
         try:
             resolved = ipaddress.ip_address(addr)
-        except ValueError:  # pragma: no cover - defensive
-            raise UnsafeAudioUrlError(url, f"unparseable resolved address {addr!r}")
+        except ValueError as exc:
+            # Defense in depth: never trust a malformed address string from the
+            # system resolver -- reject rather than letting it through unparsed.
+            raise UnsafeAudioUrlError(url, f"unparseable resolved address {addr!r}") from exc
         if _is_disallowed_ip(resolved):
             raise UnsafeAudioUrlError(
                 url, f"host {host} resolves to private/reserved address {addr}"

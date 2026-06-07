@@ -21,7 +21,6 @@ from std_faster_whisper import (
     create,
 )
 from std_faster_whisper.entrypoint import create as entrypoint_create
-from std_faster_whisper.main import main
 from std_faster_whisper.std_asr_faster_whisper import (
     _convert_segments,  # pyright: ignore[reportPrivateUsage]
     _provider_kwargs,  # pyright: ignore[reportPrivateUsage]
@@ -150,6 +149,16 @@ def test_transcribe_array_basic(fake_faster_whisper: type[FakeWhisperModel]) -> 
     kwargs = fake_faster_whisper.last_transcribe_kwargs
     assert kwargs["language"] == "en"
     assert kwargs["word_timestamps"] is False
+
+
+def test_transcribe_region_tagged_language_uses_primary_subtag(
+    fake_faster_whisper: type[FakeWhisperModel],
+) -> None:
+    # faster-whisper wants a primary subtag, so a region-tagged BCP-47 language
+    # (en-US) must be reduced to its primary subtag (en) before forwarding.
+    fake_faster_whisper.segments = [FakeSegment(0.0, 1.0, "hi")]
+    FasterWhisperASR(model_path="tiny").transcribe(_audio(), RuntimeParams(language="en-US"))
+    assert fake_faster_whisper.last_transcribe_kwargs["language"] == "en"
 
 
 def test_transcribe_auto_language_sends_none(
@@ -296,25 +305,8 @@ def test_safe_metadata_skips_absent_whitelisted_fields() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Entry point + console main
+# Entry point
 # --------------------------------------------------------------------------- #
 def test_create_returns_engine() -> None:
     assert isinstance(create(), FasterWhisperASR)
     assert isinstance(entrypoint_create(model_path="tiny"), FasterWhisperASR)
-
-
-def test_main_prints_greeting(capsys: pytest.CaptureFixture[str]) -> None:
-    main()
-    assert "std-faster-whisper" in capsys.readouterr().out
-
-
-def test_main_module_guard_executes(capsys: pytest.CaptureFixture[str]) -> None:
-    # Run main.py with run_name="__main__" so the ``if __name__ == "__main__"``
-    # guard executes main(); runpy runs the actual file, so coverage counts it.
-    import importlib.util
-    import runpy
-
-    spec = importlib.util.find_spec("std_faster_whisper.main")
-    assert spec is not None and spec.origin is not None
-    runpy.run_path(spec.origin, run_name="__main__")
-    assert "std-faster-whisper" in capsys.readouterr().out

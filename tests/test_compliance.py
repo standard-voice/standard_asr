@@ -210,6 +210,29 @@ def test_sync_bridge_raising_session_reports_error() -> None:
     assert any("raised while bridging" in i.message for i in report.issues)
 
 
+class _NoTerminalSession(TranscriptionSession):
+    """Non-compliant adapter: closes the stream WITHOUT a terminal event.
+
+    Overrides ``_run_producer`` to bypass the base class's force-appended
+    ``done``, emitting a single non-terminal event and closing. This is the
+    out-of-tree non-compliance the sync-bridge check must flag.
+    """
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    async def _run_producer(self) -> None:
+        self._buffer.put_forced(TranscriptionEvent.partial(segment_id="s0", text="hi"))
+        self._buffer.close()
+
+
+def test_sync_bridge_no_terminal_event_reports_error() -> None:
+    report = check_sync_bridge(_NoTerminalSession, timeout=5.0)
+    assert report.passed is False
+    assert any("without emitting a terminal event" in i.message for i in report.issues)
+
+
 def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     # A factory whose driver thread never returns within the timeout surfaces as
     # a deadlock error. We simulate by making the driver block on a factory that
