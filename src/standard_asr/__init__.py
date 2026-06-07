@@ -40,7 +40,14 @@ from .discovery import (
 )
 from .language import AUTO
 from .options import BaseTranscribeOptions
-from .results import Segment, TranscriptionResult, Word
+from .renderers import to_srt, to_vtt
+from .results import (
+    ChannelResult,
+    Diagnostic,
+    Segment,
+    TranscriptionResult,
+    Word,
+)
 from .runtime import allow_downloads, ensure_cache_dir, resolve_cache_dir
 from .streaming import StreamChunk, StreamingASR
 from .utils.audio_loader import (
@@ -63,11 +70,13 @@ __all__ = [
     "BaseProperties",
     "BaseTranscribeOptions",
     "BatchCapabilities",
+    "ChannelResult",
     "ComplianceIssue",
     "ComplianceReport",
     "ConversionOp",
     "ConversionPlan",
     "DeclaredCapabilities",
+    "Diagnostic",
     "InputKind",
     "ModelRegistry",
     "ModelSpec",
@@ -94,4 +103,6 @@ __all__ = [
     "parse_entrypoint_name",
     "pep503_normalize",
     "resolve_cache_dir",
+    "to_srt",
+    "to_vtt",
 ]
