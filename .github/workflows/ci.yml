@@ -1,0 +1,159 @@
+name: CI
+
+# Primary pull-request gate (dependency-policy channel 1). Everything here runs
+# against the committed uv.lock (`--locked`), so CI is byte-for-byte reproducible
+# and a stale lock fails loudly. The lower-bounds lane additionally re-resolves
+# at each direct dependency's floor (`--resolution lowest-direct`) to keep the
+# declared lower bounds honest. Branch protection requires the single aggregate
+# check `checks-complete` (ADR D8); do NOT add path filters here — a skipped
+# required check would block merges forever.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin uv so resolution/lock behaviour is reproducible across runs and matches
+  # the [tool.uv] required-version floor. Bump deliberately.
+  UV_VERSION: "0.11.19"
+
+jobs:
+  lock-check:
+    name: Lock up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+
+  lint:
+    name: Lint & Typecheck (Ruff + Pyright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install dependencies (locked)
+        run: uv sync --locked --all-extras --all-groups
+      - name: Ruff format check
+        run: uv run --no-sync ruff format --check
+      - name: Ruff lint
+        run: uv run --no-sync ruff check
+      - name: Pyright
+        run: uv run --no-sync pyright
+
+  test:
+    name: Test py${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Full Python support range (ADR D7) on Linux ...
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          # ... plus macOS/Windows edges on a representative interpreter so the
+          # cross-platform contract (audio I/O, path handling) stays green.
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+    env:
+      # Force uv to the matrix interpreter (overrides .python-version).
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install dependencies (locked)
+        run: uv sync --locked --all-extras --all-groups
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  lower-bounds:
+    name: Lower bounds (lowest-direct, py3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.10"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Resolve at each direct dependency's floor and install
+        # No --locked: this lane deliberately re-resolves to the lowest
+        # compatible direct versions to prove the declared lower bounds work.
+        run: uv sync --resolution lowest-direct --all-extras --all-groups
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  checks-complete:
+    # Single aggregate status required by branch protection (ADR D8). Adding a
+    # new job above automatically tightens the gate via `needs`.
+    name: checks-complete
+    if: always()
+    needs: [lock-check, lint, test, lower-bounds]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all required jobs succeeded
+        env:
+          # join() expands matrix legs; values are job results, not user input.
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Dependency job results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            if [ "${result}" != "success" ]; then
+              echo "::error::A required job did not succeed (got '${result}')."
+              exit 1
+            fi
+          done
+          echo "All required jobs succeeded."
