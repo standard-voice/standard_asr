@@ -605,7 +605,17 @@ numpy>=2.1;  python_version >= "3.13"
 （1.24/1.26 无 cp313 wheel；Python 3.13+ 起需 numpy 2.x。）**无上限 cap**（遵 numpy 下游指南 / SPEC-0）。
 
 ## DEP.2 稳定子集强制
-核心只用 numpy 1&2 行为一致的 API；**`clip`/`astype` 等有行为变化的点 MUST 防御**（编码路径**先 `clip` 再 cast`**；禁 `copy=False`，用 `np.asarray`）。CI MUST：**ruff NPY201 + warnings-as-errors + numpy 1.26 与最新 2.x 双测 + numpy-nightly canary lane**。
+核心只用 numpy 1&2 行为一致的 API；**`clip`/`astype` 等有行为变化的点 MUST 防御**（编码路径**先 `clip` 再 cast`**；禁 `copy=False`，用 `np.asarray`）。
+
+CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `.github/workflows/`,策略见 `CONTRIBUTING.md`「Dependency policy」):
+- **ruff NPY201** —— 静态拦截 numpy 2.0 移除/改名的 API。
+- **warnings-as-errors** —— `pytest` `filterwarnings=["error", …]`,把 numpy(及其他)的 deprecation 升级为失败(取代旧的逐 job `-W error`)。
+- **锁定通道**(`--locked`,py3.10–3.14):跑提交的 `uv.lock`,即当前 numpy 2.x。
+- **下界通道**(`--resolution lowest-direct`,py3.10):贴 `numpy>=1.26` 下界跑,守住 numpy 1.x 兼容面。
+- **numpy floor 通道**(py3.13 钉 `numpy==2.1.*`):守住 `numpy>=2.1` 这一 interpreter-conditional 下界(下界通道在 3.10 上不会触及它)。
+- **每日 canary**(两轴):`latest` 稳定 + `prerelease`(`uv lock --upgrade [--prerelease allow]`)。prerelease 轴是旧 **numpy-nightly canary 的后继**,提前捕捉 NEP 50 等尚未发布的上游行为变更;非 PR 门禁,失败仅开追踪 issue。
+
+> 旧表述「numpy 1.26 与最新 2.x 双测 + numpy-nightly canary lane」由上述锁定/下界/numpy-floor/canary 四通道等价替代(对应 D1/D4 与依赖管理规格)。
 
 ## DEP.3 不强制 numpy 2+
 标准固定 **numpy-float32-ndarray 类型**，不固定版本；不排除仍绑 numpy 1 的引擎（如 FunASR）。
