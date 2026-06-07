@@ -1,5 +1,7 @@
 # Standard ASR
 
+[![CI](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml)
+[![Canary](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml/badge.svg)](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml)
 [![Checked with pyright](https://microsoft.github.io/pyright/img/pyright_badge.svg)](https://microsoft.github.io/pyright/)
 [![Static Badge](https://img.shields.io/badge/Join%20Chat-Zulip?style=flat&logo=zulip&label=Zulip&color=blue&link=https%3A%2F%2Fstandard-voice.zulipchat.com)](https://standard-voice.zulipchat.com)
 

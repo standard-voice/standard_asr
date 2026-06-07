@@ -7,9 +7,10 @@
 # Run all: prek run --all-files
 #
 # Design: lint/format/typecheck use `uv run` LOCAL hooks so they execute the
-# exact tool versions pinned in uv.lock — identical to CI (.github/workflows/
-# lint.yml) and with no drift between a pre-commit pinned rev and the project's
-# pinned tools. Generic hygiene and the GitHub Actions audit use upstream repos.
+# exact tool versions pinned in uv.lock — identical to CI (the lint job in
+# .github/workflows/ci.yml) and with no drift between a pre-commit pinned rev and
+# the project's pinned tools. Generic hygiene and the GitHub Actions audit use
+# upstream repos.
 
 default_install_hook_types: [pre-commit, pre-push]
 
