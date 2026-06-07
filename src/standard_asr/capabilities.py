@@ -27,7 +27,7 @@ dot-path; missing keys are *fail-closed* (return ``False``).
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Literal
+from typing import Any, Iterator, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,19 +71,16 @@ class _FlagLikeNode(_CapNode):
         return self.supported
 
 
-class _ModeLikeNode(_CapNode):
-    """Archetype base for enum/mode nodes (carry a ``mode`` string)."""
+def _mode_supported(mode: str) -> bool:
+    """Derive ``is_supported`` for an enum/mode node from its ``mode``.
 
-    mode: str
+    Args:
+        mode: The node's mode value.
 
-    @property
-    def is_supported(self) -> bool:
-        """Whether this capability is supported.
-
-        Returns:
-            ``True`` unless ``mode`` is ``"none"`` or ``"unsupported"``.
-        """
-        return self.mode not in _UNSUPPORTED_MODES
+    Returns:
+        ``True`` unless ``mode`` is ``"none"`` or ``"unsupported"``.
+    """
+    return mode not in _UNSUPPORTED_MODES
 
 
 # --------------------------------------------------------------------------- #
@@ -167,7 +164,9 @@ class WordTimestampsCap(_FlagLikeNode):
         granularities: Supported granularities (``word``/``segment``/``char``).
     """
 
-    granularities: list[WordTimestampGranularityName] = Field(default_factory=list)
+    granularities: list[WordTimestampGranularityName] = Field(
+        default_factory=lambda: cast("list[WordTimestampGranularityName]", [])
+    )
 
 
 class PromptCap(_FlagLikeNode):
@@ -203,7 +202,7 @@ class DiarizationCap(_FlagLikeNode):
     constraints: DiarizationConstraints = Field(default_factory=DiarizationConstraints)
 
 
-class ReconnectCap(_ModeLikeNode):
+class ReconnectCap(_CapNode):
     """Streaming reconnect capability.
 
     Args:
@@ -212,8 +211,17 @@ class ReconnectCap(_ModeLikeNode):
 
     mode: Literal["seamless", "lossy", "unsupported"] = "unsupported"
 
+    @property
+    def is_supported(self) -> bool:
+        """Whether reconnect is supported.
 
-class FinalityCap(_ModeLikeNode):
+        Returns:
+            ``True`` unless ``mode`` is ``"unsupported"``.
+        """
+        return _mode_supported(self.mode)
+
+
+class FinalityCap(_CapNode):
     """Streaming finality level the engine can guarantee.
 
     Args:
@@ -222,8 +230,17 @@ class FinalityCap(_ModeLikeNode):
 
     mode: Literal["final", "closed"] = "final"
 
+    @property
+    def is_supported(self) -> bool:
+        """Whether a finality level is guaranteed (always ``True`` here).
 
-class StreamTimestampsCap(_ModeLikeNode):
+        Returns:
+            ``True`` (both ``final`` and ``closed`` are supported levels).
+        """
+        return _mode_supported(self.mode)
+
+
+class StreamTimestampsCap(_CapNode):
     """Source of streaming timestamps.
 
     Args:
@@ -231,6 +248,15 @@ class StreamTimestampsCap(_ModeLikeNode):
     """
 
     mode: Literal["native_frame_aligned", "post_align", "none"] = "none"
+
+    @property
+    def is_supported(self) -> bool:
+        """Whether streaming timestamps are provided.
+
+        Returns:
+            ``True`` unless ``mode`` is ``"none"``.
+        """
+        return _mode_supported(self.mode)
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +369,7 @@ class DeclaredCapabilities(_Container):
         Returns:
             ``True`` if supported, otherwise ``False``.
         """
-        node: Any = self
+        node: object = self
         for part in dot_path.split("."):
             node = _get_child(node, part)
             if node is None:
@@ -373,7 +399,7 @@ class DeclaredCapabilities(_Container):
         return all(path in mine for path in other.iter_supported_paths())
 
 
-def _get_child(node: Any, part: str) -> Any:
+def _get_child(node: object, part: str) -> object:
     """Resolve a single path segment on a model or dict node.
 
     Args:
@@ -386,14 +412,14 @@ def _get_child(node: Any, part: str) -> Any:
     if isinstance(node, BaseModel):
         if part in type(node).model_fields:
             return getattr(node, part)
-        extra = node.model_extra or {}
+        extra: dict[str, Any] = node.model_extra or {}
         return extra.get(part)
     if isinstance(node, dict):
-        return node.get(part)
+        return cast("dict[str, object]", node).get(part)
     return None
 
 
-def _derive_supported(node: Any) -> bool:
+def _derive_supported(node: object) -> bool:
     """Derive the ``is_supported`` boolean for a resolved node.
 
     Args:
@@ -409,15 +435,16 @@ def _derive_supported(node: Any) -> bool:
         # A present container (mode domain or grouping) counts as supported.
         return True
     if isinstance(node, dict):
-        if "mode" in node:
-            return node["mode"] not in _UNSUPPORTED_MODES
-        if "supported" in node:
-            return bool(node["supported"])
+        mapping = cast("dict[str, object]", node)
+        if "mode" in mapping:
+            return mapping["mode"] not in _UNSUPPORTED_MODES
+        if "supported" in mapping:
+            return bool(mapping["supported"])
         return True  # present container dict
     return False
 
 
-def _iter_paths(node: Any, prefix: str) -> Iterator[str]:
+def _iter_paths(node: object, prefix: str) -> Iterator[str]:
     """Recursively yield supported dot-paths under ``node``.
 
     Args:
@@ -427,8 +454,7 @@ def _iter_paths(node: Any, prefix: str) -> Iterator[str]:
     Yields:
         Supported dot-paths.
     """
-    children = _children(node)
-    for name, child in children:
+    for name, child in _children(node):
         if child is None:
             continue
         path = f"{prefix}.{name}" if prefix else name
@@ -437,7 +463,7 @@ def _iter_paths(node: Any, prefix: str) -> Iterator[str]:
         yield from _iter_paths(child, path)
 
 
-def _children(node: Any) -> list[tuple[str, Any]]:
+def _children(node: object) -> list[tuple[str, object]]:
     """Return ``(name, child)`` pairs for a model or dict node.
 
     Args:
@@ -447,13 +473,14 @@ def _children(node: Any) -> list[tuple[str, Any]]:
         A list of named children (declared fields plus extras).
     """
     if isinstance(node, BaseModel):
-        items: list[tuple[str, Any]] = [
+        items: list[tuple[str, object]] = [
             (name, getattr(node, name)) for name in type(node).model_fields
         ]
-        items.extend((node.model_extra or {}).items())
+        extra: dict[str, Any] = node.model_extra or {}
+        items.extend(extra.items())
         return items
     if isinstance(node, dict):
-        return list(node.items())
+        return list(cast("dict[str, object]", node).items())
     return []
 
 

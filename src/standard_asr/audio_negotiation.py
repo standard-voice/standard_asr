@@ -27,7 +27,6 @@ from .audio_input import (
     AudioBytes,
     AudioInput,
     AudioPath,
-    AudioUrl,
     InputKind,
 )
 from .exceptions import IncompatibleAudioInputError
@@ -126,12 +125,8 @@ def negotiate(
         return _negotiate_bytes(source, accepted)
     if isinstance(provided, AudioBase64):
         return _negotiate_base64(source, accepted)
-    if isinstance(provided, AudioUrl):
-        return _negotiate_url(source, accepted)
-    # Unreachable for a well-formed AudioInput union.
-    return NoViablePath(  # pragma: no cover
-        source, accepted, "Unknown audio input variant."
-    )
+    # The only remaining variant is AudioUrl.
+    return _negotiate_url(source, accepted)
 
 
 def can_accept(

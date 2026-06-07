@@ -24,6 +24,24 @@ _UPPER_LT_2 = re.compile(r"<\s*2(\.0)?\b")
 _LOWER_GE_2 = re.compile(r">=\s*2\b")
 
 
+def _empty_plugins() -> list["PluginNumpy"]:
+    """Return an empty plugin list (typed factory for dataclass default).
+
+    Returns:
+        An empty list.
+    """
+    return []
+
+
+def _empty_strs() -> list[str]:
+    """Return an empty string list (typed factory for dataclass default).
+
+    Returns:
+        An empty list.
+    """
+    return []
+
+
 @dataclass
 class PluginNumpy:
     """A plugin and its declared numpy requirement.
@@ -50,8 +68,8 @@ class DoctorReport:
     """
 
     python_version: str
-    plugins: list[PluginNumpy] = field(default_factory=list)
-    conflicts: list[str] = field(default_factory=list)
+    plugins: list[PluginNumpy] = field(default_factory=_empty_plugins)
+    conflicts: list[str] = field(default_factory=_empty_strs)
 
     @property
     def has_conflict(self) -> bool:

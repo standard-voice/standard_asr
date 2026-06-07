@@ -18,7 +18,7 @@ Null rules (disambiguation):
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -213,7 +213,8 @@ class TranscriptionResult(BaseModel):
         default=None, description="Per-channel results, if channel-separated."
     )
     diagnostics: list[Diagnostic] = Field(
-        default_factory=list, description="Non-fatal diagnostics."
+        default_factory=lambda: cast("list[Diagnostic]", []),
+        description="Non-fatal diagnostics.",
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Standardized engine-agnostic metadata."

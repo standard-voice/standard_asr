@@ -142,7 +142,9 @@ class BaseProperties(BaseModel):
         Raises:
             ValueError: If the list is empty or holds non-positive entries.
         """
-        if value == "any":
+        if not isinstance(value, list):
+            if value != "any":
+                raise ValueError("accepted_sample_rates string value must be 'any'.")
             return value
         if not value:
             raise ValueError("accepted_sample_rates must not be empty (or use 'any').")

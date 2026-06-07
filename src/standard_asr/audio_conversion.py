@@ -40,6 +40,15 @@ from .utils.save_utils import encode_array_to_wav_bytes
 ASSUMED_SAMPLE_RATE = 16000
 
 
+def _empty_diagnostics() -> list[Diagnostic]:
+    """Return an empty diagnostics list (typed factory for dataclass default).
+
+    Returns:
+        An empty list of diagnostics.
+    """
+    return []
+
+
 @dataclass
 class PreparedAudio:
     """Audio negotiated into exactly one engine-accepted shape.
@@ -63,7 +72,7 @@ class PreparedAudio:
     container: str | None = None
     path: str | None = None
     url: str | None = None
-    diagnostics: list[Diagnostic] = field(default_factory=list)
+    diagnostics: list[Diagnostic] = field(default_factory=_empty_diagnostics)
 
 
 def _target_array_sample_rate(
@@ -81,7 +90,7 @@ def _target_array_sample_rate(
     Returns:
         A sample rate the engine accepts.
     """
-    if accepted == "any":
+    if not isinstance(accepted, list):
         return native_sample_rate
     if required_input_sample_rate is not None and required_input_sample_rate in accepted:
         return required_input_sample_rate
@@ -322,7 +331,7 @@ def _apply_sample_rate(
         sample_rate = ASSUMED_SAMPLE_RATE
         diags.append(_assumed_sample_rate_diag())
 
-    if accepted == "any" or sample_rate in accepted:
+    if not isinstance(accepted, list) or sample_rate in accepted:
         return array, sample_rate
 
     target = _target_array_sample_rate(

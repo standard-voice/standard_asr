@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -186,7 +186,9 @@ def coerce_audio_input(value: AudioInputLike) -> AudioInput:
         return AudioBytes(value)
     if isinstance(value, np.ndarray):
         return AudioArray(value)
-    if isinstance(value, tuple):
+    # Defensive: the public type narrows to a tuple here, but coercion is a
+    # boundary that must reject mistyped runtime input gracefully.
+    if isinstance(value, tuple):  # pyright: ignore[reportUnnecessaryIsInstance]
         return _coerce_array_tuple(value)
     raise TypeError(
         "Unsupported audio input type: "
@@ -218,7 +220,7 @@ def _coerce_array_tuple(value: Sequence[object]) -> AudioArray:
         raise TypeError("First element of the audio tuple must be a NumPy ndarray.")
     if not isinstance(sample_rate, int) or isinstance(sample_rate, bool):
         raise TypeError("Second element of the audio tuple must be an int sample rate.")
-    return AudioArray(samples, sample_rate)
+    return AudioArray(cast("NDArray[np.floating]", samples), sample_rate)
 
 
 __all__ = [
