@@ -12,8 +12,9 @@ from .asr_config import (
     env_var_name,
     secret_field,
 )
-from .asr_interface import StandardASR
+from .asr_interface import EngineBase, StandardASR
 from .asr_properties import BaseProperties
+from .audio_conversion import PreparedAudio
 from .audio_format import AudioFormat
 from .audio_input import (
     AudioArray,
@@ -89,8 +90,10 @@ __all__ = [
     "DeviceConfigMixin",
     "Diagnostic",
     "DownloadConfigMixin",
+    "EngineBase",
     "InputKind",
     "LanguageConfigMixin",
+    "PreparedAudio",
     "ModelRegistry",
     "ModelSpec",
     "NoViablePath",

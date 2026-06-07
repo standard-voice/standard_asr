@@ -48,10 +48,10 @@ def test_normalize_audio_invalid_original_sr() -> None:
         audio_loader.normalize_audio(audio, 0, 16000, 1)
 
 
-def test_normalize_audio_resample_import_error(
-    monkeypatch: pytest.MonkeyPatch,
+def test_normalize_audio_resample_fallback_without_scipy(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    audio = np.array([0.1, 0.2], dtype=np.float32)
+    audio = np.zeros(8, dtype=np.float32)
     real_import = builtins.__import__
 
     def _import(
@@ -66,9 +66,14 @@ def test_normalize_audio_resample_import_error(
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", _import)
+    caplog.set_level("WARNING")
 
-    with pytest.raises(ImportError):
-        audio_loader.normalize_audio(audio, 8000, 16000, 1)
+    # Without scipy the built-in anti-aliasing fallback resampler is used
+    # (spec AI R8): never a hard failure.
+    out = audio_loader.normalize_audio(audio, 8000, 16000, 1)
+
+    assert out.shape[0] == 16  # 8 samples at 8 kHz -> 16 at 16 kHz
+    assert any("fallback resampler" in record.message for record in caplog.records)
 
 
 def test_normalize_audio_truncates_channels(caplog: pytest.LogCaptureFixture) -> None:
@@ -317,19 +322,19 @@ def test_load_audio_from_path_soundfile_missing_scipy_fallback(
             raise ImportError("missing scipy")
         return real_import(name, globals, locals, fromlist, level)
 
-    sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
-
     def _fake_load(*_: object) -> NDArray[np.float32]:
-        return sentinel
+        raise AssertionError("FFmpeg must not be used when the fallback resampler works")
 
     caplog.set_level("WARNING")
     monkeypatch.setattr(builtins, "__import__", _import)
     monkeypatch.setattr(audio_loader, "_load_with_ffmpeg", _fake_load)
 
+    # soundfile decodes; the built-in fallback resampler handles 8k -> 16k
+    # without scipy and without falling back to FFmpeg (spec AI R8).
     out = audio_loader.load_audio_from_path("dummy.flac", target_sr=16000)
 
-    assert out is sentinel
-    assert any("falling back to FFmpeg" in record.message for record in caplog.records)
+    assert out.shape[0] == 8  # 4 samples at 8 kHz -> 8 at 16 kHz
+    assert any("fallback resampler" in record.message for record in caplog.records)
 
 
 def test_load_audio_from_path_soundfile_import_error(
@@ -461,10 +466,8 @@ def test_load_audio_from_bytes_soundfile_missing_scipy_fallback(
             raise ImportError("missing scipy")
         return real_import(name, globals, locals, fromlist, level)
 
-    sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
-
     def _fake_load(*_: object) -> NDArray[np.float32]:
-        return sentinel
+        raise AssertionError("FFmpeg must not be used when the fallback resampler works")
 
     caplog.set_level("WARNING")
     monkeypatch.setattr(builtins, "__import__", _import)
@@ -472,8 +475,8 @@ def test_load_audio_from_bytes_soundfile_missing_scipy_fallback(
 
     out = audio_loader.load_audio_from_bytes(b"data", target_sr=16000)
 
-    assert out is sentinel
-    assert any("falling back to FFmpeg" in record.message for record in caplog.records)
+    assert out.shape[0] == 8  # 4 samples at 8 kHz -> 8 at 16 kHz
+    assert any("fallback resampler" in record.message for record in caplog.records)
 
 
 def test_load_with_ffmpeg_empty_stdout(monkeypatch: pytest.MonkeyPatch) -> None:

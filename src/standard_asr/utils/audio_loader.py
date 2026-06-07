@@ -183,7 +183,10 @@ def normalize_audio(
     if processed_audio.size == 0:
         raise AudioProcessingError("Cannot process empty audio array")
 
-    # 1. Resample if necessary using resample_poly (more stable)
+    # 1. Resample if necessary. Prefer scipy's polyphase resampler (high quality,
+    #    available via the [audio] extra); fall back to the core numpy-only
+    #    anti-aliasing Fourier resampler so a missing extra is never fatal
+    #    (spec AI R8).
     if original_sr != target_sr:
         try:
             from math import gcd
@@ -195,9 +198,14 @@ def normalize_audio(
                 processed_audio, up=up, down=down, axis=0
             ).astype(np.float32, copy=False)  # pyright: ignore[reportUnknownVariableType]
         except ImportError:
-            raise ImportError(
-                "Resampling requires `scipy`. Please install it (`pip install scipy`) "
-                "or install standard-asr with audio support (`pip install 'standard-asr[audio]'`)"
+            from ..resampling import resample as _fallback_resample
+
+            logger.warning(
+                "scipy not installed; using the built-in anti-aliasing fallback "
+                "resampler. Install standard-asr[audio] for higher quality."
+            )
+            processed_audio = _fallback_resample(
+                processed_audio, original_sr, target_sr
             )
 
     # Ensure at least 2D for uniform channel processing
