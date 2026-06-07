@@ -48,7 +48,6 @@ from .discovery import (
     pep503_normalize,
 )
 from .language import AUTO
-from .options import BaseTranscribeOptions
 from .renderers import to_srt, to_vtt
 from .results import (
     ChannelResult,
@@ -59,7 +58,14 @@ from .results import (
 )
 from .runtime import allow_downloads, ensure_cache_dir, resolve_cache_dir
 from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
-from .streaming import StreamChunk, StreamingASR
+from .streaming import (
+    StreamReducer,
+    SyncSession,
+    TranscriptionEvent,
+    TranscriptionSession,
+    reduce_event,
+    validate_stable_until,
+)
 from .utils.audio_loader import (
     load_audio,
     load_audio_from_bytes,
@@ -78,7 +84,6 @@ __all__ = [
     "AudioUrl",
     "BaseConfig",
     "BaseProperties",
-    "BaseTranscribeOptions",
     "BatchCapabilities",
     "ChannelResult",
     "ComplianceIssue",
@@ -101,10 +106,12 @@ __all__ = [
     "RuntimeParams",
     "Segment",
     "StandardASR",
-    "StreamChunk",
-    "StreamingASR",
+    "StreamReducer",
     "StreamingCapabilities",
+    "SyncSession",
+    "TranscriptionEvent",
     "TranscriptionResult",
+    "TranscriptionSession",
     "Word",
     "WordTimestampGranularity",
     "allow_downloads",
@@ -122,8 +129,10 @@ __all__ = [
     "normalize_audio",
     "parse_entrypoint_name",
     "pep503_normalize",
+    "reduce_event",
     "resolve_cache_dir",
     "secret_field",
     "to_srt",
     "to_vtt",
+    "validate_stable_until",
 ]

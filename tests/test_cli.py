@@ -106,11 +106,7 @@ def test_cli_transcribe(
     def _discover_models(**_: object) -> ModelRegistry:
         return registry
 
-    def _load_audio(_: object) -> NDArray[np.float32]:
-        return np.zeros(16000, dtype=np.float32)
-
     monkeypatch.setattr(cli, "discover_models", _discover_models)
-    monkeypatch.setattr(cli, "load_audio", _load_audio)
 
     exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
     output = capsys.readouterr().out
@@ -127,11 +123,7 @@ def test_cli_transcribe_json(
     def _discover_models(**_: object) -> ModelRegistry:
         return registry
 
-    def _load_audio(_: object) -> NDArray[np.float32]:
-        return np.zeros(16000, dtype=np.float32)
-
     monkeypatch.setattr(cli, "discover_models", _discover_models)
-    monkeypatch.setattr(cli, "load_audio", _load_audio)
 
     exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav", "--json"])
     output = capsys.readouterr().out
@@ -148,11 +140,7 @@ def test_cli_transcribe_invalid_options(
     def _discover_models(**_: object) -> ModelRegistry:
         return registry
 
-    def _load_audio(_: object) -> NDArray[np.float32]:
-        return np.zeros(16000, dtype=np.float32)
-
     monkeypatch.setattr(cli, "discover_models", _discover_models)
-    monkeypatch.setattr(cli, "load_audio", _load_audio)
 
     exit_code = cli.main(
         ["transcribe", "alpha/first", "dummy.wav", "--options", "not-json"]
@@ -183,14 +171,18 @@ def test_cli_transcribe_audio_processing_error(
 ) -> None:
     registry = _demo_registry()
 
+    class _BadAudioASR:
+        def transcribe(self, audio: object, params: object = None) -> None:
+            raise AudioProcessingError("bad audio")
+
     def _discover_models(**_: object) -> ModelRegistry:
         return registry
 
-    def _load_audio(_: object) -> NDArray[np.float32]:
-        raise AudioProcessingError("bad audio")
+    def _create(*_: object, **__: object) -> _BadAudioASR:
+        return _BadAudioASR()
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
-    monkeypatch.setattr(cli, "load_audio", _load_audio)
+    monkeypatch.setattr(registry, "create", _create)
 
     exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
     captured = capsys.readouterr()
@@ -205,9 +197,7 @@ def test_cli_transcribe_transcription_error(
     registry = _demo_registry()
 
     class _FailASR:
-        def transcribe(
-            self, audio: NDArray[np.float32], options: object = None
-        ) -> None:
+        def transcribe(self, audio: object, params: object = None) -> None:
             raise TranscriptionError("boom")
 
     def _discover_models(**_: object) -> ModelRegistry:
@@ -216,12 +206,8 @@ def test_cli_transcribe_transcription_error(
     def _create(*_: object, **__: object) -> _FailASR:
         return _FailASR()
 
-    def _load_audio(_: object) -> NDArray[np.float32]:
-        return np.zeros(16000, dtype=np.float32)
-
     monkeypatch.setattr(cli, "discover_models", _discover_models)
     monkeypatch.setattr(registry, "create", _create)
-    monkeypatch.setattr(cli, "load_audio", _load_audio)
 
     exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
     captured = capsys.readouterr()
@@ -442,9 +428,11 @@ def test_cli_models_prepare_calls_prepare(
 
 
 def test_parse_options() -> None:
-    options = cli._parse_options('{"language": "en"}')  # pyright: ignore[reportPrivateUsage]
-    assert isinstance(options, dict)
-    assert options["language"] == "en"
+    from standard_asr.runtime_params import RuntimeParams
+
+    params = cli._parse_options('{"language": "en"}')  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(params, RuntimeParams)
+    assert params.language == "en"
 
     with pytest.raises(ValueError):
         cli._parse_options("[1, 2, 3]")  # pyright: ignore[reportPrivateUsage]

@@ -19,9 +19,8 @@ from .exceptions import (
     EntrypointValidationError,
     TranscriptionError,
 )
-from .options import BaseTranscribeOptions
 from .runtime import ensure_cache_dir, resolve_cache_dir
-from .utils.audio_loader import load_audio
+from .runtime_params import RuntimeParams
 
 
 def _add_models_subcommands(subparsers: Any) -> None:
@@ -290,14 +289,14 @@ def _cmd_models_prepare(args: argparse.Namespace) -> int:
     registry = discover_models()
     asr = registry.create(args.name)
 
-    options = _parse_options(args.options)
+    params = _parse_options(args.options)
 
     prepare = getattr(asr, "prepare", None)
     if callable(prepare):
         prepare()
     else:
         dummy_audio = np.zeros(16_000, dtype=np.float32)
-        asr.transcribe(dummy_audio, options=options)
+        asr.transcribe((dummy_audio, 16000), params)
     print("✅ Model prepare complete.")
     return 0
 
@@ -350,9 +349,8 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     registry = discover_models()
     asr = registry.create(args.name)
 
-    audio = load_audio(args.audio)
-    options = _parse_options(args.options)
-    result = asr.transcribe(audio, options=options)
+    params = _parse_options(args.options)
+    result = asr.transcribe(args.audio, params)
 
     if args.json:
         print(result.model_dump_json(indent=2))
@@ -392,24 +390,27 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_options(raw: str | None) -> BaseTranscribeOptions | dict[str, object] | None:
-    """Parse a JSON options string into a dict or ``BaseTranscribeOptions``.
+def _parse_options(raw: str | None) -> RuntimeParams | None:
+    """Parse a JSON options string into :class:`RuntimeParams`.
+
+    Only the portable standard-set fields are supported on the CLI; engine
+    ``provider_params`` are not constructible without the engine type.
 
     Args:
         raw: Raw JSON string.
 
     Returns:
-        Parsed options object, or ``None``.
+        Parsed runtime parameters, or ``None``.
 
     Raises:
-        ValueError: If JSON parsing fails.
+        ValueError: If JSON does not decode to an object.
     """
     if raw is None:
         return None
     payload = json.loads(raw)
-    if isinstance(payload, dict):
-        return cast(dict[str, Any], payload)
-    raise ValueError("Options JSON must decode to an object.")
+    if not isinstance(payload, dict):
+        raise ValueError("Options JSON must decode to an object.")
+    return RuntimeParams.model_validate(cast(dict[str, Any], payload))
 
 
 def main(argv: list[str] | None = None) -> int:
