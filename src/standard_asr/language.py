@@ -13,6 +13,14 @@ AUTO = "auto"
 _BCP47_RE = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 _PRIVATE_USE_RE = re.compile(r"^(?:x|i)(?:-[A-Za-z0-9]{1,8})+$", re.IGNORECASE)
 
+#: A BCP-47 *primary* language subtag is 2-3 alpha (ISO 639-1/-2/-3, e.g. ``en``,
+#: ``yue``) or 4 alpha (reserved) -- never a free-form word. Registered 5-8 long
+#: primary subtags exist but are vanishingly rare in ASR; rejecting bare long
+#: words (``"Chinese"``, ``"English"``) catches the common native-name
+#: misconfiguration loudly while subtagged forms stay permissive (see
+#: ``is_valid_bcp47``).
+_PRIMARY_SUBTAG_RE = re.compile(r"^[A-Za-z]{2,4}$")
+
 
 def normalize_bcp47(tag: str) -> str:
     """Normalize a BCP 47 language tag into a consistent, lowercase form.
@@ -39,6 +47,13 @@ def is_valid_bcp47(tag: str) -> bool:
     errors (empty segments, invalid characters). It supports private-use tags
     like ``x-foo`` and the special ``und`` tag for undetermined language.
 
+    A *single-subtag* tag MUST be a plausible primary language subtag (2-4
+    alpha, per ISO 639); this rejects free-form native language names such as
+    ``"Chinese"`` or ``"English"`` loudly rather than silently accepting a
+    misconfiguration (adapters are responsible for mapping native names to
+    BCP-47; see the language design note). Multi-subtag forms (``"zh-Hans"``)
+    stay permissive because the extra structure already rules out a stray word.
+
     Args:
         tag: Candidate language tag.
 
@@ -54,7 +69,12 @@ def is_valid_bcp47(tag: str) -> bool:
         return True
     if _PRIVATE_USE_RE.match(normalized):
         return True
-    return _BCP47_RE.match(normalized) is not None
+    if _BCP47_RE.match(normalized) is None:
+        return False
+    # A lone subtag must look like a primary language subtag, not a word.
+    if "-" not in normalized:
+        return _PRIMARY_SUBTAG_RE.match(normalized) is not None
+    return True
 
 
 def effective_language(
@@ -130,29 +150,40 @@ def effective_candidate_languages(
     if not chosen:
         return None, diagnostics
 
-    detectable = set(detectable_languages)
-    result: list[str] = []
-    seen: set[str] = set()
+    # R3 step 4 ordering: dedup-preserving-order FIRST, then validate each
+    # surviving entry. Deduplicating before membership ensures a repeated
+    # non-detectable candidate is reported (or dropped) exactly once.
+    deduped: list[str] = []
+    deduped_seen: set[str] = set()
     for tag in chosen:
+        # 'auto' is a directive, not a candidate; its presence is a caller bug,
+        # so it ALWAYS raises -- independent of strict/best_effort -- mirroring
+        # the provider_params "always-raise on a code bug" policy (R3 step 4 /
+        # language design note: candidate_languages MUST NOT contain 'auto').
         if tag == AUTO:
             raise ValueError("candidate_languages MUST NOT contain 'auto'.")
         norm = normalize_bcp47(tag)
-        if norm in seen:
+        if norm in deduped_seen:
             continue
+        deduped_seen.add(norm)
+        deduped.append(norm)
+
+    detectable = set(detectable_languages)
+    result: list[str] = []
+    for norm in deduped:
         if norm not in detectable:
             if strict:
-                raise ValueError(f"Candidate language {tag!r} is not detectable.")
+                raise ValueError(f"Candidate language {norm!r} is not detectable.")
             diagnostics.append(
                 Diagnostic(
                     level="warning",
                     code="candidate_language_dropped",
-                    message=f"Dropped non-detectable candidate {tag!r}.",
+                    message=f"Dropped non-detectable candidate {norm!r}.",
                     param="candidate_languages",
-                    provided=tag,
+                    provided=norm,
                 )
             )
             continue
-        seen.add(norm)
         result.append(norm)
 
     if max_count is not None and len(result) > max_count:

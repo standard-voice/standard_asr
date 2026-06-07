@@ -32,9 +32,10 @@ from .audio_conversion import PreparedAudio, execute_plan
 from .audio_input import AudioInput, AudioInputLike, coerce_audio_input
 from .audio_negotiation import negotiate_or_raise
 from .capabilities import DeclaredCapabilities
-from .exceptions import UnsupportedFeatureError
-from .param_gating import gate_params
-from .results import TranscriptionResult
+from .exceptions import ConfigError, UnsupportedFeatureError
+from .language import effective_candidate_languages, effective_language
+from .param_gating import Mode, gate_params
+from .results import Diagnostic, TranscriptionResult
 from .runtime_params import ProviderParams, RuntimeParams
 
 if TYPE_CHECKING:
@@ -135,23 +136,45 @@ class EngineBase(ABC):
     ) -> TranscriptionResult:
         """Transcribe a complete audio input (template method).
 
-        Runs the standard pipeline: coerce -> negotiate -> convert/resample ->
-        gate parameters -> call the engine -> attach diagnostics.
+        Runs the standard pipeline, *fail-fast first*: validate the language
+        config -> gate parameters (provider_params + capability gating, which
+        needs no audio) -> resolve & validate the effective language axis ->
+        coerce -> negotiate -> convert/resample -> call the engine -> attach
+        diagnostics.
+
+        Parameter validation runs *before* the (potentially expensive) audio
+        decode/resample so a swapped-engine ``provider_params`` bug or an
+        unsupported parameter is rejected before any audio is touched (spec
+        Runtime R3: "先 provider_params 快失败").
 
         Args:
             audio: The audio to transcribe.
             params: Per-request runtime parameters.
 
         Returns:
-            The transcription result with conversion / gating diagnostics
-            attached.
+            The transcription result with gating / language / conversion
+            diagnostics attached.
 
         Raises:
+            ConfigError: If the engine exposes a language axis but its
+                ``default_language`` is unset or not in ``selectable_languages``.
             IncompatibleAudioInputError: If no conversion path exists.
             UnsupportedFeatureError: In strict mode, on an unsupported parameter.
             InvalidProviderParamError: On wrong provider params.
+            ValueError: On an invalid candidate-language list in strict mode.
         """
         request = params or RuntimeParams()
+        # Fail fast: validate config + params (no audio needed) before decode.
+        self._validate_language_config()
+        gated, gate_diags = gate_params(
+            request,
+            self.effective_capabilities,
+            "batch",
+            strict=self._strict,
+            expected_provider_type=self.provider_params_type,
+        )
+        lang_diags = self._resolve_language_axis(gated, "batch")
+        # Audio decode/resample only after parameters are known-good.
         provided: AudioInput = coerce_audio_input(audio)
         plan = negotiate_or_raise(provided, set(self.properties.accepted_input))
         prepared = execute_plan(
@@ -163,16 +186,101 @@ class EngineBase(ABC):
             max_file_size=self.properties.max_file_size,
             strict=self._strict,
         )
-        gated, gate_diags = gate_params(
-            request,
-            self.effective_capabilities,
-            "batch",
-            strict=self._strict,
-            expected_provider_type=self.provider_params_type,
-        )
         result = self._transcribe(prepared, gated)
-        merged = [*prepared.diagnostics, *gate_diags, *result.diagnostics]
+        merged = [
+            *gate_diags,
+            *lang_diags,
+            *prepared.diagnostics,
+            *result.diagnostics,
+        ]
         return result.model_copy(update={"diagnostics": merged})
+
+    def _validate_language_config(self) -> None:
+        """Enforce the ``default_language`` totality invariant (IC.6 / LANG R1).
+
+        When the engine exposes a language axis, ``default_language`` MUST be set
+        and MUST be a member of ``selectable_languages``; otherwise R2 step 2
+        (fall back to ``default_language``) would yield an undefined result. This
+        runs in the standard layer so a forgetful adapter fails loudly instead of
+        silently transcribing in the wrong language.
+
+        Raises:
+            ConfigError: If the language axis is exposed but ``default_language``
+                is unset or not in ``selectable_languages``.
+        """
+        if not self.properties.has_language_axis:
+            return
+        default = getattr(self.config, "default_language", None)
+        if default is None:
+            raise ConfigError(
+                f"Engine {self.properties.engine_id!r} exposes a language axis "
+                "(selectable_languages is non-empty) so its config MUST set "
+                "default_language (spec IC.6 / LANG R1)."
+            )
+        if default not in self.properties.selectable_languages:
+            raise ConfigError(
+                f"default_language {default!r} is not in selectable_languages "
+                f"{self.properties.selectable_languages!r} "
+                f"(engine {self.properties.engine_id!r}, spec LANG R1)."
+            )
+
+    def _resolve_language_axis(self, params: RuntimeParams, mode: Mode) -> list[Diagnostic]:
+        """Validate the effective language / candidate-language axis (LANG R2/R3).
+
+        Runs the standard resolution so candidate-language violations are caught
+        once, in the standard layer, regardless of whether the engine remembers
+        to call :func:`~standard_asr.language.effective_candidate_languages`.
+        The engine still reads ``params`` (and MAY call
+        :func:`~standard_asr.language.effective_language` for the final value);
+        this method only validates and emits diagnostics, so :meth:`_transcribe`
+        keeps its existing signature.
+
+        Args:
+            params: The gated runtime parameters.
+            mode: ``"batch"`` or ``"streaming"``.
+
+        Returns:
+            Diagnostics produced during candidate-language resolution.
+
+        Raises:
+            ValueError: In strict mode, on an invalid candidate-language list.
+        """
+        if not self.properties.has_language_axis:
+            return []
+        caps = self.effective_capabilities
+        eff_lang = effective_language(
+            params.language,
+            getattr(self.config, "default_language", None),
+            has_language_axis=True,
+            runtime_override_supported=caps.supports(f"{mode}.language.runtime_override"),
+        )
+        constraints = self._candidate_max(mode)
+        _, diagnostics = effective_candidate_languages(
+            eff_lang,
+            params.candidate_languages,
+            getattr(self.config, "default_candidate_languages", None),
+            candidate_supported=caps.supports(f"{mode}.language.candidate_languages"),
+            detectable_languages=self.properties.detectable_languages,
+            max_count=constraints,
+            strict=self._strict,
+        )
+        return diagnostics
+
+    def _candidate_max(self, mode: Mode) -> int | None:
+        """Return the candidate-languages ``max`` constraint for ``mode``.
+
+        Args:
+            mode: ``"batch"`` or ``"streaming"``.
+
+        Returns:
+            The declared maximum candidate count, or ``None`` if unconstrained
+            or the mode is unsupported.
+        """
+        domain = getattr(self.effective_capabilities, mode, None)
+        if domain is None:
+            return None
+        cap = domain.language.candidate_languages
+        return cap.constraints.max if cap.constraints is not None else None
 
     async def transcribe_async(
         self, audio: AudioInputLike, params: RuntimeParams | None = None
@@ -207,6 +315,32 @@ class EngineBase(ABC):
         """
         raise NotImplementedError  # pragma: no cover
 
+    @staticmethod
+    def ensure_stream_inputs_exclusive(
+        audio_format: AudioFormat | None, audio: AudioInputLike | None
+    ) -> None:
+        """Enforce the ``audio_format`` / ``audio`` mutual-exclusion (ST §3.1).
+
+        ``audio_format`` (incremental PCM feeding) and ``audio`` (whole-input
+        streaming output) are mutually exclusive; passing both MUST raise. This
+        shared guard lets every streaming engine enforce the rule with one call
+        instead of reimplementing it; the base :meth:`start_transcription`
+        invokes it before raising the unsupported-streaming error.
+
+        Args:
+            audio_format: The wire format for incremental frames, if any.
+            audio: A complete audio input for whole-input streaming, if any.
+
+        Raises:
+            ValueError: If both ``audio_format`` and ``audio`` are provided.
+        """
+        if audio_format is not None and audio is not None:
+            raise ValueError(
+                "start_transcription: 'audio_format' (incremental feeding) and "
+                "'audio' (whole-input streaming) are mutually exclusive; pass "
+                "exactly one (spec Streaming §3.1)."
+            )
+
     def start_transcription(
         self,
         *,
@@ -216,7 +350,9 @@ class EngineBase(ABC):
     ) -> TranscriptionSession:
         """Open a streaming transcription session.
 
-        The default raises; streaming engines override this.
+        The default enforces the input mutual-exclusion guard and then raises;
+        streaming engines override this (and SHOULD call
+        :meth:`ensure_stream_inputs_exclusive` first).
 
         Args:
             audio_format: Wire format for incremental PCM frames.
@@ -227,8 +363,10 @@ class EngineBase(ABC):
             A streaming session.
 
         Raises:
-            UnsupportedFeatureError: Always, unless overridden.
+            ValueError: If both ``audio_format`` and ``audio`` are provided.
+            UnsupportedFeatureError: When streaming is unsupported (the default).
         """
+        self.ensure_stream_inputs_exclusive(audio_format, audio)
         raise UnsupportedFeatureError("This engine does not support streaming.")
 
 

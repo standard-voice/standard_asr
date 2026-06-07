@@ -42,6 +42,15 @@ def test_invalid_selectable_language_raises() -> None:
         BaseProperties(**data)
 
 
+def test_native_language_name_rejected_in_selectable() -> None:
+    # A native language name (not BCP-47) must fail loud, not be silently
+    # accepted as a 7-letter primary subtag.
+    data = _base_kwargs()
+    data["selectable_languages"] = ["Chinese"]
+    with pytest.raises(ValueError, match="BCP 47"):
+        BaseProperties(**data)
+
+
 def test_no_language_axis_is_allowed() -> None:
     data = _base_kwargs()
     data["selectable_languages"] = []

@@ -85,3 +85,43 @@ def test_secret_field_helper_default_none() -> None:
         token: SecretStr | None = secret_field(description="tok")
 
     assert _C().token is None
+
+
+def test_from_env_explicit_wins_over_env() -> None:
+    env = {"STANDARD_ASR_ACME_BASE_URL": "https://from-env.test"}
+    cfg = _CloudConfig.from_env(
+        "acme", environ=env, base_url="https://explicit.test"
+    )
+    assert cfg.base_url == "https://explicit.test"
+
+
+def test_from_env_fills_unset_from_env() -> None:
+    env = {"STANDARD_ASR_ACME_BASE_URL": "https://from-env.test"}
+    cfg = _CloudConfig.from_env("acme", environ=env)
+    assert cfg.base_url == "https://from-env.test"
+
+
+def test_from_env_wraps_secret_and_masks() -> None:
+    env = {"STANDARD_ASR_ACME_API_KEY": "super-secret"}
+    cfg = _CloudConfig.from_env("acme", environ=env)
+    # Secret was wrapped in SecretStr -> masked everywhere, plaintext only on
+    # explicit reveal (no plaintext dict leak path).
+    assert isinstance(cfg.api_key, SecretStr)
+    assert "super-secret" not in str(cfg)
+    assert "super-secret" not in str(cfg.public_dump())
+    assert cfg.api_key.get_secret_value() == "super-secret"
+
+
+def test_from_env_does_not_read_engine_discriminator() -> None:
+    env = {"STANDARD_ASR_ACME_ENGINE": "evil"}
+    cfg = _CloudConfig.from_env("acme", environ=env)
+    assert cfg.engine == "acme"
+
+
+def test_from_env_missing_required_raises() -> None:
+    class _NeedsKey(BaseConfig[Literal["n"]]):
+        engine: Literal["n"] = "n"
+        required_field: str
+
+    with pytest.raises(ValueError):
+        _NeedsKey.from_env("n", environ={})

@@ -38,6 +38,7 @@ from .exceptions import ConfigError
 logger = logging.getLogger(__name__)
 
 EngineNameT = TypeVar("EngineNameT", bound=str, covariant=True)
+_ConfigT = TypeVar("_ConfigT", bound="BaseConfig[Any]")
 
 #: Prefix for environment-variable credential fallback.
 ENV_PREFIX = "STANDARD_ASR"
@@ -132,6 +133,45 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         return self.model_dump(mode="json")
 
     @classmethod
+    def from_env(
+        cls: type[_ConfigT],
+        engine_id: str,
+        *,
+        environ: dict[str, str] | None = None,
+        **explicit: Any,
+    ) -> _ConfigT:
+        """Construct a config, filling unset fields from the environment (IC.4).
+
+        Applies the normative priority **explicit > env > (required-missing
+        error)**: each standard field absent from ``explicit`` is filled from its
+        ``STANDARD_ASR_<NORMENGINE>_<NORMFIELD>`` environment variable (collision
+        detected), and the merged mapping is then passed to the constructor.
+        Because construction does the field coercion, ``SecretStr`` credentials
+        are wrapped (and so masked in ``repr``/``str``/``public_dump``) instead
+        of being handed around as raw plaintext -- avoiding the leak footgun of
+        passing a plaintext ``{field: secret}`` dict through application code.
+
+        The ``engine`` discriminator is never read from the environment; it is
+        the entrypoint-derived identity and defaults on each engine's subclass.
+
+        Args:
+            engine_id: The engine identifier used to build env var names.
+            environ: Environment mapping (defaults to ``os.environ``).
+            **explicit: Explicitly supplied field values (highest priority).
+
+        Returns:
+            A validated config instance.
+
+        Raises:
+            ConfigError: If two field names collide on the same env var.
+            ValueError: If construction fails (e.g. a required field is missing
+                from both ``explicit`` and the environment).
+        """
+        merged: dict[str, Any] = dict(cls.env_overrides(engine_id, environ=environ))
+        merged.update(explicit)  # explicit wins over env.
+        return cls(**merged)
+
+    @classmethod
     def env_overrides(
         cls, engine_id: str, *, environ: dict[str, str] | None = None
     ) -> dict[str, Any]:
@@ -140,6 +180,12 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         Only fields absent from explicit config should be filled from these;
         the caller applies priority (explicit > env). Collisions (two fields
         normalizing to the same env var) are rejected.
+
+        Security note: the returned dict holds **raw plaintext** values,
+        including any credential fields, because ``SecretStr`` wrapping happens
+        only at construction. Prefer :meth:`from_env`, which merges and
+        constructs in one step (so secrets are wrapped/masked); treat the dict
+        returned here as sensitive and never log it.
 
         Args:
             engine_id: The engine identifier used to build env var names.

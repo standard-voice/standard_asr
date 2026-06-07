@@ -29,6 +29,19 @@ def test_is_valid_bcp47() -> None:
     assert is_valid_bcp47("en@US") is False
 
 
+def test_is_valid_bcp47_rejects_native_names() -> None:
+    # Free-form native language names are NOT BCP-47 -> fail loud (adapters map).
+    assert is_valid_bcp47("Chinese") is False
+    assert is_valid_bcp47("English") is False
+    assert is_valid_bcp47("Mandarin") is False
+
+
+def test_is_valid_bcp47_accepts_real_codes() -> None:
+    assert is_valid_bcp47("yue") is True  # 3-letter ISO 639-3
+    assert is_valid_bcp47("zh-Hans") is True  # subtagged form stays permissive
+    assert is_valid_bcp47("zh-Hant-HK") is True
+
+
 def test_effective_language_runtime_override() -> None:
     assert (
         effective_language(
@@ -162,6 +175,38 @@ def test_effective_candidates_best_effort_truncates() -> None:
     )
     assert result == ["en", "ja"]
     assert any(d.code == "candidate_languages_truncated" for d in diags)
+
+
+def test_dedup_before_membership_single_drop_diagnostic() -> None:
+    # A repeated NON-detectable candidate must be deduped first, so it is
+    # reported / dropped exactly once (not twice).
+    result, diags = effective_candidate_languages(
+        AUTO,
+        ["zz", "en", "zz"],
+        None,
+        candidate_supported=True,
+        detectable_languages=["en"],
+        max_count=3,
+        strict=False,
+    )
+    assert result == ["en"]
+    dropped = [d for d in diags if d.code == "candidate_language_dropped"]
+    assert len(dropped) == 1
+
+
+def test_auto_in_candidates_always_raises_even_best_effort() -> None:
+    # 'auto' in a candidate list is a caller bug -> always raises, independent
+    # of strict / best_effort.
+    with pytest.raises(ValueError, match="auto"):
+        effective_candidate_languages(
+            AUTO,
+            ["en", "auto"],
+            None,
+            candidate_supported=True,
+            detectable_languages=["en"],
+            max_count=3,
+            strict=False,
+        )
 
 
 def test_effective_candidates_defaults_when_no_request() -> None:

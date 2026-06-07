@@ -20,9 +20,12 @@ from standard_asr import (
     StandardASR,
     TranscriptionResult,
 )
+from standard_asr.asr_config import LanguageConfigMixin
 from standard_asr.audio_input import AudioArray, AudioPath, InputKind
 from standard_asr.capabilities import (
     BatchCapabilities,
+    CandidateLanguagesCap,
+    CandidateLanguagesConstraints,
     DeclaredCapabilities,
     FlagCap,
     LanguageCaps,
@@ -35,8 +38,9 @@ from standard_asr.exceptions import (
 from standard_asr.runtime_params import ProviderParams, WordTimestampGranularity
 
 
-class _Config(BaseConfig[Literal["arr"]]):
+class _Config(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
     engine: Literal["arr"] = "arr"
+    default_language: str | None = "en"
 
 
 class _ArrayProps(BaseProperties):
@@ -45,7 +49,7 @@ class _ArrayProps(BaseProperties):
     protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
-    accepted_sample_rates: list[int] = [16000]
+    accepted_sample_rates: list[int] | Literal["any"] = [16000]
     selectable_languages: list[str] = ["en", "auto"]
     detectable_languages: list[str] = ["en"]
 
@@ -167,7 +171,7 @@ def test_supports_routes_to_effective() -> None:
 
 def test_resample_diagnostic_for_off_rate_array() -> None:
     class _AnyRateProps(_ArrayProps):
-        accepted_sample_rates: list[int] = [16000]
+        accepted_sample_rates: list[int] | Literal["any"] = [16000]
 
     class _Engine(_ArrayEngine):
         properties: ClassVar[BaseProperties] = _AnyRateProps()
@@ -182,3 +186,174 @@ def test_path_to_array_engine_needs_decode(tmp_path: object) -> None:
     # negotiation routed to decode rather than failing closed.
     with pytest.raises(Exception):
         _ArrayEngine().transcribe(AudioPath("/nonexistent/file.wav"))
+
+
+# --- H2: provider_params validated BEFORE audio decode (fail-fast) -----------
+
+
+class _DecodeTracker(_ArrayEngine):
+    """Engine that records whether audio decode was reached."""
+
+    decoded: bool = False
+
+    def _transcribe(
+        self, prepared: PreparedAudio, params: RuntimeParams
+    ) -> TranscriptionResult:  # pragma: no cover - should not run on bad params
+        type(self).decoded = True
+        return super()._transcribe(prepared, params)
+
+
+def test_provider_params_rejected_before_audio_decode() -> None:
+    from standard_asr.audio_input import AudioPath
+
+    class _OtherParams(ProviderParams):
+        x: int = 0
+
+    _DecodeTracker.decoded = False
+    # A nonexistent path would blow up in decode; the swapped provider_params
+    # must be rejected first, so no decode is attempted.
+    with pytest.raises(InvalidProviderParamError):
+        _DecodeTracker().transcribe(
+            AudioPath("/nonexistent/file.wav"),
+            RuntimeParams(provider_params=_OtherParams()),
+        )
+    assert _DecodeTracker.decoded is False
+
+
+def test_unsupported_param_strict_rejected_before_audio_decode() -> None:
+    from standard_asr.audio_input import AudioPath
+
+    _DecodeTracker.decoded = False
+    with pytest.raises(UnsupportedFeatureError):
+        _DecodeTracker().transcribe(
+            AudioPath("/nonexistent/file.wav"),
+            RuntimeParams(word_timestamps=WordTimestampGranularity.WORD),
+        )
+    assert _DecodeTracker.decoded is False
+
+
+# --- default_language enforcement (IC.6 / LANG R1) ---------------------------
+
+
+class _NoDefaultConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
+    engine: Literal["arr"] = "arr"
+    # default_language intentionally left None.
+
+
+class _NoDefaultEngine(_ArrayEngine):
+    def __init__(self) -> None:
+        self.config = _NoDefaultConfig()
+
+
+def test_language_axis_requires_default_language() -> None:
+    from standard_asr.exceptions import ConfigError
+
+    with pytest.raises(ConfigError, match="default_language"):
+        _NoDefaultEngine().transcribe(_audio())
+
+
+class _BadDefaultConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
+    engine: Literal["arr"] = "arr"
+    default_language: str | None = "fr"  # not in selectable_languages
+
+
+class _BadDefaultEngine(_ArrayEngine):
+    def __init__(self) -> None:
+        self.config = _BadDefaultConfig()
+
+
+def test_default_language_must_be_selectable() -> None:
+    from standard_asr.exceptions import ConfigError
+
+    with pytest.raises(ConfigError, match="selectable_languages"):
+        _BadDefaultEngine().transcribe(_audio())
+
+
+class _NoLangProps(_ArrayProps):
+    selectable_languages: list[str] = []
+    detectable_languages: list[str] = []
+
+
+class _NoLangConfig(BaseConfig[Literal["arr"]]):
+    engine: Literal["arr"] = "arr"
+
+
+class _NoLangEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _NoLangProps()
+
+    def __init__(self) -> None:
+        self.config = _NoLangConfig()
+
+
+def test_no_language_axis_skips_default_language_check() -> None:
+    result = _NoLangEngine().transcribe(_audio())
+    assert result.text == "n=8"
+
+
+# --- H3: candidate-language validation runs in the standard layer ------------
+
+
+_CAND_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(
+        language=LanguageCaps(
+            runtime_override=FlagCap(supported=True),
+            candidate_languages=CandidateLanguagesCap(
+                supported=True,
+                constraints=CandidateLanguagesConstraints(max=2),
+            ),
+        ),
+    )
+)
+
+
+class _AutoProps(_ArrayProps):
+    selectable_languages: list[str] = ["en", "auto"]
+    detectable_languages: list[str] = ["en", "ja"]
+
+
+class _AutoConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
+    engine: Literal["arr"] = "arr"
+    default_language: str | None = "auto"
+
+
+class _AutoEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _AutoProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAND_CAPS
+
+    def __init__(self, *, strict: bool = True) -> None:
+        self.config = _AutoConfig(strict=strict)
+
+
+def test_candidate_languages_strict_non_detectable_raises_in_base() -> None:
+    with pytest.raises(ValueError, match="detectable"):
+        _AutoEngine().transcribe(
+            _audio(), RuntimeParams(language="auto", candidate_languages=["zz"])
+        )
+
+
+def test_candidate_languages_best_effort_emits_diagnostic_in_base() -> None:
+    result = _AutoEngine(strict=False).transcribe(
+        _audio(), RuntimeParams(language="auto", candidate_languages=["en", "zz"])
+    )
+    assert any(d.code == "candidate_language_dropped" for d in result.diagnostics)
+
+
+# --- streaming mutual-exclusion guard ----------------------------------------
+
+
+def test_start_transcription_rejects_both_inputs() -> None:
+    from standard_asr.audio_format import AudioFormat
+
+    fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _ArrayEngine().start_transcription(audio_format=fmt, audio=_audio())
+
+
+def test_start_transcription_guard_helper_is_static() -> None:
+    from standard_asr.audio_format import AudioFormat
+
+    fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+    # One input only is fine (no raise from the guard itself).
+    EngineBase.ensure_stream_inputs_exclusive(fmt, None)
+    EngineBase.ensure_stream_inputs_exclusive(None, _audio())
+    EngineBase.ensure_stream_inputs_exclusive(None, None)
