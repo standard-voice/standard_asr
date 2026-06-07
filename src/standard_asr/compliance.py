@@ -8,6 +8,7 @@ from typing import Iterable, Literal
 
 from .asr_config import BaseConfig
 from .asr_properties import BaseProperties
+from .capabilities import DeclaredCapabilities
 from .discovery import ModelRegistry, discover_models
 from .exceptions import FactoryLoadError
 
@@ -242,5 +243,33 @@ def check_entrypoints(
                     model=name,
                 )
             )
+
+        declared = getattr(instance, "declared_capabilities", None)
+        if not isinstance(declared, DeclaredCapabilities):
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message=(
+                        "Instance is missing a DeclaredCapabilities "
+                        "'declared_capabilities' attribute."
+                    ),
+                    model=name,
+                )
+            )
+        else:
+            effective = getattr(instance, "effective_capabilities", None)
+            if isinstance(effective, DeclaredCapabilities) and not declared.covers(
+                effective
+            ):
+                issues.append(
+                    ComplianceIssue(
+                        level="error",
+                        message=(
+                            "effective_capabilities is not a subset of "
+                            "declared_capabilities (effective MUST only narrow)."
+                        ),
+                        model=name,
+                    )
+                )
 
     return ComplianceReport(registry=registry, issues=issues)

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .discovery import ModelRegistry, discover_models
 from .results import TranscriptionResult
+from .runtime_params import RuntimeParams
 from .utils.audio_loader import load_audio, load_audio_from_bytes
 
 
@@ -167,13 +168,13 @@ def create_app(registry: ModelRegistry | None = None):
         """
         try:
             audio = await asyncio.to_thread(load_audio_from_bytes, file)
-            options_payload = json.loads(options) if options else None
+            params = _build_params(json.loads(options) if options else None)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
             asr = await asyncio.to_thread(model_registry.create, model)
-            result = await asyncio.to_thread(asr.transcribe, audio, options_payload)
+            result = await asyncio.to_thread(asr.transcribe, audio, params)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -200,14 +201,92 @@ def create_app(registry: ModelRegistry | None = None):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
+            params = _build_params(payload.options)
             asr = await asyncio.to_thread(model_registry.create, payload.model)
-            result = await asyncio.to_thread(asr.transcribe, audio, payload.options)
+            result = await asyncio.to_thread(asr.transcribe, audio, params)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         return TranscribeResponse(model=payload.model, result=result)
 
+    @app.get("/v1/capabilities/{model:path}")
+    def capabilities(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """Return an engine's declared capabilities as canonical JSON.
+
+        Args:
+            model: Model key in ``engine/model`` format.
+
+        Returns:
+            The declared capability tree.
+
+        Raises:
+            HTTPException: If the model is unknown or has no capabilities.
+        """
+        engine = _create_or_404(model_registry, model, HTTPException)
+        caps = getattr(engine, "declared_capabilities", None)
+        if caps is None:
+            raise HTTPException(status_code=404, detail="No capabilities declared.")
+        return caps.model_dump(mode="json")
+
+    @app.get("/v1/params-schema/{model:path}")
+    def params_schema(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """Return the JSON Schema for an engine's ``provider_params``.
+
+        Args:
+            model: Model key in ``engine/model`` format.
+
+        Returns:
+            The provider-params JSON Schema, or ``{}`` if the engine has none.
+
+        Raises:
+            HTTPException: If the model is unknown.
+        """
+        engine = _create_or_404(model_registry, model, HTTPException)
+        params_type = getattr(engine, "provider_params_type", None)
+        if params_type is None:
+            return {}
+        return params_type.model_json_schema()
+
     return app
+
+
+def _build_params(options: dict[str, Any] | None) -> RuntimeParams | None:
+    """Build :class:`RuntimeParams` from a JSON options object.
+
+    Only the portable standard set is supported over the wire (engine
+    ``provider_params`` are not constructible without the engine type).
+
+    Args:
+        options: A JSON options object, or ``None``.
+
+    Returns:
+        Parsed runtime parameters, or ``None``.
+    """
+    if options is None:
+        return None
+    return RuntimeParams.model_validate(options)
+
+
+def _create_or_404(
+    registry: ModelRegistry, model: str, http_exception: type[Exception]
+) -> Any:
+    """Create an engine instance or raise a 404.
+
+    Args:
+        registry: The model registry.
+        model: Model key in ``engine/model`` format.
+        http_exception: The ``HTTPException`` class to raise.
+
+    Returns:
+        The engine instance.
+
+    Raises:
+        Exception: ``http_exception`` with status 404 if the model is unknown.
+    """
+    try:
+        return registry.create(model)
+    except Exception as exc:  # noqa: BLE001
+        raise http_exception(status_code=404, detail=str(exc)) from exc  # type: ignore[call-arg]
 
 
 def _decode_audio_payload(payload: str) -> NDArray[np.float32]:

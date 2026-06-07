@@ -14,7 +14,14 @@ from numpy.typing import NDArray
 from standard_asr import BaseConfig, BaseProperties, TranscriptionResult
 from standard_asr import server as server_module
 from standard_asr.audio_input import InputKind
+from standard_asr.capabilities import (
+    BatchCapabilities,
+    DeclaredCapabilities,
+    FlagCap,
+    LanguageCaps,
+)
 from standard_asr.discovery import discover_models
+from standard_asr.runtime_params import ProviderParams
 
 
 class _DummyConfig(BaseConfig[str]):
@@ -31,8 +38,21 @@ class _DummyProperties(BaseProperties):
     selectable_languages: list[str] = ["en"]
 
 
+class _DummyParams(ProviderParams):
+    beam: int = 1
+
+
+_DUMMY_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(
+        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+    )
+)
+
+
 class _DummyASR:
     properties: ClassVar[_DummyProperties] = _DummyProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _DUMMY_CAPS
+    provider_params_type: ClassVar[type[ProviderParams] | None] = _DummyParams
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="dummy")
@@ -259,3 +279,37 @@ def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     kwargs = getattr(uvicorn_stub, "kwargs")
     assert kwargs["host"] == "127.0.0.1"
     assert kwargs["port"] == 9999
+
+
+def test_capabilities_endpoint() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    resp = client.get("/v1/capabilities/dummy/echo")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["batch"]["language"]["runtime_override"]["supported"] is True
+
+
+def test_capabilities_endpoint_unknown_model() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    resp = client.get("/v1/capabilities/nope/missing")
+    assert resp.status_code == 404
+
+
+def test_params_schema_endpoint() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    resp = client.get("/v1/params-schema/dummy/echo")
+    assert resp.status_code == 200
+    schema = resp.json()
+    assert "beam" in schema.get("properties", {})
