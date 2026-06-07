@@ -139,7 +139,7 @@ breaks instantiation-free discovery. The compliance suite enforces this.
 
 Validate with:
 
-```
+```bash
 standard-asr compliance entrypoints
 standard-asr doctor
 ```
