@@ -51,8 +51,16 @@ class Diagnostic(BaseModel):
 class Word(BaseModel):
     """Word-level detail, shared between batch results and streaming events.
 
+    Note:
+        ``start`` / ``end`` are NOT constrained to ``>= 0``. The origin is the
+        first submitted sample (t=0), but negative offsets are intentionally
+        permitted to support streaming pre-roll (audio buffered before the
+        nominal session start). Forbidding negatives would make those legitimate
+        cases unrepresentable; renderers clamp to zero for the SRT/VTT grammar.
+
     Args:
-        start: Word start time in seconds (origin = first submitted sample).
+        start: Word start time in seconds (origin = first submitted sample;
+            may be negative for pre-roll).
         end: Word end time in seconds.
         text: Word text.
         probability: Optional confidence in ``[0, 1]``.
@@ -89,8 +97,13 @@ class Word(BaseModel):
 class Segment(BaseModel):
     """Segment-level detail, shared between batch results and streaming events.
 
+    Note:
+        ``start`` / ``end`` are NOT constrained to ``>= 0``; negative offsets
+        are permitted for streaming pre-roll (see :class:`Word`).
+
     Args:
-        start: Segment start time in seconds (origin = first submitted sample).
+        start: Segment start time in seconds (origin = first submitted sample;
+            may be negative for pre-roll).
         end: Segment end time in seconds.
         text: Segment transcript text.
         words: Optional word-level details for this segment.

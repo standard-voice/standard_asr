@@ -16,6 +16,7 @@ from standard_asr.capabilities import (
     PromptCap,
     ReconnectCap,
     StreamingCapabilities,
+    StreamTimestampsCap,
     WordTimestampsCap,
 )
 
@@ -107,6 +108,146 @@ def test_covers_rejects_widening() -> None:
         batch=BatchCapabilities(word_timestamps=WordTimestampsCap(supported=True))
     )
     assert declared.covers(effective) is False
+
+
+def test_covers_rejects_constraint_widening() -> None:
+    # H1: declared max=2; effective claims max=999 -> widening, must be rejected
+    # even though the SET of supported paths is identical.
+    declared = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(
+                candidate_languages=CandidateLanguagesCap(
+                    supported=True,
+                    constraints=CandidateLanguagesConstraints(max=2),
+                )
+            )
+        )
+    )
+    effective = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(
+                candidate_languages=CandidateLanguagesCap(
+                    supported=True,
+                    constraints=CandidateLanguagesConstraints(max=999),
+                )
+            )
+        )
+    )
+    assert declared.covers(effective) is False
+
+
+def test_covers_allows_constraint_narrowing() -> None:
+    declared = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(
+                candidate_languages=CandidateLanguagesCap(
+                    supported=True,
+                    constraints=CandidateLanguagesConstraints(max=5),
+                )
+            )
+        )
+    )
+    effective = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(
+                candidate_languages=CandidateLanguagesCap(
+                    supported=True,
+                    constraints=CandidateLanguagesConstraints(max=2),
+                )
+            )
+        )
+    )
+    assert declared.covers(effective) is True
+    # Equal limits are fine too.
+    assert declared.covers(declared) is True
+
+
+def test_covers_rejects_granularity_widening() -> None:
+    declared = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCap(
+                supported=True, granularities=["word", "segment"]
+            )
+        )
+    )
+    # Effective adds "char" -> widening the offered granularity set.
+    effective = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCap(
+                supported=True, granularities=["word", "segment", "char"]
+            )
+        )
+    )
+    assert declared.covers(effective) is False
+    # Narrowing to a subset is allowed.
+    narrowed = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
+        )
+    )
+    assert declared.covers(narrowed) is True
+
+
+def test_covers_rejects_mode_widening() -> None:
+    declared = DeclaredCapabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="lossy"))
+    )
+    # Effective claims the stronger "seamless" mode -> widening.
+    effective = DeclaredCapabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="seamless"))
+    )
+    assert declared.covers(effective) is False
+    # Reducing lossy -> unsupported is a valid close (handled by set logic, and
+    # the reduction map permits it).
+    reduced = DeclaredCapabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="unsupported"))
+    )
+    assert declared.covers(reduced) is True
+
+
+def test_covers_rejects_timestamps_mode_widening() -> None:
+    declared = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            timestamps=StreamTimestampsCap(mode="post_align")
+        )
+    )
+    effective = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            timestamps=StreamTimestampsCap(mode="native_frame_aligned")
+        )
+    )
+    assert declared.covers(effective) is False
+
+
+def test_unsupported_feature_constraints_not_in_supported_paths() -> None:
+    # H1: an unsupported feature's constraint sub-container MUST NOT appear as a
+    # supported path (constraints is a default-factory, never None).
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(
+                candidate_languages=CandidateLanguagesCap(supported=False)
+            ),
+            guidance=GuidanceCaps(prompt=PromptCap(supported=False)),
+        )
+    )
+    paths = set(caps.iter_supported_paths())
+    assert "batch.language.candidate_languages" not in paths
+    assert "batch.language.candidate_languages.constraints" not in paths
+    assert "batch.guidance.prompt.constraints" not in paths
+
+
+def test_node_at_returns_typed_node() -> None:
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
+        )
+    )
+    node = caps.node_at("batch.word_timestamps")
+    assert isinstance(node, WordTimestampsCap)
+    assert node.granularities == ["word"]
+    # Containers and missing paths return None (not a leaf node).
+    assert caps.node_at("batch") is None
+    assert caps.node_at("batch.nope") is None
 
 
 def test_unknown_x_namespace_key_tolerated() -> None:

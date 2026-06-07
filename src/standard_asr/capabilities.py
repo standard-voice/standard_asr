@@ -376,10 +376,32 @@ class DeclaredCapabilities(_Container):
                 return False
         return _derive_supported(node)
 
+    def node_at(self, dot_path: str) -> _CapNode | None:
+        """Return the typed capability *node* at ``dot_path``, or ``None``.
+
+        Unlike :meth:`supports` (which returns a bool), this returns the leaf
+        node object itself so callers can inspect its constraints / enums (e.g.
+        a ``WordTimestampsCap`` to validate a requested granularity against
+        :attr:`WordTimestampsCap.granularities`). Returns ``None`` if the path
+        is absent or does not resolve to a capability leaf node.
+
+        Args:
+            dot_path: Dotted capability path without the ``capabilities.``
+                prefix (e.g. ``"batch.word_timestamps"``).
+
+        Returns:
+            The capability leaf node, or ``None``.
+        """
+        node = self._resolve(dot_path)
+        return node if isinstance(node, _CapNode) else None
+
     def iter_supported_paths(self) -> Iterator[str]:
         """Yield every dot-path in the tree whose node is supported.
 
-        Used to verify the ``effective ⊆ declared`` invariant.
+        Only the children of a *supported* node are descended into, so an
+        unsupported feature's constraint sub-containers (which are always
+        present, never ``None``) do not appear. Used to verify the
+        ``effective ⊆ declared`` invariant.
 
         Yields:
             Dot-paths of supported capability nodes and present containers.
@@ -387,16 +409,55 @@ class DeclaredCapabilities(_Container):
         yield from _iter_paths(self, prefix="")
 
     def covers(self, other: DeclaredCapabilities) -> bool:
-        """Return whether this tree is a superset of ``other``.
+        """Return whether ``other`` is a valid narrowing of this tree.
+
+        Enforces the normative ``effective ⊆ declared`` invariant (spec §C):
+        the effective set may only *close* declared capabilities, never widen
+        them. This checks two things:
+
+        * **Set containment** -- every supported path in ``other`` is also
+          supported here (no feature is enabled that this tree did not declare).
+        * **Constraint narrowing** -- where both trees support a bounded or
+          enum/mode node, ``other``'s limits MUST be no looser than this tree's
+          (e.g. a smaller-or-equal ``max``, a subset of ``granularities``, a
+          ``mode`` that is the same or a reduction). A widening (declared
+          ``max=2`` -> effective ``max=999``) is rejected.
 
         Args:
             other: A (typically narrowed, effective) capability tree.
 
         Returns:
-            ``True`` if every supported path in ``other`` is supported here.
+            ``True`` if ``other`` is a subset narrowing of this tree.
         """
         mine = set(self.iter_supported_paths())
-        return all(path in mine for path in other.iter_supported_paths())
+        for path in other.iter_supported_paths():
+            if path not in mine:
+                return False
+        # Where both support a node, the effective node must not be looser.
+        for path in other.iter_supported_paths():
+            declared_node = self._resolve(path)
+            effective_node = other._resolve(path)
+            if declared_node is None or effective_node is None:
+                continue
+            if not _node_narrows(declared_node, effective_node):
+                return False
+        return True
+
+    def _resolve(self, dot_path: str) -> object:
+        """Resolve a dot-path to its node object (not its ``supported`` bool).
+
+        Args:
+            dot_path: Dotted capability path.
+
+        Returns:
+            The resolved node, or ``None`` if any segment is absent.
+        """
+        node: object = self
+        for part in dot_path.split("."):
+            node = _get_child(node, part)
+            if node is None:
+                return None
+        return node
 
 
 def _get_child(node: object, part: str) -> object:
@@ -447,6 +508,12 @@ def _derive_supported(node: object) -> bool:
 def _iter_paths(node: object, prefix: str) -> Iterator[str]:
     """Recursively yield supported dot-paths under ``node``.
 
+    A node's children are only descended into when the node itself is
+    supported. This prevents an *unsupported* leaf's constraint sub-containers
+    (which are always-present default-factory models, never ``None``, and thus
+    would otherwise read as "supported present containers") from polluting the
+    set used for the ``effective ⊆ declared`` comparison.
+
     Args:
         node: A pydantic model or dict to walk.
         prefix: The accumulated dot-path prefix.
@@ -458,9 +525,13 @@ def _iter_paths(node: object, prefix: str) -> Iterator[str]:
         if child is None:
             continue
         path = f"{prefix}.{name}" if prefix else name
-        if _derive_supported(child):
+        supported = _derive_supported(child)
+        if supported:
             yield path
-        yield from _iter_paths(child, path)
+        # Only descend into a supported node. An unsupported leaf has no
+        # meaningful supported children (its constraints are inert).
+        if supported:
+            yield from _iter_paths(child, path)
 
 
 def _children(node: object) -> list[tuple[str, object]]:
@@ -482,6 +553,99 @@ def _children(node: object) -> list[tuple[str, object]]:
     if isinstance(node, dict):
         return list(cast("dict[str, object]", node).items())
     return []
+
+
+#: Constraint fields whose semantics are an *upper bound* (effective ≤ declared).
+_MAX_CONSTRAINT_FIELDS = frozenset(
+    {"max", "max_tokens", "max_terms", "max_chars_per_term", "max_words_per_term", "max_speakers"}
+)
+
+#: enum/mode reductions: declared mode -> the set of modes that are no looser.
+#: A mapping value is the set of effective modes accepted for that declared mode
+#: (always includes the declared mode itself plus any strictly-weaker mode).
+_MODE_REDUCTIONS: dict[str, frozenset[str]] = {
+    # reconnect: seamless is strongest; lossy is weaker; unsupported is off.
+    "seamless": frozenset({"seamless", "lossy", "unsupported"}),
+    "lossy": frozenset({"lossy", "unsupported"}),
+    "unsupported": frozenset({"unsupported"}),
+    # timestamps: native_frame_aligned strongest; post_align weaker; none off.
+    "native_frame_aligned": frozenset({"native_frame_aligned", "post_align", "none"}),
+    "post_align": frozenset({"post_align", "none"}),
+    "none": frozenset({"none"}),
+    # finality_level: closed is the stronger guarantee; final is weaker.
+    "closed": frozenset({"closed", "final"}),
+    "final": frozenset({"final"}),
+}
+
+
+def _node_narrows(declared: object, effective: object) -> bool:
+    """Return whether ``effective`` is no looser than ``declared`` for one node.
+
+    Implements the per-node half of the ``effective ⊆ declared`` invariant for
+    bounded (``constraints``) and enum/mode nodes. Flag-only nodes always pass
+    (set containment already covered them).
+
+    Args:
+        declared: The declared node (or sub-value).
+        effective: The corresponding effective node (or sub-value).
+
+    Returns:
+        ``True`` if ``effective`` does not widen ``declared``.
+    """
+    # enum/mode nodes: the effective mode must be a reduction of the declared.
+    declared_mode = _read_attr(declared, "mode")
+    effective_mode = _read_attr(effective, "mode")
+    if isinstance(declared_mode, str) and isinstance(effective_mode, str):
+        allowed = _MODE_REDUCTIONS.get(declared_mode)
+        if allowed is not None and effective_mode not in allowed:
+            return False
+
+    # granularities: effective set MUST be a subset of declared set.
+    declared_grans = _read_attr(declared, "granularities")
+    effective_grans = _read_attr(effective, "granularities")
+    if isinstance(declared_grans, list) and isinstance(effective_grans, list):
+        if not set(cast("list[object]", effective_grans)).issubset(
+            set(cast("list[object]", declared_grans))
+        ):
+            return False
+
+    # bounded constraints: each numeric upper-bound MUST NOT increase.
+    declared_c = _read_attr(declared, "constraints")
+    effective_c = _read_attr(effective, "constraints")
+    if declared_c is not None and effective_c is not None:
+        for field in _MAX_CONSTRAINT_FIELDS:
+            d_val = _read_attr(declared_c, field)
+            e_val = _read_attr(effective_c, field)
+            # A declared finite bound must not be loosened. An effective bound
+            # may not appear where the declared one was unbounded (None) and
+            # then claim a value -- that is also a widening of an open bound.
+            if isinstance(d_val, int) and isinstance(e_val, int):
+                if e_val > d_val:
+                    return False
+            elif d_val is not None and e_val is None:
+                # Declared bounded, effective claims unbounded -> widening.
+                return False
+    return True
+
+
+def _read_attr(node: object, name: str) -> object:
+    """Read ``name`` from a model (field or extra) or dict, else ``None``.
+
+    Args:
+        node: A pydantic model, dict, or other value.
+        name: The attribute / key name.
+
+    Returns:
+        The value, or ``None`` if absent.
+    """
+    if isinstance(node, BaseModel):
+        if name in type(node).model_fields:
+            return getattr(node, name)
+        extra: dict[str, Any] = node.model_extra or {}
+        return extra.get(name)
+    if isinstance(node, dict):
+        return cast("dict[str, object]", node).get(name)
+    return None
 
 
 __all__ = [

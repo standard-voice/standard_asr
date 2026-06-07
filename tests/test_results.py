@@ -95,3 +95,82 @@ def test_to_srt_empty_text_no_duration() -> None:
     result = TranscriptionResult(text="")
     srt = to_srt(result)
     assert "00:00:00,000 --> 00:00:00,000" in srt
+
+
+# --------------------------------------------------------------------------- #
+# Renderer sanitization: transcript text must not forge / break cue structure.
+# --------------------------------------------------------------------------- #
+def test_srt_adversarial_blank_line_cannot_forge_cue() -> None:
+    # A transcript with an interior blank line followed by digits + a timestamp
+    # line would, unsanitized, forge a second SRT cue. After sanitization the
+    # whole thing stays inside cue 1 and there is exactly one cue.
+    evil = "Hello\n\n2\n00:00:05,000 --> 00:00:09,000\nInjected"
+    srt = to_srt(TranscriptionResult(text="x", segments=[Segment(start=0.0, end=1.0, text=evil)]))
+    # SRT cues are blank-line-delimited; with the interior blank line collapsed
+    # there is no separator, so the injected content stays inside cue 1 and
+    # cannot forge a second cue. (SRT, unlike VTT, does not treat "-->" in a
+    # payload line as cue timing, so it need not be neutralized.)
+    assert srt.count("\n\n") == 0
+    assert srt.startswith("1\n")
+    assert "Injected" in srt
+
+
+def test_srt_collapses_interior_blank_lines() -> None:
+    seg = Segment(start=0.0, end=1.0, text="line one\n\n\nline two")
+    srt = to_srt(TranscriptionResult(text="x", segments=[seg]))
+    assert "line one\nline two" in srt
+    assert "line one\n\n" not in srt
+
+
+def test_vtt_neutralizes_arrow_in_text() -> None:
+    seg = Segment(start=0.0, end=1.0, text="a --> b")
+    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]))
+    # Only the cue timing line may contain "-->"; payload arrow neutralized.
+    assert vtt.count("-->") == 1
+    assert "a -> b" in vtt
+
+
+def test_vtt_adversarial_blank_line_cannot_forge_cue() -> None:
+    evil = "Hi\n\n00:00:05.000 --> 00:00:09.000\nInjected"
+    vtt = to_vtt(TranscriptionResult(text="x", segments=[Segment(start=0.0, end=1.0, text=evil)]))
+    # WEBVTT header + one real cue: blank-line count is exactly one.
+    assert vtt.count("\n\n") == 1
+    assert vtt.count("-->") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Renderer ordering: cues sorted by (start, channel) per spec TR.2.
+# --------------------------------------------------------------------------- #
+def test_srt_sorts_out_of_order_segments() -> None:
+    segs = [
+        Segment(start=2.0, end=3.0, text="second"),
+        Segment(start=0.0, end=1.0, text="first"),
+    ]
+    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    assert srt.index("first") < srt.index("second")
+    assert srt.startswith("1\n00:00:00,000")
+
+
+def test_srt_sorts_by_channel_on_tie() -> None:
+    segs = [
+        Segment(start=0.0, end=1.0, text="ch1", channel=1),
+        Segment(start=0.0, end=1.0, text="ch0", channel=0),
+    ]
+    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    assert srt.index("ch0") < srt.index("ch1")
+
+
+def test_renderer_clamps_negative_preroll_time() -> None:
+    # Data model allows negative (pre-roll) start; renderer clamps to zero for
+    # the SRT/VTT grammar (documented format constraint, not a silent mask).
+    seg = Segment(start=-0.5, end=0.5, text="pre-roll")
+    srt = to_srt(TranscriptionResult(text="x", segments=[seg]))
+    assert "00:00:00,000 --> 00:00:00,500" in srt
+
+
+def test_word_segment_allow_negative_times() -> None:
+    # ge=0 decision: negatives are permitted (streaming pre-roll).
+    w = Word(start=-0.2, end=0.0, text="pre")
+    s = Segment(start=-0.2, end=0.0, text="pre")
+    assert w.start == -0.2
+    assert s.start == -0.2
