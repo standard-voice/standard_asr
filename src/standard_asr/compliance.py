@@ -3,20 +3,37 @@
 from __future__ import annotations
 
 import inspect
+import threading
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal
+
+from pydantic import BaseModel
 
 from .asr_config import BaseConfig
 from .asr_properties import BaseProperties
 from .capabilities import DeclaredCapabilities
-from .discovery import ModelRegistry, discover_models
-from .exceptions import FactoryLoadError
+from .discovery import FactoryLoadError, ModelRegistry, discover_models
+from .runtime_params import ProviderParams, RuntimeParams
+from .streaming import SyncSession, TranscriptionSession
 
 __all__ = [
     "ComplianceIssue",
     "ComplianceReport",
     "check_entrypoints",
+    "check_sync_bridge",
 ]
+
+
+def _is_closed_model(model: type[BaseModel]) -> bool:
+    """Return ``True`` if *model* forbids extra fields (``extra="forbid"``).
+
+    Args:
+        model: A pydantic model type.
+
+    Returns:
+        ``True`` when the model is a closed type.
+    """
+    return model.model_config.get("extra") == "forbid"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,9 +91,7 @@ class ComplianceReport:
 
         return not any(issue.level == "error" for issue in self.issues)
 
-    def iter_level(
-        self, level: Literal["error", "warning"]
-    ) -> Iterable[ComplianceIssue]:
+    def iter_level(self, level: Literal["error", "warning"]) -> Iterable[ComplianceIssue]:
         """Yield issues matching *level*.
 
         Args:
@@ -160,6 +175,17 @@ def check_entrypoints(
         )
         return ComplianceReport(registry=registry, issues=issues)
 
+    # §R.4 R1: RuntimeParams MUST be a closed type. This is a global invariant of
+    # the standard, not per-engine, but surface it once so authors see it.
+    if not _is_closed_model(RuntimeParams):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message="RuntimeParams is not a closed type (extra='forbid').",
+                model=None,
+            )
+        )
+
     for name in registry.names():
         spec = registry.spec(name)
         try:
@@ -167,6 +193,10 @@ def check_entrypoints(
         except FactoryLoadError as exc:
             issues.append(ComplianceIssue(level="error", message=str(exc), model=name))
             continue
+
+        # §3.1 / §C: declared metadata MUST be readable from the class without
+        # instantiation. Resolve the class and read its ClassVars directly.
+        _check_class_level_metadata(spec, name, issues)
 
         if not instantiate:
             continue
@@ -195,9 +225,7 @@ def check_entrypoints(
             )
             continue
 
-        if not hasattr(instance, "transcribe") or not callable(
-            getattr(instance, "transcribe")
-        ):
+        if not hasattr(instance, "transcribe") or not callable(getattr(instance, "transcribe")):
             issues.append(
                 ComplianceIssue(
                     level="error",
@@ -215,8 +243,7 @@ def check_entrypoints(
                 ComplianceIssue(
                     level="error",
                     message=(
-                        "Instance is missing a BaseProperties-compatible "
-                        "'properties' attribute."
+                        "Instance is missing a BaseProperties-compatible 'properties' attribute."
                     ),
                     model=name,
                 )
@@ -258,9 +285,7 @@ def check_entrypoints(
             )
         else:
             effective = getattr(instance, "effective_capabilities", None)
-            if isinstance(effective, DeclaredCapabilities) and not declared.covers(
-                effective
-            ):
+            if isinstance(effective, DeclaredCapabilities) and not declared.covers(effective):
                 issues.append(
                     ComplianceIssue(
                         level="error",
@@ -273,3 +298,180 @@ def check_entrypoints(
                 )
 
     return ComplianceReport(registry=registry, issues=issues)
+
+
+def _check_class_level_metadata(spec: object, name: str, issues: list[ComplianceIssue]) -> None:
+    """Verify class-level metadata is readable without instantiation (§3.1/§C).
+
+    Reads ``declared_capabilities`` and ``provider_params_type`` from the engine
+    *class* (never the instance) and validates that, when present, the
+    provider-params type is a closed :class:`ProviderParams` subclass (§R.4 R1).
+
+    Args:
+        spec: The :class:`~standard_asr.discovery.ModelSpec`.
+        name: The model key (for issue attribution).
+        issues: The mutable list of issues to append to.
+    """
+    engine_class_getter = getattr(spec, "engine_class", None)
+    if not callable(engine_class_getter):  # pragma: no cover - defensive
+        return
+    try:
+        engine_class = engine_class_getter()
+    except FactoryLoadError as exc:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "declared_capabilities/properties are not readable without "
+                    f"instantiation: {exc}"
+                ),
+                model=name,
+            )
+        )
+        return
+
+    declared = inspect.getattr_static(engine_class, "declared_capabilities", None)
+    if not isinstance(declared, DeclaredCapabilities):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "Engine class does not expose a class-level "
+                    "'declared_capabilities' (ClassVar) readable without "
+                    "instantiation."
+                ),
+                model=name,
+            )
+        )
+
+    properties = inspect.getattr_static(engine_class, "properties", None)
+    if not isinstance(properties, BaseProperties):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "Engine class does not expose a class-level 'properties' "
+                    "(ClassVar) readable without instantiation."
+                ),
+                model=name,
+            )
+        )
+
+    params_type = inspect.getattr_static(engine_class, "provider_params_type", None)
+    if params_type is None:
+        return
+    if not (isinstance(params_type, type) and issubclass(params_type, ProviderParams)):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "provider_params_type is set but is not a ProviderParams "
+                    f"subclass (got {params_type!r})."
+                ),
+                model=name,
+            )
+        )
+    elif not _is_closed_model(params_type):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "provider_params_type must be a closed type (extra='forbid'); "
+                    f"{params_type.__name__} is not."
+                ),
+                model=name,
+            )
+        )
+
+
+def check_sync_bridge(
+    session_factory: Callable[[], TranscriptionSession],
+    *,
+    timeout: float = 5.0,
+) -> ComplianceReport:
+    """Drive an async adapter's :class:`SyncSession` from an external thread.
+
+    Implements the spec ST.6.5 mandate: a sync-bridge no-deadlock / no-leak
+    test. A fresh session is created and driven synchronously from a *different*
+    thread than the one that built it, feeding no audio and immediately ending
+    input. The test asserts the session terminates (emits a terminal event and
+    tears down) within ``timeout`` -- a deadlock or a leaked background loop/
+    thread shows up as a timeout.
+
+    Args:
+        session_factory: A zero-argument callable returning a fresh async
+            :class:`TranscriptionSession` (e.g. ``engine.start_transcription``
+            bound with its arguments).
+        timeout: Seconds to allow the bridged session to drain and close.
+
+    Returns:
+        A :class:`ComplianceReport`. ``passed`` is ``True`` when the bridge
+        terminated cleanly with no surviving worker thread.
+
+    Raises:
+        None.
+    """
+    issues: list[ComplianceIssue] = []
+    outcome: dict[str, object] = {}
+    before = {t.ident for t in threading.enumerate()}
+
+    def _drive() -> None:
+        try:
+            with SyncSession(session_factory()) as sync:
+                sync.end_audio()
+                events = list(sync)
+            outcome["terminal"] = any(getattr(ev, "is_terminal", False) for ev in events)
+        except Exception as exc:  # noqa: BLE001 - reported as a compliance error
+            outcome["error"] = repr(exc)
+
+    worker = threading.Thread(target=_drive, name="compliance-sync-bridge")
+    worker.start()
+    worker.join(timeout=timeout)
+
+    if worker.is_alive():
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    f"SyncSession did not terminate within {timeout}s (deadlock). "
+                    "Check the §6.5 adapter contract: bind loop resources in "
+                    "__aenter__, never touch the ambient event loop."
+                ),
+                model=None,
+            )
+        )
+        return ComplianceReport(registry=ModelRegistry({}), issues=issues)
+
+    if "error" in outcome:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=f"SyncSession raised while bridging: {outcome['error']}.",
+                model=None,
+            )
+        )
+    elif not outcome.get("terminal"):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message="SyncSession ended without emitting a terminal event.",
+                model=None,
+            )
+        )
+
+    # Leak check: the bridge owns a background loop thread torn down on __exit__.
+    leaked = {
+        t.name
+        for t in threading.enumerate()
+        if t.ident not in before and t.is_alive() and t.name != "compliance-sync-bridge"
+    }
+    if leaked:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=f"SyncSession leaked background thread(s): {sorted(leaked)}.",
+                model=None,
+            )
+        )
+
+    return ComplianceReport(registry=ModelRegistry({}), issues=issues)

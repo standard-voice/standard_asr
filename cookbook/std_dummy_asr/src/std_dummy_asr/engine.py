@@ -44,7 +44,7 @@ class DummyASRConfig(LanguageConfigMixin, BaseConfig[Literal["dummy"]]):
     """
 
     engine: Literal["dummy"] = "dummy"
-    default_language: str = "en"
+    default_language: str | None = "en"
     message: str = Field(
         "echo",
         description="Text prefix included in the emitted transcript for demos.",
@@ -59,7 +59,7 @@ class DummyASRProperties(BaseProperties):
     protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
-    accepted_sample_rates: list[int] = [16000]
+    accepted_sample_rates: list[int] | Literal["any"] = [16000]
     selectable_languages: list[str] = ["en", "auto"]
     detectable_languages: list[str] = ["en"]
     description: str | None = "Dummy echo engine for testing and demos."

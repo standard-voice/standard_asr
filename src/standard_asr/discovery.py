@@ -18,8 +18,10 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
+import typing
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, EntryPoints, entry_points
 from typing import (
@@ -89,9 +91,7 @@ def _validate_engine_id(engine_id: str) -> None:
     """
 
     if "/" in engine_id:
-        raise EntrypointValidationError(
-            f"engine_id must not contain '/' (got {engine_id!r})"
-        )
+        raise EntrypointValidationError(f"engine_id must not contain '/' (got {engine_id!r})")
     if not _ENGINE_ID_RE.match(engine_id):
         raise EntrypointValidationError(
             "engine_id contains unsupported characters. Allowed: lowercase ASCII "
@@ -126,9 +126,7 @@ def _validate_model_name(model_name: str) -> None:
         )
         return
     if "/" in model_name:
-        raise EntrypointValidationError(
-            f"model_name must not contain '/' (got {model_name!r})"
-        )
+        raise EntrypointValidationError(f"model_name must not contain '/' (got {model_name!r})")
     if not _MODEL_NAME_RE.match(model_name):
         raise EntrypointValidationError(
             "model_name contains unsupported characters. Allowed characters: "
@@ -234,6 +232,59 @@ class ModelSpec:
             )
         return target  # type: ignore[return-value]
 
+    def engine_class(self) -> type["StandardASR"]:
+        """Resolve the engine **class** without instantiating it.
+
+        This enables reading class-level ``ClassVar`` metadata
+        (``declared_capabilities``, ``properties``, ``provider_params_type``)
+        without calling the factory -- which spec §3.1 / §C requires to be
+        possible "without instantiation or authentication". Instantiating a
+        cloud engine would force credential resolution and a heavy ``__init__``,
+        turning an unauthenticated metadata read into a denial-of-service vector.
+
+        The entry-point target is *loaded* (its module is imported) but never
+        *called*. Resolution rules:
+
+        - If the target is itself a class, it is returned directly.
+        - If the target is a function (the common factory pattern), its return
+          type annotation is resolved (via :func:`typing.get_type_hints`) and,
+          if it names a concrete class, that class is returned.
+
+        Returns:
+            The engine class declaring the static metadata.
+
+        Raises:
+            FactoryLoadError: The target failed to load, or the class cannot be
+                determined without calling the factory (e.g. a factory with no
+                concrete return annotation). Callers SHOULD fall back to
+                instantiation only when they explicitly accept that cost.
+        """
+        target = self.load_factory()
+        if inspect.isclass(target):
+            return typing.cast("type[StandardASR]", target)
+
+        try:
+            hints = typing.get_type_hints(target)
+        except Exception as exc:  # noqa: BLE001
+            raise FactoryLoadError(
+                f"Cannot resolve the engine class for {self.key!r} without "
+                f"instantiation: failed to read the factory's type hints ({exc!r}). "
+                "Annotate the factory with a concrete engine return type."
+            ) from exc
+
+        returned = hints.get("return")
+        if inspect.isclass(returned):
+            return typing.cast("type[StandardASR]", returned)
+
+        raise FactoryLoadError(
+            f"Cannot resolve the engine class for {self.key!r} without "
+            "instantiation. The entry point is a factory whose return annotation "
+            f"is not a concrete class (got {returned!r}). Either expose the engine "
+            "class directly as the entry point, or annotate the factory with the "
+            "concrete engine return type so its static metadata is readable "
+            "without calling it."
+        )
+
 
 @final
 class ModelRegistry:
@@ -267,9 +318,32 @@ class ModelRegistry:
         unless you're providing custom entry points for testing.
     """
 
-    def __init__(self, specs: Mapping[str, ModelSpec]) -> None:
-        """Initialize with a mapping of model specs (internal use)."""
+    def __init__(
+        self,
+        specs: Mapping[str, ModelSpec],
+        *,
+        shadowed_engine_ids: set[str] | None = None,
+    ) -> None:
+        """Initialize with a mapping of model specs (internal use).
+
+        Args:
+            specs: Mapping of ``engine_id/model_name`` keys to specs.
+            shadowed_engine_ids: Engine ids contributed by more than one
+                distribution (IC.2 identity collision). Routing on these is
+                ambiguous; consumers may surface or reject them.
+        """
         self._specs: dict[str, ModelSpec] = dict(specs)
+        self._shadowed_engine_ids: set[str] = set(shadowed_engine_ids or set())
+
+    @property
+    def shadowed_engine_ids(self) -> set[str]:
+        """Engine ids provided by more than one distribution (IC.2).
+
+        Returns:
+            A copy of the set of ambiguous engine ids. Empty when discovery
+            found no engine-identity collisions.
+        """
+        return set(self._shadowed_engine_ids)
 
     def names(self) -> list[str]:
         """List all discovered model keys, sorted alphabetically.
@@ -292,9 +366,7 @@ class ModelRegistry:
             >>> registry.by_engine("faster-whisper")
             ['faster-whisper/', 'faster-whisper/large-v3', 'faster-whisper/small']
         """
-        return sorted(
-            key for key, spec in self._specs.items() if spec.engine_id == engine_id
-        )
+        return sorted(key for key, spec in self._specs.items() if spec.engine_id == engine_id)
 
     def spec(self, name: str) -> ModelSpec:
         """Get metadata for a model.
@@ -332,6 +404,27 @@ class ModelRegistry:
             FactoryLoadError: Entry point failed to load.
         """
         return self.spec(name).load_factory()
+
+    def engine_class(self, name: str) -> type["StandardASR"]:
+        """Resolve a model's engine class without instantiating it.
+
+        Use this to read class-level metadata (``declared_capabilities``,
+        ``properties``, ``provider_params_type``) for discovery, UI generation,
+        and REST endpoints without paying the cost (or auth requirements) of
+        constructing the engine. See :meth:`ModelSpec.engine_class`.
+
+        Args:
+            name: Model key in ``engine_id/model_name`` format.
+
+        Returns:
+            The engine class.
+
+        Raises:
+            EntrypointValidationError: Model not found.
+            FactoryLoadError: Entry point failed to load, or the class cannot be
+                determined without calling the factory.
+        """
+        return self.spec(name).engine_class()
 
     def create(self, name: str, /, *args: Any, **kwargs: Any) -> "StandardASR":
         """Create an ASR engine instance.
@@ -414,12 +507,12 @@ def discover_models(
         raise ValueError("on_conflict must be 'warn_keep_first' or 'replace'.")
 
     found = _gather_entry_points(eps)
-    logger.debug(
-        "Discovering Standard ASR models: %d entry points located.", len(found)
-    )
+    logger.debug("Discovering Standard ASR models: %d entry points located.", len(found))
 
     specs: MutableMapping[str, ModelSpec] = {}
     errors: list[str] = []
+    # engine_id -> set of distribution names that contribute it (IC.2).
+    engine_dists: dict[str, set[str]] = {}
 
     for ep in found:
         if ep.group != ENTRYPOINT_GROUP:
@@ -428,9 +521,7 @@ def discover_models(
         try:
             engine_id, model_name = parse_entrypoint_name(ep.name)
             key = f"{engine_id}/{model_name}"
-            spec = ModelSpec(
-                key=key, engine_id=engine_id, model_name=model_name, entry_point=ep
-            )
+            spec = ModelSpec(key=key, engine_id=engine_id, model_name=model_name, entry_point=ep)
         except EntrypointValidationError as exc:
             dist = getattr(ep, "dist", None)
             dist_label = f" (dist={dist})" if dist is not None else ""
@@ -440,6 +531,8 @@ def discover_models(
             else:
                 logger.warning(message)
             continue
+
+        engine_dists.setdefault(engine_id, set()).add(_dist_name(ep))
 
         if key in specs and on_conflict == "warn_keep_first":
             logger.warning(
@@ -459,13 +552,46 @@ def discover_models(
 
         specs[key] = spec
 
+    # IC.2 engine-identity collision: the same engine_id MUST come from a single
+    # distribution. Two different distributions both claiming engine_id="whisper"
+    # (even with distinct model names) make ``config.engine`` routing ambiguous.
+    shadowed: dict[str, set[str]] = {
+        engine_id: dists for engine_id, dists in engine_dists.items() if len(dists) > 1
+    }
+    for engine_id, dists in shadowed.items():
+        message = (
+            f"Engine-identity collision: engine_id {engine_id!r} is provided by "
+            f"multiple distributions ({', '.join(sorted(dists))}). "
+            "config.engine routing is ambiguous; install only one provider for "
+            "this engine_id, or have authors choose distinct engine_ids."
+        )
+        if strict:
+            errors.append(message)
+        else:
+            logger.warning(message)
+
     if strict and errors:
         joined = "\n".join(f"- {message}" for message in errors)
         raise EntrypointValidationError("Invalid entry points detected:\n" + joined)
 
-    registry = ModelRegistry(specs)
+    registry = ModelRegistry(specs, shadowed_engine_ids=set(shadowed))
     logger.info("Discovered %d Standard ASR model(s).", len(registry))
     return registry
+
+
+def _dist_name(ep: EntryPoint) -> str:
+    """Return the PEP 503-normalized distribution name for *ep*.
+
+    Args:
+        ep: The entry point to inspect.
+
+    Returns:
+        The normalized distribution name, or ``"<unknown>"`` when the entry
+        point has no associated distribution (e.g. test-injected entry points).
+    """
+    dist = getattr(ep, "dist", None)
+    name = getattr(dist, "name", None) if dist is not None else None
+    return pep503_normalize(name) if name else "<unknown>"
 
 
 __all__ = [

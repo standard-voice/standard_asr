@@ -1,0 +1,66 @@
+name: numpy nightly canary
+
+# DEP.2 mandates a numpy-nightly canary lane: install numpy pre-releases
+# (and, when available, the scientific-python nightly wheels) so we catch
+# upcoming numpy behavior changes BEFORE they ship in a stable release. This
+# lane is allowed to fail without blocking development; it is an early-warning
+# signal, surfaced on a schedule rather than per-PR.
+
+on:
+  schedule:
+    # 05:17 UTC daily (offset from the hour to dodge scheduler congestion).
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    name: numpy pre-release canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Early-warning lane: a numpy pre-release breakage must not look like a
+    # repo regression. It still reports red on its own job for visibility.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install dependencies (dev group + audio extras)
+        run: uv sync --all-extras --group dev
+
+      - name: Install numpy pre-release (nightly canary)
+        # Prefer the scientific-python nightly wheels; fall back to PyPI
+        # pre-releases (--pre) so the lane keeps working if the nightly index
+        # is unavailable.
+        run: |
+          uv pip install --upgrade --pre \
+            --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple \
+            numpy \
+          || uv pip install --upgrade --pre numpy
+
+      - name: Show numpy version
+        run: uv run python -c "import numpy; print('numpy', numpy.__version__)"
+
+      - name: Run tests (warnings-as-errors)
+        env:
+          PYTHONPATH: src
+        run: |
+          uv run pytest -W error

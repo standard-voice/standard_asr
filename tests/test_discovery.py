@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from importlib.metadata import EntryPoint, EntryPoints
-from typing import Any, ClassVar, Literal
+from typing import Any, AsyncIterator, ClassVar, Literal
 
 import pytest
+from pydantic import ConfigDict
 
 import standard_asr.compliance as compliance
 from standard_asr import BaseConfig, BaseProperties, TranscriptionResult
 from standard_asr.audio_input import InputKind
+from standard_asr.capabilities import (
+    BatchCapabilities,
+    DeclaredCapabilities,
+    FlagCap,
+    LanguageCaps,
+)
 from standard_asr.compliance import check_entrypoints
 from standard_asr.discovery import (
     ENTRYPOINT_GROUP,
@@ -23,6 +31,8 @@ from standard_asr.discovery import (
     validate_model_name,
 )
 from standard_asr.exceptions import EntrypointValidationError, FactoryLoadError
+from standard_asr.runtime_params import ProviderParams
+from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 
 
 class _DummyConfig(BaseConfig[Literal["dummy"]]):
@@ -35,12 +45,20 @@ class _DummyProperties(BaseProperties):
     protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
-    accepted_sample_rates: list[int] = [16000]
+    accepted_sample_rates: list[int] | Literal["any"] = [16000]
     selectable_languages: list[str] = ["en"]
+
+
+_DUMMY_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(
+        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+    )
+)
 
 
 class _DummyASR:
     properties: ClassVar[_DummyProperties] = _DummyProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _DUMMY_CAPS
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -52,6 +70,51 @@ class _DummyASR:
 
 def _dummy_factory(**kwargs: Any) -> _DummyASR:  # pyright: ignore[reportUnusedFunction]
     return _DummyASR(**kwargs)
+
+
+def _unannotated_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[reportUnusedFunction]
+    return _DummyASR()
+
+
+class _OpenParams(ProviderParams):
+    model_config = ConfigDict(extra="allow")  # violates §R.4 R1 (must be closed)
+
+
+class _OpenParamsASR(_DummyASR):
+    provider_params_type: ClassVar[type[ProviderParams] | None] = _OpenParams
+
+
+def _open_params_factory() -> _OpenParamsASR:  # pyright: ignore[reportUnusedFunction]
+    return _OpenParamsASR()
+
+
+class _FakeDist:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _ep_with_dist(name: str, dist_name: str) -> EntryPoint:
+    ep = EntryPoint(
+        name=name,
+        value="tests.test_discovery:_dummy_factory",
+        group="standard_asr.models",
+    )
+    object.__setattr__(ep, "dist", _FakeDist(dist_name))
+    return ep
+
+
+class _BridgeSession(TranscriptionSession):
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        async for _ in self.audio_chunks():
+            pass
+        yield TranscriptionEvent.final("s0", "done", start=0.0, end=1.0)
+
+
+class _HangBridgeSession(TranscriptionSession):
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        # Never terminates and never yields: simulates a deadlocking adapter.
+        await asyncio.Event().wait()
+        yield TranscriptionEvent.done()  # pragma: no cover
 
 
 def _requires_argument_factory(
@@ -449,3 +512,121 @@ def test_check_entrypoints_model_id_mismatch() -> None:
 
     errors = list(report.iter_level("error"))
     assert any("model_id" in issue.message for issue in errors)
+
+
+# ----- H6: no-instantiation engine class resolution ----------------------- #
+
+
+def test_engine_class_resolves_from_factory_return_annotation() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_dummy_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    cls = registry.engine_class("alpha/first")
+    assert cls is _DummyASR
+    # Reading ClassVars must not require instantiation.
+    assert getattr(cls, "declared_capabilities") is _DUMMY_CAPS
+
+
+def test_engine_class_resolves_when_entrypoint_is_a_class() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_DummyASR",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    assert registry.engine_class("alpha/first") is _DummyASR
+
+
+def test_engine_class_raises_when_annotation_not_concrete() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_unannotated_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(FactoryLoadError):
+        registry.engine_class("alpha/first")
+
+
+# ----- IC.2: engine-identity collision detection -------------------------- #
+
+
+def test_discover_detects_engine_id_collision_across_dists(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ep_a = _ep_with_dist("whisper/a", "dist-one")
+    ep_b = _ep_with_dist("whisper/b", "dist-two")
+
+    caplog.set_level("WARNING")
+    registry = discover_models(eps=[ep_a, ep_b])
+    assert registry.shadowed_engine_ids == {"whisper"}
+    assert any("Engine-identity collision" in r.message for r in caplog.records)
+
+
+def test_engine_id_collision_strict_raises() -> None:
+    ep_a = _ep_with_dist("whisper/a", "dist-one")
+    ep_b = _ep_with_dist("whisper/b", "dist-two")
+
+    with pytest.raises(EntrypointValidationError):
+        discover_models(eps=[ep_a, ep_b], strict=True)
+
+
+def test_same_dist_same_engine_id_is_not_a_collision() -> None:
+    ep_a = _ep_with_dist("whisper/a", "one-dist")
+    ep_b = _ep_with_dist("whisper/b", "one-dist")
+
+    registry = discover_models(eps=[ep_a, ep_b], strict=True)
+    assert registry.shadowed_engine_ids == set()
+
+
+# ----- H14: compliance class-level + sync-bridge checks -------------------- #
+
+
+def test_compliance_flags_unreadable_class_metadata() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_missing_meta_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    report = check_entrypoints(registry=registry, instantiate=False)
+
+    errors = list(report.iter_level("error"))
+    assert any("class-level 'declared_capabilities'" in i.message for i in errors)
+
+
+def test_compliance_flags_open_provider_params() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_open_params_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    report = check_entrypoints(registry=registry, instantiate=False)
+
+    errors = list(report.iter_level("error"))
+    assert any("closed type" in i.message for i in errors)
+
+
+def test_check_sync_bridge_passes_for_clean_session() -> None:
+    report = compliance.check_sync_bridge(_BridgeSession)
+    assert report.passed is True
+
+
+def test_check_sync_bridge_detects_deadlock() -> None:
+    report = compliance.check_sync_bridge(_HangBridgeSession, timeout=0.5)
+    assert report.passed is False
+    assert any("deadlock" in i.message for i in report.iter_level("error"))

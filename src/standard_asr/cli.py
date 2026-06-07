@@ -17,6 +17,7 @@ from .exceptions import (
     ConfigError,
     DiscoveryError,
     EntrypointValidationError,
+    FactoryLoadError,
     TranscriptionError,
 )
 from .runtime import ensure_cache_dir, resolve_cache_dir
@@ -35,9 +36,7 @@ def _add_models_subcommands(subparsers: Any) -> None:
     Raises:
         None.
     """
-    models_parser = subparsers.add_parser(
-        "models", help="Inspect discovered Standard ASR models."
-    )
+    models_parser = subparsers.add_parser("models", help="Inspect discovered Standard ASR models.")
     models_sub = models_parser.add_subparsers(dest="models_command", required=True)
 
     list_parser = models_sub.add_parser("list", help="List available models.")
@@ -54,9 +53,7 @@ def _add_models_subcommands(subparsers: Any) -> None:
     )
     list_parser.set_defaults(func=_cmd_models_list)
 
-    show_parser = models_sub.add_parser(
-        "show", help="Display details about a single model."
-    )
+    show_parser = models_sub.add_parser("show", help="Display details about a single model.")
     show_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
     show_parser.add_argument(
         "--strict",
@@ -102,9 +99,7 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
         "compliance",
         help="Run compliance helpers to validate plugin behaviour.",
     )
-    compliance_sub = compliance_parser.add_subparsers(
-        dest="compliance_command", required=True
-    )
+    compliance_sub = compliance_parser.add_subparsers(dest="compliance_command", required=True)
 
     ep_parser = compliance_sub.add_parser(
         "entrypoints",
@@ -168,14 +163,10 @@ def _add_serve_subcommand(subparsers: Any) -> None:
     Raises:
         None.
     """
-    parser = subparsers.add_parser(
-        "serve", help="Start the FastAPI server for Standard ASR."
-    )
+    parser = subparsers.add_parser("serve", help="Start the FastAPI server for Standard ASR.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")
-    parser.add_argument(
-        "--reload", action="store_true", help="Enable auto-reload for development."
-    )
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development.")
     parser.add_argument("--log-level", default="info", help="Uvicorn log level.")
     parser.set_defaults(func=_cmd_serve)
 
@@ -216,9 +207,7 @@ def _add_doctor_subcommand(subparsers: Any) -> None:
     Returns:
         None.
     """
-    parser = subparsers.add_parser(
-        "doctor", help="Diagnose plugin dependency (numpy) conflicts."
-    )
+    parser = subparsers.add_parser("doctor", help="Diagnose plugin dependency (numpy) conflicts.")
     parser.set_defaults(func=_cmd_doctor)
 
 
@@ -286,7 +275,33 @@ def _cmd_models_show(args: argparse.Namespace) -> int:
     print(f"  Module      : {spec.entry_point.module}")
     print(f"  Attribute   : {spec.entry_point.attr}")
     print(f"  Value       : {spec.entry_point.value}")
+    _print_declared_capabilities(spec)
     return 0
+
+
+def _print_declared_capabilities(spec: Any) -> None:
+    """Print an engine's DeclaredCapabilities without instantiating it.
+
+    Spec §264 lists ``standard-asr models show`` as a consumer of
+    DeclaredCapabilities. The capabilities are read from the engine *class*
+    (ClassVar), so no engine is constructed and no credentials are resolved.
+
+    Args:
+        spec: The model :class:`~standard_asr.discovery.ModelSpec`.
+    """
+    try:
+        engine_class = spec.engine_class()
+    except FactoryLoadError as exc:
+        print(f"  Capabilities: <unavailable: {exc}>")
+        return
+    caps = getattr(engine_class, "declared_capabilities", None)
+    if caps is None:
+        print("  Capabilities: <none declared>")
+        return
+    print("  Capabilities:")
+    rendered = json.dumps(caps.model_dump(mode="json"), indent=2, sort_keys=True)
+    for line in rendered.splitlines():
+        print(f"    {line}")
 
 
 def _cmd_models_cache(args: argparse.Namespace) -> int:
@@ -345,9 +360,7 @@ def _cmd_compliance_entrypoints(args: argparse.Namespace) -> int:
     Raises:
         None.
     """
-    report = check_entrypoints(
-        strict_discovery=args.strict, instantiate=args.instantiate
-    )
+    report = check_entrypoints(strict_discovery=args.strict, instantiate=args.instantiate)
 
     if report.passed:
         print("✅ Entry point compliance checks passed.")
@@ -413,9 +426,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        run(
-            host=args.host, port=args.port, reload=args.reload, log_level=args.log_level
-        )
+        run(host=args.host, port=args.port, reload=args.reload, log_level=args.log_level)
     except ImportError as exc:
         print(str(exc))
         return 1

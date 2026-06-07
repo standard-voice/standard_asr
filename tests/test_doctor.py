@@ -6,10 +6,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import pytest
 
 from standard_asr import doctor
+
+
+class _VersionInfo(NamedTuple):
+    major: int
+    minor: int
+    micro: int
+    releaselevel: str
+    serial: int
 
 
 @dataclass
@@ -72,3 +81,79 @@ def test_missing_dist(monkeypatch: pytest.MonkeyPatch) -> None:
     report = doctor.diagnose()
     assert report.plugins[0].distribution == "<unknown>"
     assert report.plugins[0].numpy_spec is None
+
+
+def test_classify_no_false_positive_for_bounded_range() -> None:
+    """``>=1.26,<2.3`` admits both 1.x and 2.x -> NOT a hard numpy1-only split."""
+    only1, req2 = doctor._classify_numpy(">=1.26,<2.3")  # pyright: ignore[reportPrivateUsage]
+    assert only1 is False
+    assert req2 is False
+
+
+@pytest.mark.parametrize(
+    "spec",
+    ["==1.26.*", "~=1.26.0", ">=1.21,<1.27", "<2"],
+)
+def test_classify_detects_numpy1_only(spec: str) -> None:
+    only1, req2 = doctor._classify_numpy(spec)  # pyright: ignore[reportPrivateUsage]
+    assert only1 is True
+    assert req2 is False
+
+
+@pytest.mark.parametrize("spec", [">=2", ">=2.1", "==2.*"])
+def test_classify_detects_numpy2_required(spec: str) -> None:
+    only1, req2 = doctor._classify_numpy(spec)  # pyright: ignore[reportPrivateUsage]
+    assert only1 is False
+    assert req2 is True
+
+
+@pytest.mark.parametrize("spec", [None, "(any)", "", "not-a-spec"])
+def test_classify_returns_neutral_for_unconstrained_or_invalid(
+    spec: str | None,
+) -> None:
+    assert doctor._classify_numpy(spec) == (False, False)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_bounded_range_pin_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``~=1.26.0`` pin vs ``>=2.1`` is a real conflict the old regex missed."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy~=1.26.0"])),
+            _FakeEP("new/qwen", _FakeDist("std-qwen", ["numpy>=2.1"])),
+        ],
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is True
+    assert any("1.x vs 2.x" in c for c in report.conflicts)
+
+
+def test_numpy_extras_specifier_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy[extra]<2"]))],
+    )
+    report = doctor.diagnose()
+    assert report.plugins[0].numpy_spec == "<2"
+
+
+def test_py313_no_numpy1_wheel_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy<2"]))],
+    )
+    fake_vi = _VersionInfo(3, 13, 0, "final", 0)
+    monkeypatch.setattr(doctor.sys, "version_info", fake_vi)
+    report = doctor.diagnose()
+    assert any("no numpy<2 wheel" in c for c in report.conflicts)
+
+
+def test_packaging_unavailable_adds_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy<2"]))],
+    )
+    monkeypatch.setattr(doctor, "packaging_available", lambda: False)
+    report = doctor.diagnose()
+    assert any("packaging" in n for n in report.notes)
+    assert "note:" in doctor.format_report(report)

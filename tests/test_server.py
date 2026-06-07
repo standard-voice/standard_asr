@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import builtins
 from importlib.metadata import EntryPoint
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 import pytest
@@ -34,7 +34,7 @@ class _DummyProperties(BaseProperties):
     protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
-    accepted_sample_rates: list[int] = [16000]
+    accepted_sample_rates: list[int] | Literal["any"] = [16000]
     selectable_languages: list[str] = ["en"]
 
 
@@ -67,11 +67,31 @@ def _dummy_factory() -> _DummyASR:  # pyright: ignore[reportUnusedFunction]
 
 class _FailASR(_DummyASR):
     def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
-        raise RuntimeError("boom")
+        raise RuntimeError("boom: /secret/internal/path leaked")
 
 
 def _fail_factory() -> _FailASR:  # pyright: ignore[reportUnusedFunction]
     return _FailASR()
+
+
+class _ClientErrorASR(_DummyASR):
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        from standard_asr.exceptions import UnsupportedFeatureError
+
+        raise UnsupportedFeatureError("word_timestamps not supported")
+
+
+def _client_error_factory() -> _ClientErrorASR:  # pyright: ignore[reportUnusedFunction]
+    return _ClientErrorASR()
+
+
+class _NoInstantiateASR(_DummyASR):
+    def __init__(self) -> None:
+        raise RuntimeError("instantiation forbidden (would resolve credentials)")
+
+
+def _no_instantiate_factory() -> _NoInstantiateASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoInstantiateASR()
 
 
 def _fake_audio_bytes(
@@ -196,9 +216,7 @@ def test_transcribe_file_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 200
     assert response.json()["result"]["text"] == "dummy"
 
-    monkeypatch.setattr(
-        server_module, "load_audio_from_bytes", _raise_value_error_bytes
-    )
+    monkeypatch.setattr(server_module, "load_audio_from_bytes", _raise_value_error_bytes)
     response = client.post("/v1/transcribe", data=data, files=files)
     assert response.status_code == 400
 
@@ -313,3 +331,98 @@ def test_params_schema_endpoint() -> None:
     assert resp.status_code == 200
     schema = resp.json()
     assert "beam" in schema.get("properties", {})
+
+
+def _registry_for(factory: str):
+    eps = [
+        EntryPoint(
+            name="dummy/echo",
+            value=f"tests.test_server:{factory}",
+            group="standard_asr.models",
+        )
+    ]
+    return discover_models(eps=eps, strict=True)
+
+
+def test_transcribe_client_error_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UnsupportedFeatureError (client-caused) must map to 422, not 500."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_client_error_factory"))
+    client = TestClient(app)
+    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 422
+    assert "word_timestamps" in resp.json()["detail"]
+
+
+def test_transcribe_unknown_model_maps_to_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
+
+    payload = {"model": "nope/missing", "audio": base64.b64encode(b"fake").decode()}
+    resp = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 404
+
+
+def test_transcribe_500_does_not_leak_internal_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unexpected errors return a generic message; raw text stays server-side."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_fail_factory"))
+    client = TestClient(app)
+    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "/secret/internal/path" not in detail
+    assert "See server logs" in detail
+
+
+def test_body_size_limit_returns_413() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry(), max_body_bytes=64)
+    client = TestClient(app)
+
+    big = base64.b64encode(b"x" * 1024).decode()
+    payload = {"model": "dummy/echo", "audio": big}
+    resp = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 413
+
+
+def test_create_app_rejects_nonpositive_max_body() -> None:
+    pytest.importorskip("fastapi")
+    with pytest.raises(ValueError):
+        server_module.create_app(registry=_registry(), max_body_bytes=0)
+
+
+def test_capabilities_no_instantiation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """capabilities/params-schema must NOT instantiate the engine (DoS / auth)."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    # _NoInstantiateASR.__init__ raises; reading ClassVars must still work.
+    app = server_module.create_app(registry=_registry_for("_no_instantiate_factory"))
+    client = TestClient(app)
+
+    caps = client.get("/v1/capabilities/dummy/echo")
+    assert caps.status_code == 200
+    assert caps.json()["batch"]["language"]["runtime_override"]["supported"] is True
+
+    schema = client.get("/v1/params-schema/dummy/echo")
+    assert schema.status_code == 200
+    assert "beam" in schema.json().get("properties", {})

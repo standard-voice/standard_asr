@@ -80,6 +80,33 @@ def test_cli_models_show(
     assert exit_code == 0
     assert "Engine ID" in output
     assert "alpha/first" in output
+    # §264: models show MUST surface DeclaredCapabilities (no instantiation).
+    assert "Capabilities:" in output
+    assert "runtime_override" in output
+
+
+def test_cli_models_show_unresolvable_class(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_unannotated_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+
+    exit_code = cli.main(["models", "show", "alpha/first"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Capabilities: <unavailable" in output
 
 
 def test_cli_models_cache(
@@ -140,9 +167,7 @@ def test_cli_transcribe_invalid_options(
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(
-        ["transcribe", "alpha/first", "dummy.wav", "--options", "not-json"]
-    )
+    exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav", "--options", "not-json"])
     captured = capsys.readouterr()
 
     assert exit_code == 2

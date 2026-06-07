@@ -13,8 +13,7 @@ layer passes through whichever the application provided.
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from typing import TYPE_CHECKING, Any, ClassVar, Iterable, Literal, Sequence, cast
+from typing import Any, ClassVar, Iterable, Literal, Sequence, cast
 
 from pydantic import Field
 
@@ -45,9 +44,6 @@ from standard_asr.results import Segment, Word
 from standard_asr.runtime import allow_downloads
 from standard_asr.runtime_params import ProviderParams
 
-if TYPE_CHECKING:  # pragma: no cover
-    from faster_whisper import WhisperModel  # pyright: ignore[reportMissingTypeStubs]
-
 # A representative subset of Whisper's languages (it supports ~99).
 _LANGUAGES = ["en", "zh", "es", "fr", "de", "ja", "ko", "ru", "pt", "it"]
 
@@ -72,12 +68,12 @@ class FasterWhisperConfig(
 
     engine: Literal["faster-whisper"] = "faster-whisper"
     model_path: str = Field("large-v3", description="Model size/name or local path.")
-    device: str = Field("auto", description="Compute device (cpu, cuda, auto).")
+    device: str | None = Field(default="auto", description="Compute device (cpu, cuda, auto).")
     device_index: int | list[int] = Field(0, description="Device index/indices.")
     compute_type: str = Field("default", description="Quantization/precision type.")
     cpu_threads: int = Field(0, description="CPU threads (0 = runtime default).")
     num_workers: int = Field(1, description="Worker threads for parallel inference.")
-    default_language: str = Field("auto", description="Default language or 'auto'.")
+    default_language: str | None = Field("auto", description="Default language or 'auto'.")
     local_files_only: bool = Field(False, description="Disable downloads when True.")
     revision: str | None = Field(None, description="Optional HF model revision.")
 
@@ -86,6 +82,9 @@ class FasterWhisperParams(ProviderParams):
     """Engine-specific decoding knobs for faster-whisper (non-portable).
 
     Args:
+        task: ``"transcribe"`` (default) or ``"translate"`` (translate speech to
+            English). Whisper-native; not a portable standard-set parameter, so
+            it lives here. Without it, translation would be impossible.
         beam_size: Beam size for decoding.
         best_of: Candidates sampled when temperature > 0.
         patience: Beam search patience.
@@ -99,6 +98,7 @@ class FasterWhisperParams(ProviderParams):
         vad_parameters: Optional VAD configuration dict.
     """
 
+    task: Literal["transcribe", "translate"] = "transcribe"
     beam_size: int = 5
     best_of: int = 5
     patience: float = 1.0
@@ -120,7 +120,7 @@ class FasterWhisperProperties(BaseProperties):
     protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY, InputKind.ENCODED_FILE}
     native_sample_rate: int = 16000
-    accepted_sample_rates: list[int] = [16000]
+    accepted_sample_rates: list[int] | Literal["any"] = [16000]
     selectable_languages: list[str] = ["auto", *_LANGUAGES]
     detectable_languages: list[str] = list(_LANGUAGES)
     description: str | None = "Standard ASR wrapper for faster-whisper."
@@ -129,9 +129,10 @@ class FasterWhisperProperties(BaseProperties):
 _CAPABILITIES = DeclaredCapabilities(
     batch=BatchCapabilities(
         language=LanguageCaps(runtime_override=FlagCap(supported=True)),
-        word_timestamps=WordTimestampsCap(
-            supported=True, granularities=["word", "segment"]
-        ),
+        # faster-whisper only produces word-level timestamps (when
+        # word_timestamps=True); segment start/end always exist but there is no
+        # distinct "segment" granularity mode, and no char-level support.
+        word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
         guidance=GuidanceCaps(
             prompt=PromptCap(supported=True),
             phrase_hints=PhraseHintsCap(supported=True),
@@ -158,7 +159,7 @@ class FasterWhisperASR(EngineBase):
             **kwargs: Configuration overrides.
         """
         self.config = FasterWhisperConfig(**kwargs)
-        self._model: WhisperModel | None = None
+        self._model: object | None = None
 
     def _ensure_model_loaded(self) -> None:
         """Load the faster-whisper model lazily.
@@ -169,8 +170,8 @@ class FasterWhisperASR(EngineBase):
         if self._model is not None:
             return
         try:
-            from faster_whisper import (  # pyright: ignore[reportMissingTypeStubs]
-                WhisperModel,
+            from faster_whisper import (  # pyright: ignore[reportMissingImports]
+                WhisperModel,  # pyright: ignore[reportUnknownVariableType]
             )
         except Exception as exc:  # noqa: BLE001
             raise DiscoveryError(
@@ -205,9 +206,7 @@ class FasterWhisperASR(EngineBase):
         """
         self._ensure_model_loaded()
 
-    def _transcribe(
-        self, prepared: PreparedAudio, params: RuntimeParams
-    ) -> TranscriptionResult:
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         """Transcribe negotiated audio with faster-whisper.
 
         Args:
@@ -235,6 +234,15 @@ class FasterWhisperASR(EngineBase):
         if resolved and resolved != "auto":
             language = normalize_bcp47(resolved).split("-", maxsplit=1)[0]
 
+        if prepared.array is not None:
+            # We declare accepted_sample_rates=[16000]; the standard layer
+            # negotiates to it, but assert defensively -- feeding faster-whisper
+            # an off-rate array silently produces wrong timings/text.
+            assert prepared.sample_rate == 16000, (
+                f"faster-whisper requires 16 kHz audio; got "
+                f"{prepared.sample_rate} Hz (audio negotiation should have "
+                "resampled to 16000)."
+            )
         source: Any = prepared.array if prepared.array is not None else prepared.path
         model = cast(Any, self._model)
         segments, info = model.transcribe(
@@ -256,7 +264,7 @@ class FasterWhisperASR(EngineBase):
             duration=info.duration,
             segments=segment_list or None,
             words=word_list if params.word_timestamps else None,
-            metadata={"transcription_options": asdict(info.transcription_options)},
+            metadata=_safe_metadata(info),
         )
 
 
@@ -299,6 +307,52 @@ def _convert_segments(segments: Iterable[Any]) -> tuple[list[Segment], list[Word
     return segment_list, word_list
 
 
+#: Fields from faster-whisper's ``TranscriptionInfo`` / ``transcription_options``
+#: that are safe to surface as result metadata. We deliberately exclude
+#: ``initial_prompt`` / ``prefix`` / ``hotwords`` / ``suppress_tokens`` and other
+#: large or sensitive inputs so the prompt text is not echoed back (privacy) and
+#: the metadata stays small enough to carry over REST.
+_SAFE_OPTION_FIELDS: tuple[str, ...] = (
+    "task",
+    "beam_size",
+    "best_of",
+    "patience",
+    "length_penalty",
+    "temperatures",
+    "compression_ratio_threshold",
+    "log_prob_threshold",
+    "no_speech_threshold",
+    "condition_on_previous_text",
+    "word_timestamps",
+)
+
+
+def _safe_metadata(info: Any) -> dict[str, Any]:
+    """Build whitelisted result metadata from a ``TranscriptionInfo``.
+
+    Only small, non-sensitive decoding options are included -- never the prompt,
+    hotwords, or other free-text inputs, which could leak user content or bloat
+    the result when serialized over REST.
+
+    Args:
+        info: faster-whisper's ``TranscriptionInfo``.
+
+    Returns:
+        A JSON-friendly metadata mapping.
+    """
+    options = getattr(info, "transcription_options", None)
+    safe: dict[str, Any] = {}
+    if options is not None:
+        for name in _SAFE_OPTION_FIELDS:
+            if hasattr(options, name):
+                safe[name] = getattr(options, name)
+    metadata: dict[str, Any] = {"transcription_options": safe}
+    vad = getattr(info, "duration_after_vad", None)
+    if vad is not None:
+        metadata["duration_after_vad"] = vad
+    return metadata
+
+
 def _provider_kwargs(params: ProviderParams | None) -> dict[str, Any]:
     """Convert provider params into faster-whisper keyword arguments.
 
@@ -312,6 +366,7 @@ def _provider_kwargs(params: ProviderParams | None) -> dict[str, Any]:
         return {}
     fw = cast(FasterWhisperParams, params)
     kwargs: dict[str, Any] = {
+        "task": fw.task,
         "beam_size": fw.beam_size,
         "best_of": fw.best_of,
         "patience": fw.patience,
