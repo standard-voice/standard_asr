@@ -1,160 +1,133 @@
-"""Lightweight Standard ASR implementation for demo purposes."""
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+"""Lightweight Standard ASR implementation for demos and tests.
+
+This is the canonical minimal adapter: it subclasses :class:`EngineBase`,
+declares its :class:`BaseProperties` and :class:`DeclaredCapabilities`, and
+implements only :meth:`_transcribe`. The standard layer handles audio
+negotiation, conversion, and parameter gating.
+"""
 
 from __future__ import annotations
 
 from typing import ClassVar, Literal, cast
 
-import numpy as np
-from numpy.typing import NDArray
 from pydantic import Field
 
 from standard_asr import (
     BaseConfig,
-    BaseTranscribeOptions,
-    StandardASR,
+    BaseProperties,
+    EngineBase,
+    InputKind,
+    LanguageConfigMixin,
+    PreparedAudio,
+    RuntimeParams,
     TranscriptionResult,
 )
-from standard_asr.asr_properties import BaseProperties
-from standard_asr.features import FeatureFlag
-from standard_asr.options import coerce_options
-from standard_asr.runtime import validate_audio_input
+from standard_asr.capabilities import (
+    BatchCapabilities,
+    DeclaredCapabilities,
+    FlagCap,
+    LanguageCaps,
+)
+from standard_asr.language import effective_language
 
 
-class DummyASRConfig(BaseConfig[Literal["dummy"]]):
+class DummyASRConfig(LanguageConfigMixin, BaseConfig[Literal["dummy"]]):
     """Configuration model for the dummy ASR engine.
 
     Args:
         engine: Discriminator identifying this engine (always ``"dummy"``).
         message: Text prefix inserted into the transcript.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If validation fails.
+        default_language: Default language for the engine.
     """
 
     engine: Literal["dummy"] = "dummy"
+    default_language: str = "en"
     message: str = Field(
         "echo",
-        description=(
-            "Text prefix included in the emitted transcript for demo purposes."
-        ),
+        description="Text prefix included in the emitted transcript for demos.",
     )
 
 
 class DummyASRProperties(BaseProperties):
-    """Static metadata describing the dummy ASR engine.
-
-    Args:
-        None.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If validation fails.
-    """
+    """Static metadata describing the dummy ASR engine."""
 
     engine_id: str = "dummy"
     model_name: str = "echo"
-    protocol_version: str = "0.2.0"
-    supported_languages: list[str] = ["en"]
-    supported_devices: list[str] = ["cpu"]
-    supported_sample_rates: list[int] = [16000]
-    supported_channels: list[int] = [1, 2]
-    audio_dtype: str = "float32"
-    features: set[FeatureFlag] = set()
+    protocol_version: str = "1.0.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] = [16000]
+    selectable_languages: list[str] = ["en", "auto"]
+    detectable_languages: list[str] = ["en"]
     description: str | None = "Dummy echo engine for testing and demos."
 
 
-class DummyDefaultProperties(BaseProperties):
-    """Static metadata describing the default dummy ASR preset.
+class DummyDefaultProperties(DummyASRProperties):
+    """Static metadata describing the default dummy ASR preset."""
 
-    Args:
-        None.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If validation fails.
-    """
-
-    engine_id: str = "dummy"
     model_name: str = ""
-    protocol_version: str = "0.2.0"
-    supported_languages: list[str] = ["en"]
-    supported_devices: list[str] = ["cpu"]
-    supported_sample_rates: list[int] = [16000]
-    supported_channels: list[int] = [1, 2]
-    audio_dtype: str = "float32"
-    features: set[FeatureFlag] = set()
     description: str | None = "Default dummy engine preset."
 
 
-class DummyASR(StandardASR):
+_CAPABILITIES = DeclaredCapabilities(
+    batch=BatchCapabilities(
+        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+    )
+)
+
+
+class DummyASR(EngineBase):
     """Trivial ASR implementation that reports the input shape.
 
     Args:
         message: Text prefix for the transcript.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If configuration validation fails.
     """
 
-    config: BaseConfig[str]
     properties: ClassVar[BaseProperties] = DummyASRProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPABILITIES
 
     def __init__(self, message: str = "echo") -> None:
-        self.config = DummyASRConfig(engine="dummy", message=message)
+        """Initialize the dummy engine.
 
-    def transcribe(
-        self,
-        audio: NDArray[np.float32],
-        options: BaseTranscribeOptions | dict[str, object] | None = None,
+        Args:
+            message: Text prefix for the transcript.
+        """
+        self.config = DummyASRConfig(message=message)
+
+    def _transcribe(
+        self, prepared: PreparedAudio, params: RuntimeParams
     ) -> TranscriptionResult:
         """Return a short description of the provided audio buffer.
 
         Args:
-            audio: Waveform array in ``float32`` format.
-            options: Optional transcription options (model or dict).
+            prepared: Engine-ready audio (an array, per ``accepted_input``).
+            params: Gated runtime parameters.
 
         Returns:
-            Standard ASR transcription result.
-
-        Raises:
-            ValueError: If the audio input is invalid.
+            A Standard ASR transcription result.
         """
-        audio = validate_audio_input(audio, self.properties)
-        resolved_options = coerce_options(options, BaseTranscribeOptions)
-
-        array = np.asarray(audio)
-        samples = int(array.size)
         config = cast(DummyASRConfig, self.config)
-        text = f"{config.message}: {samples} samples"
-
+        samples = int(prepared.array.size) if prepared.array is not None else 0
+        lang = effective_language(
+            params.language,
+            config.default_language,
+            has_language_axis=self.properties.has_language_axis,
+            runtime_override_supported=self.supports(
+                "batch.language.runtime_override"
+            ),
+        )
         return TranscriptionResult(
-            text=text,
-            language=resolved_options.language,
+            text=f"{config.message}: {samples} samples",
+            detected_language=lang,
+            duration=samples / self.properties.native_sample_rate,
             metadata={"samples": samples},
         )
 
 
 class DummyDefaultASR(DummyASR):
-    """Default dummy preset whose model_id matches ``dummy/``.
-
-    Args:
-        message: Text prefix for the transcript.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If configuration validation fails.
-    """
+    """Default dummy preset whose model_id matches ``dummy/``."""
 
     properties: ClassVar[BaseProperties] = DummyDefaultProperties()
