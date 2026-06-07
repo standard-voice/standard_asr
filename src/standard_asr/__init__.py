@@ -49,6 +49,7 @@ from .results import (
     Word,
 )
 from .runtime import allow_downloads, ensure_cache_dir, resolve_cache_dir
+from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
 from .streaming import StreamChunk, StreamingASR
 from .utils.audio_loader import (
     load_audio,
@@ -81,6 +82,8 @@ __all__ = [
     "ModelRegistry",
     "ModelSpec",
     "NoViablePath",
+    "ProviderParams",
+    "RuntimeParams",
     "Segment",
     "StandardASR",
     "StreamChunk",
@@ -88,6 +91,7 @@ __all__ = [
     "StreamingCapabilities",
     "TranscriptionResult",
     "Word",
+    "WordTimestampGranularity",
     "allow_downloads",
     "can_accept",
     "check_entrypoints",
