@@ -30,16 +30,23 @@ from .audio_negotiation import (
     ConversionOp,
     ConversionPlan,
     NoViablePath,
+    UnsafeAudioUrlError,
     can_accept,
     negotiate,
     negotiate_or_raise,
+    validate_fetchable_url,
 )
 from .capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
     StreamingCapabilities,
 )
-from .compliance import ComplianceIssue, ComplianceReport, check_entrypoints
+from .compliance import (
+    ComplianceIssue,
+    ComplianceReport,
+    check_entrypoints,
+    check_sync_bridge,
+)
 from .discovery import (
     ModelRegistry,
     ModelSpec,
@@ -114,11 +121,13 @@ __all__ = [
     "TranscriptionEvent",
     "TranscriptionResult",
     "TranscriptionSession",
+    "UnsafeAudioUrlError",
     "Word",
     "WordTimestampGranularity",
     "allow_downloads",
     "can_accept",
     "check_entrypoints",
+    "check_sync_bridge",
     "coerce_audio_input",
     "diagnose",
     "discover_models",
@@ -139,5 +148,6 @@ __all__ = [
     "secret_field",
     "to_srt",
     "to_vtt",
+    "validate_fetchable_url",
     "validate_stable_until",
 ]
