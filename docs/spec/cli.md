@@ -22,10 +22,17 @@ Validate entry points and factories. Use `--no-instantiate` to avoid loading
 models.
 
 ### `standard-asr transcribe <engine/model> <audio>`
-Transcribe a local audio file and print text or JSON output.
+Transcribe an audio file and print text or JSON output. `--options` accepts a
+JSON object mapping onto the portable `RuntimeParams` standard set (e.g.
+`'{"language": "en"}'`).
 
 ### `standard-asr serve`
-Launch the FastAPI server.
+Launch the FastAPI server (requires `standard-asr[server]`).
+
+### `standard-asr doctor`
+Read-only dependency diagnostic: enumerates installed plugins and reports numpy
+1.x-vs-2.x conflicts that cannot share a process (spec §DEP.5). Exit code `1` if
+a conflict is found, else `0`. Does not resolve or install anything.
 
 ### Global Flags
 

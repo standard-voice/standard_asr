@@ -1,321 +1,109 @@
-# Adapting an ASR Engine to Standard ASR
+# Adapting an ASR engine to Standard ASR (engine authors)
 
-This guide is the end-to-end workflow for ASR developers who want to publish a
-Standard ASR compliant engine. It complements the protocol specs in
-`docs/spec/*` and the entrypoint rules in `docs/for_asr_dev/plugin_entrypoints.md`.
+> Authoritative reference: [`docs/spec/specification.md`](../spec/specification.md).
+> Entry-point rules: [`plugin_entrypoints.md`](plugin_entrypoints.md).
 
-## Who Should Read This
+You implement **one** class. The standard layer gives you audio-input
+negotiation, conversion, resampling, parameter gating, diagnostics, the CLI, the
+web server, and the compliance suite — for free.
 
-- ASR engine authors building a Standard ASR plugin.
-- Maintainers reviewing third-party engines for compliance.
+## The contract
 
-## What You Must Get Right (Non-Negotiable)
+Subclass `EngineBase` and provide:
 
-1) Identity invariant
-   - `properties.model_id` must equal the entrypoint key (`engine_id/model_name`).
-2) Discovery must be side-effect free
-   - Importing entrypoints must not download models or initialize GPU resources.
-3) Audio contract
-   - `transcribe()` receives `np.float32` arrays and must validate channels.
-4) Options and results mapping
-   - Options must coerce from dict and results must follow the protocol models.
+1. `properties: ClassVar[BaseProperties]` — static identity and I/O boundaries
+   (`accepted_input`, `native_sample_rate`, `accepted_sample_rates`,
+   `selectable_languages`, …).
+2. `declared_capabilities: ClassVar[DeclaredCapabilities]` — what you support,
+   per mode (`batch` / `streaming`). Omit what you don't support (fail-closed).
+3. `provider_params_type: ClassVar[type[ProviderParams] | None]` — your typed
+   escape-hatch model, or `None`.
+4. `__init__` — capture config only. **Keep it pure**: no filesystem, GPU, or
+   network (spec IC.9). Load weights lazily in `_ensure_model_loaded`.
+5. `_transcribe(prepared, params) -> TranscriptionResult` — run your model on
+   already-negotiated audio (`prepared.kind` is one of your `accepted_input`).
+6. (Streaming) override `start_transcription(...)` returning a
+   `TranscriptionSession` subclass.
 
-These are enforced by `standard-asr compliance entrypoints`.
-
----
-
-## 1) Choose Names and Presets
-
-### Engine id (engine_id)
-- Use your package name after PEP 503 normalization (lowercase, `-` instead of
-  `.`/`_` runs).
-- Allowed characters: `a-z`, `0-9`, `.`, `_`, `-` and must start with `[a-z0-9]`.
-
-### Model name (model_name)
-- Represents a preset or variant.
-- Allowed characters: letters, digits, `.`, `_`, `+`, `%`, `:`, `-`.
-- Empty name (`engine_id/`) is allowed only for an explicit default and should
-  be documented clearly.
-
-### Recommendation
-Publish one entrypoint per preset:
-
-- `my-engine/base`
-- `my-engine/base-int8`
-- `my-engine/multilingual`
-
----
-
-## 2) Define Properties (Static Metadata)
-
-All engines must expose a static `BaseProperties` instance.
+## Minimal batch engine
 
 ```python
-from standard_asr import BaseProperties
-from standard_asr.features import FeatureFlag
+from typing import ClassVar, Literal
+from standard_asr import (
+    BaseConfig, BaseProperties, EngineBase, InputKind,
+    PreparedAudio, RuntimeParams, TranscriptionResult,
+)
+from standard_asr.capabilities import (
+    BatchCapabilities, DeclaredCapabilities, FlagCap, LanguageCaps,
+)
 
+class MyConfig(BaseConfig[Literal["my-engine"]]):
+    engine: Literal["my-engine"] = "my-engine"
 
-class MyEngineProperties(BaseProperties):
+class MyProps(BaseProperties):
     engine_id: str = "my-engine"
     model_name: str = "base"
-    protocol_version: str = "0.2.0"
-    supported_languages: list[str] = ["en", "zh-Hant"]
-    supported_devices: list[str] = ["cpu", "cuda"]
-    supported_sample_rates: list[int] = [16000]
-    supported_channels: list[int] = [1]
-    audio_dtype: str = "float32"
-    features: set[FeatureFlag] = {FeatureFlag.WORD_TIMESTAMPS}
-    description: str | None = "My Engine base preset."
-```
+    protocol_version: str = "1.0.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] = [16000]
+    selectable_languages: list[str] = ["en", "auto"]
+    detectable_languages: list[str] = ["en"]
 
-Must-follow rules:
-- `supported_languages` must be valid BCP 47 tags.
-- `supported_devices` must be non-empty.
-- `audio_dtype` must be `float32`.
-- `model_id` (computed) must equal the entrypoint key.
+class MyEngine(EngineBase):
+    properties: ClassVar[BaseProperties] = MyProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        )
+    )
 
----
-
-## 3) Define a Config Model
-
-Use `BaseConfig` to capture initialization parameters.
-
-```python
-from typing import Literal
-from pydantic import Field
-from standard_asr import BaseConfig
-
-
-class MyEngineConfig(BaseConfig[Literal["my-engine"]]):
-    engine: Literal["my-engine"] = "my-engine"
-    model_path: str = Field("base", description="Model size or path.")
-    device: str = Field("auto", description="cpu/cuda/auto.")
-```
-
-Keep config values serializable and explicit. This config is attached to each
-engine instance.
-
----
-
-## 4) Implement the StandardASR Engine
-
-Minimal skeleton:
-
-```python
-from typing import ClassVar
-import numpy as np
-from numpy.typing import NDArray
-
-from standard_asr import BaseTranscribeOptions, StandardASR, TranscriptionResult
-from standard_asr.options import coerce_options
-from standard_asr.runtime import validate_audio_input
-
-
-class MyEngine(StandardASR):
-    properties: ClassVar[MyEngineProperties] = MyEngineProperties()
-
-    def __init__(self, model_path: str = "base", device: str = "auto") -> None:
-        self.config = MyEngineConfig(engine="my-engine", model_path=model_path, device=device)
+    def __init__(self, **kw: object) -> None:
+        self.config = MyConfig()
         self._model = None
 
-    def _load_model(self) -> None:
-        if self._model is not None:
-            return
-        # Lazy import so discovery stays side-effect free.
-        import my_engine_lib  # noqa: PLC0415
-        self._model = my_engine_lib.load(self.config.model_path, device=self.config.device)
-
-    def transcribe(
-        self,
-        audio: NDArray[np.float32],
-        options: BaseTranscribeOptions | dict | None = None,
-    ) -> TranscriptionResult:
-        # Always capture the return value.
-        audio = validate_audio_input(audio, self.properties)
-        resolved = coerce_options(options, MyEngineOptions)
-        self._load_model()
-        # Run inference and map outputs to TranscriptionResult.
-        return TranscriptionResult(text="...")
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        audio = prepared.array            # 16 kHz float32 mono, per Properties
+        text = my_model_infer(audio)      # your code
+        return TranscriptionResult(text=text, detected_language=params.language)
 ```
 
-Key points:
-- Capture `validate_audio_input(...)` return value.
-- Keep heavy imports inside `_load_model` or `transcribe`.
-- Keep `properties` as a class variable (static metadata).
+## Map parameters
 
----
+- Portable standard set is gated for you against `declared_capabilities` before
+  `_transcribe` is called: `language`, `candidate_languages`, `word_timestamps`,
+  `prompt`, `phrase_hints`. Map them onto your model's native arguments.
+- Engine-specific knobs → a `ProviderParams` subclass set as
+  `provider_params_type`. Wrong-engine params raise `InvalidProviderParamError`.
+- Resolve the language with `standard_asr.language.effective_language(...)`.
 
-## 5) Define Options Mapping
+## Audio you receive
 
-`BaseTranscribeOptions` provides common fields (language, timestamps, etc.).
-Extend it only with options your engine supports.
+`prepared` is already in one of your `accepted_input` shapes:
 
-```python
-from pydantic import Field
-from standard_asr import BaseTranscribeOptions
+- `InputKind.ARRAY` → `prepared.array` (float32, `prepared.sample_rate`)
+- `InputKind.ENCODED_FILE` → `prepared.path`
+- `InputKind.ENCODED_BYTES` → `prepared.data`
+- `InputKind.FETCHABLE_URL` → `prepared.url`
 
+You never write decode/resample/encode glue — declare `accepted_input` and the
+standard layer delivers the right shape (and attaches conversion diagnostics).
 
-class MyEngineOptions(BaseTranscribeOptions):
-    beam_size: int = Field(default=5, description="Beam size for decoding.")
-    temperature: float | None = Field(default=None, description="Sampling temperature.")
+## Streaming
+
+Subclass `TranscriptionSession`, implement async `_produce()` (read fed audio via
+`self.audio_chunks()`, yield `TranscriptionEvent` objects). The base provides
+`feed`/`send_audio`/`end_audio`, backpressure, the done-timeout, and the sync
+bridge — you only write `async`. See the spec §ST for the event model
+(`partial`/`final`/`supersede`/`progress`/`done`/`error`) and the `stable_until`
+rules.
+
+## Publish
+
+Register an entry point under `standard_asr.models` (see
+[`plugin_entrypoints.md`](plugin_entrypoints.md)). Validate with:
+
 ```
-
-Guidance:
-- Accept options as dict or model; use `coerce_options()` to normalize.
-- Ignore or warn on unsupported options; do not silently misinterpret.
-
----
-
-## 6) Map Results to the Protocol Models
-
-Standard ASR expects structured results:
-
-- `TranscriptionResult.text` is required.
-- `segments` and `words` are optional, but include them if available.
-- `language` should be BCP 47 normalized.
-- `metadata` can carry engine-specific info (confidence, tokens, timings).
-
-```python
-from standard_asr.results import Segment, Word, TranscriptionResult
-
-segments = [
-    Segment(start=0.0, end=2.3, text="hello world"),
-]
-words = [
-    Word(start=0.0, end=0.5, text="hello", probability=0.98),
-]
-result = TranscriptionResult(
-    text="hello world",
-    language=resolved.language,
-    segments=segments,
-    words=words,
-    metadata={"engine": "my-engine"},
-)
-```
-
----
-
-## 7) Audio Contract and Validation
-
-Standard ASR assumes `transcribe()` receives `np.float32` audio with:
-- Shape `(n_samples,)` for mono
-- Shape `(n_samples, n_channels)` for multi-channel
-
-Your engine must:
-- Validate channel count against `supported_channels`.
-- Use `validate_audio_input()` and capture its return value.
-
-If you accept raw files or bytes in your own API, decode them outside the
-engine and pass the normalized array to `transcribe()`.
-
----
-
-## 8) Respect Download and Cache Policies
-
-If your engine downloads model weights:
-
-```python
-from standard_asr.runtime import allow_downloads, ensure_cache_dir
-
-if not allow_downloads():
-    raise RuntimeError("Model downloads disabled by STANDARD_ASR_ALLOW_DOWNLOAD.")
-
-cache_dir = ensure_cache_dir()
-```
-
-Environment variables:
-- `STANDARD_ASR_ALLOW_DOWNLOAD` (default: allowed if unset).
-- `STANDARD_ASR_MODEL_DIR` for cache directory override.
-
----
-
-## 9) Entrypoints and Factories
-
-Declare entrypoints in `pyproject.toml`:
-
-```toml
-[project.entry-points."standard_asr.models"]
-"my-engine/base" = "my_engine.entrypoint:create"
-```
-
-Factory functions should be light and should not trigger downloads at import:
-
-```python
-from typing import Any
-from standard_asr import StandardASR
-from .engine import MyEngine
-
-
-def create(**kwargs: Any) -> StandardASR:
-    return MyEngine(**kwargs)
-```
-
----
-
-## 10) Compliance and Testing
-
-Validate locally:
-
-```bash
-standard-asr models list
 standard-asr compliance entrypoints
+standard-asr doctor
 ```
-
-CI-friendly check:
-
-```python
-from standard_asr import check_entrypoints
-
-report = check_entrypoints()
-if not report.passed:
-    raise SystemExit(1)
-```
-
-Write tests for:
-- Properties validity (engine_id, model_name, languages).
-- Result mapping (segments and words present when available).
-- Options coercion.
-- Lazy loading (no heavy import at discovery time).
-
----
-
-## 11) Optional Streaming Support
-
-If your engine supports streaming, implement `StreamingASR` from
-`standard_asr.streaming` and advertise the feature flags:
-
-- `FeatureFlag.STREAMING_INPUT`
-- `FeatureFlag.STREAMING_OUTPUT`
-
-Keep streaming optional; non-streaming engines are fully compliant.
-
----
-
-## 12) Packaging Checklist
-
-- Provide a clean `pyproject.toml` with entrypoints and metadata.
-- Keep optional heavy dependencies as extras (e.g., `my-engine[cuda]`).
-- Include `py.typed` if you ship type hints.
-- Ensure `python_requires` matches supported versions (3.10+).
-
----
-
-## 13) Troubleshooting Common Failures
-
-- Entrypoint validation error
-  - Check `engine_id/model_name` format and ensure `properties.model_id` matches.
-- AudioProcessingError
-  - Validate dtype and channels; always capture `validate_audio_input(...)`.
-- DiscoveryError
-  - Import errors inside factory; keep heavy imports lazy.
-- Compliance failures
-  - Ensure `properties`, `config`, and `transcribe()` all exist and match protocol.
-
----
-
-## Next Steps
-
-- Start from the cookbook examples:
-  - `cookbook/std_dummy_asr`
-  - `cookbook/std_faster_whisper`
-- Run `standard-asr compliance entrypoints` before you publish.
