@@ -234,7 +234,8 @@ jobs:
       - name: Install everything (members + groups + extras, locked)
         run: uv sync --locked --all-packages --all-groups --all-extras
       - name: Core coverage (100%)
-        run: uv run --no-sync pytest --cov=standard_asr --cov-fail-under=100
+        # --cov=standard_asr is already in addopts; only add the strict gate here.
+        run: uv run --no-sync pytest --cov-fail-under=100
       - name: Cookbook coverage — std_dummy_asr (100%)
         run: >-
           uv run --no-sync pytest cookbook/std_dummy_asr/tests
@@ -244,12 +245,52 @@ jobs:
           uv run --no-sync pytest cookbook/std_faster_whisper/tests
           -c cookbook/std_faster_whisper/pyproject.toml --cov-fail-under=100
 
+  zizmor:
+    # GitHub Actions security audit. Folded into ci.yml (rather than a standalone
+    # workflow) so it GATES merges via checks-complete instead of merely
+    # reporting — under D8, branch protection requires only `checks-complete`, so
+    # a separate workflow's red status would not block a merge. Fails on
+    # high-severity findings (zizmor's default exit) and uploads SARIF.
+    name: Run zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      security-events: write # github/codeql-action/upload-sarif
+      contents: read # clone the repo (private repos)
+      actions: read # upload-sarif reads workflow run info (private repos)
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Run zizmor (SARIF)
+        # zizmor exits non-zero on findings at/above its default (high) threshold,
+        # so this step fails the job — and thus checks-complete — on a finding.
+        run: uvx zizmor@latest --format=sarif .github/workflows/ > results.sarif
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload SARIF to GitHub code scanning
+        # SARIF upload needs a public repo or GitHub Advanced Security; if neither
+        # applies the upload (not the audit) fails soft — the audit step already
+        # gated the job above.
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          sarif_file: results.sarif
+          category: zizmor
+
   checks-complete:
     # Single aggregate status required by branch protection (ADR D8). Adding a
     # new job above automatically tightens the gate via `needs`.
     name: checks-complete
     if: always()
-    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, coverage]
+    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, coverage, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

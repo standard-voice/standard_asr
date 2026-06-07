@@ -39,7 +39,10 @@ repos:
       - id: mixed-line-ending
         args: [--fix=lf]
 
-  # --- lint + format + typecheck (mirror CI exactly via uv) ----------------
+  # --- lint + format + typecheck (same uv-pinned tools as CI's lint job) ----
+  # These run the identical tool versions CI uses. CI additionally gates on
+  # coverage, lock-freshness, the test matrix, and packaging — so a clean prek
+  # run is necessary but not sufficient; CI is the full gate.
   - repo: local
     hooks:
       - id: ruff-check

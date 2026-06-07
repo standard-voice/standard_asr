@@ -117,7 +117,7 @@ jobs:
     permissions:
       # Elevated only on this job (top-level stays contents: read) so the canary
       # can file/update its own tracking issue. Nothing else needs write.
-      issues: write
+      issues: write # file/update the canary tracking issue
     steps:
       - name: Find or create the tracking issue
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
