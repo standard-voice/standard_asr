@@ -98,10 +98,46 @@ bridge — you only write `async`. See the spec §ST for the event model
 (`partial`/`final`/`supersede`/`progress`/`done`/`error`) and the `stable_until`
 rules.
 
+## Credentials & environment fallback (IC.4)
+
+Build your config with `Config.from_env(engine_id, **explicit)` instead of the
+bare constructor. Unset fields fall back to
+`STANDARD_ASR_<ENGINE>_<FIELD>` environment variables (explicit args win), and
+credentials are wrapped in `SecretStr` by construction — never passed around as
+plaintext. Put secrets (`api_key`, tokens) in `SecretStr` fields via
+`secret_field()`; keep non-secret routing (`base_url`, `region`) plain.
+
+```python
+def __init__(self, **kwargs):
+    self.config = MyConfig.from_env("my-engine", **kwargs)   # IC.4
+```
+
+## Streaming responsibilities (what the base does vs you)
+
+The base `TranscriptionSession` owns the pump, backpressure (bounded buffers),
+the done-timeout/idle deadlines, the sync bridge, lifecycle suppression
+(`strict_lifecycle=True` to raise instead of diagnose), and `stable_until`
+monotonicity clamping. **You** must: emit cumulative/replace `text`; set
+`stable_until` conservatively (0 if you have no right-context); and for
+reconnect, detect the disconnect, re-establish, replay `self.replay_buffer()`,
+keep `segment_id`/timestamps/language continuous, and call
+`self.note_reconnect(gap_start, gap_end)` (the base then emits the
+`progress(reconnect)` / `content_lost` events).
+
 ## Publish
 
 Register an entry point under `standard_asr.models` (see
-[`plugin_entrypoints.md`](plugin_entrypoints.md)). Validate with:
+[`plugin_entrypoints.md`](plugin_entrypoints.md)).
+
+**The entry-point factory MUST return a concrete engine class** (annotate its
+return type as your engine class, e.g. `-> MyEngine`), **not** the `StandardASR`
+protocol. Capabilities and the params schema are read from class-level
+`ClassVar`s *without instantiating or authenticating* the engine (CLI
+`models show`, the registry, REST `GET /v1/capabilities` and
+`/v1/params-schema`); a Protocol return type has no readable `ClassVar`s, so it
+breaks instantiation-free discovery. The compliance suite enforces this.
+
+Validate with:
 
 ```
 standard-asr compliance entrypoints

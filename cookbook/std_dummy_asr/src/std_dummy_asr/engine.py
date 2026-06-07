@@ -11,7 +11,7 @@ negotiation, conversion, and parameter gating.
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import Field
 
@@ -89,13 +89,21 @@ class DummyASR(EngineBase):
     properties: ClassVar[BaseProperties] = DummyASRProperties()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPABILITIES
 
-    def __init__(self, message: str = "echo") -> None:
+    def __init__(self, message: str | None = None) -> None:
         """Initialize the dummy engine.
 
+        Construct config via ``from_env`` so unset fields fall back to
+        ``STANDARD_ASR_DUMMY_*`` environment variables (spec IC.4); an explicit
+        ``message`` wins over the environment. ``message`` defaults to ``None``
+        (not ``"echo"``) so that omitting it lets the env var take effect rather
+        than passing a default that would always override it.
+
         Args:
-            message: Text prefix for the transcript.
+            message: Text prefix for the transcript, or ``None`` to use the
+                environment / config default.
         """
-        self.config = DummyASRConfig(message=message)
+        explicit: dict[str, Any] = {} if message is None else {"message": message}
+        self.config = DummyASRConfig.from_env("dummy", **explicit)
 
     def _transcribe(
         self, prepared: PreparedAudio, params: RuntimeParams

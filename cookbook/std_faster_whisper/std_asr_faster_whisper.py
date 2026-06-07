@@ -155,10 +155,15 @@ class FasterWhisperASR(EngineBase):
     def __init__(self, **kwargs: Any) -> None:
         """Capture configuration (pure; weights load lazily).
 
+        Config is built via ``from_env``: unset fields fall back to
+        ``STANDARD_ASR_FASTER_WHISPER_*`` environment variables (spec IC.4) and
+        explicit ``kwargs`` win. Credentials (none here, but e.g. an HF token)
+        are wrapped in ``SecretStr`` by construction, never passed as plaintext.
+
         Args:
             **kwargs: Configuration overrides.
         """
-        self.config = FasterWhisperConfig(**kwargs)
+        self.config = FasterWhisperConfig.from_env("faster-whisper", **kwargs)
         self._model: object | None = None
 
     def _ensure_model_loaded(self) -> None:
@@ -170,7 +175,7 @@ class FasterWhisperASR(EngineBase):
         if self._model is not None:
             return
         try:
-            from faster_whisper import (  # pyright: ignore[reportMissingImports]
+            from faster_whisper import (  # pyright: ignore[reportMissingImports, reportMissingTypeStubs]
                 WhisperModel,  # pyright: ignore[reportUnknownVariableType]
             )
         except Exception as exc:  # noqa: BLE001
@@ -183,7 +188,7 @@ class FasterWhisperASR(EngineBase):
         try:
             self._model = WhisperModel(
                 model_size_or_path=config.model_path,
-                device=config.device,
+                device=config.device or "auto",
                 device_index=config.device_index,
                 compute_type=config.compute_type,
                 cpu_threads=config.cpu_threads,
