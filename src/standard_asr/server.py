@@ -53,6 +53,12 @@ class _BodySizeLimitMiddleware:
     multipart ``request.form()`` parsing on starlette < 0.40 (the well-known
     BaseHTTPMiddleware body bug), which the lower-bounds CI lane caught.
 
+    This is an early, cheap guard on the *declared* size. A chunked / streamed
+    request with no ``Content-Length`` bypasses it, but the transcribe handler
+    still enforces the limit authoritatively on the materialised body
+    (``len(file) > max_body_bytes``), so oversize payloads are always rejected;
+    the only residual exposure is that such a body is buffered before rejection.
+
     Args:
         app: The wrapped ASGI application.
         max_body_bytes: Maximum accepted body size in bytes.

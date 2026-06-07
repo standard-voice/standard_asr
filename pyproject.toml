@@ -47,7 +47,11 @@ docs = ["mkdocs-material>=9.6.18"]
 server = ["fastapi>=0.118", "python-multipart>=0.0.9", "uvicorn>=0.30"]
 
 [build-system]
-requires = ["uv-build"]
+# Cap the build backend: uv_build can introduce breaking sdist/wheel format
+# changes between minors (uv's own build warns without this bound). This governs
+# the BUILD tool, not a runtime dependency, so D4's "no caps on deps" does not
+# apply. Bump deliberately alongside the [tool.uv] required-version.
+requires = ["uv-build>=0.9,<0.12"]
 build-backend = "uv_build"
 
 [tool.uv]
@@ -63,6 +67,18 @@ constraint-dependencies = ["starlette<1.0"]
 [tool.uv.build-backend]
 module-root = "src"
 module-name = "standard_asr"
+# uv_build does NOT honor .gitignore, and it packages every file under the
+# module directory. Explicitly keep stray artifacts (a coverage DB that landed
+# in the package dir, scratch notes) from leaking downstream. The `build` CI job
+# asserts this stays true.
+# - wheel-exclude: the wheel contains ONLY the module (src/standard_asr), where
+#   no legitimate .md lives, so excluding *.md there is safe and blocks scratch
+#   notes. (README.md sits at the repo root and is never in the wheel anyway.)
+# - source-exclude: the sdist legitimately ships the root README.md (referenced
+#   by `readme = "README.md"`), so we must NOT exclude *.md here — only the
+#   coverage DBs.
+wheel-exclude = ["*.md", ".coverage", ".coverage.*"]
+source-exclude = [".coverage", ".coverage.*"]
 
 [tool.uv.workspace]
 members = ["cookbook/std_faster_whisper", "cookbook/std_dummy_asr"]

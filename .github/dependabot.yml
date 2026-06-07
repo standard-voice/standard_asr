@@ -16,6 +16,10 @@ updates:
       prefix: ci
     cooldown:
       default-days: 7 # ADR D6: let a release settle before we adopt it.
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - ci
     groups:
       github-actions:
         patterns:
@@ -35,6 +39,14 @@ updates:
   # The sanctioned exception is Dependabot *security* updates (a separate
   # channel, enabled in repo settings): when no in-range fix exists they MAY
   # raise a floor in pyproject. That is the one time the contract moves.
+  #
+  # NOTE on grouping: `groups.*.dependency-type` (development/production) is NOT
+  # supported for the uv ecosystem (dependabot/dependabot-core#13202 — uv
+  # classifies every dependency as "production"), so a dev-vs-runtime split would
+  # silently match nothing. Astral's own guidance keeps the uv config minimal.
+  # We therefore group by UPDATE TYPE, which works: low-risk minor/patch bumps
+  # (runtime + tooling alike) batch into one PR, and every MAJOR bump is left
+  # ungrouped so it lands in its own PR for deliberate, isolated review.
   - package-ecosystem: uv
     directory: "/"
     schedule:
@@ -44,20 +56,13 @@ updates:
       prefix: deps
     cooldown:
       default-days: 7 # ADR D6.
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
     groups:
-      # Dev/test/lint/typing tooling churns frequently and is low blast-radius:
-      # batch it into a single PR.
-      dev-dependencies:
-        dependency-type: development
-        patterns:
-          - "*"
-      # Runtime minor/patch bumps are low-risk; batch them too.
-      runtime-minor-patch:
-        dependency-type: production
+      minor-and-patch:
         update-types:
           - minor
           - patch
         patterns:
           - "*"
-      # Runtime MAJOR bumps match no group on purpose, so each lands in its own
-      # PR for deliberate, isolated review.
