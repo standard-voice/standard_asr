@@ -119,12 +119,8 @@ class PhraseHintsConstraints(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
     max_terms: int | None = Field(default=None, description="Maximum hint terms.")
-    max_chars_per_term: int | None = Field(
-        default=None, description="Maximum characters per term."
-    )
-    max_words_per_term: int | None = Field(
-        default=None, description="Maximum words per term."
-    )
+    max_chars_per_term: int | None = Field(default=None, description="Maximum characters per term.")
+    max_words_per_term: int | None = Field(default=None, description="Maximum words per term.")
 
 
 class DiarizationConstraints(BaseModel):
@@ -277,9 +273,7 @@ class LanguageCaps(_Container):
     """
 
     runtime_override: FlagCap = Field(default_factory=FlagCap)
-    candidate_languages: CandidateLanguagesCap = Field(
-        default_factory=CandidateLanguagesCap
-    )
+    candidate_languages: CandidateLanguagesCap = Field(default_factory=CandidateLanguagesCap)
 
 
 class GuidanceCaps(_Container):

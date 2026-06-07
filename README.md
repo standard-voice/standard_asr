@@ -5,7 +5,7 @@
 
 
 > ⚠️⚠️⚠️ Standard ASR is still work in progress!! Breaking changes may be introduced at any moment!!
-> 
+>
 > For production use, please wait until `v1.0.0` release, where we will be stabilizing the APIs and enforce migration policy when breaking changes do happen. We strictly follow semantic versioning.
 >
 > Please test out standard library and give us feedback or your opinion. Let's shape the future of ASR library together!

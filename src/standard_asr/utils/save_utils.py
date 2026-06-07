@@ -115,9 +115,7 @@ def encode_array_to_wav_bytes(
             "use an engine without this limit."
         )
 
-    return WavEncodeResult(
-        data=data, sample_rate=sample_rate, downmixed=downmixed, quantized=True
-    )
+    return WavEncodeResult(data=data, sample_rate=sample_rate, downmixed=downmixed, quantized=True)
 
 
 def nparray_to_audio_file(

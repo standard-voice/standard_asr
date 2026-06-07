@@ -133,9 +133,7 @@ def ensure_datatype(audio: NDArray[Any]) -> NDArray[np.float32]: ...
 
 
 @overload
-def ensure_datatype(
-    audio: NDArray[Any], data_type: Literal["float32"]
-) -> NDArray[np.float32]: ...
+def ensure_datatype(audio: NDArray[Any], data_type: Literal["float32"]) -> NDArray[np.float32]: ...
 
 
 @overload
@@ -145,18 +143,14 @@ def ensure_datatype(
 
 
 @overload
-def ensure_datatype(
-    audio: NDArray[Any], data_type: type[np.float32]
-) -> NDArray[np.float32]: ...
+def ensure_datatype(audio: NDArray[Any], data_type: type[np.float32]) -> NDArray[np.float32]: ...
 
 
 @overload
 def ensure_datatype(audio: NDArray[Any], data_type: DTypeLike) -> NDArray[Any]: ...
 
 
-def ensure_datatype(
-    audio: NDArray[Any], data_type: DTypeLike = np.float32
-) -> NDArray[Any]:
+def ensure_datatype(audio: NDArray[Any], data_type: DTypeLike = np.float32) -> NDArray[Any]:
     """Convert a NumPy array to the specified dtype (default: ``float32``).
 
     Args:
@@ -233,9 +227,7 @@ def normalize_audio(
     if target_sr <= 0:
         raise AudioProcessingError(f"target_sr must be > 0, got {target_sr}")
     if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(
-            f"target_channels must be None or > 0, got {target_channels}"
-        )
+        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
 
     # Check for empty audio
     if processed_audio.size == 0:
@@ -266,9 +258,7 @@ def normalize_audio(
                 "scipy not installed; using the built-in anti-aliasing fallback "
                 "resampler. Install standard-asr[audio] for higher quality."
             )
-            processed_audio = _fallback_resample(
-                processed_audio, original_sr, target_sr
-            )
+            processed_audio = _fallback_resample(processed_audio, original_sr, target_sr)
 
     # Ensure at least 2D for uniform channel processing
     if processed_audio.ndim == 1:
@@ -281,18 +271,14 @@ def normalize_audio(
     if target_channels is not None and current_channels != target_channels:
         if target_channels == 1:
             # Downmix to mono using average across channels
-            processed_audio = processed_audio.mean(axis=1, dtype=np.float32)[
-                :, np.newaxis
-            ]
+            processed_audio = processed_audio.mean(axis=1, dtype=np.float32)[:, np.newaxis]
         else:
             # Note: For multi-to-multi down-mixing (e.g., 6->2), this implementation performs a
             # simple channel selection/truncation instead of a perceptually accurate mix.
             # For higher quality down-mix, ensure FFmpeg is installed and prefer the FFmpeg path.
             if target_channels > current_channels:  # Upscale (e.g., mono to stereo)
                 reps = int(math.ceil(target_channels / current_channels))
-                processed_audio = np.tile(processed_audio, (1, reps))[
-                    :, :target_channels
-                ]
+                processed_audio = np.tile(processed_audio, (1, reps))[:, :target_channels]
             else:  # Down-mix by truncation
                 logger.warning(
                     "Down-mixing from %d to %d channels by taking the first %d channels. "
@@ -308,19 +294,14 @@ def normalize_audio(
     if not np.isfinite(processed_audio).all():
         bad_count = (~np.isfinite(processed_audio)).sum()
         logger.warning(
-            "Detected %d invalid samples (NaN/Inf) in audio; "
-            "replacing with safe values.",
+            "Detected %d invalid samples (NaN/Inf) in audio; replacing with safe values.",
             int(bad_count),
         )
-        processed_audio = np.nan_to_num(
-            processed_audio, nan=0.0, posinf=1.0, neginf=-1.0
-        )
+        processed_audio = np.nan_to_num(processed_audio, nan=0.0, posinf=1.0, neginf=-1.0)
 
     # Clip to contract range, then cast. Clip BEFORE cast (DEP.2 defensive
     # ordering) and use np.asarray instead of astype(copy=False) (DEP.2 ban).
-    processed_audio = np.asarray(
-        np.clip(processed_audio, -1.0, 1.0), dtype=np.float32
-    )
+    processed_audio = np.asarray(np.clip(processed_audio, -1.0, 1.0), dtype=np.float32)
     # Respect contract: mono->1D, multi->2D even if n_samples==1
     if int(processed_audio.shape[1]) == 1:
         return processed_audio[:, 0]
@@ -389,9 +370,7 @@ def load_audio(
     if target_sr <= 0:
         raise AudioProcessingError(f"target_sr must be > 0, got {target_sr}")
     if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(
-            f"target_channels must be None or > 0, got {target_channels}"
-        )
+        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
     if isinstance(source, str):
         # Improved base64 detection logic to avoid false positives
         s = source.strip()
@@ -495,9 +474,7 @@ def load_audio_from_path(
     if target_sr <= 0:
         raise AudioProcessingError(f"target_sr must be > 0, got {target_sr}")
     if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(
-            f"target_channels must be None or > 0, got {target_channels}"
-        )
+        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
 
     # Expand user (~) to avoid surprises across platforms
     from os import fspath
@@ -518,9 +495,7 @@ def load_audio_from_path(
 
                 frames = wf.readframes(wf.getnframes())
                 dtype_map = {1: np.uint8, 2: np.int16}
-                audio = np.frombuffer(frames, dtype=dtype_map[sampwidth]).astype(
-                    np.float32
-                )
+                audio = np.frombuffer(frames, dtype=dtype_map[sampwidth]).astype(np.float32)
                 if sampwidth == 1:
                     # 8-bit unsigned PCM: convert to [-1, 1]
                     audio = audio - 128.0
@@ -547,20 +522,14 @@ def load_audio_from_path(
         import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
 
         sf_read: Any = getattr(sf, "read")
-        audio, orig_sr = cast(
-            tuple[NDArray[np.float32], int], sf_read(path, dtype="float32")
-        )
+        audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(path, dtype="float32"))
         try:
             return normalize_audio(audio, orig_sr, target_sr, target_channels)
         except ImportError:
-            logger.warning(
-                "Resampling requires scipy; falling back to FFmpeg for %s.", path
-            )
+            logger.warning("Resampling requires scipy; falling back to FFmpeg for %s.", path)
             return _load_with_ffmpeg(path, target_sr, target_channels)
     except ImportError:
-        logger.debug(
-            "`soundfile` not installed, cannot load non-WAV formats without FFmpeg."
-        )
+        logger.debug("`soundfile` not installed, cannot load non-WAV formats without FFmpeg.")
     except Exception as e:
         logger.debug(f"Could not load with `soundfile`, falling back... Error: {e}")
 
@@ -596,9 +565,7 @@ def load_audio_from_bytes(
     if target_sr <= 0:
         raise AudioProcessingError(f"target_sr must be > 0, got {target_sr}")
     if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(
-            f"target_channels must be None or > 0, got {target_channels}"
-        )
+        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
     # Layer 2: `soundfile` is the best primary method for bytes
     try:
         import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
@@ -610,18 +577,12 @@ def load_audio_from_bytes(
         try:
             return normalize_audio(audio, orig_sr, target_sr, target_channels)
         except ImportError:
-            logger.warning(
-                "Resampling requires scipy; falling back to FFmpeg for byte input."
-            )
+            logger.warning("Resampling requires scipy; falling back to FFmpeg for byte input.")
             return _load_with_ffmpeg(data, target_sr, target_channels)
     except ImportError:
-        logger.debug(
-            "`soundfile` not installed, cannot load from bytes without FFmpeg."
-        )
+        logger.debug("`soundfile` not installed, cannot load from bytes without FFmpeg.")
     except Exception as e:
-        logger.debug(
-            f"Could not load bytes with `soundfile`, falling back... Error: {e}"
-        )
+        logger.debug(f"Could not load bytes with `soundfile`, falling back... Error: {e}")
 
     # Layer 3: Final fallback to FFmpeg
     return _load_with_ffmpeg(data, target_sr, target_channels)
@@ -661,9 +622,7 @@ def decode_audio(
         TypeError: Unsupported source type.
     """
     if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(
-            f"target_channels must be None or > 0, got {target_channels}"
-        )
+        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
 
     if isinstance(source, str):
         s = source.strip()
@@ -692,9 +651,7 @@ def decode_audio(
     return _decode_bytes_native(data, target_channels)
 
 
-def _decode_path_native(
-    path: str, target_channels: int | None
-) -> tuple[NDArray[np.float32], int]:
+def _decode_path_native(path: str, target_channels: int | None) -> tuple[NDArray[np.float32], int]:
     """Decode a (validated, existing) file path to ``(array, native_sr)``.
 
     Args:
@@ -720,9 +677,7 @@ def _decode_path_native(
                     )
                 frames = wf.readframes(wf.getnframes())
                 dtype_map = {1: np.uint8, 2: np.int16}
-                audio = np.frombuffer(frames, dtype=dtype_map[sampwidth]).astype(
-                    np.float32
-                )
+                audio = np.frombuffer(frames, dtype=dtype_map[sampwidth]).astype(np.float32)
                 if sampwidth == 1:
                     audio = (audio - 128.0) / 128.0
                 else:
@@ -738,9 +693,7 @@ def _decode_path_native(
         import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
 
         sf_read: Any = getattr(sf, "read")
-        audio, orig_sr = cast(
-            tuple[NDArray[np.float32], int], sf_read(path, dtype="float32")
-        )
+        audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(path, dtype="float32"))
         return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
     except ImportError:
         logger.debug("`soundfile` not installed; using FFmpeg for native decode.")
@@ -902,17 +855,13 @@ def _load_with_ffmpeg(
 
         # Contract guarantee: check for empty decoded audio
         if audio.size == 0:
-            raise AudioProcessingError(
-                "FFmpeg decoded audio is empty (no audio samples)."
-            )
+            raise AudioProcessingError("FFmpeg decoded audio is empty (no audio samples).")
 
         # Reshape the flat array into (n_samples, n_channels) if multi-channel
         if final_target_channels > 1:
             n = (audio.size // final_target_channels) * final_target_channels
             if n != audio.size:
-                logger.warning(
-                    "Dropping %d trailing samples to align channels.", audio.size - n
-                )
+                logger.warning("Dropping %d trailing samples to align channels.", audio.size - n)
             audio = audio[:n].reshape(-1, final_target_channels)
 
             # Check for empty array after channel alignment
@@ -957,9 +906,7 @@ def _load_with_ffmpeg(
         ) from e
 
 
-def _probe_stream_entry(
-    source: str | bytes, entry: str, timeout: float = 5.0
-) -> int | None:
+def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -> int | None:
     """Query a single integer ``stream=<entry>`` value via ffprobe (guarded).
 
     Like the ffmpeg decode path, this constrains ffprobe to the ``file,pipe``
@@ -1017,9 +964,7 @@ def _probe_stream_entry(
         return None
 
 
-def _probe_channels_with_ffprobe(
-    source: str | bytes, timeout: float = 5.0
-) -> int | None:
+def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> int | None:
     """Detect audio channel count via ffprobe (internal helper).
 
     Args:
@@ -1035,9 +980,7 @@ def _probe_channels_with_ffprobe(
     return _probe_stream_entry(source, "channels", timeout)
 
 
-def _probe_sample_rate_with_ffprobe(
-    source: str | bytes, timeout: float = 5.0
-) -> int | None:
+def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> int | None:
     """Detect the native sample rate via ffprobe (internal helper).
 
     Args:

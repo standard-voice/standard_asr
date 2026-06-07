@@ -145,18 +145,14 @@ def test_matches_scipy_multichannel() -> None:
 
 
 def test_backend_identity_when_rates_match() -> None:
-    out, backend = resample_with_backend(
-        np.array([0.1, 0.2], dtype=np.float32), 16000, 16000
-    )
+    out, backend = resample_with_backend(np.array([0.1, 0.2], dtype=np.float32), 16000, 16000)
     assert out.dtype == np.float32
     assert backend == "fallback"
 
 
 def test_backend_reports_scipy_when_available() -> None:
     _require_scipy_signal()
-    out, backend = resample_with_backend(
-        np.zeros(16000, dtype=np.float32), 16000, 24000
-    )
+    out, backend = resample_with_backend(np.zeros(16000, dtype=np.float32), 16000, 24000)
     assert backend == "scipy"
     assert out.shape[0] == 24000
 

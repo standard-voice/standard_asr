@@ -67,12 +67,8 @@ class BaseProperties(BaseModel):
     )
 
     # Audio I/O boundaries (spec AI section 3.2).
-    accepted_input: set[InputKind] = Field(
-        ..., description="Audio shapes the engine accepts."
-    )
-    native_sample_rate: int = Field(
-        ..., gt=0, description="The model's native sample rate in Hz."
-    )
+    accepted_input: set[InputKind] = Field(..., description="Audio shapes the engine accepts.")
+    native_sample_rate: int = Field(..., gt=0, description="The model's native sample rate in Hz.")
     accepted_sample_rates: list[int] | Literal["any"] = Field(
         ..., description="Accepted input sample rates in Hz, or 'any'."
     )
@@ -104,9 +100,7 @@ class BaseProperties(BaseModel):
     description: str | None = Field(
         default=None, description="Optional human-readable description."
     )
-    extra: dict[str, Any] = Field(
-        default_factory=dict, description="Engine-specific metadata."
-    )
+    extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific metadata.")
 
     @field_validator("accepted_input")
     @classmethod
@@ -128,9 +122,7 @@ class BaseProperties(BaseModel):
 
     @field_validator("accepted_sample_rates")
     @classmethod
-    def _validate_sample_rates(
-        cls, value: list[int] | str
-    ) -> list[int] | str:
+    def _validate_sample_rates(cls, value: list[int] | str) -> list[int] | str:
         """Validate the accepted sample-rate list.
 
         Args:
@@ -211,9 +203,7 @@ class BaseProperties(BaseModel):
                 are declared.
         """
         if AUTO in self.selectable_languages and not self.detectable_languages:
-            raise ValueError(
-                "detectable_languages is required when 'auto' is selectable."
-            )
+            raise ValueError("detectable_languages is required when 'auto' is selectable.")
         return self
 
     @field_validator("engine_id")

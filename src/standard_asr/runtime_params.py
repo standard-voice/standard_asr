@@ -89,12 +89,8 @@ class RuntimeParams(BaseModel):
     word_timestamps: WordTimestampGranularity | None = Field(
         default=None, description="Requested word-timestamp granularity."
     )
-    prompt: str | None = Field(
-        default=None, description="Free-text guidance prompt."
-    )
-    phrase_hints: list[str] | None = Field(
-        default=None, description="Phrase-hint boost terms."
-    )
+    prompt: str | None = Field(default=None, description="Free-text guidance prompt.")
+    phrase_hints: list[str] | None = Field(default=None, description="Phrase-hint boost terms.")
     on_unsupported: Literal["fail", "degrade_to_prompt"] = Field(
         default="fail",
         description="Guidance degradation policy (opt-in one-way to prompt).",

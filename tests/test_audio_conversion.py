@@ -138,9 +138,7 @@ def test_url_passthrough() -> None:
     # allow_private_addresses bypasses DNS resolution so the test does not depend
     # on network/DNS; the URL is still required to be HTTPS.
     url = "https://storage.example.com/a.wav"
-    prepared = _exec(
-        AudioUrl(url), {InputKind.FETCHABLE_URL}, allow_private_addresses=True
-    )
+    prepared = _exec(AudioUrl(url), {InputKind.FETCHABLE_URL}, allow_private_addresses=True)
     assert prepared.kind is InputKind.FETCHABLE_URL
     assert prepared.url == url
 
@@ -264,9 +262,7 @@ def test_path_passthrough_file_within_limit(tmp_path: Path) -> None:
     f = tmp_path / "ok.wav"
     data = _wav_bytes(samples=8)
     f.write_bytes(data)
-    prepared = _exec(
-        AudioPath(f), {InputKind.ENCODED_FILE}, max_file_size=len(data) + 100
-    )
+    prepared = _exec(AudioPath(f), {InputKind.ENCODED_FILE}, max_file_size=len(data) + 100)
     assert prepared.kind is InputKind.ENCODED_FILE
 
 

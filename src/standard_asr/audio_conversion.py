@@ -169,9 +169,7 @@ def execute_plan(
         assert isinstance(provided, AudioUrl)
         # R5.1: validate HTTPS + non-private address before forwarding the
         # literal URL to the engine. The standard never fetches it (v1).
-        validate_fetchable_url(
-            provided.value, allow_private_addresses=allow_private_addresses
-        )
+        validate_fetchable_url(provided.value, allow_private_addresses=allow_private_addresses)
         return PreparedAudio(kind=target, url=provided.value, diagnostics=diags)
 
     if target in (InputKind.ENCODED_FILE, InputKind.ENCODED_BYTES):
@@ -243,9 +241,7 @@ def _prepare_encoded(
         sr = provided.sample_rate or ASSUMED_SAMPLE_RATE
         if provided.sample_rate is None:
             diags.append(_assumed_sample_rate_diag())
-        result = encode_array_to_wav_bytes(
-            provided.samples, sr, max_file_size=max_file_size
-        )
+        result = encode_array_to_wav_bytes(provided.samples, sr, max_file_size=max_file_size)
         diags.append(
             Diagnostic(
                 level="warning",
@@ -265,9 +261,7 @@ def _prepare_encoded(
                     param="audio",
                 )
             )
-        return PreparedAudio(
-            kind=InputKind.ENCODED_BYTES, data=result.data, container="wav"
-        )
+        return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=result.data, container="wav")
     if ConversionOp.B64_DECODE in ops:  # base64 -> bytes
         assert isinstance(provided, AudioBase64)
         decoded = _decode_b64(provided.value)
@@ -309,9 +303,7 @@ def _check_file_size(path: Path, max_file_size: int | None) -> None:
     try:
         size = path.stat().st_size
     except OSError as exc:
-        raise AudioProcessingError(
-            f"Cannot stat audio file {str(path)!r}: {exc}."
-        ) from exc
+        raise AudioProcessingError(f"Cannot stat audio file {str(path)!r}: {exc}.") from exc
     _check_payload_size(size, max_file_size)
 
 
@@ -354,9 +346,7 @@ def _prepare_array(
         raise AudioProcessingError("Cannot decode this input to an array.")
 
     # Decode at the NATIVE rate; the sample-rate stage owns any resampling (R7).
-    array, native_sr = decode_audio(
-        source, target_channels=1, max_bytes=max_file_size
-    )
+    array, native_sr = decode_audio(source, target_channels=1, max_bytes=max_file_size)
     diags.append(
         Diagnostic(
             level="info",
@@ -407,9 +397,7 @@ def _apply_sample_rate(
     if not isinstance(accepted, list) or sample_rate in accepted:
         return array, sample_rate
 
-    target = _target_array_sample_rate(
-        accepted, native_sample_rate, required_input_sample_rate
-    )
+    target = _target_array_sample_rate(accepted, native_sample_rate, required_input_sample_rate)
     resampled, backend = resample_with_backend(array, sample_rate, target)
     label = "built-in fallback" if backend == "fallback" else "scipy resample_poly"
     diags.append(

@@ -36,9 +36,7 @@ def test_cache_dir_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert isinstance(resolved, Path)
 
 
-def test_cache_dir_windows_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_cache_dir_windows_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 

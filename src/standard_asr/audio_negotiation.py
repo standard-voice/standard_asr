@@ -240,9 +240,7 @@ def negotiate(
     return _negotiate_url(source, accepted)
 
 
-def can_accept(
-    provided: AudioInput, accepted: set[InputKind] | frozenset[InputKind]
-) -> bool:
+def can_accept(provided: AudioInput, accepted: set[InputKind] | frozenset[InputKind]) -> bool:
     """Return whether the provided audio can be delivered to the engine.
 
     A pre-call determination helper: ``True`` iff :func:`negotiate` yields a
@@ -294,9 +292,7 @@ def _negotiate_array(source: str, accepted: frozenset[InputKind]) -> ConversionP
         A plan (passthrough to array, or lossy WAV encode), or no viable path.
     """
     if InputKind.ARRAY in accepted:
-        return ConversionPlan(
-            source, InputKind.ARRAY, (ConversionOp.PASSTHROUGH,), False, False
-        )
+        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.PASSTHROUGH,), False, False)
     # The encoder writes to an in-memory BytesIO (R4: MUST NOT touch disk), so the
     # encoded result is ENCODED_BYTES. A file-only engine cannot receive it, so
     # this path is viable only when ENCODED_BYTES is accepted (otherwise a
@@ -340,12 +336,8 @@ def _negotiate_path(source: str, accepted: frozenset[InputKind]) -> ConversionPl
             source, InputKind.ENCODED_BYTES, (ConversionOp.READ_FILE,), False, False
         )
     if InputKind.ARRAY in accepted:
-        return ConversionPlan(
-            source, InputKind.ARRAY, (ConversionOp.DECODE,), False, True
-        )
-    return NoViablePath(
-        source, accepted, "The standard does not synthesize a fetchable URL in v1."
-    )
+        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,), False, True)
+    return NoViablePath(source, accepted, "The standard does not synthesize a fetchable URL in v1.")
 
 
 def _negotiate_bytes(source: str, accepted: frozenset[InputKind]) -> ConversionPlan | NoViablePath:
@@ -368,9 +360,7 @@ def _negotiate_bytes(source: str, accepted: frozenset[InputKind]) -> ConversionP
             source, InputKind.ENCODED_BYTES, (ConversionOp.PASSTHROUGH,), False, False
         )
     if InputKind.ARRAY in accepted:
-        return ConversionPlan(
-            source, InputKind.ARRAY, (ConversionOp.DECODE,), False, True
-        )
+        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,), False, True)
     return NoViablePath(source, accepted, _bytes_only_file_hint(accepted))
 
 

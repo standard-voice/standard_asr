@@ -105,9 +105,7 @@ class DummyASR(EngineBase):
         explicit: dict[str, Any] = {} if message is None else {"message": message}
         self.config = DummyASRConfig.from_env("dummy", **explicit)
 
-    def _transcribe(
-        self, prepared: PreparedAudio, params: RuntimeParams
-    ) -> TranscriptionResult:
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         """Return a short description of the provided audio buffer.
 
         Args:
@@ -123,9 +121,7 @@ class DummyASR(EngineBase):
             params.language,
             config.default_language,
             has_language_axis=self.properties.has_language_axis,
-            runtime_override_supported=self.supports(
-                "batch.language.runtime_override"
-            ),
+            runtime_override_supported=self.supports("batch.language.runtime_override"),
         )
         return TranscriptionResult(
             text=f"{config.message}: {samples} samples",

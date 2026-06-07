@@ -297,9 +297,7 @@ class EngineBase(ABC):
         return await asyncio.to_thread(self.transcribe, audio, params)
 
     @abstractmethod
-    def _transcribe(
-        self, prepared: PreparedAudio, params: RuntimeParams
-    ) -> TranscriptionResult:
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         """Run the engine on already-negotiated audio.
 
         The audio in ``prepared`` is guaranteed to be in one of the engine's

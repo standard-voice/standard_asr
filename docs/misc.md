@@ -44,6 +44,3 @@
 - asr config 里的 engine 是 config 的 descriminator，如果未来有两个插件取了同样的 engine 名字，会发生什么？ 之后 `asr list` cli 会发生什么问题？
 
 - 有些 asr 推理库，比如 sherpa onnx，支持包括 whisper, sense voice small, nvidia parakeet, fire red asr 在内的多种 ASR 模型推理，每一个模型的设置项都不太一样。要怎么处理不同模型下不同 config 和 option 的问题?
-
-
-

@@ -51,9 +51,7 @@ def test_provider_params_forbids_extra() -> None:
 
 
 def test_on_unsupported_choices() -> None:
-    assert RuntimeParams(on_unsupported="degrade_to_prompt").on_unsupported == (
-        "degrade_to_prompt"
-    )
+    assert RuntimeParams(on_unsupported="degrade_to_prompt").on_unsupported == ("degrade_to_prompt")
     with pytest.raises(ValidationError):
         RuntimeParams(on_unsupported="bogus")  # type: ignore[arg-type]
 

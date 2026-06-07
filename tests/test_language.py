@@ -44,27 +44,21 @@ def test_is_valid_bcp47_accepts_real_codes() -> None:
 
 def test_effective_language_runtime_override() -> None:
     assert (
-        effective_language(
-            "fr", "en", has_language_axis=True, runtime_override_supported=True
-        )
+        effective_language("fr", "en", has_language_axis=True, runtime_override_supported=True)
         == "fr"
     )
 
 
 def test_effective_language_falls_back_to_default() -> None:
     assert (
-        effective_language(
-            "fr", "en", has_language_axis=True, runtime_override_supported=False
-        )
+        effective_language("fr", "en", has_language_axis=True, runtime_override_supported=False)
         == "en"
     )
 
 
 def test_effective_language_no_axis() -> None:
     assert (
-        effective_language(
-            None, None, has_language_axis=False, runtime_override_supported=False
-        )
+        effective_language(None, None, has_language_axis=False, runtime_override_supported=False)
         is None
     )
 

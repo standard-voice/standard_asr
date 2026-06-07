@@ -31,9 +31,7 @@ def _rich() -> DeclaredCapabilities:
                     constraints=CandidateLanguagesConstraints(max=3),
                 ),
             ),
-            word_timestamps=WordTimestampsCap(
-                supported=True, granularities=["word", "segment"]
-            ),
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word", "segment"]),
             guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
         ),
         streaming=StreamingCapabilities(
@@ -165,9 +163,7 @@ def test_covers_allows_constraint_narrowing() -> None:
 def test_covers_rejects_granularity_widening() -> None:
     declared = DeclaredCapabilities(
         batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(
-                supported=True, granularities=["word", "segment"]
-            )
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word", "segment"])
         )
     )
     # Effective adds "char" -> widening the offered granularity set.
@@ -207,14 +203,10 @@ def test_covers_rejects_mode_widening() -> None:
 
 def test_covers_rejects_timestamps_mode_widening() -> None:
     declared = DeclaredCapabilities(
-        streaming=StreamingCapabilities(
-            timestamps=StreamTimestampsCap(mode="post_align")
-        )
+        streaming=StreamingCapabilities(timestamps=StreamTimestampsCap(mode="post_align"))
     )
     effective = DeclaredCapabilities(
-        streaming=StreamingCapabilities(
-            timestamps=StreamTimestampsCap(mode="native_frame_aligned")
-        )
+        streaming=StreamingCapabilities(timestamps=StreamTimestampsCap(mode="native_frame_aligned"))
     )
     assert declared.covers(effective) is False
 
@@ -224,9 +216,7 @@ def test_unsupported_feature_constraints_not_in_supported_paths() -> None:
     # supported path (constraints is a default-factory, never None).
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(supported=False)
-            ),
+            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False)),
             guidance=GuidanceCaps(prompt=PromptCap(supported=False)),
         )
     )

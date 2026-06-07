@@ -502,9 +502,7 @@ def test_guard_suppresses_closed_in_supersede_old_ids() -> None:
     guard.admit(TranscriptionEvent.closed("s0", "X."))
     # closed segment MUST NOT appear in a later supersede old_ids.
     assert guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"])) is None
-    assert any(
-        d.code == "lifecycle_closed_superseded" for d in guard.diagnostics
-    )
+    assert any(d.code == "lifecycle_closed_superseded" for d in guard.diagnostics)
 
 
 def test_guard_strict_raises() -> None:
@@ -596,9 +594,7 @@ def test_max_session_seconds_caps_wall_time() -> None:
     async def run() -> list[TranscriptionEvent]:
         # Continuous content events keep both done_timeout and max_idle alive;
         # only the wall-clock cap guarantees termination.
-        session = _ChattySession(
-            done_timeout=5.0, max_idle=5.0, max_session_seconds=0.1
-        )
+        session = _ChattySession(done_timeout=5.0, max_idle=5.0, max_session_seconds=0.1)
         session.feed([])
         return await _collect(session)
 

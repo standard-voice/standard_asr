@@ -6,7 +6,7 @@ theme:
   features:
     - navigation.instant
     - header.autohide
-    # - navigation.tabs 
+    # - navigation.tabs
   favicon: assets/branding/icon.png
   font:
     text: Noto Sans

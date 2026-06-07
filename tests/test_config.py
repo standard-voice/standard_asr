@@ -89,9 +89,7 @@ def test_secret_field_helper_default_none() -> None:
 
 def test_from_env_explicit_wins_over_env() -> None:
     env = {"STANDARD_ASR_ACME_BASE_URL": "https://from-env.test"}
-    cfg = _CloudConfig.from_env(
-        "acme", environ=env, base_url="https://explicit.test"
-    )
+    cfg = _CloudConfig.from_env("acme", environ=env, base_url="https://explicit.test")
     assert cfg.base_url == "https://explicit.test"
 
 

@@ -57,9 +57,7 @@ class IncompatibleAudioInputError(AudioProcessingError):
         self.provided = provided
         self.accepted = accepted
         self.hint = hint
-        super().__init__(
-            f"Cannot deliver {provided} to an engine that accepts {accepted}. {hint}"
-        )
+        super().__init__(f"Cannot deliver {provided} to an engine that accepts {accepted}. {hint}")
 
 
 class UnsupportedFeatureError(StandardASRError):

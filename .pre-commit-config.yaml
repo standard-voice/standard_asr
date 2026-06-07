@@ -1,0 +1,81 @@
+# Git hooks for Standard ASR, run by prek (https://github.com/j178/prek) — a
+# fast, drop-in-compatible reimplementation of pre-commit. (Plain `pre-commit`
+# also works; the config format is identical.)
+#
+# Setup:   uv tool install prek   &&   prek install
+#          (installs both the pre-commit and pre-push git hooks)
+# Run all: prek run --all-files
+#
+# Design: lint/format/typecheck use `uv run` LOCAL hooks so they execute the
+# exact tool versions pinned in uv.lock — identical to CI (.github/workflows/
+# lint.yml) and with no drift between a pre-commit pinned rev and the project's
+# pinned tools. Generic hygiene and the GitHub Actions audit use upstream repos.
+
+default_install_hook_types: [pre-commit, pre-push]
+
+# Vendored upstream sources and verbatim-migrated design docs are kept as-is
+# (provenance), so hooks skip them.
+exclude: |
+  (?x)^(
+    reference/|
+    docs/(research|design-notes|legacy)/|
+    docs/spec/specification\.md
+  )
+
+repos:
+  # --- generic hygiene -----------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # --- lint + format + typecheck (mirror CI exactly via uv) ----------------
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff (lint, autofix)
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-format
+        name: ruff (format)
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: pyright
+        name: pyright (strict typecheck)
+        entry: uv run pyright
+        language: system
+        types: [python]
+        # Pyright reads its scope (include/exclude) from pyproject and must run
+        # in the uv venv, so do not pass individual filenames.
+        pass_filenames: false
+        require_serial: true
+
+  # --- GitHub Actions security audit ---------------------------------------
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.25.2
+    hooks:
+      - id: zizmor
+
+  # --- full test suite on push (too slow for every commit) -----------------
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (full suite)
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

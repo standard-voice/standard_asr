@@ -214,8 +214,7 @@ def _coerce_array_tuple(value: Sequence[object]) -> AudioArray:
     """
     if len(value) != 2:
         raise TypeError(
-            "Audio tuple must be (ndarray, sample_rate); "
-            f"got a {len(value)}-element tuple."
+            f"Audio tuple must be (ndarray, sample_rate); got a {len(value)}-element tuple."
         )
     samples, sample_rate = value
     if not isinstance(samples, np.ndarray):

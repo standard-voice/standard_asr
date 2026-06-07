@@ -60,18 +60,14 @@ def test_unsupported_strict_raises() -> None:
 
 
 def test_unsupported_best_effort_drops() -> None:
-    gated, diags = gate_params(
-        RuntimeParams(language="en"), _caps(), "batch", strict=False
-    )
+    gated, diags = gate_params(RuntimeParams(language="en"), _caps(), "batch", strict=False)
     assert gated.language is None
     assert diags[0].code == "unsupported_parameter_ignored"
 
 
 def test_provider_params_unexpected_raises() -> None:
     with pytest.raises(InvalidProviderParamError):
-        gate_params(
-            RuntimeParams(provider_params=_P()), _caps(), "batch", strict=True
-        )
+        gate_params(RuntimeParams(provider_params=_P()), _caps(), "batch", strict=True)
 
 
 def test_provider_params_wrong_type_raises() -> None:
@@ -100,9 +96,7 @@ def test_provider_params_correct_type_ok() -> None:
 
 
 def test_degrade_phrase_hints_to_prompt() -> None:
-    params = RuntimeParams(
-        phrase_hints=["Anthropic", "Claude"], on_unsupported="degrade_to_prompt"
-    )
+    params = RuntimeParams(phrase_hints=["Anthropic", "Claude"], on_unsupported="degrade_to_prompt")
     gated, diags = gate_params(params, _caps(prompt=True), "batch", strict=True)
     assert gated.phrase_hints is None
     assert gated.prompt is not None
@@ -112,9 +106,7 @@ def test_degrade_phrase_hints_to_prompt() -> None:
 
 def test_degrade_not_requested_strict_raises() -> None:
     with pytest.raises(UnsupportedFeatureError):
-        gate_params(
-            RuntimeParams(phrase_hints=["x"]), _caps(prompt=True), "batch", strict=True
-        )
+        gate_params(RuntimeParams(phrase_hints=["x"]), _caps(prompt=True), "batch", strict=True)
 
 
 def test_degrade_but_prompt_unsupported_strict_raises() -> None:
@@ -130,7 +122,8 @@ def _wt_caps(*granularities: str) -> DeclaredCapabilities:
     return DeclaredCapabilities(
         batch=BatchCapabilities(
             word_timestamps=WordTimestampsCap(
-                supported=True, granularities=list(granularities)  # type: ignore[arg-type]
+                supported=True,
+                granularities=list(granularities),  # type: ignore[arg-type]
             )
         )
     )
@@ -151,9 +144,7 @@ def test_granularity_not_offered_strict_raises() -> None:
 
 def test_granularity_not_offered_best_effort_drops() -> None:
     params = RuntimeParams(word_timestamps=WordTimestampGranularity.CHAR)
-    gated, diags = gate_params(
-        params, _wt_caps("word", "segment"), "batch", strict=False
-    )
+    gated, diags = gate_params(params, _wt_caps("word", "segment"), "batch", strict=False)
     assert gated.word_timestamps is None
     assert any(d.code == "unsupported_granularity_ignored" for d in diags)
 
@@ -199,9 +190,7 @@ def test_empty_candidate_languages_not_gated_when_unsupported() -> None:
     params = RuntimeParams(candidate_languages=[])
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(supported=False)
-            )
+            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False))
         )
     )
     gated, diags = gate_params(params, caps, "batch", strict=True)
@@ -215,9 +204,7 @@ def test_nonempty_candidate_languages_still_gated() -> None:
     params = RuntimeParams(candidate_languages=["en", "ja"])
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(supported=False)
-            )
+            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False))
         )
     )
     with pytest.raises(UnsupportedFeatureError):

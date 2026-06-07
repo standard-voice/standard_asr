@@ -82,9 +82,7 @@ def resample_with_backend(
     return out, "scipy"
 
 
-def resample(
-    audio: NDArray[np.floating], orig_sr: int, target_sr: int
-) -> NDArray[np.float32]:
+def resample(audio: NDArray[np.floating], orig_sr: int, target_sr: int) -> NDArray[np.float32]:
     """Resample a waveform between sample rates (anti-aliasing, FFT-based).
 
     Works on mono (1D) or multi-channel (2D ``(n_samples, n_channels)``) input
@@ -159,7 +157,7 @@ def _resample_fourier(x: NDArray[np.float64], num: int) -> NDArray[np.float64]:
     # the last (n - half) bins of the output.
     n_neg = n - half
     if n_neg > 0:
-        new_spectrum[num - n_neg:] = spectrum[n_in - n_neg:]
+        new_spectrum[num - n_neg :] = spectrum[n_in - n_neg :]
 
     # Nyquist handling applies only when N is even: the single Nyquist bin at
     # index n // 2 must carry the energy of both the positive and negative

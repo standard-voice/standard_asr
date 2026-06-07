@@ -107,9 +107,7 @@ def gate_params(
             # word-timestamp granularity must be one the engine offers). The
             # sub-check handles its own drop/raise; nothing else to do here.
             if field_name == "word_timestamps":
-                _gate_granularity(
-                    params, capabilities, mode, updates, diagnostics, strict=strict
-                )
+                _gate_granularity(params, capabilities, mode, updates, diagnostics, strict=strict)
             continue
         # Unsupported at the feature level.
         if field_name == "phrase_hints" and _try_degrade_to_prompt(

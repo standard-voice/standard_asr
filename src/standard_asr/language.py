@@ -188,9 +188,7 @@ def effective_candidate_languages(
 
     if max_count is not None and len(result) > max_count:
         if strict:
-            raise ValueError(
-                f"candidate_languages has {len(result)} entries; max is {max_count}."
-            )
+            raise ValueError(f"candidate_languages has {len(result)} entries; max is {max_count}.")
         diagnostics.append(
             Diagnostic(
                 level="warning",

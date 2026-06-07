@@ -73,9 +73,7 @@ class _ArrayEngine(EngineBase):
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _Config(strict=strict)
 
-    def _transcribe(
-        self, prepared: PreparedAudio, params: RuntimeParams
-    ) -> TranscriptionResult:
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         assert prepared.kind is InputKind.ARRAY
         assert prepared.array is not None
         return TranscriptionResult(
@@ -129,15 +127,11 @@ def test_provider_params_swap_raises() -> None:
         x: int = 0
 
     with pytest.raises(InvalidProviderParamError):
-        _ArrayEngine().transcribe(
-            _audio(), RuntimeParams(provider_params=_OtherParams())
-        )
+        _ArrayEngine().transcribe(_audio(), RuntimeParams(provider_params=_OtherParams()))
 
 
 def test_provider_params_correct_type_ok() -> None:
-    result = _ArrayEngine().transcribe(
-        _audio(), RuntimeParams(provider_params=_MyParams(beam=5))
-    )
+    result = _ArrayEngine().transcribe(_audio(), RuntimeParams(provider_params=_MyParams(beam=5)))
     assert result.text == "n=8"
 
 
@@ -147,9 +141,7 @@ def test_bare_array_strict_missing_rate_raises() -> None:
 
 
 def test_bare_array_best_effort_assumes_rate() -> None:
-    result = _ArrayEngine(strict=False).transcribe(
-        AudioArray(np.zeros(8, dtype=np.float32))
-    )
+    result = _ArrayEngine(strict=False).transcribe(AudioArray(np.zeros(8, dtype=np.float32)))
     assert any(d.code == "assumed_sample_rate" for d in result.diagnostics)
 
 

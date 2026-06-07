@@ -223,14 +223,10 @@ class TranscriptionEvent(BaseModel):
         Returns:
             A ``final`` event marked ``finality="closed"``.
         """
-        return cls(
-            type="final", segment_id=segment_id, text=text, finality="closed", **kw
-        )
+        return cls(type="final", segment_id=segment_id, text=text, finality="closed", **kw)
 
     @classmethod
-    def supersede(
-        cls, old_ids: list[str], new_ids: list[str], **kw: Any
-    ) -> TranscriptionEvent:
+    def supersede(cls, old_ids: list[str], new_ids: list[str], **kw: Any) -> TranscriptionEvent:
         """Build a ``supersede`` event replacing old segments with new ones.
 
         Args:
@@ -273,9 +269,7 @@ class TranscriptionEvent(BaseModel):
         return cls(type="done", **kw)
 
     @classmethod
-    def make_error(
-        cls, code: str, *, recoverable: bool = False, **kw: Any
-    ) -> TranscriptionEvent:
+    def make_error(cls, code: str, *, recoverable: bool = False, **kw: Any) -> TranscriptionEvent:
         """Build an ``error`` event.
 
         Args:
@@ -565,9 +559,7 @@ class _LifecycleGuard:
         """
         if self._strict:
             raise ValueError(message)
-        self.diagnostics.append(
-            Diagnostic(level="warning", code=code, message=message)
-        )
+        self.diagnostics.append(Diagnostic(level="warning", code=code, message=message))
 
     def admit(self, event: TranscriptionEvent) -> TranscriptionEvent | None:
         """Validate (and possibly clamp) an event before it is forwarded.
@@ -620,9 +612,7 @@ class _LifecycleGuard:
 
         return event
 
-    def _clamp_stable_until(
-        self, event: TranscriptionEvent, sid: str
-    ) -> TranscriptionEvent:
+    def _clamp_stable_until(self, event: TranscriptionEvent, sid: str) -> TranscriptionEvent:
         """Clamp a decreasing or invalid ``stable_until`` (spec ST.4.2).
 
         Args:
@@ -716,9 +706,7 @@ class TranscriptionSession(ABC):
             strict_lifecycle: If ``True``, raise on illegal lifecycle
                 transitions instead of suppressing + diagnosing them.
         """
-        self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(
-            maxsize=audio_queue_maxsize
-        )
+        self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=audio_queue_maxsize)
         self._buffer = _CoalescingBuffer(capacity=event_buffer_capacity)
         self._guard = _LifecycleGuard(strict=strict_lifecycle)
         self._mode: Literal["feed", "manual"] | None = None
@@ -801,9 +789,7 @@ class TranscriptionSession(ABC):
         """
         return list(self._audio_history)
 
-    def note_reconnect(
-        self, gap_start: float | None = None, gap_end: float | None = None
-    ) -> None:
+    def note_reconnect(self, gap_start: float | None = None, gap_end: float | None = None) -> None:
         """Record that an internal reconnect bridged a gap (adapter-driven).
 
         The base queues a ``progress(reconnect=True, gap_start, gap_end)`` event
@@ -820,9 +806,7 @@ class TranscriptionSession(ABC):
             gap_end: End time (seconds) of the lossy gap, if known.
         """
         self._pending_reconnects.append(
-            TranscriptionEvent.progress(
-                reconnect=True, gap_start=gap_start, gap_end=gap_end
-            )
+            TranscriptionEvent.progress(reconnect=True, gap_start=gap_start, gap_end=gap_end)
         )
         if not self._replayable and self._history_overflowed:
             self._pending_reconnects.append(
@@ -849,9 +833,7 @@ class TranscriptionSession(ABC):
             return
         if self._mode != mode:
             other = "manual" if mode == "feed" else "feed"
-            raise StreamClosedError(
-                f"{other} input already in use; cannot mix with {mode}."
-            )
+            raise StreamClosedError(f"{other} input already in use; cannot mix with {mode}.")
 
     def feed(self, source: Iterable[bytes] | AsyncIterator[bytes]) -> None:
         """Feed audio from a managed source (mutually exclusive with manual).
@@ -874,9 +856,7 @@ class TranscriptionSession(ABC):
         self._replayable = isinstance(source, (list, tuple, bytes, bytearray))
         self._feed_task = asyncio.ensure_future(self._drain_source(source))
 
-    async def _drain_source(
-        self, source: Iterable[bytes] | AsyncIterator[bytes]
-    ) -> None:
+    async def _drain_source(self, source: Iterable[bytes] | AsyncIterator[bytes]) -> None:
         """Drain a fed source into the audio queue, ending on exhaustion.
 
         Args:
@@ -1015,9 +995,7 @@ class TranscriptionSession(ABC):
             detail: Human-readable detail stored under ``extra["detail"]``.
         """
         self._buffer.put_forced(
-            TranscriptionEvent.make_error(
-                code=code, recoverable=False, extra={"detail": detail}
-            )
+            TranscriptionEvent.make_error(code=code, recoverable=False, extra={"detail": detail})
         )
 
     def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
@@ -1051,9 +1029,7 @@ class TranscriptionSession(ABC):
             if self._max_session_seconds is not None:
                 remaining = self._max_session_seconds - (now - start)
                 if remaining <= 0:
-                    yield TranscriptionEvent.make_error(
-                        code="session_timeout", recoverable=False
-                    )
+                    yield TranscriptionEvent.make_error(code="session_timeout", recoverable=False)
                     return
                 timeout = min(timeout, remaining)
             try:
@@ -1061,21 +1037,15 @@ class TranscriptionSession(ABC):
             except asyncio.TimeoutError:
                 now = self._monotonic()
                 if self._max_idle is not None and (now - last_content) >= self._max_idle:
-                    yield TranscriptionEvent.make_error(
-                        code="stream_stalled", recoverable=False
-                    )
+                    yield TranscriptionEvent.make_error(code="stream_stalled", recoverable=False)
                     return
                 if (
                     self._max_session_seconds is not None
                     and (now - start) >= self._max_session_seconds
                 ):
-                    yield TranscriptionEvent.make_error(
-                        code="session_timeout", recoverable=False
-                    )
+                    yield TranscriptionEvent.make_error(code="session_timeout", recoverable=False)
                     return
-                yield TranscriptionEvent.make_error(
-                    code="done_timeout", recoverable=False
-                )
+                yield TranscriptionEvent.make_error(code="done_timeout", recoverable=False)
                 return
             if event is None:
                 return

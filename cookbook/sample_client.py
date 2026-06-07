@@ -33,9 +33,7 @@ def main() -> None:
 
     registry = discover_models()
     if not registry.names():
-        raise SystemExit(
-            "No Standard ASR models are installed. Did you install a plugin?"
-        )
+        raise SystemExit("No Standard ASR models are installed. Did you install a plugin?")
 
     target = registry.names()[0]
     print(f"Using model: {target}")

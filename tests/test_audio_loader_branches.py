@@ -95,9 +95,7 @@ def test_load_audio_invalid_params() -> None:
         audio_loader.load_audio(b"data", target_channels=0)
 
 
-def test_load_audio_existing_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_load_audio_existing_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     path = tmp_path / "exists.wav"
     path.write_bytes(b"placeholder")
     sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
@@ -378,9 +376,7 @@ def test_load_audio_from_bytes_soundfile_success(
 ) -> None:
     module = types.ModuleType("soundfile")
 
-    def _read(
-        handle: io.BytesIO, dtype: str = "float32"
-    ) -> tuple[NDArray[np.float32], int]:
+    def _read(handle: io.BytesIO, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
         return np.zeros(4, dtype=np.float32), 16000
 
     setattr(module, "read", _read)
@@ -423,9 +419,7 @@ def test_load_audio_from_bytes_soundfile_exception(
 ) -> None:
     module = types.ModuleType("soundfile")
 
-    def _read(
-        handle: io.BytesIO, dtype: str = "float32"
-    ) -> tuple[NDArray[np.float32], int]:
+    def _read(handle: io.BytesIO, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
         raise RuntimeError("boom")
 
     setattr(module, "read", _read)
@@ -446,9 +440,7 @@ def test_load_audio_from_bytes_soundfile_missing_scipy_fallback(
 ) -> None:
     module = types.ModuleType("soundfile")
 
-    def _read(
-        handle: io.BytesIO, dtype: str = "float32"
-    ) -> tuple[NDArray[np.float32], int]:
+    def _read(handle: io.BytesIO, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
         return np.zeros(4, dtype=np.float32), 8000
 
     setattr(module, "read", _read)
@@ -506,9 +498,7 @@ def test_load_with_ffmpeg_zero_samples(monkeypatch: pytest.MonkeyPatch) -> None:
             return True
 
     def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(
-            ["ffmpeg"], 0, stdout=_TruthyBytes(b""), stderr=b""
-        )
+        return subprocess.CompletedProcess(["ffmpeg"], 0, stdout=_TruthyBytes(b""), stderr=b"")
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
@@ -529,9 +519,7 @@ def test_load_with_ffmpeg_defaults_to_mono(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(audio_loader.shutil, "which", _which)
     monkeypatch.setattr(audio_loader, "_probe_channels_with_ffprobe", _probe)
 
-    def _run(
-        *args: object, **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes | bytearray]:
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes | bytearray]:
         return subprocess.CompletedProcess(["ffmpeg"], 0, stdout=stdout, stderr=b"")
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
@@ -557,9 +545,7 @@ def test_load_with_ffmpeg_multichannel_alignment(
     monkeypatch.setattr(audio_loader.shutil, "which", _which)
     monkeypatch.setattr(audio_loader, "_probe_channels_with_ffprobe", _probe)
 
-    def _run(
-        *args: object, **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes | bytearray]:
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes | bytearray]:
         return subprocess.CompletedProcess(["ffmpeg"], 0, stdout=stdout, stderr=b"")
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
@@ -580,9 +566,7 @@ def test_load_with_ffmpeg_multichannel_no_drop(
     def _which(_: str) -> str:
         return "/usr/bin/ffmpeg"
 
-    def _run(
-        *args: object, **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes | bytearray]:
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes | bytearray]:
         return subprocess.CompletedProcess(["ffmpeg"], 0, stdout=stdout, stderr=b"")
 
     monkeypatch.setattr(audio_loader.shutil, "which", _which)

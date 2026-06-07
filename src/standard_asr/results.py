@@ -89,9 +89,7 @@ class Word(BaseModel):
     )
     speaker: str | None = Field(default=None, description="Optional speaker label.")
     channel: int | None = Field(default=None, description="Optional channel index.")
-    extra: dict[str, Any] = Field(
-        default_factory=dict, description="Engine-specific extra data."
-    )
+    extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
 
 
 class Segment(BaseModel):
@@ -132,21 +130,15 @@ class Segment(BaseModel):
     )
     speaker: str | None = Field(default=None, description="Optional speaker label.")
     channel: int | None = Field(default=None, description="Optional channel index.")
-    avg_logprob: float | None = Field(
-        default=None, description="Optional average log-probability."
-    )
+    avg_logprob: float | None = Field(default=None, description="Optional average log-probability.")
     no_speech_prob: float | None = Field(
         default=None, description="Optional no-speech probability."
     )
-    temperature: float | None = Field(
-        default=None, description="Optional decoding temperature."
-    )
+    temperature: float | None = Field(default=None, description="Optional decoding temperature.")
     compression_ratio: float | None = Field(
         default=None, description="Optional compression-ratio metric."
     )
-    extra: dict[str, Any] = Field(
-        default_factory=dict, description="Engine-specific extra data."
-    )
+    extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
 
 
 class ChannelResult(BaseModel):
@@ -213,9 +205,7 @@ class TranscriptionResult(BaseModel):
     language_confidence: float | None = Field(
         default=None, ge=0.0, le=1.0, description="Detection confidence in [0, 1]."
     )
-    duration: float | None = Field(
-        default=None, description="Audio duration in seconds, if known."
-    )
+    duration: float | None = Field(default=None, description="Audio duration in seconds, if known.")
     segments: list[Segment] | None = Field(
         default=None, description="Time-ordered segments, if available."
     )
