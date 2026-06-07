@@ -64,9 +64,12 @@ drops in without a single line of app code changing.**
 Standard ASR discovers compliant plugins through the `standard_asr.models` entry-point group;
 each plugin exposes model presets keyed as `<engine_id>/<model_name>`. A tiny demo plugin
 ships in `cookbook/std_dummy_asr` so you can try the whole workflow with **no extra
-dependencies**:
+dependencies**. The demo plugin and sample client live in this repo, so clone it first:
 
 ```bash
+git clone https://github.com/standard-voice/standard_asr.git
+cd standard_asr
+
 pip install standard-asr
 pip install -e cookbook/std_dummy_asr      # the demo plugin (echoes a synthetic transcript)
 
@@ -103,14 +106,20 @@ The **same app code** runs against any other compliant engine — only the model
 revise before committing them as final. Requires a streaming-capable engine:
 
 ```python
-session = engine.start_transcription(audio_format=audio_format)   # audio_format per the spec
+import asyncio
+from standard_asr import AudioFormat
+
+# Declare the wire format of the PCM frames you'll send (must match the engine's
+# advertised wire_encodings).
+audio_format = AudioFormat(encoding="pcm_s16le", sample_rate=16_000)
+session = engine.start_transcription(audio_format=audio_format)
 
 async with session:
     async def pump_microphone():
         async for chunk in microphone():        # your byte source
             await session.send_audio(chunk)
         await session.end_audio()
-    start_task(pump_microphone())
+    asyncio.create_task(pump_microphone())
 
     async for event in session:
         if event.type == "partial":             # may still change
