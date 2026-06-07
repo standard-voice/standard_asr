@@ -67,15 +67,15 @@ class FasterWhisperConfig(
     """
 
     engine: Literal["faster-whisper"] = "faster-whisper"
-    model_path: str = Field("large-v3", description="Model size/name or local path.")
+    model_path: str = Field(default="large-v3", description="Model size/name or local path.")
     device: str | None = Field(default="auto", description="Compute device (cpu, cuda, auto).")
-    device_index: int | list[int] = Field(0, description="Device index/indices.")
-    compute_type: str = Field("default", description="Quantization/precision type.")
-    cpu_threads: int = Field(0, description="CPU threads (0 = runtime default).")
-    num_workers: int = Field(1, description="Worker threads for parallel inference.")
-    default_language: str | None = Field("auto", description="Default language or 'auto'.")
-    local_files_only: bool = Field(False, description="Disable downloads when True.")
-    revision: str | None = Field(None, description="Optional HF model revision.")
+    device_index: int | list[int] = Field(default=0, description="Device index/indices.")
+    compute_type: str = Field(default="default", description="Quantization/precision type.")
+    cpu_threads: int = Field(default=0, description="CPU threads (0 = runtime default).")
+    num_workers: int = Field(default=1, description="Worker threads for parallel inference.")
+    default_language: str | None = Field(default="auto", description="Default language or 'auto'.")
+    local_files_only: bool = Field(default=False, description="Disable downloads when True.")
+    revision: str | None = Field(default=None, description="Optional HF model revision.")
 
 
 class FasterWhisperParams(ProviderParams):

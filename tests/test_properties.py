@@ -122,3 +122,11 @@ def test_model_name_validation_errors() -> None:
 def test_model_id() -> None:
     props = BaseProperties(**_base_kwargs())
     assert props.model_id == "engine/model"
+
+
+def test_detectable_rejects_invalid_bcp47() -> None:
+    # A non-'auto' but malformed tag in detectable_languages must fail loud.
+    data = _base_kwargs()
+    data["detectable_languages"] = ["not@@valid"]
+    with pytest.raises(ValueError, match="BCP 47"):
+        BaseProperties(**data)

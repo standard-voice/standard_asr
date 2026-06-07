@@ -137,6 +137,19 @@ def test_numpy_extras_specifier_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert report.plugins[0].numpy_spec == "<2"
 
 
+def test_numpy_spec_skips_non_numpy_requirements_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The numpy requirement is not first in the list; the extractor must skip the
+    # non-matching entries (the loop-continue branch) and still find numpy.
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["pydantic>=2", "typing-extensions", "numpy<2"]))],
+    )
+    report = doctor.diagnose()
+    assert report.plugins[0].numpy_spec == "<2"
+
+
 def test_py313_no_numpy1_wheel_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_eps(
         monkeypatch,
@@ -146,6 +159,41 @@ def test_py313_no_numpy1_wheel_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor.sys, "version_info", fake_vi)
     report = doctor.diagnose()
     assert any("no numpy<2 wheel" in c for c in report.conflicts)
+
+
+def test_packaging_available_false_when_import_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When `packaging` cannot be imported, packaging_available reports False.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *args: object, **kwargs: object) -> object:
+        if name.startswith("packaging"):
+            raise ImportError("no packaging")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    assert doctor.packaging_available() is False
+
+
+def test_classify_numpy_neutral_when_packaging_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Without `packaging`, the classifier conservatively reports no hard split so
+    # it never flags a conflict it cannot verify.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *args: object, **kwargs: object) -> object:
+        if name.startswith("packaging"):
+            raise ImportError("no packaging")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    assert doctor._classify_numpy("<2") == (False, False)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_packaging_unavailable_adds_note(monkeypatch: pytest.MonkeyPatch) -> None:

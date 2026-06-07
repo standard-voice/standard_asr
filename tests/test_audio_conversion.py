@@ -13,7 +13,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from standard_asr.audio_conversion import PreparedAudio, execute_plan
+from standard_asr.audio_conversion import (
+    PreparedAudio,
+    _target_array_sample_rate,  # pyright: ignore[reportPrivateUsage]
+    execute_plan,
+)
 from standard_asr.audio_input import (
     AudioArray,
     AudioBase64,
@@ -150,6 +154,41 @@ def test_decode_path_to_array(tmp_path: Path) -> None:
     assert prepared.kind is InputKind.ARRAY
     assert prepared.array is not None
     assert any(d.code == "audio_conversion" for d in prepared.diagnostics)
+
+
+def test_array_encode_wav_assumes_rate_when_missing() -> None:
+    # An AudioArray with no sample_rate encoded to WAV must emit the
+    # assumed_sample_rate diagnostic (it cannot fabricate a silent rate).
+    prepared = _exec(
+        AudioArray(np.zeros(8, dtype=np.float32)),
+        {InputKind.ENCODED_BYTES},
+    )
+    assert prepared.kind is InputKind.ENCODED_BYTES
+    assert any(d.code == "assumed_sample_rate" for d in prepared.diagnostics)
+
+
+def test_decode_bytes_to_array() -> None:
+    prepared = _exec(AudioBytes(_wav_bytes(rate=8000), "wav"), {InputKind.ARRAY})
+    assert prepared.kind is InputKind.ARRAY
+    assert prepared.array is not None
+
+
+def test_decode_base64_to_array() -> None:
+    payload = base64.b64encode(_wav_bytes(rate=8000)).decode()
+    prepared = _exec(AudioBase64(payload), {InputKind.ARRAY})
+    assert prepared.kind is InputKind.ARRAY
+    assert prepared.array is not None
+
+
+def test_path_passthrough_stat_oserror_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A file whose size cannot be stat'd (e.g. it vanished mid-flight) must fail
+    # loud, not silently bypass the payload-size guard.
+    def _boom(_self: object, *args: object, **kwargs: object) -> object:
+        raise OSError("gone")
+
+    monkeypatch.setattr("pathlib.Path.stat", _boom)
+    with pytest.raises(AudioProcessingError, match="Cannot stat"):
+        _exec(AudioPath("missing.wav"), {InputKind.ENCODED_FILE}, max_file_size=1000)
 
 
 def test_bare_array_strict_raises() -> None:
@@ -297,6 +336,26 @@ def test_malformed_data_uri_clear_error() -> None:
     # A data: URI with no comma previously raised a raw IndexError.
     with pytest.raises(AudioProcessingError):
         _exec(AudioBase64("data:audio/wav;base64"), {InputKind.ENCODED_BYTES})
+
+
+def test_target_sample_rate_self_describing_returns_native() -> None:
+    # A self-describing ("any") engine carries no list to choose from, so the
+    # target is the model's native rate.
+    assert _target_array_sample_rate("any", 16000, None) == 16000
+
+
+def test_target_sample_rate_falls_back_to_first_accepted() -> None:
+    # Neither the required rate nor the native rate is accepted -> pick the first
+    # accepted rate as the deterministic fallback.
+    assert _target_array_sample_rate([22050, 44100], 16000, None) == 22050
+    # A required rate that the engine does not accept also falls through to the
+    # first accepted entry.
+    assert _target_array_sample_rate([22050, 44100], 16000, 8000) == 22050
+
+
+def test_target_sample_rate_prefers_required_then_native() -> None:
+    assert _target_array_sample_rate([16000, 24000], 16000, 24000) == 24000
+    assert _target_array_sample_rate([16000, 24000], 16000, None) == 16000
 
 
 def test_resample_diagnostic_names_backend() -> None:

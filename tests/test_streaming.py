@@ -17,6 +17,7 @@ from standard_asr.streaming import (
     SyncSession,
     TranscriptionEvent,
     TranscriptionSession,
+    _cancel_all_tasks,  # pyright: ignore[reportPrivateUsage]
     _CoalescingBuffer,  # pyright: ignore[reportPrivateUsage]
     _LifecycleGuard,  # pyright: ignore[reportPrivateUsage]
     reduce_event,
@@ -416,6 +417,88 @@ def test_sync_bridge_exit_always_shuts_down() -> None:
     assert sync._thread.is_alive() is False  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 
+def test_sync_bridge_shutdown_is_idempotent() -> None:
+    # A second __exit__ / _shutdown must be a no-op (the already-closed guard),
+    # never re-tearing-down a stopped loop.
+    sync = SyncSession(_EchoSession(), submit_timeout=5.0)
+    sync.__enter__()
+    sync.feed([b"hi"])
+    list(sync)
+    sync.__exit__(None, None, None)
+    # Second teardown returns immediately via the _closed guard.
+    sync._shutdown()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert sync._thread.is_alive() is False  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+def test_sync_bridge_unbounded_submit_timeout() -> None:
+    # submit_timeout=None means the pump never imposes its own deadline (it relies
+    # on the session's own terminal-event guarantees). The bridge still completes.
+    sync = SyncSession(_EchoSession(), submit_timeout=None)
+    with sync:
+        sync.feed([b"hello"])
+        events = list(sync)
+    assert events[-1].type == "done"
+
+
+def test_cancel_all_tasks_cancels_outstanding() -> None:
+    # The teardown helper cancels and awaits every task on the loop except the
+    # caller, so no task is destroyed while pending.
+    async def run() -> bool:
+        async def _forever() -> None:
+            await asyncio.sleep(100)
+
+        task = asyncio.ensure_future(_forever())
+        await asyncio.sleep(0)  # let it start
+        await _cancel_all_tasks()
+        return task.cancelled()
+
+    assert asyncio.run(run()) is True
+
+
+def test_aexit_without_aenter_has_no_tasks_to_cancel() -> None:
+    # __aexit__ before __aenter__ ran: there is no producer/feed task, so the
+    # cancel/gather is skipped and _close still runs cleanly.
+    async def run() -> None:
+        session = _EchoSession()
+        await session.__aexit__(None, None, None)
+
+    asyncio.run(run())
+
+
+def test_iterate_stops_on_closed_empty_buffer() -> None:
+    # Teardown race guard: if the event buffer is closed with no terminal event
+    # ever landing (e.g. the producer was cancelled mid-flight), the iterator
+    # must end cleanly when get() returns None rather than hang.
+    async def run() -> list[TranscriptionEvent]:
+        session = _EchoSession(done_timeout=5.0)
+        # Close the buffer directly without any events -> get() yields None.
+        session._buffer.close()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        events: list[TranscriptionEvent] = []
+        async for ev in session:
+            events.append(ev)
+        return events
+
+    assert asyncio.run(run()) == []
+
+
+def test_cancel_all_tasks_no_other_tasks_is_noop() -> None:
+    # With no outstanding tasks the gather branch is skipped without error.
+    asyncio.run(_cancel_all_tasks())
+
+
+def test_abstract_produce_raises_not_implemented() -> None:
+    # The abstract base _produce body raises NotImplementedError when invoked
+    # directly (e.g. a subclass that delegates to super() instead of overriding).
+    class _Concrete(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.done()  # pragma: no cover
+
+    with pytest.raises(NotImplementedError):
+        # Deliberately invoke the abstract base body (which raises) to prove the
+        # contract for a subclass that wrongly delegates to super().
+        TranscriptionSession._produce(_Concrete())  # pyright: ignore[reportPrivateUsage, reportAbstractUsage]
+
+
 # --------------------------------------------------------------------------- #
 # H10 -- reconnect scaffolding
 # --------------------------------------------------------------------------- #
@@ -528,6 +611,26 @@ def test_guard_clamps_invalid_combining_boundary() -> None:
     assert ev is not None and ev.stable_until == 0
 
 
+def test_guard_clamp_decreased_then_invalid_boundary_combines_reasons() -> None:
+    # A decreased stable_until is first clamped UP to the prior; if that prior is
+    # itself an invalid boundary for the new text, a second clamp DOWN to a valid
+    # boundary applies and both reasons are reported together.
+    guard = _LifecycleGuard()
+    # prior = 2 on plain ASCII text (boundary 2 is valid here).
+    first = guard.admit(TranscriptionEvent.partial("s0", "ax", stable_until=2))
+    assert first is not None and first.stable_until == 2
+    # New text "a" + "e" + combining accent: boundary 2 splits the combining
+    # sequence. A decreased request (1 < prior 2) clamps up to 2, which is then
+    # invalid for this text -> clamp down to the largest valid boundary (1).
+    combining = "a" + "e" + "́"  # e + COMBINING ACUTE ACCENT
+    second = guard.admit(TranscriptionEvent.partial("s0", combining, stable_until=0))
+    assert second is not None and second.stable_until == 1
+    msgs = [d.message for d in guard.diagnostics if d.code == "stable_until_clamped"]
+    # The second clamp records BOTH the decrease and the invalid-boundary reason
+    # in one combined message (the "; " join under test).
+    assert any("decreased" in m and "invalid boundary" in m and "; " in m for m in msgs)
+
+
 def test_guard_supersede_new_ids_open_then_partial_allowed() -> None:
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("s0", "x"))
@@ -600,6 +703,76 @@ def test_max_session_seconds_caps_wall_time() -> None:
 
     events = asyncio.run(run())
     assert events[-1].type == "error"
+    assert events[-1].code == "session_timeout"
+
+
+def test_max_session_seconds_without_max_idle() -> None:
+    # max_idle is None (1041 False branch); only the wall-clock cap terminates a
+    # continuously-chatty session.
+    class _ChattySession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            i = 0
+            while True:
+                await asyncio.sleep(0.01)
+                yield TranscriptionEvent.final(f"s{i}", "x")
+                i += 1
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _ChattySession(done_timeout=5.0, max_idle=None, max_session_seconds=0.1)
+        session.feed([])
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "session_timeout"
+
+
+def test_session_timeout_checked_at_loop_top_with_buffered_events() -> None:
+    # The wall-clock cap is detected at the TOP of the loop (remaining <= 0)
+    # before any wait, when the clock has already advanced past the budget. A
+    # deterministic fake clock removes the timing race.
+    class _OneShotSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.final("s0", "x")
+            await asyncio.sleep(10)  # then go silent
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _OneShotSession(done_timeout=5.0, max_idle=None, max_session_seconds=1.0)
+        # Deterministic clock: start at 0, then jump past the 1.0s budget so the
+        # second loop iteration's top-of-loop check sees remaining <= 0.
+        ticks = iter([0.0, 0.0, 2.0, 2.0, 2.0, 2.0])
+
+        def _clock() -> float:
+            try:
+                return next(ticks)
+            except StopIteration:  # pragma: no cover - safety for extra reads
+                return 2.0
+
+        session._monotonic = _clock  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        session.feed([])
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "session_timeout"
+
+
+def test_session_timeout_on_silence_in_timeout_handler() -> None:
+    # Total silence: the per-event wait times out exactly at the wall-clock cap so
+    # the TimeoutError handler synthesizes session_timeout (not done_timeout).
+    class _SilentSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            await asyncio.sleep(10)
+            yield TranscriptionEvent.done()  # pragma: no cover
+
+    async def run() -> list[TranscriptionEvent]:
+        # max_session < done_timeout, no idle cap: the wait is bounded by the
+        # remaining wall-clock budget and the handler picks session_timeout.
+        session = _SilentSession(done_timeout=0.2, max_idle=None, max_session_seconds=0.05)
+        session.feed([])
+        return await _collect(session)
+
+    events = asyncio.run(run())
     assert events[-1].code == "session_timeout"
 
 
@@ -698,6 +871,58 @@ def test_survey_wenet_two_pass_supersede_reduce() -> None:
     assert segs == {}
     reduce_event(segs, TranscriptionEvent.final("seg-5", "hello world"))
     assert segs == {"seg-5": "hello world"}
+
+
+def test_reduce_event_ignores_non_text_events() -> None:
+    # done / error / heartbeat carry no segment text -> the map is untouched.
+    segs: dict[str, str] = {"s1": "kept"}
+    reduce_event(segs, TranscriptionEvent.done())
+    reduce_event(segs, TranscriptionEvent.make_error("x", recoverable=False))
+    assert segs == {"s1": "kept"}
+
+
+def test_reduce_event_supersede_unknown_old_id_is_noop() -> None:
+    # Superseding an id that was never committed must not raise.
+    segs: dict[str, str] = {"s1": "a"}
+    reduce_event(segs, TranscriptionEvent.supersede(["ghost"], ["s2"]))
+    assert segs == {"s1": "a"}
+
+
+def test_reducer_records_detected_language() -> None:
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.partial("s0", "hola", detected_language="es"))
+    reducer.add(TranscriptionEvent.final("s0", "hola amigo"))
+    result = reducer.result()
+    assert result.detected_language == "es"
+
+
+def test_reducer_refinalize_same_segment_keeps_single_slot() -> None:
+    # A second final for the same segment_id overwrites in place (it is already in
+    # _order), it must not append a duplicate ordering entry.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s0", "first"))
+    reducer.add(TranscriptionEvent.final("s0", "second"))
+    result = reducer.result()
+    assert result.text == "second"
+    assert result.segments is not None
+    assert len(result.segments) == 1
+
+
+def test_reducer_supersede_removes_committed_segment() -> None:
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s0", "old", start=0.0, end=1.0))
+    reducer.add(TranscriptionEvent.supersede(["s0"], ["s1"]))
+    reducer.add(TranscriptionEvent.final("s1", "new", start=0.0, end=1.0))
+    assert reducer.result().text == "new"
+
+
+def test_reducer_supersede_unknown_id_is_noop() -> None:
+    # Superseding an id the reducer never committed must be skipped silently (the
+    # `if old_id in self._segments` guard), leaving committed segments intact.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s0", "kept", start=0.0, end=1.0))
+    reducer.add(TranscriptionEvent.supersede(["never-seen"], ["s9"]))
+    assert reducer.result().text == "kept"
 
 
 def test_survey_fireredasr_no_interim_only_finals() -> None:

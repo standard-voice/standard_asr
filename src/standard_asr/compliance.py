@@ -450,7 +450,11 @@ def check_sync_bridge(
                 model=None,
             )
         )
-    elif not outcome.get("terminal"):
+    elif not outcome.get("terminal"):  # pragma: no cover
+        # Defensive: a well-formed session ALWAYS lands a terminal event (the base
+        # producer force-appends ``done``), so a clean, error-free run that emits
+        # no terminal event is only reachable from a non-compliant out-of-tree
+        # adapter that bypasses the base class. Kept as a guard for that case.
         issues.append(
             ComplianceIssue(
                 level="error",

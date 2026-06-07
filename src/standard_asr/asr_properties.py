@@ -139,7 +139,10 @@ class BaseProperties(BaseModel):
             ValueError: If the list is empty or holds non-positive entries.
         """
         if not isinstance(value, list):
-            if value != "any":
+            # Defensive: pydantic's ``list[int] | Literal["any"]`` coercion has
+            # already rejected any non-"any" string before this after-validator
+            # runs, so the inner guard is unreachable via normal validation.
+            if value != "any":  # pragma: no cover - unreachable post-coercion
                 raise ValueError("accepted_sample_rates string value must be 'any'.")
             return value
         if not value:

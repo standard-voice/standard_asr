@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 
@@ -154,6 +156,22 @@ def test_array_to_file_only_engine_no_viable_path() -> None:
     assert isinstance(result, NoViablePath)
 
 
+def test_path_to_url_only_engine_no_viable_path() -> None:
+    # A local file cannot be turned into a fetchable URL; the standard does not
+    # synthesize one in v1.
+    result = negotiate(AudioPath("a.wav"), {URL})
+    assert isinstance(result, NoViablePath)
+    assert "fetchable URL" in result.hint
+
+
+def test_bytes_to_url_only_engine_no_viable_path() -> None:
+    # Bytes to a URL-only engine: neither encoded_file nor array is accepted, so
+    # the hint falls through to the no-URL-synthesis explanation.
+    result = negotiate(AudioBytes(b"x"), {URL})
+    assert isinstance(result, NoViablePath)
+    assert "fetchable URL" in result.hint
+
+
 def test_bytes_to_file_and_bytes_engine_passthrough() -> None:
     # When both file and bytes are accepted, bytes still pass through.
     plan = negotiate(AudioBytes(b"x"), {FILE, BYTES})
@@ -219,3 +237,47 @@ def test_validate_url_opt_in_still_requires_https() -> None:
 def test_validate_url_unresolvable_host_rejected() -> None:
     with pytest.raises(UnsafeAudioUrlError):
         validate_fetchable_url("https://nonexistent.invalid./a.wav")
+
+
+_AddrInfo = list[tuple[object, object, object, str, tuple[str, int]]]
+
+
+def _fake_getaddrinfo(*addrs: str) -> Callable[..., _AddrInfo]:
+    """Return a typed ``getaddrinfo`` stub resolving to the given addresses."""
+    import socket
+
+    infos: _AddrInfo = [
+        (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (addr, 443)) for addr in addrs
+    ]
+
+    def _getaddrinfo(*_a: object, **_k: object) -> _AddrInfo:
+        return infos
+
+    return _getaddrinfo
+
+
+def test_validate_url_resolved_public_host_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A named host that resolves to a public address is accepted (the DNS
+    # resolution + per-address public check is the path under test).
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
+    validate_fetchable_url("https://audio.example.com/a.wav")
+
+
+def test_validate_url_resolved_private_host_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # DNS rebinding defense: a name that resolves to a private address is rejected
+    # even though the name itself is not an IP literal.
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("10.0.0.5"))
+    with pytest.raises(UnsafeAudioUrlError, match="private/reserved"):
+        validate_fetchable_url("https://internal.example.com/a.wav")
+
+
+def test_validate_url_resolves_to_no_addresses_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo())
+    with pytest.raises(UnsafeAudioUrlError, match="no addresses"):
+        validate_fetchable_url("https://empty.example.com/a.wav")

@@ -1155,11 +1155,17 @@ class SyncSession:
         try:
             future = asyncio.run_coroutine_threadsafe(_cancel_all_tasks(), self._loop)
             future.result(timeout=5.0)
-        except Exception:  # noqa: BLE001 - teardown is best-effort
+        except Exception:  # noqa: BLE001 - teardown is best-effort  # pragma: no cover
+            # Defensive: the cancel-coroutine submit only fails if the owned loop
+            # is already torn down, which the _closed guard above prevents on the
+            # normal path. Kept so a pathological double-teardown cannot escape.
             pass
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5.0)
-        if not self._thread.is_alive():
+        # ``is_alive()`` is False on every non-pathological path (a cooperative
+        # adapter always returns within the 5s join); a truly blocking adapter
+        # that never yields would leave the thread alive and the loop unclosed.
+        if not self._thread.is_alive():  # pragma: no branch
             self._loop.close()
 
     def _submit(self, coro: Any, *, timeout: float | None) -> Any:

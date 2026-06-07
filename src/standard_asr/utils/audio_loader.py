@@ -205,10 +205,12 @@ def normalize_audio(
 
     Raises:
         AudioProcessingError: Invalid parameters or empty audio.
-        ImportError: Resampling requires ``scipy`` (``pip install scipy``).
 
     Note:
-        **Resampling:** Uses ``scipy.signal.resample_poly`` for high-quality conversion.
+        **Resampling:** Uses ``scipy.signal.resample_poly`` for high-quality
+        conversion when ``scipy`` is installed (the ``[audio]`` extra), and
+        degrades to the built-in numpy-only anti-aliasing Fourier resampler
+        otherwise (a missing extra is never fatal, spec AI R8).
 
         **Channel conversion:**
 
@@ -346,7 +348,6 @@ def load_audio(
         AudioProcessingError: Invalid parameters or decoding/processing failures,
             including missing or unreadable paths.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
-        ImportError: Resampling requires ``scipy`` when using the stdlib WAV loader.
         TypeError: Unsupported source type.
 
     Example:
@@ -463,7 +464,6 @@ def load_audio_from_path(
     Raises:
         AudioProcessingError: Decoding failed, including missing or unreadable files.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
-        ImportError: Resampling requires ``scipy`` when using the stdlib WAV loader.
 
     Note:
         **Decoding priority:** stdlib ``wave`` (WAV) → ``soundfile`` → FFmpeg.
@@ -523,11 +523,9 @@ def load_audio_from_path(
 
         sf_read: Any = getattr(sf, "read")
         audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(path, dtype="float32"))
-        try:
-            return normalize_audio(audio, orig_sr, target_sr, target_channels)
-        except ImportError:
-            logger.warning("Resampling requires scipy; falling back to FFmpeg for %s.", path)
-            return _load_with_ffmpeg(path, target_sr, target_channels)
+        # normalize_audio never raises ImportError: a missing scipy degrades to
+        # the built-in anti-aliasing fallback resampler internally (spec AI R8).
+        return normalize_audio(audio, orig_sr, target_sr, target_channels)
     except ImportError:
         logger.debug("`soundfile` not installed, cannot load non-WAV formats without FFmpeg.")
     except Exception as e:
@@ -574,11 +572,9 @@ def load_audio_from_bytes(
         audio, orig_sr = cast(
             tuple[NDArray[np.float32], int], sf_read(io.BytesIO(data), dtype="float32")
         )
-        try:
-            return normalize_audio(audio, orig_sr, target_sr, target_channels)
-        except ImportError:
-            logger.warning("Resampling requires scipy; falling back to FFmpeg for byte input.")
-            return _load_with_ffmpeg(data, target_sr, target_channels)
+        # normalize_audio never raises ImportError: a missing scipy degrades to
+        # the built-in anti-aliasing fallback resampler internally (spec AI R8).
+        return normalize_audio(audio, orig_sr, target_sr, target_channels)
     except ImportError:
         logger.debug("`soundfile` not installed, cannot load from bytes without FFmpeg.")
     except Exception as e:

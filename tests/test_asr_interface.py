@@ -161,6 +161,16 @@ def test_supports_routes_to_effective() -> None:
     assert engine.supports("batch.word_timestamps") is False
 
 
+def test_candidate_max_returns_none_for_absent_mode_domain() -> None:
+    # _CAPS declares only the batch domain; the streaming domain is None, so the
+    # candidate-max lookup for that mode must short-circuit to None rather than
+    # dereference a missing domain.
+    engine = _ArrayEngine()
+    assert engine._candidate_max("streaming") is None  # pyright: ignore[reportPrivateUsage]
+    # The present batch domain has no candidate constraint -> also None.
+    assert engine._candidate_max("batch") is None  # pyright: ignore[reportPrivateUsage]
+
+
 def test_resample_diagnostic_for_off_rate_array() -> None:
     class _AnyRateProps(_ArrayProps):
         accepted_sample_rates: list[int] | Literal["any"] = [16000]

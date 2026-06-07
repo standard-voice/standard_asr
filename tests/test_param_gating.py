@@ -20,7 +20,12 @@ from standard_asr.capabilities import (
     WordTimestampsCap,
 )
 from standard_asr.exceptions import InvalidProviderParamError, UnsupportedFeatureError
-from standard_asr.param_gating import gate_params
+from standard_asr.param_gating import (
+    _gate_granularity,  # pyright: ignore[reportPrivateUsage]
+    _try_degrade_to_prompt,  # pyright: ignore[reportPrivateUsage]
+    gate_params,
+)
+from standard_asr.results import Diagnostic
 from standard_asr.runtime_params import (
     ProviderParams,
     RuntimeParams,
@@ -209,6 +214,54 @@ def test_nonempty_candidate_languages_still_gated() -> None:
     )
     with pytest.raises(UnsupportedFeatureError):
         gate_params(params, caps, "batch", strict=True)
+
+
+# --------------------------------------------------------------------------- #
+# Direct exercise of the defensive guards in the granularity / degrade helpers.
+# These guards protect the contract regardless of call site; gate_params skips
+# them (it filters None / [] earlier), so they are unit-tested directly.
+# --------------------------------------------------------------------------- #
+def test_gate_granularity_no_request_returns_false() -> None:
+    # No word_timestamps requested -> the helper is a no-op and reports False.
+    updates: dict[str, object] = {}
+    diags: list[Diagnostic] = []
+    changed = _gate_granularity(
+        RuntimeParams(), _wt_caps("word"), "batch", updates, diags, strict=True
+    )
+    assert changed is False
+    assert updates == {}
+    assert diags == []
+
+
+def test_gate_granularity_non_word_timestamps_node_returns_false() -> None:
+    # word_timestamps does not resolve to a WordTimestampsCap leaf (here: the
+    # whole mode domain is absent, so node_at returns None) -> the helper does not
+    # over-constrain an unknown/missing shape and reports no change.
+    caps = DeclaredCapabilities()  # no batch domain at all
+    updates: dict[str, object] = {}
+    diags: list[Diagnostic] = []
+    changed = _gate_granularity(
+        RuntimeParams(word_timestamps=WordTimestampGranularity.WORD),
+        caps,
+        "batch",
+        updates,
+        diags,
+        strict=True,
+    )
+    assert changed is False
+    assert updates == {}
+    assert diags == []
+
+
+def test_try_degrade_empty_hints_returns_false() -> None:
+    # degrade_to_prompt with no hints must never frame an empty "Relevant terms: ."
+    params = RuntimeParams(phrase_hints=[], on_unsupported="degrade_to_prompt")
+    updates: dict[str, object] = {}
+    diags: list[Diagnostic] = []
+    applied = _try_degrade_to_prompt(params, _caps(prompt=True), "batch", updates, diags)
+    assert applied is False
+    assert updates == {}
+    assert diags == []
 
 
 def test_nonempty_candidate_languages_supported_passes() -> None:

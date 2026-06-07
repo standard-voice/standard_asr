@@ -46,7 +46,7 @@ class DummyASRConfig(LanguageConfigMixin, BaseConfig[Literal["dummy"]]):
     engine: Literal["dummy"] = "dummy"
     default_language: str | None = "en"
     message: str = Field(
-        "echo",
+        default="echo",
         description="Text prefix included in the emitted transcript for demos.",
     )
 

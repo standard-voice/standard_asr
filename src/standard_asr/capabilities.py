@@ -431,7 +431,10 @@ class DeclaredCapabilities(_Container):
         for path in other.iter_supported_paths():
             declared_node = self._resolve(path)
             effective_node = other._resolve(path)
-            if declared_node is None or effective_node is None:
+            if declared_node is None or effective_node is None:  # pragma: no cover
+                # Defensive: set-containment above guarantees every `other` path
+                # also resolves here, so neither side resolves to None in
+                # practice. Kept as a guard against a future traversal change.
                 continue
             if not _node_narrows(declared_node, effective_node):
                 return False

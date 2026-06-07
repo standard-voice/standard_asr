@@ -18,6 +18,17 @@ import standard_asr.utils.audio_loader as audio_loader
 from standard_asr.exceptions import AudioProcessingError
 
 
+def _ffmpeg_native_returning(array: NDArray[np.float32], rate: int) -> "object":
+    """Build a typed stand-in for ``_decode_with_ffmpeg_native``."""
+
+    def _decode(
+        source: str | bytes, target_channels: int | None
+    ) -> tuple[NDArray[np.float32], int]:
+        return array, rate
+
+    return _decode
+
+
 def _write_wav(path: Path, sampwidth: int, channels: int = 1) -> None:
     sample_rate = 16000
     frames = 4
@@ -614,6 +625,233 @@ def test_load_with_ffmpeg_called_process_error(monkeypatch: pytest.MonkeyPatch) 
         audio_loader._load_with_ffmpeg(b"data", 16000, 1)  # pyright: ignore[reportPrivateUsage]
 
     assert "truncated" in str(excinfo.value)
+
+
+def test_load_with_ffmpeg_called_process_error_short_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A short stderr (< 2000 bytes) must NOT be tagged as truncated (the
+    # truncation guard's False branch).
+    def _which(_: str) -> str:
+        return "/usr/bin/ffmpeg"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.CalledProcessError(1, "ffmpeg", output=b"", stderr=b"short error")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+
+    with pytest.raises(AudioProcessingError) as excinfo:
+        audio_loader._load_with_ffmpeg(b"data", 16000, 1)  # pyright: ignore[reportPrivateUsage]
+    assert "truncated" not in str(excinfo.value)
+    assert "short error" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
+# decode_audio: native-rate decoding (no resampling) across source variants.
+# --------------------------------------------------------------------------- #
+def test_decode_audio_rejects_nonpositive_channels() -> None:
+    with pytest.raises(AudioProcessingError, match="target_channels"):
+        audio_loader.decode_audio(b"data", target_channels=0)
+
+
+def test_decode_audio_bad_base64_data_uri() -> None:
+    with pytest.raises(AudioProcessingError, match="Invalid base64 data URI"):
+        audio_loader.decode_audio("data:audio/wav;base64,!!!notb64!!!")
+
+
+def test_decode_path_native_wav_8bit_mono(tmp_path: Path) -> None:
+    path = tmp_path / "a8.wav"
+    _write_wav(path, sampwidth=1, channels=1)
+    arr, sr = audio_loader.decode_audio(str(path), target_channels=1)
+    assert arr.dtype == np.float32
+    assert sr == 16000
+
+
+def test_decode_path_native_wav_16bit_stereo(tmp_path: Path) -> None:
+    path = tmp_path / "a16.wav"
+    _write_wav(path, sampwidth=2, channels=2)
+    arr, sr = audio_loader.decode_audio(str(path), target_channels=None)
+    assert arr.ndim == 2
+    assert arr.shape[1] == 2
+    assert sr == 16000
+
+
+def test_decode_path_native_wav_unsupported_sampwidth_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A 24-bit WAV is unsupported by the stdlib reader; decode falls through to
+    # soundfile/ffmpeg. Here soundfile is absent and ffmpeg is stubbed.
+    class _FakeWave:
+        def __enter__(self) -> "_FakeWave":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def getframerate(self) -> int:
+            return 16000
+
+        def getsampwidth(self) -> int:
+            return 3  # 24-bit -> unsupported via stdlib
+
+        def getnchannels(self) -> int:
+            return 1
+
+        def getnframes(self) -> int:
+            return 0
+
+        def readframes(self, _: int) -> bytes:
+            return b""
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *a: object, **k: object) -> object:
+        if name.startswith("soundfile"):
+            raise ImportError("no soundfile")
+        return real_import(name, *a, **k)  # type: ignore[arg-type]
+
+    def _open(*_a: object, **_k: object) -> _FakeWave:
+        return _FakeWave()
+
+    monkeypatch.setattr(wave, "open", _open)
+    monkeypatch.setattr(builtins, "__import__", _import)
+    monkeypatch.setattr(
+        audio_loader,
+        "_decode_with_ffmpeg_native",
+        _ffmpeg_native_returning(np.zeros(4, dtype=np.float32), 16000),
+    )
+    # Call the decode helper directly: decode_audio would reject the synthetic
+    # path before reaching the WAV reader.
+    arr, sr = audio_loader._decode_path_native("/tmp/u.wav", 1)  # pyright: ignore[reportPrivateUsage]
+    assert arr.shape[0] == 4
+    assert sr == 16000
+
+
+def test_decode_path_native_soundfile_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A non-WAV path decodes via soundfile, preserving the native rate.
+    module = types.ModuleType("soundfile")
+
+    def _read(path: str, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
+        return np.zeros(10, dtype=np.float32), 22050
+
+    setattr(module, "read", _read)
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", module)
+    arr, sr = audio_loader._decode_path_native("/tmp/a.flac", 1)  # pyright: ignore[reportPrivateUsage]
+    assert sr == 22050
+    assert arr.shape[0] == 10
+
+
+def test_decode_path_native_soundfile_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = types.ModuleType("soundfile")
+
+    def _read(path: str, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
+        raise RuntimeError("decode boom")
+
+    setattr(module, "read", _read)
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", module)
+    monkeypatch.setattr(
+        audio_loader,
+        "_decode_with_ffmpeg_native",
+        _ffmpeg_native_returning(np.zeros(3, dtype=np.float32), 8000),
+    )
+    arr, sr = audio_loader._decode_path_native("/tmp/a.flac", 1)  # pyright: ignore[reportPrivateUsage]
+    assert sr == 8000
+    assert arr.shape[0] == 3
+
+
+def test_decode_bytes_native_soundfile_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = types.ModuleType("soundfile")
+
+    def _read(buf: object, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
+        return np.zeros(6, dtype=np.float32), 44100
+
+    setattr(module, "read", _read)
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", module)
+    arr, sr = audio_loader.decode_audio(b"rawbytes", target_channels=1)
+    assert sr == 44100
+    assert arr.shape[0] == 6
+
+
+def test_decode_bytes_native_soundfile_import_error_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def _import(name: str, *a: object, **k: object) -> object:
+        if name.startswith("soundfile"):
+            raise ImportError("no soundfile")
+        return real_import(name, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    monkeypatch.setattr(
+        audio_loader,
+        "_decode_with_ffmpeg_native",
+        _ffmpeg_native_returning(np.zeros(2, dtype=np.float32), 16000),
+    )
+    arr, sr = audio_loader.decode_audio(b"rawbytes", target_channels=1)
+    assert sr == 16000
+    assert arr.shape[0] == 2
+
+
+def test_decode_bytes_native_soundfile_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = types.ModuleType("soundfile")
+
+    def _read(buf: object, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
+        raise RuntimeError("bytes decode boom")
+
+    setattr(module, "read", _read)
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", module)
+    monkeypatch.setattr(
+        audio_loader,
+        "_decode_with_ffmpeg_native",
+        _ffmpeg_native_returning(np.zeros(7, dtype=np.float32), 16000),
+    )
+    arr, sr = audio_loader.decode_audio(b"rawbytes", target_channels=1)
+    assert arr.shape[0] == 7
+    assert sr == 16000
+
+
+def test_decode_with_ffmpeg_native_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The native ffmpeg decode probes the rate then decodes at that rate.
+    def _probe(_source: str | bytes) -> int | None:
+        return 32000
+
+    def _load(_source: str | bytes, _sr: int, _ch: int | None) -> NDArray[np.float32]:
+        return np.zeros(5, dtype=np.float32)
+
+    monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe)
+    monkeypatch.setattr(audio_loader, "_load_with_ffmpeg", _load)
+    arr, sr = audio_loader._decode_with_ffmpeg_native(b"data", 1)  # pyright: ignore[reportPrivateUsage]
+    assert sr == 32000
+    assert arr.shape[0] == 5
+
+
+def test_decode_with_ffmpeg_native_no_rate_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _probe(_source: str | bytes) -> int | None:
+        return None
+
+    monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe)
+    with pytest.raises(AudioProcessingError, match="native sample rate"):
+        audio_loader._decode_with_ffmpeg_native(b"data", 1)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_probe_sample_rate_delegates_to_stream_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(["ffprobe"], 0, stdout=b"48000\n", stderr=b"")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    assert audio_loader._probe_sample_rate_with_ffprobe(b"data") == 48000  # pyright: ignore[reportPrivateUsage]
 
 
 def test_probe_channels_ffprobe_missing(monkeypatch: pytest.MonkeyPatch) -> None:

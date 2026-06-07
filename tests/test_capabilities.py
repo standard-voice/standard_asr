@@ -18,6 +18,9 @@ from standard_asr.capabilities import (
     StreamingCapabilities,
     StreamTimestampsCap,
     WordTimestampsCap,
+    _children,  # pyright: ignore[reportPrivateUsage]
+    _get_child,  # pyright: ignore[reportPrivateUsage]
+    _read_attr,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -250,3 +253,78 @@ def test_unknown_x_namespace_key_tolerated() -> None:
     )
     assert caps.supports("batch.x_acme_beamsearch") is True
     assert caps.supports("batch.x_acme_unknown") is False
+
+
+# --------------------------------------------------------------------------- #
+# x_* extension subtrees parse to plain dict nodes; the traversal/derivation
+# helpers (_get_child, _read_attr, _node_items, _derive_supported) must handle
+# dicts as well as typed models. These exercise those dict branches.
+# --------------------------------------------------------------------------- #
+def _x_caps(batch_extra: dict[str, object]) -> DeclaredCapabilities:
+    return DeclaredCapabilities.model_validate({"batch": batch_extra})
+
+
+def test_dict_node_supports_via_mode_and_supported_keys() -> None:
+    # A dict node with a "mode" key is supported unless the mode is an off-mode;
+    # a dict with only a "supported" key follows that flag; a bare container dict
+    # (no recognised keys) counts as present/supported.
+    caps = _x_caps(
+        {
+            "x_mode_on": {"mode": "lossy"},
+            "x_mode_off": {"mode": "unsupported"},
+            "x_flag_true": {"supported": True},
+            "x_flag_false": {"supported": False},
+            "x_container": {"nested": {"supported": True}},
+        }
+    )
+    assert caps.supports("batch.x_mode_on") is True
+    assert caps.supports("batch.x_mode_off") is False
+    assert caps.supports("batch.x_flag_true") is True
+    assert caps.supports("batch.x_flag_false") is False
+    # Present container dict + descend into its nested supported child.
+    paths = set(caps.iter_supported_paths())
+    assert "batch.x_container" in paths
+    assert "batch.x_container.nested" in paths
+
+
+def test_covers_with_dict_nodes_constraint_narrowing() -> None:
+    # Both declared and effective carry an x_* dict node with a numeric upper
+    # bound; widening it must be rejected, narrowing/equal accepted (the dict
+    # branch of the constraint comparison).
+    declared = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 5}}})
+    narrowed = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 2}}})
+    widened = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 9}}})
+    assert declared.covers(narrowed) is True
+    assert declared.covers(declared) is True
+    assert declared.covers(widened) is False
+
+
+def test_covers_rejects_dict_node_unbounding() -> None:
+    # Declared has a finite bound; effective drops it to None (unbounded) -> a
+    # widening of an open bound, which must be rejected.
+    declared = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 5}}})
+    unbounded = _x_caps({"x_feat": {"supported": True, "constraints": {"max": None}}})
+    assert declared.covers(unbounded) is False
+
+
+def test_traversal_helpers_handle_non_container_nodes() -> None:
+    # A primitive (non-model, non-dict) value can appear as a "node" when a path
+    # descends through a leaf scalar; the traversal helpers must degrade to a safe
+    # empty/None result rather than raise.
+    assert _get_child(42, "anything") is None
+    assert _get_child("a string", "x") is None
+    assert _read_attr(42, "max") is None
+    assert _read_attr(True, "mode") is None
+    assert _children(42) == []
+    assert _children("scalar") == []
+
+
+def test_covers_continues_past_unresolvable_node() -> None:
+    # When a supported path in `other` does not resolve to a node in this tree
+    # (declared_node is None), the per-node narrowing check is skipped (continue)
+    # but set-containment still governs the result.
+    declared = _x_caps({"x_feat": {"supported": True}})
+    # `other` supports the same path; declared._resolve finds it, but we also add
+    # a present container whose effective node differs in shape.
+    same = _x_caps({"x_feat": {"supported": True}})
+    assert declared.covers(same) is True

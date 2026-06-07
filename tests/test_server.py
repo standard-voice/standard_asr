@@ -411,6 +411,163 @@ def test_create_app_rejects_nonpositive_max_body() -> None:
         server_module.create_app(registry=_registry(), max_body_bytes=0)
 
 
+class _AudioErrorASR(_DummyASR):
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        from standard_asr.exceptions import AudioProcessingError
+
+        raise AudioProcessingError("bad audio frames")
+
+
+def _audio_error_factory() -> _AudioErrorASR:  # pyright: ignore[reportUnusedFunction]
+    return _AudioErrorASR()
+
+
+class _NoCapsASR(_DummyASR):
+    declared_capabilities: ClassVar[DeclaredCapabilities | None] = None  # type: ignore[assignment]
+    provider_params_type: ClassVar[type[ProviderParams] | None] = None
+
+
+def _no_caps_factory() -> _NoCapsASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoCapsASR()
+
+
+def test_transcribe_audio_error_maps_to_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    # AudioProcessingError raised inside transcribe (not decode) maps to 400.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_audio_error_factory"))
+    client = TestClient(app)
+    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 400
+    assert "bad audio frames" in resp.json()["detail"]
+
+
+def test_transcribe_json_with_options_builds_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A non-null options object is parsed into RuntimeParams (the _build_params
+    # validate path).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
+
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(b"fake").decode(),
+        "options": {"language": "en"},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+
+
+def test_capabilities_endpoint_none_caps_returns_404() -> None:
+    # An engine class with declared_capabilities=None has no caps to serve.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_no_caps_factory"))
+    client = TestClient(app)
+    resp: httpx.Response = client.get("/v1/capabilities/dummy/echo")
+    assert resp.status_code == 404
+    assert "No capabilities" in resp.json()["detail"]
+
+
+def test_params_schema_endpoint_none_returns_empty() -> None:
+    # An engine with no provider_params_type publishes an empty schema.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_no_caps_factory"))
+    client = TestClient(app)
+    resp: httpx.Response = client.get("/v1/params-schema/dummy/echo")
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+
+def test_invalid_content_length_returns_400() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    # A non-integer Content-Length must be rejected by the body-size middleware.
+    resp: httpx.Response = client.post(
+        "/v1/transcribe:json",
+        content=b"{}",
+        headers={"Content-Length": "not-a-number", "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+    assert "Invalid Content-Length" in resp.json()["detail"]
+
+
+def test_body_size_middleware_passes_non_http_scope() -> None:
+    # Non-HTTP scopes (websocket / lifespan) must pass straight through to the
+    # wrapped app without the Content-Length inspection.
+    import asyncio
+
+    forwarded: list[str] = []
+
+    async def _inner(scope: Any, receive: Any, send: Any) -> None:
+        forwarded.append(scope["type"])
+
+    mw = server_module._BodySizeLimitMiddleware(_inner, max_body_bytes=10)  # pyright: ignore[reportPrivateUsage]
+
+    async def _noop() -> dict[str, Any]:
+        return {}
+
+    async def _send(_: Any) -> None:
+        return None
+
+    asyncio.run(mw({"type": "lifespan", "headers": []}, _noop, _send))
+    assert forwarded == ["lifespan"]
+
+
+def test_transcribe_file_over_limit_without_content_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A chunked upload (no Content-Length) bypasses the early middleware guard;
+    # the handler still rejects the materialised oversize body with 413.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry(), max_body_bytes=8)
+    client = TestClient(app)
+    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
+
+    # Build a multipart body by hand and stream it via an iterator so httpx omits
+    # Content-Length (Transfer-Encoding: chunked), defeating the early guard.
+    boundary = "----stdasrboundary"
+    big_file = b"x" * 64
+    parts = (
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="model"\r\n\r\n'
+            "dummy/echo\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="a.wav"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        ).encode()
+        + big_file
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+
+    def _gen() -> Any:
+        yield parts
+
+    resp: httpx.Response = client.post(
+        "/v1/transcribe",
+        content=_gen(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert resp.status_code == 413
+    assert "too large" in resp.json()["detail"]
+
+
 def test_capabilities_no_instantiation(monkeypatch: pytest.MonkeyPatch) -> None:
     """capabilities/params-schema must NOT instantiate the engine (DoS / auth)."""
     pytest.importorskip("fastapi")

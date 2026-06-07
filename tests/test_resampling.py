@@ -157,6 +157,46 @@ def test_backend_reports_scipy_when_available() -> None:
     assert out.shape[0] == 24000
 
 
+def test_backend_invalid_rate_raises() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        resample_with_backend(np.zeros(4, dtype=np.float32), 0, 16000)
+
+
+def test_backend_empty_audio_raises() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        resample_with_backend(np.zeros(0, dtype=np.float32), 8000, 16000)
+
+
+def test_resample_clamps_zero_output_length_to_one() -> None:
+    # An extreme downsample whose rounded output length would be < 1 must clamp
+    # to a single sample rather than produce an empty array.
+    x = np.ones(3, dtype=np.float64)
+    out = resample(x, 1_000_000, 1)
+    assert out.shape[0] == 1
+
+
+def test_backend_falls_back_when_scipy_import_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A broken / absent scipy must degrade to the built-in resampler (spec R8),
+    # never propagate. We fail ONLY the in-method ``scipy.signal`` import and
+    # restore immediately, avoiding the numpy-reload artifact that purging scipy
+    # from sys.modules would cause.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "scipy.signal" or name.startswith("scipy.signal"):
+            raise ImportError("simulated broken scipy")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    out, backend = resample_with_backend(np.zeros(8000, dtype=np.float32), 8000, 16000)
+    assert backend == "fallback"
+    assert out.shape[0] == 16000
+
+
 # Note: the scipy-absent fallback branch of resample_with_backend is exercised by
 # the no-[audio] CI lane (where scipy is not importable). We deliberately do NOT
 # break the scipy import in-process here: purging scipy from sys.modules forces a

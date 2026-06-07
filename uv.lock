@@ -1836,22 +1836,46 @@ dependencies = [
     { name = "standard-asr" },
 ]
 
+[package.dev-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
 [package.metadata]
 requires-dist = [{ name = "standard-asr", editable = "." }]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "pytest", specifier = ">=8.4.1" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+]
 
 [[package]]
 name = "std-faster-whisper"
 version = "0.1.0"
-source = { virtual = "cookbook/std_faster_whisper" }
+source = { editable = "cookbook/std_faster_whisper" }
 dependencies = [
     { name = "faster-whisper" },
     { name = "standard-asr" },
+]
+
+[package.dev-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "faster-whisper", specifier = ">=1.2.0" },
     { name = "standard-asr", editable = "." },
+]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "pytest", specifier = ">=8.4.1" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
 ]
 
 [[package]]

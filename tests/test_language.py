@@ -91,6 +91,22 @@ def test_effective_candidates_unsupported_diagnostic() -> None:
     assert diags[0].code == "candidate_languages_ignored"
 
 
+def test_effective_candidates_none_when_no_chosen_list() -> None:
+    # auto + supported but neither a request nor a default candidate list: there
+    # is nothing to constrain detection to, so the result is None (no diagnostic).
+    result, diags = effective_candidate_languages(
+        AUTO,
+        None,
+        None,
+        candidate_supported=True,
+        detectable_languages=["en", "ja"],
+        max_count=3,
+        strict=True,
+    )
+    assert result is None
+    assert diags == []
+
+
 def test_effective_candidates_dedup_and_order() -> None:
     result, _ = effective_candidate_languages(
         AUTO,

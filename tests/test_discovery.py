@@ -76,6 +76,16 @@ def _unannotated_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[r
     return _DummyASR()
 
 
+def _bad_annotation_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[reportUnusedFunction]
+    return _DummyASR()
+
+
+# A return annotation naming a type that does not exist: typing.get_type_hints
+# raises NameError when resolving it, so engine_class must surface a
+# FactoryLoadError rather than crash.
+_bad_annotation_factory.__annotations__ = {"return": "ThisTypeDoesNotExistAnywhere"}
+
+
 class _OpenParams(ProviderParams):
     model_config = ConfigDict(extra="allow")  # violates §R.4 R1 (must be closed)
 
@@ -554,6 +564,21 @@ def test_engine_class_raises_when_annotation_not_concrete() -> None:
     ]
     registry = discover_models(eps=eps, strict=True)
     with pytest.raises(FactoryLoadError):
+        registry.engine_class("alpha/first")
+
+
+def test_engine_class_raises_when_type_hints_unresolvable() -> None:
+    # A factory whose return annotation references an undefined name makes
+    # typing.get_type_hints raise; that must become a FactoryLoadError, not crash.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_bad_annotation_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(FactoryLoadError, match="type hints"):
         registry.engine_class("alpha/first")
 
 

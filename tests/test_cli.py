@@ -110,6 +110,85 @@ def test_cli_models_show_unresolvable_class(
     assert "Capabilities: <unavailable" in output
 
 
+class _NoCapsClass:
+    """An engine class that declares no capabilities (declared_capabilities=None)."""
+
+    declared_capabilities = None
+
+
+def _no_caps_factory() -> _NoCapsClass:  # pyright: ignore[reportUnusedFunction]
+    return _NoCapsClass()
+
+
+def test_cli_models_show_no_capabilities(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_cli:_no_caps_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+
+    def _discover(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover)
+
+    exit_code = cli.main(["models", "show", "alpha/first"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Capabilities: <none declared>" in output
+
+
+def test_cli_doctor(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # The doctor command prints the report and returns 0 with no conflicts.
+    from standard_asr import doctor as doctor_module
+
+    def _entry_points(*, group: str) -> list[object]:
+        return []
+
+    monkeypatch.setattr(doctor_module, "entry_points", _entry_points)
+    exit_code = cli.main(["doctor"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Standard ASR" in output or "plugins" in output.lower()
+
+
+def test_cli_doctor_conflict_returns_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A numpy 1.x vs 2.x conflict makes the doctor command exit non-zero.
+    from dataclasses import dataclass
+
+    from standard_asr import doctor as doctor_module
+
+    @dataclass
+    class _Dist:
+        name: str
+        requires: list[str] | None
+
+    @dataclass
+    class _EP:
+        name: str
+        dist: _Dist | None
+
+    def _entry_points(*, group: str) -> list[_EP]:
+        return [
+            _EP("old/a", _Dist("std-a", ["numpy<2"])),
+            _EP("new/b", _Dist("std-b", ["numpy>=2.1"])),
+        ]
+
+    monkeypatch.setattr(doctor_module, "entry_points", _entry_points)
+    exit_code = cli.main(["doctor"])
+    capsys.readouterr()
+    assert exit_code == 1
+
+
 def test_cli_models_cache(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
