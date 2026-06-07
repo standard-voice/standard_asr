@@ -112,8 +112,10 @@ class AudioUrl:
     """A remote URL the engine or cloud service fetches server-side.
 
     The semantics are "the server can fetch this". Security constraints
-    (HTTPS-only, private-network rejection) are enforced at negotiation time
-    (spec R5). In v1 the standard never fetches the URL itself.
+    (HTTPS-only, private/loopback/link-local-address rejection) are enforced
+    before the URL is forwarded to an engine, by
+    :func:`standard_asr.audio_negotiation.validate_fetchable_url` at plan
+    execution (spec R5). In v1 the standard never fetches the URL itself.
 
     Args:
         value: The remote URL.

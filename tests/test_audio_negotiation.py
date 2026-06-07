@@ -20,9 +20,11 @@ from standard_asr.audio_negotiation import (
     ConversionOp,
     ConversionPlan,
     NoViablePath,
+    UnsafeAudioUrlError,
     can_accept,
     negotiate,
     negotiate_or_raise,
+    validate_fetchable_url,
 )
 from standard_asr.exceptions import IncompatibleAudioInputError
 
@@ -125,3 +127,95 @@ def test_negotiate_or_raise_raises() -> None:
     with pytest.raises(IncompatibleAudioInputError) as exc:
         negotiate_or_raise(_arr(), {URL})
     assert "AudioArray" in str(exc.value)
+
+
+# --- File-only engine rejects in-memory payloads (R3/R4 correctness) ---
+
+
+def test_bytes_to_file_only_engine_no_viable_path() -> None:
+    # In-memory bytes cannot be delivered to an engine that accepts only files on
+    # disk (the standard will not write a temp file). Must be NoViablePath, not a
+    # wrong-shape ENCODED_BYTES payload.
+    result = negotiate(AudioBytes(b"x"), {FILE})
+    assert isinstance(result, NoViablePath)
+    assert "encoded_file" in result.hint
+
+
+def test_base64_to_file_only_engine_no_viable_path() -> None:
+    result = negotiate(AudioBase64("AAAA"), {FILE})
+    assert isinstance(result, NoViablePath)
+    assert "encoded_file" in result.hint
+
+
+def test_array_to_file_only_engine_no_viable_path() -> None:
+    # The encoder produces in-memory bytes (BytesIO, R4); a file-only engine
+    # cannot receive them.
+    result = negotiate(_arr(), {FILE})
+    assert isinstance(result, NoViablePath)
+
+
+def test_bytes_to_file_and_bytes_engine_passthrough() -> None:
+    # When both file and bytes are accepted, bytes still pass through.
+    plan = negotiate(AudioBytes(b"x"), {FILE, BYTES})
+    assert isinstance(plan, ConversionPlan)
+    assert plan.target_kind is BYTES
+    assert plan.is_passthrough
+
+
+# --- R5 SSRF validation ---
+
+
+def test_validate_url_rejects_non_https() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("http://example.com/a.wav")
+
+
+def test_validate_url_rejects_missing_host() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("https:///a.wav")
+
+
+def test_validate_url_rejects_loopback_literal() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("https://127.0.0.1/a.wav")
+
+
+def test_validate_url_rejects_link_local_metadata() -> None:
+    # The classic cloud-metadata SSRF target.
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("https://169.254.169.254/latest/meta-data/")
+
+
+def test_validate_url_rejects_private_rfc1918() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("https://10.0.0.5/a.wav")
+
+
+def test_validate_url_rejects_ipv6_loopback() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("https://[::1]/a.wav")
+
+
+def test_validate_url_rejects_ipv4_mapped_ipv6_private() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("https://[::ffff:10.0.0.1]/a.wav")
+
+
+def test_validate_url_allows_public_ip_literal() -> None:
+    # A public IP literal needs no DNS; this must pass.
+    validate_fetchable_url("https://93.184.216.34/a.wav")
+
+
+def test_validate_url_opt_in_allows_private() -> None:
+    # The opt-in relaxes the private-address rejection (still HTTPS-only).
+    validate_fetchable_url("https://127.0.0.1/a.wav", allow_private_addresses=True)
+
+
+def test_validate_url_opt_in_still_requires_https() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("http://127.0.0.1/a.wav", allow_private_addresses=True)
+
+
+def test_validate_url_unresolvable_host_rejected() -> None:
+    with pytest.raises(UnsafeAudioUrlError):
+        validate_fetchable_url("https://nonexistent.invalid./a.wav")

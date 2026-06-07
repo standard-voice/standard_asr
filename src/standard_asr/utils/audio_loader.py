@@ -67,7 +67,64 @@ from ..exceptions import (
 
 logger = logging.getLogger(__name__)
 
+#: Hard ceiling (bytes) on a single buffered decode, guarding against
+#: decompression bombs / oversize inputs when no engine limit is supplied
+#: (spec R9). 2 GiB comfortably covers multi-hour PCM while bounding memory.
+_DEFAULT_MAX_DECODE_BYTES = 2 * 1024 * 1024 * 1024
+
 # --- Public API ---
+
+
+def _validate_local_source_path(path: str) -> str:
+    """Validate and absolutize a local file path before handing it to ffmpeg.
+
+    This is the file-input half of the bare-str-never-URL defense (design
+    decision D1): ffmpeg must only ever open a real local file, never a network
+    URL (``http://``, ``tcp://``), a protocol-chaining input (``concat:``,
+    ``data:``) or an option-injection string (a leading ``-``).
+
+    Args:
+        path: The candidate local file path.
+
+    Returns:
+        The resolved absolute path as a string.
+
+    Raises:
+        AudioProcessingError: If the path is empty, looks like a CLI option, or
+            does not resolve to an existing regular file.
+    """
+    if not path or path.startswith("-"):
+        raise AudioProcessingError(
+            "Refusing to decode an audio source that begins with '-' "
+            "(possible option injection). Pass a real local file path."
+        )
+    resolved = pathlib.Path(path).expanduser()
+    if not resolved.is_file():
+        raise AudioProcessingError(
+            f"Audio file not found or not a regular file: {path!r}. "
+            "Bare strings are always treated as local file paths; wrap URLs in "
+            "AudioUrl and base64 in AudioBase64."
+        )
+    return str(resolved.resolve())
+
+
+def _enforce_decode_size(num_bytes: int, max_bytes: int | None) -> None:
+    """Raise if a buffered payload exceeds the allowed decode size (spec R9).
+
+    Args:
+        num_bytes: Size of the payload about to be buffered, in bytes.
+        max_bytes: Engine-declared limit, or ``None`` to use the default cap.
+
+    Raises:
+        AudioProcessingError: If ``num_bytes`` exceeds the effective limit.
+    """
+    limit = max_bytes if max_bytes is not None else _DEFAULT_MAX_DECODE_BYTES
+    if num_bytes > limit:
+        raise AudioProcessingError(
+            f"Audio payload is {num_bytes} bytes, exceeding the decode limit of "
+            f"{limit} bytes. Provide a smaller input or an engine without this "
+            "limit."
+        )
 
 
 # numpy datatype check
@@ -116,10 +173,12 @@ def ensure_datatype(
         >>> audio = ensure_datatype(raw_audio)  # -> float32
         >>> audio = ensure_datatype(raw_audio, "float64")  # -> float64
     """
-    # Compute the target dtype for runtime comparison; helps static checkers
+    # Compute the target dtype for runtime comparison; helps static checkers.
+    # Use np.asarray (not astype(copy=False)) per spec DEP.2 / D4: copy=False is
+    # banned because its no-copy guarantee differs subtly across numpy 1.x/2.x.
     target_dtype: np.dtype[np.generic] = np.dtype(data_type)
     if audio.dtype != target_dtype:
-        audio = audio.astype(target_dtype, copy=False)
+        audio = np.asarray(audio, dtype=target_dtype)
     return audio
 
 
@@ -190,15 +249,16 @@ def normalize_audio(
         try:
             from math import gcd
 
-            from scipy.signal import (
-                resample_poly as _resample_poly,  # pyright: ignore[reportMissingTypeStubs,reportUnknownVariableType]
+            from scipy.signal import (  # pyright: ignore[reportMissingTypeStubs]
+                resample_poly as _resample_poly,  # pyright: ignore[reportUnknownVariableType]
             )
 
             g = gcd(original_sr, target_sr)
             up, down = target_sr // g, original_sr // g
-            processed_audio = _resample_poly(
-                processed_audio, up=up, down=down, axis=0
-            ).astype(np.float32, copy=False)  # pyright: ignore[reportUnknownVariableType]
+            processed_audio = np.asarray(
+                _resample_poly(processed_audio, up=up, down=down, axis=0),  # pyright: ignore[reportUnknownArgumentType]
+                dtype=np.float32,
+            )
         except ImportError:
             from ..resampling import resample as _fallback_resample
 
@@ -253,11 +313,14 @@ def normalize_audio(
             int(bad_count),
         )
         processed_audio = np.nan_to_num(
-            processed_audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0
+            processed_audio, nan=0.0, posinf=1.0, neginf=-1.0
         )
 
-    # Clip to contract range
-    processed_audio = np.clip(processed_audio, -1.0, 1.0).astype(np.float32, copy=False)
+    # Clip to contract range, then cast. Clip BEFORE cast (DEP.2 defensive
+    # ordering) and use np.asarray instead of astype(copy=False) (DEP.2 ban).
+    processed_audio = np.asarray(
+        np.clip(processed_audio, -1.0, 1.0), dtype=np.float32
+    )
     # Respect contract: mono->1D, multi->2D even if n_samples==1
     if int(processed_audio.shape[1]) == 1:
         return processed_audio[:, 0]
@@ -564,6 +627,188 @@ def load_audio_from_bytes(
     return _load_with_ffmpeg(data, target_sr, target_channels)
 
 
+def decode_audio(
+    source: str | bytes | bytearray | memoryview | pathlib.Path,
+    *,
+    target_channels: int | None = 1,
+    max_bytes: int | None = None,
+) -> tuple[NDArray[np.float32], int]:
+    """Decode audio to a waveform at its **native** sample rate.
+
+    Unlike :func:`load_audio`, this primitive does **not** resample: it returns
+    the decoded waveform together with the source's original sample rate, so the
+    caller can make the single authoritative resampling decision (spec R7). This
+    is what the conversion layer needs to honour 8 kHz telephony and 24 kHz
+    realtime engines without a spurious round-trip through 16 kHz (spec R7, the
+    "MUST NOT upsample native-rate input" clause).
+
+    Args:
+        source: File path, ``pathlib.Path``, raw bytes, or a base64 ``data:``
+            URI string. A bare ``str`` is always a local file path.
+        target_channels: Output channels. ``1`` = mono (default), ``None`` =
+            preserve the source channel layout.
+        max_bytes: Optional cap on the buffered payload size (spec R9). Defaults
+            to a generous internal ceiling when ``None``.
+
+    Returns:
+        A ``(array, native_sample_rate)`` pair. The array is ``float32`` in
+        ``[-1, 1]`` at the source's original sample rate.
+
+    Raises:
+        AudioProcessingError: Decoding failed, the input is missing/oversize, or
+            looks like an injected option.
+        FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        TypeError: Unsupported source type.
+    """
+    if target_channels is not None and target_channels <= 0:
+        raise AudioProcessingError(
+            f"target_channels must be None or > 0, got {target_channels}"
+        )
+
+    if isinstance(source, str):
+        s = source.strip()
+        if s.lower().startswith("data:") and ";base64," in s:
+            try:
+                decoded = base64.b64decode(s.split(";base64,", 1)[1], validate=True)
+            except (ValueError, TypeError) as e:
+                raise AudioProcessingError(f"Invalid base64 data URI: {e}") from e
+            _enforce_decode_size(len(decoded), max_bytes)
+            return _decode_bytes_native(decoded, target_channels)
+        path = _validate_local_source_path(s)
+        _enforce_decode_size(pathlib.Path(path).stat().st_size, max_bytes)
+        return _decode_path_native(path, target_channels)
+
+    if isinstance(source, pathlib.Path):
+        path = _validate_local_source_path(str(source))
+        _enforce_decode_size(pathlib.Path(path).stat().st_size, max_bytes)
+        return _decode_path_native(path, target_channels)
+
+    # Defensive: the annotation narrows to bytes-like here, but this is a public
+    # boundary that must reject mistyped runtime input gracefully.
+    if not isinstance(source, (bytes, bytearray, memoryview)):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(f"Unsupported audio source type: {type(source)}")
+    data = source.tobytes() if isinstance(source, memoryview) else bytes(source)
+    _enforce_decode_size(len(data), max_bytes)
+    return _decode_bytes_native(data, target_channels)
+
+
+def _decode_path_native(
+    path: str, target_channels: int | None
+) -> tuple[NDArray[np.float32], int]:
+    """Decode a (validated, existing) file path to ``(array, native_sr)``.
+
+    Args:
+        path: A validated absolute local file path.
+        target_channels: Output channels, or ``None`` to preserve.
+
+    Returns:
+        The decoded ``float32`` waveform and its native sample rate.
+
+    Raises:
+        AudioProcessingError: Decoding failed.
+        FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+    """
+    if path.lower().endswith(".wav"):
+        try:
+            with wave.open(path, "rb") as wf:
+                orig_sr = wf.getframerate()
+                sampwidth = wf.getsampwidth()
+                n_channels = wf.getnchannels()
+                if sampwidth not in (1, 2):
+                    raise AudioProcessingError(
+                        f"Unsupported WAV sample width via stdlib: {sampwidth * 8} bits"
+                    )
+                frames = wf.readframes(wf.getnframes())
+                dtype_map = {1: np.uint8, 2: np.int16}
+                audio = np.frombuffer(frames, dtype=dtype_map[sampwidth]).astype(
+                    np.float32
+                )
+                if sampwidth == 1:
+                    audio = (audio - 128.0) / 128.0
+                else:
+                    audio = audio / 32768.0
+                audio = np.asarray(audio, dtype=np.float32)
+                if n_channels > 1:
+                    audio = audio.reshape(-1, n_channels)
+                return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
+        except (wave.Error, AudioProcessingError, OSError, ValueError) as e:
+            logger.debug("stdlib wave decode failed, falling back. Error: %s", e)
+
+    try:
+        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
+
+        sf_read: Any = getattr(sf, "read")
+        audio, orig_sr = cast(
+            tuple[NDArray[np.float32], int], sf_read(path, dtype="float32")
+        )
+        return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
+    except ImportError:
+        logger.debug("`soundfile` not installed; using FFmpeg for native decode.")
+    except Exception as e:
+        logger.debug("soundfile decode failed, falling back. Error: %s", e)
+
+    return _decode_with_ffmpeg_native(path, target_channels)
+
+
+def _decode_bytes_native(
+    data: bytes, target_channels: int | None
+) -> tuple[NDArray[np.float32], int]:
+    """Decode raw bytes to ``(array, native_sr)`` without resampling.
+
+    Args:
+        data: Encoded audio bytes.
+        target_channels: Output channels, or ``None`` to preserve.
+
+    Returns:
+        The decoded ``float32`` waveform and its native sample rate.
+
+    Raises:
+        AudioProcessingError: Decoding failed.
+        FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+    """
+    try:
+        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
+
+        sf_read: Any = getattr(sf, "read")
+        audio, orig_sr = cast(
+            tuple[NDArray[np.float32], int], sf_read(io.BytesIO(data), dtype="float32")
+        )
+        return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
+    except ImportError:
+        logger.debug("`soundfile` not installed; using FFmpeg for native decode.")
+    except Exception as e:
+        logger.debug("soundfile decode failed, falling back. Error: %s", e)
+
+    return _decode_with_ffmpeg_native(data, target_channels)
+
+
+def _decode_with_ffmpeg_native(
+    source: str | bytes, target_channels: int | None
+) -> tuple[NDArray[np.float32], int]:
+    """Decode via FFmpeg preserving the native sample rate.
+
+    Args:
+        source: A validated local file path, or raw bytes.
+        target_channels: Output channels, or ``None`` to preserve.
+
+    Returns:
+        The decoded ``float32`` waveform and its native sample rate.
+
+    Raises:
+        AudioProcessingError: If the native rate cannot be determined or decoding
+            fails.
+        FFmpegNotFoundError: FFmpeg not in PATH.
+    """
+    native_sr = _probe_sample_rate_with_ffprobe(source)
+    if native_sr is None:
+        raise AudioProcessingError(
+            "Could not determine the native sample rate via ffprobe; install "
+            "ffprobe or the [audio] extra (soundfile) for native-rate decoding."
+        )
+    array = _load_with_ffmpeg(source, native_sr, target_channels)
+    return array, native_sr
+
+
 def _load_with_ffmpeg(
     source: str | bytes,
     target_sr: int,
@@ -592,9 +837,21 @@ def _load_with_ffmpeg(
             "'choco install ffmpeg' (Windows)."
         )
 
+    # Security (D1 / spec R5 rationale): a string source is a *local file* and
+    # nothing else. Validate + absolutize it up front (before probing), and
+    # constrain ffmpeg/ffprobe to the file/pipe protocols so they can never be
+    # coerced into fetching http(s)://, tcp://, concat:, data:, etc. via a
+    # crafted input string.
+    if isinstance(source, bytes):
+        input_arg = "pipe:0"
+        probe_source: str | bytes = source
+    else:
+        input_arg = _validate_local_source_path(source)
+        probe_source = input_arg
+
     # If target_channels is None, attempt to preserve original channels via ffprobe.
     if target_channels is None:
-        detected_channels = _probe_channels_with_ffprobe(source)
+        detected_channels = _probe_channels_with_ffprobe(probe_source)
         if detected_channels is None:
             logger.warning(
                 "ffprobe not available or failed to detect channels. "
@@ -614,8 +871,10 @@ def _load_with_ffmpeg(
         "error",
         "-threads",
         "0",  # Use optimal number of threads
+        "-protocol_whitelist",
+        "file,pipe",  # Disallow network/chaining protocols (LFI/SSRF defense).
         "-i",
-        "pipe:0" if isinstance(source, bytes) else source,
+        input_arg,
         # Output options (must follow the input):
         "-vn",
         "-sn",
@@ -669,7 +928,7 @@ def _load_with_ffmpeg(
                 "Detected %d invalid samples (NaN/Inf) from FFmpeg; replacing with safe values.",
                 int(bad_count),
             )
-            audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+            audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
 
         # Contract guarantee: ensure values are in [-1, 1] range
         audio = np.clip(audio, -1.0, 1.0)
@@ -698,6 +957,66 @@ def _load_with_ffmpeg(
         ) from e
 
 
+def _probe_stream_entry(
+    source: str | bytes, entry: str, timeout: float = 5.0
+) -> int | None:
+    """Query a single integer ``stream=<entry>`` value via ffprobe (guarded).
+
+    Like the ffmpeg decode path, this constrains ffprobe to the ``file,pipe``
+    protocols, so a crafted path can never trigger a network fetch (D1 / spec R5
+    rationale). String sources are forwarded verbatim; callers that accept
+    untrusted paths MUST validate them first via :func:`_validate_local_source_path`.
+
+    Args:
+        source: A local file path, or raw bytes.
+        entry: The ``stream=`` field to read (e.g. ``"channels"``,
+            ``"sample_rate"``).
+        timeout: Max seconds to wait. Default: ``5.0``.
+
+    Returns:
+        The integer value, or ``None`` if ffprobe is unavailable or detection
+        failed.
+
+    Raises:
+        None.
+    """
+    if shutil.which("ffprobe") is None:
+        return None
+
+    if isinstance(source, bytes):
+        input_arg = "pipe:0"
+        input_data: bytes | None = source
+    else:
+        input_arg = source
+        input_data = None
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        f"stream={entry}",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        input_arg,
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, input=input_data, check=True, timeout=timeout
+        )
+        text = proc.stdout.decode().strip()
+        return int(text) if text.isdigit() else None
+    except subprocess.TimeoutExpired:
+        return None
+    except subprocess.CalledProcessError:
+        return None
+
+
 def _probe_channels_with_ffprobe(
     source: str | bytes, timeout: float = 5.0
 ) -> int | None:
@@ -711,47 +1030,25 @@ def _probe_channels_with_ffprobe(
         Number of channels, or ``None`` if ffprobe unavailable or detection failed.
 
     Raises:
-        None.
+        AudioProcessingError: If a string source is not a valid local file.
     """
-    if shutil.which("ffprobe") is None:
-        return None
+    return _probe_stream_entry(source, "channels", timeout)
 
-    if isinstance(source, bytes):
-        cmd = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "a:0",
-            "-show_entries",
-            "stream=channels",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            "pipe:0",
-        ]
-        input_data = source
-    else:
-        cmd = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "a:0",
-            "-show_entries",
-            "stream=channels",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            source,
-        ]
-        input_data = None
 
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, input=input_data, check=True, timeout=timeout
-        )
-        text = proc.stdout.decode().strip()
-        return int(text) if text.isdigit() else None
-    except subprocess.TimeoutExpired:
-        return None
-    except subprocess.CalledProcessError:
-        return None
+def _probe_sample_rate_with_ffprobe(
+    source: str | bytes, timeout: float = 5.0
+) -> int | None:
+    """Detect the native sample rate via ffprobe (internal helper).
+
+    Args:
+        source: File path or raw bytes.
+        timeout: Max seconds to wait. Default: ``5.0``.
+
+    Returns:
+        Native sample rate in Hz, or ``None`` if ffprobe unavailable or detection
+        failed.
+
+    Raises:
+        AudioProcessingError: If a string source is not a valid local file.
+    """
+    return _probe_stream_entry(source, "sample_rate", timeout)

@@ -18,8 +18,11 @@ layered on top by the engine base class and are not part of *kind* negotiation.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from dataclasses import dataclass
 from enum import Enum
+from urllib.parse import urlsplit
 
 from .audio_input import (
     AudioArray,
@@ -31,8 +34,116 @@ from .audio_input import (
 )
 from .exceptions import IncompatibleAudioInputError
 
-#: Engine-accepted shapes treated as the single "encoded" matrix column.
-_ENCODED_KINDS = frozenset({InputKind.ENCODED_FILE, InputKind.ENCODED_BYTES})
+
+class UnsafeAudioUrlError(IncompatibleAudioInputError):
+    """An ``AudioUrl`` failed the R5 security policy and MUST NOT be forwarded.
+
+    Raised before a URL is handed to an engine when the URL is not HTTPS, or
+    resolves (in whole or in part) to a private / loopback / link-local address
+    -- the classic SSRF target set (spec R5.1). Subclasses
+    :class:`~standard_asr.exceptions.IncompatibleAudioInputError` so existing
+    audio-input error handling catches it, while remaining distinguishable.
+
+    Args:
+        url: The offending URL.
+        reason: A human-readable explanation of why it was rejected.
+    """
+
+    def __init__(self, url: str, reason: str) -> None:
+        self.url = url
+        self.reason = reason
+        super().__init__(
+            provided="AudioUrl",
+            accepted=["fetchable_url"],
+            hint=(
+                f"Refusing to forward {url!r}: {reason}. URLs MUST be HTTPS and "
+                "MUST NOT target private/loopback/link-local addresses (SSRF "
+                "defense, spec R5). Pass allow_private_addresses=True only for a "
+                "trusted internal endpoint."
+            ),
+        )
+
+
+def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return whether an IP is in a private/loopback/link-local/reserved range.
+
+    Covers the SSRF target set from spec R5.1: RFC1918, 127/8, 169.254/16, ::1,
+    fc00::/7 (and their relatives, plus reserved/unspecified) -- including
+    IPv4-mapped IPv6 addresses, which are unwrapped first.
+
+    Args:
+        ip: The parsed address to classify.
+
+    Returns:
+        ``True`` if the address MUST be rejected by default.
+    """
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    )
+
+
+def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -> None:
+    """Validate an ``AudioUrl`` against the R5 SSRF policy before forwarding.
+
+    The standard never fetches the URL itself in v1 (spec R5); this only
+    validates the literal that will be passed to the engine. The check is:
+    HTTPS-only, a parseable host, and -- unless opted out -- every address the
+    host resolves to must be public.
+
+    Args:
+        url: The URL to validate.
+        allow_private_addresses: If ``True``, skip the private/loopback/
+            link-local rejection (opt-in for trusted internal endpoints). HTTPS
+            is still required.
+
+    Raises:
+        UnsafeAudioUrlError: If the URL is not HTTPS, has no host, fails to
+            resolve, or resolves to a disallowed address.
+    """
+    parts = urlsplit(url)
+    if parts.scheme.lower() != "https":
+        raise UnsafeAudioUrlError(url, f"scheme {parts.scheme!r} is not HTTPS")
+    host = parts.hostname
+    if not host:
+        raise UnsafeAudioUrlError(url, "the URL has no host component")
+
+    if allow_private_addresses:
+        return
+
+    # An IP literal host is checked directly; a name is resolved and ALL
+    # returned addresses must be public (defends against DNS that returns a mix).
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _is_disallowed_ip(literal):
+            raise UnsafeAudioUrlError(url, f"host {host} is a private/reserved address")
+        return
+
+    try:
+        infos = socket.getaddrinfo(host, parts.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeAudioUrlError(url, f"host {host!r} did not resolve ({exc})") from exc
+    if not infos:
+        raise UnsafeAudioUrlError(url, f"host {host!r} resolved to no addresses")
+    for info in infos:
+        addr = info[4][0]
+        try:
+            resolved = ipaddress.ip_address(addr)
+        except ValueError:  # pragma: no cover - defensive
+            raise UnsafeAudioUrlError(url, f"unparseable resolved address {addr!r}")
+        if _is_disallowed_ip(resolved):
+            raise UnsafeAudioUrlError(
+                url, f"host {host} resolves to private/reserved address {addr}"
+            )
 
 
 class ConversionOp(str, Enum):
@@ -186,10 +297,22 @@ def _negotiate_array(source: str, accepted: frozenset[InputKind]) -> ConversionP
         return ConversionPlan(
             source, InputKind.ARRAY, (ConversionOp.PASSTHROUGH,), False, False
         )
-    if accepted & _ENCODED_KINDS:
+    # The encoder writes to an in-memory BytesIO (R4: MUST NOT touch disk), so the
+    # encoded result is ENCODED_BYTES. A file-only engine cannot receive it, so
+    # this path is viable only when ENCODED_BYTES is accepted (otherwise a
+    # wrong-shape silent result -- R3).
+    if InputKind.ENCODED_BYTES in accepted:
         # Encode to WAV/16-bit PCM bytes (float32 -> int16 is lossy).
         return ConversionPlan(
             source, InputKind.ENCODED_BYTES, (ConversionOp.ENCODE_WAV,), True, False
+        )
+    if InputKind.ENCODED_FILE in accepted:
+        return NoViablePath(
+            source,
+            accepted,
+            "This engine accepts only files on disk (encoded_file); the standard "
+            "encodes arrays to in-memory bytes and will not write a temp file. "
+            "Use an engine that accepts arrays or encoded_bytes.",
         )
     return NoViablePath(
         source,
@@ -235,7 +358,12 @@ def _negotiate_bytes(source: str, accepted: frozenset[InputKind]) -> ConversionP
     Returns:
         A plan (passthrough bytes or decode), or no viable path.
     """
-    if accepted & _ENCODED_KINDS:
+    # In-memory bytes can only be delivered as ENCODED_BYTES. A file-only engine
+    # (accepts ENCODED_FILE but not ENCODED_BYTES) cannot consume bytes: the
+    # standard MUST NOT write a temp file (R4/D1, BytesIO-only), so producing an
+    # ENCODED_BYTES payload would be a silent wrong-shape result (R3). Require
+    # ENCODED_BYTES to be accepted before passing through.
+    if InputKind.ENCODED_BYTES in accepted:
         return ConversionPlan(
             source, InputKind.ENCODED_BYTES, (ConversionOp.PASSTHROUGH,), False, False
         )
@@ -243,9 +371,7 @@ def _negotiate_bytes(source: str, accepted: frozenset[InputKind]) -> ConversionP
         return ConversionPlan(
             source, InputKind.ARRAY, (ConversionOp.DECODE,), False, True
         )
-    return NoViablePath(
-        source, accepted, "The standard does not synthesize a fetchable URL in v1."
-    )
+    return NoViablePath(source, accepted, _bytes_only_file_hint(accepted))
 
 
 def _negotiate_base64(source: str, accepted: frozenset[InputKind]) -> ConversionPlan | NoViablePath:
@@ -258,7 +384,9 @@ def _negotiate_base64(source: str, accepted: frozenset[InputKind]) -> Conversion
     Returns:
         A plan (b64-decode to bytes, or b64-decode then decode), or no path.
     """
-    if accepted & _ENCODED_KINDS:
+    # As with AudioBytes: base64 decodes to in-memory bytes, which a file-only
+    # engine cannot accept without the standard writing a temp file (forbidden).
+    if InputKind.ENCODED_BYTES in accepted:
         return ConversionPlan(
             source, InputKind.ENCODED_BYTES, (ConversionOp.B64_DECODE,), False, False
         )
@@ -270,16 +398,35 @@ def _negotiate_base64(source: str, accepted: frozenset[InputKind]) -> Conversion
             False,
             True,
         )
-    return NoViablePath(
-        source, accepted, "The standard does not synthesize a fetchable URL in v1."
-    )
+    return NoViablePath(source, accepted, _bytes_only_file_hint(accepted))
+
+
+def _bytes_only_file_hint(accepted: frozenset[InputKind]) -> str:
+    """Build a hint for in-memory audio that no accepted shape can receive.
+
+    Args:
+        accepted: Engine-accepted input kinds.
+
+    Returns:
+        An actionable hint string.
+    """
+    if InputKind.ENCODED_FILE in accepted:
+        return (
+            "This engine accepts only files on disk (encoded_file), not in-memory "
+            "bytes; the standard will not write a temporary file (SSRF/TOCTOU "
+            "safety). Pass the audio as AudioPath to a real local file."
+        )
+    return "The standard does not synthesize a fetchable URL in v1."
 
 
 def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPlan | NoViablePath:
     """Negotiate a path for an :class:`AudioUrl` source.
 
     In v1 the standard never fetches URLs (SSRF risk); a URL is only viable if
-    the engine fetches it server-side.
+    the engine fetches it server-side. Negotiation is a pure, I/O-free structural
+    match; the R5 SSRF *security* validation (HTTPS + non-private-address, which
+    needs DNS resolution) runs at execution time via
+    :func:`validate_fetchable_url` before the URL is forwarded.
 
     Args:
         source: Source variant name.
@@ -304,7 +451,9 @@ __all__ = [
     "ConversionOp",
     "ConversionPlan",
     "NoViablePath",
+    "UnsafeAudioUrlError",
     "can_accept",
     "negotiate",
     "negotiate_or_raise",
+    "validate_fetchable_url",
 ]

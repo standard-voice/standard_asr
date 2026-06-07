@@ -29,11 +29,11 @@ from .audio_input import (
     AudioUrl,
     InputKind,
 )
-from .audio_negotiation import ConversionOp, ConversionPlan
+from .audio_negotiation import ConversionOp, ConversionPlan, validate_fetchable_url
 from .exceptions import AudioProcessingError
-from .resampling import resample
+from .resampling import resample_with_backend
 from .results import Diagnostic
-from .utils.audio_loader import load_audio
+from .utils.audio_loader import decode_audio
 from .utils.save_utils import encode_array_to_wav_bytes
 
 #: Canonical fallback sample rate when a bare array omits its rate (spec R6).
@@ -111,7 +111,15 @@ def _decode_b64(value: str) -> bytes:
     Raises:
         AudioProcessingError: If the payload is not valid base64.
     """
-    payload = value.split(",", 1)[1] if value.startswith("data:") else value
+    if value.startswith("data:"):
+        if "," not in value:
+            raise AudioProcessingError(
+                "Malformed data: URI -- missing the ',' that separates the "
+                "media-type header from the base64 payload."
+            )
+        payload = value.split(",", 1)[1]
+    else:
+        payload = value
     try:
         return base64.b64decode(payload, validate=True)
     except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
@@ -127,6 +135,7 @@ def execute_plan(
     required_input_sample_rate: int | None = None,
     max_file_size: int | None = None,
     strict: bool = True,
+    allow_private_addresses: bool = False,
 ) -> PreparedAudio:
     """Execute a conversion plan, returning engine-ready prepared audio.
 
@@ -136,15 +145,21 @@ def execute_plan(
         accepted_sample_rates: Engine accepted sample rates, or ``"any"``.
         native_sample_rate: The model's native sample rate.
         required_input_sample_rate: A hard-required rate, if any.
-        max_file_size: Engine max payload size for the WAV-encode precheck.
+        max_file_size: Engine max payload size; prechecked on every encoded
+            payload and used to bound the decode buffer (spec R4/R9).
         strict: Whether to raise (vs assume + diagnostic) on a missing rate.
+        allow_private_addresses: Opt-in to relax the R5 SSRF check that rejects
+            URLs resolving to private/loopback/link-local addresses. HTTPS is
+            still required.
 
     Returns:
         The :class:`PreparedAudio` with any conversion diagnostics attached.
 
     Raises:
         AudioProcessingError: On a missing sample rate in strict mode, an
-            oversize encode, or a decode failure.
+            oversize encode/payload, or a decode failure.
+        UnsafeAudioUrlError: When a ``FETCHABLE_URL`` target fails the R5 SSRF
+            policy (not HTTPS, or a private/reserved address).
     """
     diags: list[Diagnostic] = []
     ops = plan.operations
@@ -152,6 +167,11 @@ def execute_plan(
 
     if target is InputKind.FETCHABLE_URL:
         assert isinstance(provided, AudioUrl)
+        # R5.1: validate HTTPS + non-private address before forwarding the
+        # literal URL to the engine. The standard never fetches it (v1).
+        validate_fetchable_url(
+            provided.value, allow_private_addresses=allow_private_addresses
+        )
         return PreparedAudio(kind=target, url=provided.value, diagnostics=diags)
 
     if target in (InputKind.ENCODED_FILE, InputKind.ENCODED_BYTES):
@@ -160,7 +180,7 @@ def execute_plan(
         return prepared
 
     # target is ARRAY
-    array, sample_rate = _prepare_array(provided, ops, diags)
+    array, sample_rate = _prepare_array(provided, ops, max_file_size, diags)
     array, sample_rate = _apply_sample_rate(
         array,
         sample_rate,
@@ -198,8 +218,11 @@ def _prepare_encoded(
     ops = plan.operations
     if ConversionOp.PASSTHROUGH in ops:
         if isinstance(provided, AudioPath):
+            # File path passthrough: prefer stat() over reading the file (R9/H9).
+            _check_file_size(Path(provided.value), max_file_size)
             return PreparedAudio(kind=InputKind.ENCODED_FILE, path=str(provided.value))
         assert isinstance(provided, AudioBytes)
+        _check_payload_size(len(provided.data), max_file_size)
         return PreparedAudio(
             kind=InputKind.ENCODED_BYTES,
             data=provided.data,
@@ -208,6 +231,8 @@ def _prepare_encoded(
     if ConversionOp.READ_FILE in ops:
         assert isinstance(provided, AudioPath)
         path = Path(provided.value)
+        # Precheck via stat() before reading the whole file into memory (R9/H9).
+        _check_file_size(path, max_file_size)
         return PreparedAudio(
             kind=InputKind.ENCODED_BYTES,
             data=path.read_bytes(),
@@ -245,22 +270,68 @@ def _prepare_encoded(
         )
     if ConversionOp.B64_DECODE in ops:  # base64 -> bytes
         assert isinstance(provided, AudioBase64)
-        return PreparedAudio(
-            kind=InputKind.ENCODED_BYTES, data=_decode_b64(provided.value)
-        )
+        decoded = _decode_b64(provided.value)
+        _check_payload_size(len(decoded), max_file_size)
+        return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=decoded)
     raise AudioProcessingError("Unsupported encoded conversion plan.")  # pragma: no cover
+
+
+def _check_payload_size(num_bytes: int, max_file_size: int | None) -> None:
+    """Enforce an engine's ``max_file_size`` on an encoded payload (spec R4/H9).
+
+    Args:
+        num_bytes: Size of the encoded payload in bytes.
+        max_file_size: The engine's declared limit, or ``None`` for no limit.
+
+    Raises:
+        AudioProcessingError: If the payload exceeds ``max_file_size``.
+    """
+    if max_file_size is not None and num_bytes > max_file_size:
+        raise AudioProcessingError(
+            f"Encoded audio is {num_bytes} bytes, which exceeds the engine's "
+            f"max_file_size of {max_file_size} bytes. Provide a shorter clip or "
+            "use an engine without this limit."
+        )
+
+
+def _check_file_size(path: Path, max_file_size: int | None) -> None:
+    """Enforce ``max_file_size`` against a file's size via ``stat`` (spec R9/H9).
+
+    Args:
+        path: The local file path.
+        max_file_size: The engine's declared limit, or ``None`` for no limit.
+
+    Raises:
+        AudioProcessingError: If the file is missing or exceeds ``max_file_size``.
+    """
+    if max_file_size is None:
+        return
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise AudioProcessingError(
+            f"Cannot stat audio file {str(path)!r}: {exc}."
+        ) from exc
+    _check_payload_size(size, max_file_size)
 
 
 def _prepare_array(
     provided: AudioInput,
     ops: tuple[ConversionOp, ...],
+    max_file_size: int | None,
     diags: list[Diagnostic],
 ) -> tuple[NDArray[np.float32], int | None]:
     """Produce a waveform array from the provided input.
 
+    The decode path returns the source's **native** sample rate -- it does NOT
+    resample. The single authoritative R7 resampling decision is made later by
+    :func:`_apply_sample_rate`, so 8 kHz telephony and 24 kHz realtime inputs are
+    not silently forced through 16 kHz (spec R7).
+
     Args:
         provided: The provided audio input.
         ops: The plan operations.
+        max_file_size: Engine payload limit, used to bound the decode buffer (R9).
         diags: Diagnostics accumulator.
 
     Returns:
@@ -269,7 +340,8 @@ def _prepare_array(
     """
     if ConversionOp.PASSTHROUGH in ops:
         assert isinstance(provided, AudioArray)
-        return provided.samples.astype(np.float32, copy=False), provided.sample_rate
+        # np.asarray (not astype(copy=False)) per DEP.2.
+        return np.asarray(provided.samples, dtype=np.float32), provided.sample_rate
 
     # Decode path: AudioPath / AudioBytes / AudioBase64 -> array.
     if isinstance(provided, AudioPath):
@@ -281,19 +353,20 @@ def _prepare_array(
     else:  # pragma: no cover - matrix guarantees the above
         raise AudioProcessingError("Cannot decode this input to an array.")
 
-    # Decode preserving the native rate; let the sample-rate stage resample.
-    array = load_audio(source, target_sr=ASSUMED_SAMPLE_RATE, target_channels=1)
+    # Decode at the NATIVE rate; the sample-rate stage owns any resampling (R7).
+    array, native_sr = decode_audio(
+        source, target_channels=1, max_bytes=max_file_size
+    )
     diags.append(
         Diagnostic(
             level="info",
             code="audio_conversion",
-            message="Decoded encoded audio to a waveform array.",
+            message=f"Decoded encoded audio to a waveform array at {native_sr} Hz.",
             param="audio",
             effective="array",
         )
     )
-    # load_audio already produced 16 kHz mono; treat that as the known rate.
-    return array, ASSUMED_SAMPLE_RATE
+    return array, native_sr
 
 
 def _apply_sample_rate(
@@ -337,12 +410,13 @@ def _apply_sample_rate(
     target = _target_array_sample_rate(
         accepted, native_sample_rate, required_input_sample_rate
     )
-    resampled = resample(array, sample_rate, target)
+    resampled, backend = resample_with_backend(array, sample_rate, target)
+    label = "built-in fallback" if backend == "fallback" else "scipy resample_poly"
     diags.append(
         Diagnostic(
             level="info",
             code="resampled_with",
-            message=f"Resampled {sample_rate} Hz -> {target} Hz (fallback).",
+            message=f"Resampled {sample_rate} Hz -> {target} Hz ({label}).",
             param="audio",
             provided=sample_rate,
             effective=target,
