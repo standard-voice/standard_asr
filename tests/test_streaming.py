@@ -710,6 +710,68 @@ def test_guard_supersede_new_ids_open_then_partial_allowed() -> None:
     assert guard.admit(TranscriptionEvent.partial("s1", "new")) is not None
 
 
+# --------------------------------------------------------------------------- #
+# C1 -- supersede MUST preserve concatenated frozen text (spec ST.5.2)
+# --------------------------------------------------------------------------- #
+def test_guard_supersede_2to1_merge_preserves_frozen_text() -> None:
+    # Two retired segments froze "你好" and "世界"; the single replacement MUST
+    # carry the concatenation "你好世界" as its frozen prefix.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好", stable_until=2))
+    guard.admit(TranscriptionEvent.final("b", "世界", stable_until=2))
+    guard.admit(TranscriptionEvent.supersede(["a", "b"], ["c"]))
+    accepted = guard.admit(TranscriptionEvent.partial("c", "你好世界！", stable_until=4))
+    assert accepted is not None
+    assert not guard.diagnostics
+
+
+def test_guard_supersede_1to2_split_preserves_frozen_text() -> None:
+    # "你好世界" frozen on one segment, split into "你好" + "世界…": the two new
+    # segments' concatenated frozen prefix reconstructs F_old and MUST be
+    # accepted (the conservative split case).
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
+    # First new segment freezes "你好" -- strictly shorter than F_old, the safe
+    # (pending) direction: accepted with no diagnostic.
+    first = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    assert first is not None
+    assert not guard.diagnostics
+    # Second new segment freezes "世界"; F_new now == "你好世界" == F_old.
+    second = guard.admit(TranscriptionEvent.final("c", "世界呀", stable_until=2))
+    assert second is not None
+    assert not guard.diagnostics
+
+
+def test_guard_supersede_rewrite_frozen_prefix_suppressed() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    # New segment freezes "再见" -- rewrites the user-visible frozen "你好世界".
+    rejected = guard.admit(TranscriptionEvent.partial("b", "再见", stable_until=2))
+    assert rejected is None
+    assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
+
+
+def test_guard_supersede_rewrite_frozen_prefix_strict_raises() -> None:
+    guard = _LifecycleGuard(strict=True)
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    with pytest.raises(ValueError, match="preserve frozen text"):
+        guard.admit(TranscriptionEvent.partial("b", "再见", stable_until=2))
+
+
+def test_guard_supersede_no_frozen_old_text_has_no_obligation() -> None:
+    # An old segment with no frozen prefix imposes no preservation obligation;
+    # the replacement may freeze whatever it likes.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "draft"))  # stable_until None -> 0
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    accepted = guard.admit(TranscriptionEvent.partial("b", "different", stable_until=4))
+    assert accepted is not None
+    assert not guard.diagnostics
+
+
 def test_session_suppresses_illegal_transition_in_stream() -> None:
     class _BadSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:

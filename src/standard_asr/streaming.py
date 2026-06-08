@@ -565,6 +565,42 @@ class _Slot:
         self.alive = True
 
 
+class _SupersedeObligation:
+    """A pending frozen-prefix-preservation obligation for one supersede group.
+
+    A ``supersede`` MUST preserve the concatenated frozen text of the retired
+    segments across the replacement (spec ST.5.2). This records, for one
+    ``new_ids`` group, the concatenated frozen prefix of the retired old
+    segments (``f_old``, in ``old_ids`` order) and the running concatenated
+    frozen prefix of the new segments (in ``new_ids`` order), so the guard can
+    eagerly reject the cardinal-sin direction (a new segment rewriting text the
+    user already saw frozen).
+    """
+
+    __slots__ = ("f_old", "frozen", "new_ids")
+
+    def __init__(self, f_old: str, new_ids: list[str]) -> None:
+        """Initialize the obligation.
+
+        Args:
+            f_old: Concatenated frozen prefix of the retired segments.
+            new_ids: The replacement segment ids, in reading (temporal) order.
+        """
+        self.f_old = f_old
+        self.new_ids = new_ids
+        #: Per-new-id current frozen prefix, accumulated as each new segment
+        #: freezes more text.
+        self.frozen: dict[str, str] = {}
+
+    def f_new(self) -> str:
+        """Return the concatenated frozen prefix of the new segments.
+
+        Returns:
+            The new segments' frozen prefixes joined in ``new_ids`` order.
+        """
+        return "".join(self.frozen.get(nid, "") for nid in self.new_ids)
+
+
 class _LifecycleGuard:
     """Enforces segment lifecycle + ``stable_until`` invariants (spec ST.5.1).
 
@@ -591,6 +627,9 @@ class _LifecycleGuard:
         self._stable_until: dict[str, int] = {}
         self._frozen_text: dict[str, str] = {}
         self._audio_cursor: float = 0.0
+        #: Maps each ``new_id`` of an active supersede group to its shared
+        #: frozen-prefix-preservation obligation (spec ST.5.2).
+        self._supersede_obligations: dict[str, _SupersedeObligation] = {}
         self.diagnostics: list[Diagnostic] = []
 
     def _reject(self, code: str, message: str) -> None:
@@ -628,10 +667,18 @@ class _LifecycleGuard:
                         "suppressed (spec ST.5.3: closed MUST NOT be superseded).",
                     )
                     return None
+            # Concatenate the retired segments' frozen prefixes, in old_ids
+            # (reading) order: this is the text the user already saw frozen and
+            # which the replacement MUST preserve (spec ST.5.2).
+            f_old = "".join(self._frozen_text.get(old, "") for old in event.old_ids)
             for old in event.old_ids:
                 self._state[old] = "superseded"
             for new in event.new_ids:
                 self._state.setdefault(new, "open")
+            if f_old:
+                obligation = _SupersedeObligation(f_old, list(event.new_ids))
+                for new in event.new_ids:
+                    self._supersede_obligations[new] = obligation
             return event
 
         if event.type in ("partial", "final") and sid is not None:
@@ -662,6 +709,16 @@ class _LifecycleGuard:
             su = event.stable_until or 0
             if su > 0 and event.text is not None:
                 self._frozen_text[sid] = event.text[:su]
+                if not self._supersede_preserves_frozen(sid):
+                    self._reject(
+                        "frozen_prefix_rewritten_supersede",
+                        f"segment {sid!r} froze text that rewrites the frozen "
+                        "prefix of the segment(s) it superseded; suppressed "
+                        "(spec ST.5.2: supersede MUST preserve frozen text).",
+                    )
+                    # Undo the freeze so subsequent state is not corrupted.
+                    del self._frozen_text[sid]
+                    return None
             if event.type == "final":
                 self._state[sid] = "closed" if event.finality == "closed" else "final"
             else:
@@ -728,6 +785,34 @@ class _LifecycleGuard:
         if prior_su <= 0 or event.text is None:
             return False
         return event.text[:prior_su] != self._frozen_text.get(sid, "")
+
+    def _supersede_preserves_frozen(self, sid: str) -> bool:
+        """Return whether ``sid``'s freeze keeps a supersede obligation intact.
+
+        When ``sid`` is one of the ``new_ids`` of an active supersede group, the
+        concatenated frozen prefix of the new segments (``F_new``, in ``new_ids``
+        order) MUST agree with the retired segments' concatenated frozen prefix
+        (``F_old``) on their common prefix -- neither may rewrite the other
+        (spec ST.5.2). Only the *contradiction* (divergence on the common
+        prefix) is checked, and eagerly: it is the cardinal-sin direction. The
+        opposite case (``F_new`` still strictly shorter than ``F_old``) is the
+        safe, conservative direction (the new segmentation has simply not yet
+        re-frozen everything) and is permitted to remain pending.
+
+        Args:
+            sid: The segment id that just froze (more) text.
+
+        Returns:
+            ``True`` if no obligation is violated (including when ``sid`` is not
+            part of any supersede group).
+        """
+        obligation = self._supersede_obligations.get(sid)
+        if obligation is None:
+            return True
+        obligation.frozen[sid] = self._frozen_text.get(sid, "")
+        f_new = obligation.f_new()
+        common = min(len(f_new), len(obligation.f_old))
+        return f_new[:common] == obligation.f_old[:common]
 
     def _clamp_audio_cursor(self, event: TranscriptionEvent) -> TranscriptionEvent:
         """Clamp a decreasing ``audio_processed_until`` cursor (spec ST.4.1).
