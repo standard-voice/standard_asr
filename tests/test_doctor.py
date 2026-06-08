@@ -150,6 +150,59 @@ def test_numpy_spec_skips_non_numpy_requirements_first(
     assert report.plugins[0].numpy_spec == "<2"
 
 
+def test_disjoint_same_major_ranges_are_conflicting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``==2.0.*`` vs ``>=2.3`` share no satisfying numpy release: a real
+    intersection conflict the 1.x/2.x major split alone would miss (CLI-4)."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("a/x", _FakeDist("std-a", ["numpy==2.0.*"])),
+            _FakeEP("b/y", _FakeDist("std-b", ["numpy>=2.3"])),
+        ],
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is True
+    assert any("no common satisfying version" in c for c in report.conflicts)
+    # Both are numpy2 -> the dedicated 1.x-vs-2.x message must NOT fire.
+    assert not any("1.x vs 2.x" in c for c in report.conflicts)
+
+
+def test_compatible_overlapping_ranges_not_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same-major ranges that DO overlap (e.g. share 2.3.x) are not conflicts."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("a/x", _FakeDist("std-a", ["numpy>=2.0,<2.5"])),
+            _FakeEP("b/y", _FakeDist("std-b", ["numpy>=2.3"])),
+        ],
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is False
+
+
+def test_intersection_empty_helper_direct() -> None:
+    """The intersection helper reports emptiness for disjoint sets and
+    non-emptiness for overlapping ones (covers the direct branch)."""
+    from packaging.specifiers import SpecifierSet
+
+    assert (
+        doctor._intersection_is_empty(  # pyright: ignore[reportPrivateUsage]
+            [SpecifierSet("==2.0.*"), SpecifierSet(">=2.3")]
+        )
+        is True
+    )
+    assert (
+        doctor._intersection_is_empty(  # pyright: ignore[reportPrivateUsage]
+            [SpecifierSet(">=1.26"), SpecifierSet(">=2.1")]
+        )
+        is False
+    )
+
+
 def test_canonical_dual_line_resolves_to_numpy2_on_py313(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

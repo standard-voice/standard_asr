@@ -16,8 +16,12 @@ import re
 import sys
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
+from typing import TYPE_CHECKING
 
 from .discovery import ENTRYPOINT_GROUP
+
+if TYPE_CHECKING:
+    from packaging.specifiers import SpecifierSet
 
 # Display-only fallback for the packaging-absent path. ``packaging`` is the
 # authoritative parser (it evaluates environment markers and the legacy
@@ -28,14 +32,26 @@ from .discovery import ENTRYPOINT_GROUP
 # the extras group (``numpy[foo]``) is discarded.
 _NUMPY_REQ = re.compile(r"^\s*numpy\b(?:\[[^\]]*\])?(?P<spec>[^;]*)", re.IGNORECASE)
 
-# Representative probe versions spanning the numpy 1.x / 2.x boundary. We use
-# proper specifier-set membership (not regex token matching) so that ranges like
-# ``>=1.26,<2.3`` (admits both), ``==1.26.*`` / ``~=1.26.0`` / ``>=1.21,<1.27``
-# (numpy-1 only) are classified correctly. The probes bracket the meaningful
-# inflection points: oldest supported 1.x, the 1.x ceiling, the 2.0 boundary,
-# and well beyond the current 2.x line.
+# Representative probe versions spanning the numpy 1.x / 2.x boundary, used to
+# (a) classify a single spec as numpy1-only / numpy2-required for the
+# human-readable conflict message and the 3.13 wheel special case, and (b) test
+# whether a *combined* SpecifierSet across plugins is empty (the real conflict
+# decision -- see ``_intersection_is_empty``). The classification probes bracket
+# the meaningful inflection points: oldest supported 1.x, the 1.x ceiling, the
+# 2.0 boundary, and well beyond the current 2.x line.
 _NUMPY1_PROBES = ("1.21.0", "1.24.0", "1.26.4", "1.26.99", "1.99.99")
 _NUMPY2_PROBES = ("2.0.0", "2.1.0", "2.3.0", "2.99.99")
+
+# A dense version grid (minor-level, with patch edges) spanning numpy 1.x and
+# 2.x. An intersection of SpecifierSets is treated as empty when NO grid version
+# satisfies it. Unlike major-boundary probe classification, this catches
+# disjoint same-major ranges (e.g. ``==2.0.*`` vs ``>=2.3``) that share no
+# satisfying release. ``SpecifierSet`` has no exact emptiness oracle, so a dense
+# probe sweep is the pragmatic, dependency-free check; the grid is wide enough
+# that any real-world numpy pin lands on it.
+_NUMPY_GRID: tuple[str, ...] = tuple(
+    f"{major}.{minor}.{patch}" for major in (1, 2) for minor in range(0, 40) for patch in (0, 99)
+)
 
 
 def _empty_plugins() -> list["PluginNumpy"]:
@@ -132,21 +148,64 @@ def _classify_numpy(numpy_spec: str | None) -> tuple[bool, bool]:
         when it admits a 2.x but no 1.x. An unconstrained / both-admitting /
         unparseable spec, or a missing ``packaging``, yields ``(False, False)``.
     """
-    if not numpy_spec:
+    spec_set = _specset(numpy_spec)
+    if spec_set is None:
         return (False, False)
-    try:
-        from packaging.specifiers import InvalidSpecifier, SpecifierSet
-        from packaging.version import Version
-    except ImportError:
-        return (False, False)
-    raw = "" if numpy_spec == "(any)" else numpy_spec
-    try:
-        spec_set = SpecifierSet(raw)
-    except InvalidSpecifier:
-        return (False, False)
+    from packaging.version import Version
+
     admits1 = any(Version(p) in spec_set for p in _NUMPY1_PROBES)
     admits2 = any(Version(p) in spec_set for p in _NUMPY2_PROBES)
     return (admits1 and not admits2, admits2 and not admits1)
+
+
+def _specset(numpy_spec: str | None) -> SpecifierSet | None:
+    """Parse a numpy specifier string into a ``SpecifierSet``.
+
+    Args:
+        numpy_spec: The effective numpy specifier (e.g. ``"<2"``, ``"~=1.26.0"``,
+            ``"(any)"``), or ``None`` when numpy is not required.
+
+    Returns:
+        The parsed :class:`packaging.specifiers.SpecifierSet`, or ``None`` when
+        the spec is missing/unparseable or ``packaging`` is unavailable. The
+        ``"(any)"`` sentinel parses to the empty (admit-all) set.
+    """
+    if not numpy_spec:
+        return None
+    try:
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    except ImportError:
+        return None
+    raw = "" if numpy_spec == "(any)" else numpy_spec
+    try:
+        return SpecifierSet(raw)
+    except InvalidSpecifier:
+        return None
+
+
+def _intersection_is_empty(specs: list[SpecifierSet]) -> bool:
+    """Report whether the intersection of numpy ``SpecifierSet``s admits nothing.
+
+    Computes the real combined specifier (``&``) across plugins and tests it
+    against a dense version grid (:data:`_NUMPY_GRID`). An empty intersection
+    means no single numpy release satisfies every plugin -- a hard conflict.
+    This catches disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``) that a
+    1.x/2.x major-boundary classification alone would miss (CLI-4).
+
+    Args:
+        specs: The per-plugin :class:`packaging.specifiers.SpecifierSet`s to
+            intersect. Must be non-empty and contain only real specifier sets.
+
+    Returns:
+        ``True`` if no grid version satisfies the combined specifier.
+    """
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    combined = SpecifierSet()
+    for spec in specs:
+        combined &= spec
+    return not any(Version(v) in combined for v in _NUMPY_GRID)
 
 
 def _numpy_spec_for(requires: list[str] | None) -> str | None:
@@ -249,7 +308,13 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
 
     numpy1_only: list[PluginNumpy] = []
     numpy2_required: list[PluginNumpy] = []
+    constrained: list[PluginNumpy] = []
+    spec_sets: list[SpecifierSet] = []
     for p in report.plugins:
+        spec_set = _specset(p.numpy_spec)
+        if spec_set is not None:
+            constrained.append(p)
+            spec_sets.append(spec_set)
         only1, req2 = _classify_numpy(p.numpy_spec)
         if only1:
             numpy1_only.append(p)
@@ -257,6 +322,8 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             numpy2_required.append(p)
 
     if numpy1_only and numpy2_required:
+        # Clean 1.x-vs-2.x split: the most actionable framing for the canonical
+        # C-ABI break, named explicitly so the user knows which side to isolate.
         report.conflicts.append(
             "numpy 1.x vs 2.x conflict: "
             + ", ".join(f"{p.distribution} ({p.numpy_spec})" for p in numpy1_only)
@@ -264,6 +331,17 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             + ", ".join(f"{p.distribution} ({p.numpy_spec})" for p in numpy2_required)
             + " require numpy>=2. They cannot share one process; run the "
             "conflicting plugin out-of-process (subprocess/server isolation)."
+        )
+    elif len(spec_sets) >= 2 and _intersection_is_empty(spec_sets):
+        # Real-intersection conflict that the 1.x/2.x classification alone misses
+        # -- e.g. disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``) that share
+        # no satisfying numpy release (CLI-4).
+        report.conflicts.append(
+            "numpy version conflict: "
+            + ", ".join(f"{p.distribution} ({p.numpy_spec})" for p in constrained)
+            + " declare numpy ranges with no common satisfying version. They "
+            "cannot share one process; run the conflicting plugin out-of-process "
+            "(subprocess/server isolation)."
         )
 
     if sys.version_info >= (3, 13) and numpy1_only:
