@@ -813,6 +813,34 @@ def test_guard_supersede_reintroduces_known_new_id_strict_raises() -> None:
         guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
 
 
+# --------------------------------------------------------------------------- #
+# STRE-3/4 -- illegal final-after-final (spec ST.5.1)
+# --------------------------------------------------------------------------- #
+def test_guard_suppresses_final_after_final() -> None:
+    guard = _LifecycleGuard()
+    assert guard.admit(TranscriptionEvent.final("s0", "done")) is not None
+    rejected = guard.admit(TranscriptionEvent.final("s0", "rewritten"))
+    assert rejected is None
+    assert any(d.code == "lifecycle_final_after_final" for d in guard.diagnostics)
+
+
+def test_guard_final_after_final_strict_raises() -> None:
+    guard = _LifecycleGuard(strict=True)
+    guard.admit(TranscriptionEvent.final("s0", "done"))
+    with pytest.raises(ValueError, match="only supersede or a"):
+        guard.admit(TranscriptionEvent.final("s0", "again"))
+
+
+def test_guard_closed_after_final_is_legal() -> None:
+    # A closed event (finality="closed") after a plain final is the legal
+    # in-place post-processing correction (spec ST.5.1/5.4).
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("s0", "hello"))
+    closed = guard.admit(TranscriptionEvent.closed("s0", "Hello."))
+    assert closed is not None
+    assert not any(d.code == "lifecycle_final_after_final" for d in guard.diagnostics)
+
+
 def test_session_suppresses_illegal_transition_in_stream() -> None:
     class _BadSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:

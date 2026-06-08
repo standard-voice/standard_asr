@@ -715,6 +715,17 @@ class _LifecycleGuard:
                     "(spec ST.5.1 illegal transition).",
                 )
                 return None
+            if event.type == "final" and state == "final" and event.finality != "closed":
+                # From state final the only legal transitions are supersede or a
+                # closed event; a plain final re-freezing/rewriting the segment
+                # is illegal (spec ST.5.1).
+                self._reject(
+                    "lifecycle_final_after_final",
+                    f"non-closed final for segment {sid!r} already in state final; "
+                    "suppressed (spec ST.5.1: from final only supersede or a "
+                    "closed event is legal).",
+                )
+                return None
             if self._frozen_prefix_rewritten(event, sid):
                 self._reject(
                     "frozen_prefix_rewritten",
