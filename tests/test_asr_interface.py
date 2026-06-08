@@ -392,8 +392,10 @@ def test_ensure_stream_format_supported_skips_when_no_wire_encodings() -> None:
 def test_required_input_sample_rate_must_be_accepted() -> None:
     from pydantic import ValidationError
 
-    # required rate present in accepted list: valid.
+    # required rate present in accepted list: valid (native also in the list, so
+    # the separate native-rate reachability invariant is satisfied).
     _ArrayProps(
+        native_sample_rate=24000,
         accepted_sample_rates=[24000],
         required_input_sample_rate=24000,
     )

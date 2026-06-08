@@ -108,7 +108,7 @@
 
 **R6 — 采样率。** canonical = 16 kHz mono。裸数组无采样率时：strict MUST 抛错（"pass AudioArray(samples, sample_rate)"）；best_effort MAY 假定 16k 但 MUST 每次发 `assumed_sample_rate` diagnostic。**绝不静默假定。** `sample_rate`：batch 选填；bare-PCM streaming 必填（会话锁定）；header-bearing buffered 输入（OpenAI SSE）自描述豁免。
 
-**R7 — 重采样责任。** `accepted_sample_rates` **始终权威**，不论 `self_resamples`：输入 ∉ accepted 且 ≠ `required_input_sample_rate` → 标准 MUST 重采样；无可达目标 = 定义错误，MUST NOT 静默透传。8 kHz 电话 = 独立原生模型，MUST 经 entrypoint preset 选择，MUST NOT 升采样原生率输入。24 kHz realtime = `required_input_sample_rate`，标准重采样；流式缺 `[audio]` 时 MUST 在会话建立时报错。**可达性不变量**：`required_input_sample_rate`（若设）MUST ∈ `accepted_sample_rates`（当后者为具体列表时）——重采样目标必须可达；此不变量在 Properties **声明期**即校验（`BaseProperties`），而非延迟到会话建立。
+**R7 — 重采样责任。** `accepted_sample_rates` **始终权威**，不论 `self_resamples`：输入 ∉ accepted 且 ≠ `required_input_sample_rate` → 标准 MUST 重采样；无可达目标 = 定义错误，MUST NOT 静默透传。8 kHz 电话 = 独立原生模型，MUST 经 entrypoint preset 选择，MUST NOT 升采样原生率输入。24 kHz realtime = `required_input_sample_rate`，标准重采样；流式缺 `[audio]` 时 MUST 在会话建立时报错。**可达性不变量**：`required_input_sample_rate`（若设）MUST ∈ `accepted_sample_rates`（当后者为具体列表时）——重采样目标必须可达；同理 `native_sample_rate` MUST ∈ `accepted_sample_rates`（当后者为具体列表时）——否则引擎自身的原生率输入会被静默重采样（如 8 kHz 电话模型被升采样到 16k），而 8 kHz 是独立原生模型而非低采样率变体。两条不变量均在 Properties **声明期**即校验（`BaseProperties`），而非延迟到会话建立。
 
 > **v1 实现说明**：v1 不在标准层重采样**流式裸帧**（流式引擎自行处理 wire 帧），因此上文"流式缺 `[audio]` 时会话建立报错"针对的是**未来**标准层流式重采样落地后的路径；v1 的会话建立校验仅做 wire 编码 fail-closed（`EngineBase.ensure_stream_format_supported`）。批量 `transcribe` 路径的重采样与 `[audio]` 行为按本条全量生效。
 

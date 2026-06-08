@@ -285,6 +285,37 @@ class BaseProperties(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_native_rate_reachable(self) -> BaseProperties:
+        """Require ``native_sample_rate`` to be an accepted rate (R7).
+
+        An engine whose ``native_sample_rate`` is not among a concrete
+        ``accepted_sample_rates`` list is self-contradictory: an 8 kHz telephony
+        model that declares ``native_sample_rate=8000`` but excludes 8000 from
+        ``accepted_sample_rates`` would have its own native input silently
+        upsampled (e.g. to 16 kHz), degrading quality. Per spec R7 an 8 kHz model
+        is a distinct native model, not a low-rate variant. Mirror the
+        ``required_input_sample_rate`` reachability invariant and fail loudly at
+        declaration time. ``"any"`` accepts every rate and so skips the check.
+
+        Returns:
+            The validated model.
+
+        Raises:
+            ValueError: If ``native_sample_rate`` is not in a concrete
+                ``accepted_sample_rates`` list.
+        """
+        native = self.native_sample_rate
+        rates = self.accepted_sample_rates
+        if isinstance(rates, list) and native not in rates:
+            raise ValueError(
+                f"native_sample_rate={native} must be in accepted_sample_rates "
+                f"{rates} (otherwise the engine's own native-rate input would be "
+                "silently resampled; an 8 kHz telephony model is a distinct native "
+                "model, not a low-rate variant; spec R7)."
+            )
+        return self
+
     @field_validator("engine_id")
     @classmethod
     def _validate_engine_id_field(cls, value: str) -> str:

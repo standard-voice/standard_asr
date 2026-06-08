@@ -98,6 +98,32 @@ def test_accepted_sample_rates_validation() -> None:
         BaseProperties(**data)
 
 
+def test_native_rate_must_be_in_accepted_rates() -> None:
+    # A telephony 8 kHz native rate excluded from accepted_sample_rates would be
+    # silently upsampled -- reject at declaration time.
+    data = _base_kwargs()
+    data["native_sample_rate"] = 8000
+    data["accepted_sample_rates"] = [16000]
+    with pytest.raises(ValueError, match="native_sample_rate"):
+        BaseProperties(**data)
+
+
+def test_native_rate_in_accepted_rates_ok() -> None:
+    data = _base_kwargs()
+    data["native_sample_rate"] = 8000
+    data["accepted_sample_rates"] = [8000, 16000]
+    props = BaseProperties(**data)
+    assert props.native_sample_rate == 8000
+
+
+def test_native_rate_reachability_skipped_for_any() -> None:
+    data = _base_kwargs()
+    data["native_sample_rate"] = 8000
+    data["accepted_sample_rates"] = "any"
+    props = BaseProperties(**data)
+    assert props.native_sample_rate == 8000
+
+
 def test_native_sample_rate_positive() -> None:
     data = _base_kwargs()
     data["native_sample_rate"] = 0
