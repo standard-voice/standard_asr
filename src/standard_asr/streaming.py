@@ -773,6 +773,7 @@ class _LifecycleGuard:
             return event
 
         if event.type in ("partial", "final") and sid is not None:
+            is_closed_final = event.type == "final" and event.finality == "closed"
             state = self._state.get(sid, "open")
             if state in ("superseded", "closed"):
                 self._reject(
@@ -799,7 +800,9 @@ class _LifecycleGuard:
                     "closed event is legal).",
                 )
                 return None
-            if self._frozen_prefix_rewritten(event, sid):
+            # ``closed`` is the terminal post-processing correction and may
+            # replace previously frozen text in place.
+            if not is_closed_final and self._frozen_prefix_rewritten(event, sid):
                 self._reject(
                     "frozen_prefix_rewritten",
                     f"segment {sid!r} rewrote its already-frozen prefix "
@@ -811,7 +814,7 @@ class _LifecycleGuard:
             su = event.stable_until or 0
             if su > 0 and event.text is not None:
                 self._frozen_text[sid] = event.text[:su]
-                if not self._supersede_preserves_frozen(sid):
+                if not is_closed_final and not self._supersede_preserves_frozen(sid):
                     self._reject(
                         "frozen_prefix_rewritten_supersede",
                         f"segment {sid!r} froze text that rewrites the frozen "

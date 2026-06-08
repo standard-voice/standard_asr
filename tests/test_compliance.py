@@ -406,6 +406,28 @@ def test_check_event_sequence_empty_is_vacuously_ok() -> None:
     assert report.passed is True
 
 
+def test_check_event_sequence_accepts_closed_rewrite_frozen_prefix() -> None:
+    events = [
+        TranscriptionEvent.final("s0", "hello", stable_until=5),
+        TranscriptionEvent.closed("s0", "Hello.", stable_until=6),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True
+    assert not any("frozen_prefix_rewritten" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_flags_non_closed_frozen_prefix_rewrite() -> None:
+    events = [
+        TranscriptionEvent.partial("s0", "hello", stable_until=5),
+        TranscriptionEvent.final("s0", "Hello.", stable_until=6),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("frozen_prefix_rewritten" in i.message for i in report.issues)
+
+
 def test_check_event_sequence_flags_supersede_frozen_prefix_rewrite() -> None:
     # A supersede that rewrites the retired segment's frozen prefix (spec ST.5.2)
     # MUST be reported -- the cardinal sin.

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 
 import pytest
 
@@ -150,6 +150,18 @@ class _YieldingEchoSession(TranscriptionSession):
             await asyncio.sleep(0)
             yield TranscriptionEvent.final(sid, text, start=float(index), end=float(index + 1))
             index += 1
+
+
+class _ScriptedSession(TranscriptionSession):
+    """Replays a fixed event sequence through the session guard and reducer."""
+
+    def __init__(self, events: Iterable[TranscriptionEvent]) -> None:
+        super().__init__()
+        self._events = list(events)
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        for event in self._events:
+            yield event
 
 
 async def _collect(session: TranscriptionSession) -> list[TranscriptionEvent]:
@@ -1017,6 +1029,14 @@ def test_guard_suppresses_frozen_prefix_rewrite() -> None:
     assert any(d.code == "frozen_prefix_rewritten" for d in guard.diagnostics)
 
 
+def test_guard_non_closed_final_rewrite_frozen_prefix_suppressed() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=5))
+    rejected = guard.admit(TranscriptionEvent.final("s0", "Hello.", stable_until=6))
+    assert rejected is None
+    assert any(d.code == "frozen_prefix_rewritten" for d in guard.diagnostics)
+
+
 def test_guard_supersede_new_ids_open_then_partial_allowed() -> None:
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("s0", "x"))
@@ -1112,6 +1132,16 @@ def test_guard_supersede_rewrite_frozen_prefix_strict_raises() -> None:
         guard.admit(TranscriptionEvent.partial("b", "再见", stable_until=2))
 
 
+def test_guard_closed_supersede_rewrite_frozen_prefix_is_accepted() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "hello", stable_until=5))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    guard.admit(TranscriptionEvent.final("b", "hello", stable_until=5))
+    accepted = guard.admit(TranscriptionEvent.closed("b", "Hello.", stable_until=6))
+    assert accepted is not None
+    assert not any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
+
+
 def test_guard_supersede_no_frozen_old_text_has_no_obligation() -> None:
     # An old segment with no frozen prefix imposes no preservation obligation;
     # the replacement may freeze whatever it likes.
@@ -1190,6 +1220,52 @@ def test_guard_closed_after_final_is_legal() -> None:
     closed = guard.admit(TranscriptionEvent.closed("s0", "Hello."))
     assert closed is not None
     assert not any(d.code == "lifecycle_final_after_final" for d in guard.diagnostics)
+
+
+def test_session_accepts_closed_rewrite_of_frozen_prefix_and_updates_result() -> None:
+    async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.final("s0", "hello", stable_until=5),
+                TranscriptionEvent.closed("s0", "Hello.", stable_until=6),
+            ]
+        )
+        events = await _collect(session)
+        return events, session.result().text, [d.code for d in session.diagnostics()]
+
+    events, text, diagnostic_codes = asyncio.run(run())
+    assert any(e.type == "final" and e.finality == "closed" for e in events)
+    assert text == "Hello."
+    assert "frozen_prefix_rewritten" not in diagnostic_codes
+
+
+def test_session_accepts_closed_punctuation_itn_within_frozen_prefix() -> None:
+    raw = "i owe twenty dollars"
+    corrected = "I owe $20."
+
+    async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.final("s0", raw, stable_until=len(raw)),
+                TranscriptionEvent.closed("s0", corrected, stable_until=len(corrected)),
+            ]
+        )
+        events = await _collect(session)
+        return events, session.result().text, [d.code for d in session.diagnostics()]
+
+    events, text, diagnostic_codes = asyncio.run(run())
+    assert any(e.type == "final" and e.finality == "closed" for e in events)
+    assert text == corrected
+    assert "frozen_prefix_rewritten" not in diagnostic_codes
+
+
+def test_guard_suppresses_closed_after_superseded_segment() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("s0", "hello", stable_until=5))
+    guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"]))
+    rejected = guard.admit(TranscriptionEvent.closed("s0", "Hello.", stable_until=6))
+    assert rejected is None
+    assert any(d.code == "lifecycle_after_terminal" for d in guard.diagnostics)
 
 
 # --------------------------------------------------------------------------- #
