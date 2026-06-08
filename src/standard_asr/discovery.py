@@ -280,9 +280,13 @@ class ModelSpec:
         *called*. Resolution rules:
 
         - If the target is itself a class, it is returned directly.
-        - If the target is a function (the common factory pattern), its return
-          type annotation is resolved (via :func:`typing.get_type_hints`) and,
-          if it names a concrete class, that class is returned.
+        - If the target is a function (the common factory pattern), **only its
+          return annotation** is resolved and, if it names a concrete class,
+          that class is returned. We deliberately do not evaluate the whole
+          annotation namespace (e.g. via :func:`typing.get_type_hints`): an
+          unrelated parameter carrying an unresolvable forward reference must
+          not turn a static metadata read into a ``FactoryLoadError`` (DISC-4,
+          spec §C "免实例化即可读").
 
         Returns:
             The engine class declaring the static metadata.
@@ -297,16 +301,7 @@ class ModelSpec:
         if inspect.isclass(target):
             return self._ensure_engine_class(target)
 
-        try:
-            hints = typing.get_type_hints(target)
-        except Exception as exc:  # noqa: BLE001
-            raise FactoryLoadError(
-                f"Cannot resolve the engine class for {self.key!r} without "
-                f"instantiation: failed to read the factory's type hints ({exc!r}). "
-                "Annotate the factory with a concrete engine return type."
-            ) from exc
-
-        returned = hints.get("return")
+        returned = self._resolve_return_annotation(target)
         if inspect.isclass(returned):
             return self._ensure_engine_class(returned)
 
@@ -318,6 +313,55 @@ class ModelSpec:
             "concrete engine return type so its static metadata is readable "
             "without calling it."
         )
+
+    def _resolve_return_annotation(self, target: ASRFactory) -> object:
+        """Resolve **only** the factory's return annotation.
+
+        Unlike :func:`typing.get_type_hints`, this never evaluates parameter
+        annotations, so an unrelated unresolvable forward reference on a
+        parameter does not block reading the engine class (DISC-4). A string
+        return annotation (e.g. under ``from __future__ import annotations``) is
+        evaluated against the factory's own module globals.
+
+        Args:
+            target: The loaded factory callable.
+
+        Returns:
+            The resolved return annotation object, or ``inspect.Signature.empty``
+            when the factory has no return annotation.
+
+        Raises:
+            FactoryLoadError: The return annotation is a string that cannot be
+                evaluated (e.g. it names an undefined type).
+        """
+        try:
+            annotation = inspect.signature(target).return_annotation
+        except (TypeError, ValueError) as exc:
+            raise FactoryLoadError(
+                f"Cannot resolve the engine class for {self.key!r} without "
+                f"instantiation: the factory has no inspectable signature ({exc!r}). "
+                "Annotate the factory with a concrete engine return type."
+            ) from exc
+
+        if annotation is inspect.Signature.empty:
+            # No return annotation at all. ``inspect.Signature.empty`` is itself
+            # a class (``inspect._empty``), so return ``None`` to route the caller
+            # to its "not a concrete class" guidance rather than mis-resolving it.
+            return None
+        if not isinstance(annotation, str):
+            return annotation
+
+        module = inspect.getmodule(target)
+        globalns = getattr(module, "__dict__", {})
+        try:
+            return eval(annotation, dict(globalns))  # noqa: S307
+        except Exception as exc:  # noqa: BLE001
+            raise FactoryLoadError(
+                f"Cannot resolve the engine class for {self.key!r} without "
+                f"instantiation: failed to resolve the factory's return "
+                f"annotation {annotation!r} ({exc!r}). Annotate the factory with "
+                "a concrete engine return type."
+            ) from exc
 
     def _ensure_engine_class(self, cls: type) -> type["StandardASR"]:
         """Validate ``cls`` is recognisably an engine class, then cast.

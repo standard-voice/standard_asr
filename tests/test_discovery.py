@@ -93,10 +93,18 @@ def _bad_annotation_factory():  # type: ignore[no-untyped-def]  # pyright: ignor
     return _DummyASR()
 
 
-# A return annotation naming a type that does not exist: typing.get_type_hints
-# raises NameError when resolving it, so engine_class must surface a
-# FactoryLoadError rather than crash.
+# A return annotation naming a type that does not exist: resolving it raises
+# NameError, so engine_class must surface a FactoryLoadError rather than crash.
 _bad_annotation_factory.__annotations__ = {"return": "ThisTypeDoesNotExistAnywhere"}
+
+
+def _bad_param_annotation_factory(  # pyright: ignore[reportUnusedFunction]
+    required: ThisParamTypeDoesNotExist,  # type: ignore[name-defined]  # noqa: F821
+) -> _DummyASR:  # pragma: no cover - instantiation skipped
+    # The parameter annotation is an unresolvable forward reference, but the
+    # RETURN annotation is concrete. engine_class must read the return type
+    # without choking on the unrelated parameter (DISC-4).
+    return _DummyASR()
 
 
 class _OpenParams(ProviderParams):
@@ -639,9 +647,9 @@ def test_engine_class_raises_when_annotation_not_concrete() -> None:
         registry.engine_class("alpha/first")
 
 
-def test_engine_class_raises_when_type_hints_unresolvable() -> None:
-    # A factory whose return annotation references an undefined name makes
-    # typing.get_type_hints raise; that must become a FactoryLoadError, not crash.
+def test_engine_class_raises_when_return_annotation_unresolvable() -> None:
+    # A factory whose *return* annotation references an undefined name cannot be
+    # resolved; that must become a FactoryLoadError, not crash.
     eps = [
         EntryPoint(
             name="alpha/first",
@@ -650,8 +658,71 @@ def test_engine_class_raises_when_type_hints_unresolvable() -> None:
         )
     ]
     registry = discover_models(eps=eps, strict=True)
-    with pytest.raises(FactoryLoadError, match="type hints"):
+    with pytest.raises(FactoryLoadError, match="return annotation"):
         registry.engine_class("alpha/first")
+
+
+def test_engine_class_resolves_live_class_return_annotation() -> None:
+    # A factory whose return annotation is already a live class object (no
+    # ``from __future__ import annotations`` stringification) resolves directly,
+    # without the eval path.
+    def _live_annotation_factory() -> object:  # pragma: no cover - never invoked
+        return _DummyASR()
+
+    _live_annotation_factory.__annotations__ = {"return": _DummyASR}
+
+    class _LoadsLiveFactory:
+        def load(self) -> object:
+            return _live_annotation_factory
+
+    spec = ModelSpec(
+        key="alpha/first",
+        engine_id="alpha",
+        model_name="first",
+        entry_point=_LoadsLiveFactory(),  # type: ignore[arg-type]
+    )
+
+    assert spec.engine_class() is _DummyASR
+
+
+def test_engine_class_raises_when_factory_has_no_signature() -> None:
+    # A callable factory whose signature cannot be introspected (e.g. an invalid
+    # ``__signature__``) must surface a FactoryLoadError, not crash.
+    class _NoSignatureFactory:
+        __signature__ = "not a signature"  # makes inspect.signature raise
+
+        def __call__(self) -> _DummyASR:  # pragma: no cover - never invoked
+            return _DummyASR()
+
+    class _LoadsNoSignature:
+        def load(self) -> object:
+            return _NoSignatureFactory()
+
+    spec = ModelSpec(
+        key="alpha/first",
+        engine_id="alpha",
+        model_name="first",
+        entry_point=_LoadsNoSignature(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(FactoryLoadError, match="inspectable signature"):
+        spec.engine_class()
+
+
+def test_engine_class_ignores_unresolvable_param_annotation() -> None:
+    # DISC-4: an unrelated parameter carrying an unresolvable forward reference
+    # must NOT block reading the engine class -- only the return annotation is
+    # resolved, so static metadata stays readable without instantiation.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_bad_param_annotation_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    cls = registry.engine_class("alpha/first")
+    assert cls is _DummyASR
 
 
 # ----- IC.2: engine-identity collision detection -------------------------- #
