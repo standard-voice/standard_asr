@@ -192,17 +192,21 @@ def effective_candidate_languages(
     if max_count is not None and len(result) > max_count:
         if strict:
             raise ValueError(f"candidate_languages has {len(result)} entries; max is {max_count}.")
+        kept = result[:max_count]
+        dropped = result[max_count:]
         diagnostics.append(
             Diagnostic(
                 level="warning",
                 code="candidate_languages_truncated",
-                message=f"Truncated candidate languages to {max_count}.",
+                message=(
+                    f"Truncated candidate languages to {max_count}: kept {kept}, dropped {dropped}."
+                ),
                 param="candidate_languages",
-                provided=len(result),
-                effective=max_count,
+                provided=result,
+                effective=kept,
             )
         )
-        result = result[:max_count]
+        result = kept
 
     return (result or None), diagnostics
 

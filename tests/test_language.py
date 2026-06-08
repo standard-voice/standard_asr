@@ -184,7 +184,12 @@ def test_effective_candidates_best_effort_truncates() -> None:
         strict=False,
     )
     assert result == ["en", "ja"]
-    assert any(d.code == "candidate_languages_truncated" for d in diags)
+    # LANG-3: the diagnostic carries the final effective list and the dropped
+    # tags, not just a count.
+    diag = next(d for d in diags if d.code == "candidate_languages_truncated")
+    assert diag.provided == ["en", "ja", "ko"]
+    assert diag.effective == ["en", "ja"]
+    assert "ko" in diag.message and "['en', 'ja']" in diag.message
 
 
 def test_dedup_before_membership_single_drop_diagnostic() -> None:
