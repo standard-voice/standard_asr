@@ -108,11 +108,19 @@ def to_srt(result: TranscriptionResult) -> str:
         The SRT document as a string.
     """
     blocks: list[str] = []
-    for index, segment in enumerate(_cues(result), start=1):
+    index = 1
+    for segment in _cues(result):
+        text = _sanitize_cue_text(segment.text, neutralize_arrow=False)
+        if not text:
+            # An empty / whitespace-only segment would yield a cue with no
+            # payload (an index + timing line followed by a blank line), which
+            # strict SRT parsers reject. Skip it; indices stay contiguous
+            # because they are only advanced for emitted cues.
+            continue
         start = _format_timestamp(segment.start, millis_sep=",")
         end = _format_timestamp(segment.end, millis_sep=",")
-        text = _sanitize_cue_text(segment.text, neutralize_arrow=False)
         blocks.append(f"{index}\n{start} --> {end}\n{text}")
+        index += 1
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
@@ -127,9 +135,13 @@ def to_vtt(result: TranscriptionResult) -> str:
     """
     blocks: list[str] = ["WEBVTT"]
     for segment in _cues(result):
+        text = _sanitize_cue_text(segment.text, neutralize_arrow=True)
+        if not text:
+            # A WebVTT cue with no payload line is malformed; skip empty /
+            # whitespace-only segments rather than emit a payload-less block.
+            continue
         start = _format_timestamp(segment.start, millis_sep=".")
         end = _format_timestamp(segment.end, millis_sep=".")
-        text = _sanitize_cue_text(segment.text, neutralize_arrow=True)
         blocks.append(f"{start} --> {end}\n{text}")
     return "\n\n".join(blocks) + "\n"
 

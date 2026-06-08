@@ -92,9 +92,40 @@ def test_renderers_fallback_to_full_text() -> None:
 
 
 def test_to_srt_empty_text_no_duration() -> None:
+    # segments=None + empty text: nothing to render, so no fabricated cue.
     result = TranscriptionResult(text="")
-    srt = to_srt(result)
-    assert "00:00:00,000 --> 00:00:00,000" in srt
+    assert to_srt(result) == ""
+    assert to_vtt(result) == "WEBVTT\n"
+
+
+def test_srt_skips_empty_segment_and_renumbers() -> None:
+    # An empty / whitespace-only segment among real ones must not produce a
+    # payload-less cue, and the surviving SRT indices must stay contiguous.
+    segs = [
+        Segment(start=0.0, end=1.0, text="first"),
+        Segment(start=1.0, end=2.0, text="   "),
+        Segment(start=2.0, end=3.0, text="third"),
+    ]
+    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    assert "1\n00:00:00,000 --> 00:00:01,000\nfirst" in srt
+    assert "2\n00:00:02,000 --> 00:00:03,000\nthird" in srt
+    # No third index (the whitespace cue was dropped, not emitted blank).
+    assert "3\n" not in srt
+    # No payload-less / empty cue (would manifest as a stray blank-line run).
+    assert "\n\n\n" not in srt
+
+
+def test_vtt_skips_empty_segment() -> None:
+    segs = [
+        Segment(start=0.0, end=1.0, text="first"),
+        Segment(start=1.0, end=2.0, text=""),
+        Segment(start=2.0, end=3.0, text="third"),
+    ]
+    vtt = to_vtt(TranscriptionResult(text="x", segments=segs))
+    # WEBVTT header + two real cues = exactly two blank-line separators.
+    assert vtt.count("\n\n") == 2
+    assert "first" in vtt
+    assert "third" in vtt
 
 
 # --------------------------------------------------------------------------- #
