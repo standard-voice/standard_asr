@@ -627,7 +627,13 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 插件-插件 numpy1-vs-2 **无法在单进程共存**（Python 事实，非设计可消除）。逃生舱：**subprocess + UDS + `shared_memory`**（轻于 FastAPI；避免文本序列化、保零拷贝）为首选；FastAPI server 留给真·远程/跨语言。MUST 定义 `engine_id → endpoint` 寻址；提供薄 **isolation shim**（fast-follow）使 app 代码不变。
 
 ## DEP.5 `standard-asr doctor`
-只读诊断：枚举已装插件 entrypoint，读各自 `Requires-Dist` 的 numpy（及其他共享原生库），算交集，空交集报冲突 + 一行补救（含「3.13 上 `numpy<2` 无 wheel」）。**不做** resolve/install。
+只读诊断：枚举已装插件 entrypoint，读各自 `Requires-Dist`，按**运行解释器**求值环境标记（PEP 508 marker；只取标记成立或缺失的行），算 numpy 版本区间交集，空交集报冲突 + 一行补救（含「3.13 上 `numpy<2` 无 wheel」）。**不做** resolve/install。
+
+**v1 范围（诚实声明）**：doctor **只精确诊断 `numpy`**——它是标准本身唯一的共享原生依赖（DEP.1），其 1.x↔2.x 是干净的 C-ABI 断层、且冲突完整编码在版本区间里，故版本区间交集可判定。其余共享原生库的冲突在 v1 **明确未覆盖（known-uncovered）**，因为其冲突模型与 numpy 根本不同、无法用同一套版本区间交集判定：
+- **torch**：冲突是 CUDA 构建*变体*（`cpu`/`cu118`/`cu121`…），**不**体现在版本号 specifier 里。
+- **onnxruntime vs onnxruntime-gpu**：是包*身份*冲突（两个不同分发包），非版本区间冲突。
+
+把 numpy 的版本交集逻辑泛化到上述库会给出**自信而错误**的诊断（本工具的基数罪），故 v1 不做。对这些库的硬冲突，依 **DEP.4** 的通用进程隔离（subprocess + UDS + `shared_memory`）逃生舱处理。未来若要精确诊断，需为每类库引入其特有的冲突模型，而非复用 numpy 的版本交集。
 
 
 ---

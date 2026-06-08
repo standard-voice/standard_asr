@@ -8,6 +8,16 @@ declared ``numpy`` requirement, and reports conflicts that cannot coexist in a
 single process -- most importantly the numpy 1.x-vs-2.x split (spec DEP.5). It
 never resolves or installs anything; it only diagnoses and suggests remediation
 (out-of-process isolation when a conflict is real).
+
+Scope (v1, spec DEP.5): doctor diagnoses ``numpy`` ONLY. numpy is the single
+shared native dependency the standard itself has (DEP.1), and its 1.x-vs-2.x
+break is a clean C-ABI split whose conflict is fully encoded in version
+specifiers -- so a version-range intersection decides it. Other shared native
+libraries (torch CUDA build variants; onnxruntime vs onnxruntime-gpu package
+identity) have fundamentally different conflict models that version
+intersection cannot decide, so they are explicitly known-uncovered in v1;
+their hard conflicts fall under the general DEP.4 process-isolation guidance.
+See the per-library seam in :func:`_numpy_spec_for` for the rationale.
 """
 
 from __future__ import annotations
