@@ -273,9 +273,19 @@ class TranscriptionEvent(BaseModel):
     def supersede(cls, old_ids: list[str], new_ids: list[str], **kw: Any) -> TranscriptionEvent:
         """Build a ``supersede`` event replacing old segments with new ones.
 
+        Lineage is **set-to-set**: ``old_ids``/``new_ids`` express the
+        *cardinality* of the re-segmentation (which ids retire, which appear)
+        but not a per-old->per-new mapping. On a merge+split (many->many) a UI
+        cannot tell which specific old segment a given new segment descends
+        from. This is a documented v1 limitation (X-ST-6); the spec does not
+        require a pairwise mapping, and the frozen-prefix-preservation invariant
+        (§ST 5.2) is enforced over the concatenated prefixes, not per pair.
+        Per-pair edit-ops/diffs are the deferred §10 direction (additive later).
+
         Args:
-            old_ids: The retired segment ids.
-            new_ids: The replacement segment ids (must be disjoint from old).
+            old_ids: The retired segment ids, in reading (time) order.
+            new_ids: The replacement segment ids, in reading (time) order
+                (must be disjoint from ``old_ids``).
             **kw: Additional event fields.
 
         Returns:

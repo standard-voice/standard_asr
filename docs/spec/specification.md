@@ -920,6 +920,7 @@ elif event.type == "supersede":
   - 这条规则**统一覆盖** 1→1、多→1（合并）、1→多（拆分）、多→多 各种基数；1→1 只是 n=m=1 的退化情形，无需特殊处理。（例：旧段冻结前缀是"你好世界"，无论新分段是单个 seg("你好世界", `stable_until`≥4) 还是拆成 seg("你好", su≥2)+seg("世界…", su≥2)，拼接后都必须以"你好世界"开头。）
   - **方向不对称**：**改写/分歧方向** MUST **及早（eagerly）**检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。而"新分段冻结的文本严格少于 F_old"是**保守安全方向**（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。
 - `re_segments` capability：`false` 表示引擎承诺不发 `supersede`（finals 只增不改）；`true` 表示可能发。
+- **lineage 是 set-to-set（v1 已知限制）**：`old_ids`/`new_ids` 表达 re-segmentation 的**基数**（哪些退休、哪些出现），但**不**承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；冻结前缀保留（上）按**拼接**的 F_old/F_new 校验而非逐对。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。
 
 ### 5.3 两级终态
 
@@ -974,7 +975,7 @@ elif event.type == "supersede":
 | 音频源类型 | 行为 |
 |---|---|
 | **可回放**（文件/数组/服务端有缓冲的引擎） | 重连后从缓冲区重喂，缝隙在内部弥合；对应用几乎透明。 |
-| **不可回放**（live mic 等实时源） | 重连期间到达的音频如果超出了缓冲区容量，**会真丢**。标准 MUST 在 `progress` 事件后**紧跟一条** `error(code="content_lost", recoverable=false)` 事件,明确标记内容丢失（`progress` 携带 `reconnect/gap` 信息描述缝隙位置，`error` 标记丢失的严重性）。不可回放源的缓冲区只覆盖"已捕获但尚未确认处理"的窗口。 |
+| **不可回放**（live mic 等实时源） | 重连期间到达的音频如果超出了缓冲区容量，**会真丢**。**丢失由适配器判定**——与 `segment_id`/时间戳/语言连续性同理（见上，皆为适配器责任），由适配器据其 gap 窗口与 replay 覆盖情况决定本次重连是否真丢（实现：`note_reconnect(..., content_lost=True)`）。**结构化事件由标准发出**：当适配器判定真丢时，标准 MUST 在 `progress` 事件后**紧跟一条** `error(code="content_lost", recoverable=false)` 事件（`progress` 携带 `reconnect/gap` 信息描述缝隙位置，`error` 标记丢失的严重性）。不可回放源的缓冲区只覆盖"已捕获但尚未确认处理"的窗口。 |
 
 `reconnect` capability：引擎声明 `seamless`（无损，仅 stateless / 服务端有状态引擎可声明）或 `lossy`（可能有缝隙，DSM 等有状态本地模型 MUST 声明 `lossy`）或 `unsupported`。
 
