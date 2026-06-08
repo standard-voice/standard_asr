@@ -11,6 +11,7 @@ import pytest
 from pydantic import SecretStr
 
 from standard_asr.asr_config import (
+    SECRET_MASK,
     BaseConfig,
     CredentialsConfigMixin,
     DeviceConfigMixin,
@@ -45,6 +46,50 @@ def test_secret_is_masked_in_public_dump() -> None:
 def test_secret_field_marks_schema() -> None:
     schema = _CloudConfig.model_json_schema()
     assert schema["properties"]["api_key"].get("secret") is True
+
+
+def test_secret_marked_non_secretstr_field_rejected_at_definition() -> None:
+    # A secret-marked field annotated as plain str leaks plaintext everywhere;
+    # the framework MUST fail loud at class-definition time (IC.3).
+    with pytest.raises(TypeError, match="marked secret"):
+
+        class _BadCfg(BaseConfig[Literal["bad"]]):  # pyright: ignore[reportUnusedClass]
+            engine: Literal["bad"] = "bad"
+            api_key: str | None = secret_field()  # type: ignore[assignment]
+
+
+def test_public_dump_redacts_secret_marked_field_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defensive masking: even if a plaintext value (hypothetically) slipped past
+    # the annotation guard, public_dump() must never emit it. We simulate that by
+    # patching model_dump to return a plaintext value for the secret field.
+    cfg = _CloudConfig(api_key=SecretStr("super-secret"))
+    raw = dict(cfg.model_dump(mode="json"))
+    raw["api_key"] = "leaked-plaintext"
+
+    def _leaky_dump(_self: _CloudConfig, **_kw: object) -> dict[str, object]:
+        return raw
+
+    monkeypatch.setattr(_CloudConfig, "model_dump", _leaky_dump)
+    dumped = cfg.public_dump()
+    assert dumped["api_key"] == SECRET_MASK
+    assert "leaked-plaintext" not in str(dumped)
+
+
+def test_secretstr_config_roundtrips_masked() -> None:
+    cfg = _CloudConfig(api_key=SecretStr("super-secret"))
+    dumped = cfg.public_dump()
+    assert dumped["api_key"] == SECRET_MASK
+    assert "super-secret" not in str(dumped)
+    assert cfg.api_key is not None
+    assert cfg.api_key.get_secret_value() == "super-secret"
+
+
+def test_public_dump_leaves_unset_secret_as_none() -> None:
+    cfg = _CloudConfig()
+    dumped = cfg.public_dump()
+    assert dumped["api_key"] is None
 
 
 def test_env_var_name_normalization() -> None:

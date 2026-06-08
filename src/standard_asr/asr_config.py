@@ -31,11 +31,17 @@ import re
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretBytes, SecretStr
 
 from .exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
+
+#: Mask emitted in place of any secret-marked field value by ``public_dump``.
+SECRET_MASK = "**********"
+
+#: Pydantic types that genuinely mask their value in ``repr``/``str``/dump.
+_SECRET_TYPES: tuple[type[Any], ...] = (SecretStr, SecretBytes)
 
 EngineNameT = TypeVar("EngineNameT", bound=str, covariant=True)
 _ConfigT = TypeVar("_ConfigT", bound="BaseConfig[Any]")
@@ -63,6 +69,40 @@ def secret_field(default: Any = None, *, description: str = "") -> Any:
         description=description,
         json_schema_extra={"format": "password", "writeOnly": True, "secret": True},
     )
+
+
+def _is_secret_marked(field: Any) -> bool:
+    """Return whether a pydantic field is marked secret via ``json_schema_extra``.
+
+    Args:
+        field: A pydantic ``FieldInfo``.
+
+    Returns:
+        ``True`` if the field's ``json_schema_extra`` carries ``secret=True``.
+    """
+    extra = field.json_schema_extra
+    return isinstance(extra, dict) and extra.get("secret") is True
+
+
+def _annotation_is_secret_type(annotation: Any) -> bool:
+    """Return whether an annotation resolves to a masking secret type.
+
+    Accepts ``SecretStr`` / ``SecretBytes`` directly or as a member of an
+    ``Optional`` / ``Union`` (e.g. ``SecretStr | None``).
+
+    Args:
+        annotation: The field's resolved annotation.
+
+    Returns:
+        ``True`` if the annotation is (or unions in) a masking secret type.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, _SECRET_TYPES):
+        return True
+    # Unwrap Optional/Union: any masking member satisfies the requirement.
+    args = getattr(annotation, "__args__", None)
+    if args:
+        return any(_annotation_is_secret_type(arg) for arg in args)
+    return False
 
 
 def _normalize_segment(value: str) -> str:
@@ -125,16 +165,49 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         description="Unsupported-parameter policy: True=strict, False=best_effort.",
     )
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Enforce that secret-marked fields use a masking secret annotation (IC.3).
+
+        A field marked ``secret=True`` (via :func:`secret_field`) but annotated
+        with a plain type (e.g. ``str | None``) would be hidden from REST/auto-UI
+        while leaking plaintext in ``repr``/``str``/``model_dump``/
+        :meth:`public_dump`. Fail loud at class-definition time so the leak can
+        never reach runtime.
+
+        Args:
+            **kwargs: Forwarded subclass keyword arguments.
+
+        Raises:
+            TypeError: If a secret-marked field is not annotated ``SecretStr`` or
+                ``SecretBytes`` (optionally unioned with ``None``).
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        for name, field in cls.model_fields.items():
+            if _is_secret_marked(field) and not _annotation_is_secret_type(field.annotation):
+                raise TypeError(
+                    f"{cls.__name__}.{name} is marked secret (secret_field) but its "
+                    f"annotation {field.annotation!r} is not SecretStr/SecretBytes. "
+                    f"Secret-marked fields MUST use SecretStr to avoid plaintext leaks "
+                    f"(spec IC.3)."
+                )
+
     def public_dump(self) -> dict[str, Any]:
         """Return a serialization with secrets masked.
 
         Suitable for ``/v1/models``, persistence, and telemetry. ``SecretStr``
-        fields are rendered as ``"**********"`` (never plaintext).
+        fields are rendered as ``"**********"`` (never plaintext). As a defensive
+        measure, **any** secret-marked field is masked by name, so even a value
+        that (hypothetically) slipped through as plaintext is never emitted.
 
         Returns:
             A JSON-safe dict with credentials masked.
         """
-        return self.model_dump(mode="json")
+        dumped = self.model_dump(mode="json")
+        for name, field in type(self).model_fields.items():
+            if _is_secret_marked(field) and dumped.get(name) is not None:
+                dumped[name] = SECRET_MASK
+        return dumped
 
     @classmethod
     def from_env(
@@ -280,6 +353,7 @@ class CredentialsConfigMixin(BaseModel):
 
 __all__ = [
     "ENV_PREFIX",
+    "SECRET_MASK",
     "BaseConfig",
     "CredentialsConfigMixin",
     "DeviceConfigMixin",
