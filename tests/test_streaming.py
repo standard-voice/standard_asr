@@ -82,6 +82,7 @@ def test_is_terminal() -> None:
     assert TranscriptionEvent.make_error("x", recoverable=False).is_terminal is True
     assert TranscriptionEvent.make_error("x", recoverable=True).is_terminal is False
     assert TranscriptionEvent.partial("s", "t").is_terminal is False
+    assert TranscriptionEvent.final("s", "t").is_terminal is False
 
 
 def test_closed_finality() -> None:
@@ -164,12 +165,39 @@ class _ScriptedSession(TranscriptionSession):
             yield event
 
 
+class _FloodThenEventSession(TranscriptionSession):
+    """Fills the event buffer with partials before yielding one scripted event."""
+
+    def __init__(
+        self,
+        tail_event: TranscriptionEvent,
+        *,
+        event_buffer_capacity: int = 2,
+        leading_partial_count: int = 2,
+    ) -> None:
+        super().__init__(event_buffer_capacity=event_buffer_capacity)
+        self._tail_event = tail_event
+        self._leading_partial_count = leading_partial_count
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        for index in range(self._leading_partial_count):
+            yield TranscriptionEvent.partial(f"s{index}", "x")
+        yield self._tail_event
+
+
 async def _collect(session: TranscriptionSession) -> list[TranscriptionEvent]:
     events: list[TranscriptionEvent] = []
     async with session:
         async for event in session:
             events.append(event)
     return events
+
+
+async def _collect_after_producer_runs(session: TranscriptionSession) -> list[TranscriptionEvent]:
+    session.feed([])
+    async with session:
+        await asyncio.sleep(0.05)
+        return [event async for event in session]
 
 
 def test_attach_initial_diagnostics_surface_through_diagnostics() -> None:
@@ -601,6 +629,66 @@ def test_session_backpressure_overflow_emits_error() -> None:
     assert events[-1].type == "error"
     assert events[-1].code == "backpressure"
     assert events[-1].recoverable is False
+
+
+def test_adapter_terminal_error_bypasses_backpressure_overflow() -> None:
+    async def run() -> list[TranscriptionEvent]:
+        session = _FloodThenEventSession(
+            TranscriptionEvent.make_error("provider_engine_error", recoverable=False),
+            event_buffer_capacity=2,
+        )
+        return await _collect_after_producer_runs(session)
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "provider_engine_error"
+    assert events[-1].recoverable is False
+    assert all(event.code != "backpressure" for event in events)
+
+
+def test_adapter_done_bypasses_backpressure_overflow_without_duplicate() -> None:
+    async def run() -> list[TranscriptionEvent]:
+        session = _FloodThenEventSession(
+            TranscriptionEvent.done(),
+            event_buffer_capacity=2,
+        )
+        return await _collect_after_producer_runs(session)
+
+    events = asyncio.run(run())
+    assert events[-1].type == "done"
+    assert [event.type for event in events].count("done") == 1
+    assert all(event.type != "error" for event in events)
+
+
+def test_non_terminal_overflow_still_emits_backpressure_when_consumer_is_slow() -> None:
+    async def run() -> list[TranscriptionEvent]:
+        session = _FloodThenEventSession(
+            TranscriptionEvent.progress(),
+            event_buffer_capacity=2,
+        )
+        return await _collect_after_producer_runs(session)
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "backpressure"
+    assert all(event.type != "progress" for event in events)
+
+
+def test_same_segment_partials_still_coalesce_when_consumer_is_slow() -> None:
+    class _SameSegmentBurstSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.partial("s0", "a")
+            yield TranscriptionEvent.partial("s0", "ab")
+            yield TranscriptionEvent.partial("s0", "abc")
+            yield TranscriptionEvent.done()
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _SameSegmentBurstSession(event_buffer_capacity=1)
+        return await _collect_after_producer_runs(session)
+
+    events = asyncio.run(run())
+    assert [event.type for event in events] == ["partial", "done"]
+    assert events[0].text == "abc"
 
 
 def test_audio_queue_is_bounded() -> None:

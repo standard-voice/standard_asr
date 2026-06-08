@@ -1327,9 +1327,10 @@ class TranscriptionSession(ABC):
                 if admitted is None:
                     continue  # illegal transition: suppressed (diagnosed).
                 self._reducer.add(admitted)
-                self._buffer.put(admitted)
                 if admitted.is_terminal:
+                    self._buffer.put_forced(admitted)
                     return
+                self._buffer.put(admitted)
             self._drain_pending_reconnects()
             # done MUST never be dropped: bypass the bound so it always lands.
             self._buffer.put_forced(TranscriptionEvent.done())
