@@ -249,6 +249,29 @@ def test_unsupported_feature_constraints_not_in_supported_paths() -> None:
     assert "batch.guidance.prompt.constraints" not in paths
 
 
+def test_supports_fail_closed_on_constraints_subpaths() -> None:
+    # CAPA-2: a constraints submodel is NOT a capability node -- supports() on a
+    # constraints sub-path is fail-CLOSED, even when the feature IS supported,
+    # and obviously when it is not.
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(
+                candidate_languages=CandidateLanguagesCap(
+                    supported=True,
+                    constraints=CandidateLanguagesConstraints(max=3),
+                )
+            ),
+            guidance=GuidanceCaps(prompt=PromptCap(supported=False)),
+        )
+    )
+    # Real capability paths still answer True.
+    assert caps.supports("batch.language.candidate_languages") is True
+    # Constraints sub-paths are fail-closed even under a SUPPORTED feature.
+    assert caps.supports("batch.language.candidate_languages.constraints") is False
+    # ... and under an UNSUPPORTED feature.
+    assert caps.supports("batch.guidance.prompt.constraints") is False
+
+
 def test_node_at_returns_typed_node() -> None:
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(

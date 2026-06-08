@@ -527,9 +527,14 @@ def _derive_supported(node: object) -> bool:
     """
     if isinstance(node, _CapNode):
         return node.is_supported
-    if isinstance(node, BaseModel):
+    if isinstance(node, _Container):
         # A present container (mode domain or grouping) counts as supported.
         return True
+    if isinstance(node, BaseModel):
+        # A non-capability BaseModel (a `constraints` submodel) is NOT a
+        # capability node (spec §C R6): `supports("<feature>.constraints")` must
+        # be fail-CLOSED, never report the feature as supported via its limits.
+        return False
     if isinstance(node, dict):
         mapping = cast("dict[str, object]", node)
         if "mode" in mapping:
