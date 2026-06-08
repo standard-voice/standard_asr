@@ -98,6 +98,23 @@ def test_to_srt_empty_text_no_duration() -> None:
     assert to_vtt(result) == "WEBVTT\n"
 
 
+def test_empty_segments_list_yields_no_cues() -> None:
+    # segments=[] means segmentation ran and found nothing (e.g. silence). Per
+    # the §TR.1 null rule this must NOT fabricate a full-span cue from text.
+    result = TranscriptionResult(text="some text", segments=[], duration=5.0)
+    assert to_srt(result) == ""
+    assert to_vtt(result) == "WEBVTT\n"
+
+
+def test_none_segments_with_text_synthesizes_one_cue() -> None:
+    # segments=None (not requested) + non-empty text: synthesize a single cue.
+    result = TranscriptionResult(text="whole text", duration=2.0)
+    srt = to_srt(result)
+    assert "1\n00:00:00,000 --> 00:00:02,000\nwhole text" in srt
+    # Exactly one cue.
+    assert "2\n" not in srt
+
+
 def test_srt_skips_empty_segment_and_renumbers() -> None:
     # An empty / whitespace-only segment among real ones must not produce a
     # payload-less cue, and the surviving SRT indices must stay contiguous.

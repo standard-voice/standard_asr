@@ -76,24 +76,35 @@ def _format_timestamp(seconds: float, *, millis_sep: str) -> str:
 def _cues(result: TranscriptionResult) -> list[Segment]:
     """Return the segments to render, falling back to a single full-text cue.
 
+    The §TR.1 null rule distinguishes the two empty states: ``segments is None``
+    means segmentation was *not requested / not applicable*, whereas
+    ``segments == []`` means it *was requested but is empty* (e.g. confirmed
+    silence). Only the former may fall back to a synthetic whole-text cue; an
+    explicit ``[]`` yields zero cues, never a fabricated full-span cue.
+
     Segments are sorted by ``(start, channel)`` to enforce the §TR.2 top-level
     ordering invariant at the rendering boundary, so out-of-order input still
     produces correctly ordered subtitles. ``channel`` may be ``None``; it sorts
-    before any explicit channel index (treated as ``-1``).
+    before any explicit channel index (which the data model constrains to
+    ``>= 0``).
 
     Args:
         result: The transcription result.
 
     Returns:
-        A list of segments ordered by ``(start, channel)``. When the result has
-        no segments, a single synthetic segment spanning ``[0, duration]`` with
-        the full text is returned.
+        The segments to render, ordered by ``(start, channel)``. For
+        ``segments == []`` this is empty. When ``segments is None`` and
+        ``text`` is non-empty, a single synthetic segment spanning
+        ``[0, duration]`` with the full text is returned; when ``text`` is
+        empty too, no cues are produced.
     """
-    if result.segments:
+    if result.segments is not None:
         return sorted(
             result.segments,
             key=lambda s: (s.start, s.channel if s.channel is not None else -1),
         )
+    if not result.text:
+        return []
     end = result.duration if result.duration is not None else 0.0
     return [Segment(start=0.0, end=end, text=result.text)]
 
