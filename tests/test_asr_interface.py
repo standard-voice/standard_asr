@@ -340,6 +340,41 @@ def test_candidate_languages_best_effort_emits_diagnostic_in_base() -> None:
     assert any(d.code == "candidate_language_dropped" for d in result.diagnostics)
 
 
+class _NoCandConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
+    engine: Literal["arr"] = "arr"
+    default_language: str | None = "auto"
+
+
+_NO_CAND_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(
+        language=LanguageCaps(
+            runtime_override=FlagCap(supported=True),
+            candidate_languages=CandidateLanguagesCap(supported=False),
+        )
+    )
+)
+
+
+class _NoCandEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _AutoProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _NO_CAND_CAPS
+
+    def __init__(self, *, strict: bool = True) -> None:
+        self.config = _NoCandConfig(strict=strict)
+
+
+def test_unsupported_candidate_languages_strict_does_not_raise_single_diagnostic() -> None:
+    # RUNT-1: §Language R3 step 2 -- an unsupported candidate_languages axis
+    # resolves to None + exactly one diagnostic and never raises, even in strict.
+    result = _NoCandEngine(strict=True).transcribe(
+        _audio(), RuntimeParams(language="auto", candidate_languages=["en", "ja"])
+    )
+    # RUNT-2: exactly ONE diagnostic for this axis (no gate_params duplicate).
+    cand_diags = [d for d in result.diagnostics if d.param == "candidate_languages"]
+    assert len(cand_diags) == 1
+    assert cand_diags[0].code == "candidate_languages_ignored"
+
+
 # --- streaming mutual-exclusion guard ----------------------------------------
 
 

@@ -191,29 +191,22 @@ def test_empty_phrase_hints_no_garbage_degrade() -> None:
     assert diags == []
 
 
-def test_empty_candidate_languages_not_gated_when_unsupported() -> None:
-    params = RuntimeParams(candidate_languages=[])
+def test_candidate_languages_not_gated_here_when_unsupported() -> None:
+    # RUNT-1/RUNT-2: candidate_languages is owned solely by language.py (spec
+    # §Language R3), so gate_params must NOT touch it -- even an unsupported,
+    # non-empty request in strict mode passes through untouched (no raise, no
+    # diagnostic). language.effective_candidate_languages resolves the axis to
+    # None + a single diagnostic; that is asserted in test_language.py.
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(
             language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False))
         )
     )
-    gated, diags = gate_params(params, caps, "batch", strict=True)
-    assert gated.candidate_languages == []
-    assert diags == []
-
-
-def test_nonempty_candidate_languages_still_gated() -> None:
-    # Sanity: a real (non-empty) request is still gated and raises when
-    # unsupported (proves [] handling did not break real requests).
-    params = RuntimeParams(candidate_languages=["en", "ja"])
-    caps = DeclaredCapabilities(
-        batch=BatchCapabilities(
-            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False))
-        )
-    )
-    with pytest.raises(UnsupportedFeatureError):
-        gate_params(params, caps, "batch", strict=True)
+    for value in ([], ["en", "ja"]):
+        params = RuntimeParams(candidate_languages=value)
+        gated, diags = gate_params(params, caps, "batch", strict=True)
+        assert gated.candidate_languages == value
+        assert diags == []
 
 
 # --------------------------------------------------------------------------- #
@@ -264,7 +257,9 @@ def test_try_degrade_empty_hints_returns_false() -> None:
     assert diags == []
 
 
-def test_nonempty_candidate_languages_supported_passes() -> None:
+def test_candidate_languages_supported_passes_through_untouched() -> None:
+    # Even when supported, gate_params leaves candidate_languages alone (it is
+    # not in _GATED_PARAMS); resolution/validation happens in language.py.
     params = RuntimeParams(candidate_languages=["en", "ja"])
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(

@@ -30,9 +30,15 @@ from .runtime_params import ProviderParams, RuntimeParams
 Mode = Literal["batch", "streaming"]
 
 #: Portable standard-set fields and their capability dot-path suffixes.
+#:
+#: ``candidate_languages`` is deliberately absent: the language axis is owned
+#: solely by :func:`standard_asr.language.effective_candidate_languages` per
+#: spec §Language R3. R3 step 2 requires that an unsupported ``candidate_languages``
+#: resolve to ``None`` + a single diagnostic and **never raise** (even in strict),
+#: which contradicts this table's strict-raises gating. Gating it here too would
+#: also double-diagnose in best_effort. So it has exactly one owner (language.py).
 _GATED_PARAMS: tuple[tuple[str, str], ...] = (
     ("language", "language.runtime_override"),
-    ("candidate_languages", "language.candidate_languages"),
     ("word_timestamps", "word_timestamps"),
     ("prompt", "guidance.prompt"),
     ("phrase_hints", "guidance.phrase_hints"),
@@ -41,6 +47,8 @@ _GATED_PARAMS: tuple[tuple[str, str], ...] = (
 #: List-typed channels whose empty-list value (``[]``) is the spec §R.3.3
 #: "requested-but-empty" sentinel: an explicit "nothing to honor". It is NOT a
 #: real request, so it is never gated, degraded, or reported as unsupported.
+#: ``candidate_languages`` is no longer gated here (owned by language.py), but its
+#: ``[]`` sentinel is still recognized so a stray direct caller stays consistent.
 _EMPTY_IS_NOOP_FIELDS = frozenset({"candidate_languages", "phrase_hints"})
 
 
