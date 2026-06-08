@@ -572,18 +572,22 @@ def test_abstract_produce_raises_not_implemented() -> None:
 class _ReconnectSession(TranscriptionSession):
     """Drains all audio, notes a reconnect, then finalizes -- continuity test."""
 
-    def __init__(self, gap: tuple[float, float], **kw: object) -> None:
+    def __init__(
+        self, gap: tuple[float, float], *, content_lost: bool = False, **kw: object
+    ) -> None:
         super().__init__(**kw)  # type: ignore[arg-type]
         self._gap = gap
+        self._content_lost = content_lost
 
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
         chunks: list[bytes] = []
         async for chunk in self.audio_chunks():
             chunks.append(chunk)
         # Simulate the adapter re-establishing, replaying the rolling buffer,
-        # and signalling the bridged gap after audio has been processed.
+        # and signalling the bridged gap after audio has been processed. The
+        # adapter explicitly decides whether content was lost.
         _ = self.replay_buffer()
-        self.note_reconnect(self._gap[0], self._gap[1])
+        self.note_reconnect(self._gap[0], self._gap[1], content_lost=self._content_lost)
         yield TranscriptionEvent.final("seg-0", b"".join(chunks).decode(), start=0.0)
 
 
@@ -604,14 +608,15 @@ def test_reconnect_emits_progress_replayable_no_content_lost() -> None:
     assert events[-1].type == "done"
 
 
-def test_reconnect_nonreplayable_overflow_emits_content_lost() -> None:
+def test_reconnect_adapter_signals_content_lost_emits_progress_then_content_lost() -> None:
     async def run() -> list[TranscriptionEvent]:
-        # Async generator source -> non-replayable; tiny history -> overflow.
+        # Async generator source -> non-replayable; adapter decides content was
+        # lost (the gap could not be replayed) and passes content_lost=True.
         async def gen() -> AsyncIterator[bytes]:
             for _ in range(5):
                 yield b"x"
 
-        session = _ReconnectSession((1.0, 2.0), audio_history_maxlen=1)
+        session = _ReconnectSession((1.0, 2.0), content_lost=True, audio_history_maxlen=1)
         session.feed(gen())
         assert session.replayable is False
         return await _collect(session)
@@ -620,12 +625,32 @@ def test_reconnect_nonreplayable_overflow_emits_content_lost() -> None:
     progress = [e for e in events if e.type == "progress" and e.reconnect]
     errors = [e for e in events if e.type == "error"]
     assert len(progress) == 1
-    # content_lost MUST follow the reconnect progress for a lossy live source.
+    # content_lost MUST IMMEDIATELY follow the reconnect progress.
     assert any(e.code == "content_lost" for e in errors)
     cl = next(e for e in errors if e.code == "content_lost")
     assert cl.recoverable is False
-    # progress precedes the content_lost error in delivery order.
-    assert events.index(progress[0]) < events.index(cl)
+    assert events.index(cl) == events.index(progress[0]) + 1
+
+
+def test_reconnect_no_content_lost_even_after_ring_wraps_many_times() -> None:
+    # H5: with content_lost defaulting False, a non-replayable source whose
+    # rolling ring has wrapped many times during NORMAL operation MUST NOT get a
+    # fabricated content_lost -- the old eviction-based false positive is gone.
+    async def run() -> list[TranscriptionEvent]:
+        async def gen() -> AsyncIterator[bytes]:
+            for _ in range(100):  # far exceeds the tiny ring -> many evictions
+                yield b"x"
+
+        session = _ReconnectSession((1.0, 2.0), audio_history_maxlen=2)
+        session.feed(gen())
+        assert session.replayable is False
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    assert any(e.type == "progress" and e.reconnect for e in events)
+    # No content_lost despite the ring wrapping ~50 times.
+    assert not any(e.type == "error" for e in events)
+    assert events[-1].type == "done"
 
 
 def test_reconnect_pair_survives_full_buffer_and_stays_adjacent() -> None:
@@ -635,10 +660,12 @@ def test_reconnect_pair_survives_full_buffer_and_stays_adjacent() -> None:
     async def run() -> list[TranscriptionEvent]:
         async def gen() -> AsyncIterator[bytes]:
             yield b"x"
-            yield b"x"  # overflow tiny history -> content_lost on reconnect
+            yield b"x"
 
-        session = _ReconnectSession((1.0, 2.0), event_buffer_capacity=2, audio_history_maxlen=1)
-        session.feed(gen())  # non-replayable + overflow -> content_lost queued
+        session = _ReconnectSession(
+            (1.0, 2.0), content_lost=True, event_buffer_capacity=2, audio_history_maxlen=1
+        )
+        session.feed(gen())  # adapter signals content_lost -> pair queued
         # Saturate the bounded event buffer so a non-drop-proof drain of the
         # queued reconnect pair would overflow / split them.
         session._buffer.put(TranscriptionEvent.partial("p0", "x"))  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]

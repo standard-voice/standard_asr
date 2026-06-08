@@ -937,8 +937,9 @@ class TranscriptionSession(ABC):
       replays :meth:`replay_buffer` audio, keeps ``segment_id`` / timestamps /
       detected language continuous, then calls :meth:`note_reconnect`. The base
       then emits the ``progress(reconnect=True, gap_start, gap_end)`` event and,
-      for a non-replayable source whose buffer overflowed during the gap, a
-      trailing ``error(code="content_lost", recoverable=False)``.
+      iff the adapter passed ``content_lost=True`` (its own determination that
+      the reconnect + replay could not cover the gap), a trailing
+      ``error(code="content_lost", recoverable=False)``.
     """
 
     def __init__(
@@ -986,7 +987,6 @@ class TranscriptionSession(ABC):
         # Reconnect scaffolding (spec ST.6.3 / D10.7).
         self._audio_history: deque[bytes] = deque(maxlen=audio_history_maxlen)
         self._replayable = False
-        self._history_overflowed = False
         self._pending_reconnects: list[TranscriptionEvent] = []
         self._monotonic = time.monotonic
 
@@ -1022,14 +1022,12 @@ class TranscriptionSession(ABC):
             chunk = await self._audio_queue.get()
             if chunk is None:
                 return
-            # Appending to a full bounded deque evicts the oldest chunk: that
-            # chunk can no longer be replayed. For a non-replayable (live)
-            # source an eviction means a later reconnect may have lost content.
-            if (
-                self._audio_history.maxlen is not None
-                and len(self._audio_history) >= self._audio_history.maxlen
-            ):
-                self._history_overflowed = True
+            # The bounded deque drops its oldest chunk when full: it is only the
+            # most-recent-audio replay window for replay_buffer(). Whether a
+            # reconnect gap actually lost unreplayable audio is the adapter's
+            # determination (passed to note_reconnect(content_lost=...)), not an
+            # eviction count -- a live ring is always evicting, so eviction is
+            # the wrong content-loss signal.
             self._audio_history.append(chunk)
             yield chunk
 
@@ -1055,26 +1053,43 @@ class TranscriptionSession(ABC):
         """
         return list(self._audio_history)
 
-    def note_reconnect(self, gap_start: float | None = None, gap_end: float | None = None) -> None:
+    def note_reconnect(
+        self,
+        gap_start: float | None = None,
+        gap_end: float | None = None,
+        *,
+        content_lost: bool = False,
+    ) -> None:
         """Record that an internal reconnect bridged a gap (adapter-driven).
 
-        The base queues a ``progress(reconnect=True, gap_start, gap_end)`` event
-        to be emitted in order with produced events, and -- for a non-replayable
-        source whose rolling buffer overflowed during the session (audio was
-        evicted and thus cannot be replayed) -- a trailing
-        ``error(code="content_lost", recoverable=False)`` (spec ST.6.3).
+        The base ALWAYS queues a ``progress(reconnect=True, gap_start, gap_end)``
+        event to be emitted in order with produced events. It queues a trailing
+        ``error(code="content_lost", recoverable=False, gap_start, gap_end)`` --
+        IMMEDIATELY following the progress (spec ST.6.3) -- IFF the adapter passes
+        ``content_lost=True``.
 
-        ``segment_id`` / timestamps / detected language continuity across the
-        reconnect is the adapter's responsibility (the base never rewrites them).
+        Content loss is an **explicit adapter determination**, not something the
+        base infers from rolling-buffer eviction: a live ring is always evicting,
+        so eviction is the wrong signal (it would falsely claim permanent loss on
+        every long live session). The adapter -- which alone knows whether its
+        reconnect + :meth:`replay_buffer` replay actually covered the gap -- sets
+        ``content_lost=True`` only when audio the engine had not yet processed
+        could not be replayed and is therefore truly lost. This mirrors the
+        existing contract where ``segment_id`` / timestamps / detected language
+        continuity across the reconnect is likewise the adapter's responsibility
+        (the base never rewrites them).
 
         Args:
             gap_start: Start time (seconds) of the lossy gap, if known.
             gap_end: End time (seconds) of the lossy gap, if known.
+            content_lost: ``True`` if the reconnect could not cover the gap and
+                unreplayable audio was permanently lost; queues a terminal
+                ``content_lost`` error after the progress (spec ST.6.3).
         """
         self._pending_reconnects.append(
             TranscriptionEvent.progress(reconnect=True, gap_start=gap_start, gap_end=gap_end)
         )
-        if not self._replayable and self._history_overflowed:
+        if content_lost:
             self._pending_reconnects.append(
                 TranscriptionEvent.make_error(
                     code="content_lost",

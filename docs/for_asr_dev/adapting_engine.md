@@ -146,8 +146,14 @@ monotonicity clamping. **You** must: emit cumulative/replace `text`; set
 `stable_until` conservatively (0 if you have no right-context); and for
 reconnect, detect the disconnect, re-establish, replay `self.replay_buffer()`,
 keep `segment_id`/timestamps/language continuous, and call
-`self.note_reconnect(gap_start, gap_end)` (the base then emits the
-`progress(reconnect)` / `content_lost` events).
+`self.note_reconnect(gap_start, gap_end, content_lost=...)`. The base always
+emits the `progress(reconnect)` event; it emits a trailing terminal
+`content_lost` error **only if you pass `content_lost=True`** — your own
+determination that the reconnect + replay could not cover the gap and
+unreplayable audio was permanently lost. The base does **not** infer loss from
+rolling-buffer eviction (a live ring is always evicting, so that would falsely
+claim loss on every long session); you decide, because only you know whether the
+replay actually bridged the gap.
 
 ### Sequence invariants the guard enforces for free
 
