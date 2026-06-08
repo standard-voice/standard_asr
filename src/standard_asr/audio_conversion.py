@@ -460,8 +460,13 @@ def _apply_sample_rate(
             code="resampled_with",
             message=f"Resampled {sample_rate} Hz -> {target} Hz ({label}).",
             param="audio",
-            provided=sample_rate,
-            effective=target,
+            # The rate transition lives in ``provided`` and the structured
+            # ``effective`` carries the *backend* identifier, so the spec R8
+            # contract reads as ``resampled_with=<scipy|fallback>`` without any
+            # English prose parsing -- a cross-language/REST client can detect the
+            # low-quality numpy fallback from the structured field alone.
+            provided=f"{sample_rate}->{target}",
+            effective=backend,
         )
     )
     return resampled, target

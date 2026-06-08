@@ -416,3 +416,49 @@ def test_resample_diagnostic_names_backend() -> None:
     diag = next(d for d in prepared.diagnostics if d.code == "resampled_with")
     assert "scipy" in diag.message
     assert "fallback" not in diag.message
+
+
+def test_resample_diagnostic_backend_in_structured_field() -> None:
+    # RESA-2: a (cross-language/REST) client must be able to tell scipy from the
+    # low-quality numpy fallback WITHOUT parsing English prose. The backend is
+    # carried in the structured ``effective`` field so the spec R8 contract reads
+    # as resampled_with=<scipy|fallback>; the rate transition lives in ``provided``.
+    if not _scipy_usable():
+        pytest.skip("scipy.signal not usable in this environment")
+    prepared = _exec(
+        AudioArray(np.zeros(48000, dtype=np.float32), 48000),
+        {InputKind.ARRAY},
+        accepted_sample_rates=[16000],
+        native_sample_rate=16000,
+    )
+    diag = next(d for d in prepared.diagnostics if d.code == "resampled_with")
+    assert diag.effective == "scipy"
+    assert diag.provided == "48000->16000"
+
+
+def test_resample_diagnostic_backend_field_is_fallback_without_scipy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # RESA-2: when scipy is unavailable, the structured field MUST equal
+    # ``fallback`` (spec R8's machine-readable resampled_with=fallback contract).
+    # Break only the in-method ``scipy.signal`` import, mirroring the resampling
+    # test, to avoid the numpy-reload artifact of purging scipy from sys.modules.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "scipy.signal" or name.startswith("scipy.signal"):
+            raise ImportError("simulated broken scipy")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    prepared = _exec(
+        AudioArray(np.zeros(48000, dtype=np.float32), 48000),
+        {InputKind.ARRAY},
+        accepted_sample_rates=[16000],
+        native_sample_rate=16000,
+    )
+    diag = next(d for d in prepared.diagnostics if d.code == "resampled_with")
+    assert diag.effective == "fallback"
+    assert diag.provided == "48000->16000"
