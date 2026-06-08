@@ -98,6 +98,16 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     HTTPS-only, a parseable host, and -- unless opted out -- every address the
     host resolves to must be public.
 
+    The resolve-time IP check is **advisory** against DNS rebinding, not a hard
+    guarantee. This function resolves the host and verifies every returned
+    address is public, then forwards the unmodified hostname URL; the engine
+    resolves the name again independently at fetch time, so an attacker who
+    controls DNS can return a public address here and a private one to the
+    engine (classic TOCTOU/DNS-rebinding). Pinning the validated address for the
+    engine's subsequent fetch (DNS-pin) is a documented v1 limitation and a v2
+    requirement (spec R5). Strong SSRF defense for engine-fetched URLs requires
+    the engine to honour a pinned address.
+
     Args:
         url: The URL to validate.
         allow_private_addresses: If ``True``, skip the private/loopback/

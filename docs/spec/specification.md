@@ -91,8 +91,9 @@
 | `AudioStorageUri` | **FAIL**（R5.2） | **FAIL**（R5.2） | **FAIL**（R5.2） | 透传（零转换） |
 
 - 有损单元格 MUST 发 `audio_conversion` diagnostic（from/to/lossy/extra）。
-- 协商 MUST 支持调用前判定：`can_accept(kind, engine) -> bool` / `negotiate(provided, accepted) -> ConversionPlan | NoViablePath`，并体现在引擎 card / 文档。
+- 协商 MUST 支持调用前判定：`can_accept(provided, accepted) -> bool` / `negotiate(provided, accepted) -> ConversionPlan | NoViablePath`，并体现在引擎 card / 文档。
 - **死角**（本地数据 + 只接受 `fetchable_url`，或 storage-URI + 不接受 `storage_uri`）：MUST fail-explicit。标准 MUST NOT 做 upload-broker，且 MUST NOT 在无引擎凭证下拉取云存储。
+- **内存源 → 只接受 `encoded_file`（不接受 `encoded_bytes`）的引擎**：实现选择 **FAIL** 而非落临时文件——数组 encode 输出 `BytesIO`、bytes/base64 解码为内存字节，标准 MUST NOT 为投递而写临时文件（临时文件有泄漏/只读 FS/TOCTOU 风险，见 R4 理由）。此处行为以**代码为准**：上表 `AudioBytes`/`AudioBase64` × `encoded_file/bytes` 写作"透传"是针对接受 `encoded_bytes` 的引擎；当引擎**仅**接受 `encoded_file` 时，协商返回 `NoViablePath`（fail-explicit），比字面矩阵更严。
 
 **R4 — 数组→编码文件 encoder。** 当 `AudioArray` 遇到只接受文件的引擎时：输出 MUST 为内存 `BytesIO`（MUST NOT 落磁盘）；canonical 编码 = WAV/16-bit PCM LE/mono；多声道 MUST 降混+diagnostic；float32→int16 有损 MUST 发 diagnostic；编码后 MUST 预检 `max_file_size`，超限抛清晰本地错误。
 
