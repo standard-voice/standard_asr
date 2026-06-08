@@ -150,6 +150,134 @@ def test_numpy_spec_skips_non_numpy_requirements_first(
     assert report.plugins[0].numpy_spec == "<2"
 
 
+def test_canonical_dual_line_resolves_to_numpy2_on_py313(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical interpreter-conditional dual-line form (DEP.1) must resolve
+    to the line whose marker holds on the running interpreter -- on 3.13 that is
+    ``>=2.1``, so no bogus 'no numpy<2 wheel' conflict fires (CLI-1 / H2)."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP(
+                "x/y",
+                _FakeDist(
+                    "std-x",
+                    [
+                        'numpy<2; python_version < "3.13"',
+                        'numpy>=2.1; python_version >= "3.13"',
+                    ],
+                ),
+            )
+        ],
+    )
+    fake_vi = _VersionInfo(3, 13, 0, "final", 0)
+    monkeypatch.setattr(doctor.sys, "version_info", fake_vi)
+    report = doctor.diagnose()
+    assert report.plugins[0].numpy_spec == ">=2.1"
+    assert report.has_conflict is False
+
+
+def test_marker_false_line_imposes_no_constraint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A numpy line whose marker is False on the running interpreter must be
+    ignored entirely, not treated as an active constraint (CLI-1 / H2)."""
+    # On 3.13 the marker python_version < "3.10" is False, so numpy is not
+    # required at all -> no constraint, no conflict.
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("x/y", _FakeDist("std-x", ['numpy<2; python_version < "3.10"']))],
+    )
+    fake_vi = _VersionInfo(3, 13, 0, "final", 0)
+    monkeypatch.setattr(doctor.sys, "version_info", fake_vi)
+    report = doctor.diagnose()
+    assert report.plugins[0].numpy_spec is None
+    assert report.has_conflict is False
+
+
+def test_legacy_parenthesized_specifier_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy parenthesized Requires-Dist (``numpy (>=1.26)``) must parse to the
+    real specifier rather than being swallowed as unconstrained (CLI-2)."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy (<2)"])),
+            _FakeEP("new/qwen", _FakeDist("std-qwen", ["numpy (>=2.1)"])),
+        ],
+    )
+    report = doctor.diagnose()
+    assert report.plugins[0].numpy_spec == "<2"
+    assert report.has_conflict is True
+    assert any("1.x vs 2.x" in c for c in report.conflicts)
+
+
+def test_invalid_requirement_line_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed Requires-Dist line must be skipped, not abort parsing."""
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["==not a requirement==", "numpy<2"]))],
+    )
+    report = doctor.diagnose()
+    assert report.plugins[0].numpy_spec == "<2"
+
+
+def test_numpy_spec_display_fallback_when_packaging_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without `packaging`, the spec is extracted display-only (no marker eval)
+    and conflicts are not classified -- doctor degrades, never misreports."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *args: object, **kwargs: object) -> object:
+        if name.startswith("packaging"):
+            raise ImportError("no packaging")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy<2"])),
+            _FakeEP("new/qwen", _FakeDist("std-qwen", ["numpy>=2.1"])),
+        ],
+    )
+    report = doctor.diagnose()
+    # Display string is still rendered (best-effort regex).
+    assert report.plugins[0].numpy_spec == "<2"
+    # But with packaging absent, the real numpy1-vs-2 conflict is NOT classified.
+    assert report.has_conflict is False
+    assert any("packaging" in n for n in report.notes)
+
+
+def test_numpy_spec_display_fallback_returns_none_without_numpy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The display fallback returns None when numpy is not required at all."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *args: object, **kwargs: object) -> object:
+        if name.startswith("packaging"):
+            raise ImportError("no packaging")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["pydantic>=2"]))],
+    )
+    report = doctor.diagnose()
+    assert report.plugins[0].numpy_spec is None
+
+
 def test_py313_no_numpy1_wheel_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_eps(
         monkeypatch,

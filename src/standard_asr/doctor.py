@@ -19,9 +19,13 @@ from importlib.metadata import entry_points
 
 from .discovery import ENTRYPOINT_GROUP
 
-# Match a leading ``numpy`` requirement and capture its version specifier (the
-# part before any environment marker). The extras group (e.g. ``numpy[foo]``) is
-# discarded; we only care about the version constraints.
+# Display-only fallback for the packaging-absent path. ``packaging`` is the
+# authoritative parser (it evaluates environment markers and the legacy
+# parenthesized form ``numpy (>=1.26)``); this regex is used solely to render a
+# best-effort specifier string when ``packaging`` cannot be imported, in which
+# case doctor degrades to listing-without-classifying and never reports a
+# conflict it could not verify. It captures the text before any marker (``;``);
+# the extras group (``numpy[foo]``) is discarded.
 _NUMPY_REQ = re.compile(r"^\s*numpy\b(?:\[[^\]]*\])?(?P<spec>[^;]*)", re.IGNORECASE)
 
 # Representative probe versions spanning the numpy 1.x / 2.x boundary. We use
@@ -146,13 +150,70 @@ def _classify_numpy(numpy_spec: str | None) -> tuple[bool, bool]:
 
 
 def _numpy_spec_for(requires: list[str] | None) -> str | None:
-    """Extract the numpy version specifier from a distribution's requirements.
+    """Extract the *effective* numpy specifier for the running interpreter.
+
+    Per-library seam: numpy is the only shared native dependency Standard ASR can
+    diagnose precisely (spec DEP.5 / CLI-3). Its 1.x-vs-2.x split is a clean
+    C-ABI break with a clean version-range signature, so a Requires-Dist version
+    specifier fully determines compatibility. torch (CUDA build variants),
+    onnxruntime vs onnxruntime-gpu (package-identity conflicts) and similar do
+    NOT encode their conflict in version specifiers, so this seam intentionally
+    matches ``numpy`` only -- generalizing the version-intersection to them would
+    be confidently wrong. See DEP.4 for the general isolation guidance.
+
+    Each ``Requires-Dist`` line is parsed with :class:`packaging.requirements.
+    Requirement`, which evaluates PEP 508 environment markers and accepts the
+    legacy parenthesized form (``numpy (>=1.26)``). Only numpy lines whose marker
+    holds on the running interpreter (or is absent) contribute, so the canonical
+    interpreter-conditional dual-line declaration (spec DEP.1) resolves to the
+    one line that actually applies here. Multiple applicable lines are
+    intersected. When ``packaging`` is absent doctor degrades to a display-only
+    regex extraction (no marker evaluation, no conflict classification).
 
     Args:
         requires: The distribution's ``Requires-Dist`` entries.
 
     Returns:
-        The numpy specifier string, or ``None`` if numpy is not required.
+        The effective numpy specifier string (``"(any)"`` when numpy is required
+        without a version bound), or ``None`` if numpy is not required (or no
+        applicable line survives marker evaluation).
+    """
+    try:
+        from packaging.requirements import InvalidRequirement, Requirement
+        from packaging.specifiers import SpecifierSet
+    except ImportError:
+        return _numpy_spec_for_display(requires)
+
+    combined = SpecifierSet()
+    found = False
+    for raw in requires or []:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.name.lower() != "numpy":
+            continue
+        if req.marker is not None and not req.marker.evaluate():
+            continue
+        found = True
+        combined &= req.specifier
+    if not found:
+        return None
+    return str(combined) or "(any)"
+
+
+def _numpy_spec_for_display(requires: list[str] | None) -> str | None:
+    """Best-effort numpy specifier extraction for the packaging-absent path.
+
+    This does NOT evaluate environment markers and is used only to populate the
+    human-readable plugin listing when ``packaging`` is unavailable; in that mode
+    doctor never classifies conflicts (see :func:`diagnose`).
+
+    Args:
+        requires: The distribution's ``Requires-Dist`` entries.
+
+    Returns:
+        The first numpy specifier string, or ``None`` if numpy is not required.
     """
     for req in requires or []:
         match = _NUMPY_REQ.match(req)
