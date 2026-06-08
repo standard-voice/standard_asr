@@ -415,6 +415,33 @@ def test_canonical_json_preserves_unknown_extra_keys() -> None:
     assert cj["batch"]["x_vendor"] == {"flavor": "fast"}
 
 
+def test_canonical_json_injects_supported_on_json_sourced_x_star_dicts() -> None:
+    # CAPA-3: an x_* capability parsed from JSON lands in model_extra as a raw
+    # dict. canonical_json MUST inject the derived `supported` so cross-language
+    # clients get the same uniform probe as typed nodes. A bare constraints-like
+    # dict (no mode/supported) stays untouched.
+    caps = DeclaredCapabilities.model_validate(
+        {
+            "batch": {
+                "x_acme_flag": {"supported": True},
+                "x_acme_mode": {"mode": "lossy"},
+                "x_acme_off": {"mode": "unsupported"},
+                "x_acme_bounded": {"supported": True, "constraints": {"max": 5}},
+            }
+        }
+    )
+    cj = caps.canonical_json()
+    assert cj["batch"]["x_acme_flag"]["supported"] is True
+    # mode dict gains a derived supported alongside its mode.
+    assert cj["batch"]["x_acme_mode"] == {"mode": "lossy", "supported": True}
+    assert cj["batch"]["x_acme_off"]["supported"] is False
+    # bounded x_* dict keeps its constraints; constraints dict itself gets NO
+    # supported (not a capability node).
+    assert cj["batch"]["x_acme_bounded"]["supported"] is True
+    assert cj["batch"]["x_acme_bounded"]["constraints"] == {"max": 5}
+    assert "supported" not in cj["batch"]["x_acme_bounded"]["constraints"]
+
+
 def test_canonical_json_absent_domain_is_null() -> None:
     # An unsupported mode domain serializes as null (fail-closed), never as a
     # present-but-empty container.

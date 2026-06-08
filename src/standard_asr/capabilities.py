@@ -600,10 +600,18 @@ def _to_canonical(node: object, *, inject_supported: bool) -> Any:
     if isinstance(node, list):
         return [_to_canonical(item, inject_supported=True) for item in cast("list[object]", node)]
     if isinstance(node, dict):
-        return {
-            key: _to_canonical(value, inject_supported=True)
-            for key, value in cast("dict[str, object]", node).items()
+        mapping = cast("dict[str, object]", node)
+        out_dict: dict[str, Any] = {
+            key: _to_canonical(value, inject_supported=True) for key, value in mapping.items()
         }
+        # CAPA-3: a JSON-sourced x_* capability lands here as a raw dict (not a
+        # typed _CapNode). Inject the derived `supported` so cross-language
+        # clients get the same uniform probe the typed path provides (spec §C R6).
+        # A dict is a capability node iff it carries `mode` or `supported`; a bare
+        # `constraints` dict (e.g. {"max": 5}) has neither and is left untouched.
+        if inject_supported and ("mode" in mapping or "supported" in mapping):
+            out_dict["supported"] = _derive_supported(mapping)
+        return out_dict
     return node
 
 
