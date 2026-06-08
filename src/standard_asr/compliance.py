@@ -194,6 +194,19 @@ def check_entrypoints(
 
     issues: list[ComplianceIssue] = []
 
+    # §R.4 R1: RuntimeParams MUST be a closed type. This is a global invariant of
+    # the standard, not per-engine, so it MUST be verified even in a bare
+    # environment with no plugins installed -- it runs *before* the empty-registry
+    # early return so the global invariant is never silently unchecked.
+    if not _is_closed_model(RuntimeParams):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message="RuntimeParams is not a closed type (extra='forbid').",
+                model=None,
+            )
+        )
+
     if len(registry) == 0:
         issues.append(
             ComplianceIssue(
@@ -203,17 +216,6 @@ def check_entrypoints(
             )
         )
         return ComplianceReport(registry=registry, issues=issues)
-
-    # §R.4 R1: RuntimeParams MUST be a closed type. This is a global invariant of
-    # the standard, not per-engine, but surface it once so authors see it.
-    if not _is_closed_model(RuntimeParams):
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                message="RuntimeParams is not a closed type (extra='forbid').",
-                model=None,
-            )
-        )
 
     for name in registry.names():
         spec = registry.spec(name)

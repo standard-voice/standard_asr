@@ -202,6 +202,23 @@ def test_check_entrypoints_runtime_params_not_closed(monkeypatch: pytest.MonkeyP
     assert any("RuntimeParams is not a closed type" in i.message for i in report.issues)
 
 
+def test_check_entrypoints_runtime_params_closedness_runs_with_no_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The RuntimeParams-closedness invariant is plugin-independent and MUST be
+    # verified even in a bare environment (empty registry), not skipped by the
+    # "no plugins" early return.
+    def _not_closed(model: type) -> bool:
+        return False
+
+    monkeypatch.setattr(compliance_module, "_is_closed_model", _not_closed)
+    report = check_entrypoints(registry=ModelRegistry({}))
+    assert report.passed is False
+    assert any("RuntimeParams is not a closed type" in i.message for i in report.issues)
+    # The empty-registry diagnostic is still reported too.
+    assert any("No standard_asr.models" in i.message for i in report.issues)
+
+
 def test_check_entrypoints_effective_widens_declared() -> None:
     report = check_entrypoints(registry=_registry("widened_factory"))
     assert report.passed is False
