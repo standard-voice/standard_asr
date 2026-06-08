@@ -660,11 +660,29 @@ class _LifecycleGuard:
         sid = event.segment_id
         if event.type == "supersede":
             for old in event.old_ids:
+                if old not in self._state:
+                    self._reject(
+                        "supersede_unknown_old_id",
+                        f"supersede old_ids contains never-announced segment "
+                        f"{old!r}; suppressed (spec ST.5.2: old_ids MUST have "
+                        "received at least one partial/final).",
+                    )
+                    return None
+            for old in event.old_ids:
                 if self._state.get(old) == "closed":
                     self._reject(
                         "lifecycle_closed_superseded",
                         f"supersede old_ids contains closed segment {old!r}; "
                         "suppressed (spec ST.5.3: closed MUST NOT be superseded).",
+                    )
+                    return None
+            for new in event.new_ids:
+                if new in self._state:
+                    self._reject(
+                        "supersede_reintroduces_segment",
+                        f"supersede new_ids reintroduces already-known segment "
+                        f"{new!r} (state {self._state[new]!r}); suppressed "
+                        "(spec ST.5.2: a new_id MUST be fresh).",
                     )
                     return None
             # Concatenate the retired segments' frozen prefixes, in old_ids

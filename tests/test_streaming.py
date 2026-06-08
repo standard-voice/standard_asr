@@ -772,6 +772,47 @@ def test_guard_supersede_no_frozen_old_text_has_no_obligation() -> None:
     assert not guard.diagnostics
 
 
+# --------------------------------------------------------------------------- #
+# STRE-2 / X-ST-2 -- supersede ordering & disjointness invariants (spec ST.5.2)
+# --------------------------------------------------------------------------- #
+def test_supersede_disjoint_enforced_at_construction() -> None:
+    # old_ids n new_ids = empty MUST hold; the event model refuses to build one.
+    with pytest.raises(ValueError, match="disjoint"):
+        TranscriptionEvent.supersede(["a"], ["a"])
+    with pytest.raises(ValueError, match="disjoint"):
+        TranscriptionEvent(type="supersede", old_ids=["a"], new_ids=["a"])
+
+
+def test_guard_supersede_unknown_old_id_suppressed() -> None:
+    guard = _LifecycleGuard()
+    rejected = guard.admit(TranscriptionEvent.supersede(["never-seen"], ["b"]))
+    assert rejected is None
+    assert any(d.code == "supersede_unknown_old_id" for d in guard.diagnostics)
+
+
+def test_guard_supersede_unknown_old_id_strict_raises() -> None:
+    guard = _LifecycleGuard(strict=True)
+    with pytest.raises(ValueError, match="never-announced"):
+        guard.admit(TranscriptionEvent.supersede(["never-seen"], ["b"]))
+
+
+def test_guard_supersede_reintroduces_known_new_id_suppressed() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("a", "x"))
+    guard.admit(TranscriptionEvent.partial("b", "y"))  # b already open
+    rejected = guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    assert rejected is None
+    assert any(d.code == "supersede_reintroduces_segment" for d in guard.diagnostics)
+
+
+def test_guard_supersede_reintroduces_known_new_id_strict_raises() -> None:
+    guard = _LifecycleGuard(strict=True)
+    guard.admit(TranscriptionEvent.partial("a", "x"))
+    guard.admit(TranscriptionEvent.partial("b", "y"))
+    with pytest.raises(ValueError, match="MUST be fresh"):
+        guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+
+
 def test_session_suppresses_illegal_transition_in_stream() -> None:
     class _BadSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
