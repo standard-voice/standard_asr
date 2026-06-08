@@ -456,9 +456,10 @@ class EngineBase(ABC):
 
         Raises:
             UnsupportedFeatureError: If ``wire_encodings`` is declared and the
-                requested encoding is not among them, or if the wire sample rate
-                is not reachable for the engine (fail-closed; v1 does not resample
-                streaming wire frames).
+                requested encoding is not among them, if the wire ``channels`` is
+                not ``1`` (v1 streaming wire is mono-only), or if the wire sample
+                rate is not reachable for the engine (fail-closed; v1 does not
+                resample streaming wire frames).
         """
         props = self.properties
         wire = props.wire_encodings
@@ -469,6 +470,17 @@ class EngineBase(ABC):
                 param="audio_format.encoding",
                 mode="streaming",
                 hint=f"Open the session with one of the declared wire_encodings={wire}.",
+            )
+
+        if audio_format.channels != 1:
+            raise UnsupportedFeatureError(
+                f"Streaming wire format declares channels={audio_format.channels}; v1 "
+                "streaming wire input is mono-only. The standard layer does not process "
+                "incremental wire frames, so it cannot downmix multi-channel frames the "
+                "way the batch path does. Downmix to mono before feeding.",
+                param="audio_format.channels",
+                mode="streaming",
+                hint="Open the session with AudioFormat(..., channels=1) and downmix client-side.",
             )
 
         accepted = props.accepted_sample_rates

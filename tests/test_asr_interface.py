@@ -558,6 +558,25 @@ def test_ensure_stream_format_supported_rejects_unknown_encoding() -> None:
     assert exc_info.value.hint is not None
 
 
+def test_ensure_stream_format_supported_rejects_multichannel_wire() -> None:
+    # v1 streaming wire is mono-only: the standard layer does not process
+    # incremental wire frames, so it cannot downmix multi-channel frames the way
+    # the batch path does. A stereo wire format is rejected at session start.
+    from standard_asr.audio_format import AudioFormat
+
+    engine = _WireEngine()
+    engine.ensure_stream_format_supported(
+        AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+    )
+    with pytest.raises(UnsupportedFeatureError, match="mono-only") as exc_info:
+        engine.ensure_stream_format_supported(
+            AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=2)
+        )
+    assert exc_info.value.param == "audio_format.channels"
+    assert exc_info.value.mode == "streaming"
+    assert exc_info.value.hint is not None
+
+
 def test_ensure_stream_format_supported_skips_encoding_when_no_wire_encodings() -> None:
     # An engine that declares no wire_encodings cannot validate encoding; the
     # encoding check is a no-op. The sample-rate fail-closed still applies.
