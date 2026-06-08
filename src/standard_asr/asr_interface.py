@@ -526,11 +526,13 @@ class EngineBase(ABC):
         undefined behaviour), and an unsupported standard parameter is rejected
         (strict) or dropped + diagnosed (best_effort) exactly as for batch.
 
-        The unsupported-streaming error is raised *before* gating when the engine
-        has not implemented streaming (see :meth:`_overrides_streaming`), so a
-        batch-only engine reports "does not support streaming" rather than a
-        confusing parameter error -- while still running the input
-        mutual-exclusion guard first, exactly as before.
+        The streaming input/output capability axis is checked before the hook
+        override defense, so an engine that implements the hook but does not
+        declare the requested session mode fails on the missing capability
+        rather than reaching parameter or audio gating. The hook override defense
+        still runs before parameter gating, so a batch-only engine reports "does
+        not support streaming" rather than a confusing parameter error -- while
+        still running the input mutual-exclusion guard first, exactly as before.
 
         Spec Runtime R5 (streaming param freeze): the already-gated, frozen
         :class:`~standard_asr.runtime_params.RuntimeParams` is handed to the hook
@@ -549,7 +551,8 @@ class EngineBase(ABC):
             ValueError: If both ``audio_format`` and ``audio`` are provided.
             ConfigError: If the engine exposes a language axis but its
                 ``default_language`` is unset or not in ``selectable_languages``.
-            UnsupportedFeatureError: When streaming is unsupported, when the wire
+            UnsupportedFeatureError: When the requested streaming input/output
+                axis is unsupported, when streaming is unsupported, when the wire
                 format is unreachable, or, in strict mode, on an unsupported
                 parameter.
             IncompatibleAudioInputError: If no conversion path exists for a
@@ -558,6 +561,32 @@ class EngineBase(ABC):
             ValueError: On an invalid candidate-language list in strict mode.
         """
         self.ensure_stream_inputs_exclusive(audio_format, audio)
+        if audio_format is not None and not self.effective_capabilities.supports("streaming_input"):
+            raise UnsupportedFeatureError(
+                "start_transcription(audio_format=...) uses incremental PCM frame "
+                "streaming mode and requires the streaming-input capability "
+                "('streaming_input'); this engine does not declare streaming-input "
+                "support.",
+                param="audio_format",
+                mode="streaming",
+                hint=(
+                    "Use an engine that declares 'streaming_input', or use "
+                    "audio=... with an engine that declares 'streaming_output'."
+                ),
+            )
+        if audio is not None and not self.effective_capabilities.supports("streaming_output"):
+            raise UnsupportedFeatureError(
+                "start_transcription(audio=...) uses whole-input streaming mode "
+                "and requires the streaming-output capability ('streaming_output'); "
+                "this engine does not declare streaming-output support.",
+                param="audio",
+                mode="streaming",
+                hint=(
+                    "Use an engine that declares 'streaming_output', or open an "
+                    "audio_format=... session with an engine that declares "
+                    "'streaming_input'."
+                ),
+            )
         if not self._overrides_streaming():
             raise UnsupportedFeatureError("This engine does not support streaming.")
         request = params or RuntimeParams()

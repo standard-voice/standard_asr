@@ -657,6 +657,8 @@ class _StreamEngine(_ArrayEngine):
         streaming=StreamingCapabilities(
             language=LanguageCaps(runtime_override=FlagCap(supported=True)),
         ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
     )
 
     #: Captures the params the base handed to the hook (R5 freeze assertions).
@@ -679,6 +681,28 @@ class _StreamEngine(_ArrayEngine):
         return _StreamSession()
 
 
+class _NoStreamingInputEngine(_StreamEngine):
+    """Streaming hook is present, but incremental input is not declared."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        ),
+        streaming_output=FlagCap(supported=True),
+    )
+
+
+class _NoStreamingOutputEngine(_StreamEngine):
+    """Streaming hook is present, but whole-input streaming output is not declared."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        ),
+        streaming_input=FlagCap(supported=True),
+    )
+
+
 class _UrlStreamProps(_ArrayProps):
     accepted_input: set[InputKind] = {InputKind.FETCHABLE_URL}
 
@@ -693,6 +717,64 @@ class _EncodedStreamProps(_ArrayProps):
 
 class _EncodedStreamEngine(_StreamEngine):
     properties: ClassVar[BaseProperties] = _EncodedStreamProps()
+
+
+def test_missing_streaming_input_capability_rejects_audio_format_session() -> None:
+    _NoStreamingInputEngine.hook_called = False
+
+    with pytest.raises(UnsupportedFeatureError) as exc_info:
+        _NoStreamingInputEngine().start_transcription(
+            audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000),
+        )
+
+    error = exc_info.value
+    message = str(error)
+    assert error.param == "audio_format"
+    assert error.mode == "streaming"
+    assert "audio_format" in message
+    assert "streaming mode" in message
+    assert "streaming-input" in message
+    assert "streaming_input" in message
+    assert _NoStreamingInputEngine.hook_called is False
+
+
+def test_missing_streaming_output_capability_rejects_whole_input_session() -> None:
+    _NoStreamingOutputEngine.hook_called = False
+
+    with pytest.raises(UnsupportedFeatureError) as exc_info:
+        _NoStreamingOutputEngine().start_transcription(audio=_audio())
+
+    error = exc_info.value
+    message = str(error)
+    assert error.param == "audio"
+    assert error.mode == "streaming"
+    assert "audio=" in message
+    assert "whole-input streaming mode" in message
+    assert "streaming-output" in message
+    assert "streaming_output" in message
+    assert _NoStreamingOutputEngine.hook_called is False
+
+
+def test_declared_streaming_input_allows_audio_format_session() -> None:
+    _NoStreamingOutputEngine.hook_called = False
+    _NoStreamingOutputEngine.received_prepared_audio = None
+
+    _NoStreamingOutputEngine().start_transcription(
+        audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000),
+    )
+
+    assert _NoStreamingOutputEngine.hook_called is True
+    assert _NoStreamingOutputEngine.received_prepared_audio is None
+
+
+def test_declared_streaming_output_allows_whole_input_session() -> None:
+    _NoStreamingInputEngine.hook_called = False
+    _NoStreamingInputEngine.received_prepared_audio = None
+
+    _NoStreamingInputEngine().start_transcription(audio=_audio())
+
+    assert _NoStreamingInputEngine.hook_called is True
+    assert _NoStreamingInputEngine.received_prepared_audio is not None
 
 
 def test_whole_input_streaming_audio_url_rejected_by_ssrf_before_hook() -> None:
