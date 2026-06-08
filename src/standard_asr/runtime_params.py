@@ -21,15 +21,22 @@ and never silently degraded. Degradation to ``prompt`` is opt-in and one-way via
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .capabilities import WordTimestampGranularityName
 from .language import is_valid_bcp47
 
 
 class WordTimestampGranularity(str, Enum):
     """Granularity for requested word timestamps.
+
+    The member *values* are the single source of truth shared with the
+    declaration-side capability vocabulary
+    :data:`~standard_asr.capabilities.WordTimestampGranularityName` (a
+    ``Literal``). A module-level assertion (below) and a drift test bind the
+    two sets so an additive change to one cannot silently desync the other.
 
     Attributes:
         WORD: Word-level timestamps.
@@ -40,6 +47,17 @@ class WordTimestampGranularity(str, Enum):
     WORD = "word"
     SEGMENT = "segment"
     CHAR = "char"
+
+
+# X-EL-3: enforce the single-source-of-truth link at import time. The request
+# enum (`WordTimestampGranularity`) and the capability `Literal`
+# (`WordTimestampGranularityName`) historically defined the same vocabulary in
+# two places with no link; an additive change to one could silently desync the
+# other. This invariant makes such a drift a hard import-time failure (a drift
+# test asserts the same), so the two are guaranteed to stay identical.
+assert {g.value for g in WordTimestampGranularity} == set(get_args(WordTimestampGranularityName)), (
+    "WordTimestampGranularity desynced from capabilities.WordTimestampGranularityName"
+)
 
 
 class ProviderParams(BaseModel):

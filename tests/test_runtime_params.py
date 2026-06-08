@@ -40,6 +40,21 @@ def test_word_timestamps_enum() -> None:
     assert params.word_timestamps is WordTimestampGranularity.WORD
 
 
+def test_granularity_vocabulary_single_source_of_truth() -> None:
+    # X-EL-3: the request-side enum (WordTimestampGranularity) and the
+    # declaration-side capability Literal (WordTimestampGranularityName) define
+    # the same granularity vocabulary. They MUST stay identical -- an additive
+    # change to one without the other would silently desync gating from
+    # declaration. This drift test fails the moment the two sets diverge.
+    from typing import get_args
+
+    from standard_asr.capabilities import WordTimestampGranularityName
+
+    enum_values = {g.value for g in WordTimestampGranularity}
+    literal_values = set(get_args(WordTimestampGranularityName))
+    assert enum_values == literal_values
+
+
 def test_provider_params_typed() -> None:
     params = RuntimeParams(provider_params=_OpenAIParams(temperature=0.2))
     assert isinstance(params.provider_params, _OpenAIParams)
