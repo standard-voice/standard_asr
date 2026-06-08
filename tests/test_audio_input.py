@@ -91,6 +91,23 @@ def test_tuple_bool_sample_rate_raises() -> None:
         coerce_audio_input((np.zeros(4), True))  # type: ignore[arg-type]
 
 
+def test_array_rejects_int_dtype() -> None:
+    int16 = np.zeros(8, dtype=np.int16)
+    with pytest.raises(TypeError, match="floating dtype"):
+        AudioArray(int16)  # type: ignore[arg-type]
+
+
+def test_array_rejects_int_dtype_via_coercion() -> None:
+    int16 = np.zeros(8, dtype=np.int16)
+    with pytest.raises(TypeError, match="floating dtype"):
+        coerce_audio_input(int16)  # type: ignore[arg-type]
+
+
+def test_array_accepts_float32_and_float64() -> None:
+    assert AudioArray(np.zeros(8, dtype=np.float32)).samples.dtype == np.float32
+    assert AudioArray(np.zeros(8, dtype=np.float64)).samples.dtype == np.float64
+
+
 def test_path_accepts_os_pathlike() -> None:
     class _P(os.PathLike[str]):
         def __fspath__(self) -> str:

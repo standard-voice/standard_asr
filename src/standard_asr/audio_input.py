@@ -106,6 +106,26 @@ class AudioArray:
 
     provided_kind = InputKind.ARRAY
 
+    def __post_init__(self) -> None:
+        """Reject a non-floating sample dtype (the canonical form is float32).
+
+        Both downstream paths assume floating samples in ``[-1, 1]``: array
+        passthrough delivers them unscaled, and WAV encoding scales by full
+        int16 range. An integer array (e.g. ``int16`` PCM) would be silently
+        mis-scaled by either path -- a wrong-audio result, the cardinal sin --
+        so it is rejected at construction with an actionable message.
+
+        Raises:
+            TypeError: If ``samples`` does not have a floating dtype.
+        """
+        if not np.issubdtype(self.samples.dtype, np.floating):
+            raise TypeError(
+                "AudioArray.samples must have a floating dtype (canonical is "
+                f"float32 mono in [-1, 1]); got dtype {self.samples.dtype}. "
+                "Convert integer PCM with samples.astype(np.float32) / 32768.0 "
+                "(scale to [-1, 1]) before wrapping it in AudioArray."
+            )
+
 
 @dataclass(frozen=True)
 class AudioUrl:
