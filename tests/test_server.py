@@ -868,6 +868,66 @@ def test_ws_stream_client_disconnect_is_handled() -> None:
     # Exiting the context closes the socket without an end frame.
 
 
+class _StreamErrorSession(TranscriptionSession):
+    """Raises a detail-bearing exception so the base synthesizes an
+    ``engine_error`` event whose ``extra['detail']`` carries the raw text."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        async for _chunk in self.audio_chunks():
+            raise RuntimeError("boom: /secret/internal/path leaked")
+        yield TranscriptionEvent.done()  # pragma: no cover - never reached
+
+
+class _StreamErrorEngine(_StreamEchoEngine):
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        audio: Any = None,
+    ) -> TranscriptionSession:
+        return _StreamErrorSession()
+
+
+def _stream_error_factory() -> _StreamErrorEngine:  # pyright: ignore[reportUnusedFunction]
+    return _StreamErrorEngine()
+
+
+def test_ws_stream_error_event_does_not_leak_detail(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An engine that raises mid-stream surfaces an `error` event. Its raw
+    # exception text MUST stay server-side (logged), never reach the client --
+    # matching the REST 500 non-leak contract (server.md §3.7 / §4.2).
+    import logging
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_error_factory"))
+    client = TestClient(app)
+    with caplog.at_level(logging.ERROR, logger="standard_asr.server"):
+        with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+            ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+            ws.send_bytes(b"abc")
+            ws.send_text("end")
+            events: list[dict[str, Any]] = []
+            while True:
+                event = ws.receive_json()
+                events.append(event)
+                if event["type"] == "error":
+                    break
+
+    error = next(e for e in events if e["type"] == "error")
+    assert error["code"] == "engine_error"
+    # The structured fields survive; the raw detail is scrubbed from the frame.
+    assert error["recoverable"] is False
+    assert error["extra"] == {}
+    assert "/secret/internal/path" not in json.dumps(error)
+    # The dropped detail is logged server-side for operators.
+    assert any("/secret/internal/path" in rec.getMessage() for rec in caplog.records)
+
+
 def test_bridge_stream_tolerates_send_failure() -> None:
     # If the client vanishes mid-stream, a failing send must not propagate: the
     # bridge swallows it, ends input, and tears the session down cleanly.

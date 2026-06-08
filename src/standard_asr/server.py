@@ -36,7 +36,7 @@ from .exceptions import (
 )
 from .results import TranscriptionResult
 from .runtime_params import RuntimeParams
-from .streaming import TranscriptionSession
+from .streaming import TranscriptionEvent, TranscriptionSession
 
 if TYPE_CHECKING:
     from fastapi import WebSocket
@@ -434,13 +434,45 @@ def create_app(
     return app
 
 
+def _scrub_event_for_client(event: TranscriptionEvent) -> dict[str, Any]:
+    """Serialize an event to JSON, stripping internal detail from errors.
+
+    The streaming layer stores a human-readable message (which for the
+    ``engine_error`` catch-all is ``str(exc)`` and may contain filesystem
+    paths, upstream URLs, or credential fragments) under ``extra["detail"]`` of
+    an ``error`` event. Forwarding it verbatim to an unauthenticated WebSocket
+    client would contradict the REST 500 non-leak contract (server.md §3.7), so
+    for ``error`` events the ``extra`` payload is dropped before it leaves the
+    server. The safe structured fields (``code``, ``recoverable``,
+    ``retriable_after``, ``segment_id``, and the gap/reconnect fields) are
+    preserved; operators keep the dropped detail via the caller's logging.
+
+    Non-error events are serialized unchanged.
+
+    Args:
+        event: The event produced by the session.
+
+    Returns:
+        The JSON-serializable payload to send to the client.
+    """
+    payload = event.model_dump(mode="json")
+    if event.type == "error":
+        # Drop any internal detail (e.g. extra["detail"]); keep only the safe
+        # structured fields that the client protocol documents (server.md §4.2).
+        payload["extra"] = {}
+    return payload
+
+
 async def _bridge_stream(websocket: WebSocket, session: TranscriptionSession) -> None:
     """Pump client audio into ``session`` while streaming its events back.
 
     Reads binary frames as audio and any text frame (or a disconnect) as
     end-of-audio, feeding the session from a background task; concurrently
-    forwards each produced event to the client as JSON. A client that vanishes
-    mid-stream simply ends the session (its remaining events are dropped).
+    forwards each produced event to the client as JSON. ``error`` events are
+    scrubbed of internal detail before sending (see
+    :func:`_scrub_event_for_client`); the raw detail is logged server-side for
+    operators. A client that vanishes mid-stream simply ends the session (its
+    remaining events are dropped).
 
     Args:
         websocket: The accepted client WebSocket.
@@ -463,7 +495,15 @@ async def _bridge_stream(websocket: WebSocket, session: TranscriptionSession) ->
         pump = asyncio.create_task(_pump_audio())
         try:
             async for event in session:
-                await websocket.send_json(event.model_dump(mode="json"))
+                if event.type == "error":
+                    # Keep the (potentially sensitive) detail server-side only;
+                    # the client receives the scrubbed event below.
+                    logger.error(
+                        "Stream error event for client: code=%r detail=%r",
+                        event.code,
+                        event.extra.get("detail"),
+                    )
+                await websocket.send_json(_scrub_event_for_client(event))
         except Exception:  # noqa: BLE001
             # The client went away mid-stream; stop forwarding and tear down.
             pass

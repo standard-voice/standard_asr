@@ -165,6 +165,16 @@ Client authors MUST handle **both**:
   (It carries the full `TranscriptionEvent` field set; other fields are `null`
   or defaults.)
 
+  > **Non-leak (mirrors the REST 500 contract, §3.7).** For `error` events the
+  > server **drops the `extra` payload** before sending (it is emptied to `{}`).
+  > The streaming layer stores a human-readable message under `extra["detail"]`
+  > — for the `engine_error` catch-all this is the raw `str(exc)`, which may
+  > contain filesystem paths, upstream URLs, or credential fragments — so it is
+  > never forwarded to the (unauthenticated) client. The safe structured fields
+  > (`code`, `recoverable`, `retriable_after`, `segment_id`, and the
+  > gap/reconnect fields) are preserved. The dropped detail is logged
+  > server-side for operators.
+
 ### 4.3 Scope limit (v1)
 
 The WebSocket surface supports **only** the incremental `audio_format` path
