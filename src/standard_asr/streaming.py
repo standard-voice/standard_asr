@@ -987,6 +987,10 @@ class TranscriptionSession(ABC):
         # Reconnect scaffolding (spec ST.6.3 / D10.7).
         self._audio_history: deque[bytes] = deque(maxlen=audio_history_maxlen)
         self._replayable = False
+        # The FULL fed source, retained only for a truly replayable (list/tuple)
+        # source so replay_buffer() can offer loss-free replay even past the ring
+        # length. None for non-replayable/live sources (which use the ring).
+        self._replay_source: tuple[bytes, ...] | None = None
         self._pending_reconnects: list[TranscriptionEvent] = []
         self._monotonic = time.monotonic
 
@@ -1043,14 +1047,20 @@ class TranscriptionSession(ABC):
         return self._replayable
 
     def replay_buffer(self) -> list[bytes]:
-        """Return the bounded rolling buffer of recent audio for re-feeding.
+        """Return audio for re-feeding to a freshly re-established connection.
 
-        Adapters call this on reconnect to re-send the most recent audio to a
-        freshly re-established engine connection.
+        Adapters call this on reconnect to re-send audio. For a **replayable**
+        (list / tuple) source the COMPLETE source is returned -- replayability
+        promises loss-free replay, so it must not be silently truncated to the
+        rolling ring. For a **non-replayable** / live source only the bounded
+        rolling window of recent chunks is available (older audio was evicted).
 
         Returns:
-            The retained recent audio chunks, oldest first.
+            The audio chunks to replay, oldest first: the full source if
+            replayable, otherwise the bounded rolling window.
         """
+        if self._replay_source is not None:
+            return list(self._replay_source)
         return list(self._audio_history)
 
     def note_reconnect(
@@ -1143,6 +1153,11 @@ class TranscriptionSession(ABC):
         # Replayable iff a re-iterable collection (not a one-shot iterator and
         # not an async source); list/tuple (incl. a wrapped bytes-like) qualify.
         self._replayable = isinstance(source, (list, tuple))
+        if self._replayable:
+            # Retain the FULL source so replay_buffer() can offer loss-free
+            # replay even when the source is longer than the rolling ring --
+            # "replayable" must mean the whole source, not merely the tail.
+            self._replay_source = tuple(source)  # type: ignore[arg-type]
         self._feed_task = asyncio.ensure_future(self._drain_source(source))
 
     async def _drain_source(self, source: Iterable[bytes] | AsyncIterator[bytes]) -> None:

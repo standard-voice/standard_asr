@@ -653,6 +653,53 @@ def test_reconnect_no_content_lost_even_after_ring_wraps_many_times() -> None:
     assert events[-1].type == "done"
 
 
+class _ReplayCaptureSession(TranscriptionSession):
+    """Drains all audio, then records replay_buffer() for inspection."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.captured_replay: list[bytes] = []
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        async for _ in self.audio_chunks():
+            pass
+        self.captured_replay = self.replay_buffer()
+        yield TranscriptionEvent.final("seg-0", "x", start=0.0)
+
+
+def test_replayable_source_longer_than_ring_replays_in_full() -> None:
+    # A replayable list longer than audio_history_maxlen MUST replay in full:
+    # "replayable" promises loss-free replay, not just the rolling tail.
+    async def run() -> _ReplayCaptureSession:
+        chunks = [bytes([i]) for i in range(10)]
+        session = _ReplayCaptureSession(audio_history_maxlen=3)
+        session.feed(chunks)  # list -> replayable
+        assert session.replayable is True
+        await _collect(session)
+        return session
+
+    session = asyncio.run(run())
+    assert session.captured_replay == [bytes([i]) for i in range(10)]
+
+
+def test_nonreplayable_source_replays_only_bounded_ring() -> None:
+    # A non-replayable (live) source can only offer the bounded rolling window.
+    async def run() -> _ReplayCaptureSession:
+        async def gen() -> AsyncIterator[bytes]:
+            for i in range(10):
+                yield bytes([i])
+
+        session = _ReplayCaptureSession(audio_history_maxlen=3)
+        session.feed(gen())
+        assert session.replayable is False
+        await _collect(session)
+        return session
+
+    session = asyncio.run(run())
+    # Only the last 3 chunks survived the bounded ring.
+    assert session.captured_replay == [bytes([7]), bytes([8]), bytes([9])]
+
+
 def test_reconnect_pair_survives_full_buffer_and_stays_adjacent() -> None:
     # A pending progress + content_lost pair MUST survive (and stay adjacent)
     # even when the bounded buffer is already full: reconnect events bypass the
