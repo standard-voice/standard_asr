@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 def _to_int16_pcm(audio: NDArray[np.floating]) -> NDArray[np.int16]:
     """Convert a float waveform in ``[-1, 1]`` to signed 16-bit PCM.
 
-    Clipping happens *before* the cast (NumPy 1.x/2.x defensive; see the
+    Non-finite samples are sanitized *first* (NaN->0, +Inf->+1, -Inf->-1),
+    because ``np.clip`` does NOT replace NaN (``np.clip(nan, -1, 1) == nan``) and
+    casting NaN to ``int16`` is undefined behavior that emits garbage PCM -- a
+    silent-wrong-result. This mirrors the decode paths, which already sanitize.
+    Clipping then happens *before* the cast (NumPy 1.x/2.x defensive; see the
     dependencies spec section DEP.2).
 
     Args:
@@ -40,7 +44,8 @@ def _to_int16_pcm(audio: NDArray[np.floating]) -> NDArray[np.int16]:
     Returns:
         Signed 16-bit PCM array.
     """
-    clipped = np.clip(audio, -1.0, 1.0)
+    finite = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
+    clipped = np.clip(finite, -1.0, 1.0)
     return (clipped * 32767.0).astype(np.int16)
 
 

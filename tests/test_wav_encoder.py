@@ -53,3 +53,19 @@ def test_encode_rejects_3d() -> None:
     audio = np.zeros((2, 2, 2), dtype=np.float32)
     with pytest.raises(AudioProcessingError):
         encode_array_to_wav_bytes(audio, 16000)
+
+
+def test_encode_sanitizes_nan_and_inf() -> None:
+    # AUDI-1: NaN/Inf must be sanitized BEFORE the int16 cast (np.clip does not
+    # replace NaN, and casting NaN to int16 yields garbage PCM). NaN->0,
+    # +Inf->+full-scale, -Inf->-full-scale, and the result must round-trip sanely.
+    audio = np.array([np.nan, np.inf, -np.inf, 0.5], dtype=np.float32)
+    result = encode_array_to_wav_bytes(audio, 16000)
+    with wave.open(io.BytesIO(result.data), "rb") as wf:
+        frames = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2")
+    assert frames[0] == 0
+    assert frames[1] == 32767
+    assert frames[2] == -32767
+    # No garbage: every sample is a bounded int16.
+    assert frames.min() >= -32767
+    assert frames.max() <= 32767
