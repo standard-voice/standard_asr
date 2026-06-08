@@ -124,6 +124,43 @@ def test_model_id() -> None:
     assert props.model_id == "engine/model"
 
 
+def test_wire_encodings_none_is_unconstrained() -> None:
+    # Explicitly None runs the validator's None branch and means "unconstrained".
+    data = _base_kwargs()
+    data["wire_encodings"] = None
+    props = BaseProperties(**data)
+    assert props.wire_encodings is None
+
+
+def test_wire_encodings_normalized_to_lowercase() -> None:
+    data = _base_kwargs()
+    data["wire_encodings"] = ["PCM_S16LE", "MuLaw"]
+    props = BaseProperties(**data)
+    assert props.wire_encodings == ["pcm_s16le", "mulaw"]
+
+
+def test_wire_encodings_empty_list_rejected() -> None:
+    data = _base_kwargs()
+    data["wire_encodings"] = []
+    with pytest.raises(ValueError, match="empty list"):
+        BaseProperties(**data)
+
+
+def test_wire_encodings_blank_entry_rejected() -> None:
+    data = _base_kwargs()
+    data["wire_encodings"] = ["pcm_s16le", "   "]
+    with pytest.raises(ValueError, match="blank"):
+        BaseProperties(**data)
+
+
+def test_wire_encodings_duplicate_entry_rejected() -> None:
+    # Case-insensitive: "PCM_S16LE" and "pcm_s16le" are the same encoding.
+    data = _base_kwargs()
+    data["wire_encodings"] = ["pcm_s16le", "PCM_S16LE"]
+    with pytest.raises(ValueError, match="duplicate"):
+        BaseProperties(**data)
+
+
 def test_detectable_rejects_invalid_bcp47() -> None:
     # A non-'auto' but malformed tag in detectable_languages must fail loud.
     data = _base_kwargs()

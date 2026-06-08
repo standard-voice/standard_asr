@@ -152,6 +152,50 @@ class BaseProperties(BaseModel):
             raise ValueError("accepted_sample_rates entries must be positive.")
         return value
 
+    @field_validator("wire_encodings")
+    @classmethod
+    def _validate_wire_encodings(cls, value: list[str] | None) -> list[str] | None:
+        """Validate and normalize the streaming wire-encoding allowlist.
+
+        ``wire_encodings`` is the fail-closed gate that
+        :meth:`~standard_asr.asr_interface.EngineBase.ensure_stream_format_supported`
+        checks at session establishment. ``None`` means "unconstrained"; a
+        concrete list MUST therefore be usable:
+
+        - An empty ``[]`` (distinct from ``None``) would reject every encoding,
+          silently bricking streaming -- rejected here.
+        - Entries are stripped and lowercased so a declared ``"PCM_S16LE"`` and a
+          requested ``"pcm_s16le"`` do not falsely mismatch (encodings are
+          case-insensitive identifiers).
+        - Blank and duplicate entries are rejected as declaration errors.
+
+        Args:
+            value: The declared wire encodings, or ``None``.
+
+        Returns:
+            The normalized list, or ``None`` when unconstrained.
+
+        Raises:
+            ValueError: If the list is empty, or holds a blank or duplicate
+                entry.
+        """
+        if value is None:
+            return None
+        if not value:
+            raise ValueError(
+                "wire_encodings must not be an empty list (use None for "
+                "'unconstrained'; an empty list rejects every streaming encoding)."
+            )
+        normalized: list[str] = []
+        for encoding in value:
+            cleaned = encoding.strip().lower()
+            if not cleaned:
+                raise ValueError("wire_encodings entries must not be blank.")
+            if cleaned in normalized:
+                raise ValueError(f"wire_encodings has a duplicate entry: {cleaned!r}.")
+            normalized.append(cleaned)
+        return normalized
+
     @field_validator("selectable_languages")
     @classmethod
     def _validate_selectable(cls, value: list[str]) -> list[str]:
