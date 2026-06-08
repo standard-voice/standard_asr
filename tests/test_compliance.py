@@ -301,3 +301,73 @@ def test_check_event_sequence_flags_decreasing_audio_cursor() -> None:
 def test_check_event_sequence_empty_is_vacuously_ok() -> None:
     report = check_event_sequence([])
     assert report.passed is True
+
+
+def test_check_event_sequence_flags_supersede_frozen_prefix_rewrite() -> None:
+    # A supersede that rewrites the retired segment's frozen prefix (spec ST.5.2)
+    # MUST be reported -- the cardinal sin.
+    events = [
+        TranscriptionEvent.final("a", "你好世界", stable_until=4),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.final("b", "再见", stable_until=2),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("frozen_prefix_rewritten_supersede" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_accepts_supersede_merge_preserving_frozen() -> None:
+    events = [
+        TranscriptionEvent.final("a", "你好", stable_until=2),
+        TranscriptionEvent.final("b", "世界", stable_until=2),
+        TranscriptionEvent.supersede(["a", "b"], ["c"]),
+        TranscriptionEvent.final("c", "你好世界！", stable_until=4),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True
+
+
+def test_check_event_sequence_flags_unannounced_old_id() -> None:
+    events = [
+        TranscriptionEvent.supersede(["never-seen"], ["b"]),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("supersede_unknown_old_id" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_flags_reintroduced_new_id() -> None:
+    events = [
+        TranscriptionEvent.partial("a", "x"),
+        TranscriptionEvent.partial("b", "y"),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("supersede_reintroduces_segment" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_flags_final_after_final() -> None:
+    events = [
+        TranscriptionEvent.final("a", "hello"),
+        TranscriptionEvent.final("a", "rewritten"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("lifecycle_final_after_final" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_flags_empty_new_ids_deleting_frozen() -> None:
+    events = [
+        TranscriptionEvent.final("a", "你好", stable_until=2),
+        TranscriptionEvent.supersede(["a"], []),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("supersede_deletes_frozen_text" in i.message for i in report.issues)

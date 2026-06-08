@@ -406,10 +406,20 @@ def check_event_sequence(events: Iterable[TranscriptionEvent]) -> ComplianceRepo
     the author already produced.)
 
     Detected violations (each an error): an illegal lifecycle transition
-    (``partial``/``final`` after a segment is finalized/superseded; superseding a
-    ``closed`` segment), a non-monotonic ``stable_until`` or
-    ``audio_processed_until``, a rewritten frozen prefix, and an event stream
-    that never reaches a terminal (``done`` / non-recoverable ``error``) event.
+    (``partial``/``final`` after a segment is finalized/superseded; a non-closed
+    ``final`` after ``final``; superseding a ``closed`` segment), a non-monotonic
+    ``stable_until`` or ``audio_processed_until``, a rewritten frozen prefix, the
+    full ``supersede`` invariants of spec ST.5.2 -- frozen-prefix preservation
+    across a replacement (the concatenated frozen text of ``old_ids`` MUST be
+    preserved by ``new_ids``), ``old_ids`` that were never announced, a
+    ``new_id`` that reintroduces an already-known segment, and an empty
+    ``new_ids`` (pure deletion) that would destroy frozen text -- and an event
+    stream that never reaches a terminal (``done`` / non-recoverable ``error``)
+    event.
+
+    These checks are obtained by replaying the events through the same
+    :class:`~standard_asr.streaming._LifecycleGuard` the runtime uses, so the
+    compliance verdict cannot drift from the runtime's enforcement.
 
     Args:
         events: The recorded events to validate, in emission order.
