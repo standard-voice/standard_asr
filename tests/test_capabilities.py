@@ -21,6 +21,7 @@ from standard_asr.capabilities import (
     _children,  # pyright: ignore[reportPrivateUsage]
     _get_child,  # pyright: ignore[reportPrivateUsage]
     _read_attr,  # pyright: ignore[reportPrivateUsage]
+    granularity_offers_all,
 )
 
 
@@ -185,6 +186,25 @@ def test_covers_rejects_granularity_widening() -> None:
         )
     )
     assert declared.covers(narrowed) is True
+
+
+def test_covers_empty_declared_granularities_is_unbounded() -> None:
+    # CAPA-1: a declared empty granularities list means "unbounded (all)", so a
+    # narrowing from it to any concrete subset is a valid effective ⊆ declared
+    # (must NOT false-fail). Mirrors param_gating treating empty as "offers all".
+    assert granularity_offers_all([]) is True
+    assert granularity_offers_all(["word"]) is False
+    declared = DeclaredCapabilities(
+        batch=BatchCapabilities(word_timestamps=WordTimestampsCap(supported=True))
+    )
+    effective = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
+        )
+    )
+    assert declared.covers(effective) is True
+    # And empty -> empty is trivially covered.
+    assert declared.covers(declared) is True
 
 
 def test_covers_rejects_mode_widening() -> None:

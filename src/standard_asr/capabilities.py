@@ -27,7 +27,7 @@ dot-path; missing keys are *fail-closed* (return ``False``).
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Literal, cast
+from typing import Any, Iterator, Literal, Sequence, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,6 +35,26 @@ WordTimestampGranularityName = Literal["word", "segment", "char"]
 
 #: Mode values that count as "not supported" for enum/mode archetype nodes.
 _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
+
+
+def granularity_offers_all(granularities: Sequence[str]) -> bool:
+    """Return whether a declared ``granularities`` list means "unbounded (all)".
+
+    A bounded capability node with **no listed constraint values** does not
+    constrain (spec §C, archetype "bounded"): an empty ``granularities`` list is
+    the "engine did not enumerate" / unbounded case, not "offers nothing". This
+    is the single source of truth shared by capability narrowing
+    (:func:`_node_narrows` / :meth:`DeclaredCapabilities.covers`) and runtime
+    parameter gating (``param_gating._gate_granularity``) so the two modules
+    never disagree on what an empty list means.
+
+    Args:
+        granularities: The declared granularity list (possibly empty).
+
+    Returns:
+        ``True`` if the list is empty (unbounded -- every granularity offered).
+    """
+    return not granularities
 
 
 class _CapNode(BaseModel):
@@ -650,13 +670,15 @@ def _node_narrows(declared: object, effective: object) -> bool:
         if allowed is not None and effective_mode not in allowed:
             return False
 
-    # granularities: effective set MUST be a subset of declared set.
+    # granularities: effective set MUST be a subset of declared set. An empty
+    # declared list means "unbounded (all)" (see granularity_offers_all), so any
+    # effective list is a valid narrowing of it -- skip the subset check then.
     declared_grans = _read_attr(declared, "granularities")
     effective_grans = _read_attr(effective, "granularities")
     if isinstance(declared_grans, list) and isinstance(effective_grans, list):
-        if not set(cast("list[object]", effective_grans)).issubset(
-            set(cast("list[object]", declared_grans))
-        ):
+        if not granularity_offers_all(cast("list[str]", declared_grans)) and not set(
+            cast("list[object]", effective_grans)
+        ).issubset(set(cast("list[object]", declared_grans))):
             return False
 
     # bounded constraints: each numeric upper-bound MUST NOT increase.
@@ -708,6 +730,7 @@ __all__ = [
     "FinalityCap",
     "FlagCap",
     "GuidanceCaps",
+    "granularity_offers_all",
     "LanguageCaps",
     "PhraseHintsCap",
     "PhraseHintsConstraints",
