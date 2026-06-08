@@ -112,7 +112,11 @@ def test_load_audio_existing_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
 
     def _load_audio_from_path(
-        path_str: str, target_sr: int = 16000, target_channels: int | None = 1
+        path_str: str,
+        target_sr: int = 16000,
+        target_channels: int | None = 1,
+        *,
+        max_bytes: int | None = None,
     ) -> NDArray[np.float32]:
         assert path_str == str(path)
         return sentinel
@@ -130,7 +134,11 @@ def test_load_audio_pathlib(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
 
     def _load_audio_from_path(
-        path_str: str, target_sr: int = 16000, target_channels: int | None = 1
+        path_str: str,
+        target_sr: int = 16000,
+        target_channels: int | None = 1,
+        *,
+        max_bytes: int | None = None,
     ) -> NDArray[np.float32]:
         assert path_str == str(path)
         return sentinel
@@ -148,7 +156,11 @@ def test_load_audio_path_exists_probe_error(
     sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
 
     def _load_audio_from_path(
-        path_str: str, target_sr: int = 16000, target_channels: int | None = 1
+        path_str: str,
+        target_sr: int = 16000,
+        target_channels: int | None = 1,
+        *,
+        max_bytes: int | None = None,
     ) -> NDArray[np.float32]:
         return sentinel
 
@@ -167,7 +179,11 @@ def test_load_audio_binary_io(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel: NDArray[np.float32] = np.zeros(2, dtype=np.float32)
 
     def _load_audio_from_bytes(
-        data: bytes, target_sr: int = 16000, target_channels: int | None = 1
+        data: bytes,
+        target_sr: int = 16000,
+        target_channels: int | None = 1,
+        *,
+        max_bytes: int | None = None,
     ) -> NDArray[np.float32]:
         assert data == b"abc"
         return sentinel

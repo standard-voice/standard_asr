@@ -70,9 +70,11 @@ from ..exceptions import (
 
 logger = logging.getLogger(__name__)
 
-#: Hard ceiling (bytes) on a single buffered decode, guarding against
-#: decompression bombs / oversize inputs when no engine limit is supplied
-#: (spec R9). 2 GiB comfortably covers multi-hour PCM while bounding memory.
+#: Hard ceiling (bytes) on a single buffered **encoded** payload when no engine
+#: limit is supplied (spec R9). 2 GiB comfortably covers multi-hour PCM while
+#: bounding memory. NOTE: this bounds the *encoded* input only, not the decoded
+#: array -- a compressed codec can still expand well past this once decoded (see
+#: :func:`_enforce_decode_size`).
 _DEFAULT_MAX_DECODE_BYTES = 2 * 1024 * 1024 * 1024
 
 # --- Public API ---
@@ -156,10 +158,18 @@ def _validate_local_source_path(path: str) -> str:
 
 
 def _enforce_decode_size(num_bytes: int, max_bytes: int | None) -> None:
-    """Raise if a buffered payload exceeds the allowed decode size (spec R9).
+    """Raise if a buffered **encoded** payload exceeds the size cap (spec R9).
+
+    Honesty note: this bounds only the size of the ENCODED input (a file's
+    ``st_size`` or ``len(bytes)``) before it is buffered. It does NOT bound the
+    decoded float32 array, whose size is ``duration x sample_rate x 4`` and can
+    be many times larger for a compressed codec. It is therefore an
+    oversize-input guard, not a full decompression-bomb guard; bounding the
+    decoded output would require probing duration / capping the decoder, which
+    v1 does not do (the FFmpeg path still buffers its whole stdout).
 
     Args:
-        num_bytes: Size of the payload about to be buffered, in bytes.
+        num_bytes: Size of the encoded payload about to be buffered, in bytes.
         max_bytes: Engine-declared limit, or ``None`` to use the default cap.
 
     Raises:
@@ -361,6 +371,8 @@ def load_audio(
     source: str | bytes | bytearray | memoryview | pathlib.Path | BinaryIO,
     target_sr: int = 16000,
     target_channels: int | None = 1,
+    *,
+    max_bytes: int | None = _DEFAULT_MAX_DECODE_BYTES,
 ) -> NDArray[np.float32]:
     """Load audio from given source and convert to Standard ASR format.
 
@@ -392,6 +404,11 @@ def load_audio(
         target_sr: Output sample rate in Hz. Default: ``16000``.
         target_channels: Output channels. ``1`` = mono (default), ``2`` = stereo,
             ``None`` = preserve.
+        max_bytes: Max ENCODED input size, threaded to the underlying loaders and
+            defaulting to the 2 GiB ceiling (spec R9). It bounds only the encoded
+            payload (file ``stat`` or ``bytes`` length), not the decoded array,
+            and the FFmpeg fallback still buffers its full output. Pass ``None``
+            to disable the cap; set it explicitly for untrusted input.
 
     Returns:
         Waveform as ``np.float32`` array:
@@ -402,7 +419,7 @@ def load_audio(
 
     Raises:
         AudioProcessingError: Invalid parameters or decoding/processing failures,
-            including missing or unreadable paths.
+            including missing or unreadable paths, or input exceeding ``max_bytes``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
         TypeError: Unsupported source type.
 
@@ -435,33 +452,37 @@ def load_audio(
         # First check: if it has explicit base64 data URI prefix, treat as base64
         if s.lower().startswith("data:") and ";base64," in s:
             source_bytes = decode_base64_audio(s)
-            return load_audio_from_bytes(source_bytes, target_sr, target_channels)
+            return load_audio_from_bytes(
+                source_bytes, target_sr, target_channels, max_bytes=max_bytes
+            )
 
         # Second check: if it exists as a file path, prioritize as path
         try:
             path = pathlib.Path(s).expanduser()
             if path.exists():
-                return load_audio_from_path(str(path), target_sr, target_channels)
+                return load_audio_from_path(
+                    str(path), target_sr, target_channels, max_bytes=max_bytes
+                )
         except (OSError, ValueError):
             # Path operations failed, continue to treat as file path anyway
             pass
 
         # Default: treat as file path (will raise FileNotFoundError if not found)
-        return load_audio_from_path(s, target_sr, target_channels)
+        return load_audio_from_path(s, target_sr, target_channels, max_bytes=max_bytes)
 
     # Handle pathlib.Path by converting to string
     if isinstance(source, pathlib.Path):
-        return load_audio_from_path(str(source), target_sr, target_channels)
+        return load_audio_from_path(str(source), target_sr, target_channels, max_bytes=max_bytes)
 
     # Bytes-like objects
     if isinstance(source, (bytes, bytearray, memoryview)):
         data = source.tobytes() if isinstance(source, memoryview) else bytes(source)
-        return load_audio_from_bytes(data, target_sr, target_channels)
+        return load_audio_from_bytes(data, target_sr, target_channels, max_bytes=max_bytes)
 
     # File-like object that returns bytes
     if _is_binary_io(source):
         data = source.read()
-        return load_audio_from_bytes(data, target_sr, target_channels)
+        return load_audio_from_bytes(data, target_sr, target_channels, max_bytes=max_bytes)
 
     raise TypeError(f"Unsupported audio source type: {type(source)}")
 
@@ -497,7 +518,11 @@ def _is_binary_io(obj: Any) -> TypeGuard[BinaryIO]:
 
 
 def load_audio_from_path(
-    path: str, target_sr: int = 16000, target_channels: int | None = 1
+    path: str,
+    target_sr: int = 16000,
+    target_channels: int | None = 1,
+    *,
+    max_bytes: int | None = _DEFAULT_MAX_DECODE_BYTES,
 ) -> NDArray[np.float32]:
     """Load audio from a file path and convert to Standard ASR format.
 
@@ -505,16 +530,25 @@ def load_audio_from_path(
 
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
+    This is a convenience loader, **not** the engine input boundary. The
+    ``max_bytes`` cap bounds only the on-disk ENCODED file size via ``stat``
+    (spec R9); it does not bound the decoded array, and the FFmpeg fallback
+    buffers its full output. Callers handling untrusted input SHOULD set
+    ``max_bytes`` (or ``None`` to disable the default 2 GiB ceiling).
+
     Args:
         path: Path to audio file. Supports ``~`` expansion.
         target_sr: Output sample rate (Hz). Default: ``16000``.
         target_channels: Output channels. ``1`` = mono, ``2`` = stereo, ``None`` = preserve.
+        max_bytes: Max encoded file size; defaults to the 2 GiB ceiling. Pass
+            ``None`` to disable the cap.
 
     Returns:
         Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
-        AudioProcessingError: Decoding failed, including missing or unreadable files.
+        AudioProcessingError: Decoding failed, including missing or unreadable
+            files, or the file exceeds ``max_bytes``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
 
     Note:
@@ -532,6 +566,12 @@ def load_audio_from_path(
     from os import fspath
 
     path = fspath(pathlib.Path(path).expanduser())
+    # Precheck the encoded file size via stat() before any read/decode (spec R9).
+    # Only when the file exists, so a genuinely missing path still surfaces the
+    # decoders' clear "not found" error rather than a stat OSError here.
+    expanded = pathlib.Path(path)
+    if expanded.is_file():
+        _enforce_decode_size(expanded.stat().st_size, max_bytes)
     # Layer 1: WAV files with Python standard library `wave`
     if path.lower().endswith(".wav"):
         try:
@@ -545,6 +585,11 @@ def load_audio_from_path(
                         f"Unsupported WAV sample width via stdlib: {sampwidth * 8} bits"
                     )
 
+                # Honesty (spec R9): getnframes() comes from the header and this
+                # reads the whole data chunk at once (wave clamps to the real chunk,
+                # so a header lie cannot over-read, but a genuinely huge WAV is still
+                # fully materialized + copied to float32). The caller's encoded-size
+                # cap, where applied, is the only bound here.
                 frames = wf.readframes(wf.getnframes())
                 # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
                 # read it with an explicit "<i2" dtype so a big-endian host does
@@ -594,7 +639,11 @@ def load_audio_from_path(
 
 
 def load_audio_from_bytes(
-    data: bytes, target_sr: int = 16000, target_channels: int | None = 1
+    data: bytes,
+    target_sr: int = 16000,
+    target_channels: int | None = 1,
+    *,
+    max_bytes: int | None = _DEFAULT_MAX_DECODE_BYTES,
 ) -> NDArray[np.float32]:
     """Load audio from raw bytes and convert to Standard ASR format.
 
@@ -602,16 +651,25 @@ def load_audio_from_bytes(
 
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
+    This is a convenience loader, **not** the engine input boundary. The
+    ``max_bytes`` cap bounds only the ENCODED ``data`` length (spec R9); it does
+    not bound the decoded array (a compressed codec can still expand past it) and
+    the FFmpeg fallback buffers its full output. Callers handling untrusted input
+    SHOULD set ``max_bytes`` (or ``None`` to disable the default 2 GiB ceiling).
+
     Args:
         data: Raw bytes of an audio file (any format: WAV, MP3, FLAC, etc.).
         target_sr: Output sample rate (Hz). Default: ``16000``.
         target_channels: Output channels. ``1`` = mono, ``2`` = stereo, ``None`` = preserve.
+        max_bytes: Max encoded payload size; defaults to the 2 GiB ceiling.
+            Pass ``None`` to disable the cap.
 
     Returns:
         Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
-        AudioProcessingError: Decoding failed or empty audio.
+        AudioProcessingError: Decoding failed, empty audio, or ``data`` exceeds
+            ``max_bytes``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
 
     Note:
@@ -622,6 +680,7 @@ def load_audio_from_bytes(
         raise AudioProcessingError(f"target_sr must be > 0, got {target_sr}")
     if target_channels is not None and target_channels <= 0:
         raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _enforce_decode_size(len(data), max_bytes)
     # Layer 2: `soundfile` is the best primary method for bytes
     try:
         import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
@@ -726,6 +785,11 @@ def _decode_path_native(path: str, target_channels: int | None) -> tuple[NDArray
                     raise AudioProcessingError(
                         f"Unsupported WAV sample width via stdlib: {sampwidth * 8} bits"
                     )
+                # Honesty (spec R9): getnframes() comes from the header and this
+                # reads the whole data chunk at once (wave clamps to the real chunk,
+                # so a header lie cannot over-read, but a genuinely huge WAV is still
+                # fully materialized + copied to float32). The caller's encoded-size
+                # cap, where applied, is the only bound here.
                 frames = wf.readframes(wf.getnframes())
                 # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
                 # read it with an explicit "<i2" dtype so a big-endian host does
@@ -826,6 +890,13 @@ def _load_with_ffmpeg(
     timeout: float = 120.0,
 ) -> NDArray[np.float32]:
     """Decode audio via FFmpeg subprocess (internal fallback).
+
+    Memory honesty (spec R9 SHOULD): the decoded f32le stream is buffered WHOLE
+    via ``capture_output`` before any size is observed, so this is bounded only
+    by ``timeout``, not by an output-byte ceiling -- a crafted input with a huge
+    declared duration can still emit far more PCM than its encoded size implies.
+    Streaming stdout in bounded chunks (or passing ``-fs``/``-t`` to ffmpeg) is a
+    future improvement; v1 relies on the caller's encoded-size cap + the timeout.
 
     Args:
         source: File path or raw bytes.

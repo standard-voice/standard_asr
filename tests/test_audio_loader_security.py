@@ -22,6 +22,9 @@ from standard_asr.utils import audio_loader
 from standard_asr.utils.audio_loader import (
     _validate_local_source_path,  # pyright: ignore[reportPrivateUsage]
     decode_audio,
+    load_audio,
+    load_audio_from_bytes,
+    load_audio_from_path,
 )
 
 
@@ -96,6 +99,40 @@ def test_decode_audio_within_size_limit(tmp_path: Path) -> None:
     f.write_bytes(data)
     arr, sr = decode_audio(f, max_bytes=len(data) + 1000)
     assert sr == 16000
+    assert arr.shape == (100,)
+
+
+# --- AUDI-2 (loader-security): convenience loaders thread max_bytes ---
+
+
+def test_load_audio_from_bytes_size_guard() -> None:
+    with pytest.raises(AudioProcessingError, match="decode limit"):
+        load_audio_from_bytes(_wav_bytes(samples=5000), max_bytes=10)
+
+
+def test_load_audio_from_path_size_guard(tmp_path: Path) -> None:
+    f = tmp_path / "big.wav"
+    f.write_bytes(_wav_bytes(samples=5000))
+    with pytest.raises(AudioProcessingError, match="decode limit"):
+        load_audio_from_path(str(f), max_bytes=10)
+
+
+def test_load_audio_size_guard_bytes() -> None:
+    with pytest.raises(AudioProcessingError, match="decode limit"):
+        load_audio(_wav_bytes(samples=5000), max_bytes=10)
+
+
+def test_load_audio_within_size_limit_bytes() -> None:
+    data = _wav_bytes(samples=100)
+    arr = load_audio(data, max_bytes=len(data) + 1000)
+    assert arr.shape == (100,)
+
+
+def test_load_audio_from_path_within_limit(tmp_path: Path) -> None:
+    f = tmp_path / "ok.wav"
+    data = _wav_bytes(samples=100)
+    f.write_bytes(data)
+    arr = load_audio_from_path(str(f), max_bytes=len(data) + 1000)
     assert arr.shape == (100,)
 
 
