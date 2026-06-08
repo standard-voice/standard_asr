@@ -1011,6 +1011,73 @@ def test_create_app_rejects_nonpositive_ws_caps(kwargs: dict[str, int]) -> None:
         server_module.create_app(registry=_registry(), **kwargs)
 
 
+def test_bridge_stream_pump_failure_is_logged_and_signalled(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A protocol violation on the pump side (send_audio raising, e.g.
+    # StreamClosedError) must NOT be silently swallowed: it is logged
+    # server-side and surfaced to the client as a single generic, non-leaking
+    # error frame (SERV-3).
+    import asyncio
+    import logging
+
+    from standard_asr.exceptions import StreamClosedError
+
+    class _FakeWS:
+        def __init__(self) -> None:
+            self._frames: list[dict[str, Any]] = [{"type": "websocket.receive", "bytes": b"abc"}]
+            self.sent: list[Any] = []
+
+        async def receive(self) -> dict[str, Any]:
+            if self._frames:
+                return self._frames.pop(0)
+            return {"type": "websocket.disconnect"}
+
+        async def send_json(self, data: Any) -> None:
+            self.sent.append(data)
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            # Set when input ends so the producer terminates (mirrors a real
+            # session: it does not emit `done` until input is ended).
+            self._ended = asyncio.Event()
+
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+        async def send_audio(self, chunk: bytes) -> None:
+            raise StreamClosedError("session already ended: /secret/path")
+
+        async def end_audio(self) -> None:
+            self._ended.set()
+
+        def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
+            async def _gen() -> AsyncIterator[TranscriptionEvent]:
+                await self._ended.wait()
+                yield TranscriptionEvent.done()
+
+            return _gen()
+
+    websocket = _FakeWS()
+    with caplog.at_level(logging.ERROR, logger="standard_asr.server"):
+        asyncio.run(
+            server_module._bridge_stream(  # pyright: ignore[reportPrivateUsage]
+                websocket,  # pyright: ignore[reportArgumentType]
+                _FakeSession(),  # pyright: ignore[reportArgumentType]
+                max_frame_bytes=1024,
+                max_session_bytes=1024,
+            )
+        )
+    # The failure was logged (with detail) and a generic error frame was sent.
+    assert any("audio pump failed" in rec.getMessage().lower() for rec in caplog.records)
+    error_frames = [f for f in websocket.sent if f.get("type") == "error"]
+    assert error_frames and error_frames[-1]["code"] == "stream_input_error"
+    assert "/secret/path" not in json.dumps(websocket.sent)
+
+
 def test_bridge_stream_tolerates_send_failure() -> None:
     # If the client vanishes mid-stream, a failing send must not propagate: the
     # bridge swallows it, ends input, and tears the session down cleanly.

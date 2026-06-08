@@ -529,44 +529,65 @@ async def _bridge_stream(
         max_frame_bytes: Maximum size of a single binary audio frame in bytes.
         max_session_bytes: Cumulative cap on total ingested audio bytes.
     """
-    # Set by _pump_audio when a byte cap is exceeded, so the forward loop stops
-    # emitting engine events and the bridge sends a single policy error frame.
+    # Out-of-band terminal frames the pump asks the forward loop to deliver. A
+    # byte-cap ``violation`` (``payload_too_large``) or a swallowed pump
+    # ``failure`` (``stream_input_error``) stops the loop forwarding engine
+    # events and sends a single, non-leaking policy frame instead.
     violation: dict[str, str] = {}
+    pump_failed = False
 
     async def _pump_audio() -> None:
+        nonlocal pump_failed
         total = 0
-        while True:
-            message = await websocket.receive()
-            chunk = message.get("bytes")
-            if chunk is not None:
-                frame_len = len(chunk)
-                if frame_len > max_frame_bytes:
-                    violation["message"] = (
-                        f"Audio frame too large: {frame_len} bytes exceeds the "
-                        f"{max_frame_bytes}-byte per-frame limit."
-                    )
+        try:
+            while True:
+                message = await websocket.receive()
+                chunk = message.get("bytes")
+                if chunk is not None:
+                    frame_len = len(chunk)
+                    if frame_len > max_frame_bytes:
+                        violation["message"] = (
+                            f"Audio frame too large: {frame_len} bytes exceeds the "
+                            f"{max_frame_bytes}-byte per-frame limit."
+                        )
+                        break
+                    total += frame_len
+                    if total > max_session_bytes:
+                        violation["message"] = (
+                            f"Session audio too large: {total} bytes exceeds the "
+                            f"{max_session_bytes}-byte per-session limit."
+                        )
+                        break
+                    await session.send_audio(chunk)
+                else:
+                    # A text frame signals end-of-audio; a disconnect message has
+                    # neither bytes nor text. Either way, stop feeding.
                     break
-                total += frame_len
-                if total > max_session_bytes:
-                    violation["message"] = (
-                        f"Session audio too large: {total} bytes exceeds the "
-                        f"{max_session_bytes}-byte per-session limit."
-                    )
-                    break
-                await session.send_audio(chunk)
-            else:
-                # A text frame signals end-of-audio; a disconnect message has
-                # neither bytes nor text. Either way, stop feeding.
-                break
-        await session.end_audio()
+            await session.end_audio()
+        except Exception:
+            # A client protocol violation (e.g. send_audio after the session
+            # ended -> StreamClosedError) or any feed failure MUST NOT be
+            # silently swallowed by the gather's return_exceptions (spec:
+            # explicit > implicit / fail-loud). Log the full detail server-side
+            # and flag the forward loop to emit a single generic, non-leaking
+            # error frame. (CancelledError derives from BaseException on the
+            # teardown path, so it is not caught here and propagates as required.)
+            logger.exception("WebSocket audio pump failed")
+            pump_failed = True
+            # Best-effort end the input so the session drains and the forward
+            # loop wakes to deliver the generic error frame (rather than blocking
+            # on a session that will never produce a terminal event). end_audio
+            # is idempotent and does not raise on the StreamClosedError path, so
+            # no further guard is needed here.
+            await session.end_audio()
 
     async with session:
         pump = asyncio.create_task(_pump_audio())
         try:
             async for event in session:
-                if violation:
-                    # A byte-cap violation occurred: stop forwarding engine
-                    # events; the policy error frame is sent after the loop.
+                if violation or pump_failed:
+                    # A byte-cap violation / pump failure occurred: stop
+                    # forwarding engine events; the policy frame is sent below.
                     break
                 if event.type == "error":
                     # Keep the (potentially sensitive) detail server-side only;
@@ -584,6 +605,15 @@ async def _bridge_stream(
                         "type": "error",
                         "code": "payload_too_large",
                         "message": violation["message"],
+                    }
+                )
+            elif pump_failed:
+                # Generic, non-leaking signal: the raw cause is already logged.
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "stream_input_error",
+                        "message": "Audio input failed. See server logs for details.",
                     }
                 )
         except Exception:  # noqa: BLE001

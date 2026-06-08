@@ -214,3 +214,12 @@ This is distinct from the §4.2 in-stream `error` event (an engine-produced
 `TranscriptionEvent`); the policy frame is emitted by the **server**, not the
 engine, and carries a human-readable `message` (the cap that was exceeded; it
 contains no internal/engine detail).
+
+A failure on the audio-input pump (e.g. a client protocol violation such as
+sending audio after the session ended) is likewise never swallowed silently: it
+is logged server-side and surfaced as a single generic, **non-leaking** frame
+before teardown:
+
+```json
+{ "type": "error", "code": "stream_input_error", "message": "Audio input failed. See server logs for details." }
+```
