@@ -640,8 +640,6 @@ def discover_models(
 
     specs: MutableMapping[str, ModelSpec] = {}
     errors: list[str] = []
-    # Canonical engine_id -> set of distribution names that contribute it (IC.2).
-    engine_dists: dict[str, set[str]] = {}
 
     for ep in found:
         if ep.group != ENTRYPOINT_GROUP:
@@ -678,8 +676,6 @@ def discover_models(
                 engine_id,
             )
 
-        engine_dists.setdefault(engine_id, set()).add(_dist_name(ep))
-
         if key in specs and on_conflict == "warn_keep_first":
             logger.warning(
                 "Duplicate model key %r detected. Keeping %r; ignoring %r.",
@@ -701,6 +697,12 @@ def discover_models(
     # IC.2 engine-identity collision: the same engine_id MUST come from a single
     # distribution. Two different distributions both claiming engine_id="whisper"
     # (even with distinct model names) make ``config.engine`` routing ambiguous.
+    # Accumulate from the surviving specs only, so a duplicate model key resolved
+    # by ``on_conflict`` does not double-count as two providers.
+    engine_dists: dict[str, set[str]] = {}
+    for spec in specs.values():
+        engine_dists.setdefault(spec.engine_id, set()).add(_dist_identity(spec.entry_point))
+
     shadowed: dict[str, set[str]] = {
         engine_id: dists for engine_id, dists in engine_dists.items() if len(dists) > 1
     }
@@ -725,19 +727,29 @@ def discover_models(
     return registry
 
 
-def _dist_name(ep: EntryPoint) -> str:
-    """Return the PEP 503-normalized distribution name for *ep*.
+def _dist_identity(ep: EntryPoint) -> str:
+    """Return a provider identity for *ep* used in IC.2 collision detection.
+
+    Normally this is the PEP 503-normalized distribution name. When the entry
+    point carries no distribution metadata (e.g. the ``eps=`` test-injection /
+    custom-registry path), every such entry point would otherwise collapse to a
+    single ``"<unknown>"`` sentinel, hiding a real collision between two
+    distinct providers of the same engine id. We instead fall back to the entry
+    point's ``module:attr`` target so two genuinely different dist-less
+    providers still register as distinct identities (DISC-3).
 
     Args:
         ep: The entry point to inspect.
 
     Returns:
-        The normalized distribution name, or ``"<unknown>"`` when the entry
-        point has no associated distribution (e.g. test-injected entry points).
+        The normalized distribution name, or an ``ep:<module:attr>`` identity
+        derived from the entry point target when no distribution is available.
     """
     dist = getattr(ep, "dist", None)
     name = getattr(dist, "name", None) if dist is not None else None
-    return pep503_normalize(name) if name else "<unknown>"
+    if name:
+        return pep503_normalize(name)
+    return f"ep:{ep.value}"
 
 
 __all__ = [

@@ -819,6 +819,48 @@ def test_normalized_engine_id_collision_strict_raises() -> None:
         discover_models(eps=[ep_a, ep_b], strict=True)
 
 
+def test_dist_less_distinct_providers_collide(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # DISC-3: two entry points without distribution metadata but distinct
+    # module:attr targets are genuinely different providers of the same engine
+    # id; they must NOT collapse to a single "<unknown>" identity that hides the
+    # collision.
+    ep_a = EntryPoint(
+        name="whisper/a",
+        value="tests.test_discovery:_dummy_factory",
+        group="standard_asr.models",
+    )
+    ep_b = EntryPoint(
+        name="whisper/b",
+        value="tests.test_discovery:_requires_argument_factory",
+        group="standard_asr.models",
+    )
+
+    caplog.set_level("WARNING")
+    registry = discover_models(eps=[ep_a, ep_b])
+    assert registry.shadowed_engine_ids == {"whisper"}
+    assert any("Engine-identity collision" in r.message for r in caplog.records)
+
+
+def test_dist_less_same_provider_is_not_a_collision() -> None:
+    # Two models from the SAME dist-less provider (identical module:attr target)
+    # share an identity and must not be flagged.
+    ep_a = EntryPoint(
+        name="whisper/a",
+        value="tests.test_discovery:_dummy_factory",
+        group="standard_asr.models",
+    )
+    ep_b = EntryPoint(
+        name="whisper/b",
+        value="tests.test_discovery:_dummy_factory",
+        group="standard_asr.models",
+    )
+
+    registry = discover_models(eps=[ep_a, ep_b], strict=True)
+    assert registry.shadowed_engine_ids == set()
+
+
 def test_same_dist_same_engine_id_is_not_a_collision() -> None:
     ep_a = _ep_with_dist("whisper/a", "one-dist")
     ep_b = _ep_with_dist("whisper/b", "one-dist")
