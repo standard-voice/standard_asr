@@ -92,6 +92,49 @@ def test_public_dump_leaves_unset_secret_as_none() -> None:
     assert dumped["api_key"] is None
 
 
+def test_secret_whitespace_not_stripped_direct() -> None:
+    # str_strip_whitespace MUST NOT silently trim a credential's contents, which
+    # could mask a paste error (X-EL-5). Plain routing fields still strip.
+    cfg = _CloudConfig(api_key=SecretStr("  pad-secret  "), base_url="  https://x  ")
+    assert cfg.api_key is not None
+    assert cfg.api_key.get_secret_value() == "  pad-secret  "
+    assert cfg.base_url == "https://x"
+
+
+def test_secret_whitespace_not_stripped_from_env() -> None:
+    # The from_env path hands the constructor a plain str; it must still not be
+    # trimmed for a secret-marked field.
+    env = {"STANDARD_ASR_ACME_API_KEY": "  pad-secret  "}
+    cfg = _CloudConfig.from_env("acme", environ=env)
+    assert cfg.api_key is not None
+    assert cfg.api_key.get_secret_value() == "  pad-secret  "
+
+
+def test_secret_whitespace_preserved_via_alias() -> None:
+    # Wrapping must also find the value under the field alias.
+    from pydantic import Field
+
+    class _Aliased(BaseConfig[Literal["al"]]):
+        engine: Literal["al"] = "al"
+        xi_api_key: SecretStr | None = Field(
+            default=None,
+            alias="xi-api-key",
+            json_schema_extra={"format": "password", "writeOnly": True, "secret": True},
+        )
+
+    cfg = _Aliased.model_validate({"xi-api-key": "  tok  "})
+    assert cfg.xi_api_key is not None
+    assert cfg.xi_api_key.get_secret_value() == "  tok  "
+
+
+def test_secret_validator_passes_non_mapping_input_through() -> None:
+    # The before-validator must not choke on non-dict input (e.g. model_validate
+    # of a non-mapping); it returns it unchanged so normal validation reports the
+    # error. This exercises the non-dict guard branch.
+    with pytest.raises(ValueError):
+        _CloudConfig.model_validate(["not", "a", "dict"])
+
+
 def test_env_var_name_normalization() -> None:
     assert env_var_name("acme-cloud", "api_key") == "STANDARD_ASR_ACME_CLOUD_API_KEY"
 

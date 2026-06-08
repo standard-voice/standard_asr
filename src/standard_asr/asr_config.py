@@ -29,9 +29,16 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
-from pydantic import BaseModel, ConfigDict, Field, SecretBytes, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretBytes,
+    SecretStr,
+    model_validator,
+)
 
 from .exceptions import ConfigError
 
@@ -55,7 +62,10 @@ def secret_field(default: Any = None, *, description: str = "") -> Any:
 
     Use together with a ``SecretStr`` annotation. The ``json_schema_extra``
     marks the field secret so auto-UI renders a password / write-only input and
-    REST exposes it POST-only.
+    REST exposes it POST-only. :class:`BaseConfig` enforces the ``SecretStr``
+    annotation at class-definition time, masks the value in
+    :meth:`BaseConfig.public_dump`, and preserves the secret's exact contents
+    (no whitespace stripping) so a paste error is never silently swallowed.
 
     Args:
         default: Field default (use ``None`` for optional credentials).
@@ -204,6 +214,41 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                     f"Secret-marked fields MUST use SecretStr to avoid plaintext leaks "
                     f"(spec IC.3)."
                 )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _preserve_secret_whitespace(cls, data: Any) -> Any:
+        """Wrap raw secret strings before global whitespace stripping (X-EL-5).
+
+        ``str_strip_whitespace=True`` silently trims every plain ``str`` input,
+        including a raw credential passed via ``from_env`` (which hands the
+        constructor a plain ``str`` that pydantic strips *before* coercing it to
+        ``SecretStr``). Trimming a credential can mask a paste error and produce a
+        silently-wrong secret. Running before field validation, this wraps any
+        raw ``str`` destined for a secret-marked field into ``SecretStr`` first,
+        so its contents bypass stripping; non-secret routing fields (``base_url``
+        etc.) keep the convenience strip.
+
+        Args:
+            data: The raw constructor input (a mapping when called positionally
+                with keyword data; passed through unchanged otherwise).
+
+        Returns:
+            The (possibly mutated) input mapping.
+        """
+        if not isinstance(data, dict):
+            return data
+        mapping = cast("dict[Any, Any]", data)
+        for name, field in cls.model_fields.items():
+            if not _is_secret_marked(field):
+                continue
+            key = name if name in mapping else field.alias
+            if key is None or key not in mapping:
+                continue
+            value = mapping[key]
+            if isinstance(value, str):
+                mapping[key] = SecretStr(value)
+        return mapping
 
     def public_dump(self) -> dict[str, Any]:
         """Return a serialization with secrets masked.
