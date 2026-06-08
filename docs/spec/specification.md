@@ -975,7 +975,7 @@ elif event.type == "supersede":
 | 音频源类型 | 行为 |
 |---|---|
 | **可回放**（文件/数组/服务端有缓冲的引擎） | 重连后从缓冲区重喂，缝隙在内部弥合；对应用几乎透明。 |
-| **不可回放**（live mic 等实时源） | 重连期间到达的音频如果超出了缓冲区容量，**会真丢**。**丢失由适配器判定**——与 `segment_id`/时间戳/语言连续性同理（见上，皆为适配器责任），由适配器据其 gap 窗口与 replay 覆盖情况决定本次重连是否真丢（实现：`note_reconnect(..., content_lost=True)`）。**结构化事件由标准发出**：当适配器判定真丢时，标准 MUST 在 `progress` 事件后**紧跟一条** `error(code="content_lost", recoverable=false)` 事件（`progress` 携带 `reconnect/gap` 信息描述缝隙位置，`error` 标记丢失的严重性）。不可回放源的缓冲区只覆盖"已捕获但尚未确认处理"的窗口。 |
+| **不可回放**（live mic 等实时源） | 重连期间到达的音频如果超出了缓冲区容量，**会真丢**。**丢失由适配器判定**——与 `segment_id`/时间戳/语言连续性同理（见上，皆为适配器责任），由适配器据其 gap 窗口与 replay 覆盖情况决定本次重连是否真丢（实现：`note_reconnect(..., content_lost=True)`）。**结构化事件由标准发出**：当适配器判定真丢时，标准 MUST 在 `progress` 事件后**紧跟一条** `error(code="content_lost", recoverable=true)` 事件；这是非终态 fidelity warning：会话继续存活，gap 被诚实报告，后续事件继续流动直到正常 `done` 或真正的终态 `error`。不可回放源的缓冲区只覆盖"已捕获但尚未确认处理"的窗口。 |
 
 `reconnect` capability：引擎声明 `seamless`（无损，仅 stateless / 服务端有状态引擎可声明）或 `lossy`（可能有缝隙，DSM 等有状态本地模型 MUST 声明 `lossy`）或 `unsupported`。
 

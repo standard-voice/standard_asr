@@ -968,7 +968,7 @@ class TranscriptionSession(ABC):
       then emits the ``progress(reconnect=True, gap_start, gap_end)`` event and,
       iff the adapter passed ``content_lost=True`` (its own determination that
       the reconnect + replay could not cover the gap), a trailing
-      ``error(code="content_lost", recoverable=False)``.
+      ``error(code="content_lost", recoverable=True)`` fidelity warning.
     """
 
     def __init__(
@@ -1112,7 +1112,7 @@ class TranscriptionSession(ABC):
 
         The base ALWAYS queues a ``progress(reconnect=True, gap_start, gap_end)``
         event to be emitted in order with produced events. It queues a trailing
-        ``error(code="content_lost", recoverable=False, gap_start, gap_end)`` --
+        ``error(code="content_lost", recoverable=True, gap_start, gap_end)`` --
         IMMEDIATELY following the progress (spec ST.6.3) -- IFF the adapter passes
         ``content_lost=True``.
 
@@ -1131,8 +1131,8 @@ class TranscriptionSession(ABC):
             gap_start: Start time (seconds) of the lossy gap, if known.
             gap_end: End time (seconds) of the lossy gap, if known.
             content_lost: ``True`` if the reconnect could not cover the gap and
-                unreplayable audio was permanently lost; queues a terminal
-                ``content_lost`` error after the progress (spec ST.6.3).
+                unreplayable audio was permanently lost; queues a non-terminal
+                ``content_lost`` fidelity warning after the progress (spec ST.6.3).
         """
         self._pending_reconnects.append(
             TranscriptionEvent.progress(reconnect=True, gap_start=gap_start, gap_end=gap_end)
@@ -1141,7 +1141,7 @@ class TranscriptionSession(ABC):
             self._pending_reconnects.append(
                 TranscriptionEvent.make_error(
                     code="content_lost",
-                    recoverable=False,
+                    recoverable=True,
                     gap_start=gap_start,
                     gap_end=gap_end,
                 )

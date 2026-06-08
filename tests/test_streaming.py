@@ -783,8 +783,49 @@ def test_reconnect_adapter_signals_content_lost_emits_progress_then_content_lost
     # content_lost MUST IMMEDIATELY follow the reconnect progress.
     assert any(e.code == "content_lost" for e in errors)
     cl = next(e for e in errors if e.code == "content_lost")
-    assert cl.recoverable is False
+    assert cl.recoverable is True
+    assert cl.is_terminal is False
     assert events.index(cl) == events.index(progress[0]) + 1
+    assert events[-1].type == "done"
+
+
+class _LossyReconnectContinuationSession(TranscriptionSession):
+    """Emits more content after a lossy reconnect warning."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.partial("seg-0", "he")
+        await asyncio.sleep(0)
+        yield TranscriptionEvent.final("seg-0", "hello", start=0.0, end=1.0)
+        self.note_reconnect(1.0, 2.0, content_lost=True)
+        yield TranscriptionEvent.partial("seg-1", "wo")
+        await asyncio.sleep(0)
+        yield TranscriptionEvent.final("seg-1", "world", start=2.0, end=3.0)
+
+
+def test_lossy_reconnect_content_lost_is_non_terminal_and_stream_matches_result() -> None:
+    async def run() -> tuple[list[TranscriptionEvent], str]:
+        session = _LossyReconnectContinuationSession()
+        session.feed([])
+        events = await _collect(session)
+        return events, session.result().text
+
+    events, result_text = asyncio.run(run())
+    progress_i = next(i for i, e in enumerate(events) if e.type == "progress" and e.reconnect)
+    content_lost_i = next(
+        i for i, e in enumerate(events) if e.type == "error" and e.code == "content_lost"
+    )
+    content_lost = events[content_lost_i]
+    stream_text = " ".join(e.text or "" for e in events if e.type == "final")
+
+    assert [e.text for e in events if e.type == "final"] == ["hello", "world"]
+    assert content_lost_i == progress_i + 1
+    assert content_lost.recoverable is True
+    assert content_lost.is_terminal is False
+    assert events[content_lost_i + 1].type == "partial"
+    assert events[content_lost_i + 1].text == "wo"
+    assert events[-1].type == "done"
+    assert result_text == "hello world"
+    assert stream_text == result_text
 
 
 def test_reconnect_no_content_lost_even_after_ring_wraps_many_times() -> None:
