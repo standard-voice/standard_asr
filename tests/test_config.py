@@ -164,6 +164,30 @@ def test_from_env_does_not_downgrade_strict_policy() -> None:
     assert cfg.strict is True
 
 
+def test_from_env_loads_aliased_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    # IC.4: a credential declaring a provider-native alias (e.g. ElevenLabs
+    # `xi-api-key`) must still load from its STANDARD_ASR_<ENGINE>_<FIELD> env var
+    # (keyed by attribute name), even under extra="forbid" (INIT-1).
+    from pydantic import Field
+
+    class _ElevenConfig(BaseConfig[Literal["eleven"]]):
+        engine: Literal["eleven"] = "eleven"
+        api_key: SecretStr | None = secret_field(description="key")
+
+        # Re-declare with an alias to mimic an aliased credential field.
+        xi_api_key: SecretStr | None = Field(
+            default=None,
+            alias="xi-api-key",
+            json_schema_extra={"format": "password", "writeOnly": True, "secret": True},
+        )
+
+    env = {"STANDARD_ASR_ELEVEN_XI_API_KEY": "secret-token"}
+    cfg = _ElevenConfig.from_env("eleven", environ=env)
+    assert isinstance(cfg.xi_api_key, SecretStr)
+    assert cfg.xi_api_key.get_secret_value() == "secret-token"
+    assert "secret-token" not in str(cfg.public_dump())
+
+
 def test_from_env_does_not_read_engine_discriminator() -> None:
     env = {"STANDARD_ASR_ACME_ENGINE": "evil"}
     cfg = _CloudConfig.from_env("acme", environ=env)

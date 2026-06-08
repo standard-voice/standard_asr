@@ -151,6 +151,13 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         extra="forbid",
         str_strip_whitespace=True,
         validate_assignment=True,
+        # Accept fields by their attribute name as well as their alias (IC.4):
+        # env fallback keys by attribute name (e.g. ``api_key``), but a credential
+        # may declare a provider-native alias (e.g. ElevenLabs ``xi-api-key``).
+        # Without this, loading such a field from env trips ``extra="forbid"``.
+        # ``populate_by_name`` (not the newer ``validate_by_name``) is used for
+        # pydantic >= 2.5 compatibility (the lower-bounds CI lane).
+        populate_by_name=True,
         # Engine configs commonly carry `model_*` fields (e.g. `model_path`).
         # Opt out of pydantic's `model_` protected namespace so subclasses do not
         # warn (the warning fires on older pydantic, e.g. the lower-bounds 2.5).
