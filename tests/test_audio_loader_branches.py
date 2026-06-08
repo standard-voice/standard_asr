@@ -657,8 +657,27 @@ def test_decode_audio_rejects_nonpositive_channels() -> None:
 
 
 def test_decode_audio_bad_base64_data_uri() -> None:
-    with pytest.raises(AudioProcessingError, match="Invalid base64 data URI"):
+    with pytest.raises(AudioProcessingError, match="Invalid base64 audio payload"):
         audio_loader.decode_audio("data:audio/wav;base64,!!!notb64!!!")
+
+
+def test_shared_base64_decoder_accepts_data_uri_and_bare() -> None:
+    # AUDI-4: one shared decoder for both entry points. A base64 data URI and the
+    # equivalent bare base64 string decode to the same bytes.
+    import base64 as _b64
+
+    raw = b"hello-audio"
+    encoded = _b64.b64encode(raw).decode()
+    assert audio_loader.decode_base64_audio(f"data:audio/wav;base64,{encoded}") == raw
+    assert audio_loader.decode_base64_audio(encoded) == raw
+
+
+def test_shared_base64_decoder_rejects_data_uri_without_base64_marker() -> None:
+    # AUDI-4: a data: URI without the ';base64,' marker is rejected, not silently
+    # treated as base64 (the old conversion._decode_b64 split on ',' and accepted
+    # percent-encoded data URIs). Both entry points now share this strict rule.
+    with pytest.raises(AudioProcessingError, match="';base64,' marker is required"):
+        audio_loader.decode_base64_audio("data:audio/wav,not-base64-payload")
 
 
 def test_decode_path_native_wav_8bit_mono(tmp_path: Path) -> None:

@@ -382,6 +382,14 @@ def test_malformed_data_uri_clear_error() -> None:
         _exec(AudioBase64("data:audio/wav;base64"), {InputKind.ENCODED_BYTES})
 
 
+def test_data_uri_without_base64_marker_rejected() -> None:
+    # AUDI-4: the conversion entry point now shares the loader's strict decoder,
+    # so a data: URI lacking the ';base64,' marker is rejected (previously this
+    # path split on ',' and accepted percent-encoded data URIs).
+    with pytest.raises(AudioProcessingError, match="';base64,' marker is required"):
+        _exec(AudioBase64("data:audio/wav,not-base64"), {InputKind.ENCODED_BYTES})
+
+
 def test_target_sample_rate_self_describing_returns_native() -> None:
     # A self-describing ("any") engine carries no list to choose from, so the
     # target is the model's native rate.

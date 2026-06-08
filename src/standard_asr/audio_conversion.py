@@ -13,7 +13,6 @@ in exactly one of the engine's accepted shapes, plus a list of
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,7 +33,7 @@ from .audio_negotiation import ConversionOp, ConversionPlan, validate_fetchable_
 from .exceptions import AudioProcessingError
 from .resampling import resample_with_backend
 from .results import Diagnostic
-from .utils.audio_loader import decode_audio
+from .utils.audio_loader import decode_audio, decode_base64_audio
 from .utils.save_utils import encode_array_to_wav_bytes
 
 #: Canonical fallback sample rate when a bare array omits its rate (spec R6).
@@ -100,33 +99,6 @@ def _target_array_sample_rate(
     if native_sample_rate in accepted:
         return native_sample_rate
     return accepted[0]
-
-
-def _decode_b64(value: str) -> bytes:
-    """Decode a base64 string or ``data:`` URI into bytes.
-
-    Args:
-        value: A base64 payload, optionally a ``data:...;base64,...`` URI.
-
-    Returns:
-        The decoded bytes.
-
-    Raises:
-        AudioProcessingError: If the payload is not valid base64.
-    """
-    if value.startswith("data:"):
-        if "," not in value:
-            raise AudioProcessingError(
-                "Malformed data: URI -- missing the ',' that separates the "
-                "media-type header from the base64 payload."
-            )
-        payload = value.split(",", 1)[1]
-    else:
-        payload = value
-    try:
-        return base64.b64decode(payload, validate=True)
-    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
-        raise AudioProcessingError("Invalid base64 audio payload.") from exc
 
 
 def execute_plan(
@@ -289,7 +261,7 @@ def _prepare_encoded(
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=result.data, container="wav")
     if ConversionOp.B64_DECODE in ops:  # base64 -> bytes
         assert isinstance(provided, AudioBase64)
-        decoded = _decode_b64(provided.value)
+        decoded = decode_base64_audio(provided.value)
         _check_payload_size(len(decoded), max_file_size)
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=decoded)
     raise AudioProcessingError("Unsupported encoded conversion plan.")  # pragma: no cover
@@ -395,7 +367,7 @@ def _prepare_array(
     elif isinstance(provided, AudioBytes):
         source = provided.data
     elif isinstance(provided, AudioBase64):
-        source = _decode_b64(provided.value)
+        source = decode_base64_audio(provided.value)
     else:  # pragma: no cover - matrix guarantees the above
         raise AudioProcessingError("Cannot decode this input to an array.")
 

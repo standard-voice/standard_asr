@@ -78,6 +78,50 @@ _DEFAULT_MAX_DECODE_BYTES = 2 * 1024 * 1024 * 1024
 # --- Public API ---
 
 
+def decode_base64_audio(value: str) -> bytes:
+    """Decode a base64 audio payload, optionally wrapped in a ``data:`` URI.
+
+    Single source of truth for the ``data:``-URI/base64 parse rules, shared by
+    the convenience loaders, :func:`decode_audio`, and the conversion layer so
+    every entry point accepts and rejects exactly the same forms (AUDI-4).
+
+    Rules:
+
+    * A ``data:`` URI MUST carry the explicit ``;base64,`` marker; the bytes
+      after it are base64-decoded. A ``data:`` URI without ``;base64,`` (e.g. a
+      percent-encoded ``data:audio/wav,...``) is rejected rather than silently
+      treated as base64.
+    * Any other string is treated as a bare base64 payload.
+
+    Validation is strict (``validate=True``): non-base64 characters fail loudly
+    rather than being silently dropped.
+
+    Args:
+        value: A ``data:...;base64,...`` URI or a bare base64 string.
+
+    Returns:
+        The decoded bytes.
+
+    Raises:
+        AudioProcessingError: If a ``data:`` URI lacks the ``;base64,`` marker,
+            or the payload is not valid base64.
+    """
+    if value.startswith("data:"):
+        marker = ";base64,"
+        if marker not in value:
+            raise AudioProcessingError(
+                "Malformed data: URI -- only base64-encoded data URIs are "
+                "supported; the ';base64,' marker is required."
+            )
+        payload = value.split(marker, 1)[1]
+    else:
+        payload = value
+    try:
+        return base64.b64decode(payload, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
+        raise AudioProcessingError("Invalid base64 audio payload.") from exc
+
+
 def _validate_local_source_path(path: str) -> str:
     """Validate and absolutize a local file path before handing it to ffmpeg.
 
@@ -390,12 +434,8 @@ def load_audio(
 
         # First check: if it has explicit base64 data URI prefix, treat as base64
         if s.lower().startswith("data:") and ";base64," in s:
-            try:
-                encoded_data = s.split(";base64,", 1)[1]
-                source_bytes = base64.b64decode(encoded_data, validate=True)
-                return load_audio_from_bytes(source_bytes, target_sr, target_channels)
-            except (ValueError, TypeError) as e:
-                raise AudioProcessingError(f"Invalid base64 data URI: {e}") from e
+            source_bytes = decode_base64_audio(s)
+            return load_audio_from_bytes(source_bytes, target_sr, target_channels)
 
         # Second check: if it exists as a file path, prioritize as path
         try:
@@ -641,10 +681,7 @@ def decode_audio(
     if isinstance(source, str):
         s = source.strip()
         if s.lower().startswith("data:") and ";base64," in s:
-            try:
-                decoded = base64.b64decode(s.split(";base64,", 1)[1], validate=True)
-            except (ValueError, TypeError) as e:
-                raise AudioProcessingError(f"Invalid base64 data URI: {e}") from e
+            decoded = decode_base64_audio(s)
             _enforce_decode_size(len(decoded), max_bytes)
             return _decode_bytes_native(decoded, target_channels)
         path = _validate_local_source_path(s)
