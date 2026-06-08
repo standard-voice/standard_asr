@@ -841,6 +841,33 @@ def test_guard_closed_after_final_is_legal() -> None:
     assert not any(d.code == "lifecycle_final_after_final" for d in guard.diagnostics)
 
 
+# --------------------------------------------------------------------------- #
+# X-ST-3 -- supersede with empty new_ids (pure deletion) (spec ST.5.2)
+# --------------------------------------------------------------------------- #
+def test_guard_supersede_empty_new_ids_deleting_frozen_suppressed() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好", stable_until=2))
+    rejected = guard.admit(TranscriptionEvent.supersede(["a"], []))
+    assert rejected is None
+    assert any(d.code == "supersede_deletes_frozen_text" for d in guard.diagnostics)
+
+
+def test_guard_supersede_empty_new_ids_deleting_frozen_strict_raises() -> None:
+    guard = _LifecycleGuard(strict=True)
+    guard.admit(TranscriptionEvent.final("a", "你好", stable_until=2))
+    with pytest.raises(ValueError, match="empty new_ids"):
+        guard.admit(TranscriptionEvent.supersede(["a"], []))
+
+
+def test_guard_supersede_empty_new_ids_no_frozen_is_allowed() -> None:
+    # Pure deletion is fine when the retired segment froze nothing.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("a", "draft"))  # nothing frozen
+    accepted = guard.admit(TranscriptionEvent.supersede(["a"], []))
+    assert accepted is not None
+    assert not guard.diagnostics
+
+
 def test_session_suppresses_illegal_transition_in_stream() -> None:
     class _BadSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:

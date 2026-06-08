@@ -689,6 +689,17 @@ class _LifecycleGuard:
             # (reading) order: this is the text the user already saw frozen and
             # which the replacement MUST preserve (spec ST.5.2).
             f_old = "".join(self._frozen_text.get(old, "") for old in event.old_ids)
+            if not event.new_ids and f_old:
+                # Pure deletion (empty new_ids) cannot preserve any frozen text;
+                # it MUST NOT silently destroy a prefix the user saw frozen.
+                self._reject(
+                    "supersede_deletes_frozen_text",
+                    "supersede with empty new_ids would delete the frozen prefix "
+                    f"of {event.old_ids!r}; suppressed (spec ST.5.2: frozen text "
+                    "MUST be preserved -- pure deletion is allowed only for "
+                    "segments with no frozen prefix).",
+                )
+                return None
             for old in event.old_ids:
                 self._state[old] = "superseded"
             for new in event.new_ids:
