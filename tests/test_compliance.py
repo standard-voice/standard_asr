@@ -12,23 +12,31 @@ from typing import Any, ClassVar, Literal
 
 import pytest
 
-from standard_asr import BaseConfig, BaseProperties, TranscriptionResult
+from standard_asr import BaseConfig, BaseProperties, EngineBase, PreparedAudio, TranscriptionResult
 from standard_asr import compliance as compliance_module
 from standard_asr.audio_input import InputKind
 from standard_asr.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
     FlagCap,
+    GuidanceCaps,
     LanguageCaps,
+    PromptCap,
+    StreamingCapabilities,
     WordTimestampsCap,
 )
 from standard_asr.compliance import (
     check_entrypoints,
     check_event_sequence,
+    check_streaming_param_gating,
     check_sync_bridge,
 )
 from standard_asr.discovery import ModelRegistry, discover_models
-from standard_asr.runtime_params import ProviderParams
+from standard_asr.exceptions import UnsupportedFeatureError
+from standard_asr.runtime_params import (
+    ProviderParams,
+    RuntimeParams,
+)
 from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 
 
@@ -371,3 +379,134 @@ def test_check_event_sequence_flags_empty_new_ids_deleting_frozen() -> None:
     report = check_event_sequence(events)
     assert report.passed is False
     assert any("supersede_deletes_frozen_text" in i.message for i in report.issues)
+
+
+# --------------------------------------------------------------------------- #
+# check_streaming_param_gating (RUNT-3)
+# --------------------------------------------------------------------------- #
+class _StreamProps(BaseProperties):
+    engine_id: str = "streamer"
+    model_name: str = "demo"
+    protocol_version: str = "0.2.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] | Literal["any"] = [16000]
+    selectable_languages: list[str] = []  # no language axis -> no default needed
+
+
+_STREAM_CAPS = DeclaredCapabilities(
+    streaming=StreamingCapabilities(),
+    streaming_input=FlagCap(supported=True),
+    streaming_output=FlagCap(supported=True),
+)
+
+
+class _GatingSession(TranscriptionSession):
+    """Ends immediately (the base appends ``done``)."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+
+class _GatingStreamEngine(EngineBase):
+    """Streaming engine that relies on the base template's gating (compliant)."""
+
+    properties: ClassVar[BaseProperties] = _StreamProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAM_CAPS
+
+    def __init__(self, *, strict: bool = True) -> None:
+        self.config = _Config(engine="dummy", strict=strict)
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+    def _start_transcription(
+        self, *, gated_params: RuntimeParams, audio_format: Any = None, audio: Any = None
+    ) -> TranscriptionSession:
+        return _GatingSession()
+
+
+class _UngatedStreamEngine(_GatingStreamEngine):
+    """Non-compliant: overrides the PUBLIC start_transcription, bypassing gating."""
+
+    def start_transcription(
+        self, *, audio_format: Any = None, params: Any = None, audio: Any = None
+    ) -> TranscriptionSession:
+        # Forgot to gate: returns a session for ANY params, no gate_params call.
+        return _GatingSession()
+
+
+class _BatchOnlyEngine(EngineBase):
+    """No streaming support declared; start_transcription raises unsupported."""
+
+    properties: ClassVar[BaseProperties] = _StreamProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+
+class _AllSupportedStreamEngine(_GatingStreamEngine):
+    """Supports every probed standard param in streaming -> nothing to gate."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word", "segment"]),
+            guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
+        ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+
+def test_streaming_gating_strict_engine_passes() -> None:
+    report = check_streaming_param_gating(_GatingStreamEngine(strict=True))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_streaming_gating_best_effort_engine_passes() -> None:
+    report = check_streaming_param_gating(_GatingStreamEngine(strict=False))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_streaming_gating_ungated_engine_fails() -> None:
+    # strict engine that bypassed the template accepts the unsupported param.
+    report = check_streaming_param_gating(_UngatedStreamEngine(strict=True))
+    assert report.passed is False
+    assert any("without raising" in i.message for i in report.issues)
+
+
+def test_streaming_gating_ungated_best_effort_engine_fails() -> None:
+    # best_effort engine that bypassed the template never emits the diagnostic.
+    report = check_streaming_param_gating(_UngatedStreamEngine(strict=False))
+    assert report.passed is False
+    assert any("silently swallowed" in i.message for i in report.issues)
+
+
+def test_streaming_gating_non_streaming_engine_is_noop_pass() -> None:
+    report = check_streaming_param_gating(_BatchOnlyEngine())
+    assert report.passed is True
+    assert report.issues == []
+
+
+def test_streaming_gating_all_supported_engine_is_noop_pass() -> None:
+    report = check_streaming_param_gating(_AllSupportedStreamEngine())
+    assert report.passed is True
+    assert report.issues == []
+
+
+def test_streaming_gating_best_effort_engine_raising_fails() -> None:
+    # A best_effort engine that wrongly RAISES for the unsupported param fails.
+    class _RaisingBestEffortEngine(_GatingStreamEngine):
+        def start_transcription(
+            self, *, audio_format: Any = None, params: Any = None, audio: Any = None
+        ) -> TranscriptionSession:
+            raise UnsupportedFeatureError("I refuse the param even in best_effort.")
+
+    report = check_streaming_param_gating(_RaisingBestEffortEngine(strict=False))
+    assert report.passed is False
+    assert any("MUST drop it" in i.message for i in report.issues)

@@ -13,10 +13,12 @@ from typing import Callable, Iterable, Literal
 from pydantic import BaseModel
 
 from .asr_config import BaseConfig
+from .asr_interface import EngineBase
 from .asr_properties import BaseProperties
 from .capabilities import DeclaredCapabilities
 from .discovery import FactoryLoadError, ModelRegistry, discover_models
-from .runtime_params import ProviderParams, RuntimeParams
+from .exceptions import UnsupportedFeatureError
+from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
 from .streaming import (
     SyncSession,
     TranscriptionEvent,
@@ -29,8 +31,26 @@ __all__ = [
     "ComplianceReport",
     "check_entrypoints",
     "check_event_sequence",
+    "check_streaming_param_gating",
     "check_sync_bridge",
 ]
+
+#: Candidate (param-field, params-builder, capability-suffix) probes for an
+#: unsupported standard streaming parameter. The check picks the first whose
+#: capability the engine does NOT support, so it always exercises the gating
+#: drop/raise path. The builder returns a fully-typed :class:`RuntimeParams`.
+_GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
+    (
+        "word_timestamps",
+        lambda: RuntimeParams(word_timestamps=WordTimestampGranularity.WORD),
+        "streaming.word_timestamps",
+    ),
+    (
+        "prompt",
+        lambda: RuntimeParams(prompt="the quick brown fox"),
+        "streaming.guidance.prompt",
+    ),
+)
 
 
 def _is_closed_model(model: type[BaseModel]) -> bool:
@@ -454,6 +474,110 @@ def check_event_sequence(events: Iterable[TranscriptionEvent]) -> ComplianceRepo
                     "error) event (spec ST.6.1: the stream MUST terminate)."
                 ),
                 model=None,
+            )
+        )
+    return ComplianceReport(registry=ModelRegistry({}), issues=issues)
+
+
+def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
+    """Assert a streaming engine gates an unsupported standard parameter.
+
+    Closes the RUNT-3 gap as a *compliance* failure rather than a silent one:
+    the base :meth:`~standard_asr.asr_interface.EngineBase.start_transcription`
+    template runs ``gate_params(mode="streaming")`` for every engine, so a
+    "forgot to gate" engine (one that bypassed the template) must show up here.
+
+    The check opens a streaming session with the first standard parameter the
+    engine does **not** support in ``streaming`` mode and asserts the standard
+    contract:
+
+    * **strict** policy -- the call MUST raise
+      :class:`~standard_asr.exceptions.UnsupportedFeatureError`;
+    * **best_effort** policy -- the call MUST succeed, drop the parameter, and
+      surface an ``unsupported_parameter_ignored`` diagnostic via
+      ``session.diagnostics()``.
+
+    An engine that declared streaming support (``streaming_input`` or
+    ``streaming_output``) yet accepts the unsupported parameter -- the "forgot
+    to gate" engine that bypassed the base template -- is a compliance
+    **failure** here, so the gap is loud rather than silent.
+
+    Engines that declare no streaming support, or that support every probed
+    parameter, yield a clean (no-op) pass -- there is nothing to gate.
+
+    Args:
+        engine: The engine instance to exercise. Its ``config.strict`` selects
+            which branch (strict raise / best_effort drop) is asserted.
+
+    Returns:
+        A :class:`ComplianceReport`; ``passed`` is ``True`` when the engine gated
+        the unsupported parameter per its policy (or had nothing to gate).
+
+    Raises:
+        None.
+    """
+    issues: list[ComplianceIssue] = []
+    model = engine.properties.engine_id
+
+    if not (engine.supports("streaming_input") or engine.supports("streaming_output")):
+        # The engine does not declare streaming support; there is no streaming
+        # gating contract to exercise.
+        return ComplianceReport(registry=ModelRegistry({}), issues=issues)
+
+    probe = next(
+        (p for p in _GATING_PROBES if not engine.supports(p[2])),
+        None,
+    )
+    if probe is None:
+        # The engine supports every probed standard parameter, so there is no
+        # unsupported-parameter path to exercise here.
+        return ComplianceReport(registry=ModelRegistry({}), issues=issues)
+
+    field_name, build_params, _cap = probe
+    params = build_params()
+    strict = bool(getattr(engine.config, "strict", True))
+
+    try:
+        session = engine.start_transcription(params=params)
+    except UnsupportedFeatureError:
+        if not strict:
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message=(
+                        f"best_effort engine raised UnsupportedFeatureError for an "
+                        f"unsupported streaming parameter {field_name!r}; it MUST drop "
+                        "it and emit a diagnostic instead (spec Runtime R2)."
+                    ),
+                    model=model,
+                )
+            )
+        return ComplianceReport(registry=ModelRegistry({}), issues=issues)
+
+    # The session was created: only valid under best_effort, and only if the
+    # parameter was dropped + diagnosed.
+    if strict:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    f"strict engine accepted an unsupported streaming parameter "
+                    f"{field_name!r} without raising; it MUST raise "
+                    "UnsupportedFeatureError (spec Runtime R2 / RUNT-3 gating gap)."
+                ),
+                model=model,
+            )
+        )
+    elif not any(d.code == "unsupported_parameter_ignored" for d in session.diagnostics()):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    f"best_effort engine silently swallowed unsupported streaming "
+                    f"parameter {field_name!r}: no 'unsupported_parameter_ignored' "
+                    "diagnostic surfaced via session.diagnostics() (spec Runtime R2)."
+                ),
+                model=model,
             )
         )
     return ComplianceReport(registry=ModelRegistry({}), issues=issues)

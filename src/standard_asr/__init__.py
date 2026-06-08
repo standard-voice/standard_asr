@@ -46,6 +46,7 @@ from .compliance import (
     ComplianceIssue,
     ComplianceReport,
     check_entrypoints,
+    check_streaming_param_gating,
     check_sync_bridge,
 )
 from .discovery import (
@@ -129,6 +130,7 @@ __all__ = [
     "allow_downloads",
     "can_accept",
     "check_entrypoints",
+    "check_streaming_param_gating",
     "check_sync_bridge",
     "coerce_audio_input",
     "diagnose",
