@@ -14,9 +14,20 @@ from standard_asr.language import (
 )
 
 
-def test_normalize_bcp47() -> None:
-    assert normalize_bcp47("EN-US") == "en-us"
-    assert normalize_bcp47(" zh_cn ") == "zh-cn"
+def test_normalize_bcp47_canonical_casing() -> None:
+    # LANG-2: canonical BCP-47 casing -- language lower, script Title, region UPPER.
+    assert normalize_bcp47("EN-US") == "en-US"
+    assert normalize_bcp47(" zh_cn ") == "zh-CN"
+    assert normalize_bcp47("ZH-HANS") == "zh-Hans"
+    assert normalize_bcp47("zh-hans-cn") == "zh-Hans-CN"
+    assert normalize_bcp47("es-419") == "es-419"  # numeric region unchanged
+    assert normalize_bcp47("en") == "en"
+
+
+def test_normalize_bcp47_membership_is_case_insensitive_in_effect() -> None:
+    # Two differently-cased spellings canonicalize to the same value, so
+    # membership comparisons remain exact regardless of input casing.
+    assert normalize_bcp47("zh-Hans") == normalize_bcp47("ZH-HANS") == "zh-Hans"
 
 
 def test_is_valid_bcp47() -> None:

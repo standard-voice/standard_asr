@@ -25,14 +25,50 @@ _PRIVATE_USE_RE = re.compile(r"^(?:x|i)(?:-[A-Za-z0-9]{1,8})+$", re.IGNORECASE)
 _PRIMARY_SUBTAG_RE = re.compile(r"^[A-Za-z]{2,4}$")
 
 
+def _canonical_case_subtag(index: int, subtag: str) -> str:
+    """Apply BCP-47 canonical casing to a single subtag at ``index``.
+
+    Casing rules (RFC 5646 §2.1.1): the primary language subtag (index 0) is
+    lowercase; a 4-alpha script subtag is Title-case; a 2-alpha or 3-digit
+    region subtag is UPPERCASE; everything else (variants, 3-8 alpha extended
+    subtags, extensions) is lowercase. Casing is purely cosmetic -- membership
+    comparisons remain exact because every tag is canonicalized identically.
+
+    Args:
+        index: The subtag's position (0 = primary language).
+        subtag: The subtag text (no separators).
+
+    Returns:
+        The subtag in canonical casing.
+    """
+    lower = subtag.lower()
+    if index == 0:
+        return lower
+    if len(subtag) == 4 and subtag.isalpha():
+        return lower.capitalize()  # script subtag -> Titlecase (e.g. "Hans")
+    if subtag.isalpha() and len(subtag) == 2:
+        return subtag.upper()  # alpha-2 region -> UPPERCASE (e.g. "US")
+    if subtag.isdigit() and len(subtag) == 3:
+        return subtag  # numeric-3 region (e.g. "001") -> unchanged
+    return lower
+
+
 def normalize_bcp47(tag: str) -> str:
-    """Normalize a BCP 47 language tag into a consistent, lowercase form.
+    """Normalize a BCP 47 language tag into a consistent, canonical form.
+
+    Trims/replaces separators, then applies BCP-47 canonical casing
+    (language lowercase, script Titlecase, region UPPERCASE) so values echoed
+    back to applications -- e.g. ``detected_language`` and diagnostic
+    ``provided``/``effective`` fields -- read canonically (``zh-Hans``, not
+    ``zh-hans``). Membership comparisons are unaffected: both the declared set
+    and the request are canonicalized through this same function, so matching
+    stays case-insensitive in effect.
 
     Args:
         tag: Input language tag.
 
     Returns:
-        Normalized tag in lowercase with underscores replaced by hyphens.
+        The canonicalized tag (separators normalized to ``-``, canonical casing).
 
     Raises:
         ValueError: If ``tag`` is empty or only whitespace.
@@ -40,7 +76,8 @@ def normalize_bcp47(tag: str) -> str:
     normalized = tag.strip().replace("_", "-")
     if not normalized:
         raise ValueError("Language tag must not be empty.")
-    return normalized.lower()
+    parts = normalized.split("-")
+    return "-".join(_canonical_case_subtag(i, part) for i, part in enumerate(parts))
 
 
 def is_valid_bcp47(tag: str) -> bool:

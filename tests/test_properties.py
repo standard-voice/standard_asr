@@ -30,7 +30,8 @@ def test_selectable_language_normalization() -> None:
     data["selectable_languages"] = ["EN_us", "auto"]
     data["detectable_languages"] = ["en"]
     props = BaseProperties(**data)
-    assert props.selectable_languages == ["en-us", "auto"]
+    # LANG-2: canonical BCP-47 casing (region UPPER), reserved 'auto' preserved.
+    assert props.selectable_languages == ["en-US", "auto"]
     assert props.supports_auto is True
     assert props.has_language_axis is True
 
