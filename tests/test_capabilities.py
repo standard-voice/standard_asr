@@ -442,6 +442,21 @@ def test_canonical_json_injects_supported_on_json_sourced_x_star_dicts() -> None
     assert "supported" not in cj["batch"]["x_acme_bounded"]["constraints"]
 
 
+def test_self_resamples_is_declarable_engine_global_flag() -> None:
+    # X-AU-1: `self_resamples` is the one behavioural capability the spec places
+    # in Capabilities (spec §AI 3.2, §C R7). It is engine-global, queried via
+    # `supports("self_resamples")` like streaming_input/streaming_output, and is
+    # informational only -- it does not change any resampling decision.
+    declared = DeclaredCapabilities(self_resamples=FlagCap(supported=True))
+    assert declared.supports("self_resamples") is True
+    # Appears in canonical JSON with its real supported field.
+    assert declared.canonical_json()["self_resamples"] == {"supported": True}
+    # Absent => False (fail-closed), and the node defaults to not-supported.
+    default = DeclaredCapabilities()
+    assert default.supports("self_resamples") is False
+    assert default.canonical_json()["self_resamples"] == {"supported": False}
+
+
 def test_canonical_json_absent_domain_is_null() -> None:
     # An unsupported mode domain serializes as null (fail-closed), never as a
     # present-but-empty container.

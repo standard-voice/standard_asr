@@ -388,12 +388,26 @@ class DeclaredCapabilities(_Container):
         streaming: Streaming-mode capabilities, or ``None`` if unsupported.
         streaming_input: Whether the engine accepts incremental audio.
         streaming_output: Whether the engine returns results incrementally.
+        self_resamples: Whether the engine resamples audio internally. This is
+            the single *behavioural* capability the spec places in Capabilities
+            rather than Properties (spec §AI 3.2, §C R7); it is engine-global
+            (a static behaviour of the engine, not per-mode), so it lives at the
+            top level alongside ``streaming_input`` / ``streaming_output``.
+
+            It is **purely informational**: ``accepted_sample_rates`` remains
+            authoritative for every resampling decision (spec §AI R7), so this
+            flag has no decision power and does NOT change whether the standard
+            resamples. It lets a client-side resampling engine (e.g.
+            faster-whisper, which declares ``accepted_sample_rates="any"``)
+            advertise that incoming audio is downsampled inside the engine
+            rather than by the standard. Absent ⇒ ``False`` (fail-closed).
     """
 
     batch: BatchCapabilities | None = None
     streaming: StreamingCapabilities | None = None
     streaming_input: FlagCap = Field(default_factory=FlagCap)
     streaming_output: FlagCap = Field(default_factory=FlagCap)
+    self_resamples: FlagCap = Field(default_factory=FlagCap)
 
     def supports(self, dot_path: str) -> bool:
         """Return whether the capability at ``dot_path`` is supported.

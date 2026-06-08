@@ -326,6 +326,7 @@ capabilities:
   # ── 引擎全局正交能力 ──
   streaming_input:          { supported }
   streaming_output:         { supported }
+  self_resamples:           { supported }   # 唯一行为性能力（§AI 3.2）；仅信息性，R7 仍以 accepted_sample_rates 为权威
 ```
 
 同一功能（如 `language`、`guidance`）在 `batch` 和 `streaming` 下**分别声明**——同一引擎在不同模式下的能力可以不同。
