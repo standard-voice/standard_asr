@@ -593,12 +593,28 @@ class _SupersedeObligation:
         self.frozen: dict[str, str] = {}
 
     def f_new(self) -> str:
-        """Return the concatenated frozen prefix of the new segments.
+        """Return the replacement's *contiguous* frozen prefix.
+
+        A frozen prefix is contiguous from position 0, so the replacement's
+        frozen prefix is the concatenation of the new segments' frozen prefixes
+        in ``new_ids`` order **only up to the first new segment that has not yet
+        frozen any text**. The streaming protocol does not forbid freezing the
+        new segments of a split out of order; a later ``new_id`` that freezes
+        before an earlier one does NOT yet contribute to position 0, so its
+        text must not be counted until the gap to its left is filled (otherwise
+        it would be misplaced and falsely flagged as rewriting ``f_old``).
 
         Returns:
-            The new segments' frozen prefixes joined in ``new_ids`` order.
+            The new segments' frozen prefixes joined in ``new_ids`` order,
+            truncated at the first not-yet-frozen (missing or empty) new id.
         """
-        return "".join(self.frozen.get(nid, "") for nid in self.new_ids)
+        parts: list[str] = []
+        for nid in self.new_ids:
+            frozen = self.frozen.get(nid, "")
+            if not frozen:
+                break
+            parts.append(frozen)
+        return "".join(parts)
 
 
 class _LifecycleGuard:

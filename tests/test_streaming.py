@@ -743,6 +743,42 @@ def test_guard_supersede_1to2_split_preserves_frozen_text() -> None:
     assert not guard.diagnostics
 
 
+def test_guard_supersede_split_out_of_order_freeze_accepted() -> None:
+    # Split of frozen "你好世界" into [b, c] (reading order). The protocol does
+    # not forbid freezing the new segments out of order: c freezes "世界" BEFORE
+    # b has frozen anything. Because a frozen prefix is contiguous from
+    # position 0, c's "世界" does NOT yet count toward the replacement's frozen
+    # prefix (b's slot is still empty), so F_new is the empty contiguous run and
+    # the event MUST be accepted with no false rewrite diagnostic. Once b later
+    # freezes "你好", F_new == "你好世界" == F_old and stays accepted.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
+    # c (the later new id) freezes "世界" first -- must NOT be misplaced at 0.
+    out_of_order = guard.admit(TranscriptionEvent.partial("c", "世界呀", stable_until=2))
+    assert out_of_order is not None
+    assert not guard.diagnostics
+    # b later freezes "你好"; the contiguous run is now "你好世界" == F_old.
+    filled = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    assert filled is not None
+    assert not guard.diagnostics
+
+
+def test_guard_supersede_split_contradiction_still_rejected() -> None:
+    # Both new segments freeze in order but c rewrites positions 2-3: b freezes
+    # "你好", c freezes "再见" -> F_new "你好再见" diverges from F_old "你好世界"
+    # on the common prefix, so it MUST still be rejected (the contradiction
+    # check survives the contiguous-run change).
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
+    first = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    assert first is not None
+    rejected = guard.admit(TranscriptionEvent.partial("c", "再见", stable_until=2))
+    assert rejected is None
+    assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
+
+
 def test_guard_supersede_rewrite_frozen_prefix_suppressed() -> None:
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
