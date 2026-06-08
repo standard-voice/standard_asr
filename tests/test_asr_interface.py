@@ -373,19 +373,65 @@ def test_ensure_stream_format_supported_rejects_unknown_encoding() -> None:
     from standard_asr.audio_format import AudioFormat
 
     engine = _WireEngine()
-    # A declared encoding passes; an undeclared one is fail-closed at session start.
-    engine.ensure_stream_format_supported(AudioFormat(encoding="mulaw", sample_rate=8000))
+    # A declared encoding at an accepted rate passes; an undeclared encoding is
+    # fail-closed at session start (encoding is checked before the rate).
+    engine.ensure_stream_format_supported(AudioFormat(encoding="mulaw", sample_rate=16000))
     with pytest.raises(UnsupportedFeatureError, match="wire encoding"):
         engine.ensure_stream_format_supported(AudioFormat(encoding="opus", sample_rate=48000))
 
 
-def test_ensure_stream_format_supported_skips_when_no_wire_encodings() -> None:
+def test_ensure_stream_format_supported_skips_encoding_when_no_wire_encodings() -> None:
     # An engine that declares no wire_encodings cannot validate encoding; the
-    # guard is a no-op (sample-rate is the standard's resampling responsibility).
+    # encoding check is a no-op. The sample-rate fail-closed still applies.
     from standard_asr.audio_format import AudioFormat
 
     _ArrayEngine().ensure_stream_format_supported(
         AudioFormat(encoding="anything", sample_rate=16000)
+    )
+
+
+def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> None:
+    # X-AU-5: v1 does NOT resample streaming wire frames, so a wire sample_rate
+    # the engine does not accept must be rejected (fail-closed), not forwarded as
+    # frames the engine never declared (silent mistranscription). _ArrayProps
+    # accepts only [16000] and declares no required_input_sample_rate.
+    from standard_asr.audio_format import AudioFormat
+
+    engine = _ArrayEngine()
+    with pytest.raises(UnsupportedFeatureError, match="wire sample_rate"):
+        engine.ensure_stream_format_supported(AudioFormat(encoding="pcm_s16le", sample_rate=44100))
+
+
+def test_ensure_stream_format_supported_accepts_required_rate_not_in_list() -> None:
+    # The wire sample_rate is accepted when it equals required_input_sample_rate
+    # (the rate the engine's wire protocol hard-requires).
+    from standard_asr.audio_format import AudioFormat
+
+    class _ReqProps(_ArrayProps):
+        native_sample_rate: int = 24000
+        accepted_sample_rates: list[int] | Literal["any"] = [24000]
+        required_input_sample_rate: int | None = 24000
+
+    class _ReqEngine(_ArrayEngine):
+        properties: ClassVar[BaseProperties] = _ReqProps()
+
+    _ReqEngine().ensure_stream_format_supported(
+        AudioFormat(encoding="pcm_s16le", sample_rate=24000)
+    )
+
+
+def test_ensure_stream_format_supported_allows_any_rate_for_any_engine() -> None:
+    # When accepted_sample_rates is "any", no wire-rate constraint applies.
+    from standard_asr.audio_format import AudioFormat
+
+    class _AnyRateProps(_ArrayProps):
+        accepted_sample_rates: list[int] | Literal["any"] = "any"
+
+    class _AnyEngine(_ArrayEngine):
+        properties: ClassVar[BaseProperties] = _AnyRateProps()
+
+    _AnyEngine().ensure_stream_format_supported(
+        AudioFormat(encoding="pcm_s16le", sample_rate=44100)
     )
 
 

@@ -106,20 +106,22 @@ opening engine resources:
 - `self.ensure_stream_inputs_exclusive(audio_format, audio)` — enforces the
   `audio_format` / `audio` mutual exclusion (ST §3.1).
 - `self.ensure_stream_format_supported(audio_format)` — **fail-closed** wire-format
-  check. It raises `UnsupportedFeatureError` when `audio_format.encoding` is not in
-  the engine's declared `wire_encodings`, so an encoding you never declared is
-  rejected up front instead of being misframed as PCM and silently mistranscribed.
-  It deliberately does **not** validate the wire sample rate: per spec R7 the
-  standard resamples wire frames to `required_input_sample_rate` (or an accepted
-  rate), and the reachability invariant (`required_input_sample_rate ∈
-  accepted_sample_rates`) is already enforced on `BaseProperties` at declaration
-  time.
+  check on both encoding and sample rate. It raises `UnsupportedFeatureError` when
+  `audio_format.encoding` is not in the engine's declared `wire_encodings`, so an
+  encoding you never declared is rejected up front instead of being misframed as PCM
+  and silently mistranscribed. It **also** rejects a wire `sample_rate` the engine
+  does not accept: per spec R7's v1 note the standard does **not** resample streaming
+  wire frames in v1 (only the batch `transcribe` path resamples), so an unreachable
+  wire rate is a loud error rather than a silent mistranscription. The rate is
+  accepted when `accepted_sample_rates` is `"any"`, when it is in that concrete list,
+  or when it equals `required_input_sample_rate`. (Standard-layer streaming resampling
+  is a deferred capability; this guard becomes a resample once it lands.)
 
 ```python
 def start_transcription(self, *, audio_format=None, params=None, audio=None):
     self.ensure_stream_inputs_exclusive(audio_format, audio)
     if audio_format is not None:
-        self.ensure_stream_format_supported(audio_format)   # fail-closed on encoding
+        self.ensure_stream_format_supported(audio_format)   # fail-closed: encoding + rate
     return MySession(...)
 ```
 

@@ -345,29 +345,51 @@ class EngineBase(ABC):
 
         Shared session-establishment guard for streaming engines: call it first
         (like :meth:`ensure_stream_inputs_exclusive`) when opening a
-        ``audio_format=...`` session. Fail-closed on the wire **encoding** -- an
-        encoding the engine never declared in ``wire_encodings`` is rejected up
-        front rather than misframed as PCM and silently mistranscribed.
+        ``audio_format=...`` session. It is **fail-closed** on both the wire
+        encoding and the wire sample rate.
 
-        The wire **sample rate** need not match the engine: per spec R7 the
-        standard resamples wire frames to ``required_input_sample_rate`` (or an
-        accepted rate), and the engine-definition invariant that the required
-        rate is itself reachable is enforced on
-        :class:`~standard_asr.asr_properties.BaseProperties`.
+        Wire **encoding**: an encoding the engine never declared in
+        ``wire_encodings`` is rejected up front rather than misframed as PCM and
+        silently mistranscribed.
+
+        Wire **sample rate**: spec R7's v1 implementation note is explicit that
+        v1 does **NOT** resample streaming bare frames in the standard layer
+        (unlike the batch ``transcribe`` path, which resamples). Therefore, until
+        standard-layer streaming resampling lands, a wire ``sample_rate`` that the
+        engine does not accept MUST be rejected here rather than forwarded as
+        frames the engine never declared -- a loud error beats a silent
+        mistranscription. The rate is accepted when ``accepted_sample_rates`` is
+        ``"any"``, when it is in that concrete list, or when it equals the
+        engine's ``required_input_sample_rate``.
 
         Args:
             audio_format: The wire format the session declared.
 
         Raises:
             UnsupportedFeatureError: If ``wire_encodings`` is declared and the
-                requested encoding is not among them.
+                requested encoding is not among them, or if the wire sample rate
+                is not reachable for the engine (fail-closed; v1 does not resample
+                streaming wire frames).
         """
-        wire = self.properties.wire_encodings
+        props = self.properties
+        wire = props.wire_encodings
         if wire is not None and audio_format.encoding not in wire:
             raise UnsupportedFeatureError(
                 f"Streaming wire encoding {audio_format.encoding!r} is not supported; "
-                f"engine {self.properties.engine_id!r} declares wire_encodings={wire}."
+                f"engine {props.engine_id!r} declares wire_encodings={wire}."
             )
+
+        accepted = props.accepted_sample_rates
+        if isinstance(accepted, list):
+            rate = audio_format.sample_rate
+            if rate not in accepted and rate != props.required_input_sample_rate:
+                raise UnsupportedFeatureError(
+                    f"Streaming wire sample_rate {rate} Hz is not accepted by engine "
+                    f"{props.engine_id!r} (accepted_sample_rates={accepted}). v1 does "
+                    "not resample streaming wire frames, so an unreachable rate is "
+                    "rejected at session establishment rather than silently "
+                    "mistranscribed. Open the session at an accepted rate."
+                )
 
     def start_transcription(
         self,
