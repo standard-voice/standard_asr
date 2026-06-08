@@ -54,10 +54,11 @@ class _BodySizeLimitMiddleware:
     BaseHTTPMiddleware body bug), which the lower-bounds CI lane caught.
 
     This is an early, cheap guard on the *declared* size. A chunked / streamed
-    request with no ``Content-Length`` bypasses it, but the transcribe handler
-    still enforces the limit authoritatively on the materialised body
-    (``len(file) > max_body_bytes``), so oversize payloads are always rejected;
-    the only residual exposure is that such a body is buffered before rejection.
+    request with no ``Content-Length`` bypasses it, but **both** transcribe
+    endpoints then enforce the limit on the materialised payload (the multipart
+    ``len(file)`` and the JSON ``len(payload.audio)``), so oversize payloads are
+    always rejected; the only residual exposure is that such a body is buffered
+    before rejection.
 
     Args:
         app: The wrapped ASGI application.
@@ -297,6 +298,14 @@ def create_app(
         Raises:
             HTTPException: If decoding or transcription fails.
         """
+        if len(payload.audio) > max_body_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Encoded audio too large: {len(payload.audio)} bytes exceeds the "
+                    f"{max_body_bytes}-byte limit."
+                ),
+            )
         try:
             audio = await asyncio.to_thread(_decode_audio_payload, payload.audio)
             params = _build_params(payload.options)

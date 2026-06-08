@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import builtins
+import json
 from importlib.metadata import EntryPoint
 from typing import Any, ClassVar, Literal
 
@@ -563,6 +564,29 @@ def test_transcribe_file_over_limit_without_content_length(
         "/v1/transcribe",
         content=_gen(),
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert resp.status_code == 413
+    assert "too large" in resp.json()["detail"]
+
+
+def test_transcribe_json_over_limit_without_content_length() -> None:
+    # The JSON endpoint must reject an over-limit encoded payload too, even when
+    # a chunked request (no Content-Length) slips past the early middleware guard.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry(), max_body_bytes=8)
+    client = TestClient(app)
+
+    body = json.dumps({"model": "dummy/echo", "audio": "x" * 64}).encode()
+
+    def _gen() -> Any:
+        yield body
+
+    resp: httpx.Response = client.post(
+        "/v1/transcribe:json",
+        content=_gen(),
+        headers={"Content-Type": "application/json"},
     )
     assert resp.status_code == 413
     assert "too large" in resp.json()["detail"]
