@@ -1285,6 +1285,45 @@ def test_guard_supersede_rewrite_frozen_prefix_suppressed() -> None:
     assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
 
 
+def test_session_supersede_rewrite_suppression_accepts_corrected_final_result() -> None:
+    async def run() -> tuple[str, list[str], list[TranscriptionEvent]]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.final("a", "hello", stable_until=5),
+                TranscriptionEvent.supersede(["a"], ["b"]),
+                TranscriptionEvent.final("b", "bye", stable_until=3),
+                TranscriptionEvent.final("b", "hello there", stable_until=5),
+            ]
+        )
+        events = await _collect(session)
+        return session.result().text, [d.code for d in session.diagnostics()], events
+
+    text, diagnostic_codes, events = asyncio.run(run())
+
+    assert text == "hello there"
+    assert diagnostic_codes == ["frozen_prefix_rewritten_supersede"]
+    assert any(e.segment_id == "b" and e.text == "hello there" for e in events)
+    assert not any(e.segment_id == "b" and e.text == "bye" for e in events)
+
+
+def test_guard_supersede_rewrite_suppression_restores_existing_freeze_state() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "hello world", stable_until=11))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    guard.admit(TranscriptionEvent.partial("b", "hello", stable_until=5))
+
+    rejected = guard.admit(TranscriptionEvent.partial("b", "hello bye", stable_until=9))
+    accepted = guard.admit(TranscriptionEvent.final("b", "hello world", stable_until=11))
+
+    assert rejected is None
+    assert accepted is not None
+    stable_until = guard._stable_until["b"]  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    frozen_text = guard._frozen_text["b"]  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert stable_until == 11
+    assert frozen_text == "hello world"
+    assert [d.code for d in guard.diagnostics] == ["frozen_prefix_rewritten_supersede"]
+
+
 def test_guard_supersede_rewrite_frozen_prefix_strict_raises() -> None:
     guard = _LifecycleGuard(strict=True)
     guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))

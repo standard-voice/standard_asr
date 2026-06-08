@@ -810,19 +810,40 @@ class _LifecycleGuard:
                     "frozen prefix is immutable).",
                 )
                 return None
+            had_stable_until = sid in self._stable_until
+            prior_stable_until = self._stable_until.get(sid, 0)
+            had_frozen_text = sid in self._frozen_text
+            prior_frozen_text = self._frozen_text.get(sid, "")
+            obligation = self._supersede_obligations.get(sid)
+            had_obligation_frozen = obligation is not None and sid in obligation.frozen
+            prior_obligation_frozen = (
+                obligation.frozen.get(sid, "") if obligation is not None else ""
+            )
+
             event = self._clamp_stable_until(event, sid)
             su = event.stable_until or 0
             if su > 0 and event.text is not None:
                 self._frozen_text[sid] = event.text[:su]
                 if not is_closed_final and not self._supersede_preserves_frozen(sid):
+                    if had_stable_until:
+                        self._stable_until[sid] = prior_stable_until
+                    else:
+                        self._stable_until.pop(sid, None)
+                    if had_frozen_text:
+                        self._frozen_text[sid] = prior_frozen_text
+                    else:
+                        self._frozen_text.pop(sid, None)
+                    assert obligation is not None
+                    if had_obligation_frozen:
+                        obligation.frozen[sid] = prior_obligation_frozen
+                    else:
+                        obligation.frozen.pop(sid, None)
                     self._reject(
                         "frozen_prefix_rewritten_supersede",
                         f"segment {sid!r} froze text that rewrites the frozen "
                         "prefix of the segment(s) it superseded; suppressed "
                         "(spec ST.5.2: supersede MUST preserve frozen text).",
                     )
-                    # Undo the freeze so subsequent state is not corrupted.
-                    del self._frozen_text[sid]
                     return None
             if event.type == "final":
                 self._state[sid] = "closed" if event.finality == "closed" else "final"

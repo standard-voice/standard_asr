@@ -442,6 +442,22 @@ def test_check_event_sequence_flags_supersede_frozen_prefix_rewrite() -> None:
     assert any("frozen_prefix_rewritten_supersede" in i.message for i in report.issues)
 
 
+def test_check_event_sequence_does_not_cascade_after_supersede_rewrite() -> None:
+    events = [
+        TranscriptionEvent.final("a", "hello", stable_until=5),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.final("b", "bye", stable_until=3),
+        TranscriptionEvent.final("b", "hello there", stable_until=5),
+        TranscriptionEvent.done(),
+    ]
+
+    report = check_event_sequence(events)
+
+    assert report.passed is False
+    assert len(report.issues) == 1
+    assert "frozen_prefix_rewritten_supersede" in report.issues[0].message
+
+
 def test_check_event_sequence_accepts_supersede_merge_preserving_frozen() -> None:
     events = [
         TranscriptionEvent.final("a", "你好", stable_until=2),
