@@ -100,13 +100,15 @@
 
 **R6 — 采样率。** canonical = 16 kHz mono。裸数组无采样率时：strict MUST 抛错（"pass AudioArray(samples, sample_rate)"）；best_effort MAY 假定 16k 但 MUST 每次发 `assumed_sample_rate` diagnostic。**绝不静默假定。** `sample_rate`：batch 选填；bare-PCM streaming 必填（会话锁定）；header-bearing buffered 输入（OpenAI SSE）自描述豁免。
 
-**R7 — 重采样责任。** `accepted_sample_rates` **始终权威**，不论 `self_resamples`：输入 ∉ accepted 且 ≠ `required_input_sample_rate` → 标准 MUST 重采样；无可达目标 = 定义错误，MUST NOT 静默透传。8 kHz 电话 = 独立原生模型，MUST 经 entrypoint preset 选择，MUST NOT 升采样原生率输入。24 kHz realtime = `required_input_sample_rate`，标准重采样；流式缺 `[audio]` 时 MUST 在会话建立时报错。
+**R7 — 重采样责任。** `accepted_sample_rates` **始终权威**，不论 `self_resamples`：输入 ∉ accepted 且 ≠ `required_input_sample_rate` → 标准 MUST 重采样；无可达目标 = 定义错误，MUST NOT 静默透传。8 kHz 电话 = 独立原生模型，MUST 经 entrypoint preset 选择，MUST NOT 升采样原生率输入。24 kHz realtime = `required_input_sample_rate`，标准重采样；流式缺 `[audio]` 时 MUST 在会话建立时报错。**可达性不变量**：`required_input_sample_rate`（若设）MUST ∈ `accepted_sample_rates`（当后者为具体列表时）——重采样目标必须可达；此不变量在 Properties **声明期**即校验（`BaseProperties`），而非延迟到会话建立。
+
+> **v1 实现说明**：v1 不在标准层重采样**流式裸帧**（流式引擎自行处理 wire 帧），因此上文"流式缺 `[audio]` 时会话建立报错"针对的是**未来**标准层流式重采样落地后的路径；v1 的会话建立校验仅做 wire 编码 fail-closed（`EngineBase.ensure_stream_format_supported`）。批量 `transcribe` 路径的重采样与 `[audio]` 行为按本条全量生效。
 
 **R8 — 重采样质量与许可证。** fallback MUST 抗混叠（FFT-based，MUST NOT 裸线性/抽取）；用了 fallback MUST 发 `resampled_with=fallback` diagnostic。许可证：SHOULD clean-room FFT；MUST NOT vendoring SoX/soxr(LGPL/GPL) 或 2016 前 libsamplerate；soxr 仅作 `[audio]` 依赖。
 
 **R9 — 内存与大媒体。** `AudioBytes`/`AudioArray` = 装得下内存的形态；大媒体 SHOULD 用 `AudioPath`/`AudioUrl`；标准读文件/URL 给文件型引擎时 SHOULD 流式不全缓冲。
 
-**R10 — 新增 Properties。** `accepted_input`/`max_file_size`/`max_audio_duration`/`native_sample_rate`/`accepted_sample_rates`/`required_input_sample_rate`/`wire_encodings` MUST 落在 §C 的层级化模型内。关于 `supported_input_formats`（容器格式协商）：v1 由 `accepted_input` + encoder 容器选择间接覆盖，后续可 additive 补充。
+**R10 — 新增 Properties。** `accepted_input`/`max_file_size`/`max_audio_duration`/`native_sample_rate`/`accepted_sample_rates`/`required_input_sample_rate`/`wire_encodings` MUST 落在 §C 的层级化模型内。关于 `supported_input_formats`（容器格式协商）：v1 由 `accepted_input` + encoder 容器选择间接覆盖，后续可 additive 补充。`max_audio_duration` **强制点**：标准仅在输入**已解码为数组**（时长可测）时校验并 fail-loud；编码透传（file/bytes passthrough）MUST NOT 为测时长而强制全解码（见 R9），改由 `max_file_size` 作本地护栏 + 引擎自行兜底。
 
 ## 5. 示例
 
@@ -160,6 +162,7 @@
 - **为何采样率放 Properties**：采样率是引擎的静态 I/O 边界，不随功能/模式改变。唯一例外 `self_resamples`（行为性）归 Capabilities。
 - **为何 8 kHz 走 preset**：8 kHz 模型是完全不同的模型（训练数据、声学特征不同），不是"同一模型的低采样率版"。阿里/Google 均明确警告升采样掉精度。
 - **重采样许可证**：soxr (LGPL) 不能 vendoring 进 Apache-2.0 核心。内置 FFT 实现（算法不可版权化）确保许可证干净。
+- **为何 HTTP server 不预解码**：工具链 server 收到上传后 MUST 以 `AudioBytes`（multipart）/`AudioBase64`（JSON）形态喂入引擎自身的标准协商，MUST NOT 自行预解码/归一到 16 kHz。否则会破坏按引擎的采样率要求（R7，如 8 kHz 电话被静默升采样、24 kHz realtime 无法协商），也会让只接受 encoded/url 的云引擎无法被 server 暴露（违背 G.2.2"封装任何引擎"）。base64 仅作传输编码，由协商层解码。
 
 
 ---
@@ -343,7 +346,7 @@ capabilities:
 
 **R5 — `engine.supports()` 点路径查询。** 应用查询能力的**唯一**标准方式。缺失路径返回 `False`（R1 的体现）。应用 MUST NOT 手动遍历能力树或捕获缺键异常。
 
-**R6 — canonical JSON。** `capabilities` 在 Python 侧是 typed pydantic 树；REST `GET .../capabilities` 暴露 canonical JSON，每个节点带（派生的）`supported` 字段。enum/mode 节点的 `supported` 由服务端注入（跨语言统一探针）。
+**R6 — canonical JSON。** `capabilities` 在 Python 侧是 typed pydantic 树；REST `GET .../capabilities` 暴露 canonical JSON，每个节点（叶节点 + **存在的容器/mode 域**）带（派生的）`supported` 字段。enum/mode 节点的 `supported` 由服务端注入（跨语言统一探针），实现见 `DeclaredCapabilities.canonical_json()`。结构契约（跨语言客户端 MUST 可依赖）：**根对象本身不带 `supported`**（它是所有 mode 的容器，非能力）；**缺席的 mode 域序列化为 `null`**（fail-closed，等价于不支持）；`constraints` 等限额子模型非能力节点，**不注入** `supported`（仅保留其限额字段）。
 
 **R7 — Capabilities 与 Properties 边界（定死一处家）。**
 

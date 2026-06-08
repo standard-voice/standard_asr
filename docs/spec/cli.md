@@ -15,7 +15,10 @@ Show metadata about a specific model entry point.
 Display (and optionally create) the Standard ASR model cache directory.
 
 ### `standard-asr models prepare <engine/model>`
-Warm up a model by loading or downloading weights.
+Warm up a model by loading or downloading weights. `prepare` is best-effort: for
+an engine that declares no `prepare()` hook it is a reported no-op ("nothing to
+warm up") and never transcribes, so a cloud engine is never billed for a stand-in
+request.
 
 ### `standard-asr compliance entrypoints`
 Validate entry points and factories. Use `--no-instantiate` to avoid loading

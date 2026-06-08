@@ -171,7 +171,10 @@ pip install "standard-asr[server]"
 standard-asr serve --host 0.0.0.0 --port 8000
 ```
 
-See [`docs/spec/`](docs/spec/) for the protocol specification and the HTTP/WebSocket API contract.
+See [`docs/spec/server.md`](docs/spec/server.md) for the full HTTP/WebSocket API contract,
+and [`docs/spec/`](docs/spec/) for the protocol specification. The WebSocket endpoint covers
+the incremental-streaming path (declare an `audio_format`, push raw PCM frames, receive live
+events); whole-input engines use the batch HTTP endpoints.
 
 ---
 

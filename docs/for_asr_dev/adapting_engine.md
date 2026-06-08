@@ -98,6 +98,31 @@ bridge — you only write `async`. See the spec §ST for the event model
 (`partial`/`final`/`supersede`/`progress`/`done`/`error`) and the `stable_until`
 rules.
 
+### Session-establishment guards
+
+Override `start_transcription(...)` and call the two shared guards first, before
+opening engine resources:
+
+- `self.ensure_stream_inputs_exclusive(audio_format, audio)` — enforces the
+  `audio_format` / `audio` mutual exclusion (ST §3.1).
+- `self.ensure_stream_format_supported(audio_format)` — **fail-closed** wire-format
+  check. It raises `UnsupportedFeatureError` when `audio_format.encoding` is not in
+  the engine's declared `wire_encodings`, so an encoding you never declared is
+  rejected up front instead of being misframed as PCM and silently mistranscribed.
+  It deliberately does **not** validate the wire sample rate: per spec R7 the
+  standard resamples wire frames to `required_input_sample_rate` (or an accepted
+  rate), and the reachability invariant (`required_input_sample_rate ∈
+  accepted_sample_rates`) is already enforced on `BaseProperties` at declaration
+  time.
+
+```python
+def start_transcription(self, *, audio_format=None, params=None, audio=None):
+    self.ensure_stream_inputs_exclusive(audio_format, audio)
+    if audio_format is not None:
+        self.ensure_stream_format_supported(audio_format)   # fail-closed on encoding
+    return MySession(...)
+```
+
 ## Credentials & environment fallback (IC.4)
 
 Build your config with `Config.from_env(engine_id, **explicit)` instead of the
@@ -123,6 +148,32 @@ reconnect, detect the disconnect, re-establish, replay `self.replay_buffer()`,
 keep `segment_id`/timestamps/language continuous, and call
 `self.note_reconnect(gap_start, gap_end)` (the base then emits the
 `progress(reconnect)` / `content_lost` events).
+
+### Sequence invariants the guard enforces for free
+
+Beyond lifecycle transitions and monotonic `stable_until`, the base `_LifecycleGuard`
+also enforces two further per-stream invariants on every event you yield, so a
+slipped engine still cannot emit a wrong transcript:
+
+- **Monotonic audio cursor** — a decreasing `audio_processed_until` is clamped to
+  the prior value (the cursor never moves backwards; ST §4.1), with an
+  `audio_cursor_decreased` diagnostic (or a raise in `strict_lifecycle`).
+- **Frozen-prefix immutability** — an event that rewrites a segment's
+  already-frozen prefix (`text[:stable_until]` changed) is suppressed with a
+  `frozen_prefix_rewritten` diagnostic (the frozen prefix is immutable; ST §4.2).
+
+The full set of standard-layer diagnostic codes the guard can emit (read them off
+the session with `session.diagnostics()`):
+
+- `stable_until_clamped` — a decreasing or invalid `stable_until` was clamped.
+- `audio_cursor_decreased` — a decreasing `audio_processed_until` was clamped.
+- `frozen_prefix_rewritten` — an event rewriting a frozen prefix was suppressed.
+- `lifecycle_after_terminal` — a `partial`/`final` after the segment became
+  `closed`/`superseded` was suppressed.
+- `lifecycle_partial_after_final` — a `partial` after the segment's `final` was
+  suppressed.
+- `lifecycle_closed_superseded` — a `supersede` retiring a `closed` segment was
+  suppressed.
 
 ## Publish
 
