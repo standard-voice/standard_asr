@@ -224,6 +224,22 @@ def test_check_entrypoints_raising_effective_caps_is_reported_not_crash() -> Non
     assert any("not a subset" in i.message for i in report.issues)
 
 
+def test_check_entrypoints_wrong_typed_effective_caps_fails() -> None:
+    # A non-None effective_capabilities of the wrong type MUST NOT silently skip
+    # the effective ⊆ declared check -- it is itself a compliance error, so the
+    # invariant cannot be evaded by returning the wrong type.
+    report = check_entrypoints(registry=_registry("wrong_type_effective_factory"))
+    assert report.passed is False
+    assert any("is not a DeclaredCapabilities" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_none_effective_caps_passes() -> None:
+    # effective_capabilities = None (engine declares no narrowing) is a legitimate
+    # no-op and MUST pass.
+    report = check_entrypoints(registry=_registry("none_effective_factory"))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
 def test_check_entrypoints_open_provider_params_errors() -> None:
     report = check_entrypoints(registry=_registry("open_params_factory"))
     assert any("closed type" in i.message for i in report.issues)

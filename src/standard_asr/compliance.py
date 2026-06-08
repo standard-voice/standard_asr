@@ -331,13 +331,32 @@ def check_entrypoints(
                     )
                 )
             else:
-                if isinstance(effective, DeclaredCapabilities) and not declared.covers(effective):
+                if isinstance(effective, DeclaredCapabilities):
+                    if not declared.covers(effective):
+                        issues.append(
+                            ComplianceIssue(
+                                level="error",
+                                message=(
+                                    "effective_capabilities is not a subset of "
+                                    "declared_capabilities (effective MUST only narrow)."
+                                ),
+                                model=name,
+                            )
+                        )
+                elif effective is not None:
+                    # A non-None, wrong-typed ``effective`` is itself a violation:
+                    # the effective ⊆ declared invariant MUST NOT be evadable by
+                    # returning the wrong type (which would silently skip the
+                    # subset check). ``None`` (engine declares no narrowing) stays
+                    # a legitimate no-op.
                     issues.append(
                         ComplianceIssue(
                             level="error",
                             message=(
-                                "effective_capabilities is not a subset of "
-                                "declared_capabilities (effective MUST only narrow)."
+                                "effective_capabilities is not a DeclaredCapabilities "
+                                f"(got {type(effective).__name__!r}); it MUST be a "
+                                "DeclaredCapabilities (or None) so the effective ⊆ "
+                                "declared invariant can be verified."
                             ),
                             model=name,
                         )
