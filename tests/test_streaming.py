@@ -146,6 +146,25 @@ async def _collect(session: TranscriptionSession) -> list[TranscriptionEvent]:
     return events
 
 
+def test_attach_initial_diagnostics_surface_through_diagnostics() -> None:
+    # The base start_transcription template attaches gating / language
+    # diagnostics to the session; they MUST surface through diagnostics(),
+    # ordered before the runtime's lifecycle-suppression diagnostics.
+    from standard_asr.results import Diagnostic
+
+    session = _EchoSession()
+    assert session.diagnostics() == []
+    injected = [
+        Diagnostic(level="warning", code="unsupported_parameter_ignored", message="dropped"),
+    ]
+    session._attach_initial_diagnostics(injected)  # pyright: ignore[reportPrivateUsage]
+    diags = session.diagnostics()
+    assert [d.code for d in diags] == ["unsupported_parameter_ignored"]
+    # A second attach replaces (does not accumulate) the initial set.
+    session._attach_initial_diagnostics([])  # pyright: ignore[reportPrivateUsage]
+    assert session.diagnostics() == []
+
+
 def test_session_feed_mode() -> None:
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession()

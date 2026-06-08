@@ -993,6 +993,11 @@ class TranscriptionSession(ABC):
         self._replay_source: tuple[bytes, ...] | None = None
         self._pending_reconnects: list[TranscriptionEvent] = []
         self._monotonic = time.monotonic
+        # Standard-layer diagnostics (parameter gating / language resolution)
+        # attached by the base ``start_transcription`` template before the
+        # session is handed to the application, so they surface through the
+        # session's existing ``diagnostics()`` channel.
+        self._initial_diagnostics: list[Diagnostic] = []
 
     # ----- author hooks ---------------------------------------------------- #
     async def _open(self) -> None:
@@ -1381,14 +1386,32 @@ class TranscriptionSession(ABC):
             if event.is_terminal:
                 return
 
-    def diagnostics(self) -> list[Diagnostic]:
-        """Return lifecycle-suppression diagnostics accumulated so far.
+    def _attach_initial_diagnostics(self, diagnostics: list[Diagnostic]) -> None:
+        """Record standard-layer diagnostics produced before the session ran.
+
+        Called once by the base :meth:`~standard_asr.asr_interface.EngineBase.\
+start_transcription` template with the parameter-gating and language-axis
+        diagnostics, so they surface through :meth:`diagnostics` alongside the
+        runtime's lifecycle-suppression diagnostics.
+
+        Args:
+            diagnostics: The gating / language diagnostics to attach.
 
         Returns:
-            The structured diagnostics for any suppressed illegal transitions
-            or clamped ``stable_until`` values.
+            None.
         """
-        return list(self._guard.diagnostics)
+        self._initial_diagnostics = list(diagnostics)
+
+    def diagnostics(self) -> list[Diagnostic]:
+        """Return the diagnostics accumulated for this session so far.
+
+        Returns:
+            The standard-layer parameter-gating / language diagnostics attached
+            at session establishment, followed by the runtime's
+            lifecycle-suppression diagnostics (suppressed illegal transitions or
+            clamped ``stable_until`` values).
+        """
+        return [*self._initial_diagnostics, *self._guard.diagnostics]
 
     @property
     def done_timeout(self) -> float:
