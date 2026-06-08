@@ -155,6 +155,15 @@ def test_from_env_wraps_secret_and_masks() -> None:
     assert cfg.api_key.get_secret_value() == "super-secret"
 
 
+def test_from_env_does_not_downgrade_strict_policy() -> None:
+    # Env fallback MUST NOT let the environment flip the fail-loud `strict`
+    # safety policy to best_effort (X-EL-1).
+    env = {"STANDARD_ASR_ACME_STRICT": "false"}
+    assert "strict" not in _CloudConfig.env_overrides("acme", environ=env)
+    cfg = _CloudConfig.from_env("acme", environ=env)
+    assert cfg.strict is True
+
+
 def test_from_env_does_not_read_engine_discriminator() -> None:
     env = {"STANDARD_ASR_ACME_ENGINE": "evil"}
     cfg = _CloudConfig.from_env("acme", environ=env)

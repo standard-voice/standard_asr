@@ -29,7 +29,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, SecretBytes, SecretStr
 
@@ -165,6 +165,13 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         description="Unsupported-parameter policy: True=strict, False=best_effort.",
     )
 
+    #: Base fields that MUST NOT be sourced from the environment (IC.4). Env
+    #: fallback covers standard *config* fields (credentials, endpoint routing,
+    #: device, language, download root) only -- never the ``engine`` identity
+    #: (entrypoint-derived) nor the ``strict`` safety policy, which would let the
+    #: environment silently downgrade fail-loud to best_effort with no diagnostic.
+    _ENV_EXCLUDED_FIELDS: ClassVar[frozenset[str]] = frozenset({"engine", "strict"})
+
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         """Enforce that secret-marked fields use a masking secret annotation (IC.3).
@@ -230,6 +237,9 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
 
         The ``engine`` discriminator is never read from the environment; it is
         the entrypoint-derived identity and defaults on each engine's subclass.
+        The ``strict`` safety policy is likewise excluded so the environment can
+        never silently downgrade fail-loud to best_effort (see
+        :attr:`_ENV_EXCLUDED_FIELDS`).
 
         Args:
             engine_id: The engine identifier used to build env var names.
@@ -278,7 +288,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         seen: dict[str, str] = {}
         overrides: dict[str, Any] = {}
         for field_name in cls.model_fields:
-            if field_name == "engine":
+            if field_name in cls._ENV_EXCLUDED_FIELDS:
                 continue
             var = env_var_name(engine_id, field_name)
             if var in seen:
