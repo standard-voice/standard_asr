@@ -414,8 +414,11 @@ def test_ensure_stream_format_supported_rejects_unknown_encoding() -> None:
     # A declared encoding at an accepted rate passes; an undeclared encoding is
     # fail-closed at session start (encoding is checked before the rate).
     engine.ensure_stream_format_supported(AudioFormat(encoding="mulaw", sample_rate=16000))
-    with pytest.raises(UnsupportedFeatureError, match="wire encoding"):
+    with pytest.raises(UnsupportedFeatureError, match="wire encoding") as exc_info:
         engine.ensure_stream_format_supported(AudioFormat(encoding="opus", sample_rate=48000))
+    assert exc_info.value.param == "audio_format.encoding"
+    assert exc_info.value.mode == "streaming"
+    assert exc_info.value.hint is not None
 
 
 def test_ensure_stream_format_supported_skips_encoding_when_no_wire_encodings() -> None:
@@ -436,8 +439,11 @@ def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> Non
     from standard_asr.audio_format import AudioFormat
 
     engine = _ArrayEngine()
-    with pytest.raises(UnsupportedFeatureError, match="wire sample_rate"):
+    with pytest.raises(UnsupportedFeatureError, match="wire sample_rate") as exc_info:
         engine.ensure_stream_format_supported(AudioFormat(encoding="pcm_s16le", sample_rate=44100))
+    assert exc_info.value.param == "audio_format.sample_rate"
+    assert exc_info.value.mode == "streaming"
+    assert exc_info.value.hint is not None
 
 
 def test_ensure_stream_format_supported_accepts_required_rate_not_in_list() -> None:

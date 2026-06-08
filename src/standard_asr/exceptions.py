@@ -67,10 +67,30 @@ class UnsupportedFeatureError(StandardASRError):
     """Raised in strict mode when a requested standard feature is unsupported.
 
     In best_effort mode the unsupported parameter is ignored and a structured
-    diagnostic is returned instead of raising.
+    diagnostic is returned instead of raising. The strict path carries the same
+    structured context as that diagnostic so callers can inspect *which* feature
+    was rejected without parsing the message.
+
+    Args:
+        message: Human-readable description of the rejection.
+        param: The offending standard parameter name, if applicable.
+        mode: The mode (``"batch"`` / ``"streaming"``) the rejection occurred in,
+            if applicable.
+        hint: Actionable guidance for resolving the rejection, if any.
     """
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        param: str | None = None,
+        mode: str | None = None,
+        hint: str | None = None,
+    ) -> None:
+        self.param = param
+        self.mode = mode
+        self.hint = hint
+        super().__init__(message)
 
 
 class InvalidProviderParamError(StandardASRError, ValueError):

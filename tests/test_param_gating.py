@@ -65,8 +65,14 @@ def test_supported_param_passes() -> None:
 
 
 def test_unsupported_strict_raises() -> None:
-    with pytest.raises(UnsupportedFeatureError):
+    with pytest.raises(UnsupportedFeatureError) as exc_info:
         gate_params(RuntimeParams(language="en"), _caps(), "batch", strict=True)
+    # The strict error exposes the same structured context as the best_effort
+    # diagnostic (INTE-4): which parameter, in which mode, and a hint.
+    err = exc_info.value
+    assert err.param == "language"
+    assert err.mode == "batch"
+    assert err.hint is not None
 
 
 def test_unsupported_best_effort_drops() -> None:
@@ -148,8 +154,12 @@ def test_granularity_offered_passes() -> None:
 
 def test_granularity_not_offered_strict_raises() -> None:
     params = RuntimeParams(word_timestamps=WordTimestampGranularity.CHAR)
-    with pytest.raises(UnsupportedFeatureError):
+    with pytest.raises(UnsupportedFeatureError) as exc_info:
         gate_params(params, _wt_caps("word", "segment"), "batch", strict=True)
+    err = exc_info.value
+    assert err.param == "word_timestamps"
+    assert err.mode == "batch"
+    assert err.hint is not None
 
 
 def test_granularity_not_offered_best_effort_drops() -> None:
@@ -303,8 +313,11 @@ def test_prompt_within_max_tokens_passes() -> None:
 
 def test_prompt_over_max_tokens_strict_raises() -> None:
     params = RuntimeParams(prompt="one two three four")
-    with pytest.raises(UnsupportedFeatureError, match="tokens"):
+    with pytest.raises(UnsupportedFeatureError, match="tokens") as exc_info:
         gate_params(params, _guidance_caps(prompt_max_tokens=2), "batch", strict=True)
+    assert exc_info.value.param == "prompt"
+    assert exc_info.value.mode == "batch"
+    assert exc_info.value.hint is not None
 
 
 def test_prompt_over_max_tokens_best_effort_truncates() -> None:
@@ -325,8 +338,11 @@ def test_prompt_unbounded_limit_noop() -> None:
 
 def test_phrase_hints_too_many_terms_strict_raises() -> None:
     params = RuntimeParams(phrase_hints=["a", "b", "c"])
-    with pytest.raises(UnsupportedFeatureError, match="limits"):
+    with pytest.raises(UnsupportedFeatureError, match="limits") as exc_info:
         gate_params(params, _guidance_caps(hints_max_terms=2), "batch", strict=True)
+    assert exc_info.value.param == "phrase_hints"
+    assert exc_info.value.mode == "batch"
+    assert exc_info.value.hint is not None
 
 
 def test_phrase_hints_too_many_terms_best_effort_truncates() -> None:
@@ -393,8 +409,11 @@ def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:
     params = RuntimeParams(
         phrase_hints=["Anthropic", "Claude", "Opus"], on_unsupported="degrade_to_prompt"
     )
-    with pytest.raises(UnsupportedFeatureError):
+    with pytest.raises(UnsupportedFeatureError) as exc_info:
         gate_params(params, caps, "batch", strict=True)
+    assert exc_info.value.param == "prompt"
+    assert exc_info.value.mode == "batch"
+    assert exc_info.value.hint is not None
 
 
 def test_guidance_limits_enforced_in_streaming_mode() -> None:

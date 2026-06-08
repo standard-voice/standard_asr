@@ -377,7 +377,10 @@ class EngineBase(ABC):
         if wire is not None and audio_format.encoding not in wire:
             raise UnsupportedFeatureError(
                 f"Streaming wire encoding {audio_format.encoding!r} is not supported; "
-                f"engine {props.engine_id!r} declares wire_encodings={wire}."
+                f"engine {props.engine_id!r} declares wire_encodings={wire}.",
+                param="audio_format.encoding",
+                mode="streaming",
+                hint=f"Open the session with one of the declared wire_encodings={wire}.",
             )
 
         accepted = props.accepted_sample_rates
@@ -389,7 +392,10 @@ class EngineBase(ABC):
                     f"{props.engine_id!r} (accepted_sample_rates={accepted}). v1 does "
                     "not resample streaming wire frames, so an unreachable rate is "
                     "rejected at session establishment rather than silently "
-                    "mistranscribed. Open the session at an accepted rate."
+                    "mistranscribed. Open the session at an accepted rate.",
+                    param="audio_format.sample_rate",
+                    mode="streaming",
+                    hint=f"Open the session at an accepted_sample_rates value: {accepted}.",
                 )
 
     def _overrides_streaming(self) -> bool:

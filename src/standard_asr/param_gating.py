@@ -138,7 +138,13 @@ def gate_params(
             continue
         if strict:
             raise UnsupportedFeatureError(
-                f"Parameter {field_name!r} is not supported in {mode} mode."
+                f"Parameter {field_name!r} is not supported in {mode} mode.",
+                param=field_name,
+                mode=mode,
+                hint=(
+                    "Use best_effort to drop it with a diagnostic, or choose an "
+                    "engine that supports it."
+                ),
             )
         updates[field_name] = None
         diagnostics.append(
@@ -207,7 +213,10 @@ def _gate_granularity(
     if strict:
         raise UnsupportedFeatureError(
             f"word_timestamps granularity {requested.value!r} is not supported "
-            f"in {mode} mode (offered: {sorted(node.granularities)})."
+            f"in {mode} mode (offered: {sorted(node.granularities)}).",
+            param="word_timestamps",
+            mode=mode,
+            hint=f"Request one of the offered granularities: {sorted(node.granularities)}.",
         )
     updates["word_timestamps"] = None
     diagnostics.append(
@@ -286,7 +295,10 @@ def _enforce_prompt_limit(
         return
     if strict:
         raise UnsupportedFeatureError(
-            f"prompt has {len(tokens)} tokens; max is {max_tokens} in {mode} mode."
+            f"prompt has {len(tokens)} tokens; max is {max_tokens} in {mode} mode.",
+            param="prompt",
+            mode=mode,
+            hint=f"Shorten the prompt to at most {max_tokens} whitespace tokens.",
         )
     truncated = " ".join(tokens[:max_tokens])
     updates["prompt"] = truncated
@@ -368,7 +380,14 @@ def _enforce_phrase_hints_limits(
         raise UnsupportedFeatureError(
             f"phrase_hints violate declared limits in {mode} mode "
             f"(max_terms={c.max_terms}, max_chars_per_term={c.max_chars_per_term}, "
-            f"max_words_per_term={c.max_words_per_term})."
+            f"max_words_per_term={c.max_words_per_term}).",
+            param="phrase_hints",
+            mode=mode,
+            hint=(
+                f"Keep within max_terms={c.max_terms}, "
+                f"max_chars_per_term={c.max_chars_per_term}, "
+                f"max_words_per_term={c.max_words_per_term}."
+            ),
         )
     kept = hints if c.max_terms is None else hints[: c.max_terms]
     truncated = [
@@ -470,7 +489,13 @@ def _try_degrade_to_prompt(
         if strict:
             raise UnsupportedFeatureError(
                 f"Degraded prompt would have {_count_tokens(combined)} tokens; "
-                f"max is {max_tokens} in {mode} mode."
+                f"max is {max_tokens} in {mode} mode.",
+                param="prompt",
+                mode=mode,
+                hint=(
+                    f"Provide fewer phrase_hints so the synthesized prompt fits "
+                    f"within {max_tokens} tokens."
+                ),
             )
         truncated = " ".join(combined.split()[:max_tokens])
         diagnostics.append(
