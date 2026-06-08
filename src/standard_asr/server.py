@@ -280,14 +280,11 @@ def create_app(
         Raises:
             None.
         """
-        return [
-            ModelInfo(
-                key=name,
-                engine_id=model_registry.spec(name).engine_id,
-                model_name=model_registry.spec(name).model_name,
-            )
-            for name in model_registry.names()
-        ]
+        infos: list[ModelInfo] = []
+        for name in model_registry.names():
+            spec = model_registry.spec(name)
+            infos.append(ModelInfo(key=name, engine_id=spec.engine_id, model_name=spec.model_name))
+        return infos
 
     @app.post("/v1/transcribe", response_model=TranscribeResponse)
     async def transcribe_file(  # pyright: ignore[reportUnusedFunction]
