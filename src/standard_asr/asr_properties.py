@@ -57,7 +57,6 @@ class BaseProperties(BaseModel):
         frozen=True,
         extra="forbid",
         str_strip_whitespace=True,
-        validate_assignment=True,
         # `model_name` is a deliberate, central field of this protocol. Opt out of
         # pydantic's `model_` protected namespace so it does not warn (the warning
         # fires on older pydantic, e.g. the lower-bounds lane's 2.5).

@@ -150,7 +150,6 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         frozen=True,
         extra="forbid",
         str_strip_whitespace=True,
-        validate_assignment=True,
         # Accept fields by their attribute name as well as their alias (IC.4):
         # env fallback keys by attribute name (e.g. ``api_key``), but a credential
         # may declare a provider-native alias (e.g. ElevenLabs ``xi-api-key``).
