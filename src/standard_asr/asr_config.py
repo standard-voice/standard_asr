@@ -251,12 +251,16 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         return mapping
 
     def public_dump(self) -> dict[str, Any]:
-        """Return a serialization with secrets masked.
+        """Return a serialization with secrets masked (IC.3, the default path).
 
-        Suitable for ``/v1/models``, persistence, and telemetry. ``SecretStr``
-        fields are rendered as ``"**********"`` (never plaintext). As a defensive
-        measure, **any** secret-marked field is masked by name, so even a value
-        that (hypothetically) slipped through as plaintext is never emitted.
+        This is the **masked** half of the secret-serialization contract and is
+        the serialization to use for ``/v1/models``, persistence, and telemetry.
+        ``SecretStr`` fields are rendered as :data:`SECRET_MASK` (never
+        plaintext). As a defensive measure, **any** secret-marked field is masked
+        by name, so even a value that (hypothetically) slipped through as
+        plaintext is never emitted. The default pydantic serializers
+        (``model_dump`` / ``model_dump_json``) likewise mask ``SecretStr``; use
+        :meth:`reveal_dump` only when plaintext is genuinely required in-process.
 
         Returns:
             A JSON-safe dict with credentials masked.
@@ -266,6 +270,29 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
             if _is_secret_marked(field) and dumped.get(name) is not None:
                 dumped[name] = SECRET_MASK
         return dumped
+
+    def reveal_dump(self) -> dict[str, Any]:
+        """Return a serialization with secrets materialized as plaintext (IC.3).
+
+        This is the **reveal** half of the secret-serialization contract: the
+        explicit, named counterpart to :meth:`public_dump`. Use it **only** for
+        in-process calls into an engine SDK that needs the raw credential (e.g.
+        an ``Authorization`` header). The result contains plaintext secrets and
+        MUST NEVER be logged, persisted, sent to ``/v1/models``, or emitted as
+        telemetry -- those paths use :meth:`public_dump`.
+
+        ``SecretStr`` / ``SecretBytes`` fields are unwrapped via
+        ``get_secret_value()``; all other fields keep their Python values (no
+        JSON coercion), so a credential is returned as the engine SDK expects it.
+
+        Returns:
+            A dict with secret-marked fields materialized to plaintext.
+        """
+        revealed = dict(self)
+        for name, value in revealed.items():
+            if isinstance(value, _SECRET_TYPES):
+                revealed[name] = value.get_secret_value()
+        return revealed
 
     @classmethod
     def from_env(

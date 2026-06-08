@@ -43,6 +43,23 @@ def test_secret_is_masked_in_public_dump() -> None:
     assert cfg.api_key.get_secret_value() == "super-secret"
 
 
+def test_reveal_dump_materializes_secret_plaintext() -> None:
+    # reveal_dump() is the explicit, symmetric counterpart to public_dump() for
+    # in-process SDK calls (INIT-4): secrets are materialized as plaintext.
+    cfg = _CloudConfig(api_key=SecretStr("super-secret"), base_url="https://api.acme.test")
+    revealed = cfg.reveal_dump()
+    assert revealed["api_key"] == "super-secret"
+    assert revealed["base_url"] == "https://api.acme.test"
+    # public_dump() stays masked for the same instance.
+    assert "super-secret" not in str(cfg.public_dump())
+
+
+def test_reveal_dump_leaves_unset_secret_as_none() -> None:
+    cfg = _CloudConfig()
+    revealed = cfg.reveal_dump()
+    assert revealed["api_key"] is None
+
+
 def test_secret_field_marks_schema() -> None:
     schema = _CloudConfig.model_json_schema()
     assert schema["properties"]["api_key"].get("secret") is True
