@@ -555,7 +555,11 @@ class _GatingStreamEngine(EngineBase):
         return TranscriptionResult(text="")
 
     def _start_transcription(
-        self, *, gated_params: RuntimeParams, audio_format: Any = None, audio: Any = None
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
     ) -> TranscriptionSession:
         return _GatingSession()
 

@@ -22,7 +22,9 @@ from standard_asr import (
     TranscriptionResult,
 )
 from standard_asr.asr_config import LanguageConfigMixin
-from standard_asr.audio_input import AudioArray, AudioPath, InputKind
+from standard_asr.audio_format import AudioFormat
+from standard_asr.audio_input import AudioArray, AudioPath, AudioUrl, InputKind
+from standard_asr.audio_negotiation import UnsafeAudioUrlError
 from standard_asr.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
@@ -33,6 +35,7 @@ from standard_asr.capabilities import (
     StreamingCapabilities,
 )
 from standard_asr.exceptions import (
+    AudioProcessingError,
     IncompatibleAudioInputError,
     InvalidProviderParamError,
     UnsupportedFeatureError,
@@ -548,16 +551,104 @@ class _StreamEngine(_ArrayEngine):
 
     #: Captures the params the base handed to the hook (R5 freeze assertions).
     received: ClassVar[RuntimeParams | None] = None
+    #: Captures the prepared whole-input audio handed to the hook.
+    received_prepared_audio: ClassVar[PreparedAudio | None] = None
+    #: Distinguishes "hook received None" from "hook was not reached".
+    hook_called: ClassVar[bool] = False
 
     def _start_transcription(
         self,
         *,
         gated_params: RuntimeParams,
-        audio_format: object = None,
-        audio: object = None,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
     ) -> TranscriptionSession:
         type(self).received = gated_params
+        type(self).received_prepared_audio = prepared_audio
+        type(self).hook_called = True
         return _StreamSession()
+
+
+class _UrlStreamProps(_ArrayProps):
+    accepted_input: set[InputKind] = {InputKind.FETCHABLE_URL}
+
+
+class _UrlStreamEngine(_StreamEngine):
+    properties: ClassVar[BaseProperties] = _UrlStreamProps()
+
+
+class _EncodedStreamProps(_ArrayProps):
+    accepted_input: set[InputKind] = {InputKind.ENCODED_BYTES}
+
+
+class _EncodedStreamEngine(_StreamEngine):
+    properties: ClassVar[BaseProperties] = _EncodedStreamProps()
+
+
+def test_whole_input_streaming_audio_url_rejected_by_ssrf_before_hook() -> None:
+    _UrlStreamEngine.hook_called = False
+
+    with pytest.raises(UnsafeAudioUrlError):
+        _UrlStreamEngine().start_transcription(audio=AudioUrl("https://127.0.0.1/a.wav"))
+
+    assert _UrlStreamEngine.hook_called is False
+
+
+def test_whole_input_streaming_bare_array_strict_requires_sample_rate() -> None:
+    _StreamEngine.hook_called = False
+
+    with pytest.raises(AudioProcessingError, match="no sample rate"):
+        _StreamEngine(strict=True).start_transcription(
+            audio=np.zeros(8, dtype=np.float32),
+        )
+
+    assert _StreamEngine.hook_called is False
+
+
+def test_whole_input_streaming_bare_array_best_effort_assumes_rate_and_diagnoses() -> None:
+    _StreamEngine.hook_called = False
+    _StreamEngine.received_prepared_audio = None
+
+    session = _StreamEngine(strict=False).start_transcription(
+        audio=np.zeros(8, dtype=np.float32),
+    )
+
+    prepared = _StreamEngine.received_prepared_audio
+    assert _StreamEngine.hook_called is True
+    assert prepared is not None
+    assert prepared.kind is InputKind.ARRAY
+    assert prepared.sample_rate == 16000
+    assert any(d.code == "assumed_sample_rate" for d in session.diagnostics())
+
+
+def test_whole_input_streaming_array_to_encoded_hook_receives_prepared_audio() -> None:
+    _EncodedStreamEngine.hook_called = False
+    _EncodedStreamEngine.received_prepared_audio = None
+
+    _EncodedStreamEngine().start_transcription(
+        audio=AudioArray(np.zeros(8, dtype=np.float32), 16000),
+    )
+
+    prepared = _EncodedStreamEngine.received_prepared_audio
+    assert _EncodedStreamEngine.hook_called is True
+    assert isinstance(prepared, PreparedAudio)
+    assert prepared.kind is InputKind.ENCODED_BYTES
+    assert prepared.array is None
+    assert prepared.data is not None
+    assert prepared.data.startswith(b"RIFF")
+    assert prepared.container == "wav"
+
+
+def test_incremental_streaming_audio_format_hook_receives_no_prepared_audio() -> None:
+    _StreamEngine.hook_called = False
+    _StreamEngine.received_prepared_audio = None
+
+    _StreamEngine().start_transcription(
+        audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000),
+    )
+
+    assert _StreamEngine.hook_called is True
+    assert _StreamEngine.received_prepared_audio is None
 
 
 def test_streaming_provider_params_swap_raises() -> None:
@@ -653,7 +744,10 @@ def test_base_start_transcription_hook_raises_unsupported() -> None:
     # subclass that calls super()._start_transcription() must get the clear error.
     with pytest.raises(UnsupportedFeatureError, match="does not support streaming"):
         EngineBase._start_transcription(  # pyright: ignore[reportPrivateUsage]
-            _ArrayEngine(), gated_params=RuntimeParams(), audio_format=None, audio=None
+            _ArrayEngine(),
+            gated_params=RuntimeParams(),
+            audio_format=None,
+            prepared_audio=None,
         )
 
 

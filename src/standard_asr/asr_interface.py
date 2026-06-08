@@ -473,8 +473,10 @@ class EngineBase(ABC):
         pipeline and delegates only the engine-specific session construction to
         :meth:`_start_transcription`. The pipeline enforces input
         mutual-exclusion, validates the language config, validates the wire
-        format, gates parameters against the ``streaming`` capabilities, resolves
-        the language axis, and attaches the resulting diagnostics to the session.
+        format, gates parameters against the ``streaming`` capabilities,
+        resolves the language axis, prepares whole-input audio through the
+        standard audio pipeline, and attaches the resulting diagnostics to the
+        session.
 
         Because gating now runs here, spec Runtime R3 ``provider_params``
         swap-safety is enforced on the streaming path too: a swapped-engine
@@ -509,6 +511,8 @@ class EngineBase(ABC):
             UnsupportedFeatureError: When streaming is unsupported, when the wire
                 format is unreachable, or, in strict mode, on an unsupported
                 parameter.
+            IncompatibleAudioInputError: If no conversion path exists for a
+                whole-input streaming ``audio`` value.
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
             ValueError: On an invalid candidate-language list in strict mode.
         """
@@ -527,13 +531,31 @@ class EngineBase(ABC):
             expected_provider_type=self.provider_params_type,
         )
         lang_diags = self._resolve_language_axis(gated, "streaming")
+        prepared: PreparedAudio | None = None
+        if audio is not None:
+            provided: AudioInput = coerce_audio_input(audio)
+            plan = negotiate_or_raise(provided, set(self.properties.accepted_input))
+            prepared = execute_plan(
+                provided,
+                plan,
+                accepted_sample_rates=self.properties.accepted_sample_rates,
+                native_sample_rate=self.properties.native_sample_rate,
+                required_input_sample_rate=self.properties.required_input_sample_rate,
+                max_file_size=self.properties.max_file_size,
+                max_audio_duration=self.properties.max_audio_duration,
+                strict=self._strict,
+            )
         session = self._start_transcription(
-            gated_params=gated, audio_format=audio_format, audio=audio
+            gated_params=gated, audio_format=audio_format, prepared_audio=prepared
         )
         # Friend API: the base engine seeds the session's standard-layer
         # diagnostics so they surface through the session's own diagnostics().
         session._attach_initial_diagnostics(  # pyright: ignore[reportPrivateUsage]
-            [*gate_diags, *lang_diags]
+            [
+                *gate_diags,
+                *lang_diags,
+                *(prepared.diagnostics if prepared is not None else []),
+            ]
         )
         return session
 
@@ -542,7 +564,7 @@ class EngineBase(ABC):
         *,
         gated_params: RuntimeParams,
         audio_format: AudioFormat | None,
-        audio: AudioInputLike | None,
+        prepared_audio: PreparedAudio | None,
     ) -> TranscriptionSession:
         """Construct the engine's streaming session (override point).
 
@@ -560,7 +582,9 @@ class EngineBase(ABC):
             gated_params: The gated, frozen runtime parameters (spec R5: these
                 are frozen for the whole session).
             audio_format: Wire format for incremental PCM frames, if any.
-            audio: A complete audio input for whole-input streaming, if any.
+            prepared_audio: Already-negotiated/resampled audio with conversion
+                diagnostics for whole-input streaming, or ``None`` for the
+                incremental ``audio_format`` path.
 
         Returns:
             The engine's streaming session.

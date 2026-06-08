@@ -780,7 +780,7 @@ class _StreamEchoEngine(EngineBase):
         *,
         gated_params: Any = None,
         audio_format: Any = None,
-        audio: Any = None,
+        prepared_audio: PreparedAudio | None = None,
     ) -> TranscriptionSession:
         return _StreamEchoSession()
 
@@ -884,7 +884,7 @@ class _StreamErrorEngine(_StreamEchoEngine):
         *,
         gated_params: Any = None,
         audio_format: Any = None,
-        audio: Any = None,
+        prepared_audio: PreparedAudio | None = None,
     ) -> TranscriptionSession:
         return _StreamErrorSession()
 
