@@ -849,15 +849,19 @@ class TranscriptionSession(ABC):
             other = "manual" if mode == "feed" else "feed"
             raise StreamClosedError(f"{other} input already in use; cannot mix with {mode}.")
 
-    def feed(self, source: Iterable[bytes] | AsyncIterator[bytes]) -> None:
+    def feed(self, source: Iterable[bytes] | AsyncIterator[bytes] | bytes | bytearray) -> None:
         """Feed audio from a managed source (mutually exclusive with manual).
 
-        A non-async, non-iterator collection (``list`` / ``tuple`` / ``bytes``
-        sequence) is classified as **replayable** for reconnect purposes; an
-        async iterator or a one-shot generator/iterator is **non-replayable**.
+        A bare ``bytes`` / ``bytearray`` is treated as a **single** audio chunk
+        (not an iterable of chunks -- iterating it would yield ``int`` byte
+        values). A non-async, re-iterable collection (``list`` / ``tuple``, or a
+        wrapped bytes-like) is classified as **replayable** for reconnect
+        purposes; an async iterator or a one-shot generator/iterator is
+        **non-replayable**.
 
         Args:
-            source: A sync or async iterable of audio chunks.
+            source: A sync or async iterable of audio chunks, or a single
+                ``bytes`` / ``bytearray`` chunk.
 
         Raises:
             StreamClosedError: If manual input or a prior feed was already used.
@@ -865,9 +869,13 @@ class TranscriptionSession(ABC):
         self._claim_mode("feed")
         if self._feed_task is not None:
             raise StreamClosedError("feed() already called once.")
+        if isinstance(source, (bytes, bytearray)):
+            # A bare bytes-like is ONE chunk: wrap it so draining yields the
+            # whole chunk rather than iterating it into individual int values.
+            source = [bytes(source)]
         # Replayable iff a re-iterable collection (not a one-shot iterator and
-        # not an async source). list/tuple/bytes/bytearray qualify.
-        self._replayable = isinstance(source, (list, tuple, bytes, bytearray))
+        # not an async source); list/tuple (incl. a wrapped bytes-like) qualify.
+        self._replayable = isinstance(source, (list, tuple))
         self._feed_task = asyncio.ensure_future(self._drain_source(source))
 
     async def _drain_source(self, source: Iterable[bytes] | AsyncIterator[bytes]) -> None:
@@ -1215,11 +1223,12 @@ class SyncSession:
         finally:
             self._shutdown()
 
-    def feed(self, source: Iterable[bytes]) -> None:
+    def feed(self, source: Iterable[bytes] | bytes | bytearray) -> None:
         """Feed audio from a managed source.
 
         Args:
-            source: A sync iterable of audio chunks.
+            source: A sync iterable of audio chunks, or a single ``bytes`` /
+                ``bytearray`` chunk.
         """
 
         async def _do_feed() -> None:

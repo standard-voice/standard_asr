@@ -139,6 +139,25 @@ def test_session_feed_mode() -> None:
     assert {f.text for f in finals} == {"abc", "de"}
 
 
+def test_session_feed_bytes_is_a_single_chunk() -> None:
+    # A bare bytes-like is ONE chunk, not an iterable of int byte values:
+    # feed(b"abc") must yield the chunk b"abc", not 97/98/99.
+    captured: dict[str, bool] = {}
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _EchoSession()
+        session.feed(b"abc")
+        captured["replayable"] = session.replayable
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    finals = [e for e in events if e.type == "final"]
+    assert {f.text for f in finals} == {"abc"}
+    assert events[-1].type == "done"
+    # a wrapped bytes-like is a re-iterable collection -> replayable
+    assert captured["replayable"] is True
+
+
 def test_session_manual_mode_and_result() -> None:
     async def run() -> tuple[list[TranscriptionEvent], str]:
         session = _EchoSession()
