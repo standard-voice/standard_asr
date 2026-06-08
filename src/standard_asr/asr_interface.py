@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Protocol, cast, runtime_checkable
 
 from .asr_config import BaseConfig
 from .asr_properties import BaseProperties
@@ -33,7 +33,7 @@ from .audio_input import AudioInput, AudioInputLike, coerce_audio_input
 from .audio_negotiation import negotiate_or_raise
 from .capabilities import DeclaredCapabilities
 from .exceptions import ConfigError, UnsupportedFeatureError
-from .language import effective_candidate_languages, effective_language
+from .language import AUTO, effective_candidate_languages, effective_language, normalize_bcp47
 from .param_gating import Mode, gate_params
 from .results import Diagnostic, TranscriptionResult
 from .runtime_params import ProviderParams, RuntimeParams
@@ -221,7 +221,7 @@ class EngineBase(ABC):
             strict=self._strict,
             expected_provider_type=self.provider_params_type,
         )
-        lang_diags = self._resolve_language_axis(gated, "batch")
+        gated, lang_diags = self._resolve_language_axis(gated, "batch")
         # Audio decode/resample only after parameters are known-good.
         provided: AudioInput = coerce_audio_input(audio)
         plan = negotiate_or_raise(provided, set(self.properties.accepted_input))
@@ -273,47 +273,88 @@ class EngineBase(ABC):
                 f"(engine {self.properties.engine_id!r}, spec LANG R1)."
             )
 
-    def _resolve_language_axis(self, params: RuntimeParams, mode: Mode) -> list[Diagnostic]:
-        """Validate the effective language / candidate-language axis (LANG R2/R3).
+    def _resolve_language_axis(
+        self, params: RuntimeParams, mode: Mode
+    ) -> tuple[RuntimeParams, list[Diagnostic]]:
+        """Resolve and validate the effective language axis (LANG R2/R3).
 
-        Runs the standard resolution so candidate-language violations are caught
-        once, in the standard layer, regardless of whether the engine remembers
-        to call :func:`~standard_asr.language.effective_candidate_languages`.
-        The engine still reads ``params`` (and MAY call
-        :func:`~standard_asr.language.effective_language` for the final value);
-        this method only validates and emits diagnostics, so :meth:`_transcribe`
-        keeps its existing signature.
+        Runs standard resolution so the engine receives the same effective
+        ``language`` and ``candidate_languages`` values that the standard layer
+        validated and diagnosed.
 
         Args:
             params: The gated runtime parameters.
             mode: ``"batch"`` or ``"streaming"``.
 
         Returns:
-            Diagnostics produced during candidate-language resolution.
+            A ``(params, diagnostics)`` pair containing the effective runtime
+            parameters plus diagnostics produced during language resolution.
 
         Raises:
+            UnsupportedFeatureError: In strict mode, if the resolved language is
+                not selectable by this engine.
             ValueError: In strict mode, on an invalid candidate-language list.
         """
         if not self.properties.has_language_axis:
-            return []
+            return params, []
         caps = self.effective_capabilities
+        default_language = cast("str | None", getattr(self.config, "default_language", None))
+        default_candidates = cast(
+            "list[str] | None", getattr(self.config, "default_candidate_languages", None)
+        )
         eff_lang = effective_language(
             params.language,
-            getattr(self.config, "default_language", None),
+            default_language,
             has_language_axis=True,
             runtime_override_supported=caps.supports(f"{mode}.language.runtime_override"),
         )
+        if eff_lang is not None and eff_lang != AUTO:
+            eff_lang = normalize_bcp47(eff_lang)
+
+        diagnostics: list[Diagnostic] = []
+        if eff_lang is not None and eff_lang not in self.properties.selectable_languages:
+            if self._strict:
+                raise UnsupportedFeatureError(
+                    f"language {eff_lang!r} is not selectable in {mode} mode "
+                    f"for engine {self.properties.engine_id!r} "
+                    f"(selectable_languages={self.properties.selectable_languages!r}).",
+                    param="language",
+                    mode=mode,
+                    hint=(
+                        "Request one of the engine's selectable_languages, or use "
+                        "best_effort to fall back to default_language."
+                    ),
+                )
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    code="language_not_selectable",
+                    message=(
+                        f"Fell back from non-selectable language {eff_lang!r} to "
+                        f"default_language {default_language!r} in {mode} mode."
+                    ),
+                    param="language",
+                    provided=eff_lang,
+                    effective=default_language,
+                )
+            )
+            eff_lang = default_language
+
         constraints = self._candidate_max(mode)
-        _, diagnostics = effective_candidate_languages(
+        eff_candidates, candidate_diags = effective_candidate_languages(
             eff_lang,
             params.candidate_languages,
-            getattr(self.config, "default_candidate_languages", None),
+            default_candidates,
             candidate_supported=caps.supports(f"{mode}.language.candidate_languages"),
             detectable_languages=self.properties.detectable_languages,
             max_count=constraints,
             strict=self._strict,
         )
-        return diagnostics
+        diagnostics.extend(candidate_diags)
+        effective_params = params.model_copy(
+            update={"language": eff_lang, "candidate_languages": eff_candidates}
+        )
+        return effective_params, diagnostics
 
     def _candidate_max(self, mode: Mode) -> int | None:
         """Return the candidate-languages ``max`` constraint for ``mode``.
@@ -530,7 +571,7 @@ class EngineBase(ABC):
             strict=self._strict,
             expected_provider_type=self.provider_params_type,
         )
-        lang_diags = self._resolve_language_axis(gated, "streaming")
+        gated, lang_diags = self._resolve_language_axis(gated, "streaming")
         prepared: PreparedAudio | None = None
         if audio is not None:
             provided: AudioInput = coerce_audio_input(audio)

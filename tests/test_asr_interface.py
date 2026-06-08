@@ -87,6 +87,16 @@ class _ArrayEngine(EngineBase):
         )
 
 
+class _CapturingArrayEngine(_ArrayEngine):
+    """Array engine that records params handed to the engine hook."""
+
+    received: ClassVar[RuntimeParams | None] = None
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        type(self).received = params
+        return super()._transcribe(prepared, params)
+
+
 def _audio() -> AudioArray:
     return AudioArray(np.zeros(8, dtype=np.float32), 16000)
 
@@ -317,9 +327,25 @@ class _NoLangEngine(_ArrayEngine):
         self.config = _NoLangConfig()
 
 
+class _NoLangCapturingEngine(_CapturingArrayEngine):
+    properties: ClassVar[BaseProperties] = _NoLangProps()
+
+    def __init__(self) -> None:
+        self.config = _NoLangConfig()
+
+
 def test_no_language_axis_skips_default_language_check() -> None:
     result = _NoLangEngine().transcribe(_audio())
     assert result.text == "n=8"
+
+
+def test_no_language_axis_leaves_runtime_params_unchanged() -> None:
+    _NoLangCapturingEngine.received = None
+    params = RuntimeParams(language="fr", candidate_languages=["zz"])
+
+    _NoLangCapturingEngine().transcribe(_audio(), params)
+
+    assert _NoLangCapturingEngine.received is params
 
 
 # --- H3: candidate-language validation runs in the standard layer ------------
@@ -356,6 +382,19 @@ class _AutoEngine(_ArrayEngine):
         self.config = _AutoConfig(strict=strict)
 
 
+class _AutoManyProps(_ArrayProps):
+    selectable_languages: list[str] = ["auto"]
+    detectable_languages: list[str] = ["en", "ja", "ko"]
+
+
+class _CapturingAutoEngine(_CapturingArrayEngine):
+    properties: ClassVar[BaseProperties] = _AutoManyProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAND_CAPS
+
+    def __init__(self, *, strict: bool = True) -> None:
+        self.config = _AutoConfig(strict=strict)
+
+
 def test_candidate_languages_strict_non_detectable_raises_in_base() -> None:
     with pytest.raises(ValueError, match="detectable"):
         _AutoEngine().transcribe(
@@ -368,6 +407,21 @@ def test_candidate_languages_best_effort_emits_diagnostic_in_base() -> None:
         _audio(), RuntimeParams(language="auto", candidate_languages=["en", "zz"])
     )
     assert any(d.code == "candidate_language_dropped" for d in result.diagnostics)
+
+
+def test_candidate_languages_best_effort_filtered_and_truncated_flow_to_batch_hook() -> None:
+    _CapturingAutoEngine.received = None
+
+    result = _CapturingAutoEngine(strict=False).transcribe(
+        _audio(),
+        RuntimeParams(language="auto", candidate_languages=["ja", "zz", "en", "ko"]),
+    )
+
+    assert _CapturingAutoEngine.received is not None
+    assert _CapturingAutoEngine.received.language == "auto"
+    assert _CapturingAutoEngine.received.candidate_languages == ["ja", "en"]
+    assert any(d.code == "candidate_language_dropped" for d in result.diagnostics)
+    assert any(d.code == "candidate_languages_truncated" for d in result.diagnostics)
 
 
 class _NoCandConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
@@ -403,6 +457,62 @@ def test_unsupported_candidate_languages_strict_does_not_raise_single_diagnostic
     cand_diags = [d for d in result.diagnostics if d.param == "candidate_languages"]
     assert len(cand_diags) == 1
     assert cand_diags[0].code == "candidate_languages_ignored"
+
+
+class _EnglishOnlyProps(_ArrayProps):
+    selectable_languages: list[str] = ["en"]
+    detectable_languages: list[str] = []
+
+
+class _EnglishOnlyEngine(_CapturingArrayEngine):
+    properties: ClassVar[BaseProperties] = _EnglishOnlyProps()
+
+
+def test_runtime_language_strict_rejects_non_selectable_language() -> None:
+    _EnglishOnlyEngine.received = None
+
+    with pytest.raises(UnsupportedFeatureError, match="not selectable") as exc_info:
+        _EnglishOnlyEngine().transcribe(_audio(), RuntimeParams(language="fr"))
+
+    assert exc_info.value.param == "language"
+    assert exc_info.value.mode == "batch"
+    assert _EnglishOnlyEngine.received is None
+
+
+def test_runtime_language_best_effort_falls_back_to_default_for_engine_hook() -> None:
+    _EnglishOnlyEngine.received = None
+
+    result = _EnglishOnlyEngine(strict=False).transcribe(_audio(), RuntimeParams(language="fr"))
+
+    assert _EnglishOnlyEngine.received is not None
+    assert _EnglishOnlyEngine.received.language == "en"
+    assert result.detected_language == "en"
+    diag = next(d for d in result.diagnostics if d.code == "language_not_selectable")
+    assert diag.param == "language"
+    assert diag.provided == "fr"
+    assert diag.effective == "en"
+
+
+_NO_OVERRIDE_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(
+        language=LanguageCaps(runtime_override=FlagCap(supported=False)),
+    )
+)
+
+
+class _NoOverrideEngine(_CapturingArrayEngine):
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _NO_OVERRIDE_CAPS
+
+
+def test_runtime_language_best_effort_unsupported_override_flows_default_to_hook() -> None:
+    _NoOverrideEngine.received = None
+
+    result = _NoOverrideEngine(strict=False).transcribe(_audio(), RuntimeParams(language="auto"))
+
+    assert _NoOverrideEngine.received is not None
+    assert _NoOverrideEngine.received.language == "en"
+    assert result.detected_language == "en"
+    assert any(d.code == "unsupported_parameter_ignored" for d in result.diagnostics)
 
 
 # --- streaming mutual-exclusion guard ----------------------------------------
@@ -693,8 +803,9 @@ def test_streaming_gated_params_flow_to_hook() -> None:
     assert _StreamEngine.received.language == "en"
 
 
-def test_streaming_language_diagnostics_surface_on_session() -> None:
-    # Candidate-language resolution diagnostics surface through the session.
+def test_streaming_candidate_language_effective_params_flow_to_hook_and_diagnose() -> None:
+    # Candidate-language resolution updates the hook params and surfaces
+    # diagnostics through the session.
     class _StreamAutoEngine(_StreamEngine):
         properties: ClassVar[BaseProperties] = _AutoProps()
         declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
@@ -712,9 +823,13 @@ def test_streaming_language_diagnostics_surface_on_session() -> None:
         def __init__(self, *, strict: bool = True) -> None:
             self.config = _AutoConfig(strict=strict)
 
+    _StreamAutoEngine.received = None
     session = _StreamAutoEngine(strict=False).start_transcription(
         params=RuntimeParams(language="auto", candidate_languages=["en", "zz"])
     )
+    assert _StreamAutoEngine.received is not None
+    assert _StreamAutoEngine.received.language == "auto"
+    assert _StreamAutoEngine.received.candidate_languages == ["en"]
     assert any(d.code == "candidate_language_dropped" for d in session.diagnostics())
 
 
