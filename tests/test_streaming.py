@@ -377,11 +377,13 @@ def test_coalescing_partial_after_delivery_starts_fresh_slot() -> None:
 # C6 -- bounded buffers
 # --------------------------------------------------------------------------- #
 def test_event_buffer_overflow_raises() -> None:
+    # Only NEW distinct-segment partials grow the buffer and can overflow;
+    # final / supersede bypass the bound (drop-proof, spec ST.6.4).
     buf = _CoalescingBuffer(capacity=2)
-    buf.put(TranscriptionEvent.final("s0", "a"))
-    buf.put(TranscriptionEvent.final("s1", "b"))
+    buf.put(TranscriptionEvent.partial("s0", "a"))
+    buf.put(TranscriptionEvent.partial("s1", "b"))
     with pytest.raises(EventBufferOverflow):
-        buf.put(TranscriptionEvent.final("s2", "c"))
+        buf.put(TranscriptionEvent.partial("s2", "c"))
 
 
 def test_event_buffer_coalesced_partial_does_not_grow() -> None:
@@ -399,12 +401,38 @@ def test_put_forced_bypasses_capacity() -> None:
     buf.put_forced(TranscriptionEvent.done())
 
 
+def test_final_supersede_never_dropped_at_capacity() -> None:
+    # Fill the buffer to capacity with distinct-segment partials, then assert a
+    # final and a supersede still land (drop-proof, not converted to overflow).
+    async def run() -> list[TranscriptionEvent]:
+        buf = _CoalescingBuffer(capacity=2)
+        buf.put(TranscriptionEvent.partial("s0", "a"))
+        buf.put(TranscriptionEvent.partial("s1", "b"))  # at capacity now
+        # A NEW distinct-segment partial would overflow ...
+        with pytest.raises(EventBufferOverflow):
+            buf.put(TranscriptionEvent.partial("s2", "c"))
+        # ... but final / supersede MUST bypass the bound (spec ST.6.4).
+        buf.put(TranscriptionEvent.final("s3", "f"))
+        buf.put(TranscriptionEvent.supersede(["s0"], ["s4"]))
+        buf.close()
+        return await _drain_buffer(buf)
+
+    events = asyncio.run(run())
+    types = [e.type for e in events]
+    assert "final" in types and "supersede" in types
+    assert "error" not in types
+    # The supersede invalidated the pending s0 partial (dead segment never
+    # revives), but the s1 partial is unaffected and still delivered.
+    assert any(e.type == "partial" and e.segment_id == "s1" for e in events)
+
+
 def test_session_backpressure_overflow_emits_error() -> None:
     class _FloodSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
-            # Many distinct finals (never coalesced) overflow a tiny buffer.
+            # Many distinct-segment partials (never coalesced, each grows the
+            # buffer) overflow a tiny buffer. Finals/supersedes bypass the bound.
             for i in range(50):
-                yield TranscriptionEvent.final(f"s{i}", "x")
+                yield TranscriptionEvent.partial(f"s{i}", "x")
 
     async def run() -> list[TranscriptionEvent]:
         # Consumer never reads until producer is done -> buffer fills.

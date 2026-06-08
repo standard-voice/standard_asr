@@ -433,8 +433,13 @@ class _CoalescingBuffer:
 
     The buffer is **bounded**: at most ``capacity`` non-coalesced events may be
     pending. Coalesced partials reuse their existing slot and never grow the
-    buffer. Enqueuing past capacity raises :class:`EventBufferOverflow`, which
-    the producer turns into a terminal ``backpressure`` error.
+    buffer. Only a NEW partial slot (a not-yet-pending segment) may push past
+    ``capacity`` and raise :class:`EventBufferOverflow`, which the producer turns
+    into a terminal ``backpressure`` error. ``final`` / ``supersede`` (like
+    ``done`` / ``error`` via :meth:`put_forced`) bypass the bound and are
+    appended drop-proof: they MUST never be dropped (spec ST.6.4) and are
+    bounded per segment, so only distinct-segment *partials* trigger
+    backpressure.
     """
 
     def __init__(self, capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY) -> None:
@@ -456,12 +461,15 @@ class _CoalescingBuffer:
     def put(self, event: TranscriptionEvent) -> None:
         """Add an event, coalescing superseded partials.
 
+        ``final`` / ``supersede`` are appended drop-proof (bypassing the bound),
+        so only a NEW partial slot for a not-yet-pending segment can overflow.
+
         Args:
             event: The event to enqueue.
 
         Raises:
-            EventBufferOverflow: If the buffer is at capacity and the event is
-                not a coalescible partial reusing an existing slot.
+            EventBufferOverflow: If the buffer is at capacity and the event is a
+                NEW partial for a not-yet-pending segment (growing the buffer).
         """
         if event.type == "partial" and event.segment_id is not None:
             slot = self._partial_slot.get(event.segment_id)
@@ -489,6 +497,18 @@ class _CoalescingBuffer:
                 if stale is not None and stale.alive:
                     stale.alive = False
                     self._live_count -= 1
+            # final / supersede MUST never be dropped (spec ST.6.4): append
+            # drop-proof, bypassing the capacity bound. Only a NEW partial slot
+            # (which GROWS the buffer for a not-yet-pending segment) may overflow
+            # -- finals/supersedes are bounded per segment (each invalidates its
+            # own pending partial above), so bypassing the bound is safe. The
+            # residual: a pathological flood of distinct-segment finals can grow
+            # memory unboundedly -- accepted, because the spec forbids dropping
+            # them; only distinct-segment *partials* trigger backpressure.
+            self._items.append(_Slot(event))
+            self._live_count += 1
+            self._event.set()
+            return
         self._reserve()
         self._items.append(_Slot(event))
         self._live_count += 1
