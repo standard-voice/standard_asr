@@ -66,7 +66,7 @@ class Word(BaseModel):
         probability: Optional confidence in ``[0, 1]``.
         logprob: Optional log-probability (kept separate from ``probability``).
         speaker: Optional speaker label.
-        channel: Optional channel index for provenance.
+        channel: Optional channel index for provenance (``>= 0``).
         extra: Engine-specific extra data.
 
     Returns:
@@ -88,7 +88,7 @@ class Word(BaseModel):
         default=None, description="Log-probability (separate from probability)."
     )
     speaker: str | None = Field(default=None, description="Optional speaker label.")
-    channel: int | None = Field(default=None, description="Optional channel index.")
+    channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
     extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
 
 
@@ -106,7 +106,7 @@ class Segment(BaseModel):
         text: Segment transcript text.
         words: Optional word-level details for this segment.
         speaker: Optional speaker label (authoritative diarization shape).
-        channel: Optional channel index for provenance.
+        channel: Optional channel index for provenance (``>= 0``).
         avg_logprob: Optional average log-probability.
         no_speech_prob: Optional no-speech probability.
         temperature: Optional decoding temperature.
@@ -129,7 +129,7 @@ class Segment(BaseModel):
         default=None, description="Word-level details for this segment."
     )
     speaker: str | None = Field(default=None, description="Optional speaker label.")
-    channel: int | None = Field(default=None, description="Optional channel index.")
+    channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
     avg_logprob: float | None = Field(default=None, description="Optional average log-probability.")
     no_speech_prob: float | None = Field(
         default=None, description="Optional no-speech probability."
@@ -159,7 +159,7 @@ class ChannelResult(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    channel: int = Field(..., description="Channel index.")
+    channel: int = Field(..., ge=0, description="Channel index (>= 0).")
     text: str = Field(..., description="Full transcript for this channel.")
     segments: list[Segment] | None = Field(
         default=None, description="Segment-level details for this channel."

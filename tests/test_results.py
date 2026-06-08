@@ -208,6 +208,28 @@ def test_srt_sorts_by_channel_on_tie() -> None:
     assert srt.index("ch0") < srt.index("ch1")
 
 
+def test_channel_rejects_negative_index() -> None:
+    # channel is constrained to >= 0, so the renderer's None=-1 sort sentinel
+    # can never collide with a real channel index (RESU-3).
+    with pytest.raises(ValueError):
+        Segment(start=0.0, end=1.0, text="x", channel=-1)
+    with pytest.raises(ValueError):
+        Word(start=0.0, end=1.0, text="x", channel=-1)
+    with pytest.raises(ValueError):
+        ChannelResult(channel=-1, text="x")
+
+
+def test_srt_sorts_none_channel_before_real_channel() -> None:
+    # A None channel sorts before any real channel (>= 0); channel=0 must keep
+    # its real ordering and never be treated as if it were None.
+    segs = [
+        Segment(start=0.0, end=1.0, text="ch0", channel=0),
+        Segment(start=0.0, end=1.0, text="none", channel=None),
+    ]
+    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    assert srt.index("none") < srt.index("ch0")
+
+
 def test_renderer_clamps_negative_preroll_time() -> None:
     # Data model allows negative (pre-roll) start; renderer clamps to zero for
     # the SRT/VTT grammar (documented format constraint, not a silent mask).
