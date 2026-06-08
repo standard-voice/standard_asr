@@ -1196,9 +1196,13 @@ class TranscriptionSession(ABC):
         Raises:
             StreamClosedError: If ``feed`` was used or the input was ended.
         """
+        # Claim manual ownership FIRST so mixing with an active feed always
+        # raises the deterministic mixing error -- otherwise the feed task
+        # setting _ended on exhaustion would race the _ended check below and
+        # sometimes surface the "after end_audio" message instead (spec ST.3.3).
+        self._claim_mode("manual")
         if self._ended:
             raise StreamClosedError("Cannot send_audio after end_audio().")
-        self._claim_mode("manual")
         await self._put_audio(chunk)
 
     async def end_audio(self) -> None:

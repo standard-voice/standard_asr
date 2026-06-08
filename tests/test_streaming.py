@@ -204,6 +204,26 @@ def test_session_feed_then_manual_raises() -> None:
         asyncio.run(run())
 
 
+def test_session_feed_then_manual_raises_mixing_error_even_after_feed_done() -> None:
+    # With feed active, send_audio MUST deterministically raise the feed/manual
+    # mixing error -- not the "after end_audio" message -- regardless of whether
+    # the feed task has already exhausted and set _ended (spec ST.3.3).
+    async def run() -> str:
+        session = _EchoSession()
+        session.feed([b"x"])
+        # Let the feed task drain to exhaustion so it sets _ended (the race).
+        assert session._feed_task is not None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        await session._feed_task  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert session._ended is True  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(StreamClosedError) as exc:
+            await session.send_audio(b"y")
+        return str(exc.value)
+
+    message = asyncio.run(run())
+    assert "cannot mix" in message
+    assert "end_audio" not in message
+
+
 def test_session_manual_then_feed_raises() -> None:
     async def run() -> None:
         session = _EchoSession()
