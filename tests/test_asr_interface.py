@@ -92,6 +92,30 @@ def test_engine_is_standard_asr() -> None:
     assert isinstance(_ArrayEngine(), StandardASR)
 
 
+def test_standard_asr_protocol_includes_full_surface() -> None:
+    # The protocol now structurally describes the full spec surface: batch
+    # (transcribe / transcribe_async) AND the streaming entry point
+    # (start_transcription). A duck-typed object missing the streaming surface is
+    # NOT a StandardASR, so structural typing covers the whole contract (INTE-5).
+    class _Partial:
+        config = _ArrayEngine().config
+        properties = _ArrayProps()
+        declared_capabilities = DeclaredCapabilities()
+
+        def transcribe(self, audio: object, params: object = None) -> None:  # pragma: no cover
+            return None
+
+        async def transcribe_async(
+            self, audio: object, params: object = None
+        ) -> None:  # pragma: no cover
+            return None
+
+        def supports(self, dot_path: str) -> bool:  # pragma: no cover
+            return False
+
+    assert not isinstance(_Partial(), StandardASR)  # missing start_transcription
+
+
 def test_transcribe_array_passthrough() -> None:
     result = _ArrayEngine().transcribe(_audio(), RuntimeParams(language="en"))
     assert result.text == "n=8"

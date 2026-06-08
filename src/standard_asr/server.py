@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -447,9 +447,9 @@ def create_app(
             return
 
         try:
-            # start_transcription is the streaming surface (EngineBase); it is not
-            # on the structural StandardASR protocol, so cast for the call.
-            session = cast(Any, asr).start_transcription(audio_format=audio_format, params=params)
+            # start_transcription is part of the structural StandardASR protocol
+            # (a batch-only engine raises UnsupportedFeatureError, handled below).
+            session = asr.start_transcription(audio_format=audio_format, params=params)
         except (UnsupportedFeatureError, ValueError) as exc:
             await websocket.send_json({"type": "error", "code": "unsupported", "message": str(exc)})
             await websocket.close()

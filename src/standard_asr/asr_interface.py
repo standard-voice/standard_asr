@@ -48,7 +48,13 @@ class StandardASR(Protocol):
     """Structural protocol for a Standard ASR engine.
 
     Any object exposing these members is a compliant engine, regardless of how
-    it is implemented.
+    it is implemented. The protocol describes the *full* public surface every
+    engine exposes -- batch (:meth:`transcribe` / :meth:`transcribe_async`) and
+    the streaming entry point (:meth:`start_transcription`). ``start_transcription``
+    is always present; streaming support itself is optional, so a batch-only
+    engine raises :class:`~standard_asr.exceptions.UnsupportedFeatureError` from
+    it. Because the surface is complete, callers (e.g. the server) can type an
+    engine as ``StandardASR`` and call the streaming entry point without a cast.
     """
 
     config: BaseConfig[str]
@@ -67,6 +73,47 @@ class StandardASR(Protocol):
 
         Returns:
             The transcription result.
+        """
+        ...
+
+    async def transcribe_async(
+        self, audio: AudioInputLike, params: RuntimeParams | None = None
+    ) -> TranscriptionResult:
+        """Asynchronously transcribe a complete audio input.
+
+        Args:
+            audio: The audio to transcribe (any :data:`AudioInput` variant or a
+                coercible bare value).
+            params: Per-request runtime parameters.
+
+        Returns:
+            The transcription result.
+        """
+        ...
+
+    def start_transcription(
+        self,
+        *,
+        audio_format: AudioFormat | None = None,
+        params: RuntimeParams | None = None,
+        audio: AudioInputLike | None = None,
+    ) -> TranscriptionSession:
+        """Open a streaming transcription session.
+
+        Always present on a compliant engine, but streaming itself is optional:
+        a batch-only engine raises
+        :class:`~standard_asr.exceptions.UnsupportedFeatureError` here. Callers
+        that need streaming should gate on
+        ``supports("streaming_input")`` / ``supports("streaming_output")`` (or be
+        ready to handle the unsupported-streaming error).
+
+        Args:
+            audio_format: Wire format for incremental PCM frames.
+            params: Per-request runtime parameters.
+            audio: A complete audio input for whole-input streaming output.
+
+        Returns:
+            A streaming session.
         """
         ...
 
