@@ -327,3 +327,18 @@ def test_validate_url_resolves_to_no_addresses_rejected(monkeypatch: pytest.Monk
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo())
     with pytest.raises(UnsafeAudioUrlError, match="no addresses"):
         validate_fetchable_url("https://empty.example.com/a.wav")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com:99999/a.wav",  # port out of range
+        "https://example.com:notaport/a.wav",  # non-numeric port
+    ],
+)
+def test_validate_url_malformed_port_raises_unsafe(url: str) -> None:
+    # A malformed port makes urlsplit raise a bare ValueError when parts.port is
+    # accessed; it must be re-raised as the contracted UnsafeAudioUrlError, not
+    # escape as an unexpected 500 in the server path.
+    with pytest.raises(UnsafeAudioUrlError, match="malformed port"):
+        validate_fetchable_url(url)

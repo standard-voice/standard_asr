@@ -105,8 +105,10 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
             is still required.
 
     Raises:
-        UnsafeAudioUrlError: If the URL is not HTTPS, has no host, fails to
-            resolve, or resolves to a disallowed address.
+        UnsafeAudioUrlError: If the URL is not HTTPS, has no host, has a
+            malformed port, fails to resolve, or resolves to a disallowed
+            address. This is the only exception type the validator raises, so a
+            caller (e.g. the server) can map it to a single contracted response.
     """
     parts = urlsplit(url)
     if parts.scheme.lower() != "https":
@@ -129,8 +131,17 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
             raise UnsafeAudioUrlError(url, f"host {host} is a private/reserved address")
         return
 
+    # Parsing parts.port is lazy in urlsplit and raises a bare ValueError for a
+    # malformed port (":99999" out of range, ":notaport" non-numeric). Without
+    # this guard that ValueError escapes the validator (which only catches
+    # gaierror), surfacing as an unexpected 500 in the server path instead of the
+    # contracted UnsafeAudioUrlError.
     try:
-        infos = socket.getaddrinfo(host, parts.port or 443, proto=socket.IPPROTO_TCP)
+        port = parts.port or 443
+    except ValueError as exc:
+        raise UnsafeAudioUrlError(url, f"the URL has a malformed port ({exc})") from exc
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise UnsafeAudioUrlError(url, f"host {host!r} did not resolve ({exc})") from exc
     if not infos:
