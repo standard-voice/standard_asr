@@ -306,12 +306,41 @@ def test_validate_model_name_rejects_invalid_chars() -> None:
         parse_entrypoint_name("engine/bad*name")
 
 
-def test_validate_engine_id_logs_guidance(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level("INFO")
+def test_validate_engine_id_accepts_non_canonical() -> None:
+    # A non-canonical-but-valid id passes surface validation; canonicalisation
+    # to the routing identity happens in parse_entrypoint_name / discover_models.
     validate_engine_id("my_engine")
     validate_model_name("model")
 
-    assert any("PEP 503" in record.message for record in caplog.records)
+
+def test_parse_entrypoint_name_canonicalizes_engine_id() -> None:
+    # IC.2: the routing identity is the PEP 503 canonical form, not the verbatim
+    # declared segment (runs of [-_.] collapse to a single '-').
+    engine_id, model_name = parse_entrypoint_name("my_engine/large.v3")
+    assert engine_id == "my-engine"
+    assert model_name == "large.v3"
+
+
+def test_discover_canonicalizes_engine_id_and_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    eps = [
+        EntryPoint(
+            name="my_engine/first",
+            value="tests.test_discovery:_dummy_factory",
+            group="standard_asr.models",
+        )
+    ]
+    caplog.set_level("INFO")
+    registry = discover_models(eps=eps, strict=True)
+
+    # The routing key and engine_id are canonical; the declared form is retained.
+    assert registry.names() == ["my-engine/first"]
+    spec = registry.spec("my-engine/first")
+    assert spec.engine_id == "my-engine"
+    assert spec.declared_engine_id == "my_engine"
+    assert registry.by_engine("my-engine") == ["my-engine/first"]
+    assert any("not PEP 503 normalized" in r.message for r in caplog.records)
 
 
 def test_model_spec_load_factory_error_on_load() -> None:
@@ -643,6 +672,29 @@ def test_discover_detects_engine_id_collision_across_dists(
 def test_engine_id_collision_strict_raises() -> None:
     ep_a = _ep_with_dist("whisper/a", "dist-one")
     ep_b = _ep_with_dist("whisper/b", "dist-two")
+
+    with pytest.raises(EntrypointValidationError):
+        discover_models(eps=[ep_a, ep_b], strict=True)
+
+
+def test_normalized_engine_id_collision_across_dists_is_shadowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # DISC-1/H3: two distributions whose engine_ids only differ by PEP 503
+    # normalisation (``my_engine`` vs ``my-engine``) route to the same canonical
+    # id and the same env-var prefix, so they MUST be flagged as a collision.
+    ep_a = _ep_with_dist("my_engine/a", "dist-one")
+    ep_b = _ep_with_dist("my-engine/b", "dist-two")
+
+    caplog.set_level("WARNING")
+    registry = discover_models(eps=[ep_a, ep_b])
+    assert registry.shadowed_engine_ids == {"my-engine"}
+    assert any("Engine-identity collision" in r.message for r in caplog.records)
+
+
+def test_normalized_engine_id_collision_strict_raises() -> None:
+    ep_a = _ep_with_dist("my_engine/a", "dist-one")
+    ep_b = _ep_with_dist("my-engine/b", "dist-two")
 
     with pytest.raises(EntrypointValidationError):
         discover_models(eps=[ep_a, ep_b], strict=True)

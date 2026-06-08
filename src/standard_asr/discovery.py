@@ -81,7 +81,12 @@ def pep503_normalize(name: str) -> str:
 
 
 def _validate_engine_id(engine_id: str) -> None:
-    """Validate and log guidance for an engine identifier.
+    """Validate the *declared* form of an engine identifier.
+
+    This checks the surface syntax only. Canonicalisation to the PEP 503
+    routing identity is performed by :func:`parse_entrypoint_name` (IC.2); a
+    non-canonical-but-valid id such as ``my_engine`` passes here and is folded
+    to its canonical ``my-engine`` form downstream.
 
     Args:
         engine_id: Engine identifier string.
@@ -99,13 +104,6 @@ def _validate_engine_id(engine_id: str) -> None:
         raise EntrypointValidationError(
             "engine_id contains unsupported characters. Allowed: lowercase ASCII "
             "letters, digits, '.', '_' and '-'."
-        )
-    canonical = pep503_normalize(engine_id)
-    if canonical != engine_id:
-        logger.info(
-            "engine_id %r is not PEP 503 normalized. Recommended form: %r.",
-            engine_id,
-            canonical,
         )
 
 
@@ -167,31 +165,58 @@ def validate_model_name(model_name: str) -> None:
     _validate_model_name(model_name)
 
 
-def parse_entrypoint_name(name: str) -> tuple[str, str]:
-    """Parse an entry point name into ``(engine_id, model_name)``.
+def _parse_entrypoint_name(name: str) -> tuple[str, str, str]:
+    """Parse an entry point name into ``(declared_id, canonical_id, model_name)``.
+
+    The *declared* engine id is the verbatim left segment; the *canonical* id is
+    its PEP 503 normalisation, which IC.2 makes the registry/routing identity so
+    that ``my_engine`` and ``my-engine`` resolve to one engine.
 
     Args:
         name: Entry point name declared in pyproject.toml.
 
     Returns:
-        Tuple containing engine identifier and model name (possibly empty).
+        Tuple of the declared engine id, its PEP 503 canonical form, and the
+        model name (possibly empty).
 
     Raises:
         EntrypointValidationError: If the name does not meet formatting rules.
     """
 
     if "/" not in name:
-        engine_id, model_name = name, ""
+        declared_id, model_name = name, ""
     else:
         parts = name.split("/")
         if len(parts) != 2:
             raise EntrypointValidationError(
                 f"Invalid entry point name {name!r}. Use '<engine_id>/<model_name>'."
             )
-        engine_id, model_name = parts[0], parts[1]
-    _validate_engine_id(engine_id)
+        declared_id, model_name = parts[0], parts[1]
+    _validate_engine_id(declared_id)
     _validate_model_name(model_name)
-    return engine_id, model_name
+    return declared_id, pep503_normalize(declared_id), model_name
+
+
+def parse_entrypoint_name(name: str) -> tuple[str, str]:
+    """Parse an entry point name into ``(engine_id, model_name)``.
+
+    The returned ``engine_id`` is the **PEP 503 canonical** routing identity
+    (IC.2), not necessarily the verbatim declared segment: ``my_engine`` and
+    ``my-engine`` both yield ``my-engine`` so they resolve to a single engine.
+
+    Args:
+        name: Entry point name declared in pyproject.toml.
+
+    Returns:
+        Tuple containing the canonical engine identifier and model name
+        (possibly empty).
+
+    Raises:
+        EntrypointValidationError: If the name does not meet formatting rules.
+    """
+
+    _, canonical_id, model_name = _parse_entrypoint_name(name)
+    return canonical_id, model_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,8 +224,13 @@ class ModelSpec:
     """Metadata for a discovered ASR model entry point.
 
     Attributes:
-        key: Full entry point name (``engine_id/model_name``).
-        engine_id: Engine identifier (e.g., ``faster-whisper``).
+        key: Full routing key (``engine_id/model_name``), built from the
+            **canonical** engine id.
+        engine_id: PEP 503 canonical engine identifier and routing identity
+            (e.g., ``faster-whisper``). IC.2 makes this the unique discriminator.
+        declared_engine_id: The verbatim engine id as declared in the entry
+            point (e.g., ``Faster_Whisper``). Kept for diagnostics only; never
+            used for routing. Equals ``engine_id`` when already canonical.
         model_name: Model preset name (e.g., ``large-v3``), or empty for default.
         entry_point: The underlying ``importlib.metadata.EntryPoint`` object.
 
@@ -213,6 +243,7 @@ class ModelSpec:
     engine_id: str
     model_name: str
     entry_point: EntryPoint
+    declared_engine_id: str = ""
 
     def load_factory(self) -> ASRFactory:
         """Load the factory callable for this entry point.
@@ -563,7 +594,7 @@ def discover_models(
 
     specs: MutableMapping[str, ModelSpec] = {}
     errors: list[str] = []
-    # engine_id -> set of distribution names that contribute it (IC.2).
+    # Canonical engine_id -> set of distribution names that contribute it (IC.2).
     engine_dists: dict[str, set[str]] = {}
 
     for ep in found:
@@ -571,9 +602,19 @@ def discover_models(
             logger.debug("Skipping entry point with unexpected group: %r", ep)
             continue
         try:
-            engine_id, model_name = parse_entrypoint_name(ep.name)
+            declared_id, engine_id, model_name = _parse_entrypoint_name(ep.name)
+            # IC.2: route on the PEP 503 canonical id. A non-canonical declared
+            # id (e.g. ``my_engine``) is folded to its canonical form so it
+            # cannot masquerade as a distinct engine, and so it collides with
+            # ``my-engine`` here exactly as it already does in env routing.
             key = f"{engine_id}/{model_name}"
-            spec = ModelSpec(key=key, engine_id=engine_id, model_name=model_name, entry_point=ep)
+            spec = ModelSpec(
+                key=key,
+                engine_id=engine_id,
+                model_name=model_name,
+                entry_point=ep,
+                declared_engine_id=declared_id,
+            )
         except EntrypointValidationError as exc:
             dist = getattr(ep, "dist", None)
             dist_label = f" (dist={dist})" if dist is not None else ""
@@ -583,6 +624,13 @@ def discover_models(
             else:
                 logger.warning(message)
             continue
+
+        if declared_id != engine_id:
+            logger.info(
+                "engine_id %r is not PEP 503 normalized; routing it as %r (IC.2).",
+                declared_id,
+                engine_id,
+            )
 
         engine_dists.setdefault(engine_id, set()).add(_dist_name(ep))
 
