@@ -81,13 +81,31 @@ def _target_array_sample_rate(
     accepted: list[int] | str,
     native_sample_rate: int,
     required_input_sample_rate: int | None,
+    source_sample_rate: int | None = None,
 ) -> int:
     """Choose a target sample rate for array delivery.
+
+    Selection policy (first match wins):
+
+    1. ``required_input_sample_rate`` if the engine accepts it (a hard wire
+       requirement is authoritative).
+    2. ``native_sample_rate`` if accepted (the model's own rate is ideal).
+    3. Otherwise an **explicit nearest-reachable** rate relative to the source
+       (RESA-3): the accepted rate closest in absolute distance to
+       ``source_sample_rate``, and -- to honour R7's anti-upsampling spirit --
+       preferring a rate that does **not** upsample (``<= source``) over one
+       that does when both are equally near. This is deterministic and
+       independent of the order in which ``accepted_sample_rates`` was declared
+       (the old ``accepted[0]`` could silently upsample, e.g. ``[48000, 16000]``
+       for 22050 Hz input picked 48000). When the source rate is unknown the
+       smallest accepted rate is chosen (minimises gratuitous upsampling).
 
     Args:
         accepted: The engine's accepted sample rates, or ``"any"``.
         native_sample_rate: The model's native sample rate.
         required_input_sample_rate: A hard-required rate, if any.
+        source_sample_rate: The input waveform's current rate, used to pick the
+            nearest reachable target. ``None`` when unknown.
 
     Returns:
         A sample rate the engine accepts.
@@ -98,7 +116,17 @@ def _target_array_sample_rate(
         return required_input_sample_rate
     if native_sample_rate in accepted:
         return native_sample_rate
-    return accepted[0]
+    if source_sample_rate is None:
+        # No source reference: pick the smallest accepted rate to minimise
+        # gratuitous upsampling, deterministically (order-independent).
+        return min(accepted)
+    # Nearest reachable, preferring not to upsample: sort by (distance, would-
+    # upsample) so an equally-near non-upsampling rate wins, and a non-upsampling
+    # rate beats a farther upsampling one only when nearer.
+    return min(
+        accepted,
+        key=lambda rate: (abs(rate - source_sample_rate), rate > source_sample_rate),
+    )
 
 
 def execute_plan(
@@ -423,7 +451,9 @@ def _apply_sample_rate(
     if not isinstance(accepted, list) or sample_rate in accepted:
         return array, sample_rate
 
-    target = _target_array_sample_rate(accepted, native_sample_rate, required_input_sample_rate)
+    target = _target_array_sample_rate(
+        accepted, native_sample_rate, required_input_sample_rate, source_sample_rate=sample_rate
+    )
     resampled, backend = resample_with_backend(array, sample_rate, target)
     label = "built-in fallback" if backend == "fallback" else "scipy resample_poly"
     diags.append(

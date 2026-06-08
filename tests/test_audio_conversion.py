@@ -396,18 +396,46 @@ def test_target_sample_rate_self_describing_returns_native() -> None:
     assert _target_array_sample_rate("any", 16000, None) == 16000
 
 
-def test_target_sample_rate_falls_back_to_first_accepted() -> None:
-    # Neither the required rate nor the native rate is accepted -> pick the first
-    # accepted rate as the deterministic fallback.
-    assert _target_array_sample_rate([22050, 44100], 16000, None) == 22050
-    # A required rate that the engine does not accept also falls through to the
-    # first accepted entry.
-    assert _target_array_sample_rate([22050, 44100], 16000, 8000) == 22050
+def test_target_sample_rate_falls_back_to_smallest_when_source_unknown() -> None:
+    # RESA-3: neither required nor native is accepted and the source rate is
+    # unknown -> deterministically pick the SMALLEST accepted rate (minimises
+    # gratuitous upsampling), independent of declaration order.
+    assert _target_array_sample_rate([44100, 22050], 16000, None) == 22050
+    # A required rate the engine does not accept also falls through to the policy.
+    assert _target_array_sample_rate([44100, 22050], 16000, 8000) == 22050
 
 
 def test_target_sample_rate_prefers_required_then_native() -> None:
     assert _target_array_sample_rate([16000, 24000], 16000, 24000) == 24000
     assert _target_array_sample_rate([16000, 24000], 16000, None) == 16000
+
+
+def test_target_sample_rate_picks_nearest_no_upsample() -> None:
+    # RESA-3: with a known source rate the target is the nearest reachable rate,
+    # preferring not to upsample. accepted[0] (order-dependent) would have
+    # upsampled here; the policy must pick the nearest non-upsampling rate.
+    # 22050 Hz source, accepted [48000, 16000]: 16000 (downsample) is nearer than
+    # 48000 (upsample) AND avoids upsampling -> 16000, not the declaration-first 48000.
+    assert _target_array_sample_rate([48000, 16000], 16000, None, source_sample_rate=22050) == 16000
+    # 8000 Hz source, accepted [48000, 16000]: both upsample; pick the nearest.
+    assert _target_array_sample_rate([48000, 16000], 16000, None, source_sample_rate=8000) == 16000
+    # Tie-break: equally near rates -> the non-upsampling one wins.
+    # source 16000, accepted [12000, 20000] (both 4000 away) -> 12000 (no upsample).
+    assert _target_array_sample_rate([20000, 12000], 8000, None, source_sample_rate=16000) == 12000
+
+
+def test_array_resampled_picks_no_upsample_target(tmp_path: Path) -> None:
+    # End-to-end RESA-3: a 22050 Hz file delivered to an engine accepting
+    # [48000, 16000] resamples to 16000 (no upsample), regardless of list order.
+    f = tmp_path / "src.wav"
+    f.write_bytes(_wav_bytes(samples=441, rate=22050))
+    prepared = _exec(
+        AudioPath(f),
+        {InputKind.ARRAY},
+        accepted_sample_rates=[48000, 16000],
+        native_sample_rate=16000,
+    )
+    assert prepared.sample_rate == 16000
 
 
 def test_resample_diagnostic_names_backend() -> None:
