@@ -22,7 +22,11 @@ from standard_asr.capabilities import (
     LanguageCaps,
     WordTimestampsCap,
 )
-from standard_asr.compliance import check_entrypoints, check_sync_bridge
+from standard_asr.compliance import (
+    check_entrypoints,
+    check_event_sequence,
+    check_sync_bridge,
+)
 from standard_asr.discovery import ModelRegistry, discover_models
 from standard_asr.runtime_params import ProviderParams
 from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
@@ -249,3 +253,51 @@ def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -
     report = check_sync_bridge(_HangSession, timeout=0.05)
     assert report.passed is False
     assert any("did not terminate" in i.message for i in report.issues)
+
+
+# --------------------------------------------------------------------------- #
+# check_event_sequence (pure streaming-invariant validator)
+# --------------------------------------------------------------------------- #
+def test_check_event_sequence_accepts_a_clean_stream() -> None:
+    events = [
+        TranscriptionEvent.partial("s0", "hel"),
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True
+    assert report.issues == []
+
+
+def test_check_event_sequence_flags_illegal_transition() -> None:
+    # partial after final for the same segment is an illegal lifecycle transition.
+    events = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.partial("s0", "hello again"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("invariant violated" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_flags_missing_terminal() -> None:
+    report = check_event_sequence([TranscriptionEvent.final("s0", "hello")])
+    assert report.passed is False
+    assert any("without a terminal" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_flags_decreasing_audio_cursor() -> None:
+    events = [
+        TranscriptionEvent.progress(audio_processed_until=2.0),
+        TranscriptionEvent.progress(audio_processed_until=1.0),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("audio_cursor_decreased" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_empty_is_vacuously_ok() -> None:
+    report = check_event_sequence([])
+    assert report.passed is True

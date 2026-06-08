@@ -486,9 +486,12 @@ def test_cli_serve_importerror_from_run(
     assert "boom" in output
 
 
-def test_cli_models_prepare_calls_transcribe(
+def test_cli_models_prepare_no_prepare_hook_is_noop(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # An engine without a prepare() hook must NOT trigger a real transcribe as
+    # a stand-in (that would be a billable request with side effects for cloud
+    # engines). It is a reported no-op instead.
     registry = _demo_registry()
 
     def _discover_models(**_: object) -> ModelRegistry:
@@ -500,7 +503,7 @@ def test_cli_models_prepare_calls_transcribe(
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "prepare" in output.lower()
+    assert "nothing to warm up" in output.lower()
 
 
 def test_cli_models_prepare_calls_prepare(

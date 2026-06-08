@@ -23,7 +23,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .language import is_valid_bcp47
 
 
 class WordTimestampGranularity(str, Enum):
@@ -101,6 +103,37 @@ class RuntimeParams(BaseModel):
     provider_params: ProviderParams | None = Field(
         default=None, description="Engine-specific typed knobs."
     )
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, value: str | None) -> str | None:
+        """Reject a malformed language tag at construction (fail-fast).
+
+        A malformed tag is an invalid *value*, not an unsupported feature, so --
+        like ``provider_params`` errors (spec Runtime R3) -- it always raises,
+        independent of the strict / best_effort policy. This keeps a common
+        mistake (passing ``"english"`` instead of ``"en"``) from silently
+        reaching the engine. ``"auto"`` (auto-detect) and ``None`` are permitted;
+        membership against an engine's languages is enforced separately.
+
+        Args:
+            value: The provided language tag, ``"auto"``, or ``None``.
+
+        Returns:
+            The validated value unchanged.
+
+        Raises:
+            ValueError: If ``value`` is a non-empty, non-``"auto"`` string that
+                is not a well-formed BCP-47 tag.
+        """
+        if value is None or value == "auto":
+            return value
+        if not is_valid_bcp47(value):
+            raise ValueError(
+                f"language {value!r} is not a well-formed BCP-47 language tag "
+                "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'."
+            )
+        return value
 
 
 __all__ = [

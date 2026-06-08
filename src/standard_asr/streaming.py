@@ -38,7 +38,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .exceptions import StreamClosedError
 from .results import Diagnostic, Segment, TranscriptionResult, Word
@@ -196,6 +196,36 @@ class TranscriptionEvent(BaseModel):
         if self.type == "done":
             return True
         return self.type == "error" and self.recoverable is False
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> TranscriptionEvent:
+        """Reject structurally illegal events at construction (spec ST.5).
+
+        A content event with no segment it can address, an error with no code, or
+        a supersede whose retired/replacement ids overlap (or that retires
+        nothing) is malformed -- a wrong or unattributable transcript is the
+        cardinal sin, so the event model refuses to represent one. Sequence-level
+        invariants (monotonic ``stable_until`` / ``audio_processed_until``,
+        frozen-prefix immutability, illegal lifecycle transitions) are enforced
+        across events by :class:`_LifecycleGuard`, not here.
+
+        Returns:
+            The validated event.
+
+        Raises:
+            ValueError: If the event is structurally illegal for its type.
+        """
+        if self.type in ("partial", "final"):
+            if self.segment_id is None or self.text is None:
+                raise ValueError(f"{self.type} event MUST carry both segment_id and text.")
+        elif self.type == "supersede":
+            if not self.old_ids:
+                raise ValueError("supersede event MUST retire at least one segment (old_ids).")
+            if set(self.old_ids) & set(self.new_ids):
+                raise ValueError("supersede old_ids and new_ids MUST be disjoint.")
+        elif self.type == "error" and self.code is None:
+            raise ValueError("error event MUST carry a code.")
+        return self
 
     @classmethod
     def partial(cls, segment_id: str, text: str, **kw: Any) -> TranscriptionEvent:
@@ -559,6 +589,8 @@ class _LifecycleGuard:
         self._strict = strict
         self._state: dict[str, str] = {}
         self._stable_until: dict[str, int] = {}
+        self._frozen_text: dict[str, str] = {}
+        self._audio_cursor: float = 0.0
         self.diagnostics: list[Diagnostic] = []
 
     def _reject(self, code: str, message: str) -> None:
@@ -585,6 +617,7 @@ class _LifecycleGuard:
             The event to forward (possibly with a clamped ``stable_until``), or
             ``None`` if the event is an illegal transition and was suppressed.
         """
+        event = self._clamp_audio_cursor(event)
         sid = event.segment_id
         if event.type == "supersede":
             for old in event.old_ids:
@@ -617,7 +650,18 @@ class _LifecycleGuard:
                     "(spec ST.5.1 illegal transition).",
                 )
                 return None
+            if self._frozen_prefix_rewritten(event, sid):
+                self._reject(
+                    "frozen_prefix_rewritten",
+                    f"segment {sid!r} rewrote its already-frozen prefix "
+                    "(text[:stable_until] changed); suppressed (spec ST.4.2: the "
+                    "frozen prefix is immutable).",
+                )
+                return None
             event = self._clamp_stable_until(event, sid)
+            su = event.stable_until or 0
+            if su > 0 and event.text is not None:
+                self._frozen_text[sid] = event.text[:su]
             if event.type == "final":
                 self._state[sid] = "closed" if event.finality == "closed" else "final"
             else:
@@ -663,6 +707,53 @@ class _LifecycleGuard:
             self._reject("stable_until_clamped", reason)
             event = event.model_copy(update={"stable_until": clamped})
         self._stable_until[sid] = clamped
+        return event
+
+    def _frozen_prefix_rewritten(self, event: TranscriptionEvent, sid: str) -> bool:
+        """Return whether ``event`` rewrites segment ``sid``'s frozen prefix.
+
+        The frozen prefix (``text[:stable_until]`` at the last accepted frontier)
+        is immutable: an engine may extend the text but MUST NOT alter what it
+        has already frozen (spec ST.4.2). Returns ``False`` for the first event
+        of a segment or when nothing is frozen yet.
+
+        Args:
+            event: The incoming partial/final event.
+            sid: The segment id.
+
+        Returns:
+            ``True`` if the previously-frozen prefix would change.
+        """
+        prior_su = self._stable_until.get(sid, 0)
+        if prior_su <= 0 or event.text is None:
+            return False
+        return event.text[:prior_su] != self._frozen_text.get(sid, "")
+
+    def _clamp_audio_cursor(self, event: TranscriptionEvent) -> TranscriptionEvent:
+        """Clamp a decreasing ``audio_processed_until`` cursor (spec ST.4.1).
+
+        The audio-time cursor is monotonic across the whole session (it never
+        moves backwards), independent of segment. A decrease is clamped to the
+        prior value with a diagnostic (or raises in strict mode).
+
+        Args:
+            event: Any event (the cursor may appear on content or progress).
+
+        Returns:
+            The event, with ``audio_processed_until`` clamped if it decreased.
+        """
+        cursor = event.audio_processed_until
+        if cursor is None:
+            return event
+        if cursor < self._audio_cursor:
+            self._reject(
+                "audio_cursor_decreased",
+                f"audio_processed_until decreased {cursor} -> clamped to "
+                f"{self._audio_cursor} (spec ST.4.1: the cursor is monotonic).",
+            )
+            event = event.model_copy(update={"audio_processed_until": self._audio_cursor})
+        else:
+            self._audio_cursor = cursor
         return event
 
 

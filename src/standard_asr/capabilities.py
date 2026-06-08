@@ -440,6 +440,24 @@ class DeclaredCapabilities(_Container):
                 return False
         return True
 
+    def canonical_json(self) -> dict[str, Any]:
+        """Serialize to canonical JSON with a derived ``supported`` at every node.
+
+        Cross-language clients read capabilities from this JSON. Flag and bounded
+        nodes carry ``supported`` as a real field, but enum/mode nodes derive it
+        from ``mode`` (a Python property, absent from ``model_dump``). This method
+        injects the uniform boolean at every capability node and present
+        container so a client never has to special-case archetypes or know the
+        ``"none"``/``"unsupported"`` sentinels (spec §C R6 -- "enum/mode 节点的
+        ``supported`` 由服务端注入"). The root object itself carries no
+        ``supported`` key (it is the container of all modes, not a capability);
+        an absent mode domain serializes as ``null`` (fail-closed).
+
+        Returns:
+            A JSON-serializable capability tree with ``supported`` on each node.
+        """
+        return cast("dict[str, Any]", _to_canonical(self, inject_supported=False))
+
     def _resolve(self, dot_path: str) -> object:
         """Resolve a dot-path to its node object (not its ``supported`` bool).
 
@@ -500,6 +518,41 @@ def _derive_supported(node: object) -> bool:
             return bool(mapping["supported"])
         return True  # present container dict
     return False
+
+
+def _to_canonical(node: object, *, inject_supported: bool) -> Any:
+    """Recursively convert a capability tree to canonical JSON.
+
+    Mirrors ``model_dump(mode="json")`` but injects a derived ``supported``
+    boolean at every capability node (:class:`_CapNode`) and present container
+    (:class:`_Container`). Constraint submodels are not capabilities and get no
+    ``supported`` key. See :meth:`DeclaredCapabilities.canonical_json`.
+
+    Args:
+        node: A model, container, list, dict, or scalar to convert.
+        inject_supported: Whether to add ``supported`` to this node if it is a
+            capability node or container (``False`` only for the root).
+
+    Returns:
+        A JSON-serializable representation of ``node``.
+    """
+    if isinstance(node, BaseModel):
+        out: dict[str, Any] = {}
+        for name in type(node).model_fields:
+            out[name] = _to_canonical(getattr(node, name), inject_supported=True)
+        for key, value in (node.model_extra or {}).items():
+            out[key] = _to_canonical(value, inject_supported=True)
+        if inject_supported and isinstance(node, (_CapNode, _Container)):
+            out["supported"] = _derive_supported(node)
+        return out
+    if isinstance(node, list):
+        return [_to_canonical(item, inject_supported=True) for item in cast("list[object]", node)]
+    if isinstance(node, dict):
+        return {
+            key: _to_canonical(value, inject_supported=True)
+            for key, value in cast("dict[str, object]", node).items()
+        }
+    return node
 
 
 def _iter_paths(node: object, prefix: str) -> Iterator[str]:

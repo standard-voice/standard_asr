@@ -13,6 +13,7 @@ layer passes through whichever the application provided.
 
 from __future__ import annotations
 
+import io
 from typing import Any, ClassVar, Iterable, Literal, Sequence, cast
 
 from pydantic import Field
@@ -118,7 +119,15 @@ class FasterWhisperProperties(BaseProperties):
     engine_id: str = "faster-whisper"
     model_name: str = "whisper"
     protocol_version: str = "1.0.0"
-    accepted_input: set[InputKind] = {InputKind.ARRAY, InputKind.ENCODED_FILE}
+    # faster-whisper's transcribe() takes a path, a decoded array, or a binary
+    # file-like, so the engine accepts all three. Declaring ENCODED_BYTES (not
+    # just ENCODED_FILE) lets the Web API / cloud-style integrations hand it
+    # in-memory uploads without a temp file.
+    accepted_input: set[InputKind] = {
+        InputKind.ARRAY,
+        InputKind.ENCODED_FILE,
+        InputKind.ENCODED_BYTES,
+    }
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | Literal["any"] = [16000]
     selectable_languages: list[str] = ["auto", *_LANGUAGES]
@@ -248,7 +257,15 @@ class FasterWhisperASR(EngineBase):
                 f"{prepared.sample_rate} Hz (audio negotiation should have "
                 "resampled to 16000)."
             )
-        source: Any = prepared.array if prepared.array is not None else prepared.path
+        # Dispatch on the negotiated shape: array, file path, or in-memory bytes
+        # (wrapped as a binary file-like, which faster-whisper accepts directly).
+        source: Any
+        if prepared.array is not None:
+            source = prepared.array
+        elif prepared.data is not None:
+            source = io.BytesIO(prepared.data)
+        else:
+            source = prepared.path
         model = cast(Any, self._model)
         segments, info = model.transcribe(
             source,

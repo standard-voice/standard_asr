@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Command line entry point for Standard ASR utilities."""
 
 from __future__ import annotations
@@ -7,8 +10,6 @@ import json
 import sys
 import traceback
 from typing import Any, Callable, Iterable, cast
-
-import numpy as np
 
 from .compliance import ComplianceIssue, check_entrypoints
 from .discovery import discover_models
@@ -336,15 +337,15 @@ def _cmd_models_prepare(args: argparse.Namespace) -> int:
     registry = discover_models()
     asr = registry.create(args.name)
 
-    params = _parse_options(args.options)
-
     prepare = getattr(asr, "prepare", None)
     if callable(prepare):
         prepare()
+        print("✅ Model prepare complete.")
     else:
-        dummy_audio = np.zeros(16_000, dtype=np.float32)
-        asr.transcribe((dummy_audio, 16000), params)
-    print("✅ Model prepare complete.")
+        # No prepare() hook: there is nothing to warm up or download. Never fire
+        # a real transcribe as a stand-in -- for cloud/commercial engines that
+        # would be a billable request with side effects (lazy / no-surprise).
+        print("ℹ️  Engine declares no prepare() step; nothing to warm up.")
     return 0
 
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Plugin discovery system for Standard ASR models in the current Python environment.
 
 **Quick Start:**
@@ -487,6 +490,17 @@ class ModelRegistry:
             >>> result = asr.transcribe(audio)
         """
         factory = self.get_factory(name)
+        engine_id = self.spec(name).engine_id
+        if engine_id in self._shadowed_engine_ids:
+            # IC.2: surface the ambiguity again at the point of use, not only at
+            # discovery -- routing to a shadowed engine_id is never silent.
+            logger.warning(
+                "Creating model %r whose engine_id %r is provided by more than one "
+                "distribution; config.engine routing is ambiguous. Install only one "
+                "provider for this engine_id.",
+                name,
+                engine_id,
+            )
         return factory(*args, **kwargs)
 
     def __len__(self) -> int:  # pragma: no cover

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Copyright 2025 The Standard ASR Authors
 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -321,8 +324,17 @@ def load_audio(
 
     **Returns:** ``np.float32`` array, 16kHz mono by default, values in ``[-1.0, 1.0]``.
 
-    This is the main entry point for loading audio. It handles format detection,
-    decoding, resampling, and channel conversion automatically.
+    Convenience loader for application code that wants a decoded array directly
+    (e.g. to plot or pre-process audio). It handles format detection, decoding,
+    resampling, and channel conversion automatically, and for a ``str`` it
+    auto-detects a base64 ``data:`` URI.
+
+    This is **not** the engine input boundary. When transcribing, pass an
+    :data:`~standard_asr.audio_input.AudioInput` to ``transcribe`` and let the
+    standard negotiation layer decode/convert per the engine's ``accepted_input``
+    -- there a bare ``str`` is **always** a file path and is never sniffed (a
+    security boundary against SSRF / data-URI confusion). This helper's
+    convenience sniffing is intentional and local to it.
 
     Args:
         source: Audio input. Supported types:

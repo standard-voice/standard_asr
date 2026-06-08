@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Helpers for validating, normalizing, and resolving BCP 47 language tags."""
 
 from __future__ import annotations

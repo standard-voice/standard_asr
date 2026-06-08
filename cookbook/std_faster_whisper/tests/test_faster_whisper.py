@@ -237,6 +237,30 @@ def test_transcribe_from_file_path(
     assert fake_faster_whisper.last_transcribe_kwargs["source"] == str(wav)
 
 
+def test_transcribe_from_bytes_uses_binary_file_like(
+    fake_faster_whisper: type[FakeWhisperModel],
+) -> None:
+    import io
+    import wave
+
+    from standard_asr.audio_input import AudioBytes
+
+    fake_faster_whisper.segments = [FakeSegment(0.0, 1.0, "from bytes")]
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(np.zeros(16, dtype=np.int16).tobytes())
+
+    result = FasterWhisperASR(model_path="tiny").transcribe(
+        AudioBytes(buf.getvalue()), RuntimeParams(language="en")
+    )
+    assert result.text == "from bytes"
+    # encoded_bytes is accepted, so the bytes pass through as a binary file-like.
+    assert isinstance(fake_faster_whisper.last_transcribe_kwargs["source"], io.BytesIO)
+
+
 def test_transcribe_detected_language_none_when_unknown(
     fake_faster_whisper: type[FakeWhisperModel],
 ) -> None:

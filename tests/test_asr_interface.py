@@ -359,3 +359,49 @@ def test_start_transcription_guard_helper_is_static() -> None:
     EngineBase.ensure_stream_inputs_exclusive(fmt, None)
     EngineBase.ensure_stream_inputs_exclusive(None, _audio())
     EngineBase.ensure_stream_inputs_exclusive(None, None)
+
+
+class _WireProps(_ArrayProps):
+    wire_encodings: list[str] | None = ["pcm_s16le", "mulaw"]
+
+
+class _WireEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _WireProps()
+
+
+def test_ensure_stream_format_supported_rejects_unknown_encoding() -> None:
+    from standard_asr.audio_format import AudioFormat
+
+    engine = _WireEngine()
+    # A declared encoding passes; an undeclared one is fail-closed at session start.
+    engine.ensure_stream_format_supported(AudioFormat(encoding="mulaw", sample_rate=8000))
+    with pytest.raises(UnsupportedFeatureError, match="wire encoding"):
+        engine.ensure_stream_format_supported(AudioFormat(encoding="opus", sample_rate=48000))
+
+
+def test_ensure_stream_format_supported_skips_when_no_wire_encodings() -> None:
+    # An engine that declares no wire_encodings cannot validate encoding; the
+    # guard is a no-op (sample-rate is the standard's resampling responsibility).
+    from standard_asr.audio_format import AudioFormat
+
+    _ArrayEngine().ensure_stream_format_supported(
+        AudioFormat(encoding="anything", sample_rate=16000)
+    )
+
+
+def test_required_input_sample_rate_must_be_accepted() -> None:
+    from pydantic import ValidationError
+
+    # required rate present in accepted list: valid.
+    _ArrayProps(
+        accepted_sample_rates=[24000],
+        required_input_sample_rate=24000,
+    )
+    # required rate absent from a concrete accepted list: contradictory engine.
+    with pytest.raises(ValidationError, match="required_input_sample_rate"):
+        _ArrayProps(
+            accepted_sample_rates=[16000],
+            required_input_sample_rate=24000,
+        )
+    # 'any' accepts every rate, so a required rate is always reachable.
+    _ArrayProps(accepted_sample_rates="any", required_input_sample_rate=24000)

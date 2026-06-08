@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Compliance helpers for Standard ASR plugin authors."""
 
 from __future__ import annotations
@@ -14,12 +17,18 @@ from .asr_properties import BaseProperties
 from .capabilities import DeclaredCapabilities
 from .discovery import FactoryLoadError, ModelRegistry, discover_models
 from .runtime_params import ProviderParams, RuntimeParams
-from .streaming import SyncSession, TranscriptionSession
+from .streaming import (
+    SyncSession,
+    TranscriptionEvent,
+    TranscriptionSession,
+    _LifecycleGuard,  # pyright: ignore[reportPrivateUsage]
+)
 
 __all__ = [
     "ComplianceIssue",
     "ComplianceReport",
     "check_entrypoints",
+    "check_event_sequence",
     "check_sync_bridge",
 ]
 
@@ -382,6 +391,62 @@ def _check_class_level_metadata(spec: object, name: str, issues: list[Compliance
                 model=name,
             )
         )
+
+
+def check_event_sequence(events: Iterable[TranscriptionEvent]) -> ComplianceReport:
+    """Validate a *recorded* streaming event sequence against the invariants.
+
+    Behavioral check for streaming adapters that is **pure**: it replays an
+    already-captured event stream through the standard lifecycle/frontier guard
+    and reports every invariant it violates, without ever instantiating or
+    calling an engine. (Behavioral checks that would require *running* a model --
+    strict sample-rate, the input-conversion matrix, language membership -- are
+    deliberately left to unit tests, because invoking a cloud engine from a
+    compliance run would be a billable side effect; this one only inspects data
+    the author already produced.)
+
+    Detected violations (each an error): an illegal lifecycle transition
+    (``partial``/``final`` after a segment is finalized/superseded; superseding a
+    ``closed`` segment), a non-monotonic ``stable_until`` or
+    ``audio_processed_until``, a rewritten frozen prefix, and an event stream
+    that never reaches a terminal (``done`` / non-recoverable ``error``) event.
+
+    Args:
+        events: The recorded events to validate, in emission order.
+
+    Returns:
+        A :class:`ComplianceReport`; ``passed`` is ``True`` when the sequence
+        honours every streaming invariant.
+    """
+    guard = _LifecycleGuard(strict=False)
+    issues: list[ComplianceIssue] = []
+    saw_any = False
+    saw_terminal = False
+    for event in events:
+        saw_any = True
+        guard.admit(event)
+        if event.is_terminal:
+            saw_terminal = True
+    for diagnostic in guard.diagnostics:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(f"streaming invariant violated ({diagnostic.code}): {diagnostic.message}"),
+                model=None,
+            )
+        )
+    if saw_any and not saw_terminal:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "event stream ended without a terminal (done / non-recoverable "
+                    "error) event (spec ST.6.1: the stream MUST terminate)."
+                ),
+                model=None,
+            )
+        )
+    return ComplianceReport(registry=ModelRegistry({}), issues=issues)
 
 
 def check_sync_bridge(

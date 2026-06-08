@@ -319,6 +319,75 @@ def test_traversal_helpers_handle_non_container_nodes() -> None:
     assert _children("scalar") == []
 
 
+def test_canonical_json_injects_derived_supported() -> None:
+    import json
+
+    from standard_asr.capabilities import FinalityCap
+
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(),
+        streaming=StreamingCapabilities(
+            reconnect=ReconnectCap(mode="unsupported"),
+            timestamps=StreamTimestampsCap(mode="native_frame_aligned"),
+            finality_level=FinalityCap(mode="closed"),
+        ),
+        streaming_input=FlagCap(supported=True),
+    )
+    cj = caps.canonical_json()
+
+    # The root is the container of all modes, not a capability: no supported key.
+    assert "supported" not in cj
+    # A present mode domain is supported.
+    assert cj["batch"]["supported"] is True
+    assert cj["streaming"]["supported"] is True
+    # Flag nodes keep their real supported field.
+    assert cj["streaming_input"]["supported"] is True
+    # enum/mode nodes now expose a uniform derived supported alongside mode.
+    assert cj["streaming"]["reconnect"] == {"mode": "unsupported", "supported": False}
+    assert cj["streaming"]["timestamps"]["supported"] is True
+    assert cj["streaming"]["finality_level"]["supported"] is True
+    # The whole tree is JSON-serializable.
+    json.dumps(cj)
+
+
+def test_canonical_json_preserves_unknown_extra_keys() -> None:
+    # Containers tolerate unknown keys (R6 forward-compat); canonical JSON passes
+    # them through, including nested dict values, without injecting supported.
+    caps = DeclaredCapabilities.model_validate(
+        {"batch": {"x_vendor": {"flavor": "fast"}, "streaming_input": True}}
+    )
+    cj = caps.canonical_json()
+    assert cj["batch"]["x_vendor"] == {"flavor": "fast"}
+
+
+def test_canonical_json_absent_domain_is_null() -> None:
+    # An unsupported mode domain serializes as null (fail-closed), never as a
+    # present-but-empty container.
+    caps = DeclaredCapabilities(streaming=StreamingCapabilities())
+    cj = caps.canonical_json()
+    assert cj["batch"] is None
+    assert cj["streaming"]["supported"] is True
+
+
+def test_canonical_json_preserves_constraints_without_supported() -> None:
+    # Constraint submodels are not capabilities: they keep their fields but get
+    # no injected supported key.
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(
+                candidate_languages=CandidateLanguagesCap(
+                    supported=True,
+                    constraints=CandidateLanguagesConstraints(max=3),
+                ),
+            )
+        )
+    )
+    cj = caps.canonical_json()
+    cand = cj["batch"]["language"]["candidate_languages"]
+    assert cand["supported"] is True
+    assert cand["constraints"] == {"max": 3}
+
+
 def test_covers_continues_past_unresolvable_node() -> None:
     # When a supported path in `other` does not resolve to a node in this tree
     # (declared_node is None), the per-node narrowing check is skipped (continue)

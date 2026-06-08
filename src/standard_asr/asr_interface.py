@@ -184,6 +184,7 @@ class EngineBase(ABC):
             native_sample_rate=self.properties.native_sample_rate,
             required_input_sample_rate=self.properties.required_input_sample_rate,
             max_file_size=self.properties.max_file_size,
+            max_audio_duration=self.properties.max_audio_duration,
             strict=self._strict,
         )
         result = self._transcribe(prepared, gated)
@@ -337,6 +338,35 @@ class EngineBase(ABC):
                 "start_transcription: 'audio_format' (incremental feeding) and "
                 "'audio' (whole-input streaming) are mutually exclusive; pass "
                 "exactly one (spec Streaming §3.1)."
+            )
+
+    def ensure_stream_format_supported(self, audio_format: AudioFormat) -> None:
+        """Validate a declared streaming wire format at session establishment.
+
+        Shared session-establishment guard for streaming engines: call it first
+        (like :meth:`ensure_stream_inputs_exclusive`) when opening a
+        ``audio_format=...`` session. Fail-closed on the wire **encoding** -- an
+        encoding the engine never declared in ``wire_encodings`` is rejected up
+        front rather than misframed as PCM and silently mistranscribed.
+
+        The wire **sample rate** need not match the engine: per spec R7 the
+        standard resamples wire frames to ``required_input_sample_rate`` (or an
+        accepted rate), and the engine-definition invariant that the required
+        rate is itself reachable is enforced on
+        :class:`~standard_asr.asr_properties.BaseProperties`.
+
+        Args:
+            audio_format: The wire format the session declared.
+
+        Raises:
+            UnsupportedFeatureError: If ``wire_encodings`` is declared and the
+                requested encoding is not among them.
+        """
+        wire = self.properties.wire_encodings
+        if wire is not None and audio_format.encoding not in wire:
+            raise UnsupportedFeatureError(
+                f"Streaming wire encoding {audio_format.encoding!r} is not supported; "
+                f"engine {self.properties.engine_id!r} declares wire_encodings={wire}."
             )
 
     def start_transcription(

@@ -60,3 +60,16 @@ def test_frozen() -> None:
     params = RuntimeParams(language="en")
     with pytest.raises(ValidationError):
         params.language = "fr"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("tag", ["en", "en-US", "zh-Hans", "auto", None])
+def test_language_accepts_wellformed_tags(tag: str | None) -> None:
+    assert RuntimeParams(language=tag).language == tag
+
+
+@pytest.mark.parametrize("tag", ["english", "e", "en-", "123"])
+def test_language_rejects_malformed_tags(tag: str) -> None:
+    # A malformed language tag is an invalid value, rejected at construction
+    # regardless of strict/best_effort (like provider_params errors).
+    with pytest.raises(ValidationError, match="well-formed BCP-47"):
+        RuntimeParams(language=tag)

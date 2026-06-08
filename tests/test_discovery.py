@@ -656,6 +656,20 @@ def test_same_dist_same_engine_id_is_not_a_collision() -> None:
     assert registry.shadowed_engine_ids == set()
 
 
+def test_create_shadowed_engine_id_warns_at_routing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The ambiguity is surfaced again at the point of use, not only at discovery.
+    ep_a = _ep_with_dist("whisper/a", "dist-one")
+    ep_b = _ep_with_dist("whisper/b", "dist-two")
+    registry = discover_models(eps=[ep_a, ep_b])
+
+    caplog.clear()
+    caplog.set_level("WARNING")
+    registry.create("whisper/a")
+    assert any("routing is ambiguous" in r.message for r in caplog.records)
+
+
 # ----- H14: compliance class-level + sync-bridge checks -------------------- #
 
 

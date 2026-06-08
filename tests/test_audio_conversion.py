@@ -53,6 +53,7 @@ def _exec(provided: object, accepted: set[InputKind], **kw: object) -> PreparedA
         native_sample_rate=kw.get("native_sample_rate", 16000),  # type: ignore[arg-type]
         required_input_sample_rate=kw.get("required_input_sample_rate"),  # type: ignore[arg-type]
         max_file_size=kw.get("max_file_size"),  # type: ignore[arg-type]
+        max_audio_duration=kw.get("max_audio_duration"),  # type: ignore[arg-type]
         strict=kw.get("strict", True),  # type: ignore[arg-type]
         allow_private_addresses=kw.get("allow_private_addresses", False),  # type: ignore[arg-type]
     )
@@ -156,15 +157,47 @@ def test_decode_path_to_array(tmp_path: Path) -> None:
     assert any(d.code == "audio_conversion" for d in prepared.diagnostics)
 
 
-def test_array_encode_wav_assumes_rate_when_missing() -> None:
-    # An AudioArray with no sample_rate encoded to WAV must emit the
-    # assumed_sample_rate diagnostic (it cannot fabricate a silent rate).
+def test_array_encode_wav_strict_raises_when_rate_missing() -> None:
+    # R6: a bare AudioArray (no sample_rate) headed for a WAV-encode MUST raise
+    # in strict mode rather than silently fabricating a rate -- the same
+    # contract the array-target path enforces.
+    with pytest.raises(AudioProcessingError, match="no sample rate"):
+        _exec(
+            AudioArray(np.zeros(8, dtype=np.float32)),
+            {InputKind.ENCODED_BYTES},
+        )
+
+
+def test_array_encode_wav_best_effort_assumes_rate_when_missing() -> None:
+    # best_effort MAY assume 16 kHz, but MUST emit the assumed_sample_rate
+    # diagnostic every time (never a silent assumption).
     prepared = _exec(
         AudioArray(np.zeros(8, dtype=np.float32)),
         {InputKind.ENCODED_BYTES},
+        strict=False,
     )
     assert prepared.kind is InputKind.ENCODED_BYTES
     assert any(d.code == "assumed_sample_rate" for d in prepared.diagnostics)
+
+
+def test_array_exceeding_max_duration_raises() -> None:
+    # max_audio_duration is enforced on the decoded array: 2 s of 16 kHz audio
+    # against a 1 s limit must raise (R10 -- a declared limit is a contract).
+    with pytest.raises(AudioProcessingError, match="max_audio_duration"):
+        _exec(
+            AudioArray(np.zeros(32_000, dtype=np.float32), 16_000),
+            {InputKind.ARRAY},
+            max_audio_duration=1.0,
+        )
+
+
+def test_array_within_max_duration_ok() -> None:
+    prepared = _exec(
+        AudioArray(np.zeros(16_000, dtype=np.float32), 16_000),
+        {InputKind.ARRAY},
+        max_audio_duration=10.0,
+    )
+    assert prepared.kind is InputKind.ARRAY
 
 
 def test_decode_bytes_to_array() -> None:

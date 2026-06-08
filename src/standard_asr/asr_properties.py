@@ -215,6 +215,33 @@ class BaseProperties(BaseModel):
             raise ValueError("detectable_languages is required when 'auto' is selectable.")
         return self
 
+    @model_validator(mode="after")
+    def _validate_required_rate_reachable(self) -> BaseProperties:
+        """Require ``required_input_sample_rate`` to be an accepted rate (R7).
+
+        The standard resamples wire/array input to ``required_input_sample_rate``
+        when set (spec example E: ``required=24000``, ``accepted=[24000]``). If a
+        concrete ``accepted_sample_rates`` list does not contain the required
+        rate, the engine's own contract is contradictory (the resample target is
+        unreachable), so this fails loudly at declaration time rather than at a
+        session establishment far from the bug.
+
+        Returns:
+            The validated model.
+
+        Raises:
+            ValueError: If a finite ``required_input_sample_rate`` is not in a
+                concrete ``accepted_sample_rates`` list.
+        """
+        req = self.required_input_sample_rate
+        rates = self.accepted_sample_rates
+        if req is not None and isinstance(rates, list) and req not in rates:
+            raise ValueError(
+                f"required_input_sample_rate={req} must be in accepted_sample_rates "
+                f"{rates} (the standard resamples to the required rate; spec R7)."
+            )
+        return self
+
     @field_validator("engine_id")
     @classmethod
     def _validate_engine_id_field(cls, value: str) -> str:

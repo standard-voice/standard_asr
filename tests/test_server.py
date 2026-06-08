@@ -1,29 +1,47 @@
-"""Tests for FastAPI server helpers."""
+"""Tests for FastAPI server helpers.
+
+The transcription endpoints deliberately do **not** pre-decode uploads: they
+hand the encoded payload to the engine's own standard negotiation. The tests
+below therefore exercise real :class:`EngineBase` engines so that decoding,
+resampling and encoded-passthrough are proven end-to-end (a bare stub that
+ignored the audio would mask the very contract the server must honour).
+"""
 
 from __future__ import annotations
 
 import base64
 import builtins
+import io
 import json
+import wave
+from collections.abc import AsyncIterator
 from importlib.metadata import EntryPoint
 from typing import Any, ClassVar, Literal
 
 import httpx
 import numpy as np
 import pytest
-from numpy.typing import NDArray
 
-from standard_asr import BaseConfig, BaseProperties, TranscriptionResult
+from standard_asr import (
+    BaseConfig,
+    BaseProperties,
+    EngineBase,
+    InputKind,
+    PreparedAudio,
+    RuntimeParams,
+    TranscriptionResult,
+)
 from standard_asr import server as server_module
-from standard_asr.audio_input import InputKind
 from standard_asr.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
     FlagCap,
     LanguageCaps,
+    StreamingCapabilities,
 )
 from standard_asr.discovery import discover_models
 from standard_asr.runtime_params import ProviderParams
+from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 
 
 class _DummyConfig(BaseConfig[str]):
@@ -52,6 +70,10 @@ _DUMMY_CAPS = DeclaredCapabilities(
 
 
 class _DummyASR:
+    """Bare structural engine (not EngineBase): ignores audio, returns a fixed
+    transcript. Used for the error-mapping, capabilities and params-schema
+    tests, none of which depend on audio negotiation."""
+
     properties: ClassVar[_DummyProperties] = _DummyProperties()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _DUMMY_CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _DummyParams
@@ -96,24 +118,85 @@ def _no_instantiate_factory() -> _NoInstantiateASR:  # pyright: ignore[reportUnu
     return _NoInstantiateASR()
 
 
-def _fake_audio_bytes(
-    _: bytes, target_sr: int = 16000, target_channels: int | None = 1
-) -> NDArray[np.float32]:
-    return np.zeros(target_sr, dtype=np.float32)
+# --- Real EngineBase engines that record what negotiation hands them ----------
+
+#: Set by the recording engines' ``_transcribe`` so tests can assert on the
+#: shape/rate/bytes the standard negotiation actually produced.
+_RECORDED: dict[str, Any] = {}
+
+_REC_CAPS = DeclaredCapabilities(batch=BatchCapabilities())
 
 
-def _fake_audio(_: str) -> NDArray[np.float32]:
-    return np.zeros(16000, dtype=np.float32)
+def _wav_bytes(rate: int, samples: int = 1600) -> bytes:
+    """Return a minimal mono 16-bit PCM WAV at ``rate`` Hz."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(np.zeros(samples, dtype=np.int16).tobytes())
+    return buf.getvalue()
 
 
-def _raise_value_error_bytes(
-    _: bytes, target_sr: int = 16000, target_channels: int | None = 1
-) -> NDArray[np.float32]:
-    raise ValueError("bad")
+class _Array8kProperties(BaseProperties):
+    engine_id: str = "rec"
+    model_name: str = "array8k"
+    protocol_version: str = "1.0.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 8000
+    accepted_sample_rates: list[int] | Literal["any"] = [8000]
+    selectable_languages: list[str] = []
 
 
-def _raise_value_error_str(_: str) -> NDArray[np.float32]:
-    raise ValueError("bad")
+class _RecordingArray8kASR(EngineBase):
+    """8 kHz-native engine: an 8 kHz upload must reach it at 8 kHz, never
+    silently up-sampled to 16 kHz (spec R7)."""
+
+    properties: ClassVar[BaseProperties] = _Array8kProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _REC_CAPS
+
+    def __init__(self) -> None:
+        self.config = _DummyConfig(engine="rec")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        _RECORDED["kind"] = prepared.kind
+        _RECORDED["sample_rate"] = prepared.sample_rate
+        _RECORDED["array_len"] = int(prepared.array.size) if prepared.array is not None else None
+        return TranscriptionResult(text="array8k")
+
+
+def _recording_array8k_factory() -> _RecordingArray8kASR:  # pyright: ignore[reportUnusedFunction]
+    return _RecordingArray8kASR()
+
+
+class _EncodedProperties(BaseProperties):
+    engine_id: str = "rec"
+    model_name: str = "bytes"
+    protocol_version: str = "1.0.0"
+    accepted_input: set[InputKind] = {InputKind.ENCODED_BYTES}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] | Literal["any"] = "any"
+    selectable_languages: list[str] = []
+
+
+class _RecordingEncodedASR(EngineBase):
+    """Encoded-only engine: must be servable at all (mission G.2.2) and must
+    receive the original encoded bytes byte-for-byte (passthrough)."""
+
+    properties: ClassVar[BaseProperties] = _EncodedProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _REC_CAPS
+
+    def __init__(self) -> None:
+        self.config = _DummyConfig(engine="rec")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        _RECORDED["kind"] = prepared.kind
+        _RECORDED["data"] = prepared.data
+        return TranscriptionResult(text="bytes")
+
+
+def _recording_encoded_factory() -> _RecordingEncodedASR:  # pyright: ignore[reportUnusedFunction]
+    return _RecordingEncodedASR()
 
 
 def _registry():
@@ -121,6 +204,17 @@ def _registry():
         EntryPoint(
             name="dummy/echo",
             value="tests.test_server:_dummy_factory",
+            group="standard_asr.models",
+        )
+    ]
+    return discover_models(eps=eps, strict=True)
+
+
+def _registry_for(factory: str):
+    eps = [
+        EntryPoint(
+            name="dummy/echo",
+            value=f"tests.test_server:{factory}",
             group="standard_asr.models",
         )
     ]
@@ -141,14 +235,11 @@ def test_create_app_missing_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
         server_module.create_app()
 
 
-def test_create_app_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_app_endpoints() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_registry())
-
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
-
     client = TestClient(app)
 
     response: httpx.Response = client.get("/v1/health")
@@ -168,49 +259,105 @@ def test_create_app_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
     assert transcribe.json()["result"]["text"] == "dummy"
 
 
-def test_transcribe_json_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_server_array_engine_keeps_native_rate_through_negotiation() -> None:
+    # An 8 kHz upload to an 8 kHz-native engine must arrive as an ARRAY at
+    # 8000 Hz -- proving the server routes through negotiation and never forces
+    # the old unconditional 16 kHz resample (spec R7).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _RECORDED.clear()
+    app = server_module.create_app(registry=_registry_for("_recording_array8k_factory"))
+    client = TestClient(app)
+
+    files = {"file": ("audio.wav", _wav_bytes(rate=8000), "audio/wav")}
+    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    assert _RECORDED["kind"] is InputKind.ARRAY
+    assert _RECORDED["sample_rate"] == 8000
+
+
+def test_server_encoded_engine_receives_original_bytes_multipart() -> None:
+    # An encoded-only engine must be servable (mission G.2.2) and receive the
+    # uploaded bytes verbatim (passthrough, no lossy decode/re-encode).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _RECORDED.clear()
+    wav = _wav_bytes(rate=16000)
+    app = server_module.create_app(registry=_registry_for("_recording_encoded_factory"))
+    client = TestClient(app)
+
+    files = {"file": ("audio.wav", wav, "audio/wav")}
+    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    assert _RECORDED["kind"] is InputKind.ENCODED_BYTES
+    assert _RECORDED["data"] == wav
+
+
+def test_server_encoded_engine_receives_original_bytes_json() -> None:
+    # The JSON (base64) endpoint feeds the same negotiation path.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _RECORDED.clear()
+    wav = _wav_bytes(rate=16000)
+    app = server_module.create_app(registry=_registry_for("_recording_encoded_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(wav).decode()}
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    assert _RECORDED["kind"] is InputKind.ENCODED_BYTES
+    assert _RECORDED["data"] == wav
+
+
+def test_transcribe_json_decode_error_maps_to_400() -> None:
+    # Invalid base64 reaching a real engine fails inside negotiation and maps
+    # to 400 (no pre-decode in the endpoint any more).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_recording_array8k_factory"))
+    client = TestClient(app)
+
+    resp: httpx.Response = client.post(
+        "/v1/transcribe:json", json={"model": "dummy/echo", "audio": "not-valid-base64!!!"}
+    )
+    assert resp.status_code == 400
+
+
+def test_transcribe_file_decode_error_maps_to_400() -> None:
+    # Undecodable upload bytes fail in negotiation -> 400.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_recording_array8k_factory"))
+    client = TestClient(app)
+
+    files = {"file": ("audio.wav", b"this is not audio", "audio/wav")}
+    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 400
+
+
+def test_transcribe_json_internal_error_maps_to_500() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_fail_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 500
+
+
+def test_transcribe_file_success_and_internal_error() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-
-    real_decode = server_module._decode_audio_payload  # pyright: ignore[reportPrivateUsage]
-    monkeypatch.setattr(server_module, "_decode_audio_payload", _raise_value_error_str)
-    payload = {"model": "dummy/echo", "audio": "bad"}
-    response: httpx.Response = client.post("/v1/transcribe:json", json=payload)
-    assert response.status_code == 400
-
-    monkeypatch.setattr(server_module, "_decode_audio_payload", real_decode)
-
-    eps = [
-        EntryPoint(
-            name="dummy/echo",
-            value="tests.test_server:_fail_factory",
-            group="standard_asr.models",
-        )
-    ]
-    registry = discover_models(eps=eps, strict=True)
-    app_fail = server_module.create_app(registry=registry)
-    client_fail = TestClient(app_fail)
-
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
-    payload = {
-        "model": "dummy/echo",
-        "audio": base64.b64encode(b"fake").decode("utf-8"),
-    }
-    response: httpx.Response = client_fail.post("/v1/transcribe:json", json=payload)
-    assert response.status_code == 500
-
-
-def test_transcribe_file_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    app = server_module.create_app(registry=_registry())
-    client = TestClient(app)
-
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     data = {"model": "dummy/echo"}
@@ -218,45 +365,10 @@ def test_transcribe_file_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 200
     assert response.json()["result"]["text"] == "dummy"
 
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _raise_value_error_bytes)
-    response: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
-    assert response.status_code == 400
-
-    eps = [
-        EntryPoint(
-            name="dummy/echo",
-            value="tests.test_server:_fail_factory",
-            group="standard_asr.models",
-        )
-    ]
-    registry = discover_models(eps=eps, strict=True)
-    app_fail = server_module.create_app(registry=registry)
+    app_fail = server_module.create_app(registry=_registry_for("_fail_factory"))
     client_fail = TestClient(app_fail)
-
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
-    response: httpx.Response = client_fail.post("/v1/transcribe", data=data, files=files)
+    response = client_fail.post("/v1/transcribe", data=data, files=files)
     assert response.status_code == 500
-
-
-def test_decode_audio_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
-    monkeypatch.setattr(server_module, "load_audio", _fake_audio)
-    raw = base64.b64encode(b"fake-data").decode("utf-8")
-    audio = server_module._decode_audio_payload(  # pyright: ignore[reportPrivateUsage]
-        raw
-    )
-    assert isinstance(audio, np.ndarray)
-
-    uri = f"data:audio/wav;base64,{raw}"
-    audio_uri = server_module._decode_audio_payload(  # pyright: ignore[reportPrivateUsage]
-        uri
-    )
-    assert isinstance(audio_uri, np.ndarray)
-
-    with pytest.raises(ValueError):
-        server_module._decode_audio_payload(  # pyright: ignore[reportPrivateUsage]
-            "not-base64!!!"
-        )
 
 
 def test_run_handles_missing_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -335,25 +447,13 @@ def test_params_schema_endpoint() -> None:
     assert "beam" in schema.get("properties", {})
 
 
-def _registry_for(factory: str):
-    eps = [
-        EntryPoint(
-            name="dummy/echo",
-            value=f"tests.test_server:{factory}",
-            group="standard_asr.models",
-        )
-    ]
-    return discover_models(eps=eps, strict=True)
-
-
-def test_transcribe_client_error_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transcribe_client_error_maps_to_422() -> None:
     """UnsupportedFeatureError (client-caused) must map to 422, not 500."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_registry_for("_client_error_factory"))
     client = TestClient(app)
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
@@ -361,29 +461,25 @@ def test_transcribe_client_error_maps_to_422(monkeypatch: pytest.MonkeyPatch) ->
     assert "word_timestamps" in resp.json()["detail"]
 
 
-def test_transcribe_unknown_model_maps_to_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transcribe_unknown_model_maps_to_404() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {"model": "nope/missing", "audio": base64.b64encode(b"fake").decode()}
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 404
 
 
-def test_transcribe_500_does_not_leak_internal_detail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_transcribe_500_does_not_leak_internal_detail() -> None:
     """Unexpected errors return a generic message; raw text stays server-side."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_registry_for("_fail_factory"))
     client = TestClient(app)
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
@@ -432,14 +528,13 @@ def _no_caps_factory() -> _NoCapsASR:  # pyright: ignore[reportUnusedFunction]
     return _NoCapsASR()
 
 
-def test_transcribe_audio_error_maps_to_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    # AudioProcessingError raised inside transcribe (not decode) maps to 400.
+def test_transcribe_audio_error_maps_to_400() -> None:
+    # AudioProcessingError raised inside transcribe maps to 400.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_registry_for("_audio_error_factory"))
     client = TestClient(app)
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
@@ -447,7 +542,7 @@ def test_transcribe_audio_error_maps_to_400(monkeypatch: pytest.MonkeyPatch) -> 
     assert "bad audio frames" in resp.json()["detail"]
 
 
-def test_transcribe_json_with_options_builds_params(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transcribe_json_with_options_builds_params() -> None:
     # A non-null options object is parsed into RuntimeParams (the _build_params
     # validate path).
     pytest.importorskip("fastapi")
@@ -455,7 +550,6 @@ def test_transcribe_json_with_options_builds_params(monkeypatch: pytest.MonkeyPa
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     payload = {
         "model": "dummy/echo",
@@ -464,6 +558,37 @@ def test_transcribe_json_with_options_builds_params(monkeypatch: pytest.MonkeyPa
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 200
+
+
+def test_transcribe_json_with_bad_options_maps_to_400() -> None:
+    # Invalid options in the JSON body (a malformed language tag) are a client
+    # error caught while building RuntimeParams.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(b"fake").decode(),
+        "options": {"language": "english"},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 400
+
+
+def test_transcribe_file_with_bad_options_maps_to_400() -> None:
+    # A malformed options JSON string in the multipart form is a client error.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+
+    files = {"file": ("audio.wav", b"fake", "audio/wav")}
+    data = {"model": "dummy/echo", "options": "{not json}"}
+    resp: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
+    assert resp.status_code == 400
 
 
 def test_capabilities_endpoint_none_caps_returns_404() -> None:
@@ -528,9 +653,7 @@ def test_body_size_middleware_passes_non_http_scope() -> None:
     assert forwarded == ["lifespan"]
 
 
-def test_transcribe_file_over_limit_without_content_length(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_transcribe_file_over_limit_without_content_length() -> None:
     # A chunked upload (no Content-Length) bypasses the early middleware guard;
     # the handler still rejects the materialised oversize body with 413.
     pytest.importorskip("fastapi")
@@ -538,7 +661,6 @@ def test_transcribe_file_over_limit_without_content_length(
 
     app = server_module.create_app(registry=_registry(), max_body_bytes=8)
     client = TestClient(app)
-    monkeypatch.setattr(server_module, "load_audio_from_bytes", _fake_audio_bytes)
 
     # Build a multipart body by hand and stream it via an iterator so httpx omits
     # Content-Length (Transfer-Encoding: chunked), defeating the early guard.
@@ -592,7 +714,7 @@ def test_transcribe_json_over_limit_without_content_length() -> None:
     assert "too large" in resp.json()["detail"]
 
 
-def test_capabilities_no_instantiation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_capabilities_no_instantiation() -> None:
     """capabilities/params-schema must NOT instantiate the engine (DoS / auth)."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -608,3 +730,186 @@ def test_capabilities_no_instantiation(monkeypatch: pytest.MonkeyPatch) -> None:
     schema: httpx.Response = client.get("/v1/params-schema/dummy/echo")
     assert schema.status_code == 200
     assert "beam" in schema.json().get("properties", {})
+
+
+# --- WebSocket streaming surface ---------------------------------------------
+
+
+class _StreamProperties(BaseProperties):
+    engine_id: str = "stream"
+    model_name: str = "echo"
+    protocol_version: str = "1.0.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] | Literal["any"] = [16000]
+    selectable_languages: list[str] = []
+    wire_encodings: list[str] | None = ["pcm_s16le"]
+
+
+class _StreamEchoSession(TranscriptionSession):
+    """Emits one final per fed chunk (its decoded text), then the base done."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        index = 0
+        async for chunk in self.audio_chunks():
+            yield TranscriptionEvent.final(
+                f"seg-{index}",
+                chunk.decode("utf-8", "replace"),
+                start=float(index),
+                end=float(index + 1),
+            )
+            index += 1
+
+
+class _StreamEchoEngine(EngineBase):
+    properties: ClassVar[BaseProperties] = _StreamProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+    def __init__(self) -> None:
+        self.config = _DummyConfig(engine="stream")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")  # batch path unused by these tests
+
+    def start_transcription(
+        self,
+        *,
+        audio_format: Any = None,
+        params: Any = None,
+        audio: Any = None,
+    ) -> TranscriptionSession:
+        self.ensure_stream_inputs_exclusive(audio_format, audio)
+        if audio_format is not None:
+            self.ensure_stream_format_supported(audio_format)
+        return _StreamEchoSession()
+
+
+def _stream_echo_factory() -> _StreamEchoEngine:  # pyright: ignore[reportUnusedFunction]
+    return _StreamEchoEngine()
+
+
+def test_ws_stream_happy_path() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": None}
+        )
+        ws.send_bytes(b"abc")
+        ws.send_bytes(b"de")
+        ws.send_text("end")  # any text frame signals end-of-audio
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "done":
+                break
+    finals = {e["text"] for e in events if e["type"] == "final"}
+    assert finals == {"abc", "de"}
+
+
+def test_ws_stream_bad_config_reports_error() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"no_audio_format": True})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "bad_request"
+
+
+def test_ws_stream_unknown_model_reports_error() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/nope/missing") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "unknown_model"
+
+
+def test_ws_stream_non_streaming_engine_reports_unsupported() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    # _RecordingArray8kASR is a batch-only EngineBase: start_transcription raises.
+    app = server_module.create_app(registry=_registry_for("_recording_array8k_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "unsupported"
+
+
+def test_ws_stream_client_disconnect_is_handled() -> None:
+    # A client that leaves mid-stream must not crash the server: the bridge ends
+    # the session and stops forwarding (covers the disconnect + send-failure path).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_bytes(b"abc")
+        first = ws.receive_json()
+        assert first["type"] == "final"
+    # Exiting the context closes the socket without an end frame.
+
+
+def test_bridge_stream_tolerates_send_failure() -> None:
+    # If the client vanishes mid-stream, a failing send must not propagate: the
+    # bridge swallows it, ends input, and tears the session down cleanly.
+    import asyncio
+
+    class _FakeWS:
+        def __init__(self) -> None:
+            self.send_attempted = False
+
+        async def receive(self) -> dict[str, Any]:
+            return {"type": "websocket.disconnect"}
+
+        async def send_json(self, data: Any) -> None:
+            self.send_attempted = True
+            raise RuntimeError("client gone")
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.ended = False
+
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+        async def send_audio(self, chunk: bytes) -> None:  # pragma: no cover - unused
+            return None
+
+        async def end_audio(self) -> None:
+            self.ended = True
+
+        def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
+            async def _gen() -> AsyncIterator[TranscriptionEvent]:
+                yield TranscriptionEvent.done()
+
+            return _gen()
+
+    websocket = _FakeWS()
+    asyncio.run(server_module._bridge_stream(websocket, _FakeSession()))  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+    # The send was attempted and its failure was swallowed (the run completed).
+    assert websocket.send_attempted is True

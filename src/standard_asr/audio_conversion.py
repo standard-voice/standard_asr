@@ -134,6 +134,7 @@ def execute_plan(
     native_sample_rate: int,
     required_input_sample_rate: int | None = None,
     max_file_size: int | None = None,
+    max_audio_duration: float | None = None,
     strict: bool = True,
     allow_private_addresses: bool = False,
 ) -> PreparedAudio:
@@ -147,6 +148,9 @@ def execute_plan(
         required_input_sample_rate: A hard-required rate, if any.
         max_file_size: Engine max payload size; prechecked on every encoded
             payload and used to bound the decode buffer (spec R4/R9).
+        max_audio_duration: Engine max accepted duration in seconds, if any.
+            Enforced on the decoded array (where duration is measurable);
+            encoded passthrough relies on ``max_file_size`` instead.
         strict: Whether to raise (vs assume + diagnostic) on a missing rate.
         allow_private_addresses: Opt-in to relax the R5 SSRF check that rejects
             URLs resolving to private/loopback/link-local addresses. HTTPS is
@@ -173,7 +177,7 @@ def execute_plan(
         return PreparedAudio(kind=target, url=provided.value, diagnostics=diags)
 
     if target in (InputKind.ENCODED_FILE, InputKind.ENCODED_BYTES):
-        prepared = _prepare_encoded(provided, plan, max_file_size, diags)
+        prepared = _prepare_encoded(provided, plan, max_file_size, strict, diags)
         prepared.diagnostics = diags
         return prepared
 
@@ -188,6 +192,7 @@ def execute_plan(
         strict,
         diags,
     )
+    _check_duration(array, sample_rate, max_audio_duration)
     return PreparedAudio(
         kind=InputKind.ARRAY,
         array=array,
@@ -200,6 +205,7 @@ def _prepare_encoded(
     provided: AudioInput,
     plan: ConversionPlan,
     max_file_size: int | None,
+    strict: bool,
     diags: list[Diagnostic],
 ) -> PreparedAudio:
     """Prepare an encoded (file/bytes) payload from the provided input.
@@ -208,6 +214,8 @@ def _prepare_encoded(
         provided: The provided audio input.
         plan: The conversion plan (target is file/bytes).
         max_file_size: Engine max payload size for the WAV-encode precheck.
+        strict: Whether to raise (vs assume + diagnostic) when a bare array has
+            no sample rate before encoding it to WAV (spec R6).
         diags: Diagnostics accumulator.
 
     Returns:
@@ -238,6 +246,13 @@ def _prepare_encoded(
         )
     if ConversionOp.ENCODE_WAV in ops:
         assert isinstance(provided, AudioArray)
+        if provided.sample_rate is None and strict:
+            # R6: never silently assume a rate before encoding to WAV. The
+            # array path (``_apply_sample_rate``) raises the same way.
+            raise AudioProcessingError(
+                "Audio array has no sample rate. Pass "
+                "AudioArray(samples, sample_rate) or enable best_effort."
+            )
         sr = provided.sample_rate or ASSUMED_SAMPLE_RATE
         if provided.sample_rate is None:
             diags.append(_assumed_sample_rate_diag())
@@ -268,6 +283,35 @@ def _prepare_encoded(
         _check_payload_size(len(decoded), max_file_size)
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=decoded)
     raise AudioProcessingError("Unsupported encoded conversion plan.")  # pragma: no cover
+
+
+def _check_duration(
+    array: NDArray[np.float32], sample_rate: int, max_audio_duration: float | None
+) -> None:
+    """Enforce an engine's ``max_audio_duration`` on a decoded array (spec R10).
+
+    Enforced here, where the sample count and rate are both known, so a declared
+    duration limit is an actual contract rather than advisory metadata. Encoded
+    passthrough (where duration is not measurable without a full decode) relies
+    on ``max_file_size`` instead.
+
+    Args:
+        array: The decoded waveform (``(n_samples,)`` or ``(n_samples, ch)``).
+        sample_rate: The array's sample rate in Hz.
+        max_audio_duration: The engine's limit in seconds, or ``None``.
+
+    Raises:
+        AudioProcessingError: If the duration exceeds ``max_audio_duration``.
+    """
+    if max_audio_duration is None:
+        return
+    duration = array.shape[0] / sample_rate
+    if duration > max_audio_duration:
+        raise AudioProcessingError(
+            f"Audio duration is {duration:.3f}s, which exceeds the engine's "
+            f"max_audio_duration of {max_audio_duration}s. Provide a shorter "
+            "clip or use an engine without this limit."
+        )
 
 
 def _check_payload_size(num_bytes: int, max_file_size: int | None) -> None:

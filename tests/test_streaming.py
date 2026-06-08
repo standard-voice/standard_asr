@@ -57,6 +57,26 @@ def test_supersede_disjoint_enforced() -> None:
         TranscriptionEvent.supersede(["a"], ["a"])
 
 
+def test_event_model_rejects_structurally_illegal_events() -> None:
+    from pydantic import ValidationError
+
+    # partial/final MUST carry segment_id and text.
+    with pytest.raises(ValidationError, match="segment_id and text"):
+        TranscriptionEvent(type="partial", segment_id="s0")
+    with pytest.raises(ValidationError, match="segment_id and text"):
+        TranscriptionEvent(type="final", text="hi")
+    # error MUST carry a code.
+    with pytest.raises(ValidationError, match="MUST carry a code"):
+        TranscriptionEvent(type="error")
+    # supersede MUST retire something and keep old/new disjoint.
+    with pytest.raises(ValidationError, match="retire at least one"):
+        TranscriptionEvent(type="supersede", new_ids=["s1"])
+    with pytest.raises(ValidationError, match="disjoint"):
+        TranscriptionEvent(type="supersede", old_ids=["s1"], new_ids=["s1"])
+    # progress / done need no segment fields.
+    assert TranscriptionEvent(type="progress").type == "progress"
+
+
 def test_is_terminal() -> None:
     assert TranscriptionEvent.done().is_terminal is True
     assert TranscriptionEvent.make_error("x", recoverable=False).is_terminal is True
@@ -635,19 +655,51 @@ def test_guard_clamp_decreased_then_invalid_boundary_combines_reasons() -> None:
     # itself an invalid boundary for the new text, a second clamp DOWN to a valid
     # boundary applies and both reasons are reported together.
     guard = _LifecycleGuard()
-    # prior = 2 on plain ASCII text (boundary 2 is valid here).
-    first = guard.admit(TranscriptionEvent.partial("s0", "ax", stable_until=2))
+    # prior = 2 on text whose boundary 2 is valid; freezes the prefix "ae".
+    first = guard.admit(TranscriptionEvent.partial("s0", "ae", stable_until=2))
     assert first is not None and first.stable_until == 2
-    # New text "a" + "e" + combining accent: boundary 2 splits the combining
-    # sequence. A decreased request (1 < prior 2) clamps up to 2, which is then
-    # invalid for this text -> clamp down to the largest valid boundary (1).
-    combining = "a" + "e" + "́"  # e + COMBINING ACUTE ACCENT
+    # New text "a" + "e" + combining accent extends "ae" (frozen prefix preserved)
+    # but boundary 2 now splits the combining sequence. A decreased request
+    # (0 < prior 2) clamps up to 2, which is then invalid for this text -> clamp
+    # down to the largest valid boundary (1).
+    combining = "a" + "e" + "́"  # "ae" + COMBINING ACUTE ACCENT over the e
     second = guard.admit(TranscriptionEvent.partial("s0", combining, stable_until=0))
     assert second is not None and second.stable_until == 1
     msgs = [d.message for d in guard.diagnostics if d.code == "stable_until_clamped"]
     # The second clamp records BOTH the decrease and the invalid-boundary reason
     # in one combined message (the "; " join under test).
     assert any("decreased" in m and "invalid boundary" in m and "; " in m for m in msgs)
+
+
+def test_guard_clamps_decreasing_audio_cursor() -> None:
+    # audio_processed_until is monotonic across the whole session; a decrease is
+    # clamped to the prior value with a diagnostic (spec ST.4.1).
+    guard = _LifecycleGuard()
+    e1 = guard.admit(TranscriptionEvent.progress(audio_processed_until=2.0))
+    assert e1 is not None and e1.audio_processed_until == 2.0
+    e2 = guard.admit(TranscriptionEvent.progress(audio_processed_until=1.0))
+    assert e2 is not None and e2.audio_processed_until == 2.0
+    assert any(d.code == "audio_cursor_decreased" for d in guard.diagnostics)
+
+
+def test_guard_raises_on_decreasing_audio_cursor_strict() -> None:
+    guard = _LifecycleGuard(strict=True)
+    guard.admit(TranscriptionEvent.progress(audio_processed_until=2.0))
+    with pytest.raises(ValueError, match="cursor is monotonic"):
+        guard.admit(TranscriptionEvent.progress(audio_processed_until=1.0))
+
+
+def test_guard_suppresses_frozen_prefix_rewrite() -> None:
+    # The frozen prefix (text[:stable_until]) is immutable: extending text is
+    # fine, but rewriting an already-frozen region is suppressed (spec ST.4.2).
+    guard = _LifecycleGuard()
+    first = guard.admit(TranscriptionEvent.partial("s0", "the cat", stable_until=4))
+    assert first is not None  # freezes "the "
+    extend = guard.admit(TranscriptionEvent.partial("s0", "the cattle", stable_until=4))
+    assert extend is not None  # extends, prefix preserved
+    rewrite = guard.admit(TranscriptionEvent.partial("s0", "a dog runs", stable_until=4))
+    assert rewrite is None
+    assert any(d.code == "frozen_prefix_rewritten" for d in guard.diagnostics)
 
 
 def test_guard_supersede_new_ids_open_then_partial_allowed() -> None:

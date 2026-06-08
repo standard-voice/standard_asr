@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """FastAPI server utilities for Standard ASR.
 
 **Security note (operators MUST read).** These endpoints intentionally ship
@@ -15,15 +18,14 @@ not a substitute for a rate limiter.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-import numpy as np
-from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .audio_format import AudioFormat
+from .audio_input import AudioBase64, AudioBytes, AudioInput
 from .discovery import FactoryLoadError, ModelRegistry, discover_models
 from .exceptions import (
     AudioProcessingError,
@@ -34,7 +36,10 @@ from .exceptions import (
 )
 from .results import TranscriptionResult
 from .runtime_params import RuntimeParams
-from .utils.audio_loader import load_audio, load_audio_from_bytes
+from .streaming import TranscriptionSession
+
+if TYPE_CHECKING:
+    from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
@@ -199,10 +204,16 @@ def create_app(
         raise ValueError("max_body_bytes must be a positive integer.")
     try:
         from fastapi import FastAPI, File, Form, HTTPException
+        from fastapi import WebSocket as _WebSocket
     except ImportError as exc:
         raise ImportError(
             "FastAPI dependencies are missing. Install with: pip install 'standard-asr[server]'."
         ) from exc
+
+    # Make the WebSocket type resolvable in this module's globals so FastAPI can
+    # evaluate the stringified route annotation (future-annotations) while the
+    # import itself stays lazy/optional.
+    globals()["WebSocket"] = _WebSocket
 
     app = FastAPI(title="Standard ASR")
     model_registry = registry or discover_models()
@@ -276,12 +287,18 @@ def create_app(
                 ),
             )
         try:
-            audio = await asyncio.to_thread(load_audio_from_bytes, file)
             params = _build_params(json.loads(options) if options else None)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        return await _run_transcription(model_registry, model, audio, params, HTTPException)
+        # Hand the encoded bytes to the engine's own negotiation rather than
+        # pre-decoding here. The standard layer then converts/resamples per the
+        # engine's accepted_input (so an encoded-only engine gets bytes, an
+        # array engine gets an array at its accepted rate -- the upload's true
+        # sample rate is never silently overridden).
+        return await _run_transcription(
+            model_registry, model, AudioBytes(data=file), params, HTTPException
+        )
 
     @app.post("/v1/transcribe:json", response_model=TranscribeResponse)
     async def transcribe_json(  # pyright: ignore[reportUnusedFunction]
@@ -307,12 +324,17 @@ def create_app(
                 ),
             )
         try:
-            audio = await asyncio.to_thread(_decode_audio_payload, payload.audio)
             params = _build_params(payload.options)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        return await _run_transcription(model_registry, payload.model, audio, params, HTTPException)
+        # Pass the base64/data-URI payload straight to engine negotiation, which
+        # decodes and converts per the engine's accepted_input (see the
+        # multipart endpoint). Decode failures surface as AudioProcessingError
+        # and map to 400 in _run_transcription.
+        return await _run_transcription(
+            model_registry, payload.model, AudioBase64(payload.audio), params, HTTPException
+        )
 
     @app.get("/v1/capabilities/{model:path}")
     def capabilities(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -334,7 +356,7 @@ def create_app(
         caps = getattr(engine_class, "declared_capabilities", None)
         if caps is None:
             raise HTTPException(status_code=404, detail="No capabilities declared.")
-        return caps.model_dump(mode="json")
+        return caps.canonical_json()
 
     @app.get("/v1/params-schema/{model:path}")
     def params_schema(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -360,26 +382,115 @@ def create_app(
             return {}
         return params_type.model_json_schema()
 
+    @app.websocket("/v1/stream/{model:path}")
+    async def stream(  # pyright: ignore[reportUnusedFunction]
+        websocket: WebSocket, model: str
+    ) -> None:
+        """Bridge a WebSocket to an engine streaming session (mission G.2.2).
+
+        Protocol: the client first sends a JSON text frame
+        ``{"audio_format": {"encoding", "sample_rate", "channels"}, "options": {...}}``,
+        then binary audio frames, then any text frame to signal end-of-audio (or
+        simply disconnects). The server streams each
+        :class:`~standard_asr.streaming.TranscriptionEvent` back as a JSON text
+        frame. Errors before the bridge are reported as a single
+        ``{"type": "error", "code", "message"}`` frame, then the socket closes.
+
+        Args:
+            websocket: The client WebSocket connection.
+            model: Model key in ``engine/model`` format.
+        """
+        await websocket.accept()
+        try:
+            config = await websocket.receive_json()
+            audio_format = AudioFormat(**config["audio_format"])
+            params = _build_params(config.get("options"))
+        except Exception as exc:  # noqa: BLE001
+            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
+            await websocket.close()
+            return
+
+        try:
+            asr = await asyncio.to_thread(model_registry.create, model)
+        except (EntrypointValidationError, FactoryLoadError) as exc:
+            await websocket.send_json(
+                {"type": "error", "code": "unknown_model", "message": str(exc)}
+            )
+            await websocket.close()
+            return
+
+        try:
+            # start_transcription is the streaming surface (EngineBase); it is not
+            # on the structural StandardASR protocol, so cast for the call.
+            session = cast(Any, asr).start_transcription(audio_format=audio_format, params=params)
+        except (UnsupportedFeatureError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "code": "unsupported", "message": str(exc)})
+            await websocket.close()
+            return
+
+        await _bridge_stream(websocket, session)
+        await websocket.close()
+
     return app
+
+
+async def _bridge_stream(websocket: WebSocket, session: TranscriptionSession) -> None:
+    """Pump client audio into ``session`` while streaming its events back.
+
+    Reads binary frames as audio and any text frame (or a disconnect) as
+    end-of-audio, feeding the session from a background task; concurrently
+    forwards each produced event to the client as JSON. A client that vanishes
+    mid-stream simply ends the session (its remaining events are dropped).
+
+    Args:
+        websocket: The accepted client WebSocket.
+        session: The engine's :class:`~standard_asr.streaming.TranscriptionSession`.
+    """
+
+    async def _pump_audio() -> None:
+        while True:
+            message = await websocket.receive()
+            chunk = message.get("bytes")
+            if chunk is not None:
+                await session.send_audio(chunk)
+            else:
+                # A text frame signals end-of-audio; a disconnect message has
+                # neither bytes nor text. Either way, stop feeding.
+                break
+        await session.end_audio()
+
+    async with session:
+        pump = asyncio.create_task(_pump_audio())
+        try:
+            async for event in session:
+                await websocket.send_json(event.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001
+            # The client went away mid-stream; stop forwarding and tear down.
+            pass
+        finally:
+            pump.cancel()
+            await asyncio.gather(pump, return_exceptions=True)
 
 
 async def _run_transcription(
     registry: ModelRegistry,
     model: str,
-    audio: NDArray[np.float32],
+    audio: AudioInput,
     params: RuntimeParams | None,
     http_exception: type[Exception],
 ) -> TranscribeResponse:
     """Instantiate the engine, transcribe, and map errors to HTTP status codes.
 
-    Client-caused errors map to 4xx; everything else to a generic 500 (the raw
-    exception text is logged server-side, never returned, to avoid leaking
-    internal paths or upstream/credential material).
+    The audio is passed as an :data:`~standard_asr.audio_input.AudioInput` (not a
+    pre-decoded array) so the engine's standard negotiation owns decoding and
+    resampling. Client-caused errors map to 4xx; everything else to a generic
+    500 (the raw exception text is logged server-side, never returned, to avoid
+    leaking internal paths or upstream/credential material).
 
     Args:
         registry: The model registry.
         model: Model key in ``engine/model`` format.
-        audio: Decoded audio array.
+        audio: The audio input to negotiate and transcribe.
         params: Parsed runtime parameters, or ``None``.
         http_exception: The ``HTTPException`` class to raise.
 
@@ -454,27 +565,6 @@ def _engine_class_or_404(
         return registry.engine_class(model)
     except (EntrypointValidationError, FactoryLoadError) as exc:
         raise http_exception(status_code=404, detail=str(exc)) from exc  # type: ignore[call-arg]
-
-
-def _decode_audio_payload(payload: str) -> NDArray[np.float32]:
-    """Decode a base64 payload into a normalized audio array.
-
-    Args:
-        payload: Base64 data URI or raw base64 string.
-
-    Returns:
-        Normalized audio array.
-
-    Raises:
-        ValueError: If decoding fails.
-    """
-    if payload.strip().lower().startswith("data:") and ";base64," in payload:
-        return load_audio(payload)
-    try:
-        decoded = base64.b64decode(payload, validate=True)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError("Invalid base64 payload for audio.") from exc
-    return load_audio_from_bytes(decoded)
 
 
 def run(
