@@ -53,6 +53,21 @@ def test_array_tuple_coerces_with_sample_rate() -> None:
     assert coerced.sample_rate == 16000
 
 
+@pytest.mark.parametrize("dtype", [np.int64, np.int32])
+def test_array_tuple_accepts_numpy_integer_sample_rate(dtype: type) -> None:
+    arr = np.zeros(8, dtype=np.float32)
+    coerced = coerce_audio_input((arr, dtype(16000)))
+    assert isinstance(coerced, AudioArray)
+    assert coerced.sample_rate == 16000
+    # Normalized to a builtin int -- downstream never sees a NumPy scalar.
+    assert type(coerced.sample_rate) is int
+
+
+def test_array_tuple_rejects_float_sample_rate() -> None:
+    with pytest.raises(TypeError):
+        coerce_audio_input((np.zeros(4, dtype=np.float32), 16000.0))  # type: ignore[arg-type]
+
+
 def test_existing_variant_returned_unchanged() -> None:
     url = AudioUrl("https://example.com/a.wav")
     assert coerce_audio_input(url) is url

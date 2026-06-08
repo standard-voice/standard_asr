@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Union, cast
+from typing import TYPE_CHECKING, Any, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -239,9 +239,14 @@ def _coerce_array_tuple(value: Sequence[object]) -> AudioArray:
     samples, sample_rate = value
     if not isinstance(samples, np.ndarray):
         raise TypeError("First element of the audio tuple must be a NumPy ndarray.")
-    if not isinstance(sample_rate, int) or isinstance(sample_rate, bool):
+    # Accept both a builtin ``int`` and a NumPy integer scalar (e.g. the
+    # ``np.int64`` a caller gets from ``array.shape`` or ``soundfile.read``);
+    # ``bool`` is an ``int`` subclass and is excluded. The rate is normalized to
+    # a builtin ``int`` so downstream code never sees a NumPy scalar.
+    if isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, np.integer)):
         raise TypeError("Second element of the audio tuple must be an int sample rate.")
-    return AudioArray(cast("NDArray[np.floating]", samples), sample_rate)
+    rate = int(cast("int | np.integer[Any]", sample_rate))
+    return AudioArray(cast("NDArray[np.floating]", samples), rate)
 
 
 __all__ = [
