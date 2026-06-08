@@ -23,6 +23,16 @@ Launch with `standard-asr serve` or `standard_asr.server.run(...)`.
   - A chunked/streamed request with no `Content-Length` bypasses the early
     guard, but both transcribe endpoints re-check the materialised payload size
     (`len(file)` / `len(audio)`) and reject oversize with **413**.
+  - The body-size middleware covers the **HTTP scope only**; the WebSocket
+    surface (`/v1/stream`) is byte-bounded separately (see §4.4).
+- **WebSocket audio caps.** The streaming bridge bounds audio bytes directly:
+  - `DEFAULT_MAX_WS_FRAME_BYTES` (16 MiB) — maximum size of a single binary
+    audio frame; overridable via `create_app(max_ws_frame_bytes=...)`.
+  - `DEFAULT_MAX_WS_SESSION_BYTES` (256 MiB) — cumulative cap on total audio
+    bytes ingested over one session; overridable via
+    `create_app(max_ws_session_bytes=...)`.
+  - Exceeding either cap closes the socket with a `payload_too_large` policy
+    error frame (see §4.4) and logs the violation.
 
 ## 2. Audio is NOT pre-decoded
 
@@ -183,3 +193,24 @@ The WebSocket surface supports **only** the incremental `audio_format` path
 (`start_transcription(audio=...)`, OpenAI SSE style, spec §7.3) is **NOT**
 exposed over WebSocket in v1. For those engines, use the batch REST endpoints
 (`POST /v1/transcribe` or `POST /v1/transcribe:json`).
+
+### 4.4 Audio byte caps (DoS bound)
+
+The HTTP body-size guard (§1) does not cover the WebSocket scope, so the stream
+bridge enforces its own per-frame and per-session byte caps (§1, configurable
+via `create_app`):
+
+- A single binary audio frame exceeding `max_ws_frame_bytes`, **or**
+- a cumulative session total exceeding `max_ws_session_bytes`,
+
+is rejected: the input is ended, a single policy frame is sent, and the socket
+closes (the violation is also logged server-side):
+
+```json
+{ "type": "error", "code": "payload_too_large", "message": "..." }
+```
+
+This is distinct from the §4.2 in-stream `error` event (an engine-produced
+`TranscriptionEvent`); the policy frame is emitted by the **server**, not the
+engine, and carries a human-readable `message` (the cap that was exceeded; it
+contains no internal/engine detail).

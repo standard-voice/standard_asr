@@ -48,6 +48,22 @@ logger = logging.getLogger(__name__)
 #: memory-exhaustion DoS. Override per app via ``create_app(max_body_bytes=...)``.
 DEFAULT_MAX_BODY_BYTES: int = 16 * 1024 * 1024
 
+#: Default per-frame byte cap for the WebSocket audio path. Mirrors the HTTP
+#: body cap: a single binary audio frame is treated like a request body and may
+#: not exceed this size. Bounds peak memory for one frame and prevents an
+#: unauthenticated client from exhausting memory with a few huge frames (the
+#: HTTP body-size middleware does not cover the WS scope). Override per app via
+#: ``create_app(max_ws_frame_bytes=...)``.
+DEFAULT_MAX_WS_FRAME_BYTES: int = DEFAULT_MAX_BODY_BYTES
+
+#: Default cumulative per-session audio byte cap for the WebSocket path. A
+#: streaming session legitimately sends many small frames over time, so the
+#: per-session ceiling is a larger multiple of the per-frame cap (256 MiB); it
+#: bounds total ingested audio so a long-lived session cannot drive unbounded
+#: memory/CPU even within the per-frame limit. Override per app via
+#: ``create_app(max_ws_session_bytes=...)``.
+DEFAULT_MAX_WS_SESSION_BYTES: int = 256 * 1024 * 1024
+
 
 class _BodySizeLimitMiddleware:
     """Pure-ASGI middleware that rejects over-large request bodies (413).
@@ -184,6 +200,8 @@ def create_app(
     registry: ModelRegistry | None = None,
     *,
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+    max_ws_frame_bytes: int = DEFAULT_MAX_WS_FRAME_BYTES,
+    max_ws_session_bytes: int = DEFAULT_MAX_WS_SESSION_BYTES,
 ):
     """Create a FastAPI application for Standard ASR.
 
@@ -192,16 +210,28 @@ def create_app(
         max_body_bytes: Maximum accepted request-body size in bytes. Requests
             exceeding this are rejected with ``413`` *before* the body is
             decoded, bounding peak memory (see :data:`DEFAULT_MAX_BODY_BYTES`).
+        max_ws_frame_bytes: Maximum size of a single WebSocket binary audio
+            frame in bytes. The HTTP body-size guard does not cover the WS
+            scope, so the stream bridge enforces this per-frame cap directly;
+            an over-cap frame closes the socket with a policy error (see
+            :data:`DEFAULT_MAX_WS_FRAME_BYTES`).
+        max_ws_session_bytes: Cumulative cap on total audio bytes ingested over
+            one WebSocket session; exceeding it closes the socket with a policy
+            error (see :data:`DEFAULT_MAX_WS_SESSION_BYTES`).
 
     Returns:
         FastAPI application instance.
 
     Raises:
         ImportError: If FastAPI dependencies are missing.
-        ValueError: If ``max_body_bytes`` is not positive.
+        ValueError: If any byte cap is not positive.
     """
     if max_body_bytes <= 0:
         raise ValueError("max_body_bytes must be a positive integer.")
+    if max_ws_frame_bytes <= 0:
+        raise ValueError("max_ws_frame_bytes must be a positive integer.")
+    if max_ws_session_bytes <= 0:
+        raise ValueError("max_ws_session_bytes must be a positive integer.")
     try:
         from fastapi import FastAPI, File, Form, HTTPException
         from fastapi import WebSocket as _WebSocket
@@ -428,7 +458,12 @@ def create_app(
             await websocket.close()
             return
 
-        await _bridge_stream(websocket, session)
+        await _bridge_stream(
+            websocket,
+            session,
+            max_frame_bytes=max_ws_frame_bytes,
+            max_session_bytes=max_ws_session_bytes,
+        )
         await websocket.close()
 
     return app
@@ -463,7 +498,13 @@ def _scrub_event_for_client(event: TranscriptionEvent) -> dict[str, Any]:
     return payload
 
 
-async def _bridge_stream(websocket: WebSocket, session: TranscriptionSession) -> None:
+async def _bridge_stream(
+    websocket: WebSocket,
+    session: TranscriptionSession,
+    *,
+    max_frame_bytes: int,
+    max_session_bytes: int,
+) -> None:
     """Pump client audio into ``session`` while streaming its events back.
 
     Reads binary frames as audio and any text frame (or a disconnect) as
@@ -474,16 +515,44 @@ async def _bridge_stream(websocket: WebSocket, session: TranscriptionSession) ->
     operators. A client that vanishes mid-stream simply ends the session (its
     remaining events are dropped).
 
+    The WS audio path is byte-bounded (the HTTP body-size middleware does not
+    cover the WS scope): a single frame exceeding ``max_frame_bytes`` or a
+    cumulative session total exceeding ``max_session_bytes`` is rejected with a
+    ``{"type": "error", "code": "payload_too_large"}`` policy frame, the input
+    is ended, and the socket is closed (and the violation is logged). This
+    bounds peak/total memory against an unauthenticated client feeding a few
+    huge frames.
+
     Args:
         websocket: The accepted client WebSocket.
         session: The engine's :class:`~standard_asr.streaming.TranscriptionSession`.
+        max_frame_bytes: Maximum size of a single binary audio frame in bytes.
+        max_session_bytes: Cumulative cap on total ingested audio bytes.
     """
+    # Set by _pump_audio when a byte cap is exceeded, so the forward loop stops
+    # emitting engine events and the bridge sends a single policy error frame.
+    violation: dict[str, str] = {}
 
     async def _pump_audio() -> None:
+        total = 0
         while True:
             message = await websocket.receive()
             chunk = message.get("bytes")
             if chunk is not None:
+                frame_len = len(chunk)
+                if frame_len > max_frame_bytes:
+                    violation["message"] = (
+                        f"Audio frame too large: {frame_len} bytes exceeds the "
+                        f"{max_frame_bytes}-byte per-frame limit."
+                    )
+                    break
+                total += frame_len
+                if total > max_session_bytes:
+                    violation["message"] = (
+                        f"Session audio too large: {total} bytes exceeds the "
+                        f"{max_session_bytes}-byte per-session limit."
+                    )
+                    break
                 await session.send_audio(chunk)
             else:
                 # A text frame signals end-of-audio; a disconnect message has
@@ -495,6 +564,10 @@ async def _bridge_stream(websocket: WebSocket, session: TranscriptionSession) ->
         pump = asyncio.create_task(_pump_audio())
         try:
             async for event in session:
+                if violation:
+                    # A byte-cap violation occurred: stop forwarding engine
+                    # events; the policy error frame is sent after the loop.
+                    break
                 if event.type == "error":
                     # Keep the (potentially sensitive) detail server-side only;
                     # the client receives the scrubbed event below.
@@ -504,6 +577,15 @@ async def _bridge_stream(websocket: WebSocket, session: TranscriptionSession) ->
                         event.extra.get("detail"),
                     )
                 await websocket.send_json(_scrub_event_for_client(event))
+            if violation:
+                logger.warning("WebSocket audio cap exceeded: %s", violation["message"])
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "payload_too_large",
+                        "message": violation["message"],
+                    }
+                )
         except Exception:  # noqa: BLE001
             # The client went away mid-stream; stop forwarding and tear down.
             pass

@@ -928,6 +928,89 @@ def test_ws_stream_error_event_does_not_leak_detail(
     assert any("/secret/internal/path" in rec.getMessage() for rec in caplog.records)
 
 
+def test_ws_stream_oversize_frame_rejected() -> None:
+    # A single binary frame larger than the per-frame cap is rejected with a
+    # policy error and the session is torn down (the HTTP body guard does not
+    # cover the WS scope, so the bridge must cap frames itself).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(
+        registry=_registry_for("_stream_echo_factory"), max_ws_frame_bytes=4
+    )
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_bytes(b"way too big")  # 11 bytes > 4-byte per-frame cap
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "error":
+                break
+    err = events[-1]
+    assert err["code"] == "payload_too_large"
+    assert "per-frame limit" in err["message"]
+
+
+def test_ws_stream_cumulative_cap_rejected() -> None:
+    # Each frame is within the per-frame cap, but their cumulative total exceeds
+    # the per-session cap: the bridge rejects with the policy error.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(
+        registry=_registry_for("_stream_echo_factory"),
+        max_ws_frame_bytes=8,
+        max_ws_session_bytes=5,
+    )
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_bytes(b"abc")  # 3 bytes (ok)
+        ws.send_bytes(b"def")  # cumulative 6 > 5-byte session cap
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "error":
+                break
+    err = events[-1]
+    assert err["code"] == "payload_too_large"
+    assert "per-session limit" in err["message"]
+
+
+def test_ws_stream_within_caps_still_works() -> None:
+    # Within both caps, audio still flows and the session completes normally.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(
+        registry=_registry_for("_stream_echo_factory"),
+        max_ws_frame_bytes=16,
+        max_ws_session_bytes=64,
+    )
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_bytes(b"abc")
+        ws.send_text("end")
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "done":
+                break
+    assert {e["text"] for e in events if e["type"] == "final"} == {"abc"}
+
+
+@pytest.mark.parametrize("kwargs", [{"max_ws_frame_bytes": 0}, {"max_ws_session_bytes": 0}])
+def test_create_app_rejects_nonpositive_ws_caps(kwargs: dict[str, int]) -> None:
+    pytest.importorskip("fastapi")
+    with pytest.raises(ValueError):
+        server_module.create_app(registry=_registry(), **kwargs)
+
+
 def test_bridge_stream_tolerates_send_failure() -> None:
     # If the client vanishes mid-stream, a failing send must not propagate: the
     # bridge swallows it, ends input, and tears the session down cleanly.
@@ -967,6 +1050,13 @@ def test_bridge_stream_tolerates_send_failure() -> None:
             return _gen()
 
     websocket = _FakeWS()
-    asyncio.run(server_module._bridge_stream(websocket, _FakeSession()))  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+    asyncio.run(
+        server_module._bridge_stream(  # pyright: ignore[reportPrivateUsage]
+            websocket,  # pyright: ignore[reportArgumentType]
+            _FakeSession(),  # pyright: ignore[reportArgumentType]
+            max_frame_bytes=1024,
+            max_session_bytes=1024,
+        )
+    )
     # The send was attempted and its failure was swallowed (the run completed).
     assert websocket.send_attempted is True
