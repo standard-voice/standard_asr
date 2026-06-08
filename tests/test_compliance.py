@@ -121,6 +121,40 @@ def bad_params_type_factory() -> _BadParamsTypeASR:  # pyright: ignore[reportUnu
     return _BadParamsTypeASR()
 
 
+class _RaisingEffectiveASR(_GoodASR):
+    """effective_capabilities is a property that raises (a buggy engine)."""
+
+    properties: ClassVar[_Props] = _Props(engine_id="dummy2")
+
+    @property
+    def effective_capabilities(self) -> DeclaredCapabilities:  # type: ignore[override]
+        raise RuntimeError("effective boom")
+
+
+def raising_effective_factory() -> _RaisingEffectiveASR:  # pyright: ignore[reportUnusedFunction]
+    return _RaisingEffectiveASR()
+
+
+class _WrongTypeEffectiveASR(_GoodASR):
+    """effective_capabilities is a non-None value of the wrong type."""
+
+    effective_capabilities: ClassVar[Any] = "not-a-capabilities-tree"
+
+
+def wrong_type_effective_factory() -> _WrongTypeEffectiveASR:  # pyright: ignore[reportUnusedFunction]
+    return _WrongTypeEffectiveASR()
+
+
+class _NoneEffectiveASR(_GoodASR):
+    """effective_capabilities is None (engine declares no narrowing)."""
+
+    effective_capabilities: ClassVar[Any] = None
+
+
+def none_effective_factory() -> _NoneEffectiveASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoneEffectiveASR()
+
+
 def _registry(factory: str, key: str = "dummy/demo") -> ModelRegistry:
     eps = [
         EntryPoint(
@@ -128,6 +162,18 @@ def _registry(factory: str, key: str = "dummy/demo") -> ModelRegistry:
             value=f"tests.test_compliance:{factory}",
             group="standard_asr.models",
         )
+    ]
+    return discover_models(eps=eps, strict=True)
+
+
+def _registry_many(*pairs: tuple[str, str]) -> ModelRegistry:
+    eps = [
+        EntryPoint(
+            name=key,
+            value=f"tests.test_compliance:{factory}",
+            group="standard_asr.models",
+        )
+        for factory, key in pairs
     ]
     return discover_models(eps=eps, strict=True)
 
@@ -159,6 +205,22 @@ def test_check_entrypoints_runtime_params_not_closed(monkeypatch: pytest.MonkeyP
 def test_check_entrypoints_effective_widens_declared() -> None:
     report = check_entrypoints(registry=_registry("widened_factory"))
     assert report.passed is False
+    assert any("not a subset" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_raising_effective_caps_is_reported_not_crash() -> None:
+    # A buggy effective_capabilities property that raises must surface as a
+    # ComplianceIssue (not an uncaught exception), and other engines in the same
+    # run must still be checked.
+    report = check_entrypoints(
+        registry=_registry_many(
+            ("raising_effective_factory", "dummy2/demo"),
+            ("widened_factory", "dummy/demo"),
+        )
+    )
+    assert report.passed is False
+    assert any("Reading effective_capabilities raised" in i.message for i in report.issues)
+    # The widened engine was still reached and checked despite the earlier raiser.
     assert any("not a subset" in i.message for i in report.issues)
 
 

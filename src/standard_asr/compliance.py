@@ -313,18 +313,35 @@ def check_entrypoints(
                 )
             )
         else:
-            effective = getattr(instance, "effective_capabilities", None)
-            if isinstance(effective, DeclaredCapabilities) and not declared.covers(effective):
+            try:
+                effective = getattr(instance, "effective_capabilities", None)
+            except Exception as exc:  # noqa: BLE001
+                # A buggy ``effective_capabilities`` property MUST NOT crash the
+                # whole compliance run (this function promises ``Raises: None``);
+                # report the offender and keep checking the other engines.
                 issues.append(
                     ComplianceIssue(
                         level="error",
                         message=(
-                            "effective_capabilities is not a subset of "
-                            "declared_capabilities (effective MUST only narrow)."
+                            f"Reading effective_capabilities raised {exc!r}; the "
+                            "property MUST return a DeclaredCapabilities (or None) "
+                            "without raising."
                         ),
                         model=name,
                     )
                 )
+            else:
+                if isinstance(effective, DeclaredCapabilities) and not declared.covers(effective):
+                    issues.append(
+                        ComplianceIssue(
+                            level="error",
+                            message=(
+                                "effective_capabilities is not a subset of "
+                                "declared_capabilities (effective MUST only narrow)."
+                            ),
+                            model=name,
+                        )
+                    )
 
     return ComplianceReport(registry=registry, issues=issues)
 
