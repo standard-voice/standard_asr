@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import threading
 import time
 import unicodedata
@@ -42,6 +43,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .exceptions import StreamClosedError
 from .results import Diagnostic, Segment, TranscriptionResult, Word
+
+LOGGER = logging.getLogger(__name__)
 
 EventType = Literal["partial", "final", "supersede", "progress", "done", "error"]
 
@@ -75,6 +78,8 @@ DEFAULT_AUDIO_QUEUE_MAXSIZE = 256
 #: Default capacity (number of chunks) of the bounded rolling audio buffer used
 #: to replay recent audio after an internal reconnect (spec ST.6.3 / D10.7).
 DEFAULT_AUDIO_HISTORY_MAXLEN = 256
+
+_INPUT_SOURCE_ERROR_DETAIL = "Audio input source failed during streaming."
 
 
 async def _cancel_all_tasks() -> None:
@@ -429,6 +434,17 @@ class EventBufferOverflow(Exception):
     Never propagates to applications; the producer converts it into a terminal
     ``error(code="backpressure")`` event (spec ST.6.4).
     """
+
+
+class _InputSourceError(Exception):
+    """Internal signal: the fed audio source failed mid-stream."""
+
+
+class _InputSourceFailure:
+    """Queue marker preserving audio ordering before an input-source failure."""
+
+
+_INPUT_SOURCE_FAILURE = _InputSourceFailure()
 
 
 class _CoalescingBuffer:
@@ -983,7 +999,9 @@ class TranscriptionSession(ABC):
             strict_lifecycle: If ``True``, raise on illegal lifecycle
                 transitions instead of suppressing + diagnosing them.
         """
-        self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=audio_queue_maxsize)
+        self._audio_queue: asyncio.Queue[bytes | _InputSourceFailure | None] = asyncio.Queue(
+            maxsize=audio_queue_maxsize
+        )
         self._buffer = _CoalescingBuffer(capacity=event_buffer_capacity)
         self._guard = _LifecycleGuard(strict=strict_lifecycle)
         self._mode: Literal["feed", "manual"] | None = None
@@ -1041,6 +1059,8 @@ class TranscriptionSession(ABC):
             chunk = await self._audio_queue.get()
             if chunk is None:
                 return
+            if isinstance(chunk, _InputSourceFailure):
+                raise _InputSourceError(_INPUT_SOURCE_ERROR_DETAIL)
             # The bounded deque drops its oldest chunk when full: it is only the
             # most-recent-audio replay window for replay_buffer(). Whether a
             # reconnect gap actually lost unreplayable audio is the adapter's
@@ -1188,7 +1208,13 @@ class TranscriptionSession(ABC):
             else:
                 for chunk in source:
                     await self._put_audio(chunk)
-        finally:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Fed audio source failed during streaming.")
+            await self._audio_queue.put(_INPUT_SOURCE_FAILURE)
+            self._ended = True
+        else:
             await self._audio_queue.put(None)
             self._ended = True
 
@@ -1312,6 +1338,9 @@ class TranscriptionSession(ABC):
                 "backpressure",
                 "Send-side event buffer overflowed; consumer too slow.",
             )
+        except _InputSourceError:
+            self._drain_pending_reconnects()
+            self._force_error("input_source_error", _INPUT_SOURCE_ERROR_DETAIL)
         except Exception as exc:  # noqa: BLE001 - surfaced as an error event
             self._drain_pending_reconnects()
             self._force_error("engine_error", str(exc))

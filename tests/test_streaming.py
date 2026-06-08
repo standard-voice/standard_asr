@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
@@ -134,6 +134,20 @@ class _EchoSession(TranscriptionSession):
             sid = f"seg-{index}"
             text = chunk.decode()
             yield TranscriptionEvent.partial(sid, text[:1])
+            yield TranscriptionEvent.final(sid, text, start=float(index), end=float(index + 1))
+            index += 1
+
+
+class _YieldingEchoSession(TranscriptionSession):
+    """Emits an observable partial then final per fed chunk."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        index = 0
+        async for chunk in self.audio_chunks():
+            sid = f"seg-{index}"
+            text = chunk.decode()
+            yield TranscriptionEvent.partial(sid, text[:1])
+            await asyncio.sleep(0)
             yield TranscriptionEvent.final(sid, text, start=float(index), end=float(index + 1))
             index += 1
 
@@ -308,6 +322,96 @@ def test_session_producer_error_surfaced() -> None:
     events = asyncio.run(run())
     assert events[-1].type == "error"
     assert events[-1].code == "engine_error"
+
+
+def _assert_input_source_error(events: list[TranscriptionEvent], raw_detail: str) -> None:
+    terminal = events[-1]
+    assert terminal.type == "error"
+    assert terminal.code == "input_source_error"
+    assert terminal.recoverable is False
+    assert all(event.type != "done" for event in events)
+    assert raw_detail not in terminal.model_dump_json()
+
+
+def test_session_sync_source_error_is_terminal_without_done() -> None:
+    secret = "sync-source-secret-token"
+
+    def source() -> Iterator[bytes]:
+        yield b"alpha"
+        raise RuntimeError(secret)
+
+    async def run() -> tuple[list[TranscriptionEvent], str]:
+        session = _YieldingEchoSession()
+        session.feed(source())
+        events = await _collect(session)
+        return events, session.result().text
+
+    events, text = asyncio.run(run())
+    _assert_input_source_error(events, secret)
+    assert any(event.type == "partial" and event.text == "a" for event in events[:-1])
+    assert text == "alpha"
+
+
+def test_session_async_source_error_is_terminal_without_done() -> None:
+    secret = "async-source-secret-token"
+
+    async def source() -> AsyncIterator[bytes]:
+        yield b"bravo"
+        await asyncio.sleep(0)
+        raise RuntimeError(secret)
+
+    async def run() -> tuple[list[TranscriptionEvent], str]:
+        session = _YieldingEchoSession()
+        session.feed(source())
+        events = await _collect(session)
+        return events, session.result().text
+
+    events, text = asyncio.run(run())
+    _assert_input_source_error(events, secret)
+    assert any(event.type == "partial" and event.text == "b" for event in events[:-1])
+    assert text == "bravo"
+
+
+def test_session_source_error_on_first_item_is_terminal_without_done() -> None:
+    secret = "first-source-secret-token"
+
+    def source() -> Iterator[bytes]:
+        raise RuntimeError(secret)
+        yield b"never"  # pragma: no cover
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _EchoSession()
+        session.feed(source())
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    _assert_input_source_error(events, secret)
+    assert [event.type for event in events] == ["error"]
+
+
+def test_session_exit_cancels_feed_when_audio_queue_is_full() -> None:
+    class _NonConsumingSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            await asyncio.Event().wait()
+            yield TranscriptionEvent.done()  # pragma: no cover
+
+    async def body() -> None:
+        session = _NonConsumingSession(audio_queue_maxsize=1)
+        session.feed([b"first", b"second"])
+        async with session:
+            for _ in range(100):
+                if session._audio_queue.full():  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+                    break
+                await asyncio.sleep(0)
+            else:  # pragma: no cover - would indicate the regression was not exercised
+                raise AssertionError("audio queue did not fill")
+            assert session._feed_task is not None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            assert not session._feed_task.done()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    async def run() -> None:
+        await asyncio.wait_for(body(), timeout=0.5)
+
+    asyncio.run(run())
 
 
 # --------------------------------------------------------------------------- #
