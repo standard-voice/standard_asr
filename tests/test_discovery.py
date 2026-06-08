@@ -85,6 +85,24 @@ def _not_an_engine_factory() -> _NotAnEngine:  # pyright: ignore[reportUnusedFun
     return _NotAnEngine()
 
 
+class _LookAlikeConfig:
+    """A non-engine class that happens to expose generic engine-ish names.
+
+    A misconfigured entry point pointed at an engine's Config object would
+    resolve here. It exposes ``properties`` / ``supports`` but NOT the defining
+    ``transcribe`` method, so it must be rejected (DISC-5).
+    """
+
+    properties: ClassVar[dict[str, str]] = {}
+
+    def supports(self, dot_path: str) -> bool:
+        return False
+
+
+def _look_alike_config_factory() -> _LookAlikeConfig:  # pyright: ignore[reportUnusedFunction]
+    return _LookAlikeConfig()
+
+
 def _unannotated_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[reportUnusedFunction]
     return _DummyASR()
 
@@ -645,6 +663,36 @@ def test_engine_class_raises_when_annotation_not_concrete() -> None:
     registry = discover_models(eps=eps, strict=True)
     with pytest.raises(FactoryLoadError):
         registry.engine_class("alpha/first")
+
+
+def test_engine_class_rejects_look_alike_with_only_generic_markers() -> None:
+    # DISC-5: a class exposing only generic names (properties/supports) but not
+    # the defining 'transcribe' method must be rejected -- the previous any(...)
+    # gate accepted it.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_look_alike_config_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(FactoryLoadError, match="transcribe"):
+        registry.engine_class("alpha/first")
+
+
+def test_engine_class_accepts_engine_with_only_transcribe() -> None:
+    # A real engine exposing 'transcribe' passes even if other ClassVars are
+    # absent (completeness is the compliance suite's job).
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_missing_meta_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    assert registry.engine_class("alpha/first") is _MissingMetaASR
 
 
 def test_engine_class_raises_when_return_annotation_unresolvable() -> None:

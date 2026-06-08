@@ -369,19 +369,21 @@ class ModelSpec:
         ``StandardASR`` is a ``runtime_checkable`` :class:`typing.Protocol` with
         non-method (``ClassVar``) members, so ``issubclass`` against it raises
         ``TypeError``; engines are also structural and need not subclass
-        :class:`~standard_asr.asr_interface.EngineBase`. We therefore duck-type a
-        **minimal** signal: the class must expose at least one member of the
-        engine surface. This converts a misconfigured entry point that resolves
-        to a wholly unrelated class into a clear
+        :class:`~standard_asr.asr_interface.EngineBase`. We therefore duck-type
+        on the **unambiguous** engine marker: ``transcribe``, which spec §3.1
+        makes the always-present defining method of every engine. This converts
+        a misconfigured entry point that resolves to a wholly unrelated class
+        (e.g. one pointed at the engine's ``Config`` object, which commonly
+        exposes generic names like ``properties`` / ``supports``) into a clear
         :class:`~standard_asr.exceptions.FactoryLoadError` instead of a later
-        ``AttributeError``.
+        ``AttributeError`` (DISC-5).
 
-        The check is intentionally permissive: per-attribute validation (e.g. a
-        class that has ``transcribe`` but is missing ``declared_capabilities`` /
+        The check is intentionally narrow: per-attribute completeness (a class
+        that has ``transcribe`` but is missing ``declared_capabilities`` /
         ``properties``) is the job of the compliance suite, which emits precise
-        diagnostics; and metadata readers consume these attributes defensively
+        diagnostics; and metadata readers consume those attributes defensively
         via ``getattr``, so a degenerate-but-intentional engine is still
-        tolerated. We only reject classes that look nothing like an engine.
+        tolerated. We only reject classes that lack the defining engine method.
 
         Args:
             cls: The resolved candidate engine class.
@@ -390,14 +392,14 @@ class ModelSpec:
             ``cls``, typed as a Standard ASR engine class.
 
         Raises:
-            FactoryLoadError: If ``cls`` exposes none of the engine surface.
+            FactoryLoadError: If ``cls`` does not expose ``transcribe``.
         """
-        markers = ("transcribe", "declared_capabilities", "properties", "supports")
-        if not any(hasattr(cls, marker) for marker in markers):
+        if not callable(getattr(cls, "transcribe", None)):
             raise FactoryLoadError(
                 f"Entry point {self.key!r} resolves to {cls.__name__!r}, which does not "
-                "expose any Standard ASR engine surface (none of "
-                f"{', '.join(markers)}). Check the entry-point target."
+                "expose the defining Standard ASR engine method 'transcribe'. "
+                "Check the entry-point target (a common mistake is pointing it at "
+                "the engine's Config or Properties class instead of the engine)."
             )
         return typing.cast("type[StandardASR]", cls)
 

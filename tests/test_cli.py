@@ -115,6 +115,11 @@ class _NoCapsClass:
 
     declared_capabilities = None
 
+    def transcribe(self, audio: object, options: object = None) -> object:
+        # A real engine must expose the defining 'transcribe' method even when
+        # it declares no capabilities (DISC-5).
+        return None
+
 
 def _no_caps_factory() -> _NoCapsClass:  # pyright: ignore[reportUnusedFunction]
     return _NoCapsClass()
