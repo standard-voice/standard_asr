@@ -1096,7 +1096,19 @@ def test_guard_clamps_decreasing_stable_until() -> None:
     assert ev1 is not None and ev1.stable_until == 4
     ev2 = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=2))
     assert ev2 is not None and ev2.stable_until == 4  # clamped up to prior
+    assert ev2.stable_text == "hell"
     assert any(d.code == "stable_until_clamped" for d in guard.diagnostics)
+
+
+def test_guard_accepts_increasing_stable_until_unchanged() -> None:
+    guard = _LifecycleGuard()
+    ev1 = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=2))
+    assert ev1 is not None and ev1.stable_until == 2
+    ev2 = guard.admit(TranscriptionEvent.partial("s0", "hello world", stable_until=5))
+    assert ev2 is not None and ev2.stable_until == 5
+    assert ev2.stable_text == "hello"
+    assert guard._stable_until["s0"] == 5  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert not any(d.code == "stable_until_clamped" for d in guard.diagnostics)
 
 
 def test_guard_clamps_invalid_combining_boundary() -> None:
@@ -1106,24 +1118,44 @@ def test_guard_clamps_invalid_combining_boundary() -> None:
     assert ev is not None and ev.stable_until == 0
 
 
-def test_guard_clamp_decreased_then_invalid_boundary_combines_reasons() -> None:
-    # A decreased stable_until is first clamped UP to the prior; if that prior is
-    # itself an invalid boundary for the new text, a second clamp DOWN to a valid
-    # boundary applies and both reasons are reported together.
+def test_guard_keeps_prior_when_combining_mark_splits_prior_boundary() -> None:
+    guard = _LifecycleGuard()
+    first = guard.admit(TranscriptionEvent.partial("s0", "abc", stable_until=3))
+    assert first is not None and first.stable_until == 3
+
+    text = "abc" + "\u0303" + "def"
+    assert text[:3] == "abc"
+    assert validate_stable_until(text, 3) is False
+    second = guard.admit(TranscriptionEvent.partial("s0", text, stable_until=3))
+
+    assert second is not None
+    assert second.stable_until == 3
+    assert second.stable_text == "abc"
+    assert guard._stable_until["s0"] == 3  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert guard._frozen_text["s0"] == "abc"  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert any(d.code == "stable_until_clamped" for d in guard.diagnostics)
+
+
+def test_guard_clamp_decreased_then_invalid_boundary_keeps_prior_frontier() -> None:
+    # A decreased stable_until is first clamped UP to the prior. If that prior is
+    # now an invalid boundary for the new text, the published frontier still
+    # cannot move backwards.
     guard = _LifecycleGuard()
     # prior = 2 on text whose boundary 2 is valid; freezes the prefix "ae".
     first = guard.admit(TranscriptionEvent.partial("s0", "ae", stable_until=2))
     assert first is not None and first.stable_until == 2
     # New text "a" + "e" + combining accent extends "ae" (frozen prefix preserved)
-    # but boundary 2 now splits the combining sequence. A decreased request
-    # (0 < prior 2) clamps up to 2, which is then invalid for this text -> clamp
-    # down to the largest valid boundary (1).
+    # but boundary 2 now splits the combining sequence. A decreased request is
+    # clamped up to 2 and must not be clamped below that prior frontier.
     combining = "a" + "e" + "́"  # "ae" + COMBINING ACUTE ACCENT over the e
     second = guard.admit(TranscriptionEvent.partial("s0", combining, stable_until=0))
-    assert second is not None and second.stable_until == 1
+    assert second is not None and second.stable_until == 2
+    assert second.stable_text == "ae"
+    assert guard._stable_until["s0"] == 2  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert guard._frozen_text["s0"] == "ae"  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     msgs = [d.message for d in guard.diagnostics if d.code == "stable_until_clamped"]
-    # The second clamp records BOTH the decrease and the invalid-boundary reason
-    # in one combined message (the "; " join under test).
+    # The diagnostic records BOTH the decrease and the invalid-boundary reason
+    # in one combined message.
     assert any("decreased" in m and "invalid boundary" in m and "; " in m for m in msgs)
 
 

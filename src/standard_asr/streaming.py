@@ -857,16 +857,18 @@ class _LifecycleGuard:
                 "(spec ST.4.2: MUST only increase)"
             )
         if not validate_stable_until(text, clamped):
-            # Fall back to the largest valid boundary <= clamped, else prior/0.
+            # Fall back to the largest valid boundary <= clamped without moving
+            # below the previously-published frozen frontier.
             safe = clamped
-            while safe > 0 and not validate_stable_until(text, safe):
+            while safe > prior and not validate_stable_until(text, safe):
                 safe -= 1
             if reason:
                 reason += "; "
             reason += f"stable_until {clamped} invalid boundary -> {safe}"
             clamped = safe
-        if clamped != su:
+        if reason:
             self._reject("stable_until_clamped", reason)
+        if clamped != su:
             event = event.model_copy(update={"stable_until": clamped})
         self._stable_until[sid] = clamped
         return event
