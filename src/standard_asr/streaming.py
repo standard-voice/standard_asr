@@ -1213,8 +1213,13 @@ class TranscriptionSession(ABC):
     def _drain_pending_reconnects(self) -> None:
         """Flush any queued reconnect ``progress`` / ``content_lost`` events.
 
-        Raises:
-            EventBufferOverflow: Propagated from the buffer (handled by caller).
+        Reconnect events are appended drop-proof (bypassing the capacity bound,
+        like ``final`` / terminal events) so a ``progress(reconnect=True)`` can
+        neither be dropped nor split from its immediately-following
+        ``content_lost`` error under backpressure (spec ST.6.3 requires the
+        ``content_lost`` to IMMEDIATELY follow the ``progress``; spec ST.6.4
+        forbids dropping ``error``). They are few and bounded per reconnect, so
+        bypassing the bound is safe.
         """
         if not self._pending_reconnects:
             return
@@ -1222,7 +1227,7 @@ class TranscriptionSession(ABC):
         self._pending_reconnects = []
         for ev in pending:
             self._reducer.add(ev)
-            self._buffer.put(ev)
+            self._buffer.put_forced(ev)
 
     async def _run_producer(self) -> None:
         """Drive ``_produce``, appending a terminal ``done`` or ``error``.
@@ -1230,6 +1235,12 @@ class TranscriptionSession(ABC):
         Enforces lifecycle invariants (suppressing illegal transitions), flushes
         adapter-driven reconnect events in order, and converts a send-side
         buffer overflow into a terminal ``backpressure`` error.
+
+        Pending adapter reconnect events are drained drop-proof BEFORE every
+        terminal append (so a queued ``progress`` + ``content_lost`` precedes,
+        and is delivered ahead of, the terminal) and once more in the ``finally``
+        as a guard, so no exit path -- normal, early-terminal, exception, or
+        overflow -- can lose them (spec ST.6.3 / ST.6.4).
         """
         try:
             async for event in self._produce():
@@ -1247,13 +1258,20 @@ class TranscriptionSession(ABC):
         except asyncio.CancelledError:  # pragma: no cover - teardown path
             raise
         except EventBufferOverflow:
+            self._drain_pending_reconnects()
             self._force_error(
                 "backpressure",
                 "Send-side event buffer overflowed; consumer too slow.",
             )
         except Exception as exc:  # noqa: BLE001 - surfaced as an error event
+            self._drain_pending_reconnects()
             self._force_error("engine_error", str(exc))
         finally:
+            # Guard: any path that skipped the drains above (e.g. an early
+            # terminal return while reconnects were still queued) still flushes
+            # them before the buffer closes -- queued reconnect events MUST never
+            # be silently lost (spec ST.6.4).
+            self._drain_pending_reconnects()
             self._buffer.close()
 
     def _force_error(self, code: str, detail: str) -> None:

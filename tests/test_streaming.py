@@ -628,6 +628,76 @@ def test_reconnect_nonreplayable_overflow_emits_content_lost() -> None:
     assert events.index(progress[0]) < events.index(cl)
 
 
+def test_reconnect_pair_survives_full_buffer_and_stays_adjacent() -> None:
+    # A pending progress + content_lost pair MUST survive (and stay adjacent)
+    # even when the bounded buffer is already full: reconnect events bypass the
+    # capacity bound (spec ST.6.3 adjacency + ST.6.4 "error never dropped").
+    async def run() -> list[TranscriptionEvent]:
+        async def gen() -> AsyncIterator[bytes]:
+            yield b"x"
+            yield b"x"  # overflow tiny history -> content_lost on reconnect
+
+        session = _ReconnectSession((1.0, 2.0), event_buffer_capacity=2, audio_history_maxlen=1)
+        session.feed(gen())  # non-replayable + overflow -> content_lost queued
+        # Saturate the bounded event buffer so a non-drop-proof drain of the
+        # queued reconnect pair would overflow / split them.
+        session._buffer.put(TranscriptionEvent.partial("p0", "x"))  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        session._buffer.put(TranscriptionEvent.partial("p1", "x"))  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    progress = next(e for e in events if e.type == "progress" and e.reconnect)
+    cl = next(e for e in events if e.type == "error" and e.code == "content_lost")
+    # Adjacent: content_lost IMMEDIATELY follows the reconnect progress.
+    assert events.index(cl) == events.index(progress) + 1
+
+
+def test_reconnect_drained_on_early_terminal_return() -> None:
+    # note_reconnect queued just before the producer yields a terminal event:
+    # the reconnect events MUST still be delivered (ahead of the terminal).
+    class _ReconnectThenTerminal(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            async for _ in self.audio_chunks():
+                pass
+            self.note_reconnect(1.0, 2.0)
+            yield TranscriptionEvent.done()
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _ReconnectThenTerminal()
+        session.feed([b"x"])  # replayable -> progress only, no content_lost
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    assert any(e.type == "progress" and e.reconnect for e in events)
+    # The reconnect progress is delivered before the terminal done.
+    prog_i = next(i for i, e in enumerate(events) if e.type == "progress")
+    done_i = next(i for i, e in enumerate(events) if e.type == "done")
+    assert prog_i < done_i
+
+
+def test_reconnect_drained_on_producer_exception() -> None:
+    # note_reconnect queued, then the producer raises: the reconnect events MUST
+    # still be delivered (the finally / except-path drain), ahead of the error.
+    class _ReconnectThenRaise(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            async for _ in self.audio_chunks():
+                pass
+            self.note_reconnect(1.0, 2.0)
+            raise RuntimeError("boom")
+            yield TranscriptionEvent.done()  # pragma: no cover - unreachable
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _ReconnectThenRaise()
+        session.feed([b"x"])  # replayable -> progress only
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    prog_i = next(i for i, e in enumerate(events) if e.type == "progress" and e.reconnect)
+    err_i = next(i for i, e in enumerate(events) if e.type == "error")
+    assert prog_i < err_i
+    assert events[err_i].code == "engine_error"
+
+
 # --------------------------------------------------------------------------- #
 # H11 -- lifecycle enforcement + stable_until monotonicity
 # --------------------------------------------------------------------------- #
