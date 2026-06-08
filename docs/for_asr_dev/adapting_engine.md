@@ -22,8 +22,8 @@ Subclass `EngineBase` and provide:
    network (spec IC.9). Load weights lazily in `_ensure_model_loaded`.
 5. `_transcribe(prepared, params) -> TranscriptionResult` — run your model on
    already-negotiated audio (`prepared.kind` is one of your `accepted_input`).
-6. (Streaming) override `start_transcription(...)` returning a
-   `TranscriptionSession` subclass.
+6. (Streaming) override `_start_transcription(gated_params, audio_format, audio)`
+   returning a `TranscriptionSession` subclass.
 
 ## Minimal batch engine
 
@@ -98,31 +98,40 @@ bridge — you only write `async`. See the spec §ST for the event model
 (`partial`/`final`/`supersede`/`progress`/`done`/`error`) and the `stable_until`
 rules.
 
-### Session-establishment guards
+### Session establishment — the base does the gating for you
 
-Override `start_transcription(...)` and call the two shared guards first, before
-opening engine resources:
+You override `_start_transcription(...)`, **not** the public `start_transcription`.
+The base `start_transcription` is a template method (symmetric to
+`transcribe` / `_transcribe`): it runs the standard streaming pipeline and then
+calls your hook. Before your hook runs, the base has already:
 
-- `self.ensure_stream_inputs_exclusive(audio_format, audio)` — enforces the
-  `audio_format` / `audio` mutual exclusion (ST §3.1).
-- `self.ensure_stream_format_supported(audio_format)` — **fail-closed** wire-format
-  check on both encoding and sample rate. It raises `UnsupportedFeatureError` when
-  `audio_format.encoding` is not in the engine's declared `wire_encodings`, so an
-  encoding you never declared is rejected up front instead of being misframed as PCM
-  and silently mistranscribed. It **also** rejects a wire `sample_rate` the engine
-  does not accept: per spec R7's v1 note the standard does **not** resample streaming
-  wire frames in v1 (only the batch `transcribe` path resamples), so an unreachable
-  wire rate is a loud error rather than a silent mistranscription. The rate is
-  accepted when `accepted_sample_rates` is `"any"`, when it is in that concrete list,
-  or when it equals `required_input_sample_rate`. (Standard-layer streaming resampling
-  is a deferred capability; this guard becomes a resample once it lands.)
+- enforced the `audio_format` / `audio` mutual exclusion (ST §3.1) via
+  `ensure_stream_inputs_exclusive`;
+- validated the language config (LANG R1 / IC.6);
+- run the **fail-closed** wire-format check (`ensure_stream_format_supported`) on
+  both encoding and sample rate. It rejects an `audio_format.encoding` not in your
+  declared `wire_encodings` (so an undeclared encoding is not misframed as PCM and
+  silently mistranscribed) and a wire `sample_rate` you do not accept: per spec R7's
+  v1 note the standard does **not** resample streaming wire frames in v1 (only the
+  batch `transcribe` path resamples), so an unreachable wire rate is a loud error.
+  The rate is accepted when `accepted_sample_rates` is `"any"`, when it is in that
+  concrete list, or when it equals `required_input_sample_rate`. (Standard-layer
+  streaming resampling is a deferred capability; this guard becomes a resample once
+  it lands.)
+- **gated the runtime parameters** against your `streaming` capabilities — provider
+  `provider_params` swap-safety (Runtime R3: a wrong `provider_params` type always
+  raises `InvalidProviderParamError`), capability gating (R2), guidance degradation
+  (R4) — and resolved the language axis. The gating / language **diagnostics** are
+  attached to the returned session and surface through `session.diagnostics()`.
+
+Your hook receives the **already-gated, frozen** `gated_params` (spec R5: streaming
+params are frozen at `start_transcription` and MUST NOT change mid-stream). Use them
+directly — do not re-gate or re-accept raw params.
 
 ```python
-def start_transcription(self, *, audio_format=None, params=None, audio=None):
-    self.ensure_stream_inputs_exclusive(audio_format, audio)
-    if audio_format is not None:
-        self.ensure_stream_format_supported(audio_format)   # fail-closed: encoding + rate
-    return MySession(...)
+def _start_transcription(self, *, gated_params, audio_format, audio):
+    # Guards + gating already ran in the base. gated_params is frozen (R5).
+    return MySession(gated_params, ...)
 ```
 
 ## Credentials & environment fallback (IC.4)

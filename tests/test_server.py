@@ -775,16 +775,13 @@ class _StreamEchoEngine(EngineBase):
     def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         return TranscriptionResult(text="")  # batch path unused by these tests
 
-    def start_transcription(
+    def _start_transcription(
         self,
         *,
+        gated_params: Any = None,
         audio_format: Any = None,
-        params: Any = None,
         audio: Any = None,
     ) -> TranscriptionSession:
-        self.ensure_stream_inputs_exclusive(audio_format, audio)
-        if audio_format is not None:
-            self.ensure_stream_format_supported(audio_format)
         return _StreamEchoSession()
 
 

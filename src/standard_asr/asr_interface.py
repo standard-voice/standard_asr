@@ -89,7 +89,8 @@ class EngineBase(ABC):
     class attributes, assign :attr:`config` in ``__init__`` (which MUST stay
     pure -- no filesystem, GPU, or network access; spec IC.9), and implement
     :meth:`_transcribe`. Streaming engines additionally override
-    :meth:`start_transcription`.
+    :meth:`_start_transcription` (the streaming template hook); the public
+    :meth:`start_transcription` runs the standard gating pipeline for them.
     """
 
     properties: ClassVar[BaseProperties]
@@ -391,6 +392,21 @@ class EngineBase(ABC):
                     "mistranscribed. Open the session at an accepted rate."
                 )
 
+    def _overrides_streaming(self) -> bool:
+        """Return whether this engine implements the streaming hook.
+
+        A streaming engine implements :meth:`_start_transcription`; a batch-only
+        engine inherits the base no-op. The base :meth:`start_transcription`
+        template uses this to raise the "does not support streaming" error
+        *before* any parameter gating runs, so a non-streaming engine never
+        surfaces a confusing wire-encoding / parameter error instead of the
+        clear unsupported-streaming one.
+
+        Returns:
+            ``True`` if the concrete class overrides :meth:`_start_transcription`.
+        """
+        return type(self)._start_transcription is not EngineBase._start_transcription
+
     def start_transcription(
         self,
         *,
@@ -398,11 +414,32 @@ class EngineBase(ABC):
         params: RuntimeParams | None = None,
         audio: AudioInputLike | None = None,
     ) -> TranscriptionSession:
-        """Open a streaming transcription session.
+        """Open a streaming transcription session (template method).
 
-        The default enforces the input mutual-exclusion guard and then raises;
-        streaming engines override this (and SHOULD call
-        :meth:`ensure_stream_inputs_exclusive` first).
+        Symmetric to :meth:`transcribe`: the base runs the standard streaming
+        pipeline and delegates only the engine-specific session construction to
+        :meth:`_start_transcription`. The pipeline enforces input
+        mutual-exclusion, validates the language config, validates the wire
+        format, gates parameters against the ``streaming`` capabilities, resolves
+        the language axis, and attaches the resulting diagnostics to the session.
+
+        Because gating now runs here, spec Runtime R3 ``provider_params``
+        swap-safety is enforced on the streaming path too: a swapped-engine
+        ``provider_params`` type-mismatch always raises
+        :class:`~standard_asr.exceptions.InvalidProviderParamError` (no longer
+        undefined behaviour), and an unsupported standard parameter is rejected
+        (strict) or dropped + diagnosed (best_effort) exactly as for batch.
+
+        The unsupported-streaming error is raised *before* gating when the engine
+        has not implemented streaming (see :meth:`_overrides_streaming`), so a
+        batch-only engine reports "does not support streaming" rather than a
+        confusing parameter error -- while still running the input
+        mutual-exclusion guard first, exactly as before.
+
+        Spec Runtime R5 (streaming param freeze): the already-gated, frozen
+        :class:`~standard_asr.runtime_params.RuntimeParams` is handed to the hook
+        as ``gated_params``; the engine uses that for the whole session and MUST
+        NOT re-accept raw params mid-stream.
 
         Args:
             audio_format: Wire format for incremental PCM frames.
@@ -410,13 +447,74 @@ class EngineBase(ABC):
             audio: A complete audio input for whole-input streaming output.
 
         Returns:
-            A streaming session.
+            A streaming session with gating / language diagnostics attached.
 
         Raises:
             ValueError: If both ``audio_format`` and ``audio`` are provided.
-            UnsupportedFeatureError: When streaming is unsupported (the default).
+            ConfigError: If the engine exposes a language axis but its
+                ``default_language`` is unset or not in ``selectable_languages``.
+            UnsupportedFeatureError: When streaming is unsupported, when the wire
+                format is unreachable, or, in strict mode, on an unsupported
+                parameter.
+            InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
+            ValueError: On an invalid candidate-language list in strict mode.
         """
         self.ensure_stream_inputs_exclusive(audio_format, audio)
+        if not self._overrides_streaming():
+            raise UnsupportedFeatureError("This engine does not support streaming.")
+        request = params or RuntimeParams()
+        self._validate_language_config()
+        if audio_format is not None:
+            self.ensure_stream_format_supported(audio_format)
+        gated, gate_diags = gate_params(
+            request,
+            self.effective_capabilities,
+            "streaming",
+            strict=self._strict,
+            expected_provider_type=self.provider_params_type,
+        )
+        lang_diags = self._resolve_language_axis(gated, "streaming")
+        session = self._start_transcription(
+            gated_params=gated, audio_format=audio_format, audio=audio
+        )
+        # Friend API: the base engine seeds the session's standard-layer
+        # diagnostics so they surface through the session's own diagnostics().
+        session._attach_initial_diagnostics(  # pyright: ignore[reportPrivateUsage]
+            [*gate_diags, *lang_diags]
+        )
+        return session
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None,
+        audio: AudioInputLike | None,
+    ) -> TranscriptionSession:
+        """Construct the engine's streaming session (override point).
+
+        Streaming engines override this to build and return their
+        :class:`~standard_asr.streaming.TranscriptionSession`. It is invoked by
+        the :meth:`start_transcription` template *after* the standard streaming
+        pipeline (input exclusion, language config, wire-format validation,
+        parameter gating, language resolution) has run, so the engine receives
+        already-gated, frozen parameters and need not reimplement any gating.
+
+        This is intentionally *not* abstract: batch-only engines inherit the
+        default, which raises so a stray streaming call fails loudly.
+
+        Args:
+            gated_params: The gated, frozen runtime parameters (spec R5: these
+                are frozen for the whole session).
+            audio_format: Wire format for incremental PCM frames, if any.
+            audio: A complete audio input for whole-input streaming, if any.
+
+        Returns:
+            The engine's streaming session.
+
+        Raises:
+            UnsupportedFeatureError: Always, in the base (streaming unsupported).
+        """
         raise UnsupportedFeatureError("This engine does not support streaming.")
 
 

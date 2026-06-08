@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import ClassVar, Literal
 
 import numpy as np
@@ -29,6 +30,7 @@ from standard_asr.capabilities import (
     DeclaredCapabilities,
     FlagCap,
     LanguageCaps,
+    StreamingCapabilities,
 )
 from standard_asr.exceptions import (
     IncompatibleAudioInputError,
@@ -36,6 +38,7 @@ from standard_asr.exceptions import (
     UnsupportedFeatureError,
 )
 from standard_asr.runtime_params import ProviderParams, WordTimestampGranularity
+from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 
 
 class _Config(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
@@ -488,3 +491,148 @@ def test_required_input_sample_rate_must_be_accepted() -> None:
         )
     # 'any' accepts every rate, so a required rate is always reachable.
     _ArrayProps(accepted_sample_rates="any", required_input_sample_rate=24000)
+
+
+# --- RUNT-3: streaming runtime-param gating via the template seam -------------
+
+
+class _StreamSession(TranscriptionSession):
+    """Minimal session: ends immediately (the base appends ``done``)."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        return
+        yield  # pragma: no cover - unreachable, marks this an async generator
+
+
+class _StreamEngine(_ArrayEngine):
+    """Streaming engine overriding the new ``_start_transcription`` hook."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        ),
+        streaming=StreamingCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        ),
+    )
+
+    #: Captures the params the base handed to the hook (R5 freeze assertions).
+    received: ClassVar[RuntimeParams | None] = None
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: object = None,
+        audio: object = None,
+    ) -> TranscriptionSession:
+        type(self).received = gated_params
+        return _StreamSession()
+
+
+def test_streaming_provider_params_swap_raises() -> None:
+    # R3 swap-safety on the streaming path: a wrong provider_params type ALWAYS
+    # raises, regardless of strict/best_effort, before any session is built.
+    class _OtherParams(ProviderParams):
+        x: int = 0
+
+    _StreamEngine.received = None
+    with pytest.raises(InvalidProviderParamError):
+        _StreamEngine(strict=False).start_transcription(
+            params=RuntimeParams(provider_params=_OtherParams())
+        )
+    assert _StreamEngine.received is None  # never reached the hook
+
+
+def test_streaming_unsupported_param_strict_raises() -> None:
+    # word_timestamps is not declared in streaming caps -> strict raises.
+    with pytest.raises(UnsupportedFeatureError):
+        _StreamEngine(strict=True).start_transcription(
+            params=RuntimeParams(word_timestamps=WordTimestampGranularity.WORD)
+        )
+
+
+def test_streaming_unsupported_param_best_effort_drops_and_diagnoses() -> None:
+    # best_effort drops the param and surfaces a diagnostic via the session.
+    session = _StreamEngine(strict=False).start_transcription(
+        params=RuntimeParams(word_timestamps=WordTimestampGranularity.WORD)
+    )
+    assert any(d.code == "unsupported_parameter_ignored" for d in session.diagnostics())
+    # R5 freeze: the gated (frozen) params handed to the hook have the
+    # unsupported param dropped.
+    assert _StreamEngine.received is not None
+    assert _StreamEngine.received.word_timestamps is None
+
+
+def test_streaming_gated_params_flow_to_hook() -> None:
+    # A supported param flows through unchanged to the hook (R5 freeze).
+    _StreamEngine.received = None
+    _StreamEngine().start_transcription(params=RuntimeParams(language="en"))
+    assert _StreamEngine.received is not None
+    assert _StreamEngine.received.language == "en"
+
+
+def test_streaming_language_diagnostics_surface_on_session() -> None:
+    # Candidate-language resolution diagnostics surface through the session.
+    class _StreamAutoEngine(_StreamEngine):
+        properties: ClassVar[BaseProperties] = _AutoProps()
+        declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+            streaming=StreamingCapabilities(
+                language=LanguageCaps(
+                    runtime_override=FlagCap(supported=True),
+                    candidate_languages=CandidateLanguagesCap(
+                        supported=True,
+                        constraints=CandidateLanguagesConstraints(max=2),
+                    ),
+                ),
+            ),
+        )
+
+        def __init__(self, *, strict: bool = True) -> None:
+            self.config = _AutoConfig(strict=strict)
+
+    session = _StreamAutoEngine(strict=False).start_transcription(
+        params=RuntimeParams(language="auto", candidate_languages=["en", "zz"])
+    )
+    assert any(d.code == "candidate_language_dropped" for d in session.diagnostics())
+
+
+def test_streaming_validates_wire_format() -> None:
+    # The base template validates the wire format (fail-closed) before building.
+    from standard_asr.audio_format import AudioFormat
+
+    with pytest.raises(UnsupportedFeatureError, match="wire sample_rate"):
+        _StreamEngine().start_transcription(
+            audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=44100)
+        )
+
+
+def test_non_streaming_engine_raises_unsupported_without_param_error() -> None:
+    # A batch-only engine (no _start_transcription override) reports "does not
+    # support streaming" even when given an unsupported param -- the unsupported
+    # streaming error wins over any param/wire error, and no gating runs.
+    with pytest.raises(UnsupportedFeatureError, match="does not support streaming"):
+        _ArrayEngine().start_transcription(
+            params=RuntimeParams(word_timestamps=WordTimestampGranularity.WORD)
+        )
+
+
+def test_base_start_transcription_hook_raises_unsupported() -> None:
+    # The base _start_transcription hook is a defensive raise: it is normally
+    # unreachable (the template guards on _overrides_streaming first), but a
+    # subclass that calls super()._start_transcription() must get the clear error.
+    with pytest.raises(UnsupportedFeatureError, match="does not support streaming"):
+        EngineBase._start_transcription(  # pyright: ignore[reportPrivateUsage]
+            _ArrayEngine(), gated_params=RuntimeParams(), audio_format=None, audio=None
+        )
+
+
+def test_non_streaming_engine_runs_exclusivity_guard_first() -> None:
+    # Even for a non-streaming engine, the mutual-exclusion guard runs first
+    # (preserving the prior behaviour): passing both inputs raises ValueError,
+    # not the unsupported-streaming error.
+    from standard_asr.audio_format import AudioFormat
+
+    fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _ArrayEngine().start_transcription(audio_format=fmt, audio=_audio())
