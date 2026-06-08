@@ -19,6 +19,7 @@ from standard_asr.capabilities import (
     PhraseHintsConstraints,
     PromptCap,
     PromptConstraints,
+    StreamingCapabilities,
     WordTimestampsCap,
 )
 from standard_asr.exceptions import InvalidProviderParamError, UnsupportedFeatureError
@@ -394,6 +395,22 @@ def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:
     )
     with pytest.raises(UnsupportedFeatureError):
         gate_params(params, caps, "batch", strict=True)
+
+
+def test_guidance_limits_enforced_in_streaming_mode() -> None:
+    # Mode-correctness: the same guidance-limit enforcement applies under
+    # mode="streaming" (RUNT-3 follow-up wires gate_params(mode="streaming")).
+    caps = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=2)),
+            )
+        )
+    )
+    params = RuntimeParams(prompt="one two three")
+    gated, diags = gate_params(params, caps, "streaming", strict=False)
+    assert gated.prompt == "one two"
+    assert any(d.code == "prompt_truncated" for d in diags)
 
 
 def test_enforce_prompt_limit_guards() -> None:
