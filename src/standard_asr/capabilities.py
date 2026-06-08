@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Literal, Sequence, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 WordTimestampGranularityName = Literal["word", "segment", "char"]
 
@@ -175,14 +175,41 @@ class CandidateLanguagesCap(_FlagLikeNode):
 class WordTimestampsCap(_FlagLikeNode):
     """Capability for word-level timestamps.
 
+    A supported word-timestamp capability MUST enumerate at least one
+    granularity: an engine that declares ``supported=True`` but lists no
+    granularities is ambiguous (RUNT-6) -- gating could not tell whether a
+    requested granularity is offered, and silently honoring an unlisted one is
+    the cardinal sin. Requiring explicit enumeration makes the "supported but
+    unenumerated" state unrepresentable, so gating always validates against a
+    real set. When ``supported=False`` the list stays empty (irrelevant).
+
     Args:
         supported: Whether word timestamps are supported.
-        granularities: Supported granularities (``word``/``segment``/``char``).
+        granularities: Supported granularities (``word``/``segment``/``char``);
+            MUST be non-empty when ``supported`` is ``True``.
     """
 
     granularities: list[WordTimestampGranularityName] = Field(
         default_factory=lambda: cast("list[WordTimestampGranularityName]", [])
     )
+
+    @model_validator(mode="after")
+    def _require_granularities_when_supported(self) -> WordTimestampsCap:
+        """Reject a supported capability that enumerates no granularities.
+
+        Returns:
+            The validated capability.
+
+        Raises:
+            ValueError: If ``supported`` is ``True`` but ``granularities`` is
+                empty.
+        """
+        if self.supported and not self.granularities:
+            raise ValueError(
+                "WordTimestampsCap.granularities MUST be non-empty when supported=True "
+                "(enumerate at least one of 'word'/'segment'/'char')."
+            )
+        return self
 
 
 class PromptCap(_FlagLikeNode):

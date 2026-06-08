@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from standard_asr.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
@@ -107,7 +109,9 @@ def test_covers_rejects_widening() -> None:
     declared = DeclaredCapabilities(batch=BatchCapabilities())
     # Effective claims more than declared -> not covered.
     effective = DeclaredCapabilities(
-        batch=BatchCapabilities(word_timestamps=WordTimestampsCap(supported=True))
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
+        )
     )
     assert declared.covers(effective) is False
 
@@ -189,22 +193,30 @@ def test_covers_rejects_granularity_widening() -> None:
 
 
 def test_covers_empty_declared_granularities_is_unbounded() -> None:
-    # CAPA-1: a declared empty granularities list means "unbounded (all)", so a
+    # CAPA-1: an empty declared granularities list means "unbounded (all)", so a
     # narrowing from it to any concrete subset is a valid effective ⊆ declared
-    # (must NOT false-fail). Mirrors param_gating treating empty as "offers all".
+    # (must NOT false-fail). Mirrors param_gating's empty="offers all" semantics.
+    # Typed WordTimestampsCap can't be empty+supported (RUNT-6 validator), so the
+    # empty-declared case is exercised via an x_* dict node carrying the field.
     assert granularity_offers_all([]) is True
     assert granularity_offers_all(["word"]) is False
-    declared = DeclaredCapabilities(
-        batch=BatchCapabilities(word_timestamps=WordTimestampsCap(supported=True))
-    )
-    effective = DeclaredCapabilities(
-        batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
-        )
-    )
+    declared = _x_caps({"x_wt": {"supported": True, "granularities": []}})
+    effective = _x_caps({"x_wt": {"supported": True, "granularities": ["word"]}})
     assert declared.covers(effective) is True
     # And empty -> empty is trivially covered.
     assert declared.covers(declared) is True
+
+
+def test_word_timestamps_supported_requires_granularities() -> None:
+    # RUNT-6: a typed WordTimestampsCap that declares supported=True MUST
+    # enumerate at least one granularity (no "supported but unenumerated"
+    # ambiguity). Unsupported keeps the empty default.
+    with pytest.raises(ValueError, match="non-empty"):
+        WordTimestampsCap(supported=True)
+    # supported=False with empty granularities is fine.
+    assert WordTimestampsCap(supported=False).granularities == []
+    # supported=True with a granularity is fine.
+    assert WordTimestampsCap(supported=True, granularities=["word"]).granularities == ["word"]
 
 
 def test_covers_rejects_mode_widening() -> None:

@@ -80,7 +80,7 @@ class _WidenedASR(_GoodASR):
     effective_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         batch=BatchCapabilities(
             language=LanguageCaps(runtime_override=FlagCap(supported=True)),
-            word_timestamps=WordTimestampsCap(supported=True),
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
         )
     )
 

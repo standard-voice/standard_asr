@@ -158,13 +158,12 @@ def test_granularity_not_offered_best_effort_drops() -> None:
     assert any(d.code == "unsupported_granularity_ignored" for d in diags)
 
 
-def test_granularity_empty_list_defers_to_feature_flag() -> None:
-    # Engine supports word_timestamps but did not enumerate granularities ->
-    # back-compat: requested granularity is accepted.
-    params = RuntimeParams(word_timestamps=WordTimestampGranularity.CHAR)
-    gated, diags = gate_params(params, _wt_caps(), "batch", strict=True)
-    assert gated.word_timestamps is WordTimestampGranularity.CHAR
-    assert diags == []
+def test_supported_word_timestamps_cannot_have_empty_granularities() -> None:
+    # RUNT-6: a supported WordTimestampsCap MUST enumerate granularities, so the
+    # ambiguous "empty => honor anything" state is unrepresentable. Constructing
+    # _wt_caps() (supported=True, no granularities) raises at validation time.
+    with pytest.raises(ValueError, match="non-empty"):
+        _wt_caps()
 
 
 def test_word_timestamps_feature_unsupported_strict_raises() -> None:

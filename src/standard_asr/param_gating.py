@@ -27,7 +27,6 @@ from .capabilities import (
     PhraseHintsCap,
     PromptCap,
     WordTimestampsCap,
-    granularity_offers_all,
 )
 from .exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from .results import Diagnostic
@@ -200,11 +199,9 @@ def _gate_granularity(
     # was queried as supporting -- i.e. do not over-constrain unknown shapes.
     if not isinstance(node, WordTimestampsCap):
         return False
-    if granularity_offers_all(node.granularities):
-        # Empty granularities = unbounded (every granularity offered); the single
-        # source of truth shared with capability narrowing (granularity_offers_all
-        # in capabilities.py) so gating and covers() agree on what "empty" means.
-        return False
+    # RUNT-6: a supported WordTimestampsCap always enumerates its granularities
+    # (enforced by WordTimestampsCap's validator), so there is no "empty =>
+    # honor anything" ambiguity here -- the requested value MUST be offered.
     if requested.value in set(node.granularities):
         return False
     if strict:
