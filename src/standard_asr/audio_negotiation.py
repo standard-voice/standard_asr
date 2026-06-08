@@ -30,6 +30,7 @@ from .audio_input import (
     AudioBytes,
     AudioInput,
     AudioPath,
+    AudioStorageUri,
     InputKind,
 )
 from .exceptions import IncompatibleAudioInputError
@@ -238,6 +239,8 @@ def negotiate(
         return _negotiate_bytes(source, accepted)
     if isinstance(provided, AudioBase64):
         return _negotiate_base64(source, accepted)
+    if isinstance(provided, AudioStorageUri):
+        return _negotiate_storage_uri(source, accepted)
     # The only remaining variant is AudioUrl.
     return _negotiate_url(source, accepted)
 
@@ -436,6 +439,41 @@ def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPla
         accepted,
         "This engine does not fetch URLs; in v1 the standard does not fetch them "
         "either. Provide a local file via AudioPath.",
+    )
+
+
+def _negotiate_storage_uri(
+    source: str, accepted: frozenset[InputKind]
+) -> ConversionPlan | NoViablePath:
+    """Negotiate a path for an :class:`AudioStorageUri` source.
+
+    A provider storage URI (``s3://``, ``gs://``, ...) is resolvable only by an
+    engine that authenticates it with its own cloud-SDK credentials, so it is
+    viable solely as a zero-conversion passthrough to a ``storage_uri`` engine.
+    The standard is not an upload-broker and cannot fetch from cloud storage
+    without engine credentials, so every other accepted shape FAILs (R3): there
+    is no way to turn a credentialed storage URI into an array, encoded bytes, a
+    local file, or a public fetchable URL.
+
+    Args:
+        source: Source variant name.
+        accepted: Engine-accepted input kinds.
+
+    Returns:
+        A passthrough plan if the engine accepts storage URIs, otherwise no
+        viable path.
+    """
+    if InputKind.STORAGE_URI in accepted:
+        return ConversionPlan(
+            source, InputKind.STORAGE_URI, (ConversionOp.PASSTHROUGH,), False, False
+        )
+    return NoViablePath(
+        source,
+        accepted,
+        "This engine does not accept provider storage URIs (storage_uri); the "
+        "standard cannot fetch cloud storage without the engine's credentials and "
+        "is not an upload-broker. Use an engine that accepts storage_uri, or "
+        "download the object yourself and pass it as AudioPath/AudioBytes.",
     )
 
 

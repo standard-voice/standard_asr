@@ -16,6 +16,7 @@ from standard_asr.audio_input import (
     AudioBase64,
     AudioBytes,
     AudioPath,
+    AudioStorageUri,
     AudioUrl,
     InputKind,
     coerce_audio_input,
@@ -130,3 +131,60 @@ def test_path_accepts_os_pathlike() -> None:
 
     coerced = coerce_audio_input(_P())
     assert isinstance(coerced, AudioPath)
+
+
+# --- AudioStorageUri (H6) ---
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://bucket/key.wav",
+        "gs://bucket/key.flac",
+        "gcs://bucket/key.flac",
+        "oss://bucket/key.mp3",
+        "abfs://container/key.wav",
+        "abfss://container/key.wav",
+        "az://container/key.wav",
+        "wasb://container/key.wav",
+        "wasbs://container/key.wav",
+    ],
+)
+def test_storage_uri_accepts_allowlisted_schemes(uri: str) -> None:
+    su = AudioStorageUri(uri)
+    assert su.value == uri
+    assert su.provided_kind is InputKind.STORAGE_URI
+
+
+def test_storage_uri_scheme_is_case_insensitive() -> None:
+    assert AudioStorageUri("S3://Bucket/Key.WAV").value == "S3://Bucket/Key.WAV"
+
+
+def test_storage_uri_round_trips_through_coercion() -> None:
+    su = AudioStorageUri("s3://bucket/key.wav")
+    assert coerce_audio_input(su) is su
+
+
+def test_bare_str_never_coerces_to_storage_uri() -> None:
+    # A bare s3:// string is still treated as a local path -- the same explicit
+    # construction safety stance as AudioUrl/AudioBase64.
+    coerced = coerce_audio_input("s3://bucket/key.wav")
+    assert isinstance(coerced, AudioPath)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "http://example.com/a.wav",
+        "https://example.com/a.wav",
+        "file:///tmp/a.wav",
+        "ftp://host/a.wav",
+        "s3:/bucket/key.wav",  # missing the second slash -> no '://'
+        "bucket/key.wav",  # schemeless
+        "",  # empty
+        "://bucket/key.wav",  # empty scheme
+    ],
+)
+def test_storage_uri_rejects_bad_scheme(bad: str) -> None:
+    with pytest.raises(ValueError):
+        AudioStorageUri(bad)

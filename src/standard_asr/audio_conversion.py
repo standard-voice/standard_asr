@@ -26,6 +26,7 @@ from .audio_input import (
     AudioBytes,
     AudioInput,
     AudioPath,
+    AudioStorageUri,
     AudioUrl,
     InputKind,
 )
@@ -63,6 +64,7 @@ class PreparedAudio:
         container: Optional container hint for ``data``.
         path: File path (for ``ENCODED_FILE``).
         url: Remote URL (for ``FETCHABLE_URL``).
+        storage_uri: Provider cloud-storage URI (for ``STORAGE_URI``).
     """
 
     kind: InputKind
@@ -72,6 +74,7 @@ class PreparedAudio:
     container: str | None = None
     path: str | None = None
     url: str | None = None
+    storage_uri: str | None = None
     diagnostics: list[Diagnostic] = field(default_factory=_empty_diagnostics)
 
 
@@ -175,6 +178,13 @@ def execute_plan(
         # literal URL to the engine. The standard never fetches it (v1).
         validate_fetchable_url(provided.value, allow_private_addresses=allow_private_addresses)
         return PreparedAudio(kind=target, url=provided.value, diagnostics=diags)
+
+    if target is InputKind.STORAGE_URI:
+        # The engine resolves the storage URI with its own cloud-SDK credentials;
+        # the standard forwards the literal and runs no SSRF validator (the
+        # scheme allowlist was already enforced at AudioStorageUri construction).
+        assert isinstance(provided, AudioStorageUri)
+        return PreparedAudio(kind=target, storage_uri=provided.value, diagnostics=diags)
 
     if target in (InputKind.ENCODED_FILE, InputKind.ENCODED_BYTES):
         prepared = _prepare_encoded(provided, plan, max_file_size, strict, diags)

@@ -15,6 +15,7 @@ from standard_asr.audio_input import (
     AudioBase64,
     AudioBytes,
     AudioPath,
+    AudioStorageUri,
     AudioUrl,
     InputKind,
 )
@@ -34,6 +35,7 @@ ARR = InputKind.ARRAY
 FILE = InputKind.ENCODED_FILE
 BYTES = InputKind.ENCODED_BYTES
 URL = InputKind.FETCHABLE_URL
+STORAGE = InputKind.STORAGE_URI
 
 
 def _arr() -> AudioArray:
@@ -178,6 +180,38 @@ def test_bytes_to_file_and_bytes_engine_passthrough() -> None:
     assert isinstance(plan, ConversionPlan)
     assert plan.target_kind is BYTES
     assert plan.is_passthrough
+
+
+# --- AudioStorageUri (H6) ---
+
+
+def _su() -> AudioStorageUri:
+    return AudioStorageUri("s3://bucket/key.wav")
+
+
+def test_storage_uri_passthrough_to_storage_engine() -> None:
+    plan = negotiate(_su(), {STORAGE})
+    assert isinstance(plan, ConversionPlan)
+    assert plan.is_passthrough
+    assert plan.target_kind is STORAGE
+
+
+def test_storage_uri_round_trips_via_can_accept() -> None:
+    assert can_accept(_su(), {STORAGE}) is True
+
+
+@pytest.mark.parametrize("accepted", [{ARR}, {FILE}, {BYTES}, {URL}, {FILE, BYTES}])
+def test_storage_uri_fails_to_non_storage_engines(accepted: set[InputKind]) -> None:
+    result = negotiate(_su(), accepted)
+    assert isinstance(result, NoViablePath)
+    assert "storage_uri" in result.hint
+
+
+def test_storage_uri_negotiate_or_raise_includes_hint() -> None:
+    with pytest.raises(IncompatibleAudioInputError) as exc:
+        negotiate_or_raise(_su(), {ARR})
+    assert "AudioStorageUri" in str(exc.value)
+    assert "storage_uri" in str(exc.value)
 
 
 # --- R5 SSRF validation ---

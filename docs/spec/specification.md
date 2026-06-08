@@ -25,8 +25,9 @@
 
 | 术语 | 含义 |
 |---|---|
-| `AudioInput` | 标准定义的**判别联合 (discriminated union)**，是应用传给 `transcribe(audio, …)` 的音频参数类型。包含五种变体。判别依据是显式的类型标签，**不是**对字符串内容的嗅探。 |
-| `InputKind` | 引擎在 Properties 中声明自己接受哪些音频形态的封闭枚举：`"array"` / `"encoded_bytes"` / `"encoded_file"` / `"fetchable_url"`。 |
+| `AudioInput` | 标准定义的**判别联合 (discriminated union)**，是应用传给 `transcribe(audio, …)` 的音频参数类型。包含六种变体。判别依据是显式的类型标签，**不是**对字符串内容的嗅探。 |
+| `InputKind` | 引擎在 Properties 中声明自己接受哪些音频形态的封闭枚举：`"array"` / `"encoded_bytes"` / `"encoded_file"` / `"fetchable_url"` / `"storage_uri"`。 |
+| `AudioStorageUri` | provider 云存储 URI（`s3://`、`gs://`、`oss://`、`abfs://` 等）。语义="引擎用自己的云 SDK 凭证解析此对象"。与 `AudioUrl` 区分：它**不是** HTTPS 可公开拉取的 URL，**不经过**标准的 SSRF 校验器（标准既不拉取也不能在无引擎凭证下访问云存储）。 |
 | 协商 (negotiation) | 标准层在应用提供的形态与引擎接受的形态之间寻找匹配或最小成本转换路径的过程。 |
 | 透传 (passthrough) | 应用提供的形态恰好是引擎接受的形态之一，标准层不做任何变换。 |
 | diagnostic | 标准层在执行有损转换、假定参数等非理想路径时，返回给应用的结构化通知。 |
@@ -45,12 +46,13 @@
 | `AudioArray(samples: NDArray, sample_rate: int \| None = None)` | 波形数组 | 已解码的原始波形 | 否（除非给 `sample_rate`） |
 | `AudioUrl(value: str)` | 远程 URL | 语义="服务端可拉取"；安全约束见 R5 | 是（远端头） |
 | `AudioBase64(value: str)` | base64 / data-URI | 编码为 base64 的音频 | 是 |
+| `AudioStorageUri(value: str)` | provider 云存储 URI | 引擎用自己的云 SDK 凭证解析（`s3://`/`gs://`/`oss://`/`abfs://` 等，scheme 白名单校验）；构造期校验 scheme，**不**经 SSRF 校验（见 R5.2） | 是（远端/服务端） |
 
 **便利强制转换 (coercion)**：
 
 | 裸类型 | 转换目标 | 说明 |
 |---|---|---|
-| `str` | `AudioPath` | **永远**视为本地路径。URL/base64 须显式用 `AudioUrl`/`AudioBase64`。 |
+| `str` | `AudioPath` | **永远**视为本地路径。URL/base64/storage-URI 须显式用 `AudioUrl`/`AudioBase64`/`AudioStorageUri`。 |
 | `bytes` | `AudioBytes` | — |
 | `(ndarray, int)` | `AudioArray(samples, sample_rate)` | 元组第二元素为采样率 |
 | `ndarray` | `AudioArray(samples, sample_rate=None)` | 未提供采样率，由 R6 的 strict/best_effort 决定 |
@@ -79,17 +81,18 @@
 
 **R3 — 协商与转换矩阵。** 有直接匹配时透传；无匹配走最低成本转换；无路径抛 `IncompatibleAudioInputError(provided, accepted, hint)`。
 
-| 应用提供 ↓ ╲ 引擎接受 → | `array` | `encoded_file/bytes` | `fetchable_url` |
-|---|---|---|---|
-| `AudioPath` | decode→array（需 `[audio]`） | 读文件→bytes，透传 | **FAIL** |
-| `AudioBytes` | decode→array（需 `[audio]`） | 透传 | **FAIL** |
-| `AudioArray` | 透传（+ 采样率 R6–R8） | encode→WAV bytes（R4） | **FAIL** |
-| `AudioUrl` | **v1: FAIL**（R5）；v2: fetch→decode | 透传给接受 URL 引擎 | 透传 |
-| `AudioBase64` | b64decode→decode→array | b64decode→bytes | **FAIL** |
+| 应用提供 ↓ ╲ 引擎接受 → | `array` | `encoded_file/bytes` | `fetchable_url` | `storage_uri` |
+|---|---|---|---|---|
+| `AudioPath` | decode→array（需 `[audio]`） | 读文件→bytes，透传 | **FAIL** | **FAIL** |
+| `AudioBytes` | decode→array（需 `[audio]`） | 透传 | **FAIL** | **FAIL** |
+| `AudioArray` | 透传（+ 采样率 R6–R8） | encode→WAV bytes（R4） | **FAIL** | **FAIL** |
+| `AudioUrl` | **v1: FAIL**（R5）；v2: fetch→decode | 透传给接受 URL 引擎 | 透传 | **FAIL** |
+| `AudioBase64` | b64decode→decode→array | b64decode→bytes | **FAIL** | **FAIL** |
+| `AudioStorageUri` | **FAIL**（R5.2） | **FAIL**（R5.2） | **FAIL**（R5.2） | 透传（零转换） |
 
 - 有损单元格 MUST 发 `audio_conversion` diagnostic（from/to/lossy/extra）。
 - 协商 MUST 支持调用前判定：`can_accept(kind, engine) -> bool` / `negotiate(provided, accepted) -> ConversionPlan | NoViablePath`，并体现在引擎 card / 文档。
-- **死角**（本地数据 + 只接受 `fetchable_url`）：MUST fail-explicit。标准 MUST NOT 做 upload-broker。
+- **死角**（本地数据 + 只接受 `fetchable_url`，或 storage-URI + 不接受 `storage_uri`）：MUST fail-explicit。标准 MUST NOT 做 upload-broker，且 MUST NOT 在无引擎凭证下拉取云存储。
 
 **R4 — 数组→编码文件 encoder。** 当 `AudioArray` 遇到只接受文件的引擎时：输出 MUST 为内存 `BytesIO`（MUST NOT 落磁盘）；canonical 编码 = WAV/16-bit PCM LE/mono；多声道 MUST 降混+diagnostic；float32→int16 有损 MUST 发 diagnostic；编码后 MUST 预检 `max_file_size`，超限抛清晰本地错误。
 
@@ -97,6 +100,11 @@
 - **引擎/云自取**：转发前 MUST 校验 HTTPS-only + 默认拒绝私网/环回/link-local IP 段（RFC1918、127/8、169.254/16、::1、fc00::/7；可显式 opt-in）+ 重定向上限+每跳重校验。
 - **标准自取**：**v1 MUST NOT 实现**（SSRF 高危）。`AudioUrl` v1 仅作透传。
 - v2 若开放：MUST 额外 DNS pin + 流式读取硬上限 + 超时。
+
+**R5.2 — `AudioStorageUri` 安全模型（独立于 R5）。** provider 云存储 URI（`s3://`/`gs://`/`oss://`/`abfs://` 等）由**引擎**用自己的云 SDK 凭证解析，标准既不拉取也不能在无凭证下访问，因此：
+- 构造期 MUST 校验 scheme 落在 provider 存储 scheme 白名单内（小且 extensible-by-constant，无运行时注册表）；MUST 拒绝 `file://`、`http(s)://`、空值、未知 scheme，报清晰错误。
+- MUST NOT 经过 R5 的 HTTPS / public-IP SSRF 校验器（storage URI 不是 HTTPS-fetchable，标准无 SSRF 攻击面）。
+- 协商：仅当引擎接受 `storage_uri` 时透传（零转换）；其余一律 **FAIL**（标准不是 upload-broker）。
 
 **R6 — 采样率。** canonical = 16 kHz mono。裸数组无采样率时：strict MUST 抛错（"pass AudioArray(samples, sample_rate)"）；best_effort MAY 假定 16k 但 MUST 每次发 `assumed_sample_rate` diagnostic。**绝不静默假定。** `sample_rate`：batch 选填；bare-PCM streaming 必填（会话锁定）；header-bearing buffered 输入（OpenAI SSE）自描述豁免。
 
@@ -157,6 +165,7 @@
 - **为何用判别联合而非字符串嗅探**：一个名为 `https%3A//...` 的本地文件、一个 base64 恰好以 `/` 开头的字符串，都会导致嗅探误判。显式类型标签消除所有歧义，对 IDE 类型提示也更友好。
 - **为何裸 `str` 只映射 `AudioPath`**：最常见且最安全的语义是文件路径。如果允许裸 str 被推断为 URL，恶意输入可能触发 SSRF。URL/base64 强制显式类型是一道安全防线。
 - **为何 v1 禁止标准自取 URL**：SSRF 是 v1 最不值得冒的风险。"接受 URL 就透传；不接受就报错"比安全实现一个 URL fetcher 简单得多。
+- **为何用独立的 `AudioStorageUri` 变体而非放宽 `AudioUrl`**：两者安全模型根本不同。`AudioUrl` 是 HTTPS 可公开拉取的 URL，标准的 SSRF 校验器（HTTPS-only + 拒私网 IP）正是为它而设。provider 云存储 URI（`s3://`/`gs://`/…）则由**引擎用自己的云 SDK 凭证**解析——标准无法、也不应在无凭证下拉取它，对它跑 public-IP SSRF 校验既无意义又会硬拒掉整类合法云引擎（AWS Transcribe batch 强绑 S3 URI、Google STT v2 仅接受 `gs://`）。把它放进 `AudioUrl` 会迫使一个变体承载两套互斥的安全语义；独立变体让"标准侧无 SSRF 面、引擎侧凭证解析"这一事实在类型与协商矩阵中显式可见，且 scheme 白名单在构造期即 fail-loud。
 - **为何 encoder 输出到 BytesIO**：临时文件有泄漏风险、在只读 FS 上失败、有 TOCTOU 竞态。BytesIO 在进程内完成全部操作。
 - **为何 canonical = WAV/16-bit PCM LE**：最简单的无压缩容器 + 行业标准量化深度 + 主流 CPU 字节序 = 最大兼容性。
 - **为何采样率放 Properties**：采样率是引擎的静态 I/O 边界，不随功能/模式改变。唯一例外 `self_resamples`（行为性）归 Capabilities。

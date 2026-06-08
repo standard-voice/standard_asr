@@ -7,9 +7,10 @@ This module defines the discriminated union that applications pass to
 ``transcribe`` and ``start_transcription`` as the ``audio`` argument, together
 with the closed convenience coercion from bare Python types.
 
-The discriminated union has five variants -- :class:`AudioPath`,
-:class:`AudioBytes`, :class:`AudioArray`, :class:`AudioUrl` and
-:class:`AudioBase64`. Discrimination is based on the *explicit type tag*, never
+The discriminated union has six variants -- :class:`AudioPath`,
+:class:`AudioBytes`, :class:`AudioArray`, :class:`AudioUrl`,
+:class:`AudioBase64` and :class:`AudioStorageUri`. Discrimination is based on
+the *explicit type tag*, never
 on sniffing the content of a string (see the normative spec, section
 "Audio Input & Sample Rate", rule R1). A bare ``str`` is **always** treated as a
 local file path; a URL or base64 payload MUST be wrapped explicitly in
@@ -43,12 +44,17 @@ class InputKind(str, Enum):
         ENCODED_BYTES: Encoded audio held in memory (e.g. MP3/WAV bytes).
         ENCODED_FILE: An encoded audio file on disk.
         FETCHABLE_URL: A URL the engine/cloud service fetches server-side.
+        STORAGE_URI: A provider cloud-storage URI (e.g. ``s3://``, ``gs://``)
+            the engine resolves with its own cloud-SDK credentials. Distinct
+            from :data:`FETCHABLE_URL`: it is not an HTTPS-fetchable public URL
+            and never passes through the standard's SSRF validator.
     """
 
     ARRAY = "array"
     ENCODED_BYTES = "encoded_bytes"
     ENCODED_FILE = "encoded_file"
     FETCHABLE_URL = "fetchable_url"
+    STORAGE_URI = "storage_uri"
 
 
 @dataclass(frozen=True)
@@ -159,8 +165,74 @@ class AudioBase64:
     provided_kind = InputKind.ENCODED_BYTES
 
 
+#: Cloud-storage URI schemes a provider engine can resolve with its own SDK
+#: credentials. Kept small and extensible-by-constant (no runtime registry):
+#: AWS S3 (``s3``), Google Cloud Storage (``gs``/``gcs``), Alibaba OSS (``oss``)
+#: and Azure ADLS Gen2 / Blob (``abfs``/``abfss``/``az``/``wasb``/``wasbs``).
+STORAGE_URI_SCHEMES: frozenset[str] = frozenset(
+    {"s3", "gs", "gcs", "oss", "abfs", "abfss", "az", "wasb", "wasbs"}
+)
+
+
+@dataclass(frozen=True)
+class AudioStorageUri:
+    """A provider cloud-storage URI the engine resolves with its own credentials.
+
+    Whole engine classes are addressable only by a provider-native storage URI:
+    AWS Transcribe batch requires an S3 URI (``Media.MediaFileUri``) and Google
+    STT v2 requires a ``gs://`` URI. These are **not** HTTPS-fetchable public
+    URLs: the engine resolves them with its own cloud-SDK credentials, so --
+    unlike :class:`AudioUrl` -- the standard MUST NOT run the HTTPS public-IP
+    SSRF validator over them. The standard never fetches a storage URI itself;
+    it only forwards it to an engine that declares ``"storage_uri"`` support.
+
+    Like :class:`AudioUrl` / :class:`AudioBase64`, this variant requires explicit
+    construction: a bare ``str`` always coerces to :class:`AudioPath`, never to a
+    storage URI (the same SSRF safety stance against attacker-controlled
+    strings). The scheme is validated against :data:`STORAGE_URI_SCHEMES` at
+    construction; ``file://``, ``http(s)://``, an empty value, or an unknown
+    scheme is rejected with a clear error.
+
+    Args:
+        value: The storage URI, e.g. ``"s3://bucket/key.wav"`` or
+            ``"gs://bucket/key.flac"``. The sample rate is self-describing at
+            the remote/server side once the engine resolves it.
+
+    Raises:
+        ValueError: If the URI is empty, has no scheme, or uses a scheme outside
+            :data:`STORAGE_URI_SCHEMES`.
+    """
+
+    value: str
+
+    provided_kind = InputKind.STORAGE_URI
+
+    def __post_init__(self) -> None:
+        """Validate the URI scheme against the storage-scheme allowlist.
+
+        Raises:
+            ValueError: If the URI is empty, schemeless, or uses a scheme that
+                is not an allowlisted provider storage scheme.
+        """
+        scheme, sep, _ = self.value.partition("://")
+        if not sep or not scheme:
+            raise ValueError(
+                f"AudioStorageUri requires a 'scheme://...' provider storage URI; "
+                f"got {self.value!r}. Use one of "
+                f"{sorted(STORAGE_URI_SCHEMES)} (e.g. 's3://bucket/key.wav')."
+            )
+        normalized = scheme.lower()
+        if normalized not in STORAGE_URI_SCHEMES:
+            raise ValueError(
+                f"Unsupported storage URI scheme {scheme!r} in {self.value!r}. "
+                f"AudioStorageUri accepts only provider cloud-storage schemes "
+                f"{sorted(STORAGE_URI_SCHEMES)}; pass an HTTPS URL as AudioUrl or a "
+                "local file as AudioPath instead."
+            )
+
+
 #: The discriminated union accepted by ``transcribe`` / ``start_transcription``.
-AudioInput = Union[AudioPath, AudioBytes, AudioArray, AudioUrl, AudioBase64]
+AudioInput = Union[AudioPath, AudioBytes, AudioArray, AudioUrl, AudioBase64, AudioStorageUri]
 
 #: Bare Python types accepted as a convenience and coerced to :data:`AudioInput`.
 AudioInputLike = Union[
@@ -187,8 +259,9 @@ def coerce_audio_input(value: AudioInputLike) -> AudioInput:
     ``ndarray``                :class:`AudioArray` with ``sample_rate=None``
     =========================  ==========================================
 
-    A bare ``str`` is never interpreted as a URL or base64 payload -- wrap those
-    in :class:`AudioUrl` / :class:`AudioBase64` explicitly.
+    A bare ``str`` is never interpreted as a URL, base64 payload, or cloud
+    storage URI -- wrap those in :class:`AudioUrl` / :class:`AudioBase64` /
+    :class:`AudioStorageUri` explicitly.
 
     Args:
         value: Either an :data:`AudioInput` variant (returned unchanged) or a
@@ -200,7 +273,9 @@ def coerce_audio_input(value: AudioInputLike) -> AudioInput:
     Raises:
         TypeError: If ``value`` is not a recognised audio input type.
     """
-    if isinstance(value, (AudioPath, AudioBytes, AudioArray, AudioUrl, AudioBase64)):
+    if isinstance(
+        value, (AudioPath, AudioBytes, AudioArray, AudioUrl, AudioBase64, AudioStorageUri)
+    ):
         return value
     if isinstance(value, (str, os.PathLike)):
         return AudioPath(value)
@@ -215,7 +290,7 @@ def coerce_audio_input(value: AudioInputLike) -> AudioInput:
     raise TypeError(
         "Unsupported audio input type: "
         f"{type(value).__name__}. Pass an AudioInput variant "
-        "(AudioPath/AudioBytes/AudioArray/AudioUrl/AudioBase64) or one of "
+        "(AudioPath/AudioBytes/AudioArray/AudioUrl/AudioBase64/AudioStorageUri) or one of "
         "str/PathLike/bytes/ndarray/(ndarray, sample_rate)."
     )
 
@@ -250,12 +325,14 @@ def _coerce_array_tuple(value: Sequence[object]) -> AudioArray:
 
 
 __all__ = [
+    "STORAGE_URI_SCHEMES",
     "AudioArray",
     "AudioBase64",
     "AudioBytes",
     "AudioInput",
     "AudioInputLike",
     "AudioPath",
+    "AudioStorageUri",
     "AudioUrl",
     "InputKind",
     "coerce_audio_input",

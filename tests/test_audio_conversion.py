@@ -23,6 +23,7 @@ from standard_asr.audio_input import (
     AudioBase64,
     AudioBytes,
     AudioPath,
+    AudioStorageUri,
     AudioUrl,
     InputKind,
 )
@@ -146,6 +147,16 @@ def test_url_passthrough() -> None:
     prepared = _exec(AudioUrl(url), {InputKind.FETCHABLE_URL}, allow_private_addresses=True)
     assert prepared.kind is InputKind.FETCHABLE_URL
     assert prepared.url == url
+
+
+def test_storage_uri_passthrough() -> None:
+    # The engine resolves the URI with its own credentials; the standard forwards
+    # the literal with no SSRF validation and no conversion.
+    uri = "s3://bucket/key.wav"
+    prepared = _exec(AudioStorageUri(uri), {InputKind.STORAGE_URI})
+    assert prepared.kind is InputKind.STORAGE_URI
+    assert prepared.storage_uri == uri
+    assert prepared.url is None
 
 
 def test_decode_path_to_array(tmp_path: Path) -> None:
