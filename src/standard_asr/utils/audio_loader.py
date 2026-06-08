@@ -506,7 +506,13 @@ def load_audio_from_path(
                     )
 
                 frames = wf.readframes(wf.getnframes())
-                dtype_map = {1: np.uint8, 2: np.int16}
+                # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
+                # read it with an explicit "<i2" dtype so a big-endian host does
+                # not silently byte-swap samples (AUDI-2). uint8 has no endianness.
+                dtype_map: dict[int, np.dtype[np.unsignedinteger | np.signedinteger]] = {
+                    1: np.dtype(np.uint8),
+                    2: np.dtype("<i2"),
+                }
                 audio = np.frombuffer(frames, dtype=dtype_map[sampwidth]).astype(np.float32)
                 if sampwidth == 1:
                     # 8-bit unsigned PCM: convert to [-1, 1]
@@ -684,7 +690,13 @@ def _decode_path_native(path: str, target_channels: int | None) -> tuple[NDArray
                         f"Unsupported WAV sample width via stdlib: {sampwidth * 8} bits"
                     )
                 frames = wf.readframes(wf.getnframes())
-                dtype_map = {1: np.uint8, 2: np.int16}
+                # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
+                # read it with an explicit "<i2" dtype so a big-endian host does
+                # not silently byte-swap samples (AUDI-2). uint8 has no endianness.
+                dtype_map: dict[int, np.dtype[np.unsignedinteger | np.signedinteger]] = {
+                    1: np.dtype(np.uint8),
+                    2: np.dtype("<i2"),
+                }
                 audio = np.frombuffer(frames, dtype=dtype_map[sampwidth]).astype(np.float32)
                 if sampwidth == 1:
                     audio = (audio - 128.0) / 128.0

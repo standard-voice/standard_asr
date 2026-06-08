@@ -103,7 +103,11 @@ def encode_array_to_wav_bytes(
         raise AudioProcessingError("Audio must be 1D (mono) or 2D (multi-channel).")
 
     pcm = _to_int16_pcm(mono)
-    frames = pcm.tobytes()
+    # Serialize explicitly little-endian: WAV defines 16-bit PCM as LE, but
+    # ``tobytes()`` uses the array's NATIVE byte order. On a big-endian host that
+    # would silently emit byte-swapped samples under an LE-declaring header
+    # (spec R4: canonical = WAV/16-bit PCM LE). ``<i2`` pins the contract.
+    frames = pcm.astype("<i2").tobytes()
 
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wf:
@@ -142,7 +146,9 @@ def nparray_to_audio_file(
     Raises:
         OSError: If writing to ``file_path`` fails (permissions, disk, etc.).
     """
-    audio_integer = _to_int16_pcm(audio)
+    # Pin little-endian (``<i2``) for canonical WAV PCM regardless of host byte
+    # order (spec R4); ``tobytes()`` would otherwise use native order (AUDI-2).
+    audio_integer = _to_int16_pcm(audio).astype("<i2")
 
     if audio_integer.ndim == 1:
         channels = 1
