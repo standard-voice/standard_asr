@@ -16,11 +16,15 @@ from standard_asr.capabilities import (
     GuidanceCaps,
     LanguageCaps,
     PhraseHintsCap,
+    PhraseHintsConstraints,
     PromptCap,
+    PromptConstraints,
     WordTimestampsCap,
 )
 from standard_asr.exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from standard_asr.param_gating import (
+    _enforce_phrase_hints_limits,  # pyright: ignore[reportPrivateUsage]
+    _enforce_prompt_limit,  # pyright: ignore[reportPrivateUsage]
     _gate_granularity,  # pyright: ignore[reportPrivateUsage]
     _try_degrade_to_prompt,  # pyright: ignore[reportPrivateUsage]
     gate_params,
@@ -251,10 +255,184 @@ def test_try_degrade_empty_hints_returns_false() -> None:
     params = RuntimeParams(phrase_hints=[], on_unsupported="degrade_to_prompt")
     updates: dict[str, object] = {}
     diags: list[Diagnostic] = []
-    applied = _try_degrade_to_prompt(params, _caps(prompt=True), "batch", updates, diags)
+    applied = _try_degrade_to_prompt(
+        params, _caps(prompt=True), "batch", updates, diags, strict=False
+    )
     assert applied is False
     assert updates == {}
     assert diags == []
+
+
+# --------------------------------------------------------------------------- #
+# RUNT-4: declared guidance limits are enforced (truncate/raise), and degrade
+# respects max_tokens instead of silently exceeding it.
+# --------------------------------------------------------------------------- #
+def _guidance_caps(
+    *,
+    prompt_max_tokens: int | None = None,
+    hints_max_terms: int | None = None,
+    hints_max_chars: int | None = None,
+    hints_max_words: int | None = None,
+) -> DeclaredCapabilities:
+    return DeclaredCapabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(
+                    supported=True,
+                    constraints=PromptConstraints(max_tokens=prompt_max_tokens),
+                ),
+                phrase_hints=PhraseHintsCap(
+                    supported=True,
+                    constraints=PhraseHintsConstraints(
+                        max_terms=hints_max_terms,
+                        max_chars_per_term=hints_max_chars,
+                        max_words_per_term=hints_max_words,
+                    ),
+                ),
+            )
+        )
+    )
+
+
+def test_prompt_within_max_tokens_passes() -> None:
+    params = RuntimeParams(prompt="one two three")
+    gated, diags = gate_params(params, _guidance_caps(prompt_max_tokens=5), "batch", strict=True)
+    assert gated.prompt == "one two three"
+    assert diags == []
+
+
+def test_prompt_over_max_tokens_strict_raises() -> None:
+    params = RuntimeParams(prompt="one two three four")
+    with pytest.raises(UnsupportedFeatureError, match="tokens"):
+        gate_params(params, _guidance_caps(prompt_max_tokens=2), "batch", strict=True)
+
+
+def test_prompt_over_max_tokens_best_effort_truncates() -> None:
+    params = RuntimeParams(prompt="one two three four")
+    gated, diags = gate_params(params, _guidance_caps(prompt_max_tokens=2), "batch", strict=False)
+    assert gated.prompt == "one two"
+    diag = next(d for d in diags if d.code == "prompt_truncated")
+    assert diag.effective == "one two"
+    assert diag.provided == 4
+
+
+def test_prompt_unbounded_limit_noop() -> None:
+    params = RuntimeParams(prompt="a b c d e f")
+    gated, diags = gate_params(params, _guidance_caps(prompt_max_tokens=None), "batch", strict=True)
+    assert gated.prompt == "a b c d e f"
+    assert diags == []
+
+
+def test_phrase_hints_too_many_terms_strict_raises() -> None:
+    params = RuntimeParams(phrase_hints=["a", "b", "c"])
+    with pytest.raises(UnsupportedFeatureError, match="limits"):
+        gate_params(params, _guidance_caps(hints_max_terms=2), "batch", strict=True)
+
+
+def test_phrase_hints_too_many_terms_best_effort_truncates() -> None:
+    params = RuntimeParams(phrase_hints=["a", "b", "c"])
+    gated, diags = gate_params(params, _guidance_caps(hints_max_terms=2), "batch", strict=False)
+    assert gated.phrase_hints == ["a", "b"]
+    diag = next(d for d in diags if d.code == "phrase_hints_truncated")
+    assert diag.effective == ["a", "b"]
+
+
+def test_phrase_hints_over_long_term_best_effort_shortens() -> None:
+    params = RuntimeParams(phrase_hints=["alpha beta gamma", "short"])
+    gated, diags = gate_params(
+        params,
+        _guidance_caps(hints_max_chars=5, hints_max_words=2),
+        "batch",
+        strict=False,
+    )
+    # "alpha beta gamma" -> first 2 words "alpha beta" -> first 5 chars "alpha".
+    assert gated.phrase_hints == ["alpha", "short"]
+    assert any(d.code == "phrase_hints_truncated" for d in diags)
+
+
+def test_phrase_hints_within_limits_passes() -> None:
+    params = RuntimeParams(phrase_hints=["a", "b"])
+    gated, diags = gate_params(
+        params, _guidance_caps(hints_max_terms=3, hints_max_chars=10), "batch", strict=True
+    )
+    assert gated.phrase_hints == ["a", "b"]
+    assert diags == []
+
+
+def test_degrade_respects_max_tokens_best_effort_truncates() -> None:
+    # phrase_hints unsupported -> degrade; but the framed prompt exceeds the
+    # prompt channel's max_tokens, so it is truncated (not silently emitted).
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=3)),
+                phrase_hints=PhraseHintsCap(supported=False),
+            )
+        )
+    )
+    params = RuntimeParams(
+        phrase_hints=["Anthropic", "Claude", "Opus"], on_unsupported="degrade_to_prompt"
+    )
+    gated, diags = gate_params(params, caps, "batch", strict=False)
+    assert gated.phrase_hints is None
+    assert gated.prompt is not None
+    assert len(gated.prompt.split()) == 3
+    assert any(d.code == "guidance_degraded_to_prompt" for d in diags)
+    assert any(d.code == "prompt_truncated" for d in diags)
+
+
+def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=3)),
+                phrase_hints=PhraseHintsCap(supported=False),
+            )
+        )
+    )
+    params = RuntimeParams(
+        phrase_hints=["Anthropic", "Claude", "Opus"], on_unsupported="degrade_to_prompt"
+    )
+    with pytest.raises(UnsupportedFeatureError):
+        gate_params(params, caps, "batch", strict=True)
+
+
+def test_enforce_prompt_limit_guards() -> None:
+    # Defensive guards (exercised directly; gate_params filters these earlier):
+    # no prompt -> no-op; a non-PromptCap node (here: missing domain) -> no-op.
+    updates: dict[str, object] = {}
+    diags: list[Diagnostic] = []
+    _enforce_prompt_limit(
+        RuntimeParams(), _guidance_caps(prompt_max_tokens=1), "batch", updates, diags, strict=True
+    )
+    assert updates == {} and diags == []
+    _enforce_prompt_limit(
+        RuntimeParams(prompt="a b c"),
+        DeclaredCapabilities(),  # no batch domain -> node_at returns None
+        "batch",
+        updates,
+        diags,
+        strict=True,
+    )
+    assert updates == {} and diags == []
+
+
+def test_enforce_phrase_hints_limits_guards() -> None:
+    updates: dict[str, object] = {}
+    diags: list[Diagnostic] = []
+    _enforce_phrase_hints_limits(
+        RuntimeParams(), _guidance_caps(hints_max_terms=1), "batch", updates, diags, strict=True
+    )
+    assert updates == {} and diags == []
+    _enforce_phrase_hints_limits(
+        RuntimeParams(phrase_hints=["a", "b"]),
+        DeclaredCapabilities(),  # no batch domain -> node_at returns None
+        "batch",
+        updates,
+        diags,
+        strict=True,
+    )
+    assert updates == {} and diags == []
 
 
 def test_candidate_languages_supported_passes_through_untouched() -> None:

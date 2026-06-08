@@ -22,7 +22,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from .capabilities import DeclaredCapabilities, WordTimestampsCap, granularity_offers_all
+from .capabilities import (
+    DeclaredCapabilities,
+    PhraseHintsCap,
+    PromptCap,
+    WordTimestampsCap,
+    granularity_offers_all,
+)
 from .exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from .results import Diagnostic
 from .runtime_params import ProviderParams, RuntimeParams
@@ -112,14 +118,23 @@ def gate_params(
         if capabilities.supports(f"{mode}.{cap_suffix}"):
             # Supported at the feature level; some features carry finer-grained
             # sub-constraints that MUST also be satisfied (e.g. the requested
-            # word-timestamp granularity must be one the engine offers). The
-            # sub-check handles its own drop/raise; nothing else to do here.
+            # word-timestamp granularity must be one the engine offers, or the
+            # declared guidance limits). The sub-check handles its own drop/raise
+            # / truncation; nothing else to do here.
             if field_name == "word_timestamps":
                 _gate_granularity(params, capabilities, mode, updates, diagnostics, strict=strict)
+            elif field_name == "prompt":
+                _enforce_prompt_limit(
+                    params, capabilities, mode, updates, diagnostics, strict=strict
+                )
+            elif field_name == "phrase_hints":
+                _enforce_phrase_hints_limits(
+                    params, capabilities, mode, updates, diagnostics, strict=strict
+                )
             continue
         # Unsupported at the feature level.
         if field_name == "phrase_hints" and _try_degrade_to_prompt(
-            params, capabilities, mode, updates, diagnostics
+            params, capabilities, mode, updates, diagnostics, strict=strict
         ):
             continue
         if strict:
@@ -214,6 +229,168 @@ def _gate_granularity(
     return True
 
 
+def _count_tokens(text: str) -> int:
+    """Approximate a prompt's token count by whitespace-delimited words.
+
+    The standard layer has no engine tokenizer, so ``max_tokens`` is enforced
+    against a whitespace word count -- a deterministic, engine-agnostic
+    approximation of "prompt length". This is intentionally conservative for the
+    Latin-script case and documented as such on the constraint
+    (:attr:`PromptConstraints.max_tokens`).
+
+    Args:
+        text: The prompt text.
+
+    Returns:
+        The number of whitespace-delimited tokens.
+    """
+    return len(text.split())
+
+
+def _enforce_prompt_limit(
+    params: RuntimeParams,
+    capabilities: DeclaredCapabilities,
+    mode: Mode,
+    updates: dict[str, object],
+    diagnostics: list[Diagnostic],
+    *,
+    strict: bool,
+) -> None:
+    """Enforce the declared ``prompt.max_tokens`` limit on a supported prompt.
+
+    A supported ``prompt`` MUST still respect the engine's declared token budget
+    (spec §Runtime 3.3 / R4 -- guidance is best-effort but MUST NOT silently
+    exceed a declared bound). In best_effort mode an over-budget prompt is
+    truncated to ``max_tokens`` whitespace tokens with a diagnostic; in strict
+    mode it raises. An absent (``None``) limit is unbounded -- nothing to do.
+
+    Args:
+        params: The request parameters.
+        capabilities: The engine's effective capabilities.
+        mode: ``"batch"`` or ``"streaming"``.
+        updates: Field-update accumulator (mutated on truncation).
+        diagnostics: Diagnostics accumulator (mutated on truncation).
+        strict: Whether an over-limit prompt raises (vs truncate + diagnostic).
+
+    Raises:
+        UnsupportedFeatureError: In strict mode, if the prompt exceeds the limit.
+    """
+    prompt = params.prompt
+    if prompt is None:
+        return
+    node = capabilities.node_at(f"{mode}.guidance.prompt")
+    if not isinstance(node, PromptCap):
+        return
+    max_tokens = node.constraints.max_tokens
+    if max_tokens is None:
+        return
+    tokens = prompt.split()
+    if len(tokens) <= max_tokens:
+        return
+    if strict:
+        raise UnsupportedFeatureError(
+            f"prompt has {len(tokens)} tokens; max is {max_tokens} in {mode} mode."
+        )
+    truncated = " ".join(tokens[:max_tokens])
+    updates["prompt"] = truncated
+    diagnostics.append(
+        Diagnostic(
+            level="warning",
+            code="prompt_truncated",
+            message=(f"Truncated prompt from {len(tokens)} to {max_tokens} tokens in {mode} mode."),
+            param="prompt",
+            provided=len(tokens),
+            effective=truncated,
+        )
+    )
+
+
+def _truncate_term(term: str, *, max_chars: int | None, max_words: int | None) -> str:
+    """Truncate one phrase-hint term to the declared per-term limits.
+
+    Args:
+        term: The phrase-hint term.
+        max_chars: Maximum characters per term, or ``None`` for unbounded.
+        max_words: Maximum words per term, or ``None`` for unbounded.
+
+    Returns:
+        The term truncated to satisfy both limits (words first, then chars).
+    """
+    out = term
+    if max_words is not None:
+        out = " ".join(out.split()[:max_words])
+    if max_chars is not None:
+        out = out[:max_chars]
+    return out
+
+
+def _enforce_phrase_hints_limits(
+    params: RuntimeParams,
+    capabilities: DeclaredCapabilities,
+    mode: Mode,
+    updates: dict[str, object],
+    diagnostics: list[Diagnostic],
+    *,
+    strict: bool,
+) -> None:
+    """Enforce declared ``phrase_hints`` limits on a supported hints list.
+
+    A supported ``phrase_hints`` MUST respect the engine's declared limits
+    (``max_terms`` / ``max_chars_per_term`` / ``max_words_per_term``; spec
+    §Runtime 3.3 / R4). In best_effort mode an over-limit list is truncated (too
+    many terms are dropped from the tail; over-long terms are shortened) with a
+    single diagnostic; in strict mode any violation raises. Absent (``None``)
+    limits are unbounded.
+
+    Args:
+        params: The request parameters.
+        capabilities: The engine's effective capabilities.
+        mode: ``"batch"`` or ``"streaming"``.
+        updates: Field-update accumulator (mutated on truncation).
+        diagnostics: Diagnostics accumulator (mutated on truncation).
+        strict: Whether an over-limit list raises (vs truncate + diagnostic).
+
+    Raises:
+        UnsupportedFeatureError: In strict mode, if a declared limit is exceeded.
+    """
+    hints = params.phrase_hints
+    if not hints:
+        return
+    node = capabilities.node_at(f"{mode}.guidance.phrase_hints")
+    if not isinstance(node, PhraseHintsCap):
+        return
+    c = node.constraints
+    violation = (c.max_terms is not None and len(hints) > c.max_terms) or any(
+        (c.max_chars_per_term is not None and len(t) > c.max_chars_per_term)
+        or (c.max_words_per_term is not None and len(t.split()) > c.max_words_per_term)
+        for t in hints
+    )
+    if not violation:
+        return
+    if strict:
+        raise UnsupportedFeatureError(
+            f"phrase_hints violate declared limits in {mode} mode "
+            f"(max_terms={c.max_terms}, max_chars_per_term={c.max_chars_per_term}, "
+            f"max_words_per_term={c.max_words_per_term})."
+        )
+    kept = hints if c.max_terms is None else hints[: c.max_terms]
+    truncated = [
+        _truncate_term(t, max_chars=c.max_chars_per_term, max_words=c.max_words_per_term)
+        for t in kept
+    ]
+    updates["phrase_hints"] = truncated
+    diagnostics.append(
+        Diagnostic(
+            level="warning",
+            code="phrase_hints_truncated",
+            message=f"Truncated phrase_hints to declared limits in {mode} mode.",
+            param="phrase_hints",
+            provided=hints,
+            effective=truncated,
+        )
+    )
+
+
 def _check_provider_params(
     provided: ProviderParams | None,
     expected: type[ProviderParams] | None,
@@ -247,8 +424,19 @@ def _try_degrade_to_prompt(
     mode: Mode,
     updates: dict[str, object],
     diagnostics: list[Diagnostic],
+    *,
+    strict: bool,
 ) -> bool:
     """Attempt the opt-in one-way phrase_hints -> prompt degradation.
+
+    The synthesized prompt MUST itself respect the prompt channel's declared
+    ``max_tokens`` budget -- degradation must never silently emit a prompt the
+    engine cannot accept (spec §Runtime R4: never silently degrade). When the
+    combined prompt would exceed the budget: in best_effort it is truncated to
+    ``max_tokens`` tokens with a ``prompt_truncated`` diagnostic (in addition to
+    the degrade diagnostic); in strict mode it raises, so the caller falls
+    through to the standard unsupported-phrase_hints handling rather than
+    applying a lossy degrade silently.
 
     Args:
         params: The request parameters.
@@ -256,9 +444,14 @@ def _try_degrade_to_prompt(
         mode: ``"batch"`` or ``"streaming"``.
         updates: Field-update accumulator (mutated on success).
         diagnostics: Diagnostics accumulator (mutated on success).
+        strict: Whether an over-budget synthesized prompt raises (vs truncate).
 
     Returns:
         ``True`` if the degradation was applied.
+
+    Raises:
+        UnsupportedFeatureError: In strict mode, if the synthesized prompt would
+            exceed the declared ``prompt.max_tokens`` budget.
     """
     if params.on_unsupported != "degrade_to_prompt":
         return False
@@ -272,7 +465,30 @@ def _try_degrade_to_prompt(
         return False
     framed = "Relevant terms: " + ", ".join(hints) + "."
     existing = params.prompt
-    updates["prompt"] = f"{existing}\n{framed}" if existing else framed
+    combined = f"{existing}\n{framed}" if existing else framed
+
+    node = capabilities.node_at(f"{mode}.guidance.prompt")
+    max_tokens = node.constraints.max_tokens if isinstance(node, PromptCap) else None
+    if max_tokens is not None and _count_tokens(combined) > max_tokens:
+        if strict:
+            raise UnsupportedFeatureError(
+                f"Degraded prompt would have {_count_tokens(combined)} tokens; "
+                f"max is {max_tokens} in {mode} mode."
+            )
+        truncated = " ".join(combined.split()[:max_tokens])
+        diagnostics.append(
+            Diagnostic(
+                level="warning",
+                code="prompt_truncated",
+                message=(f"Truncated degraded prompt to {max_tokens} tokens in {mode} mode."),
+                param="prompt",
+                provided=_count_tokens(combined),
+                effective=truncated,
+            )
+        )
+        combined = truncated
+
+    updates["prompt"] = combined
     updates["phrase_hints"] = None
     diagnostics.append(
         Diagnostic(
