@@ -72,6 +72,19 @@ def _dummy_factory(**kwargs: Any) -> _DummyASR:  # pyright: ignore[reportUnusedF
     return _DummyASR(**kwargs)
 
 
+class _NotAnEngine:
+    """A class an entry point might resolve to that is NOT a Standard ASR engine.
+
+    It lacks the required class surface (``properties`` /
+    ``declared_capabilities``), so ``engine_class`` must reject it with a clear
+    ``FactoryLoadError`` instead of casting it through.
+    """
+
+
+def _not_an_engine_factory() -> _NotAnEngine:  # pyright: ignore[reportUnusedFunction]
+    return _NotAnEngine()
+
+
 def _unannotated_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[reportUnusedFunction]
     return _DummyASR()
 
@@ -552,6 +565,36 @@ def test_engine_class_resolves_when_entrypoint_is_a_class() -> None:
     ]
     registry = discover_models(eps=eps, strict=True)
     assert registry.engine_class("alpha/first") is _DummyASR
+
+
+def test_engine_class_rejects_entrypoint_class_without_engine_surface() -> None:
+    # An entry point resolving to a class that does not expose the StandardASR
+    # class surface must fail loudly (FactoryLoadError), not be cast through to a
+    # later AttributeError when its metadata is read.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_NotAnEngine",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(FactoryLoadError, match="does not expose"):
+        registry.engine_class("alpha/first")
+
+
+def test_engine_class_rejects_factory_returning_non_engine() -> None:
+    # Same guard via the factory-return-annotation path.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_not_an_engine_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(FactoryLoadError, match="does not expose"):
+        registry.engine_class("alpha/first")
 
 
 def test_engine_class_raises_when_annotation_not_concrete() -> None:

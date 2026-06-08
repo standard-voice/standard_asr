@@ -261,7 +261,7 @@ class ModelSpec:
         """
         target = self.load_factory()
         if inspect.isclass(target):
-            return typing.cast("type[StandardASR]", target)
+            return self._ensure_engine_class(target)
 
         try:
             hints = typing.get_type_hints(target)
@@ -274,7 +274,7 @@ class ModelSpec:
 
         returned = hints.get("return")
         if inspect.isclass(returned):
-            return typing.cast("type[StandardASR]", returned)
+            return self._ensure_engine_class(returned)
 
         raise FactoryLoadError(
             f"Cannot resolve the engine class for {self.key!r} without "
@@ -284,6 +284,44 @@ class ModelSpec:
             "concrete engine return type so its static metadata is readable "
             "without calling it."
         )
+
+    def _ensure_engine_class(self, cls: type) -> type["StandardASR"]:
+        """Validate ``cls`` is recognisably an engine class, then cast.
+
+        ``StandardASR`` is a ``runtime_checkable`` :class:`typing.Protocol` with
+        non-method (``ClassVar``) members, so ``issubclass`` against it raises
+        ``TypeError``; engines are also structural and need not subclass
+        :class:`~standard_asr.asr_interface.EngineBase`. We therefore duck-type a
+        **minimal** signal: the class must expose at least one member of the
+        engine surface. This converts a misconfigured entry point that resolves
+        to a wholly unrelated class into a clear
+        :class:`~standard_asr.exceptions.FactoryLoadError` instead of a later
+        ``AttributeError``.
+
+        The check is intentionally permissive: per-attribute validation (e.g. a
+        class that has ``transcribe`` but is missing ``declared_capabilities`` /
+        ``properties``) is the job of the compliance suite, which emits precise
+        diagnostics; and metadata readers consume these attributes defensively
+        via ``getattr``, so a degenerate-but-intentional engine is still
+        tolerated. We only reject classes that look nothing like an engine.
+
+        Args:
+            cls: The resolved candidate engine class.
+
+        Returns:
+            ``cls``, typed as a Standard ASR engine class.
+
+        Raises:
+            FactoryLoadError: If ``cls`` exposes none of the engine surface.
+        """
+        markers = ("transcribe", "declared_capabilities", "properties", "supports")
+        if not any(hasattr(cls, marker) for marker in markers):
+            raise FactoryLoadError(
+                f"Entry point {self.key!r} resolves to {cls.__name__!r}, which does not "
+                "expose any Standard ASR engine surface (none of "
+                f"{', '.join(markers)}). Check the entry-point target."
+            )
+        return typing.cast("type[StandardASR]", cls)
 
 
 @final
