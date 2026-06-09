@@ -235,6 +235,24 @@ def test_auto_in_candidates_always_raises_even_best_effort() -> None:
         )
 
 
+@pytest.mark.parametrize("strict", [True, False])
+def test_malformed_candidate_always_raises(strict: bool) -> None:
+    # LANG-1: a malformed BCP-47 candidate ('english' instead of 'en') is a
+    # caller bug -> always raises with a clear malformed-tag message naming the
+    # offending tag, independent of strict / best_effort. It must NOT be silently
+    # dropped (best_effort) or misreported as "not detectable" (strict).
+    with pytest.raises(ValueError, match=r"malformed.*'english'"):
+        effective_candidate_languages(
+            AUTO,
+            ["english"],
+            None,
+            candidate_supported=True,
+            detectable_languages=["en"],
+            max_count=3,
+            strict=strict,
+        )
+
+
 def test_effective_candidates_defaults_when_no_request() -> None:
     result, _ = effective_candidate_languages(
         AUTO,
