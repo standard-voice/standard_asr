@@ -57,6 +57,24 @@ drops in without a single line of app code changing.**
 | **An ASR engine developer / researcher** | Focus on the model, not boilerplate. Implement one interface and get a CLI, a Web API server, and a compliance test suite **for free**. Reach the whole ecosystem instantly. |
 | **An end user** | Access to cutting-edge models sooner, and the freedom to pick the engine that fits your language or domain — not whatever the app author happened to choose. |
 
+### How does Standard ASR get adoption?
+
+An obvious question: if no ASR provider supports the protocol today, how does Standard ASR bootstrap an ecosystem?
+
+The short answer: **Standard ASR does not need any ASR provider's cooperation to be immediately useful.** We maintain first-party forks of popular ASR engines with Standard ASR protocol support baked in, so application developers can start using multiple engines through a single interface from day one. Once the ecosystem demonstrates value, there will be strong, organic incentives for ASR providers to ship native compliance — but we are not waiting for that to happen.
+
+#### Why not build another all-in-one package?
+
+Past attempts to unify ASR access have consistently followed the same pattern: build a monolithic package that bundles adapters for every engine the maintainers can think of. These projects attract users, but they never build an ecosystem. ASR model creators want to ship a standalone package or SDK — they are not going to open a pull request against someone else's mega-repo. Third-party contributors rarely step in either, because contributing to and reviewing code in a large, tightly coupled codebase is daunting and exhausting.
+
+The inevitable outcome: the monolithic package falls behind as new models outpace the maintainers' capacity, dependency conflicts between engines become unresolvable, and licensing incompatibilities make bundling impossible. The maintainers burn out or move on, and the project stalls.
+
+#### The plugin architecture breaks this cycle
+
+Standard ASR takes a fundamentally different approach. Instead of pulling every engine into one package, we define a protocol and turn every engine into an independent, installable plugin. For existing ASR packages, adding Standard ASR compliance is a thin adapter — not a rewrite. For new models, our templates and toolchain make it trivially easy to ship a production-ready, Standard ASR–compliant package from the start.
+
+This design means the ecosystem can grow without bottlenecking on a single team. Every new compliant engine benefits every Standard ASR application automatically, and every new application increases the incentive for engines to comply. The maintainers of Standard ASR focus on the protocol and toolchain — not on chasing an ever-growing list of adapters.
+
 ---
 
 ## Quickstart
