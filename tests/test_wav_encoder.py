@@ -19,7 +19,6 @@ def test_encode_mono_roundtrip() -> None:
     audio = np.array([0.0, 0.5, -0.5, 1.0, -1.0], dtype=np.float32)
     result = encode_array_to_wav_bytes(audio, 16000)
     assert result.downmixed is False
-    assert result.quantized is True
     with wave.open(io.BytesIO(result.data), "rb") as wf:
         assert wf.getnchannels() == 1
         assert wf.getframerate() == 16000

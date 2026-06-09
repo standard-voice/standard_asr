@@ -57,13 +57,11 @@ class WavEncodeResult:
         data: The encoded WAV byte payload.
         sample_rate: Sample rate written, in Hz.
         downmixed: Whether multi-channel input was downmixed to mono.
-        quantized: Whether a lossy float->int16 quantization was applied.
     """
 
     data: bytes
     sample_rate: int
     downmixed: bool
-    quantized: bool
 
 
 def encode_array_to_wav_bytes(
@@ -124,7 +122,7 @@ def encode_array_to_wav_bytes(
             "use an engine without this limit."
         )
 
-    return WavEncodeResult(data=data, sample_rate=sample_rate, downmixed=downmixed, quantized=True)
+    return WavEncodeResult(data=data, sample_rate=sample_rate, downmixed=downmixed)
 
 
 def nparray_to_audio_file(
