@@ -2,8 +2,9 @@
 
 Standard ASR ships an optional FastAPI server (`standard-asr[server]`) that
 exposes any discovered, compliant engine over HTTP, plus a WebSocket endpoint
-for incremental streaming. The implementation in `standard_asr.server` is the
-source of truth; this document describes exactly what it does.
+for incremental streaming. This document is the authoritative contract for that
+server; the implementation in `standard_asr.server` conforms to it (any
+divergence is a bug in the implementation, not the spec).
 
 Launch with `standard-asr serve` or `standard_asr.server.run(...)`.
 
