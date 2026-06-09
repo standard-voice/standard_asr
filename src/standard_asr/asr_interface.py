@@ -150,6 +150,28 @@ def _canonical_language(tag: str) -> str:
     return tag if tag == AUTO else normalize_bcp47(tag)
 
 
+def _language_is_selectable(tag: str, selectable: set[str]) -> bool:
+    """Whether a canonical BCP-47 tag is selectable, via RFC 4647 lookup matching.
+
+    A request is selectable if its canonical form -- or any prefix obtained by
+    progressively dropping trailing subtags -- is in the (canonical) selectable
+    set. This lets an engine declare a primary language subtag (``en``) and still
+    accept a region/script refinement of it (``en-US``, ``zh-Hant``), which the
+    engine reduces internally, without enumerating every variant. Genuinely
+    unrelated languages (``fr`` against an ``en`` engine) still do not match, and
+    the reserved ``auto`` token has no subtags so it only ever matches verbatim.
+
+    Args:
+        tag: The canonical requested tag (or ``auto``).
+        selectable: The canonical selectable set.
+
+    Returns:
+        ``True`` if ``tag`` or one of its prefixes is selectable.
+    """
+    parts = tag.split("-")
+    return any("-".join(parts[:i]) in selectable for i in range(len(parts), 0, -1))
+
+
 class EngineBase(ABC):
     """Abstract base implementing the standard transcribe pipeline.
 
@@ -369,8 +391,11 @@ class EngineBase(ABC):
         diagnostics: list[Diagnostic] = []
         # Canonicalize the selectable set too (it may be a non-canonical
         # class-level default), so a canonical eff_lang matches case-insensitively.
+        # Membership uses RFC 4647 lookup so a region/script refinement of a
+        # selectable primary subtag (e.g. "en-US" against "en") is accepted and
+        # handed to the engine to reduce -- engines need not enumerate variants.
         selectable = {_canonical_language(tag) for tag in self.properties.selectable_languages}
-        if eff_lang is not None and eff_lang not in selectable:
+        if eff_lang is not None and not _language_is_selectable(eff_lang, selectable):
             if self._strict:
                 raise UnsupportedFeatureError(
                     f"language {eff_lang!r} is not selectable in {mode} mode "

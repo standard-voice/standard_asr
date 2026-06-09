@@ -346,6 +346,15 @@ def test_non_canonical_default_language_is_canonicalized_not_rejected() -> None:
     assert result.detected_language == "en-US"
 
 
+def test_region_tagged_request_matches_selectable_primary_subtag() -> None:
+    # RFC 4647 lookup: a region/script refinement ("en-US") of a selectable
+    # primary subtag ("en", in _ArrayProps.selectable_languages) is accepted, and
+    # the full tag is handed to the engine to reduce -- so engines that declare
+    # only primary subtags need not enumerate every region variant.
+    result = _ArrayEngine().transcribe(_audio(), RuntimeParams(language="en-US"))
+    assert result.detected_language == "en-US"
+
+
 class _NoLangProps(_ArrayProps):
     selectable_languages: list[str] = []
     detectable_languages: list[str] = []
