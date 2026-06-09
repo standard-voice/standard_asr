@@ -310,6 +310,18 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
 
     combined = SpecifierSet()
     found = False
+    # Evaluate markers against an environment derived from sys.version_info rather
+    # than packaging's default (which reads the real interpreter via
+    # platform.python_version()). This keeps marker resolution consistent with the
+    # python_version doctor reports and makes it overridable -- e.g. a test that
+    # simulates another interpreter by patching sys.version_info, or any caller
+    # that wants the canonical interpreter-conditional dual line (DEP.1) resolved
+    # for a specific Python.
+    py = f"{sys.version_info.major}.{sys.version_info.minor}"
+    marker_env = {
+        "python_version": py,
+        "python_full_version": f"{py}.{sys.version_info.micro}",
+    }
     for raw in requires or []:
         try:
             req = Requirement(raw)
@@ -317,7 +329,7 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
             continue
         if req.name.lower() != "numpy":
             continue
-        if req.marker is not None and not req.marker.evaluate():
+        if req.marker is not None and not req.marker.evaluate(marker_env):
             continue
         found = True
         combined &= req.specifier
