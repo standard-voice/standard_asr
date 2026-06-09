@@ -203,6 +203,88 @@ def test_intersection_empty_helper_direct() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "specs",
+    [
+        # High pins that all land ABOVE the old bounded grid but share a
+        # satisfying version -- the false "empty intersection" of NEW-DOCTOR-1.
+        [">=2.40", ">=2.1"],
+        ["==2.45.*", ">=2.40"],
+        [">=3.0", ">=2.1"],
+        ["~=2.5", ">=2.9"],
+    ],
+)
+def test_high_pins_are_not_falsely_empty(specs: list[str]) -> None:
+    """A satisfiable intersection of high pins must NOT read as empty just
+    because every satisfying version sits above any fixed grid (NEW-DOCTOR-1)."""
+    from packaging.specifiers import SpecifierSet
+
+    sets = [SpecifierSet(s) for s in specs]
+    assert doctor._intersection_is_empty(sets) is False  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    "specs",
+    [
+        # Genuinely disjoint -- must still be reported empty.
+        ["==2.0.*", ">=2.3"],
+        [">=3.0", "<3"],
+        ["==2.45.*", ">=2.50"],
+    ],
+)
+def test_disjoint_pins_are_empty(specs: list[str]) -> None:
+    from packaging.specifiers import SpecifierSet
+
+    sets = [SpecifierSet(s) for s in specs]
+    assert doctor._intersection_is_empty(sets) is True  # pyright: ignore[reportPrivateUsage]
+
+
+def test_arbitrary_equality_edge_is_skipped_not_crash() -> None:
+    """A ``===`` arbitrary-equality edge carries a non-PEP440 version string; it
+    must be skipped during candidate derivation rather than crash the probe, and
+    the remaining real boundary still drives the verdict."""
+    from packaging.specifiers import SpecifierSet
+
+    # ``===foobar`` matches only the literal 'foobar', which no numeric release
+    # satisfies, so intersecting it with ``>=2.1`` is genuinely empty.
+    assert (
+        doctor._intersection_is_empty(  # pyright: ignore[reportPrivateUsage]
+            [SpecifierSet("===foobar"), SpecifierSet(">=2.1")]
+        )
+        is True
+    )
+
+
+def test_high_pins_no_conflict_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two plugins requiring ``>=2.40`` and ``>=2.1`` share every 2.40+ release,
+    so doctor must report NO conflict (and exit-code-wise, no false positive)."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("a/x", _FakeDist("std-a", ["numpy>=2.40"])),
+            _FakeEP("b/y", _FakeDist("std-b", ["numpy>=2.1"])),
+        ],
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is False, report.conflicts
+
+
+def test_single_plugin_internally_unsatisfiable_is_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SINGLE plugin whose own numpy declaration is internally unsatisfiable
+    (``<2`` AND ``>=2.1``) must be flagged, not silently passed (NEW-DOCTOR-2)."""
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy<2", "numpy>=2.1"]))],
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is True
+    assert any("internally unsatisfiable" in c for c in report.conflicts)
+    # A single offender is a self-contradiction, not a cross-plugin conflict.
+    assert not any("cannot share one process" in c for c in report.conflicts)
+
+
 def test_canonical_dual_line_resolves_to_numpy2_on_py313(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

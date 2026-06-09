@@ -43,25 +43,24 @@ if TYPE_CHECKING:
 _NUMPY_REQ = re.compile(r"^\s*numpy\b(?:\[[^\]]*\])?(?P<spec>[^;]*)", re.IGNORECASE)
 
 # Representative probe versions spanning the numpy 1.x / 2.x boundary, used to
-# (a) classify a single spec as numpy1-only / numpy2-required for the
-# human-readable conflict message and the 3.13 wheel special case, and (b) test
-# whether a *combined* SpecifierSet across plugins is empty (the real conflict
-# decision -- see ``_intersection_is_empty``). The classification probes bracket
-# the meaningful inflection points: oldest supported 1.x, the 1.x ceiling, the
-# 2.0 boundary, and well beyond the current 2.x line.
+# classify a single spec as numpy1-only / numpy2-required for the human-readable
+# conflict message and the 3.13 wheel special case. The probes bracket the
+# meaningful inflection points: oldest supported 1.x, the 1.x ceiling, the 2.0
+# boundary, and well beyond the current 2.x line. (Emptiness of a *combined*
+# specifier is decided separately and boundary-derived -- see
+# ``_intersection_is_empty`` -- never against a bounded grid, which would
+# misread a high pin such as ``>=2.40`` or ``>=3.0`` as empty.)
 _NUMPY1_PROBES = ("1.21.0", "1.24.0", "1.26.4", "1.26.99", "1.99.99")
 _NUMPY2_PROBES = ("2.0.0", "2.1.0", "2.3.0", "2.99.99")
 
-# A dense version grid (minor-level, with patch edges) spanning numpy 1.x and
-# 2.x. An intersection of SpecifierSets is treated as empty when NO grid version
-# satisfies it. Unlike major-boundary probe classification, this catches
-# disjoint same-major ranges (e.g. ``==2.0.*`` vs ``>=2.3``) that share no
-# satisfying release. ``SpecifierSet`` has no exact emptiness oracle, so a dense
-# probe sweep is the pragmatic, dependency-free check; the grid is wide enough
-# that any real-world numpy pin lands on it.
-_NUMPY_GRID: tuple[str, ...] = tuple(
-    f"{major}.{minor}.{patch}" for major in (1, 2) for minor in range(0, 40) for patch in (0, 99)
-)
+# A sentinel "arbitrarily large" release, used to witness that an open upper
+# bound (``>=``/``>`` with no ceiling) is satisfiable. Any real numpy pin is far
+# below this, so it is a safe stand-in for "+infinity" when probing emptiness.
+_OPEN_UPPER_SENTINEL = "100000.0.0"
+
+# A large component value used to construct a version that sits *just below* a
+# boundary at a given release position (e.g. just under ``2.1`` -> ``2.0.<big>``).
+_JUST_BELOW_FILL = 99999
 
 
 def _empty_plugins() -> list["PluginNumpy"]:
@@ -193,21 +192,77 @@ def _specset(numpy_spec: str | None) -> SpecifierSet | None:
         return None
 
 
+def _emptiness_candidates(combined: SpecifierSet) -> set[str]:
+    """Derive probe versions that witness whether *combined* is satisfiable.
+
+    A :class:`~packaging.specifiers.SpecifierSet` has no exact emptiness oracle,
+    so emptiness is decided by probing. A *bounded* version grid is unsound here:
+    a perfectly satisfiable high pin (``>=2.40``, ``==2.45.*``, ``>=3.0``) lands
+    above any fixed grid and would be misread as empty. Instead the candidates
+    are derived from the combined specifier's **own boundaries** -- each
+    specifier's edge version, plus a version just *above* and just *below* every
+    release position of that edge -- together with an open "arbitrarily large"
+    sentinel (so an open ``>=``/``>`` lower bound is recognised as satisfiable)
+    and ``0`` (so an open ``<``/``<=`` upper bound is too). Any satisfiable
+    intersection of PEP 440 intervals has a witness among these boundary points,
+    so a "no candidate satisfies it" verdict is sound regardless of how high the
+    pins are.
+
+    Args:
+        combined: The merged specifier whose satisfiability is being probed.
+
+    Returns:
+        A set of candidate version strings (all final releases, never
+        pre-releases, so default ``SpecifierSet`` membership applies cleanly).
+    """
+    from packaging.version import Version
+
+    candidates: set[str] = {"0", _OPEN_UPPER_SENTINEL}
+    candidates.update(_NUMPY1_PROBES)
+    candidates.update(_NUMPY2_PROBES)
+    for spec in combined:
+        # ``==2.45.*`` / ``!=2.0.*`` carry a non-PEP440 ``2.45.*`` version; the
+        # prefix (``2.45``) is the band edge and is itself a valid Version.
+        edge = spec.version[:-2] if spec.version.endswith(".*") else spec.version
+        try:
+            release = Version(edge).release
+        except Exception:  # noqa: BLE001 - a non-version edge (e.g. ``===`` URL) is just skipped
+            continue
+        candidates.add(".".join(str(r) for r in release) or "0")
+        for i in range(len(release)):
+            # Just above this release position: bump component i, zero the tail.
+            above = (*release[:i], release[i] + 1, *((0,) * (len(release) - i - 1)))
+            candidates.add(".".join(str(r) for r in above))
+            # Just below: decrement component i (when > 0), fill the tail high.
+            if release[i] > 0:
+                below = (
+                    *release[:i],
+                    release[i] - 1,
+                    *((_JUST_BELOW_FILL,) * (len(release) - i - 1)),
+                )
+                candidates.add(".".join(str(r) for r in below))
+    return candidates
+
+
 def _intersection_is_empty(specs: list[SpecifierSet]) -> bool:
     """Report whether the intersection of numpy ``SpecifierSet``s admits nothing.
 
     Computes the real combined specifier (``&``) across plugins and tests it
-    against a dense version grid (:data:`_NUMPY_GRID`). An empty intersection
-    means no single numpy release satisfies every plugin -- a hard conflict.
-    This catches disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``) that a
-    1.x/2.x major-boundary classification alone would miss (CLI-4).
+    against boundary-derived probe versions (:func:`_emptiness_candidates`). An
+    empty intersection means no single numpy release satisfies every plugin -- a
+    hard conflict. This catches disjoint same-major ranges (``==2.0.*`` vs
+    ``>=2.3``) that a 1.x/2.x major-boundary classification alone would miss
+    (CLI-4), *and* high pins (``>=2.40``, ``>=3.0``) that a bounded grid would
+    have misreported as empty (NEW-DOCTOR-1).
 
     Args:
         specs: The per-plugin :class:`packaging.specifiers.SpecifierSet`s to
             intersect. Must be non-empty and contain only real specifier sets.
+            A single internally-unsatisfiable set (e.g. ``<2`` and ``>=2.1``
+            declared by one plugin) is a valid -- and detected -- input.
 
     Returns:
-        ``True`` if no grid version satisfies the combined specifier.
+        ``True`` if no candidate version satisfies the combined specifier.
     """
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version
@@ -215,7 +270,7 @@ def _intersection_is_empty(specs: list[SpecifierSet]) -> bool:
     combined = SpecifierSet()
     for spec in specs:
         combined &= spec
-    return not any(Version(v) in combined for v in _NUMPY_GRID)
+    return not any(Version(v) in combined for v in _emptiness_candidates(combined))
 
 
 def _numpy_spec_for(requires: list[str] | None) -> str | None:
@@ -342,17 +397,26 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             + " require numpy>=2. They cannot share one process; run the "
             "conflicting plugin out-of-process (subprocess/server isolation)."
         )
-    elif len(spec_sets) >= 2 and _intersection_is_empty(spec_sets):
+    elif spec_sets and _intersection_is_empty(spec_sets):
         # Real-intersection conflict that the 1.x/2.x classification alone misses
         # -- e.g. disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``) that share
-        # no satisfying numpy release (CLI-4).
-        report.conflicts.append(
-            "numpy version conflict: "
-            + ", ".join(f"{p.distribution} ({p.numpy_spec})" for p in constrained)
-            + " declare numpy ranges with no common satisfying version. They "
-            "cannot share one process; run the conflicting plugin out-of-process "
-            "(subprocess/server isolation)."
-        )
+        # no satisfying numpy release (CLI-4). A SINGLE plugin whose own numpy
+        # declaration is internally unsatisfiable (e.g. ``<2`` and ``>=2.1``) is
+        # checked too (>= 1, not >= 2): an impossible self-pin is a real conflict
+        # the user must see, not a silently-passed declaration (NEW-DOCTOR-2).
+        listing = ", ".join(f"{p.distribution} ({p.numpy_spec})" for p in constrained)
+        if len(constrained) == 1:
+            report.conflicts.append(
+                f"numpy version conflict: {listing} declares an internally "
+                "unsatisfiable numpy range (no version satisfies it). Fix the "
+                "plugin's numpy requirement."
+            )
+        else:
+            report.conflicts.append(
+                f"numpy version conflict: {listing} declare numpy ranges with no "
+                "common satisfying version. They cannot share one process; run the "
+                "conflicting plugin out-of-process (subprocess/server isolation)."
+            )
 
     if sys.version_info >= (3, 13) and numpy1_only:
         report.conflicts.append(
