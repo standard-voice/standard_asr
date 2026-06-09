@@ -136,6 +136,81 @@ def test_load_audio_from_path_within_limit(tmp_path: Path) -> None:
     assert arr.shape == (100,)
 
 
+# --- max_bytes=None means truly unbounded (no cap), not the default ceiling ---
+
+
+def test_load_audio_from_bytes_none_disables_cap() -> None:
+    # An input that a small positive cap WOULD reject must load when max_bytes is
+    # None: None disables the cap entirely rather than mapping to a default.
+    data = _wav_bytes(samples=5000)
+    # Sanity: this same input is rejected under a tiny explicit cap.
+    with pytest.raises(AudioProcessingError, match="decode limit"):
+        load_audio_from_bytes(data, max_bytes=10)
+    # With None there is no cap, so the >cap input decodes successfully.
+    arr = load_audio_from_bytes(data, max_bytes=None)
+    assert arr.shape == (5000,)
+
+
+def test_load_audio_from_path_none_disables_cap(tmp_path: Path) -> None:
+    f = tmp_path / "big.wav"
+    f.write_bytes(_wav_bytes(samples=5000))
+    with pytest.raises(AudioProcessingError, match="decode limit"):
+        load_audio_from_path(str(f), max_bytes=10)
+    arr = load_audio_from_path(str(f), max_bytes=None)
+    assert arr.shape == (5000,)
+
+
+def test_enforce_decode_size_none_is_unbounded() -> None:
+    # The shared guard treats None as no-check even for an enormous notional size.
+    audio_loader._enforce_decode_size(10**18, None)  # pyright: ignore[reportPrivateUsage]
+
+
+# --- BinaryIO stream reads are bounded by max_bytes (no unbounded buffering) ---
+
+
+class _SpyStream(io.BytesIO):
+    """A BytesIO that records every read() request size it received."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.read_sizes: list[int | None] = []
+
+    def read(self, size: int | None = -1, /) -> bytes:  # type: ignore[override]
+        self.read_sizes.append(size)
+        return super().read(size)
+
+
+def test_load_audio_stream_exceeding_max_bytes_raises_without_unbounded_read() -> None:
+    # A stream larger than the cap must raise, and the loader must never request
+    # more than max_bytes + 1 bytes (no read-everything-then-check blow-up).
+    stream = _SpyStream(_wav_bytes(samples=5000))
+    with pytest.raises(AudioProcessingError, match="decode limit"):
+        load_audio(stream, max_bytes=64)
+    # The capping read asked for exactly max_bytes + 1 and never an unbounded
+    # read(-1)/read(None) over the whole stream.
+    assert 65 in stream.read_sizes
+    positive = [n for n in stream.read_sizes if n is not None and n >= 0]
+    assert max(positive) == 65
+    assert -1 not in stream.read_sizes
+    assert None not in stream.read_sizes
+
+
+def test_load_audio_stream_within_cap_loads() -> None:
+    data = _wav_bytes(samples=100)
+    stream = _SpyStream(data)
+    arr = load_audio(stream, max_bytes=len(data) + 1000)
+    assert arr.shape == (100,)
+
+
+def test_load_audio_stream_none_reads_whole_stream() -> None:
+    # With None the cap is disabled and the whole stream is read at once.
+    data = _wav_bytes(samples=100)
+    stream = _SpyStream(data)
+    arr = load_audio(stream, max_bytes=None)
+    assert arr.shape == (100,)
+    assert -1 in stream.read_sizes  # bare read() of the entire stream
+
+
 # --- C4: native-rate decode (no forced 16k) ---
 
 

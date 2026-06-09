@@ -170,18 +170,53 @@ def _enforce_decode_size(num_bytes: int, max_bytes: int | None) -> None:
 
     Args:
         num_bytes: Size of the encoded payload about to be buffered, in bytes.
-        max_bytes: Engine-declared limit, or ``None`` to use the default cap.
+        max_bytes: The cap in bytes, or ``None`` for **truly unbounded** (no
+            check). Callers that want the default 2 GiB ceiling pass it
+            explicitly; only ``None`` disables the cap entirely.
 
     Raises:
-        AudioProcessingError: If ``num_bytes`` exceeds the effective limit.
+        AudioProcessingError: If ``num_bytes`` exceeds ``max_bytes``.
     """
-    limit = max_bytes if max_bytes is not None else _DEFAULT_MAX_DECODE_BYTES
-    if num_bytes > limit:
+    if max_bytes is None:
+        return
+    if num_bytes > max_bytes:
         raise AudioProcessingError(
             f"Audio payload is {num_bytes} bytes, exceeding the decode limit of "
-            f"{limit} bytes. Provide a smaller input or an engine without this "
+            f"{max_bytes} bytes. Provide a smaller input or an engine without this "
             "limit."
         )
+
+
+def _read_stream_capped(stream: BinaryIO, max_bytes: int | None) -> bytes:
+    """Read a binary stream into bytes without exceeding ``max_bytes`` in memory.
+
+    Unlike a bare ``stream.read()`` (which buffers the WHOLE stream before any
+    size is observed), this reads at most ``max_bytes + 1`` bytes so an untrusted
+    stream cannot force an unbounded allocation: if the stream yields more than
+    ``max_bytes`` the read is aborted and an error raised (spec R9). When
+    ``max_bytes`` is ``None`` the cap is disabled and the whole stream is read.
+
+    Args:
+        stream: A binary IO stream positioned at the data to read.
+        max_bytes: Maximum bytes to admit, or ``None`` for unbounded.
+
+    Returns:
+        The stream contents (at most ``max_bytes`` bytes when a cap is set).
+
+    Raises:
+        AudioProcessingError: If the stream exceeds ``max_bytes``.
+    """
+    if max_bytes is None:
+        return stream.read()
+    # Read one byte past the cap so an over-limit stream is detectable without
+    # ever holding more than max_bytes + 1 bytes in memory.
+    data = stream.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise AudioProcessingError(
+            f"Audio stream exceeds the decode limit of {max_bytes} bytes. Provide "
+            "a smaller input or an engine without this limit."
+        )
+    return data
 
 
 # numpy datatype check
@@ -462,10 +497,13 @@ def load_audio(
         target_channels: Output channels. ``1`` = mono (default), ``2`` = stereo,
             ``None`` = preserve.
         max_bytes: Max ENCODED input size, threaded to the underlying loaders and
-            defaulting to the 2 GiB ceiling (spec R9). It bounds only the encoded
-            payload (file ``stat`` or ``bytes`` length), not the decoded array,
-            and the FFmpeg fallback still buffers its full output. Pass ``None``
-            to disable the cap; set it explicitly for untrusted input.
+            defaulting to the 2 GiB ceiling (spec R9). It bounds the encoded
+            payload only -- a file via ``stat``, ``bytes`` via length, and a
+            ``BinaryIO`` stream via a capped read that aborts past the limit
+            instead of buffering the whole stream -- not the decoded array, and
+            the FFmpeg fallback still buffers its full output. Pass ``None`` to
+            disable the cap entirely (truly unbounded); set it explicitly for
+            untrusted input.
 
     Returns:
         Waveform as ``np.float32`` array:
@@ -536,9 +574,10 @@ def load_audio(
         data = source.tobytes() if isinstance(source, memoryview) else bytes(source)
         return load_audio_from_bytes(data, target_sr, target_channels, max_bytes=max_bytes)
 
-    # File-like object that returns bytes
+    # File-like object that returns bytes. Read it with a running cap so an
+    # untrusted stream cannot blow up memory before max_bytes is observed (R9).
     if _is_binary_io(source):
-        data = source.read()
+        data = _read_stream_capped(source, max_bytes)
         return load_audio_from_bytes(data, target_sr, target_channels, max_bytes=max_bytes)
 
     raise TypeError(f"Unsupported audio source type: {type(source)}")
@@ -778,8 +817,11 @@ def decode_audio(
             URI string. A bare ``str`` is always a local file path.
         target_channels: Output channels. ``1`` = mono (default), ``None`` =
             preserve the source channel layout.
-        max_bytes: Optional cap on the buffered payload size (spec R9). Defaults
-            to a generous internal ceiling when ``None``.
+        max_bytes: Cap on the buffered ENCODED payload size (spec R9). ``None``
+            (the default) means **truly unbounded** -- this primitive is driven
+            by the conversion layer, which threads the engine's declared limit
+            through verbatim (an engine with no limit -> ``None`` -> no cap).
+            Callers handling untrusted input directly SHOULD pass a positive cap.
 
     Returns:
         A ``(array, native_sample_rate)`` pair. The array is ``float32`` in
