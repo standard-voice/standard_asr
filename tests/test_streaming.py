@@ -1056,6 +1056,39 @@ def test_reconnect_drained_on_producer_exception() -> None:
     assert events[err_i].code == "engine_error"
 
 
+def test_reconnect_events_delivered_while_producer_blocked_on_slow_reconnect() -> None:
+    # A7: note_reconnect MUST flush its progress + content_lost promptly so the
+    # consumer sees the reconnect notification even while the producer is BLOCKED
+    # mid-reconnect (awaiting indefinitely without yielding another event).
+    class _BlockOnReconnect(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            self.note_reconnect(1.0, 2.0, content_lost=True)
+            await asyncio.Event().wait()  # stuck reconnect: never yields again.
+            yield TranscriptionEvent.done()  # pragma: no cover - unreachable
+
+    async def run() -> tuple[TranscriptionEvent, TranscriptionEvent]:
+        session = _BlockOnReconnect()
+        session.feed([])
+        async with session:
+            ait = session.__aiter__()
+            # Both events arrive WITHOUT any further produced event: a short
+            # timeout proves they were flushed promptly, not on the next yield.
+            progress = await asyncio.wait_for(ait.__anext__(), timeout=1.0)
+            content_lost = await asyncio.wait_for(ait.__anext__(), timeout=1.0)
+            # No third event is available (the producer is still blocked).
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(ait.__anext__(), timeout=0.1)
+            return progress, content_lost
+
+    progress, content_lost = asyncio.run(run())
+    assert progress.type == "progress" and progress.reconnect is True
+    assert progress.gap_start == 1.0 and progress.gap_end == 2.0
+    # content_lost IMMEDIATELY follows the progress and is non-terminal.
+    assert content_lost.type == "error" and content_lost.code == "content_lost"
+    assert content_lost.recoverable is True
+    assert content_lost.is_terminal is False
+
+
 # --------------------------------------------------------------------------- #
 # H11 -- lifecycle enforcement + stable_until monotonicity
 # --------------------------------------------------------------------------- #

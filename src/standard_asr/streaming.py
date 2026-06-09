@@ -1133,11 +1133,23 @@ class TranscriptionSession(ABC):
     ) -> None:
         """Record that an internal reconnect bridged a gap (adapter-driven).
 
-        The base ALWAYS queues a ``progress(reconnect=True, gap_start, gap_end)``
-        event to be emitted in order with produced events. It queues a trailing
-        ``error(code="content_lost", recoverable=True, gap_start, gap_end)`` --
-        IMMEDIATELY following the progress (spec ST.6.3) -- IFF the adapter passes
-        ``content_lost=True``.
+        The base ALWAYS emits a ``progress(reconnect=True, gap_start, gap_end)``
+        event in order with produced events, followed -- IMMEDIATELY (spec
+        ST.6.3) -- by a trailing ``error(code="content_lost", recoverable=True,
+        gap_start, gap_end)`` IFF the adapter passes ``content_lost=True``.
+
+        The events are flushed **promptly**, the moment this is called, through
+        the drop-proof path (:meth:`_CoalescingBuffer.put_forced`, the same sync
+        primitive the base uses for synthesized terminals). This matters because
+        an adapter typically calls :meth:`note_reconnect` and then BLOCKS while
+        it re-establishes the connection without yielding another event; deferring
+        the flush to the next produced event would leave the consumer staring at a
+        timeout/silence during a slow reconnect -- the opposite of "transparent
+        but honest" (spec ST.6.3). :meth:`note_reconnect` runs in the
+        producer-task coroutine on the session loop, so a synchronous flush is
+        correct and ordered (the events land after already-emitted events and
+        before any subsequent one). The :meth:`_run_producer` / ``finally`` drains
+        remain as a harmless safety net -- they will simply find nothing pending.
 
         Content loss is an **explicit adapter determination**, not something the
         base infers from rolling-buffer eviction: a live ring is always evicting,
@@ -1169,6 +1181,11 @@ class TranscriptionSession(ABC):
                     gap_end=gap_end,
                 )
             )
+        # Flush promptly (drop-proof, in order) so the notification reaches the
+        # consumer even if the adapter now blocks on a slow reconnect without
+        # yielding another event. The progress + content_lost pair is drained
+        # together, preserving their required adjacency (spec ST.6.3).
+        self._drain_pending_reconnects()
 
     # ----- input ownership ------------------------------------------------- #
     def _claim_mode(self, mode: Literal["feed", "manual"]) -> None:
