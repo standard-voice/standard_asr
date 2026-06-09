@@ -78,6 +78,12 @@ class _GoodASR:
     def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
         return TranscriptionResult(text="ok")
 
+    async def transcribe_async(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="ok")
+
+    def supports(self, dot_path: str) -> bool:
+        return self.effective_capabilities.supports(dot_path)
+
 
 def good_factory() -> _GoodASR:  # pyright: ignore[reportUnusedFunction]
     return _GoodASR()
@@ -285,6 +291,123 @@ def test_check_entrypoints_no_instantiate_skips_invocation() -> None:
     # factory; the good engine passes its class-level checks.
     report = check_entrypoints(registry=_registry("good_factory"), instantiate=False)
     assert report.passed is True, [i.message for i in report.issues]
+
+
+# --------------------------------------------------------------------------- #
+# Required-surface checks (D9): the full StandardASR method surface, conditional
+# on the declared streaming axis, plus the identity match.
+# --------------------------------------------------------------------------- #
+class _NoAsyncASR(_GoodASR):
+    """Batch engine missing the required ``transcribe_async`` method."""
+
+    transcribe_async: ClassVar[None] = None  # type: ignore[assignment]
+
+
+def no_async_factory() -> _NoAsyncASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoAsyncASR()
+
+
+class _NoSupportsASR(_GoodASR):
+    """Batch engine missing the required ``supports`` method."""
+
+    supports: ClassVar[None] = None  # type: ignore[assignment]
+
+
+def no_supports_factory() -> _NoSupportsASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoSupportsASR()
+
+
+class _NoPropertiesProbeASR:
+    """Engine exposing the methods but no ``properties`` attribute at all."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    effective_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    provider_params_type: ClassVar[type[ProviderParams] | None] = _GoodParams
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="ok")
+
+    async def transcribe_async(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="ok")
+
+    def supports(self, dot_path: str) -> bool:
+        return self.effective_capabilities.supports(dot_path)
+
+
+def no_properties_probe_factory() -> _NoPropertiesProbeASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoPropertiesProbeASR()
+
+
+_STREAMING_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(),
+    streaming=StreamingCapabilities(),
+    streaming_output=FlagCap(supported=True),
+)
+
+
+class _StreamingNoStartASR(_GoodASR):
+    """Declares a streaming axis but omits ``start_transcription`` (non-compliant)."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_CAPS
+    effective_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_CAPS
+
+
+def streaming_no_start_factory() -> _StreamingNoStartASR:  # pyright: ignore[reportUnusedFunction]
+    return _StreamingNoStartASR()
+
+
+def test_check_entrypoints_missing_transcribe_async_fails() -> None:
+    report = check_entrypoints(registry=_registry("no_async_factory"))
+    assert report.passed is False
+    assert any("'transcribe_async'" in i.message and i.level == "error" for i in report.issues), [
+        i.message for i in report.issues
+    ]
+
+
+def test_check_entrypoints_missing_supports_fails() -> None:
+    report = check_entrypoints(registry=_registry("no_supports_factory"))
+    assert report.passed is False
+    assert any("'supports'" in i.message and i.level == "error" for i in report.issues), [
+        i.message for i in report.issues
+    ]
+
+
+def test_check_entrypoints_missing_properties_fails() -> None:
+    report = check_entrypoints(registry=_registry("no_properties_probe_factory"))
+    assert report.passed is False
+    assert any("'properties'" in i.message for i in report.issues), [
+        i.message for i in report.issues
+    ]
+
+
+def test_check_entrypoints_streaming_engine_missing_start_transcription_fails() -> None:
+    report = check_entrypoints(registry=_registry("streaming_no_start_factory"))
+    assert report.passed is False
+    assert any("'start_transcription'" in i.message for i in report.issues), [
+        i.message for i in report.issues
+    ]
+
+
+def test_check_entrypoints_batch_only_without_start_transcription_passes() -> None:
+    # A batch-only engine (no streaming axis declared) legitimately omits
+    # start_transcription -- it MUST still pass. _GoodASR has no
+    # start_transcription attribute, confirming the conditional requirement.
+    assert not hasattr(_GoodASR, "start_transcription")
+    report = check_entrypoints(registry=_registry("good_factory"))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_check_entrypoints_properties_key_mismatch_fails() -> None:
+    # The engine's declared identity (properties.model_id) MUST match its
+    # entry-point key; a mismatch is a compliance error, not a silent accept.
+    report = check_entrypoints(registry=_registry("good_factory", key="dummy/other"))
+    assert report.passed is False
+    assert any("does not match the entry point key" in i.message for i in report.issues), [
+        i.message for i in report.issues
+    ]
 
 
 # --------------------------------------------------------------------------- #

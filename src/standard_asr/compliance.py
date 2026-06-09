@@ -16,7 +16,7 @@ from .asr_config import BaseConfig
 from .asr_interface import EngineBase
 from .asr_properties import BaseProperties
 from .capabilities import DeclaredCapabilities
-from .discovery import FactoryLoadError, ModelRegistry, discover_models
+from .discovery import FactoryLoadError, ModelRegistry, ModelSpec, discover_models
 from .exceptions import UnsupportedFeatureError
 from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
 from .streaming import (
@@ -256,17 +256,7 @@ def check_entrypoints(
             )
             continue
 
-        if not hasattr(instance, "transcribe") or not callable(getattr(instance, "transcribe")):
-            issues.append(
-                ComplianceIssue(
-                    level="error",
-                    message=(
-                        "Factory did not return an object with a callable 'transcribe' attribute."
-                    ),
-                    model=name,
-                )
-            )
-            continue
+        _check_required_surface(instance, spec, name, issues)
 
         properties = getattr(instance, "properties", None)
         if not isinstance(properties, BaseProperties):
@@ -365,6 +355,70 @@ def check_entrypoints(
                     )
 
     return ComplianceReport(registry=registry, issues=issues)
+
+
+#: Public callables every compliant engine MUST expose unconditionally
+#: (StandardASR protocol, spec §3.1). ``start_transcription`` is required only
+#: when the engine declares a streaming axis -- handled separately below.
+_ALWAYS_REQUIRED_METHODS: tuple[str, ...] = ("transcribe", "transcribe_async", "supports")
+
+
+def _check_required_surface(
+    instance: object,
+    spec: ModelSpec,
+    name: str,
+    issues: list[ComplianceIssue],
+) -> None:
+    """Verify the engine exposes the full required public surface (D9).
+
+    Every engine MUST expose the unconditional batch/query surface
+    (:meth:`transcribe`, :meth:`transcribe_async`, :meth:`supports`); a missing
+    member is a compliance **error**, not a silent accept. ``start_transcription``
+    is required **only** when the engine declares a streaming axis
+    (``streaming_input`` or ``streaming_output``) -- a batch-only engine
+    legitimately omits it (spec §3.2). The ``properties``/``declared_capabilities``
+    attributes are verified by the caller's type checks; this helper covers the
+    callable methods and the conditional streaming entry point.
+
+    Args:
+        instance: The instantiated engine to inspect.
+        spec: The engine's discovery :class:`~standard_asr.discovery.ModelSpec`.
+        name: The model key (for issue attribution).
+        issues: The mutable list of issues to append to.
+    """
+    for method in _ALWAYS_REQUIRED_METHODS:
+        if not callable(getattr(instance, method, None)):
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message=(
+                        f"Instance is missing a callable {method!r} method "
+                        "(required by the StandardASR protocol)."
+                    ),
+                    model=name,
+                )
+            )
+
+    # ``start_transcription`` is required iff the engine declares streaming. Read
+    # the declared axes defensively: a malformed ``declared_capabilities`` (its
+    # own error is raised elsewhere) simply means we cannot assert a streaming
+    # requirement here, so we do not over-report.
+    declared = getattr(instance, "declared_capabilities", None)
+    declares_streaming = isinstance(declared, DeclaredCapabilities) and (
+        declared.supports("streaming_input") or declared.supports("streaming_output")
+    )
+    if declares_streaming and not callable(getattr(instance, "start_transcription", None)):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "Instance declares a streaming axis (streaming_input / "
+                    "streaming_output) but is missing a callable "
+                    "'start_transcription' method (spec §3.1)."
+                ),
+                model=name,
+            )
+        )
 
 
 def _check_class_level_metadata(spec: object, name: str, issues: list[ComplianceIssue]) -> None:
