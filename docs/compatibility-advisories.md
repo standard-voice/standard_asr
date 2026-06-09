@@ -3,7 +3,7 @@
 This file is the audit trail for every place we deliberately constrain a
 dependency's **upper** range. Our default is the opposite — lower-bound-only
 ranges with no caps (see the dependency policy in
-[`CONTRIBUTING.md`](../CONTRIBUTING.md)) — because a speculative cap fragments
+[`CONTRIBUTING.md`](https://github.com/standard-voice/standard_asr/blob/main/CONTRIBUTING.md)) — because a speculative cap fragments
 the ecosystem. So each cap here must justify itself with:
 
 - **what** is constrained and **where** (the `[project]` contract, or a dev-only
