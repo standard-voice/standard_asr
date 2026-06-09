@@ -950,9 +950,16 @@ def test_lossy_reconnect_content_lost_is_non_terminal_and_stream_matches_result(
     assert content_lost_i == progress_i + 1
     assert content_lost.recoverable is True
     assert content_lost.is_terminal is False
-    assert events[content_lost_i + 1].type == "partial"
-    assert events[content_lost_i + 1].text == "wo"
-    assert events[-1].type == "done"
+    # content_lost is non-terminal, so the session keeps emitting content after it.
+    # The post-reconnect segment's partial ("wo") MAY be coalesced into its final
+    # ("world") depending on how promptly the consumer drains -- a legitimate
+    # coalescing behavior (only reconnect events are drop-proof, spec ST.6.3/6.4;
+    # content partials are not) that varies with async scheduling across Python
+    # versions. So assert the continuation via the drop-proof final, not the
+    # transient partial.
+    after = events[content_lost_i + 1 :]
+    assert [e.text for e in after if e.type == "final"] == ["world"]
+    assert after[-1].type == "done"
     assert result_text == "hello world"
     assert stream_text == result_text
 
