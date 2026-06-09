@@ -342,6 +342,49 @@ def test_unknown_x_namespace_key_tolerated() -> None:
     assert caps.supports("batch.x_acme_unknown") is False
 
 
+def test_supports_fail_closed_on_unknown_non_extension_segment() -> None:
+    # A path segment that is neither a known standard field nor an x_* extension
+    # key is fail-closed (returns False), even when the typo'd key was tolerated
+    # on parse (containers use extra="allow" for forward compat). A typo of a real
+    # capability MUST NOT read as supported and weaken the gating contract.
+    assert DeclaredCapabilities().supports("streamnig") is False
+    # A typo'd top-level key that landed in model_extra still fails closed.
+    top_typo = DeclaredCapabilities.model_validate({"streamnig": {"supported": True}})
+    assert top_typo.supports("streamnig") is False
+    assert "streamnig" not in set(top_typo.iter_supported_paths())
+    # A typo'd field inside a typed container (batch.word_timestmaps) too.
+    nested_typo = DeclaredCapabilities.model_validate(
+        {"batch": {"word_timestmaps": {"supported": True}}}
+    )
+    assert nested_typo.supports("batch.word_timestmaps") is False
+    assert "batch.word_timestmaps" not in set(nested_typo.iter_supported_paths())
+    # A real declared standard path and a real x_* path still resolve correctly.
+    declared = DeclaredCapabilities.model_validate(
+        {
+            "batch": {
+                "word_timestamps": {"supported": True, "granularities": ["word"]},
+                "x_acme_beam": {"supported": True},
+            }
+        }
+    )
+    assert declared.supports("batch.word_timestamps") is True
+    assert declared.supports("batch.x_acme_beam") is True
+    paths = set(declared.iter_supported_paths())
+    assert {"batch.word_timestamps", "batch.x_acme_beam"} <= paths
+
+
+def test_supports_descends_non_extension_keys_inside_x_star_subtree() -> None:
+    # The x_* filter applies only to extra keys on typed standard nodes. Inside a
+    # raw x_* subtree the vendor owns the whole structure, so non-x_* child keys
+    # (e.g. "nested") still resolve and appear as supported paths.
+    caps = DeclaredCapabilities.model_validate(
+        {"batch": {"x_container": {"nested": {"supported": True}}}}
+    )
+    assert caps.supports("batch.x_container.nested") is True
+    paths = set(caps.iter_supported_paths())
+    assert {"batch.x_container", "batch.x_container.nested"} <= paths
+
+
 # --------------------------------------------------------------------------- #
 # x_* extension subtrees parse to plain dict nodes; the traversal/derivation
 # helpers (_get_child, _read_attr, _node_items, _derive_supported) must handle

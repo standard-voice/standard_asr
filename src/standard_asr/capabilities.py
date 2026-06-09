@@ -36,6 +36,34 @@ WordTimestampGranularityName = Literal["word", "segment", "char"]
 #: Mode values that count as "not supported" for enum/mode archetype nodes.
 _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
 
+#: Reserved prefix for experimental extension capabilities (spec §C R4,
+#: ``x_<vendor>_<feature>``). An *extra* (non-field) key on a typed standard node
+#: is a recognised capability only when it carries this prefix.
+_EXTENSION_PREFIX = "x_"
+
+
+def _is_extension_key(key: object) -> bool:
+    """Return whether an extra key on a typed node is an ``x_*`` extension.
+
+    Typed capability containers parse with ``extra="allow"`` so an unknown key
+    (a future standard field, or a typo) does not fail validation -- forward
+    compatibility (spec §C, "tolerate unknown keys"). But only the reserved
+    ``x_<vendor>_<feature>`` namespace (spec §C R4) is a real, queryable
+    capability. Every other unknown key MUST be fail-closed when probed via
+    :meth:`DeclaredCapabilities.supports` / excluded from
+    :meth:`DeclaredCapabilities.iter_supported_paths`, so a typo'd path segment
+    (e.g. ``"word_timestmaps"``) never reads as a supported capability and
+    weakens the gating contract. Serialization (:meth:`canonical_json`) is
+    separate and still round-trips every extra.
+
+    Args:
+        key: A model-extra key.
+
+    Returns:
+        ``True`` if ``key`` is a string in the ``x_`` extension namespace.
+    """
+    return isinstance(key, str) and key.startswith(_EXTENSION_PREFIX)
+
 
 def granularity_offers_all(granularities: Sequence[str]) -> bool:
     """Return whether a declared ``granularities`` list means "unbounded (all)".
@@ -553,6 +581,13 @@ def _get_child(node: object, part: str) -> object:
     if isinstance(node, BaseModel):
         if part in type(node).model_fields:
             return getattr(node, part)
+        # An extra key on a typed node resolves only inside the ``x_*`` extension
+        # namespace (spec §C R4). A non-extension unknown segment (e.g. a typo of
+        # a real field) is fail-closed -- treated as absent -- so it never reads
+        # as a supported capability. Keys *inside* a raw ``x_*`` subtree (the dict
+        # branch below) are the vendor's own and are not filtered.
+        if not _is_extension_key(part):
+            return None
         extra: dict[str, Any] = node.model_extra or {}
         return extra.get(part)
     if isinstance(node, dict):
@@ -683,7 +718,11 @@ def _children(node: object) -> list[tuple[str, object]]:
             (name, getattr(node, name)) for name in type(node).model_fields
         ]
         extra: dict[str, Any] = node.model_extra or {}
-        items.extend(extra.items())
+        # Only ``x_*`` extension extras are queryable capabilities (spec §C R4);
+        # other unknown keys (forward-compat tolerated on parse, or a typo) MUST
+        # NOT pollute the supported-path set used by the ``effective ⊆ declared``
+        # comparison. Mirror the same gate as :func:`_get_child`.
+        items.extend((key, value) for key, value in extra.items() if _is_extension_key(key))
         return items
     if isinstance(node, dict):
         return list(cast("dict[str, object]", node).items())
