@@ -13,12 +13,10 @@ import pytest
 
 from standard_asr.audio_input import (
     AudioArray,
-    AudioBase64,
     AudioBytes,
     AudioPath,
     AudioStorageUri,
     AudioUrl,
-    InputKind,
     coerce_audio_input,
 )
 
@@ -26,7 +24,6 @@ from standard_asr.audio_input import (
 def test_str_coerces_to_path_never_url() -> None:
     coerced = coerce_audio_input("https://example.com/a.wav")
     assert isinstance(coerced, AudioPath)
-    assert coerced.provided_kind is InputKind.ENCODED_FILE
 
 
 def test_pathlike_coerces_to_path() -> None:
@@ -72,11 +69,6 @@ def test_array_tuple_rejects_float_sample_rate() -> None:
 def test_existing_variant_returned_unchanged() -> None:
     url = AudioUrl("https://example.com/a.wav")
     assert coerce_audio_input(url) is url
-    assert url.provided_kind is InputKind.FETCHABLE_URL
-
-
-def test_base64_provided_kind() -> None:
-    assert AudioBase64("AAAA").provided_kind is InputKind.ENCODED_BYTES
 
 
 def test_array_uses_identity_equality() -> None:
@@ -153,7 +145,6 @@ def test_path_accepts_os_pathlike() -> None:
 def test_storage_uri_accepts_allowlisted_schemes(uri: str) -> None:
     su = AudioStorageUri(uri)
     assert su.value == uri
-    assert su.provided_kind is InputKind.STORAGE_URI
 
 
 def test_storage_uri_scheme_is_case_insensitive() -> None:

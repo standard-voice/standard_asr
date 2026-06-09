@@ -69,9 +69,6 @@ class AudioPath:
 
     value: str | os.PathLike[str]
 
-    #: The :class:`InputKind` this variant natively provides.
-    provided_kind = InputKind.ENCODED_FILE
-
 
 @dataclass(frozen=True)
 class AudioBytes:
@@ -86,8 +83,6 @@ class AudioBytes:
 
     data: bytes
     container: str | None = None
-
-    provided_kind = InputKind.ENCODED_BYTES
 
 
 @dataclass(frozen=True, eq=False)
@@ -109,8 +104,6 @@ class AudioArray:
 
     samples: NDArray[np.floating]
     sample_rate: int | None = None
-
-    provided_kind = InputKind.ARRAY
 
     def __post_init__(self) -> None:
         """Reject a non-floating sample dtype (the canonical form is float32).
@@ -149,8 +142,6 @@ class AudioUrl:
 
     value: str
 
-    provided_kind = InputKind.FETCHABLE_URL
-
 
 @dataclass(frozen=True)
 class AudioBase64:
@@ -161,8 +152,6 @@ class AudioBase64:
     """
 
     value: str
-
-    provided_kind = InputKind.ENCODED_BYTES
 
 
 #: Cloud-storage URI schemes a provider engine can resolve with its own SDK
@@ -204,8 +193,6 @@ class AudioStorageUri:
     """
 
     value: str
-
-    provided_kind = InputKind.STORAGE_URI
 
     def __post_init__(self) -> None:
         """Validate the URI scheme against the storage-scheme allowlist.
