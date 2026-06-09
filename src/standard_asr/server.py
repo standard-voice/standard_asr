@@ -698,8 +698,36 @@ def create_app(
             # start_transcription is part of the structural StandardASR protocol
             # (a batch-only engine raises UnsupportedFeatureError, handled below).
             session = asr.start_transcription(audio_format=audio_format, params=params)
+        except (ConfigError, InvalidProviderParamError) as exc:
+            # The streaming template now runs the full gating pipeline at session
+            # establishment, so a language misconfig (ConfigError) or a
+            # swapped-engine provider_params mismatch (InvalidProviderParamError)
+            # surfaces HERE, not only at engine construction. These are
+            # client-fixable -> bad_request, mirroring the construction mapping
+            # above and the REST 422 (server.md §4.2). NOTE: both subclass
+            # ValueError, so this clause MUST precede the UnsupportedFeatureError /
+            # ValueError clause below, which would otherwise mislabel them
+            # "unsupported".
+            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
+            await websocket.close()
+            return
         except (UnsupportedFeatureError, ValueError) as exc:
             await websocket.send_json({"type": "error", "code": "unsupported", "message": str(exc)})
+            await websocket.close()
+            return
+        except Exception:  # noqa: BLE001
+            # Internal/unexpected session-establishment fault (e.g. a fault in the
+            # engine's own _start_transcription hook): never crash the route or
+            # leak detail. Log server-side; send a single generic, non-leaking
+            # frame (mirrors the construction scrubbed-frame contract, §3.7).
+            logger.exception("Stream session establishment failed for model %r", model)
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "internal_error",
+                    "message": "Internal stream establishment error. See server logs for details.",
+                }
+            )
             await websocket.close()
             return
 

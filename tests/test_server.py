@@ -1383,6 +1383,76 @@ def test_ws_stream_non_streaming_engine_reports_unsupported() -> None:
     assert err["code"] == "unsupported"
 
 
+class _StreamLangAxisProperties(_StreamProperties):
+    # A language axis is present (selectable_languages non-empty) but the engine's
+    # _DummyConfig sets no default_language, so _validate_language_config raises
+    # ConfigError at SESSION ESTABLISHMENT (not construction) -- LANG R1 totality.
+    selectable_languages: list[str] = ["en"]
+
+
+class _StreamConfigErrorEngine(_StreamEchoEngine):
+    properties: ClassVar[BaseProperties] = _StreamLangAxisProperties()
+
+
+def _stream_config_error_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _StreamConfigErrorEngine
+):
+    return _StreamConfigErrorEngine()
+
+
+class _StreamRaisingEngine(_StreamEchoEngine):
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        # An unexpected adapter fault during establishment, carrying internal
+        # detail that MUST NOT leak to the client.
+        raise RuntimeError("boom: internal detail /secret/path")
+
+
+def _stream_raising_factory() -> _StreamRaisingEngine:  # pyright: ignore[reportUnusedFunction]
+    return _StreamRaisingEngine()
+
+
+def test_ws_stream_establishment_config_error_reports_bad_request() -> None:
+    # A ConfigError raised by the gating pipeline at session establishment (here a
+    # missing default_language for a language-axis engine) is client-fixable and
+    # MUST map to bad_request, not the misleading "unsupported" -- even though
+    # ConfigError subclasses ValueError, so its clause must precede the ValueError
+    # clause (server.md §4.2).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_config_error_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "bad_request"
+
+
+def test_ws_stream_establishment_unexpected_error_reports_internal_no_leak() -> None:
+    # An unexpected fault in the engine's _start_transcription hook must not crash
+    # the route or leak internal detail: a single generic internal_error frame is
+    # sent instead (server.md §3.7).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_raising_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "internal_error"
+    assert "boom" not in err["message"]
+    assert "secret" not in err["message"]
+
+
 def test_ws_stream_client_disconnect_is_handled() -> None:
     # A client that leaves mid-stream must not crash the server: the bridge ends
     # the session and stops forwarding (covers the disconnect + send-failure path).
