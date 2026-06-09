@@ -11,6 +11,7 @@ native-rate :func:`decode_audio` primitive (spec R7/C4).
 from __future__ import annotations
 
 import io
+import struct
 import wave
 from pathlib import Path
 
@@ -36,6 +37,30 @@ def _wav_bytes(samples: int = 100, rate: int = 16000) -> bytes:
         wf.setframerate(rate)
         wf.writeframes(np.zeros(samples, dtype=np.int16).tobytes())
     return buf.getvalue()
+
+
+def _wav_with_inflated_nframes(
+    claimed_frames: int,
+    real_frames: int = 4,
+    channels: int = 1,
+    sampwidth: int = 2,
+    rate: int = 16000,
+) -> bytes:
+    """Hand-craft a WAV whose header claims far more frames than really follow.
+
+    ``getnframes()`` is read from the ``data`` chunk size in the header, so a
+    crafted inflated chunk size makes ``readframes(getnframes())`` derive a huge
+    read size from attacker-controlled metadata (only a few real frames follow).
+    """
+    block_align = channels * sampwidth
+    claimed_data_bytes = claimed_frames * block_align
+    real_data = np.zeros(real_frames * channels, dtype="<i2").tobytes()
+    riff = b"RIFF" + struct.pack("<I", 36 + claimed_data_bytes) + b"WAVE"
+    fmt = b"fmt " + struct.pack(
+        "<IHHIIHH", 16, 1, channels, rate, rate * block_align, block_align, sampwidth * 8
+    )
+    data_hdr = b"data" + struct.pack("<I", claimed_data_bytes)
+    return riff + fmt + data_hdr + real_data
 
 
 # --- C2: ffmpeg/ffprobe LFI/SSRF defense (path validation) ---
@@ -99,6 +124,44 @@ def test_decode_audio_within_size_limit(tmp_path: Path) -> None:
     f.write_bytes(data)
     arr, sr = decode_audio(f, max_bytes=len(data) + 1000)
     assert sr == 16000
+    assert arr.shape == (100,)
+
+
+# --- R9: stdlib WAV header-declared nframes allocation guard ---
+
+
+def test_load_audio_from_path_rejects_inflated_wav_nframes(tmp_path: Path) -> None:
+    # A tiny file whose WAV header claims a billion frames must be rejected by the
+    # header guard (the encoded stat precheck passes -- the file really is tiny --
+    # so without the guard readframes() would derive a 2 GB read from the header).
+    f = tmp_path / "bomb.wav"
+    f.write_bytes(_wav_with_inflated_nframes(claimed_frames=1_000_000_000))
+    with pytest.raises(AudioProcessingError, match="WAV header declares"):
+        load_audio_from_path(str(f), max_bytes=64)
+
+
+def test_decode_audio_rejects_inflated_wav_nframes(tmp_path: Path) -> None:
+    f = tmp_path / "bomb.wav"
+    f.write_bytes(_wav_with_inflated_nframes(claimed_frames=1_000_000_000))
+    with pytest.raises(AudioProcessingError, match="WAV header declares"):
+        decode_audio(f, max_bytes=64)
+
+
+def test_inflated_wav_nframes_rejected_against_default_ceiling(tmp_path: Path) -> None:
+    # With max_bytes=None the guard still bounds against the module default
+    # ceiling, so a header claiming > 2 GiB of PCM is rejected even uncapped.
+    huge_frames = (audio_loader._DEFAULT_MAX_DECODE_BYTES // 2) + 1  # pyright: ignore[reportPrivateUsage]
+    f = tmp_path / "huge.wav"
+    f.write_bytes(_wav_with_inflated_nframes(claimed_frames=huge_frames))
+    with pytest.raises(AudioProcessingError, match="WAV header declares"):
+        load_audio_from_path(str(f), max_bytes=None)
+
+
+def test_valid_wav_with_honest_header_loads(tmp_path: Path) -> None:
+    # A regression guard: an honest header within the cap still decodes fine.
+    f = tmp_path / "ok.wav"
+    f.write_bytes(_wav_bytes(samples=100))
+    arr = load_audio_from_path(str(f), max_bytes=10_000)
     assert arr.shape == (100,)
 
 

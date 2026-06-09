@@ -187,6 +187,50 @@ def _enforce_decode_size(num_bytes: int, max_bytes: int | None) -> None:
         )
 
 
+class _WavAllocationGuardError(AudioProcessingError):
+    """A WAV header declared a frame count that would over-allocate (spec R9).
+
+    A dedicated subclass so the stdlib WAV decode paths can re-raise it past
+    their broad ``except AudioProcessingError`` fallback: a header-declared
+    decompression bomb is a hard rejection, not a "try the next decoder" signal
+    (every decoder would parse the same hostile header). It remains an
+    :class:`AudioProcessingError`, so public callers handle it uniformly.
+    """
+
+
+def _guard_wav_nframes(wf: wave.Wave_read, max_bytes: int | None) -> None:
+    """Reject a WAV whose header-declared frame count would over-allocate (R9).
+
+    ``wave.readframes(getnframes())`` derives its read size from the WAV
+    *header's* frame count, which an attacker controls independently of the file
+    that actually follows. Probe ``getnframes() x channels x sampwidth`` against
+    the cap *before* the read so a header claiming an enormous ``nframes`` is
+    rejected up front rather than driving a large allocation off untrusted
+    metadata. When ``max_bytes`` is ``None`` the module's default ceiling is used
+    as the sane derived limit (this guard is a sanity bound, not the caller's
+    encoded-size cap, so it stays bounded even for an uncapped caller).
+
+    Args:
+        wf: An open :class:`wave.Wave_read` positioned before the data read.
+        max_bytes: The caller's encoded-size cap, or ``None`` to fall back to the
+            module's default ceiling as the sanity bound.
+
+    Raises:
+        _WavAllocationGuardError: If the header-declared PCM size exceeds the
+            limit. This is a hard rejection that must not fall back to another
+            decoder.
+    """
+    limit = max_bytes if max_bytes is not None else _DEFAULT_MAX_DECODE_BYTES
+    declared = wf.getnframes() * wf.getnchannels() * wf.getsampwidth()
+    if declared > limit:
+        raise _WavAllocationGuardError(
+            f"WAV header declares {wf.getnframes()} frames "
+            f"({declared} bytes of PCM), exceeding the {limit}-byte limit. The "
+            "header is likely corrupt or hostile; provide a smaller file or an "
+            "engine without this limit."
+        )
+
+
 def _read_stream_capped(stream: BinaryIO, max_bytes: int | None) -> bytes:
     """Read a binary stream into bytes without exceeding ``max_bytes`` in memory.
 
@@ -681,11 +725,9 @@ def load_audio_from_path(
                         f"Unsupported WAV sample width via stdlib: {sampwidth * 8} bits"
                     )
 
-                # Honesty (spec R9): getnframes() comes from the header and this
-                # reads the whole data chunk at once (wave clamps to the real chunk,
-                # so a header lie cannot over-read, but a genuinely huge WAV is still
-                # fully materialized + copied to float32). The caller's encoded-size
-                # cap, where applied, is the only bound here.
+                # Spec R9: getnframes() is a header-declared count an attacker
+                # controls; bound the read it drives before allocating from it.
+                _guard_wav_nframes(wf, max_bytes)
                 frames = wf.readframes(wf.getnframes())
                 # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
                 # read it with an explicit "<i2" dtype so a big-endian host does
@@ -710,6 +752,10 @@ def load_audio_from_path(
                     audio = audio.reshape(-1, n_channels)
 
                 return normalize_audio(audio, orig_sr, target_sr, target_channels)
+        except _WavAllocationGuardError:
+            # A header-declared decompression bomb is a hard rejection: every
+            # decoder would parse the same hostile header, so do NOT fall back.
+            raise
         except (wave.Error, AudioProcessingError, OSError, ValueError) as e:
             logger.debug(
                 f"Could not load WAV with stdlib `wave` (unsupported format or corrupted file), "
@@ -844,12 +890,12 @@ def decode_audio(
             return _decode_bytes_native(decoded, target_channels)
         path = _validate_local_source_path(s)
         _enforce_decode_size(pathlib.Path(path).stat().st_size, max_bytes)
-        return _decode_path_native(path, target_channels)
+        return _decode_path_native(path, target_channels, max_bytes)
 
     if isinstance(source, pathlib.Path):
         path = _validate_local_source_path(str(source))
         _enforce_decode_size(pathlib.Path(path).stat().st_size, max_bytes)
-        return _decode_path_native(path, target_channels)
+        return _decode_path_native(path, target_channels, max_bytes)
 
     # Defensive: the annotation narrows to bytes-like here, but this is a public
     # boundary that must reject mistyped runtime input gracefully.
@@ -860,12 +906,17 @@ def decode_audio(
     return _decode_bytes_native(data, target_channels)
 
 
-def _decode_path_native(path: str, target_channels: int | None) -> tuple[NDArray[np.float32], int]:
+def _decode_path_native(
+    path: str, target_channels: int | None, max_bytes: int | None = None
+) -> tuple[NDArray[np.float32], int]:
     """Decode a (validated, existing) file path to ``(array, native_sr)``.
 
     Args:
         path: A validated absolute local file path.
         target_channels: Output channels, or ``None`` to preserve.
+        max_bytes: The caller's encoded-size cap, threaded through to bound the
+            stdlib WAV path's header-declared frame allocation (spec R9). ``None``
+            falls back to the module's default ceiling as the sanity bound.
 
     Returns:
         The decoded ``float32`` waveform and its native sample rate.
@@ -884,11 +935,9 @@ def _decode_path_native(path: str, target_channels: int | None) -> tuple[NDArray
                     raise AudioProcessingError(
                         f"Unsupported WAV sample width via stdlib: {sampwidth * 8} bits"
                     )
-                # Honesty (spec R9): getnframes() comes from the header and this
-                # reads the whole data chunk at once (wave clamps to the real chunk,
-                # so a header lie cannot over-read, but a genuinely huge WAV is still
-                # fully materialized + copied to float32). The caller's encoded-size
-                # cap, where applied, is the only bound here.
+                # Spec R9: getnframes() is a header-declared count an attacker
+                # controls; bound the read it drives before allocating from it.
+                _guard_wav_nframes(wf, max_bytes)
                 frames = wf.readframes(wf.getnframes())
                 # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
                 # read it with an explicit "<i2" dtype so a big-endian host does
@@ -906,6 +955,10 @@ def _decode_path_native(path: str, target_channels: int | None) -> tuple[NDArray
                 if n_channels > 1:
                     audio = audio.reshape(-1, n_channels)
                 return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
+        except _WavAllocationGuardError:
+            # A header-declared decompression bomb is a hard rejection: every
+            # decoder would parse the same hostile header, so do NOT fall back.
+            raise
         except (wave.Error, AudioProcessingError, OSError, ValueError) as e:
             logger.debug("stdlib wave decode failed, falling back. Error: %s", e)
 
