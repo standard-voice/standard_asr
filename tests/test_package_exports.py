@@ -42,28 +42,18 @@ def test_capability_vocabulary_is_re_exported_from_top_level() -> None:
     )
     from standard_asr import capabilities as caps_module
 
-    # The top-level names are the very objects defined in the submodule (a true
-    # re-export, not a shadowing redefinition).
-    for name in (
-        "CandidateLanguagesCap",
-        "CandidateLanguagesConstraints",
-        "DiarizationCap",
-        "DiarizationConstraints",
-        "FinalityCap",
-        "FlagCap",
-        "GuidanceCaps",
-        "LanguageCaps",
-        "PhraseHintsCap",
-        "PhraseHintsConstraints",
-        "PromptCap",
-        "PromptConstraints",
-        "ReconnectCap",
-        "StreamTimestampsCap",
-        "WordTimestampsCap",
-        "granularity_offers_all",
-    ):
-        assert getattr(standard_asr, name) is getattr(caps_module, name)
-        assert name in standard_asr.__all__
+    # Dynamic X-EL-2 drift guard (mirrors the X-EL-3 granularity drift test):
+    # EVERY name the capabilities submodule advertises in its `__all__` MUST be
+    # re-exported from the package top level. A hardcoded list would silently miss
+    # a future capability type added to capabilities.__all__ but forgotten in the
+    # top-level re-export -- this set-subset assertion fails the moment one is.
+    assert set(caps_module.__all__) <= set(standard_asr.__all__)
+
+    # Each re-exported name is the very object defined in the submodule (a true
+    # re-export, not a shadowing redefinition) -- checked over the full __all__,
+    # not a hardcoded subset.
+    for name in caps_module.__all__:
+        assert getattr(standard_asr, name) is getattr(caps_module, name), name
 
     # The cap classes are usable straight from the top-level import.
     assert FlagCap(supported=True).is_supported is True
