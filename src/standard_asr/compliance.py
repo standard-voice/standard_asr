@@ -505,7 +505,11 @@ def _check_class_level_metadata(spec: object, name: str, issues: list[Compliance
         )
 
 
-def check_event_sequence(events: Iterable[TranscriptionEvent]) -> ComplianceReport:
+def check_event_sequence(
+    events: Iterable[TranscriptionEvent],
+    *,
+    allow_empty: bool = False,
+) -> ComplianceReport:
     """Validate a *recorded* streaming event sequence against the invariants.
 
     Behavioral check for streaming adapters that is **pure**: it replays an
@@ -525,16 +529,24 @@ def check_event_sequence(events: Iterable[TranscriptionEvent]) -> ComplianceRepo
     across a replacement (the concatenated frozen text of ``old_ids`` MUST be
     preserved by ``new_ids``), ``old_ids`` that were never announced, a
     ``new_id`` that reintroduces an already-known segment, and an empty
-    ``new_ids`` (pure deletion) that would destroy frozen text -- and an event
-    stream that never reaches a terminal (``done`` / non-recoverable ``error``)
-    event.
+    ``new_ids`` (pure deletion) that would destroy frozen text -- an event stream
+    that never reaches a terminal (``done`` / non-recoverable ``error``) event,
+    **an empty sequence** (unless ``allow_empty=True``), and **any event emitted
+    after the session-terminal** event (a terminal MUST be the last event).
 
-    These checks are obtained by replaying the events through the same
+    The per-segment lifecycle / frozen-prefix / supersede checks are obtained by
+    replaying the events through the same
     :class:`~standard_asr.streaming._LifecycleGuard` the runtime uses, so the
-    compliance verdict cannot drift from the runtime's enforcement.
+    compliance verdict cannot drift from the runtime's enforcement. Events after
+    the session-terminal are flagged and **not** replayed (they do not exist in a
+    well-formed stream, so they MUST NOT mutate segment state).
 
     Args:
         events: The recorded events to validate, in emission order.
+        allow_empty: When ``True``, an empty sequence is accepted (the rare
+            intentional case). Default ``False`` -- an empty sequence is a
+            violation, because a real session always emits at least a terminal
+            event.
 
     Returns:
         A :class:`ComplianceReport`; ``passed`` is ``True`` when the sequence
@@ -546,6 +558,22 @@ def check_event_sequence(events: Iterable[TranscriptionEvent]) -> ComplianceRepo
     saw_terminal = False
     for event in events:
         saw_any = True
+        if saw_terminal:
+            # A session-terminal (done / non-recoverable error) MUST be the last
+            # event. Flag the stray event and do NOT admit it to the guard: it is
+            # invalid by position, so it must not pollute segment lifecycle state.
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message=(
+                        f"event {event.type!r} emitted after the session-terminal event "
+                        "(spec ST.6.1: a terminal done / non-recoverable error MUST be "
+                        "the last event)."
+                    ),
+                    model=None,
+                )
+            )
+            continue
         guard.admit(event)
         if event.is_terminal:
             saw_terminal = True
@@ -557,7 +585,20 @@ def check_event_sequence(events: Iterable[TranscriptionEvent]) -> ComplianceRepo
                 model=None,
             )
         )
-    if saw_any and not saw_terminal:
+    if not saw_any:
+        if not allow_empty:
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message=(
+                        "empty event sequence: a streaming session MUST emit at least a "
+                        "terminal (done / non-recoverable error) event (pass "
+                        "allow_empty=True only for the rare intentional case)."
+                    ),
+                    model=None,
+                )
+            )
+    elif not saw_terminal:
         issues.append(
             ComplianceIssue(
                 level="error",

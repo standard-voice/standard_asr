@@ -524,9 +524,54 @@ def test_check_event_sequence_flags_decreasing_audio_cursor() -> None:
     assert any("audio_cursor_decreased" in i.message for i in report.issues)
 
 
-def test_check_event_sequence_empty_is_vacuously_ok() -> None:
+def test_check_event_sequence_empty_fails_by_default() -> None:
+    # An empty stream is a violation by default: a real session always emits at
+    # least a terminal event.
     report = check_event_sequence([])
+    assert report.passed is False
+    assert any("empty event sequence" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_empty_allowed_with_flag() -> None:
+    report = check_event_sequence([], allow_empty=True)
     assert report.passed is True
+    assert report.issues == []
+
+
+def test_check_event_sequence_flags_event_after_done() -> None:
+    # A terminal MUST be the last event; a partial after done is a violation.
+    events = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.done(),
+        TranscriptionEvent.partial("s1", "late"),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("after the session-terminal" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_flags_event_after_nonrecoverable_error() -> None:
+    # A non-recoverable error is terminal; any later event is a violation.
+    events = [
+        TranscriptionEvent.make_error("session_timeout", recoverable=False),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any("after the session-terminal" in i.message for i in report.issues)
+
+
+def test_check_event_sequence_recoverable_error_is_not_terminal() -> None:
+    # A recoverable error does NOT end the session, so events may legitimately
+    # follow it; the stream still needs a real terminal to pass.
+    events = [
+        TranscriptionEvent.make_error("content_lost", recoverable=True),
+        TranscriptionEvent.partial("s0", "resumed"),
+        TranscriptionEvent.final("s0", "resumed"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True, [i.message for i in report.issues]
 
 
 def test_check_event_sequence_accepts_closed_rewrite_frozen_prefix() -> None:
