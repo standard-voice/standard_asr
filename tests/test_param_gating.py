@@ -24,9 +24,11 @@ from standard_asr.capabilities import (
 )
 from standard_asr.exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from standard_asr.param_gating import (
+    _count_tokens,  # pyright: ignore[reportPrivateUsage]
     _enforce_phrase_hints_limits,  # pyright: ignore[reportPrivateUsage]
     _enforce_prompt_limit,  # pyright: ignore[reportPrivateUsage]
     _gate_granularity,  # pyright: ignore[reportPrivateUsage]
+    _truncate_to_token_budget,  # pyright: ignore[reportPrivateUsage]
     _try_degrade_to_prompt,  # pyright: ignore[reportPrivateUsage]
     gate_params,
 )
@@ -334,6 +336,67 @@ def test_prompt_unbounded_limit_noop() -> None:
     gated, diags = gate_params(params, _guidance_caps(prompt_max_tokens=None), "batch", strict=True)
     assert gated.prompt == "a b c d e f"
     assert diags == []
+
+
+# A 12-codepoint no-space Mandarin prompt. ``.split()`` yields ONE whitespace
+# token, so the old word-count check let it pass any max_tokens >= 1 (NEW-RUNT-1).
+_CJK_PROMPT = "前文提到了量子计算与超导"
+
+
+def test_count_tokens_latin_is_word_count() -> None:
+    # Latin behaviour is unchanged: still a conservative whitespace word count.
+    assert _count_tokens("the quick brown fox") == 4
+    assert _count_tokens("  spaced   out  ") == 2
+
+
+def test_count_tokens_counts_no_space_codepoints() -> None:
+    # Each CJK codepoint is at least one token; the whole run is also 1 whitespace
+    # token -> 12 codepoints + 1 word = 13 (far above the old count of 1).
+    assert _count_tokens(_CJK_PROMPT) == len(_CJK_PROMPT) + 1 == 13
+
+
+def test_count_tokens_ideographic_space_is_whitespace_not_cjk() -> None:
+    # U+3000 is whitespace (a separator), not a counted CJK letter.
+    assert _count_tokens("a　b") == 2
+
+
+def test_cjk_prompt_over_max_tokens_strict_raises() -> None:
+    # Before the fix this slipped through (1 whitespace token <= max_tokens).
+    params = RuntimeParams(prompt=_CJK_PROMPT)
+    with pytest.raises(UnsupportedFeatureError, match="tokens") as exc_info:
+        gate_params(params, _guidance_caps(prompt_max_tokens=5), "batch", strict=True)
+    assert exc_info.value.param == "prompt"
+
+
+def test_cjk_prompt_over_max_tokens_best_effort_truncates() -> None:
+    params = RuntimeParams(prompt=_CJK_PROMPT)
+    gated, diags = gate_params(params, _guidance_caps(prompt_max_tokens=5), "batch", strict=False)
+    diag = next(d for d in diags if d.code == "prompt_truncated")
+    assert diag.provided == 13
+    # The truncated prompt must actually fit the declared budget.
+    assert gated.prompt is not None
+    assert _count_tokens(gated.prompt) <= 5
+    assert gated.prompt == _CJK_PROMPT[:4]  # 4 codepoints + 1 word = 5
+
+
+def test_truncate_to_token_budget_latin_slices_whole_words() -> None:
+    # Latin truncation is unchanged (whole-word slice, no codepoint trimming).
+    assert _truncate_to_token_budget("one two three four", 2) == "one two"
+
+
+def test_truncate_to_token_budget_cjk_trims_codepoints() -> None:
+    out = _truncate_to_token_budget(_CJK_PROMPT, 5)
+    assert _count_tokens(out) <= 5
+    assert out == _CJK_PROMPT[:4]
+
+
+def test_prompt_constraints_max_tokens_documents_approximation() -> None:
+    # The :attr: cross-reference is honest: the field documents that the
+    # standard-layer count is a conservative approximation, not the exact
+    # tokenizer (NEW-RUNT-1 broken cross-reference).
+    desc = PromptConstraints.model_fields["max_tokens"].description
+    assert desc is not None
+    assert "approximation" in desc.lower()
 
 
 def test_phrase_hints_too_many_terms_strict_raises() -> None:

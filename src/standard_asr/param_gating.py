@@ -235,22 +235,97 @@ def _gate_granularity(
     return True
 
 
+#: Inclusive Unicode codepoint ranges for the major scripts that are written
+#: **without spaces between words**, where a whitespace word count grossly
+#: under-estimates the token count (the spec's Qwen3 CJK prompt example collapses
+#: to ~1 whitespace token). Covers CJK ideographs (incl. Ext-A/B and
+#: compatibility), Japanese kana, Korean Hangul, and the major space-less
+#: South-East-Asian scripts (Thai, Lao, Khmer, Myanmar). Codepoints that are
+#: whitespace (e.g. the ideographic space U+3000) are excluded at the call site.
+_NO_SPACE_SCRIPT_RANGES: tuple[tuple[int, int], ...] = (
+    (0x1000, 0x109F),  # Myanmar
+    (0x0E00, 0x0E7F),  # Thai
+    (0x0E80, 0x0EFF),  # Lao
+    (0x1780, 0x17FF),  # Khmer
+    (0x3040, 0x30FF),  # Hiragana + Katakana
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xA000, 0xA4CF),  # Yi
+    (0xAC00, 0xD7AF),  # Hangul syllables
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0x20000, 0x2FA1F),  # CJK Unified Ideographs Extension B-F + compat supplement
+)
+
+
+def _is_no_space_codepoint(ch: str) -> bool:
+    """Return whether *ch* belongs to a space-less script (CJK/kana/Hangul/SEA).
+
+    Args:
+        ch: A single character.
+
+    Returns:
+        ``True`` when ``ch`` is a non-whitespace codepoint in a script written
+        without inter-word spaces, where each codepoint is at least one token.
+    """
+    if ch.isspace():
+        return False
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _NO_SPACE_SCRIPT_RANGES)
+
+
 def _count_tokens(text: str) -> int:
-    """Approximate a prompt's token count by whitespace-delimited words.
+    """Conservatively approximate a prompt's token count (script-aware).
 
     The standard layer has no engine tokenizer, so ``max_tokens`` is enforced
-    against a whitespace word count -- a deterministic, engine-agnostic
-    approximation of "prompt length". This is intentionally conservative for the
-    Latin-script case and documented as such on the constraint
-    (:attr:`PromptConstraints.max_tokens`).
+    against an engine-agnostic, deterministic approximation of "prompt length":
+    the number of whitespace-delimited words **plus one unit for every space-less
+    (CJK / kana / Hangul / Thai / ...) codepoint**. The CJK term is essential --
+    a whitespace word count alone collapses a long no-space prompt (the spec's
+    Qwen3 ``context`` -> ``prompt`` example) to ~1 token and would let it slip
+    past a ``max_tokens`` limit it actually blows. For Latin scripts there are no
+    space-less codepoints, so this is exactly the (conservative) word count.
+
+    This is a deliberate over-approximation, not the engine's exact tokenizer;
+    it is documented as such on :attr:`~standard_asr.capabilities.PromptConstraints.max_tokens`.
 
     Args:
         text: The prompt text.
 
     Returns:
-        The number of whitespace-delimited tokens.
+        The approximate token count: whitespace words + space-less codepoints.
     """
-    return len(text.split())
+    return len(text.split()) + sum(1 for ch in text if _is_no_space_codepoint(ch))
+
+
+def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
+    """Truncate *text* so its :func:`_count_tokens` is at most ``max_tokens``.
+
+    Latin behaviour is preserved exactly: whole whitespace-delimited words are
+    sliced (``" ".join(words[:max_tokens])``) and, having no space-less
+    codepoints, that already fits the budget. For space-less scripts the
+    whole-word slice can still exceed the budget (its codepoints each cost a
+    token), so trailing codepoints are dropped until the script-aware count fits.
+
+    Args:
+        text: The prompt text to truncate.
+        max_tokens: The maximum approximate token count to keep.
+
+    Returns:
+        The truncated prompt (its :func:`_count_tokens` is ``<= max_tokens``).
+    """
+    candidate = " ".join(text.split()[:max_tokens])
+    if _count_tokens(candidate) <= max_tokens:
+        return candidate
+    # Space-less codepoints still overflow; binary-search the longest prefix that
+    # fits (``_count_tokens`` is monotonic non-decreasing in the prefix length).
+    lo, hi = 0, len(candidate)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _count_tokens(candidate[:mid]) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return candidate[:lo].rstrip()
 
 
 def _enforce_prompt_limit(
@@ -266,9 +341,12 @@ def _enforce_prompt_limit(
 
     A supported ``prompt`` MUST still respect the engine's declared token budget
     (spec §Runtime 3.3 / R4 -- guidance is best-effort but MUST NOT silently
-    exceed a declared bound). In best_effort mode an over-budget prompt is
-    truncated to ``max_tokens`` whitespace tokens with a diagnostic; in strict
-    mode it raises. An absent (``None``) limit is unbounded -- nothing to do.
+    exceed a declared bound). The budget is measured with the script-aware
+    :func:`_count_tokens` (a conservative approximation, not the engine's exact
+    tokenizer) so a long no-space / CJK prompt cannot slip past a limit it
+    actually blows. In best_effort mode an over-budget prompt is truncated to fit
+    with a diagnostic; in strict mode it raises. An absent (``None``) limit is
+    unbounded -- nothing to do.
 
     Args:
         params: The request parameters.
@@ -290,25 +368,25 @@ def _enforce_prompt_limit(
     max_tokens = node.constraints.max_tokens
     if max_tokens is None:
         return
-    tokens = prompt.split()
-    if len(tokens) <= max_tokens:
+    count = _count_tokens(prompt)
+    if count <= max_tokens:
         return
     if strict:
         raise UnsupportedFeatureError(
-            f"prompt has {len(tokens)} tokens; max is {max_tokens} in {mode} mode.",
+            f"prompt has ~{count} tokens; max is {max_tokens} in {mode} mode.",
             param="prompt",
             mode=mode,
-            hint=f"Shorten the prompt to at most {max_tokens} whitespace tokens.",
+            hint=f"Shorten the prompt to at most {max_tokens} tokens (standard-layer estimate).",
         )
-    truncated = " ".join(tokens[:max_tokens])
+    truncated = _truncate_to_token_budget(prompt, max_tokens)
     updates["prompt"] = truncated
     diagnostics.append(
         Diagnostic(
             level="warning",
             code="prompt_truncated",
-            message=(f"Truncated prompt from {len(tokens)} to {max_tokens} tokens in {mode} mode."),
+            message=(f"Truncated prompt from ~{count} to {max_tokens} tokens in {mode} mode."),
             param="prompt",
-            provided=len(tokens),
+            provided=count,
             effective=truncated,
         )
     )
@@ -497,7 +575,7 @@ def _try_degrade_to_prompt(
                     f"within {max_tokens} tokens."
                 ),
             )
-        truncated = " ".join(combined.split()[:max_tokens])
+        truncated = _truncate_to_token_budget(combined, max_tokens)
         diagnostics.append(
             Diagnostic(
                 level="warning",

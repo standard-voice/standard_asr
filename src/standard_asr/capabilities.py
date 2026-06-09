@@ -149,11 +149,27 @@ class PromptConstraints(BaseModel):
     """Constraints for the prompt guidance channel.
 
     Args:
-        max_tokens: Optional maximum prompt length in tokens.
+        max_tokens: Optional maximum prompt length in tokens. The standard layer
+            has no engine tokenizer, so it enforces this bound against a
+            **conservative, script-aware approximation** -- whitespace-delimited
+            words plus one unit per space-less (CJK / kana / Hangul / Thai / ...)
+            codepoint -- not the engine's exact token count. The approximation
+            never under-counts (a long no-space prompt cannot slip past the
+            limit), so an engine MAY receive a prompt slightly shorter than its
+            true budget; declare ``max_tokens`` as the engine's own hard limit and
+            the standard will not exceed it.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
-    max_tokens: int | None = Field(default=None, gt=0, description="Maximum prompt tokens.")
+    max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum prompt tokens. Enforced by the standard against a "
+            "conservative, script-aware approximation (whitespace words + "
+            "space-less codepoints), not the engine's exact tokenizer."
+        ),
+    )
 
 
 class PhraseHintsConstraints(BaseModel):
