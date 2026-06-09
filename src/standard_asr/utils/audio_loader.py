@@ -987,28 +987,35 @@ def _load_with_ffmpeg(
     target_sr: int,
     target_channels: int | None,
     timeout: float = 120.0,
+    max_output_bytes: int | None = _DEFAULT_MAX_DECODE_BYTES,
 ) -> NDArray[np.float32]:
     """Decode audio via FFmpeg subprocess (internal fallback).
 
-    Memory honesty (spec R9 SHOULD): the decoded f32le stream is buffered WHOLE
-    via ``capture_output`` before any size is observed, so this is bounded only
-    by ``timeout``, not by an output-byte ceiling -- a crafted input with a huge
-    declared duration can still emit far more PCM than its encoded size implies.
-    Streaming stdout in bounded chunks (or passing ``-fs``/``-t`` to ffmpeg) is a
-    future improvement; v1 relies on the caller's encoded-size cap + the timeout.
+    Output-size bound (spec R9): the encoded-input cap does NOT bound the decoded
+    PCM (output size is ``duration x sample_rate x channels x 4``), so a crafted
+    long-duration input could otherwise force a multi-GB allocation. This bounds
+    the decoded output two ways: ffmpeg is given ``-fs <max_output_bytes>`` so it
+    stops writing once the limit is reached (the OS buffer for ``capture_output``
+    therefore cannot grow past it), and the captured stdout is re-checked against
+    the same ceiling afterwards and rejected if exceeded (defense in depth for an
+    ffmpeg build that ignores ``-fs``). The guarantee is an output-byte ceiling,
+    not a streaming decoder; ``timeout`` still bounds wall-clock time.
 
     Args:
         source: File path or raw bytes.
         target_sr: Output sample rate (Hz).
         target_channels: Output channels, or ``None`` to auto-detect via ffprobe.
         timeout: Max seconds before aborting. Default: ``120.0``.
+        max_output_bytes: Ceiling on the decoded PCM output, in bytes. ``None``
+            disables it (unbounded). Defaults to the 2 GiB module ceiling.
 
     Returns:
         Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
         FFmpegNotFoundError: FFmpeg not in PATH.
-        AudioProcessingError: Decoding failed, timeout, or empty output.
+        AudioProcessingError: Decoding failed, timeout, empty output, or decoded
+            output exceeding ``max_output_bytes``.
     """
     if shutil.which("ffmpeg") is None:
         raise FFmpegNotFoundError(
@@ -1067,8 +1074,13 @@ def _load_with_ffmpeg(
         str(final_target_channels),  # Set number of audio channels
         "-ar",
         str(target_sr),  # Set audio sample rate
-        "-",  # Pipe output to stdout
     ]
+    if max_output_bytes is not None:
+        # Make ffmpeg self-limit its output so capture_output cannot buffer past
+        # the ceiling: ``-fs`` stops writing once the byte limit is reached
+        # (spec R9). The post-capture check below is the backstop.
+        cmd += ["-fs", str(max_output_bytes)]
+    cmd.append("-")  # Pipe output to stdout
 
     input_data = source if isinstance(source, bytes) else None
 
@@ -1078,6 +1090,14 @@ def _load_with_ffmpeg(
         )
         if not proc.stdout:
             raise AudioProcessingError("FFmpeg produced no audio data.")
+        # Defense in depth: reject decoded output past the ceiling even if an
+        # ffmpeg build ignored ``-fs`` (spec R9). Bounds the np.frombuffer copy.
+        if max_output_bytes is not None and len(proc.stdout) > max_output_bytes:
+            raise AudioProcessingError(
+                f"FFmpeg decoded output exceeds the {max_output_bytes}-byte ceiling. "
+                "The input likely declares a very long duration; provide a shorter "
+                "clip or an engine without this limit."
+            )
         audio: NDArray[np.float32] = np.frombuffer(proc.stdout, dtype=np.float32)
 
         # Contract guarantee: check for empty decoded audio

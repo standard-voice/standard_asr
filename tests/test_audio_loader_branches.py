@@ -575,6 +575,78 @@ def test_load_with_ffmpeg_empty_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
         audio_loader._load_with_ffmpeg(b"data", 16000, 1)  # pyright: ignore[reportPrivateUsage]
 
 
+def test_load_with_ffmpeg_rejects_oversized_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Spec R9: a crafted long-duration input could emit far more PCM than its
+    # encoded size implies. If ffmpeg's stdout exceeds the output ceiling, it is
+    # rejected (defense in depth) rather than buffered into a multi-GB array.
+    def _which(_: str) -> str:
+        return "/usr/bin/ffmpeg"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    oversized = np.zeros(64, dtype=np.float32).tobytes()  # 256 bytes > the cap
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(["ffmpeg"], 0, stdout=oversized, stderr=b"")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+
+    with pytest.raises(AudioProcessingError, match="exceeds the .* ceiling"):
+        audio_loader._load_with_ffmpeg(  # pyright: ignore[reportPrivateUsage]
+            b"data", 16000, 1, max_output_bytes=16
+        )
+
+
+def test_load_with_ffmpeg_passes_fs_limit_to_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The decode command must carry ``-fs <ceiling>`` so ffmpeg self-limits its
+    # output (capture_output cannot then buffer past the ceiling).
+    captured: dict[str, list[str]] = {}
+
+    def _which(_: str) -> str:
+        return "/usr/bin/ffmpeg"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=np.zeros(4, np.float32).tobytes(), stderr=b""
+        )
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+
+    audio_loader._load_with_ffmpeg(b"data", 16000, 1, max_output_bytes=4096)  # pyright: ignore[reportPrivateUsage]
+    cmd = captured["cmd"]
+    assert "-fs" in cmd
+    assert cmd[cmd.index("-fs") + 1] == "4096"
+    assert cmd[-1] == "-"  # the pipe-output arg stays last
+
+
+def test_load_with_ffmpeg_none_output_bound_omits_fs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # max_output_bytes=None disables the ceiling: no ``-fs`` flag, no rejection
+    # even for a large stdout.
+    captured: dict[str, list[str]] = {}
+
+    def _which(_: str) -> str:
+        return "/usr/bin/ffmpeg"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    big = np.zeros(1024, dtype=np.float32).tobytes()
+
+    def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout=big, stderr=b"")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+
+    out = audio_loader._load_with_ffmpeg(  # pyright: ignore[reportPrivateUsage]
+        b"data", 16000, 1, max_output_bytes=None
+    )
+    assert out.shape[0] == 1024
+    assert "-fs" not in captured["cmd"]
+
+
 def test_load_with_ffmpeg_zero_samples(monkeypatch: pytest.MonkeyPatch) -> None:
     def _which(_: str) -> str:
         return "/usr/bin/ffmpeg"
