@@ -95,11 +95,17 @@ def decode_base64_audio(value: str) -> bytes:
       treated as base64.
     * Any other string is treated as a bare base64 payload.
 
+    The ``data:`` scheme is detected case-insensitively (``data:``, ``DATA:``,
+    ``Data:`` ...) so this matches the case-insensitive dispatch in
+    :func:`load_audio` / :func:`decode_audio`; an upper/mixed-case ``DATA:`` URI
+    decodes correctly instead of being mis-parsed as raw base64.
+
     Validation is strict (``validate=True``): non-base64 characters fail loudly
     rather than being silently dropped.
 
     Args:
-        value: A ``data:...;base64,...`` URI or a bare base64 string.
+        value: A ``data:...;base64,...`` URI (any case for the scheme) or a bare
+            base64 string.
 
     Returns:
         The decoded bytes.
@@ -108,7 +114,7 @@ def decode_base64_audio(value: str) -> bytes:
         AudioProcessingError: If a ``data:`` URI lacks the ``;base64,`` marker,
             or the payload is not valid base64.
     """
-    if value.startswith("data:"):
+    if value[:5].lower() == "data:":
         marker = ";base64,"
         if marker not in value:
             raise AudioProcessingError(

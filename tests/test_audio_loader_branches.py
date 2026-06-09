@@ -829,6 +829,19 @@ def test_shared_base64_decoder_rejects_data_uri_without_base64_marker() -> None:
         audio_loader.decode_base64_audio("data:audio/wav,not-base64-payload")
 
 
+@pytest.mark.parametrize("scheme", ["data:", "DATA:", "Data:", "dAtA:"])
+def test_shared_base64_decoder_scheme_is_case_insensitive(scheme: str) -> None:
+    # The data: scheme is detected case-insensitively to match the case-
+    # insensitive dispatch in load_audio/decode_audio. A mixed/upper-case DATA:
+    # URI must decode its payload, not be mis-parsed as a raw base64 string (the
+    # old case-sensitive prefix produced a misleading "Invalid base64 payload").
+    import base64 as _b64
+
+    raw = b"hello-audio"
+    encoded = _b64.b64encode(raw).decode()
+    assert audio_loader.decode_base64_audio(f"{scheme}audio/wav;base64,{encoded}") == raw
+
+
 def test_decode_path_native_wav_8bit_mono(tmp_path: Path) -> None:
     path = tmp_path / "a8.wav"
     _write_wav(path, sampwidth=1, channels=1)

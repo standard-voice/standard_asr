@@ -293,6 +293,18 @@ def test_decode_audio_from_data_uri_native_rate() -> None:
     assert arr.ndim == 1
 
 
+def test_decode_audio_from_mixed_case_data_uri() -> None:
+    # End-to-end: a mixed-case DATA: scheme is routed in by the case-insensitive
+    # dispatch AND decoded by the (now) case-insensitive base64 decoder, instead
+    # of failing with a misleading "Invalid base64 audio payload".
+    import base64 as _b64
+
+    uri = "DATA:audio/wav;base64," + _b64.b64encode(_wav_bytes(rate=8000)).decode()
+    arr, sr = decode_audio(uri)
+    assert sr == 8000
+    assert arr.ndim == 1
+
+
 def test_decode_audio_rejects_unsupported_type() -> None:
     with pytest.raises(TypeError):
         decode_audio(12345)  # type: ignore[arg-type]
