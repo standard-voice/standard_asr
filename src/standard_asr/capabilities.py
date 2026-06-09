@@ -578,10 +578,17 @@ def _derive_supported(node: object) -> bool:
         return False
     if isinstance(node, dict):
         mapping = cast("dict[str, object]", node)
+        # An explicit `supported` is the authoritative flag for a flag/bounded
+        # archetype and is read as a STRICT boolean: only a real ``True`` counts
+        # as supported. A non-bool (e.g. the STRING "false", truthy in Python, or
+        # a number) is a malformed declaration and is fail-closed to ``False`` --
+        # never silently promoted to supported. An explicit `supported` is also
+        # checked BEFORE `mode`: a `mode` sub-key on the same node MUST NOT raise
+        # an explicit ``supported: false`` back to true (spec §C R6, fail-closed).
+        if "supported" in mapping:
+            return mapping["supported"] is True
         if "mode" in mapping:
             return mapping["mode"] not in _UNSUPPORTED_MODES
-        if "supported" in mapping:
-            return bool(mapping["supported"])
         return True  # present container dict
     return False
 

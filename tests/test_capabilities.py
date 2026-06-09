@@ -342,6 +342,49 @@ def test_dict_node_supports_via_mode_and_supported_keys() -> None:
     assert "batch.x_container.nested" in paths
 
 
+def test_dict_node_supported_is_strict_boolean() -> None:
+    # A raw x_* dict node's `supported` is read as a STRICT boolean: only a real
+    # bool True counts. A non-bool (the STRING "false" -- truthy in Python -- or a
+    # number) is a malformed declaration and is fail-closed to False, never
+    # silently promoted to supported.
+    caps = _x_caps(
+        {
+            "x_str_false": {"supported": "false"},
+            "x_str_true": {"supported": "true"},
+            "x_num_one": {"supported": 1},
+            "x_real_true": {"supported": True},
+            "x_real_false": {"supported": False},
+        }
+    )
+    assert caps.supports("batch.x_str_false") is False
+    assert caps.supports("batch.x_str_true") is False
+    assert caps.supports("batch.x_num_one") is False
+    assert caps.supports("batch.x_real_true") is True
+    assert caps.supports("batch.x_real_false") is False
+    # canonical_json injects the same fail-closed value for cross-language clients.
+    cj = caps.canonical_json()
+    assert cj["batch"]["x_str_false"]["supported"] is False
+    assert cj["batch"]["x_real_true"]["supported"] is True
+
+
+def test_dict_node_mode_does_not_override_explicit_supported_false() -> None:
+    # An explicit `supported: false` is authoritative: a `mode` sub-key on the
+    # same node MUST NOT raise it back to true (fail-closed, spec §C R6). A node
+    # carrying only `mode` (no `supported`) still derives from the mode.
+    caps = _x_caps(
+        {
+            "x_off_with_mode": {"supported": False, "mode": "seamless"},
+            "x_on_with_mode": {"supported": True, "mode": "unsupported"},
+            "x_mode_only": {"mode": "seamless"},
+        }
+    )
+    assert caps.supports("batch.x_off_with_mode") is False
+    # An explicit supported=True is likewise authoritative over the mode key.
+    assert caps.supports("batch.x_on_with_mode") is True
+    # No `supported` key -> mode governs.
+    assert caps.supports("batch.x_mode_only") is True
+
+
 def test_covers_with_dict_nodes_constraint_narrowing() -> None:
     # Both declared and effective carry an x_* dict node with a numeric upper
     # bound; widening it must be rejected, narrowing/equal accepted (the dict
