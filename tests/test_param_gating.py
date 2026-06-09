@@ -521,6 +521,35 @@ def test_degrade_truncation_drops_hints_but_keeps_free_prompt_text_signals_loss(
     assert not any(d.code == "guidance_degraded_to_prompt" for d in diags)
 
 
+def test_degrade_dropped_signal_not_fooled_by_hint_substring_in_prompt() -> None:
+    # Regression: the all-hints-dropped check must scan ONLY the surviving framed
+    # region, not the whole truncated prompt. A hint term that merely occurs as a
+    # SUBSTRING of a surviving original-prompt word (here "cat" inside
+    # "categorize") must NOT be mistaken for surviving hint content -- otherwise
+    # the degrade falsely reports success when every hint was truncated away.
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=1)),
+                phrase_hints=PhraseHintsCap(supported=False),
+            )
+        )
+    )
+    params = RuntimeParams(
+        prompt="categorize",
+        phrase_hints=["cat"],
+        on_unsupported="degrade_to_prompt",
+    )
+    gated, diags = gate_params(params, caps, "batch", strict=False)
+
+    assert gated.phrase_hints is None
+    assert gated.prompt == "categorize"  # the framed hint block was cut entirely.
+    # "cat" survives only as a substring of "categorize", NOT as folded-in hint
+    # content -> the loss must be the distinct dropped signal, not a false success.
+    assert any(d.code == "guidance_degrade_phrase_hints_dropped" for d in diags)
+    assert not any(d.code == "guidance_degraded_to_prompt" for d in diags)
+
+
 def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(

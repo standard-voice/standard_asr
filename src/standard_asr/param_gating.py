@@ -512,6 +512,12 @@ def _check_provider_params(
         )
 
 
+#: Marker prefixing the synthesized phrase-hints block in a degraded prompt.
+#: Shared by the frame builder and the post-truncation survival check so the two
+#: never drift, and so survival is scanned only within the framed region.
+_PHRASE_HINTS_FRAME_PREFIX = "Relevant terms: "
+
+
 def _try_degrade_to_prompt(
     params: RuntimeParams,
     capabilities: DeclaredCapabilities,
@@ -566,7 +572,7 @@ def _try_degrade_to_prompt(
         return False
     if not capabilities.supports(f"{mode}.guidance.prompt"):
         return False
-    framed = "Relevant terms: " + ", ".join(hints) + "."
+    framed = _PHRASE_HINTS_FRAME_PREFIX + ", ".join(hints) + "."
     existing = params.prompt
     combined = f"{existing}\n{framed}" if existing else framed
 
@@ -596,14 +602,24 @@ def _try_degrade_to_prompt(
             )
         )
         combined = truncated
-        # The framed hints sit at the tail of ``combined``, so forward truncation
-        # cuts them first. If the budget is so small that NONE of the hint terms
-        # survived, the degrade folded no hint content into the prompt at all --
-        # reporting a plain ``guidance_degraded_to_prompt`` here would mislead the
-        # caller into thinking the hints were honored when they were silently cut.
-        # Emit a distinct, explicit signal instead (the loss is honest, not a
-        # generic prompt_truncated; spec §Runtime R4: never silently degrade).
-        if not any(hint in combined for hint in hints):
+        # The framed hints sit at the tail of ``combined`` after the marker, so
+        # forward truncation cuts them first. Scan for survival ONLY within the
+        # surviving framed region (the text after the LAST marker) -- never the
+        # original prompt prefix: a hint term that merely occurs as a substring of
+        # an original-prompt word (e.g. hint ``"cat"`` inside ``"categorize"``)
+        # must NOT be mistaken for surviving hint content. A partial mid-term cut
+        # also reads as "not survived" because the full term no longer appears.
+        # If the budget is so small that NO hint term survived, the degrade folded
+        # no hint content into the prompt at all -- reporting a plain
+        # ``guidance_degraded_to_prompt`` here would mislead the caller into
+        # thinking the hints were honored when they were silently cut. Emit a
+        # distinct, explicit signal instead (the loss is honest, not a generic
+        # prompt_truncated; spec §Runtime R4: never silently degrade).
+        marker_pos = combined.rfind(_PHRASE_HINTS_FRAME_PREFIX)
+        surviving_frame = (
+            combined[marker_pos + len(_PHRASE_HINTS_FRAME_PREFIX) :] if marker_pos != -1 else ""
+        )
+        if not any(hint in surviving_frame for hint in hints):
             updates["prompt"] = combined
             updates["phrase_hints"] = None
             diagnostics.append(
