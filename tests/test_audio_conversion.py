@@ -296,6 +296,36 @@ def test_array_resampled_to_accepted_rate() -> None:
     assert any(d.code == "resampled_with" for d in prepared.diagnostics)
 
 
+def test_array_required_rate_overrides_any() -> None:
+    # C2/D7: required_input_sample_rate is authoritative even when
+    # accepted_sample_rates is "any". The "any" short-circuit previously returned
+    # the source unchanged, ignoring the hard requirement.
+    prepared = _exec(
+        AudioArray(np.zeros(16000, dtype=np.float32), 16000),
+        {InputKind.ARRAY},
+        accepted_sample_rates="any",
+        required_input_sample_rate=24000,
+        native_sample_rate=24000,
+    )
+    assert prepared.sample_rate == 24000
+    assert any(
+        d.code == "resampled_with" and d.provided == "16000->24000" for d in prepared.diagnostics
+    )
+
+
+def test_array_required_rate_overrides_in_accepted_source() -> None:
+    # required_input_sample_rate wins even when the source rate is itself in
+    # accepted_sample_rates -- a hard wire requirement means exactly that rate.
+    prepared = _exec(
+        AudioArray(np.zeros(16000, dtype=np.float32), 16000),
+        {InputKind.ARRAY},
+        accepted_sample_rates=[16000, 24000],
+        required_input_sample_rate=24000,
+        native_sample_rate=24000,
+    )
+    assert prepared.sample_rate == 24000
+
+
 # --- C4: decode preserves the native sample rate (no silent forced 16k) ---
 
 

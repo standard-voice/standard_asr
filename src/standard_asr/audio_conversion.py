@@ -476,12 +476,17 @@ def _apply_sample_rate(
         sample_rate = ASSUMED_SAMPLE_RATE
         diags.append(_assumed_sample_rate_diag())
 
-    if not isinstance(accepted, list) or sample_rate in accepted:
+    if required_input_sample_rate is not None and sample_rate != required_input_sample_rate:
+        # A hard-required rate is authoritative (spec R7): always resample to it,
+        # even when accepted_sample_rates is "any" or already contains the source
+        # rate. An engine that hard-requires a wire rate must receive exactly it.
+        target = required_input_sample_rate
+    elif not isinstance(accepted, list) or sample_rate in accepted:
         return array, sample_rate
-
-    target = _target_array_sample_rate(
-        accepted, native_sample_rate, required_input_sample_rate, source_sample_rate=sample_rate
-    )
+    else:
+        target = _target_array_sample_rate(
+            accepted, native_sample_rate, required_input_sample_rate, source_sample_rate=sample_rate
+        )
     resampled, backend = resample_with_backend(array, sample_rate, target)
     label = "built-in fallback" if backend == "fallback" else "scipy resample_poly"
     diags.append(
