@@ -373,6 +373,34 @@ def test_discover_canonicalizes_engine_id_and_logs(
     assert any("not PEP 503 normalized" in r.message for r in caplog.records)
 
 
+def test_by_engine_normalizes_non_canonical_argument() -> None:
+    # IC.2 consistency: by_engine() must PEP 503-normalize its argument the same
+    # way spec()/create() do, so a non-canonical query form (e.g. "my_engine")
+    # resolves to the same engine -- not an empty list while spec()/create()
+    # still resolve it.
+    eps = [
+        EntryPoint(
+            name="my-engine/first",
+            value="tests.test_discovery:_dummy_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+
+    expected = ["my-engine/first"]
+    assert registry.by_engine("my-engine") == expected  # canonical form.
+    # Lowercase non-canonical forms ([-_.] separators) are exactly what
+    # spec()/create() accept and fold to the canonical id; by_engine() now agrees
+    # instead of returning [].
+    for non_canonical in ("my_engine", "my.engine", "my--engine"):
+        assert registry.by_engine(non_canonical) == expected, non_canonical
+        assert registry.spec(f"{non_canonical}/first").engine_id == "my-engine"
+        assert registry.create(f"{non_canonical}/first") is not None
+    # pep503_normalize also lowercases, so by_engine tolerates a mixed-case form
+    # too (a lookup key, unlike an entry-point name, need not be lowercase).
+    assert registry.by_engine("My-Engine") == expected
+
+
 def test_model_spec_load_factory_error_on_load() -> None:
     class _BadEntryPoint:
         def load(self) -> object:

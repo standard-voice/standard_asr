@@ -474,8 +474,14 @@ class ModelRegistry:
     def by_engine(self, engine_id: str) -> list[str]:
         """List all model keys for a specific engine.
 
+        The argument is PEP 503-normalized to the canonical routing identity
+        before matching (IC.2), so a non-canonical form (e.g. ``my_engine``)
+        resolves to the same engine as :meth:`spec` / :meth:`create` -- the
+        stored ``engine_id`` is already canonical.
+
         Args:
-            engine_id: Engine identifier (e.g., ``faster-whisper``).
+            engine_id: Engine identifier (e.g., ``faster-whisper``). Any PEP 503
+                equivalent form (``Faster_Whisper``, ``faster.whisper``) matches.
 
         Returns:
             List of matching model keys, sorted alphabetically.
@@ -484,7 +490,8 @@ class ModelRegistry:
             >>> registry.by_engine("faster-whisper")
             ['faster-whisper/', 'faster-whisper/large-v3', 'faster-whisper/small']
         """
-        return sorted(key for key, spec in self._specs.items() if spec.engine_id == engine_id)
+        canonical = pep503_normalize(engine_id)
+        return sorted(key for key, spec in self._specs.items() if spec.engine_id == canonical)
 
     def spec(self, name: str) -> ModelSpec:
         """Get metadata for a model.
