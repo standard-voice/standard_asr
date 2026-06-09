@@ -638,6 +638,35 @@ def test_check_event_sequence_accepts_supersede_merge_preserving_frozen() -> Non
     assert report.passed is True
 
 
+def test_check_event_sequence_warns_unfulfilled_supersede_obligation() -> None:
+    # A8: the replacement re-froze "你好" but the retired frozen prefix was
+    # "你好世界" -- the permitted conservative direction. The replay reports it as
+    # a soft WARNING (it does NOT fail the report; the supersede is not rejected).
+    events = [
+        TranscriptionEvent.final("a", "你好世界", stable_until=4),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.final("b", "你好", stable_until=2),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True, [i.message for i in report.issues]
+    obligation = [i for i in report.issues if "supersede_obligation_unfulfilled" in i.message]
+    assert len(obligation) == 1
+    assert obligation[0].level == "warning"
+
+
+def test_check_event_sequence_reconciled_supersede_has_no_obligation_warning() -> None:
+    events = [
+        TranscriptionEvent.final("a", "你好世界", stable_until=4),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.final("b", "你好世界", stable_until=4),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True
+    assert not any("supersede_obligation_unfulfilled" in i.message for i in report.issues)
+
+
 def test_check_event_sequence_flags_unannounced_old_id() -> None:
     events = [
         TranscriptionEvent.supersede(["never-seen"], ["b"]),

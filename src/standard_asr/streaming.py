@@ -692,6 +692,9 @@ class _LifecycleGuard:
         #: Maps each ``new_id`` of an active supersede group to its shared
         #: frozen-prefix-preservation obligation (spec ST.5.2).
         self._supersede_obligations: dict[str, _SupersedeObligation] = {}
+        #: Set once :meth:`finalize` has run, so the end-of-session obligation
+        #: sweep is emitted at most once per guard.
+        self._finalized = False
         self.diagnostics: list[Diagnostic] = []
 
     def _reject(self, code: str, message: str) -> None:
@@ -941,6 +944,57 @@ class _LifecycleGuard:
         f_new = obligation.f_new()
         common = min(len(f_new), len(obligation.f_old))
         return f_new[:common] == obligation.f_old[:common]
+
+    def finalize(self) -> list[Diagnostic]:
+        """Sweep for supersede obligations left unfulfilled at session end.
+
+        The supersede frozen-prefix rule is asymmetric (spec ST.5.2): the
+        *contradiction* direction is rejected eagerly in :meth:`admit`, but the
+        *conservative* direction -- the replacement's concatenated frozen prefix
+        ``F_new`` remaining strictly SHORTER than the retired ``F_old`` -- is
+        permitted to stay pending, on the bet that later events will re-freeze the
+        rest. If the session ends with that bet unsettled, frozen text the user
+        saw was effectively dropped from the lineage; the spec allows it but
+        wants it reported "at most with a soft diagnostic". This emits exactly
+        that: one **soft** (``info``) ``supersede_obligation_unfulfilled``
+        diagnostic per still-short obligation, naming the affected ``new_ids``.
+        It is NOT an error and does not reject anything -- the supersede stands.
+
+        Call this once when the session reaches its terminal (the base appends
+        ``done``) and once when :func:`~standard_asr.compliance.check_event_sequence`
+        finishes replaying. Idempotent: the sweep runs at most once per guard.
+
+        Returns:
+            The newly emitted obligation diagnostics (also appended to
+            :attr:`diagnostics`); empty if every obligation reconciled.
+        """
+        if self._finalized:
+            return []
+        self._finalized = True
+        emitted: list[Diagnostic] = []
+        seen: set[int] = set()
+        for obligation in self._supersede_obligations.values():
+            # new_ids of one supersede share a single obligation object; emit
+            # once per obligation, not once per new_id.
+            if id(obligation) in seen:
+                continue
+            seen.add(id(obligation))
+            if len(obligation.f_new()) < len(obligation.f_old):
+                emitted.append(
+                    Diagnostic(
+                        level="info",
+                        code="supersede_obligation_unfulfilled",
+                        message=(
+                            f"supersede replacement {obligation.new_ids!r} ended with its "
+                            f"concatenated frozen prefix shorter than the retired frozen text "
+                            f"({obligation.f_new()!r} vs {obligation.f_old!r}); the unre-frozen "
+                            "tail was dropped from the lineage (spec ST.5.2: permitted, "
+                            "reported as a soft diagnostic)."
+                        ),
+                    )
+                )
+        self.diagnostics.extend(emitted)
+        return emitted
 
     def _clamp_audio_cursor(self, event: TranscriptionEvent) -> TranscriptionEvent:
         """Clamp a decreasing ``audio_processed_until`` cursor (spec ST.4.1).
@@ -1372,6 +1426,11 @@ class TranscriptionSession(ABC):
                     return
                 self._buffer.put(admitted)
             self._drain_pending_reconnects()
+            # Session ended cleanly: sweep for supersede obligations whose
+            # replacement never re-froze all the retired frozen text. Any such
+            # lineage loss is permitted but MUST be reported honestly as a soft
+            # diagnostic (spec ST.5.2); it surfaces through diagnostics().
+            self._guard.finalize()
             # done MUST never be dropped: bypass the bound so it always lands.
             self._buffer.put_forced(TranscriptionEvent.done())
         except asyncio.CancelledError:  # pragma: no cover - teardown path

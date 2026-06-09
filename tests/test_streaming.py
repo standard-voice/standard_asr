@@ -1387,6 +1387,100 @@ def test_guard_supersede_no_frozen_old_text_has_no_obligation() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# A8 -- unfulfilled supersede frozen-prefix obligation at session end
+# --------------------------------------------------------------------------- #
+def test_guard_finalize_flags_unfulfilled_supersede_obligation() -> None:
+    # The replacement re-froze "你好" but the retired frozen prefix was "你好世界":
+    # F_new stays strictly shorter than F_old (the permitted conservative
+    # direction). At session end this is reported as ONE soft info diagnostic.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    assert not guard.diagnostics  # nothing eager: the short direction is allowed.
+    emitted = guard.finalize()
+    assert len(emitted) == 1
+    diag = emitted[0]
+    assert diag.code == "supersede_obligation_unfulfilled"
+    assert diag.level == "info"  # soft, not an error.
+    assert "b" in diag.message  # names the affected new id.
+    # Surfaced through the guard's diagnostics channel too.
+    assert guard.diagnostics == emitted
+
+
+def test_guard_finalize_no_diagnostic_for_reconciled_supersede() -> None:
+    # The replacement re-froze the full retired frozen prefix -> obligation
+    # satisfied -> finalize emits nothing.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    guard.admit(TranscriptionEvent.final("b", "你好世界", stable_until=4))
+    assert guard.finalize() == []
+    assert not guard.diagnostics
+
+
+def test_guard_finalize_one_diagnostic_per_obligation_not_per_new_id() -> None:
+    # A 1->2 split shares one obligation across both new ids; an unfulfilled
+    # split yields exactly ONE diagnostic naming both new ids (not one each).
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
+    guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))  # c never freezes
+    emitted = guard.finalize()
+    assert len(emitted) == 1
+    assert "b" in emitted[0].message and "c" in emitted[0].message
+
+
+def test_guard_finalize_is_idempotent() -> None:
+    # finalize runs the sweep at most once (the session terminal and a later
+    # compliance replay must not double-report).
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    assert len(guard.finalize()) == 1
+    assert guard.finalize() == []  # second sweep is a no-op.
+    assert len(guard.diagnostics) == 1
+
+
+def test_session_unfulfilled_supersede_obligation_surfaces_soft_diagnostic_on_done() -> None:
+    # A session that supersedes a frozen segment and ends (done) with the
+    # replacement re-frozen LESS than the retired frozen prefix yields ONE soft
+    # supersede_obligation_unfulfilled diagnostic via diagnostics() -- not an
+    # error event, and the session still terminates with done.
+    async def run() -> tuple[list[str], list[TranscriptionEvent]]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.final("a", "你好世界", stable_until=4),
+                TranscriptionEvent.supersede(["a"], ["b"]),
+                TranscriptionEvent.partial("b", "你好", stable_until=2),
+            ]
+        )
+        events = await _collect(session)
+        return [d.code for d in session.diagnostics()], events
+
+    codes, events = asyncio.run(run())
+    assert codes == ["supersede_obligation_unfulfilled"]
+    assert events[-1].type == "done"
+    assert not any(e.type == "error" for e in events)
+
+
+def test_session_reconciled_supersede_emits_no_obligation_diagnostic() -> None:
+    async def run() -> list[str]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.final("a", "你好世界", stable_until=4),
+                TranscriptionEvent.supersede(["a"], ["b"]),
+                TranscriptionEvent.final("b", "你好世界", stable_until=4),
+            ]
+        )
+        await _collect(session)
+        return [d.code for d in session.diagnostics()]
+
+    assert asyncio.run(run()) == []
+
+
+# --------------------------------------------------------------------------- #
 # STRE-2 / X-ST-2 -- supersede ordering & disjointness invariants (spec ST.5.2)
 # --------------------------------------------------------------------------- #
 def test_supersede_disjoint_enforced_at_construction() -> None:

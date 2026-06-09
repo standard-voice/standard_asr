@@ -585,6 +585,19 @@ def check_event_sequence(
                 model=None,
             )
         )
+    # Sweep for supersede frozen-prefix obligations the replacement never fully
+    # re-froze before the sequence ended. This is the permitted (conservative)
+    # direction of spec ST.5.2, so it is a soft WARNING -- it does NOT fail the
+    # report -- consistent with how the runtime surfaces it via diagnostics().
+    # Harvested AFTER the error loop above so it is not mis-promoted to error.
+    for obligation in guard.finalize():
+        issues.append(
+            ComplianceIssue(
+                level="warning",
+                message=(f"streaming soft diagnostic ({obligation.code}): {obligation.message}"),
+                model=None,
+            )
+        )
     if not saw_any:
         if not allow_empty:
             issues.append(
