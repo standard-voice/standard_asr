@@ -374,11 +374,15 @@ def create_app(
         max_body_bytes: Maximum accepted request-body size in bytes. Requests
             exceeding this are rejected with ``413`` *before* the body is
             decoded, bounding peak memory (see :data:`DEFAULT_MAX_BODY_BYTES`).
-        max_ws_frame_bytes: Maximum size of a single WebSocket binary audio
-            frame in bytes. The HTTP body-size guard does not cover the WS
-            scope, so the stream bridge enforces this per-frame cap directly;
-            an over-cap frame closes the socket with a policy error (see
-            :data:`DEFAULT_MAX_WS_FRAME_BYTES`).
+        max_ws_frame_bytes: Maximum size of a single WebSocket frame in bytes
+            (audio frames *and* the config/handshake frame). The HTTP body-size
+            guard does not cover the WS scope, so the stream bridge enforces this
+            per-frame cap directly; an over-cap frame closes the socket with a
+            policy error (see :data:`DEFAULT_MAX_WS_FRAME_BYTES`). The transport
+            also imposes its own ``ws_max_size`` (uvicorn's default is 16 MiB),
+            so the effective bound is ``min(max_ws_frame_bytes, transport
+            ws_max_size)``; :func:`run` passes ``ws_max_size=max_ws_frame_bytes``
+            so the two match.
         max_ws_session_bytes: Cumulative cap on total audio bytes ingested over
             one WebSocket session; exceeding it closes the socket with a policy
             error (see :data:`DEFAULT_MAX_WS_SESSION_BYTES`).
@@ -630,9 +634,19 @@ def create_app(
         """
         await websocket.accept()
         try:
-            config = await websocket.receive_json()
+            config = await _receive_config_frame(websocket, max_ws_frame_bytes)
             audio_format = AudioFormat(**config["audio_format"])
             params = _build_params(config.get("options"))
+        except _ConfigFrameTooLarge as exc:
+            # The config/handshake frame is bounded by the app cap too (not just
+            # the transport ws_max_size), so the documented DoS bound holds
+            # regardless of the ASGI server in front. Reported like the audio
+            # caps (server.md §4.4).
+            await websocket.send_json(
+                {"type": "error", "code": "payload_too_large", "message": str(exc)}
+            )
+            await websocket.close()
+            return
         except ValidationError as exc:
             # Sanitize: pydantic's str(exc) echoes the offending input value, so
             # a mis-placed secret in options would be reflected to the client.
@@ -707,6 +721,45 @@ def create_app(
         await websocket.close()
 
     return app
+
+
+class _ConfigFrameTooLarge(Exception):
+    """The WebSocket config/handshake frame exceeded the app per-frame cap."""
+
+
+async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> dict[str, Any]:
+    """Receive and parse the WS config frame, bounded by the app per-frame cap.
+
+    The audio frames are byte-bounded by :func:`_bridge_stream`, but the very
+    first config/handshake frame is read before the bridge and would otherwise be
+    covered **only** by the transport's ``ws_max_size`` (uvicorn's default is 16
+    MiB) -- so a smaller app cap (``max_ws_frame_bytes``) would not actually bound
+    it, and the documented vs. enforced DoS bound could diverge. Reading the raw
+    frame and checking its length against the app cap *before* parsing closes that
+    gap independently of the ASGI server in front (the effective bound is
+    ``min(app cap, transport ws_max_size)``).
+
+    Args:
+        websocket: The accepted client WebSocket.
+        max_frame_bytes: The app per-frame byte cap.
+
+    Returns:
+        The parsed config object.
+
+    Raises:
+        _ConfigFrameTooLarge: If the raw config frame exceeds ``max_frame_bytes``.
+        Exception: If the frame is not a JSON object (surfaced as ``bad_request``
+            by the caller).
+    """
+    message = await websocket.receive()
+    raw = message.get("text")
+    payload: bytes = raw.encode() if isinstance(raw, str) else (message.get("bytes") or b"")
+    if len(payload) > max_frame_bytes:
+        raise _ConfigFrameTooLarge(
+            f"Config frame too large: {len(payload)} bytes exceeds the "
+            f"{max_frame_bytes}-byte per-frame limit."
+        )
+    return json.loads(payload)
 
 
 def _initial_diagnostics_frame(session: TranscriptionSession) -> dict[str, Any] | None:
@@ -1048,20 +1101,38 @@ def run(
     port: int = 8000,
     reload: bool = False,
     log_level: str = "info",
+    *,
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+    max_ws_frame_bytes: int = DEFAULT_MAX_WS_FRAME_BYTES,
+    max_ws_session_bytes: int = DEFAULT_MAX_WS_SESSION_BYTES,
 ) -> None:
     """Run the FastAPI server using Uvicorn.
+
+    The WebSocket per-frame cap is wired to uvicorn's transport ``ws_max_size``
+    so the app-level bound (``max_ws_frame_bytes``) and the transport bound are
+    the **same** honest value -- uvicorn's default ``ws_max_size`` is 16 MiB, so
+    without this a smaller app cap would not actually bound a frame at the
+    transport (and a larger one would be silently clamped by the transport). The
+    config/handshake frame is additionally bounded by the app cap in
+    :func:`_receive_config_frame`, so the effective per-frame bound is
+    ``min(app cap, transport ws_max_size)`` regardless of deployment.
 
     Args:
         host: Bind host.
         port: Bind port.
         reload: Enable auto-reload.
         log_level: Uvicorn log level.
+        max_body_bytes: HTTP request-body cap (see :func:`create_app`).
+        max_ws_frame_bytes: WebSocket per-frame cap; also passed to uvicorn as
+            ``ws_max_size`` (see :func:`create_app`).
+        max_ws_session_bytes: WebSocket per-session cap (see :func:`create_app`).
 
     Returns:
         None.
 
     Raises:
         ImportError: If Uvicorn is not installed.
+        ValueError: If any byte cap is not positive (via :func:`create_app`).
     """
     try:
         import uvicorn
@@ -1071,8 +1142,19 @@ def run(
             "pip install 'standard-asr[server]'."
         ) from exc
 
-    app = create_app()
-    uvicorn.run(app, host=host, port=port, reload=reload, log_level=log_level)
+    app = create_app(
+        max_body_bytes=max_body_bytes,
+        max_ws_frame_bytes=max_ws_frame_bytes,
+        max_ws_session_bytes=max_ws_session_bytes,
+    )
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level=log_level,
+        ws_max_size=max_ws_frame_bytes,
+    )
 
 
 __all__ = [

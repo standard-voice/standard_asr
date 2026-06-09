@@ -435,17 +435,31 @@ def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setitem(__import__("sys").modules, "uvicorn", uvicorn_stub)
 
-    def _create_app() -> str:
+    create_app_kwargs: dict[str, Any] = {}
+
+    def _create_app(**kwargs: Any) -> str:
+        create_app_kwargs.update(kwargs)
         return "app"
 
     monkeypatch.setattr(server_module, "create_app", _create_app)
 
-    server_module.run(host="127.0.0.1", port=9999, reload=False, log_level="warning")
+    server_module.run(
+        host="127.0.0.1",
+        port=9999,
+        reload=False,
+        log_level="warning",
+        max_ws_frame_bytes=4096,
+    )
 
     assert getattr(uvicorn_stub, "called") is True
     kwargs = getattr(uvicorn_stub, "kwargs")
     assert kwargs["host"] == "127.0.0.1"
     assert kwargs["port"] == 9999
+    # The WS per-frame cap is wired to uvicorn's transport ws_max_size so the
+    # app-level bound and the transport bound match.
+    assert kwargs["ws_max_size"] == 4096
+    # The same cap is propagated to the app it builds.
+    assert create_app_kwargs["max_ws_frame_bytes"] == 4096
 
 
 def test_capabilities_endpoint() -> None:
@@ -1446,19 +1460,20 @@ def test_ws_stream_error_event_does_not_leak_detail(
 
 
 def test_ws_stream_oversize_frame_rejected() -> None:
-    # A single binary frame larger than the per-frame cap is rejected with a
-    # policy error and the session is torn down (the HTTP body guard does not
-    # cover the WS scope, so the bridge must cap frames itself).
+    # A single binary AUDIO frame larger than the per-frame cap is rejected with
+    # a policy error and the session is torn down (the HTTP body guard does not
+    # cover the WS scope, so the bridge must cap frames itself). The cap is set
+    # above the small config frame so this exercises the audio-frame path.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(
-        registry=_registry_for("_stream_echo_factory"), max_ws_frame_bytes=4
+        registry=_registry_for("_stream_echo_factory"), max_ws_frame_bytes=128
     )
     client = TestClient(app)
     with client.websocket_connect("/v1/stream/dummy/echo") as ws:
         ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
-        ws.send_bytes(b"way too big")  # 11 bytes > 4-byte per-frame cap
+        ws.send_bytes(b"x" * 200)  # 200 bytes > 128-byte per-frame cap
         events: list[dict[str, Any]] = []
         while True:
             event = ws.receive_json()
@@ -1471,14 +1486,15 @@ def test_ws_stream_oversize_frame_rejected() -> None:
 
 
 def test_ws_stream_cumulative_cap_rejected() -> None:
-    # Each frame is within the per-frame cap, but their cumulative total exceeds
-    # the per-session cap: the bridge rejects with the policy error.
+    # Each audio frame is within the per-frame cap, but their cumulative total
+    # exceeds the per-session cap: the bridge rejects with the policy error. The
+    # per-frame cap is set above the config frame so it is not pre-empted.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(
         registry=_registry_for("_stream_echo_factory"),
-        max_ws_frame_bytes=8,
+        max_ws_frame_bytes=128,
         max_ws_session_bytes=5,
     )
     client = TestClient(app)
@@ -1497,6 +1513,56 @@ def test_ws_stream_cumulative_cap_rejected() -> None:
     assert "per-session limit" in err["message"]
 
 
+def test_ws_stream_oversize_config_frame_rejected() -> None:
+    # The config/handshake frame is bounded by the app per-frame cap too (not
+    # only the transport ws_max_size), so an oversize config frame is rejected
+    # before it is parsed -- the documented DoS bound holds regardless of the
+    # ASGI server in front.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(
+        registry=_registry_for("_stream_echo_factory"), max_ws_frame_bytes=16
+    )
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        # A valid-but-large config frame (well over the 16-byte cap).
+        ws.send_json(
+            {
+                "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                "options": {"prompt": "x" * 64},
+            }
+        )
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "payload_too_large"
+    assert "Config frame too large" in err["message"]
+
+
+def test_ws_stream_config_frame_as_bytes_is_accepted() -> None:
+    # The config frame may arrive as a binary frame; it is bounded and parsed the
+    # same way (covers the bytes branch of the config reader).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    config = json.dumps(
+        {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": None}
+    ).encode()
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_bytes(config)  # config delivered as a binary frame
+        ws.send_bytes(b"abc")
+        ws.send_text("end")
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "done":
+                break
+    assert {e["text"] for e in events if e["type"] == "final"} == {"abc"}
+
+
 def test_ws_stream_within_caps_still_works() -> None:
     # Within both caps, audio still flows and the session completes normally.
     pytest.importorskip("fastapi")
@@ -1504,7 +1570,7 @@ def test_ws_stream_within_caps_still_works() -> None:
 
     app = server_module.create_app(
         registry=_registry_for("_stream_echo_factory"),
-        max_ws_frame_bytes=16,
+        max_ws_frame_bytes=128,
         max_ws_session_bytes=64,
     )
     client = TestClient(app)
