@@ -558,6 +558,31 @@ def test_ensure_stream_format_supported_rejects_unknown_encoding() -> None:
     assert exc_info.value.hint is not None
 
 
+def test_audio_format_encoding_is_normalized() -> None:
+    # AudioFormat.encoding is a case-insensitive identifier: it is stripped and
+    # lowercased on construction, mirroring BaseProperties.wire_encodings so the
+    # two normalize to the same form. A blank encoding is rejected.
+    from pydantic import ValidationError
+
+    from standard_asr.audio_format import AudioFormat
+
+    assert AudioFormat(encoding="PCM_S16LE", sample_rate=16000).encoding == "pcm_s16le"
+    assert AudioFormat(encoding="  Mulaw  ", sample_rate=16000).encoding == "mulaw"
+    with pytest.raises(ValidationError, match="must not be blank"):
+        AudioFormat(encoding="   ", sample_rate=16000)
+
+
+def test_ensure_stream_format_supported_matches_encoding_case_insensitively() -> None:
+    # An engine declaring wire_encodings=['pcm_s16le'] (already lowercased) MUST
+    # accept a session opened with a differently-cased AudioFormat encoding: the
+    # request encoding is normalized to the same form, so it is not a mismatch.
+    from standard_asr.audio_format import AudioFormat
+
+    _WireEngine().ensure_stream_format_supported(
+        AudioFormat(encoding="PCM_S16LE", sample_rate=16000)
+    )
+
+
 def test_ensure_stream_format_supported_rejects_multichannel_wire() -> None:
     # v1 streaming wire is mono-only: the standard layer does not process
     # incremental wire frames, so it cannot downmix multi-channel frames the way

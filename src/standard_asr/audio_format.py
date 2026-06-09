@@ -13,7 +13,7 @@ not self-describing, so they MUST be declared up front.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AudioFormat(BaseModel):
@@ -40,6 +40,34 @@ class AudioFormat(BaseModel):
     )
     sample_rate: int = Field(..., gt=0, description="Sample rate in Hz.")
     channels: int = Field(default=1, gt=0, description="Number of channels.")
+
+    @field_validator("encoding")
+    @classmethod
+    def _normalize_encoding(cls, value: str) -> str:
+        """Strip and lowercase the wire encoding (case-insensitive identifier).
+
+        ``BaseProperties.wire_encodings`` stores its allowlist stripped and
+        lowercased, and
+        :meth:`~standard_asr.asr_interface.EngineBase.ensure_stream_format_supported`
+        checks the request encoding against that normalized list. Normalizing the
+        request encoding the same way here keeps the match case-insensitive: an
+        engine declaring ``"pcm_s16le"`` MUST accept a session opened with
+        ``AudioFormat(encoding="PCM_S16LE")`` -- a pure case difference is the
+        same encoding, never a fail-closed mismatch that bricks a valid session.
+
+        Args:
+            value: The declared wire encoding.
+
+        Returns:
+            The stripped, lowercased encoding.
+
+        Raises:
+            ValueError: If the encoding is blank after stripping.
+        """
+        cleaned = value.strip().lower()
+        if not cleaned:
+            raise ValueError("encoding must not be blank.")
+        return cleaned
 
 
 __all__ = ["AudioFormat"]
