@@ -101,6 +101,7 @@
 - **引擎/云自取**：转发前 MUST 校验 HTTPS-only + 默认拒绝私网/环回/link-local IP 段（RFC1918、127/8、169.254/16、::1、fc00::/7；可显式 opt-in）+ 重定向上限+每跳重校验。
 - **标准自取**：**v1 MUST NOT 实现**（SSRF 高危）。`AudioUrl` v1 仅作透传。
 - v2 若开放：MUST 额外 DNS pin + 流式读取硬上限 + 超时。
+- **v1 校验边界（明示，非静默缺口）**：v1 标准层**只校验调用方给出的那个初始 URL**——解析其 host、核验 HTTPS 与所有解析到的 IP 非私网（实现：`validate_fetchable_url`），随后把**字面 URL**透传给引擎；标准层**自身不拉取、不发起任何请求、因此也不存在需要逐跳重校验的重定向链**。上文第一条里的"重定向上限+每跳重校验"是**引擎/云端 fetcher**的责任（它在 fetch 时会独立地再次解析域名——故 resolve-time IP 检查对 DNS rebinding 仅是 advisory，不是硬保证）。也就是说：**v1 里跟随并逐跳重校验重定向是引擎侧的义务，不是标准层的**；待 v2 标准开放自取时，per-hop 重校验才落到标准层（连同上一条的 DNS pin / 读取上限 / 超时）。
 
 **R5.2 — `AudioStorageUri` 安全模型（独立于 R5）。** provider 云存储 URI（`s3://`/`gs://`/`oss://`/`abfs://` 等）由**引擎**用自己的云 SDK 凭证解析，标准既不拉取也不能在无凭证下访问，因此：
 - 构造期 MUST 校验 scheme 落在 provider 存储 scheme 白名单内（小且 extensible-by-constant，无运行时注册表）；MUST 拒绝 `file://`、`http(s)://`、空值、未知 scheme，报清晰错误。
@@ -239,6 +240,13 @@
 2. 否则，若 `<mode>.language.candidate_languages.supported` 为假 → `None` + 一条 diagnostic（"候选语言被忽略：当前引擎/当前模式不支持此功能"）。
 3. 否则：优先使用本次请求的 `candidate_languages`；若未提供，则使用 `default_candidate_languages`。
 4. 对结果列表执行校验：**去重但保序**；**禁止包含 `auto`**；每个值 MUST ∈ `detectable_languages`；长度 MUST ≤ `…candidate_languages.constraints.max`（超出时：strict 模式抛错；best_effort 模式截断 + diagnostic）。
+
+> **strict / best_effort 边界（与 [§Runtime 参数 R3](#runtime-参数-runtime-parameters--normative) 的"不支持即报错"张力的澄清）**：这里三类情况分属两套错误模型，**不要混淆**：
+> - **功能不支持**（步 2，`candidate_languages.supported=false`）：这是一个**不支持的标准集参数**，但 R3 步 2 明确把它降为 `None` + diagnostic——**永不抛错**，**独立于 strict/best_effort**。它是 Runtime §R2"不支持参数 strict 抛错"的一个**显式 carve-out**：候选语言不支持时静默忽略并诚实诊断，比为一个纯优化项硬失败更合理。
+> - **值非法**（步 4 的"malformed BCP-47 标签"或包含保留字 `auto`）：这是**调用方的代码 bug**（如把 `"english"`/`"auto"` 当候选传入），MUST **始终抛 `ValueError`**，**独立于 strict/best_effort**——与 §Runtime R3 的 `provider_params` 错误"始终抛、不被 strict/best_effort 吞掉"同源。
+> - **值合法但不可达**（步 4 的"non-detectable"或"超 `constraints.max`"）：这才走 §R2 的 strict/best_effort 策略——strict 抛错，best_effort 丢弃/截断 + diagnostic。
+>
+> 实现：`standard_asr.language.effective_candidate_languages`（其 `Raises` 文档逐条对应上述三类）。
 
 ## 5. 示例
 
@@ -756,6 +764,7 @@ start_transcription(
 - **增量喂入**（ElevenLabs realtime、Qwen3 streaming）：传 `audio_format`，之后用 `send_audio(chunk)` 逐块喂裸 PCM 帧。
 - **整段输入 + 流式输出**（OpenAI Audio SSE）：传 `audio`（一个完整的 `AudioInput`，如文件路径或编码字节），引擎一次收完后流式返回结果。
 - `audio_format` 与 `audio` **互斥**；同时传 MUST 报错。
+- **v1 增量 wire 输入仅支持单声道（mono-only）**：`audio_format.channels` MUST = `1`。与批量 `transcribe` 路径不同，标准层**不处理**增量 wire 帧（它们被直接转发给流式引擎），因此**无法**像批量那样对多声道做降混；声明 `channels != 1` 的会话 MUST 在建立时 fail-closed 报错（实现：`EngineBase.ensure_stream_format_supported`）。如需多声道，调用方 MUST 自行在客户端降混到 mono 再喂入。多声道 wire 输入是未来能力（与 §AI R7 的"标准层流式重采样"同属 deferred 路径）。
 
 ### 3.2 两个正交能力轴
 
@@ -846,6 +855,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 
 **规则**：
 - `stable_until` 在同一段内 **MUST 只增不减**（冻结的前缀永不回退）。
+  - **`closed` 终态修正的豁免（见 §5.3 / §5.4）**：此不可变规则约束的是**进行中的识别**——只要识别仍在继续，已冻结前缀 MUST NOT 被后续 `partial`/`final`/`supersede` 改写（实现：标准层 `_LifecycleGuard` 抑制改写并发 `frozen_prefix_rewritten` diagnostic）。**唯一例外**是段进入终态时的 `closed` 事件：它 MAY 对已冻结文本做一次后处理改写（补标点 / ITN / 大小写），这不是"识别回退"而是终态定稿（§5.3、§5.4）。应用收到 `closed` 时 MUST 用新文本**替换**显示，而非追加。
 - 适配器 MUST **保守地**设 `stable_until`——宁可偏小（少冻结几个字），不可偏大（声称冻结了实际可能再变的字）。
 - 引擎没有 `right_context`（前瞻窗口）或时间戳信息时（如 Qwen3-ASR streaming），MUST 报 `stable_until=0`——表示没有冻结任何字。相应地，`word_stability` capability 应声明为 `false`。
 - **简单应用**：可以无视 `stable_until`，只用 `partial` 显示、`final` 提交。
@@ -920,7 +930,7 @@ elif event.type == "supersede":
 - **排序**：`supersede` 事件 MUST 在其 `new_ids` 的任何 `partial`/`final` 之前投递；`old_ids` 中的 id 必须在之前已被宣告过（收到过至少一个 `partial` 或 `final`）。
 - **冻结前缀保留（拼接覆盖规则）**：`supersede` 操作 MUST 保留已冻结的文本。设 **F_old** = 被替换的旧段（按 `old_ids` 顺序）各自冻结前缀 `text[:stable_until]` 的拼接；**F_new** = 新段（按 `new_ids` 顺序）各自当前冻结前缀的拼接（随新段后续 `partial`/`final` 不断冻结更多文本而增长）。**不变量**：F_old 与 F_new MUST 在其公共前缀上一致——任何一方都 MUST NOT 改写另一方。换言之，**用户已经看到并"确信不变"的文字，在段被替换后仍然不变**。
   - 这条规则**统一覆盖** 1→1、多→1（合并）、1→多（拆分）、多→多 各种基数；1→1 只是 n=m=1 的退化情形，无需特殊处理。（例：旧段冻结前缀是"你好世界"，无论新分段是单个 seg("你好世界", `stable_until`≥4) 还是拆成 seg("你好", su≥2)+seg("世界…", su≥2)，拼接后都必须以"你好世界"开头。）
-  - **方向不对称**：**改写/分歧方向** MUST **及早（eagerly）**检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。而"新分段冻结的文本严格少于 F_old"是**保守安全方向**（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。
+  - **方向不对称**：**改写/分歧方向** MUST **及早（eagerly）**检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。而"新分段冻结的文本严格少于 F_old"是**保守安全方向**（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。该"至多一条软诊断"在实现中是：会话到达终态（或合规重放结束）时，若某个 supersede 的 F_new 仍严格短于 F_old，标准层发一条 **`info` 级 `supersede_obligation_unfulfilled`** diagnostic（点名受影响的 `new_ids`），表示未重新冻结的尾巴被从 lineage 中丢弃——它**不是 error、不拒绝**任何事件，supersede 依旧成立（实现：`TranscriptionSession.finalize`）。
 - `re_segments` capability：`false` 表示引擎承诺不发 `supersede`（finals 只增不改）；`true` 表示可能发。
 - **lineage 是 set-to-set（v1 已知限制）**：`old_ids`/`new_ids` 表达 re-segmentation 的**基数**（哪些退休、哪些出现），但**不**承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；冻结前缀保留（上）按**拼接**的 F_old/F_new 校验而非逐对。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。
 
