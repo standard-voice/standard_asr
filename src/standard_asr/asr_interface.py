@@ -244,9 +244,39 @@ class EngineBase(ABC):
         )
         gated, lang_diags = self._resolve_language_axis(gated, "batch")
         # Audio decode/resample only after parameters are known-good.
+        prepared = self._prepare_audio(audio)
+        result = self._transcribe(prepared, gated)
+        merged = [
+            *gate_diags,
+            *lang_diags,
+            *prepared.diagnostics,
+            *result.diagnostics,
+        ]
+        return result.model_copy(update={"diagnostics": merged})
+
+    def _prepare_audio(self, audio: AudioInputLike) -> PreparedAudio:
+        """Decode, negotiate, and resample an audio input (shared pipeline).
+
+        The single owner of the audio-conversion arguments threaded into
+        :func:`~standard_asr.audio_conversion.execute_plan`, shared by
+        :meth:`transcribe` and the whole-input :meth:`start_transcription` path so
+        both honor identical negotiation against the engine's declared audio
+        properties. A new conversion parameter is then wired in exactly one place
+        and can never silently diverge between the batch and streaming paths.
+
+        Args:
+            audio: The caller's audio input (path, bytes, URL, array, ...).
+
+        Returns:
+            The prepared audio (decoded / resampled per the engine's properties),
+            carrying any conversion diagnostics.
+
+        Raises:
+            IncompatibleAudioInputError: If no conversion path exists.
+        """
         provided: AudioInput = coerce_audio_input(audio)
         plan = negotiate_or_raise(provided, set(self.properties.accepted_input))
-        prepared = execute_plan(
+        return execute_plan(
             provided,
             plan,
             accepted_sample_rates=self.properties.accepted_sample_rates,
@@ -256,14 +286,6 @@ class EngineBase(ABC):
             max_audio_duration=self.properties.max_audio_duration,
             strict=self._strict,
         )
-        result = self._transcribe(prepared, gated)
-        merged = [
-            *gate_diags,
-            *lang_diags,
-            *prepared.diagnostics,
-            *result.diagnostics,
-        ]
-        return result.model_copy(update={"diagnostics": merged})
 
     def _validate_language_config(self) -> None:
         """Enforce the ``default_language`` totality invariant (IC.6 / LANG R1).
@@ -651,18 +673,7 @@ class EngineBase(ABC):
         gated, lang_diags = self._resolve_language_axis(gated, "streaming")
         prepared: PreparedAudio | None = None
         if audio is not None:
-            provided: AudioInput = coerce_audio_input(audio)
-            plan = negotiate_or_raise(provided, set(self.properties.accepted_input))
-            prepared = execute_plan(
-                provided,
-                plan,
-                accepted_sample_rates=self.properties.accepted_sample_rates,
-                native_sample_rate=self.properties.native_sample_rate,
-                required_input_sample_rate=self.properties.required_input_sample_rate,
-                max_file_size=self.properties.max_file_size,
-                max_audio_duration=self.properties.max_audio_duration,
-                strict=self._strict,
-            )
+            prepared = self._prepare_audio(audio)
         session = self._start_transcription(
             gated_params=gated, audio_format=audio_format, prepared_audio=prepared
         )
