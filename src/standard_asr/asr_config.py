@@ -234,11 +234,19 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                 with keyword data; passed through unchanged otherwise).
 
         Returns:
-            The (possibly mutated) input mapping.
+            A shallow copy of the input mapping with raw secret strings wrapped
+            (the caller's original mapping is never mutated), or the input
+            unchanged when it is not a mapping.
         """
         if not isinstance(data, dict):
             return data
-        mapping = cast("dict[Any, Any]", data)
+        # Operate on a shallow copy so a caller's input dict is never mutated
+        # (no spooky action at a distance): e.g. ``Cloud.model_validate(d)`` must
+        # leave ``d['api_key']`` the plain str the caller passed, not silently
+        # swap it for a SecretStr in their mapping. A shallow copy is sufficient:
+        # we only rebind whole values (str -> SecretStr), never mutate nested
+        # objects.
+        mapping = dict(cast("dict[Any, Any]", data))
         for name, field in cls.model_fields.items():
             if not _is_secret_marked(field):
                 continue

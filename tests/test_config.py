@@ -152,6 +152,40 @@ def test_secret_validator_passes_non_mapping_input_through() -> None:
         _CloudConfig.model_validate(["not", "a", "dict"])
 
 
+def test_secret_validator_does_not_mutate_caller_input() -> None:
+    # No spooky action at a distance: validating a caller's mapping MUST NOT
+    # mutate it (the before-validator wraps raw secret strings on a shallow copy).
+    # The caller's dict keeps its original plain-str api_key, and the resulting
+    # model still has the secret preserved/correct.
+    user_input = {"api_key": "  pad-secret  ", "base_url": "https://x"}
+    cfg = _CloudConfig.model_validate(user_input)
+    assert user_input["api_key"] == "  pad-secret  "  # original str, untouched.
+    assert not isinstance(user_input["api_key"], SecretStr)
+    assert cfg.api_key is not None
+    assert cfg.api_key.get_secret_value() == "  pad-secret  "
+
+
+def test_secret_validator_does_not_mutate_caller_input_via_alias() -> None:
+    # The same non-mutation guarantee holds when the secret is supplied under a
+    # field alias (the wrap-on-copy path keys by alias too).
+    from pydantic import Field
+
+    class _Aliased(BaseConfig[Literal["al"]]):
+        engine: Literal["al"] = "al"
+        xi_api_key: SecretStr | None = Field(
+            default=None,
+            alias="xi-api-key",
+            json_schema_extra={"format": "password", "writeOnly": True, "secret": True},
+        )
+
+    user_input: dict[str, object] = {"xi-api-key": "tok"}
+    cfg = _Aliased.model_validate(user_input)
+    assert user_input["xi-api-key"] == "tok"
+    assert not isinstance(user_input["xi-api-key"], SecretStr)
+    assert cfg.xi_api_key is not None
+    assert cfg.xi_api_key.get_secret_value() == "tok"
+
+
 def test_env_var_name_normalization() -> None:
     assert env_var_name("acme-cloud", "api_key") == "STANDARD_ASR_ACME_CLOUD_API_KEY"
 
