@@ -366,7 +366,11 @@ def create_app(
     """Create a FastAPI application for Standard ASR.
 
     Args:
-        registry: Optional pre-discovered registry.
+        registry: Pre-discovered registry to expose. When ``None`` (the
+            default), plugins are auto-discovered via ``discover_models()``. An
+            explicitly-passed registry is used as-is **even when empty** (an
+            empty ``ModelRegistry({})`` exposes zero models; it does *not* fall
+            back to discovery).
         max_body_bytes: Maximum accepted request-body size in bytes. Requests
             exceeding this are rejected with ``413`` *before* the body is
             decoded, bounding peak memory (see :data:`DEFAULT_MAX_BODY_BYTES`).
@@ -408,7 +412,12 @@ def create_app(
     globals()["WebSocket"] = _WebSocket
 
     app = FastAPI(title="Standard ASR")
-    model_registry = registry or discover_models()
+    # Use the caller's registry when one is given -- even an empty one. A bare
+    # ``registry or discover_models()`` would treat an explicitly-passed empty
+    # ``ModelRegistry({})`` as falsey (it is len 0) and silently fall back to
+    # full plugin discovery, so an operator who wants to expose ZERO models would
+    # instead expose every installed plugin. ``is not None`` honors the intent.
+    model_registry = registry if registry is not None else discover_models()
 
     # Pure-ASGI body-size guard (see _BodySizeLimitMiddleware): rejects over-large
     # bodies via Content-Length before they are read, without buffering the body.

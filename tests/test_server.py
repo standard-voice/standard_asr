@@ -39,7 +39,7 @@ from standard_asr.capabilities import (
     LanguageCaps,
     StreamingCapabilities,
 )
-from standard_asr.discovery import discover_models
+from standard_asr.discovery import ModelRegistry, discover_models
 from standard_asr.runtime_params import ProviderParams
 from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 
@@ -248,6 +248,26 @@ def test_create_app_missing_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ImportError):
         server_module.create_app()
+
+
+def test_create_app_empty_registry_exposes_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An explicitly-passed empty ModelRegistry must expose ZERO models and MUST
+    # NOT fall back to plugin discovery (a bare `registry or discover_models()`
+    # would treat the len-0 registry as falsey and expose every installed
+    # plugin instead -- the opposite of the operator's intent).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    def _boom() -> ModelRegistry:
+        raise AssertionError("discover_models() must not be called for an explicit registry")
+
+    monkeypatch.setattr(server_module, "discover_models", _boom)
+
+    app = server_module.create_app(registry=ModelRegistry({}))
+    client = TestClient(app)
+    resp: httpx.Response = client.get("/v1/models")
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 def test_create_app_endpoints() -> None:
