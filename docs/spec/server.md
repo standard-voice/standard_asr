@@ -104,20 +104,27 @@ over the transcribe endpoints (§2).
 
 ### 3.7 Error → HTTP status mapping
 
-The transcribe endpoints map engine errors in `_run_transcription` as follows:
+The transcribe endpoints map errors from **both** engine construction
+(`model_registry.create`) and the `transcribe` call as follows:
 
 | Condition | Status |
 |---|---|
-| Unknown model (`EntrypointValidationError` / `FactoryLoadError`) | **404** |
-| Invalid provider param / unsupported standard feature / config error / validation error (`InvalidProviderParamError`, `UnsupportedFeatureError`, `ConfigError`, `ValidationError`) | **422** |
+| Unknown / unloadable model (`EntrypointValidationError` / `FactoryLoadError`) | **404** |
+| Client config error during construction — bad config, missing credentials, or validation (`ConfigError`, `InvalidProviderParamError`, `ValidationError`) | **422** |
+| Invalid provider param / unsupported standard feature / config error / validation error during transcription (`InvalidProviderParamError`, `UnsupportedFeatureError`, `ConfigError`, `ValidationError`) | **422** |
 | Audio decode/processing failure (`AudioProcessingError`) | **400** |
 | Bad `options` (parse / `RuntimeParams` build, before transcription) | **400** |
-| Any other / unexpected error | **500** |
+| Any other / unexpected error (construction or transcription) | **500** |
+
+Engine construction errors are mapped the same way (`unknown model → 404`,
+client config/validation → 422, unexpected → 500); they do **not** escape as a
+non-spec 500.
 
 The **500** response is non-leaking: it returns a stable generic message
-(`"Internal transcription error. See server logs for details."`); the raw
-exception text is logged server-side only, never returned (avoids leaking
-internal paths or upstream/credential material).
+(`"Internal transcription error. See server logs for details."` for the
+transcribe path, `"Internal model construction error. ..."` for construction);
+the raw exception text is logged server-side only, never returned (avoids
+leaking internal paths or upstream/credential material).
 
 ## 4. WebSocket Endpoint `/v1/stream/{model}`
 
@@ -156,15 +163,22 @@ Bridges a WebSocket to an engine streaming session (the incremental
 Client authors MUST handle **both**:
 
 - **Pre-bridge error** (before streaming starts: bad config frame, unknown
-  model, or unsupported feature). Sent as a single frame, then the socket
-  closes:
+  model, a client config error during engine construction, an unsupported
+  feature, or an internal construction fault). Sent as a single frame, then the
+  socket closes:
   ```json
-  { "type": "error", "code": "bad_request" | "unknown_model" | "unsupported", "message": "..." }
+  { "type": "error", "code": "bad_request" | "unknown_model" | "unsupported" | "internal_error", "message": "..." }
   ```
-  - `bad_request`: malformed config frame / invalid `audio_format` / invalid `options`.
+  - `bad_request`: malformed config frame / invalid `audio_format` / invalid
+    `options`, **or** a client config error surfaced during engine construction
+    (`ConfigError` / `InvalidProviderParamError` / `ValidationError` — bad
+    config, missing credentials; mirrors the REST 422 mapping, §3.7).
   - `unknown_model`: model key does not resolve (`EntrypointValidationError` / `FactoryLoadError`).
   - `unsupported`: engine cannot start a streaming session for this request
     (`UnsupportedFeatureError` / `ValueError`).
+  - `internal_error`: an unexpected fault during engine construction. The
+    `message` is a stable generic string (the raw cause is logged server-side
+    only, never sent — mirrors the REST scrubbed-500 contract, §3.7).
 
 - **In-stream error** (a `TranscriptionEvent` with `type == "error"`, produced by
   the engine once streaming has begun). This shape is **different**: it has

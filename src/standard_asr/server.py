@@ -445,6 +445,27 @@ def create_app(
             )
             await websocket.close()
             return
+        except (InvalidProviderParamError, ConfigError, ValidationError) as exc:
+            # Client-caused construction failure (bad config / missing
+            # credentials / invalid options) -- the caller can fix it, so it is a
+            # bad_request, mirroring the REST 422 mapping.
+            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
+            await websocket.close()
+            return
+        except Exception:  # noqa: BLE001
+            # Internal/unexpected construction fault: never crash the route or
+            # leak detail. Log server-side; send a single generic, non-leaking
+            # frame (mirrors the REST scrubbed-500 contract, §3.7).
+            logger.exception("Engine construction failed for streaming model %r", model)
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "internal_error",
+                    "message": "Internal model construction error. See server logs for details.",
+                }
+            )
+            await websocket.close()
+            return
 
         try:
             # start_transcription is part of the structural StandardASR protocol
@@ -621,6 +642,53 @@ async def _bridge_stream(
             await asyncio.gather(pump, return_exceptions=True)
 
 
+async def _create_engine_or_http_error(
+    registry: ModelRegistry,
+    model: str,
+    http_exception: type[Exception],
+) -> Any:
+    """Instantiate the engine, mapping construction errors to HTTP status codes.
+
+    Engine construction (factory load + ``__init__``) can fail for distinct
+    reasons that must NOT all collapse to a non-spec ``500``:
+
+    - an unknown / unloadable model (``EntrypointValidationError`` /
+      ``FactoryLoadError``) is a routing problem -> ``404`` (server.md §3.7);
+    - a client-supplied config problem surfaced during construction -- bad
+      config, missing credentials, or a ``pydantic`` validation error
+      (``ConfigError`` / ``InvalidProviderParamError`` / ``ValidationError``) --
+      is the caller's to fix -> ``422``;
+    - anything else is an internal fault -> a generic, scrubbed ``500`` whose
+      raw text is logged server-side only (same non-leak contract as
+      :func:`_run_transcription`).
+
+    Args:
+        registry: The model registry.
+        model: Model key in ``engine/model`` format.
+        http_exception: The ``HTTPException`` class to raise.
+
+    Returns:
+        The instantiated engine.
+
+    Raises:
+        Exception: ``http_exception`` with an appropriate status code.
+    """
+    try:
+        return await asyncio.to_thread(registry.create, model)
+    except (EntrypointValidationError, FactoryLoadError) as exc:
+        raise http_exception(status_code=404, detail=str(exc)) from exc  # type: ignore[call-arg]
+    except (InvalidProviderParamError, ConfigError, ValidationError) as exc:
+        # Client-caused construction failure (bad config / missing credentials /
+        # invalid options) -- the caller can fix it, so it is a 422, not a 500.
+        raise http_exception(status_code=422, detail=str(exc)) from exc  # type: ignore[call-arg]
+    except Exception as exc:  # noqa: BLE001
+        # Internal/unexpected construction fault: log details, return a stable
+        # generic message so we never leak internal paths or credential text.
+        logger.exception("Engine construction failed for model %r", model)
+        detail = "Internal model construction error. See server logs for details."
+        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+
+
 async def _run_transcription(
     registry: ModelRegistry,
     model: str,
@@ -649,10 +717,7 @@ async def _run_transcription(
     Raises:
         Exception: ``http_exception`` with an appropriate status code.
     """
-    try:
-        asr = await asyncio.to_thread(registry.create, model)
-    except (EntrypointValidationError, FactoryLoadError) as exc:
-        raise http_exception(status_code=404, detail=str(exc)) from exc  # type: ignore[call-arg]
+    asr = await _create_engine_or_http_error(registry, model, http_exception)
 
     try:
         result = await asyncio.to_thread(asr.transcribe, audio, params)

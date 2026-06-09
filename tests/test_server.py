@@ -118,6 +118,21 @@ def _no_instantiate_factory() -> _NoInstantiateASR:  # pyright: ignore[reportUnu
     return _NoInstantiateASR()
 
 
+class _ConfigErrorOnConstructASR(_DummyASR):
+    """Construction raises a client-config error (e.g. missing credential)."""
+
+    def __init__(self) -> None:
+        from standard_asr.exceptions import ConfigError
+
+        raise ConfigError("missing API key for /secret/internal/path")
+
+
+def _config_error_construct_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ConfigErrorOnConstructASR
+):
+    return _ConfigErrorOnConstructASR()
+
+
 # --- Real EngineBase engines that record what negotiation hands them ----------
 
 #: Set by the recording engines' ``_transcribe`` so tests can assert on the
@@ -487,6 +502,89 @@ def test_transcribe_500_does_not_leak_internal_detail() -> None:
     detail = resp.json()["detail"]
     assert "/secret/internal/path" not in detail
     assert "See server logs" in detail
+
+
+def test_transcribe_construction_config_error_maps_to_422() -> None:
+    """A ConfigError raised during engine construction is client-caused -> 422.
+
+    Construction errors must be mapped exactly like transcription errors; a bad
+    config / missing credential must not escape as a non-spec 500.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_config_error_construct_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 422
+    # The safe message is surfaced; it is not a traceback.
+    assert "missing API key" in resp.json()["detail"]
+    assert "Traceback" not in resp.json()["detail"]
+
+
+def test_transcribe_construction_unexpected_error_maps_to_500_no_leak() -> None:
+    """An unexpected construction fault -> generic 500 with no internal detail."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    # _NoInstantiateASR.__init__ raises a RuntimeError carrying internal text.
+    app = server_module.create_app(registry=_registry_for("_no_instantiate_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "instantiation forbidden" not in detail
+    assert "See server logs" in detail
+
+
+def test_transcribe_file_construction_config_error_maps_to_422() -> None:
+    # The multipart endpoint maps construction config errors identically.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_config_error_construct_factory"))
+    client = TestClient(app)
+
+    files = {"file": ("audio.wav", b"fake", "audio/wav")}
+    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 422
+
+
+def test_ws_stream_construction_config_error_reports_bad_request() -> None:
+    # A client config error during engine construction (e.g. missing credential)
+    # is surfaced as a pre-bridge bad_request frame, not a route crash.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_config_error_construct_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "bad_request"
+    assert "missing API key" in err["message"]
+
+
+def test_ws_stream_construction_unexpected_error_reports_internal_no_leak() -> None:
+    # An unexpected construction fault must not crash the route or leak detail:
+    # a single generic internal_error frame is sent instead.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_no_instantiate_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "internal_error"
+    assert "instantiation forbidden" not in err["message"]
+    assert "See server logs" in err["message"]
 
 
 def test_body_size_limit_returns_413() -> None:
