@@ -125,7 +125,7 @@ class PromptConstraints(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
-    max_tokens: int | None = Field(default=None, description="Maximum prompt tokens.")
+    max_tokens: int | None = Field(default=None, gt=0, description="Maximum prompt tokens.")
 
 
 class PhraseHintsConstraints(BaseModel):
@@ -138,9 +138,13 @@ class PhraseHintsConstraints(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
-    max_terms: int | None = Field(default=None, description="Maximum hint terms.")
-    max_chars_per_term: int | None = Field(default=None, description="Maximum characters per term.")
-    max_words_per_term: int | None = Field(default=None, description="Maximum words per term.")
+    max_terms: int | None = Field(default=None, gt=0, description="Maximum hint terms.")
+    max_chars_per_term: int | None = Field(
+        default=None, gt=0, description="Maximum characters per term."
+    )
+    max_words_per_term: int | None = Field(
+        default=None, gt=0, description="Maximum words per term."
+    )
 
 
 class DiarizationConstraints(BaseModel):
@@ -151,7 +155,7 @@ class DiarizationConstraints(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
-    max_speakers: int | None = Field(default=None, description="Maximum speakers.")
+    max_speakers: int | None = Field(default=None, gt=0, description="Maximum speakers.")
 
 
 # --------------------------------------------------------------------------- #

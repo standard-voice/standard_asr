@@ -12,10 +12,13 @@ from standard_asr.capabilities import (
     CandidateLanguagesCap,
     CandidateLanguagesConstraints,
     DeclaredCapabilities,
+    DiarizationConstraints,
     FlagCap,
     GuidanceCaps,
     LanguageCaps,
+    PhraseHintsConstraints,
     PromptCap,
+    PromptConstraints,
     ReconnectCap,
     StreamingCapabilities,
     StreamTimestampsCap,
@@ -166,6 +169,35 @@ def test_covers_allows_constraint_narrowing() -> None:
     assert declared.covers(effective) is True
     # Equal limits are fine too.
     assert declared.covers(declared) is True
+
+
+def test_numeric_constraints_reject_non_positive_values() -> None:
+    # A numeric guidance limit (max count) MUST be a positive integer: a negative
+    # or zero limit is nonsensical and would drive bogus slicing in param_gating
+    # (a negative max silently truncates everything and reports a fake degrade), so
+    # it is rejected at construction. None stays valid (unbounded).
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PromptConstraints(max_tokens=-1)
+    with pytest.raises(ValidationError):
+        PromptConstraints(max_tokens=0)
+    with pytest.raises(ValidationError):
+        PhraseHintsConstraints(max_terms=0)
+    with pytest.raises(ValidationError):
+        PhraseHintsConstraints(max_chars_per_term=-5)
+    with pytest.raises(ValidationError):
+        PhraseHintsConstraints(max_words_per_term=0)
+    with pytest.raises(ValidationError):
+        DiarizationConstraints(max_speakers=-2)
+    with pytest.raises(ValidationError):
+        CandidateLanguagesConstraints(max=0)
+
+    # A valid positive limit (and an unconstrained None) still construct fine.
+    assert PromptConstraints(max_tokens=5).max_tokens == 5
+    assert PromptConstraints().max_tokens is None
+    assert PhraseHintsConstraints(max_terms=3, max_chars_per_term=10).max_terms == 3
+    assert DiarizationConstraints(max_speakers=4).max_speakers == 4
 
 
 def test_covers_rejects_granularity_widening() -> None:
