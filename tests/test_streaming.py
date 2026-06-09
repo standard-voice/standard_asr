@@ -1308,6 +1308,34 @@ def test_guard_supersede_split_contradiction_still_rejected() -> None:
     assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
 
 
+def test_guard_supersede_out_of_order_divergence_diagnostic_names_the_group() -> None:
+    # Diagnostic-accuracy: c freezes WRONG text "界世" out of order (before b has
+    # frozen anything), then b later freezes the CORRECT "你好" -- completing the
+    # contiguous run that exposes c's divergence. The suppression is correct, but
+    # the diagnostic MUST NOT blame b (which froze correct text). It must describe
+    # the supersede GROUP and the F_old-vs-F_new comparison so an engine author
+    # debugging it is pointed at the real divergence, not the run-completing id.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))  # F_old = 你好世界
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
+    out_of_order = guard.admit(TranscriptionEvent.partial("c", "界世", stable_until=2))
+    assert out_of_order is not None  # c's freeze is still pending at this point.
+    assert not guard.diagnostics
+    rejected = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+
+    # Behavior is unchanged: b's freeze is suppressed (the run now diverges).
+    assert rejected is None
+    diag = next(d for d in guard.diagnostics if d.code == "frozen_prefix_rewritten_supersede")
+    # The message references the whole replacement group, not just one segment...
+    assert "['b', 'c']" in diag.message
+    # ...and shows the F_new (diverging contiguous run) vs F_old comparison.
+    assert "你好界世" in diag.message  # F_new
+    assert "你好世界" in diag.message  # F_old
+    # It does NOT mis-attribute the rewrite solely to b: b is mentioned only as
+    # the id that COMPLETED the contiguous run, not as the rewriter.
+    assert "completed the contiguous run" in diag.message
+
+
 def test_guard_supersede_rewrite_frozen_prefix_suppressed() -> None:
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))

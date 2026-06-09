@@ -828,6 +828,17 @@ class _LifecycleGuard:
             if su > 0 and event.text is not None:
                 self._frozen_text[sid] = event.text[:su]
                 if not is_closed_final and not self._supersede_preserves_frozen(sid):
+                    assert obligation is not None
+                    # Capture the diverging comparison BEFORE the rollback below
+                    # restores ``obligation.frozen[sid]``. The contradiction is a
+                    # property of the supersede GROUP, not of ``sid`` alone: a
+                    # later (e.g. out-of-order) freeze on ``sid`` can simply
+                    # complete the contiguous run and expose an EARLIER new id's
+                    # divergence, so blaming ``sid`` mis-attributes the rewrite.
+                    # Report the group and the F_old-vs-F_new comparison instead.
+                    f_old = obligation.f_old
+                    f_new = obligation.f_new()
+                    group = obligation.new_ids
                     if had_stable_until:
                         self._stable_until[sid] = prior_stable_until
                     else:
@@ -836,16 +847,19 @@ class _LifecycleGuard:
                         self._frozen_text[sid] = prior_frozen_text
                     else:
                         self._frozen_text.pop(sid, None)
-                    assert obligation is not None
                     if had_obligation_frozen:
                         obligation.frozen[sid] = prior_obligation_frozen
                     else:
                         obligation.frozen.pop(sid, None)
                     self._reject(
                         "frozen_prefix_rewritten_supersede",
-                        f"segment {sid!r} froze text that rewrites the frozen "
-                        "prefix of the segment(s) it superseded; suppressed "
-                        "(spec ST.5.2: supersede MUST preserve frozen text).",
+                        f"supersede replacement group {group!r} froze a "
+                        f"concatenated prefix {f_new!r} that diverges from the "
+                        f"retired frozen text {f_old!r} it MUST preserve; the freeze "
+                        f"on segment {sid!r} (the latest in the group to freeze) "
+                        "completed the contiguous run that exposed the divergence. "
+                        "Suppressed (spec ST.5.2: supersede MUST preserve frozen "
+                        "text).",
                     )
                     return None
             if event.type == "final":
