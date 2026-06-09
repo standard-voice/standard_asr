@@ -130,6 +130,21 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     if allow_private_addresses:
         return
 
+    # Parse + validate the port BEFORE the IP-vs-name branch so a malformed port
+    # is rejected symmetrically for both host kinds. ``parts.port`` is lazy in
+    # urlsplit and raises a bare ValueError for a malformed port (":99999" out of
+    # range, ":notaport" non-numeric). Doing this only on the name branch would
+    # silently accept an IP-literal host with an invalid port (e.g.
+    # "https://8.8.8.8:99999/a") while the equivalent name-host URL raises -- an
+    # asymmetric, dishonest rejection. Without this guard the bare ValueError also
+    # escapes the validator (which only catches gaierror), surfacing as an
+    # unexpected 500 in the server path instead of the contracted
+    # UnsafeAudioUrlError.
+    try:
+        port = parts.port or 443
+    except ValueError as exc:
+        raise UnsafeAudioUrlError(url, f"the URL has a malformed port ({exc})") from exc
+
     # An IP literal host is checked directly; a name is resolved and ALL
     # returned addresses must be public (defends against DNS that returns a mix).
     try:
@@ -141,15 +156,6 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
             raise UnsafeAudioUrlError(url, f"host {host} is a private/reserved address")
         return
 
-    # Parsing parts.port is lazy in urlsplit and raises a bare ValueError for a
-    # malformed port (":99999" out of range, ":notaport" non-numeric). Without
-    # this guard that ValueError escapes the validator (which only catches
-    # gaierror), surfacing as an unexpected 500 in the server path instead of the
-    # contracted UnsafeAudioUrlError.
-    try:
-        port = parts.port or 443
-    except ValueError as exc:
-        raise UnsafeAudioUrlError(url, f"the URL has a malformed port ({exc})") from exc
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:

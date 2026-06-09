@@ -344,3 +344,24 @@ def test_validate_url_malformed_port_raises_unsafe(url: str) -> None:
     # escape as an unexpected 500 in the server path.
     with pytest.raises(UnsafeAudioUrlError, match="malformed port"):
         validate_fetchable_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://8.8.8.8:99999/a.wav",  # IP-literal host, port out of range
+        "https://8.8.8.8:notaport/a.wav",  # IP-literal host, non-numeric port
+    ],
+)
+def test_validate_url_malformed_port_raises_for_ip_literal_host(url: str) -> None:
+    # The malformed-port guard runs BEFORE the IP-vs-name branch, so a public IP
+    # literal with an invalid port is rejected symmetrically with the name-host
+    # case (it must not be silently accepted just because the IP needs no DNS).
+    with pytest.raises(UnsafeAudioUrlError, match="malformed port"):
+        validate_fetchable_url(url)
+
+
+def test_validate_url_allows_public_ip_literal_with_port() -> None:
+    # A public IP literal with a normal explicit port still passes (the symmetric
+    # port validation only rejects malformed ports, not legal ones).
+    validate_fetchable_url("https://93.184.216.34:8443/a.wav")
