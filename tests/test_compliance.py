@@ -45,6 +45,15 @@ from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 # --------------------------------------------------------------------------- #
 class _Config(BaseConfig[Literal["dummy"]]):
     engine: Literal["dummy"] = "dummy"
+    # The fixture properties expose a language axis (selectable_languages is
+    # non-empty), so a compliant config MUST provide default_language (IC.6).
+    default_language: str | None = "en"
+
+
+class _ConfigNoLang(BaseConfig[Literal["dummy"]]):
+    """Config WITHOUT default_language, for the language-axis violation tests."""
+
+    engine: Literal["dummy"] = "dummy"
 
 
 class _Props(BaseProperties):
@@ -161,6 +170,73 @@ def none_effective_factory() -> _NoneEffectiveASR:  # pyright: ignore[reportUnus
     return _NoneEffectiveASR()
 
 
+class _GoodConfigTypeASR(_GoodASR):
+    """Engine declaring its config_type (the schema-discoverable good citizen)."""
+
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _Config
+
+
+def good_config_type_factory() -> _GoodConfigTypeASR:  # pyright: ignore[reportUnusedFunction]
+    return _GoodConfigTypeASR()
+
+
+class _BadConfigTypeASR(_GoodASR):
+    """config_type set to something that is not a BaseConfig subclass."""
+
+    config_type: ClassVar[Any] = _NotProviderParams
+
+
+def bad_config_type_factory() -> _BadConfigTypeASR:  # pyright: ignore[reportUnusedFunction]
+    return _BadConfigTypeASR()
+
+
+class _OtherConfig(BaseConfig[Literal["dummy"]]):
+    engine: Literal["dummy"] = "dummy"
+    default_language: str | None = "en"
+
+
+class _MismatchedConfigTypeASR(_GoodASR):
+    """Declares config_type=_OtherConfig but constructs a _Config instance."""
+
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _OtherConfig
+
+
+def mismatched_config_type_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _MismatchedConfigTypeASR
+):
+    return _MismatchedConfigTypeASR()
+
+
+class _AxisNoDefaultEngine(EngineBase):
+    """EngineBase engine with a language axis but no default_language (IC.6 bug)."""
+
+    properties: ClassVar[BaseProperties] = _Props()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+
+    def __init__(self) -> None:
+        self.config = _ConfigNoLang(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="never reached")
+
+
+def axis_no_default_factory() -> _AxisNoDefaultEngine:  # pyright: ignore[reportUnusedFunction]
+    return _AxisNoDefaultEngine()
+
+
+class _StructuralAxisNoDefaultASR(_GoodASR):
+    """Structural (non-EngineBase) engine with the same IC.6 violation."""
+
+    def __init__(self) -> None:
+        self.config = _ConfigNoLang(engine="dummy")
+
+
+def structural_axis_no_default_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _StructuralAxisNoDefaultASR
+):
+    return _StructuralAxisNoDefaultASR()
+
+
 def _registry(factory: str, key: str = "dummy/demo") -> ModelRegistry:
     eps = [
         EntryPoint(
@@ -271,6 +347,51 @@ def test_check_entrypoints_open_provider_params_errors() -> None:
 def test_check_entrypoints_provider_params_not_subclass_errors() -> None:
     report = check_entrypoints(registry=_registry("bad_params_type_factory"))
     assert any("not a ProviderParams subclass" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_missing_config_type_warns_but_passes() -> None:
+    # No class-level config_type: a DX warning (settings UIs cannot discover the
+    # config schema without instantiation), but NOT a compliance failure.
+    report = check_entrypoints(registry=_registry("good_factory"))
+    assert report.passed is True, [i.message for i in report.issues]
+    warnings = [i for i in report.issues if i.level == "warning"]
+    assert any("config_type" in i.message for i in warnings)
+
+
+def test_check_entrypoints_declared_config_type_no_warning() -> None:
+    report = check_entrypoints(registry=_registry("good_config_type_factory"))
+    assert report.passed is True, [i.message for i in report.issues]
+    assert not any("config_type" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_config_type_not_baseconfig_errors() -> None:
+    report = check_entrypoints(registry=_registry("bad_config_type_factory"))
+    assert report.passed is False
+    assert any("not a BaseConfig subclass" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_config_not_instance_of_config_type_errors() -> None:
+    # Declaring config_type=X while constructing a Y config means the schema
+    # published for UIs does not match the config actually consumed.
+    report = check_entrypoints(registry=_registry("mismatched_config_type_factory"))
+    assert report.passed is False
+    assert any("not an instance of the declared" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_language_axis_without_default_enginebase_errors() -> None:
+    # An EngineBase engine with a language axis but no default_language would
+    # raise ConfigError on the user's FIRST transcribe; compliance must catch it
+    # at author time, reusing the exact runtime validation.
+    report = check_entrypoints(registry=_registry("axis_no_default_factory"))
+    assert report.passed is False
+    assert any("every transcribe will fail" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_language_axis_without_default_structural_errors() -> None:
+    # Structural (non-EngineBase) engines get the IC.6 presence check.
+    report = check_entrypoints(registry=_registry("structural_axis_no_default_factory"))
+    assert report.passed is False
+    assert any("default_language" in i.message for i in report.issues)
 
 
 def unannotated_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[reportUnusedFunction]

@@ -614,6 +614,34 @@ def create_app(
             return {}
         return params_type.model_json_schema()
 
+    @app.get("/v1/config-schema/{model:path}")
+    def config_schema(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """Return the JSON Schema for an engine's init config (``config_type``).
+
+        Read from the engine **class** without instantiating it (spec §3.1 /
+        §C / G.3.1). This is the wire-side discovery path for settings UIs: a
+        non-Python client can render the engine's configuration form (secret
+        fields carry ``format: password`` / ``writeOnly`` markers) before the
+        engine is ever constructed. The schema describes field *shapes* only --
+        it never contains configured values, so it is safe to expose without
+        authentication alongside the capabilities endpoint.
+
+        Args:
+            model: Model key in ``engine/model`` format.
+
+        Returns:
+            The init-config JSON Schema, or ``{}`` if the engine does not
+            declare a class-level ``config_type``.
+
+        Raises:
+            HTTPException: If the model is unknown.
+        """
+        engine_class = _engine_class_or_404(model_registry, model, HTTPException)
+        config_type = getattr(engine_class, "config_type", None)
+        if config_type is None:
+            return {}
+        return config_type.model_json_schema()
+
     @app.websocket("/v1/stream/{model:path}")
     async def stream(  # pyright: ignore[reportUnusedFunction]
         websocket: WebSocket, model: str

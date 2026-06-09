@@ -138,6 +138,22 @@ class, for discovery / UI generation), or `{}` if the engine declares none.
 **404** if the model is unknown. Note these params cannot currently be sent
 over the transcribe endpoints (§2).
 
+### 3.6.1 `GET /v1/config-schema/{model}`
+Returns the JSON Schema of the engine's **init config** (read from the engine
+class's `config_type`, without instantiation), or `{}` if the engine declares
+no `config_type`. **404** if the model is unknown.
+
+This is the wire-side discovery path for settings UIs (G.3.1): a client can
+render an engine's configuration form **before** the engine is constructed —
+construction may require the very values (credentials, `default_language`)
+the form collects. Secret fields carry `format: password` / `writeOnly: true`
+markers, so schema-driven UIs render them safely. The schema describes field
+*shapes* only and never contains configured values, so — like capabilities and
+params-schema — it is deliberately readable without authentication. Note that
+the server itself does not accept engine construction over the wire in v1; the
+collected config is consumed by the operator-side process that constructs the
+engine (e.g. `registry.create(key, **values)`).
+
 > The `{model}` path segment matches the full `engine/model` key (it may contain
 > a slash).
 

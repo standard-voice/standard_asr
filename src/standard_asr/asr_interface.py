@@ -187,6 +187,15 @@ class EngineBase(ABC):
     declared_capabilities: ClassVar[DeclaredCapabilities]
     #: The engine's expected ``provider_params`` type, or ``None``.
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
+    #: The engine's init-config model type, or ``None`` when not declared.
+    #: Declaring it makes the config JSON Schema (including the secret-field
+    #: markers from :func:`~standard_asr.asr_config.secret_field`) readable
+    #: *without instantiation* (spec §3.1 / G.3.1) -- the discovery path for
+    #: settings UIs. Without it, an app cannot render a config form for a
+    #: credentialed engine, because constructing the engine requires the very
+    #: credentials the form is meant to collect. Engines SHOULD declare it;
+    #: the compliance suite reports a warning when it is missing.
+    config_type: ClassVar[type[BaseConfig[str]] | None] = None
 
     config: BaseConfig[str]
 

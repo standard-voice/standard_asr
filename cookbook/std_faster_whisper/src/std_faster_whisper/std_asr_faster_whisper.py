@@ -160,6 +160,7 @@ class FasterWhisperASR(EngineBase):
     properties: ClassVar[BaseProperties] = FasterWhisperProperties()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPABILITIES
     provider_params_type: ClassVar[type[ProviderParams] | None] = FasterWhisperParams
+    config_type: ClassVar[type[BaseConfig[str]] | None] = FasterWhisperConfig
 
     def __init__(self, **kwargs: Any) -> None:
         """Capture configuration (pure; weights load lazily).

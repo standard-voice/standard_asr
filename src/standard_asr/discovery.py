@@ -38,6 +38,7 @@ from typing import (
     final,
 )
 
+from .asr_config import BaseConfig
 from .exceptions import EntrypointValidationError, FactoryLoadError
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -551,6 +552,42 @@ class ModelRegistry:
         """
         return self.spec(name).engine_class()
 
+    def config_schema(self, name: str) -> dict[str, Any] | None:
+        """Return the JSON Schema of a model's init config, without instantiation.
+
+        Resolves the engine class and reads its ``config_type`` ClassVar. This
+        is the discovery path for settings UIs (G.3.1): an application can
+        render a configuration form for an engine **before** constructing it --
+        construction may require the very values (credentials, default
+        language) the form is meant to collect. Secret fields carry the
+        ``format: password`` / ``writeOnly: true`` markers in the schema, so a
+        schema-driven UI renders them safely.
+
+        Args:
+            name: Model key in ``engine_id/model_name`` format.
+
+        Returns:
+            The config JSON Schema, or ``None`` when the engine does not
+            declare a class-level ``config_type``.
+
+        Raises:
+            EntrypointValidationError: Model not found.
+            FactoryLoadError: Entry point failed to load, the engine class
+                cannot be determined without calling the factory, or
+                ``config_type`` is not a ``BaseConfig`` subclass.
+        """
+        engine_class = self.engine_class(name)
+        config_type = getattr(engine_class, "config_type", None)
+        if config_type is None:
+            return None
+        if not (isinstance(config_type, type) and issubclass(config_type, BaseConfig)):
+            raise FactoryLoadError(
+                f"Engine class for {name!r} declares config_type={config_type!r}, "
+                "which is not a BaseConfig subclass. Fix the engine's 'config_type' "
+                "ClassVar (it must reference the engine's init-config model)."
+            )
+        return config_type.model_json_schema()
+
     def create(self, name: str, /, *args: Any, **kwargs: Any) -> "StandardASR":
         """Create an ASR engine instance.
 
@@ -567,7 +604,16 @@ class ModelRegistry:
 
         Raises:
             EntrypointValidationError: Model not found.
-            FactoryLoadError: Factory failed to load or execute.
+            FactoryLoadError: Entry point failed to load or is not callable.
+            Exception: Errors raised by the factory itself propagate
+                **unchanged** -- most commonly a pydantic ``ValidationError``
+                (missing/invalid config such as a required credential or
+                ``default_language``) or a
+                :class:`~standard_asr.exceptions.ConfigError`. They are
+                deliberately not wrapped so callers (and the HTTP server's
+                error mapping) can distinguish "unknown model" from "model
+                needs configuration"; use :meth:`config_schema` to discover
+                what configuration a model requires.
 
         Example:
             >>> asr = registry.create("faster-whisper/large-v3", device="cuda")

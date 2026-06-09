@@ -88,6 +88,7 @@ class DummyASR(EngineBase):
 
     properties: ClassVar[BaseProperties] = DummyASRProperties()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPABILITIES
+    config_type: ClassVar[type[BaseConfig[str]] | None] = DummyASRConfig
 
     def __init__(self, message: str | None = None) -> None:
         """Initialize the dummy engine.

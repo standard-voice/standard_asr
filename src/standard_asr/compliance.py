@@ -17,7 +17,7 @@ from .asr_interface import EngineBase
 from .asr_properties import BaseProperties
 from .capabilities import DeclaredCapabilities
 from .discovery import FactoryLoadError, ModelRegistry, ModelSpec, discover_models
-from .exceptions import UnsupportedFeatureError
+from .exceptions import ConfigError, UnsupportedFeatureError
 from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
 from .streaming import (
     SyncSession,
@@ -291,6 +291,26 @@ def check_entrypoints(
                     model=name,
                 )
             )
+        else:
+            declared_config_type = inspect.getattr_static(type(instance), "config_type", None)
+            if (
+                isinstance(declared_config_type, type)
+                and issubclass(declared_config_type, BaseConfig)
+                and not isinstance(config, declared_config_type)
+            ):
+                issues.append(
+                    ComplianceIssue(
+                        level="error",
+                        message=(
+                            "Instance config is not an instance of the declared "
+                            f"config_type ({config.__class__.__name__!r} is not a "
+                            f"{declared_config_type.__name__!r}); the schema published "
+                            "for UIs would not match the config actually consumed."
+                        ),
+                        model=name,
+                    )
+                )
+            _check_language_axis_config(instance, name, issues)
 
         declared = getattr(instance, "declared_capabilities", None)
         if not isinstance(declared, DeclaredCapabilities):
@@ -355,6 +375,60 @@ def check_entrypoints(
                     )
 
     return ComplianceReport(registry=registry, issues=issues)
+
+
+def _check_language_axis_config(
+    instance: object,
+    name: str,
+    issues: list[ComplianceIssue],
+) -> None:
+    """Verify a language-axis engine is constructed with a usable default language.
+
+    An engine whose properties expose a language axis but whose config lacks a
+    valid ``default_language`` passes construction (IC.9 keeps ``__init__``
+    pure) and then raises ``ConfigError`` on the **user's first transcribe** --
+    the worst place for an engine-author bug to surface. Catch it at compliance
+    time instead. For :class:`EngineBase` engines this reuses the exact runtime
+    validation (presence, selectable-membership, canonicalization), so the
+    compliance verdict cannot drift from runtime behavior; for structural
+    engines it falls back to the presence check (spec IC.6 / LANG R1).
+
+    Args:
+        instance: The instantiated engine to inspect.
+        name: The model key (for issue attribution).
+        issues: The mutable list of issues to append to.
+    """
+    if isinstance(instance, EngineBase):
+        try:
+            instance._validate_language_config()  # pyright: ignore[reportPrivateUsage]
+        except (ConfigError, ValueError) as exc:
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    message=f"Language config is invalid; every transcribe will fail: {exc}",
+                    model=name,
+                )
+            )
+        return
+
+    properties = getattr(instance, "properties", None)
+    config = getattr(instance, "config", None)
+    if (
+        isinstance(properties, BaseProperties)
+        and properties.has_language_axis
+        and getattr(config, "default_language", None) is None
+    ):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    "Engine exposes a language axis (selectable_languages is non-empty) "
+                    "but its config does not set default_language; every transcribe "
+                    "will raise ConfigError (spec IC.6 / LANG R1)."
+                ),
+                model=name,
+            )
+        )
 
 
 #: Public callables every compliant engine MUST expose unconditionally
@@ -473,6 +547,34 @@ def _check_class_level_metadata(spec: object, name: str, issues: list[Compliance
                 message=(
                     "Engine class does not expose a class-level 'properties' "
                     "(ClassVar) readable without instantiation."
+                ),
+                model=name,
+            )
+        )
+
+    config_type = inspect.getattr_static(engine_class, "config_type", None)
+    if config_type is None:
+        # DX nudge, not an error: without a class-level ``config_type`` a
+        # settings UI cannot discover the engine's config schema (G.3.1) --
+        # constructing a credentialed engine to read ``type(engine.config)``
+        # requires the very values the UI is meant to collect.
+        issues.append(
+            ComplianceIssue(
+                level="warning",
+                message=(
+                    "Engine class does not declare a class-level 'config_type'; "
+                    "its init-config JSON Schema is not discoverable without "
+                    "instantiation (registry.config_schema / GET /v1/config-schema)."
+                ),
+                model=name,
+            )
+        )
+    elif not (isinstance(config_type, type) and issubclass(config_type, BaseConfig)):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    f"config_type is set but is not a BaseConfig subclass (got {config_type!r})."
                 ),
                 model=name,
             )

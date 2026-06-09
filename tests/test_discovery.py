@@ -37,6 +37,10 @@ from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 
 class _DummyConfig(BaseConfig[Literal["dummy"]]):
     engine: Literal["dummy"] = "dummy"
+    # _DummyProperties exposes a language axis, so a compliant config provides
+    # default_language (IC.6) -- keeps these fixtures clean under the
+    # check_entrypoints language-axis check.
+    default_language: str | None = "en"
 
 
 class _DummyProperties(BaseProperties):
@@ -131,6 +135,21 @@ class _OpenParams(ProviderParams):
 
 class _OpenParamsASR(_DummyASR):
     provider_params_type: ClassVar[type[ProviderParams] | None] = _OpenParams
+
+
+class _ConfigTypeASR(_DummyASR):  # pyright: ignore[reportUnusedClass]
+    """Engine declaring config_type; construction must never be needed to read it."""
+
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _DummyConfig
+
+    def __init__(self, **kwargs: Any) -> None:
+        raise AssertionError("config_schema must not instantiate the engine")
+
+
+class _GarbageConfigTypeASR(_DummyASR):  # pyright: ignore[reportUnusedClass]
+    """config_type set to a non-BaseConfig object (a broken engine)."""
+
+    config_type: ClassVar[Any] = _NotAnEngine
 
 
 def _open_params_factory() -> _OpenParamsASR:  # pyright: ignore[reportUnusedFunction]
@@ -685,6 +704,49 @@ def test_engine_class_rejects_factory_returning_non_engine() -> None:
     registry = discover_models(eps=eps, strict=True)
     with pytest.raises(FactoryLoadError, match="does not expose"):
         registry.engine_class("alpha/first")
+
+
+def test_config_schema_reads_class_without_instantiation() -> None:
+    # The whole point of config_schema: render a settings UI for an engine
+    # BEFORE construction (construction may require the very credentials the
+    # form collects). _ConfigTypeASR.__init__ raises, proving no instantiation.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_ConfigTypeASR",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    schema = registry.config_schema("alpha/first")
+    assert schema is not None
+    assert "engine" in schema["properties"]
+    assert "strict" in schema["properties"]
+
+
+def test_config_schema_returns_none_when_undeclared() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_DummyASR",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    assert registry.config_schema("alpha/first") is None
+
+
+def test_config_schema_rejects_non_baseconfig_config_type() -> None:
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_GarbageConfigTypeASR",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(FactoryLoadError, match="not a BaseConfig subclass"):
+        registry.config_schema("alpha/first")
 
 
 def test_engine_class_raises_when_annotation_not_concrete() -> None:

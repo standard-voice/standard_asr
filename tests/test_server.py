@@ -118,6 +118,28 @@ def _no_instantiate_factory() -> _NoInstantiateASR:  # pyright: ignore[reportUnu
     return _NoInstantiateASR()
 
 
+class _WithConfigTypeASR(_DummyASR):
+    """Engine declaring ``config_type`` so its config schema is discoverable."""
+
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _DummyConfig
+
+
+def _with_config_type_factory() -> _WithConfigTypeASR:  # pyright: ignore[reportUnusedFunction]
+    return _WithConfigTypeASR()
+
+
+class _NoInstantiateConfigTypeASR(_NoInstantiateASR):
+    """Credentialed engine: construction raises, but config schema must serve."""
+
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _DummyConfig
+
+
+def _no_instantiate_config_type_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _NoInstantiateConfigTypeASR
+):
+    return _NoInstantiateConfigTypeASR()
+
+
 class _ConfigErrorOnConstructASR(_DummyASR):
     """Construction raises a client-config error (e.g. missing credential)."""
 
@@ -974,6 +996,55 @@ def test_params_schema_endpoint_none_returns_empty() -> None:
     resp: httpx.Response = client.get("/v1/params-schema/dummy/echo")
     assert resp.status_code == 200
     assert resp.json() == {}
+
+
+def test_config_schema_endpoint() -> None:
+    # The init-config JSON Schema is served from the class-level config_type.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_with_config_type_factory"))
+    client = TestClient(app)
+    resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+    assert resp.status_code == 200
+    schema = resp.json()
+    assert "engine" in schema.get("properties", {})
+    assert "strict" in schema.get("properties", {})
+
+
+def test_config_schema_endpoint_none_returns_empty() -> None:
+    # An engine without a declared config_type publishes an empty schema.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+
+def test_config_schema_endpoint_unknown_model() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    resp: httpx.Response = client.get("/v1/config-schema/nope/missing")
+    assert resp.status_code == 404
+
+
+def test_config_schema_no_instantiation() -> None:
+    """config-schema must NOT instantiate the engine (it exists precisely so a
+    credentialed engine's config form can be rendered before construction)."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_no_instantiate_config_type_factory"))
+    client = TestClient(app)
+    resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+    assert resp.status_code == 200
+    assert "engine" in resp.json().get("properties", {})
 
 
 def test_invalid_content_length_returns_400() -> None:
