@@ -231,19 +231,23 @@ def test_discover_models_supports_multiple_entries() -> None:
 
 
 def test_discover_models_duplicate_strategy_replace() -> None:
-    eps = [
-        EntryPoint(
-            name="alpha/only",
-            value="tests.test_discovery:_dummy_factory",
-            group="standard_asr.models",
-        ),
-        EntryPoint(
-            name="alpha/only",
-            value="tests.test_discovery:_requires_argument_factory",
-            group="standard_asr.models",
-        ),
-    ]
-    registry = discover_models(eps=eps, strict=True, on_conflict="replace")
+    # ``replace`` is the same provider overriding its own registration, so both
+    # entry points carry the SAME distribution identity -- otherwise this would
+    # (correctly) be an IC.2 cross-distribution collision. Distinct targets let
+    # us assert the latter factory wins.
+    ep_a = EntryPoint(
+        name="alpha/only",
+        value="tests.test_discovery:_dummy_factory",
+        group="standard_asr.models",
+    )
+    ep_b = EntryPoint(
+        name="alpha/only",
+        value="tests.test_discovery:_requires_argument_factory",
+        group="standard_asr.models",
+    )
+    object.__setattr__(ep_a, "dist", _FakeDist("one-dist"))
+    object.__setattr__(ep_b, "dist", _FakeDist("one-dist"))
+    registry = discover_models(eps=[ep_a, ep_b], strict=True, on_conflict="replace")
     spec = registry.spec("alpha/only")
     factory = spec.load_factory()
     assert factory is _requires_argument_factory
@@ -467,19 +471,22 @@ def test_discover_models_skips_wrong_group() -> None:
 
 
 def test_discover_models_warn_keep_first() -> None:
-    eps = [
-        EntryPoint(
-            name="alpha/dup",
-            value="tests.test_discovery:_dummy_factory",
-            group="standard_asr.models",
-        ),
-        EntryPoint(
-            name="alpha/dup",
-            value="tests.test_discovery:_requires_argument_factory",
-            group="standard_asr.models",
-        ),
-    ]
-    registry = discover_models(eps=eps, strict=True)
+    # Same provider registering the key twice (shared distribution identity), so
+    # the duplicate is resolved by ``warn_keep_first`` rather than flagged as an
+    # IC.2 cross-distribution collision. Distinct targets prove the first is kept.
+    ep_a = EntryPoint(
+        name="alpha/dup",
+        value="tests.test_discovery:_dummy_factory",
+        group="standard_asr.models",
+    )
+    ep_b = EntryPoint(
+        name="alpha/dup",
+        value="tests.test_discovery:_requires_argument_factory",
+        group="standard_asr.models",
+    )
+    object.__setattr__(ep_a, "dist", _FakeDist("one-dist"))
+    object.__setattr__(ep_b, "dist", _FakeDist("one-dist"))
+    registry = discover_models(eps=[ep_a, ep_b], strict=True)
 
     spec = registry.spec("alpha/dup")
     assert spec.entry_point.value == "tests.test_discovery:_dummy_factory"
@@ -794,6 +801,48 @@ def test_engine_id_collision_strict_raises() -> None:
 
     with pytest.raises(EntrypointValidationError):
         discover_models(eps=[ep_a, ep_b], strict=True)
+
+
+def test_same_model_name_across_dists_is_shadowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # DISC-3 regression: two DISTINCT distributions providing the SAME model key
+    # (``whisper/large-v3``) are the most common engine-identity collision. The
+    # ``on_conflict`` drop must not erase one provider before IC.2 counts it, or
+    # the collision would silently survive (re-opening the mis-routing IC.2 guards
+    # against).
+    ep_a = _ep_with_dist("whisper/large-v3", "dist-one")
+    ep_b = _ep_with_dist("whisper/large-v3", "dist-two")
+
+    caplog.set_level("WARNING")
+    registry = discover_models(eps=[ep_a, ep_b])
+    assert registry.shadowed_engine_ids == {"whisper"}
+    assert any("Engine-identity collision" in r.message for r in caplog.records)
+
+
+def test_same_model_name_across_dists_strict_raises() -> None:
+    # The strict-mode counterpart of the regression above must still fail loud.
+    ep_a = _ep_with_dist("whisper/large-v3", "dist-one")
+    ep_b = _ep_with_dist("whisper/large-v3", "dist-two")
+
+    with pytest.raises(EntrypointValidationError):
+        discover_models(eps=[ep_a, ep_b], strict=True)
+
+
+def test_single_dist_many_models_is_not_a_collision() -> None:
+    # A single distribution legitimately exposing several models under one
+    # engine_id must NOT be falsely flagged: set semantics dedupe its identity.
+    ep_a = _ep_with_dist("whisper/large-v3", "one-dist")
+    ep_b = _ep_with_dist("whisper/medium", "one-dist")
+    ep_c = _ep_with_dist("whisper/small", "one-dist")
+
+    registry = discover_models(eps=[ep_a, ep_b, ep_c], strict=True)
+    assert registry.shadowed_engine_ids == set()
+    assert set(registry.names()) == {
+        "whisper/large-v3",
+        "whisper/medium",
+        "whisper/small",
+    }
 
 
 def test_normalized_engine_id_collision_across_dists_is_shadowed(

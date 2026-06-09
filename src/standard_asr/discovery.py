@@ -640,6 +640,12 @@ def discover_models(
 
     specs: MutableMapping[str, ModelSpec] = {}
     errors: list[str] = []
+    # IC.2 engine-identity collision: the same engine_id MUST come from a single
+    # distribution. Accumulated over every legally-named entry point -- *before*
+    # ``on_conflict`` may drop a duplicate model key -- so that two distributions
+    # providing the same model name (the more common collision) are still both
+    # counted. The set semantics dedupe a single distribution's many models.
+    engine_dists: dict[str, set[str]] = {}
 
     for ep in found:
         if ep.group != ENTRYPOINT_GROUP:
@@ -676,6 +682,11 @@ def discover_models(
                 engine_id,
             )
 
+        # Count this provider for IC.2 *before* ``on_conflict`` can drop the spec:
+        # when two distributions expose the same model key, dropping one survivor
+        # must not hide that two distributions claim this engine_id.
+        engine_dists.setdefault(engine_id, set()).add(_dist_identity(ep))
+
         if key in specs and on_conflict == "warn_keep_first":
             logger.warning(
                 "Duplicate model key %r detected. Keeping %r; ignoring %r.",
@@ -696,13 +707,10 @@ def discover_models(
 
     # IC.2 engine-identity collision: the same engine_id MUST come from a single
     # distribution. Two different distributions both claiming engine_id="whisper"
-    # (even with distinct model names) make ``config.engine`` routing ambiguous.
-    # Accumulate from the surviving specs only, so a duplicate model key resolved
-    # by ``on_conflict`` does not double-count as two providers.
-    engine_dists: dict[str, set[str]] = {}
-    for spec in specs.values():
-        engine_dists.setdefault(spec.engine_id, set()).add(_dist_identity(spec.entry_point))
-
+    # (whether via distinct model names or the SAME model key) make
+    # ``config.engine`` routing ambiguous. ``engine_dists`` is populated inside
+    # the loop above so a duplicate model key resolved by ``on_conflict`` still
+    # counts both providers.
     shadowed: dict[str, set[str]] = {
         engine_id: dists for engine_id, dists in engine_dists.items() if len(dists) > 1
     }
