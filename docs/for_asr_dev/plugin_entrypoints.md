@@ -48,16 +48,23 @@ Your callable can be a function or a class constructor:
 # std_faster_whisper/entrypoint.py
 from typing import Any
 
-from standard_asr import StandardASR
-
 from .runtime import FasterWhisperASR
 
 
-def create(**kwargs: Any) -> StandardASR:
+def create(**kwargs: Any) -> FasterWhisperASR:
     """Return the multilingual preset."""
 
     return FasterWhisperASR(model_path="large-v3", **kwargs)
 ```
+
+> **Annotate the factory with your concrete engine class, not the `StandardASR`
+> protocol.** Discovery reads class-level metadata (`declared_capabilities`,
+> `properties`, `provider_params_type`) *without instantiating or authenticating*
+> the engine, by resolving the factory's **return annotation**
+> (`ModelRegistry.engine_class`). A concrete class (`-> FasterWhisperASR`) exposes
+> those `ClassVar`s; the `StandardASR` protocol does not, so annotating the
+> factory `-> StandardASR` breaks instantiation-free discovery. The compliance
+> suite enforces this.
 
 The dispatcher performs thorough validation:
 
@@ -73,7 +80,7 @@ from standard_asr import discover_models
 registry = discover_models()
 print(registry.names())
 asr = registry.create("faster-whisper/whisper", device="cuda", compute_type="float16")
-text = asr.transcribe(audio)
+text = asr.transcribe("meeting.wav").text  # or AudioArray(samples, 16000) / (samples, 16000)
 ```
 
 Helper APIs:
@@ -84,12 +91,20 @@ Helper APIs:
 
 ## Required Metadata
 
-Your factory must return an object that exposes:
+Your factory must return a compliant engine (typically an `EngineBase`
+subclass) that exposes:
 
-- `properties`: a `BaseProperties` instance (class attribute).
+- `properties`: a `BaseProperties` instance (class attribute / `ClassVar`).
+- `declared_capabilities`: a `DeclaredCapabilities` instance (`ClassVar`).
 - `config`: a `BaseConfig` instance (captured at initialization).
-- `transcribe(audio, options)` returning `TranscriptionResult`.
-- Accept `BaseTranscribeOptions | dict | None` and coerce into your options model.
+- `transcribe(audio, params)` returning `TranscriptionResult`, where `params` is
+  an optional `RuntimeParams`. Subclassing `EngineBase` gives you this
+  `transcribe` template for free; you implement only `_transcribe(prepared,
+  params)`.
+- Engine-specific knobs live in a typed `ProviderParams` subclass declared as
+  `provider_params_type` — never as extra top-level `RuntimeParams` fields
+  (`RuntimeParams` is closed). See
+  [`adapting_engine.md`](adapting_engine.md) for the full contract.
 
 These are validated by `standard-asr compliance entrypoints`.
 
