@@ -980,6 +980,92 @@ def test_body_size_middleware_passes_non_http_scope() -> None:
     assert forwarded == ["lifespan"]
 
 
+def test_body_size_middleware_counts_streamed_bytes_and_suppresses_app_response() -> None:
+    # The true-cap layer: an oversize body delivered as multiple chunks (no
+    # honest Content-Length) is rejected with 413 the moment the cumulative count
+    # exceeds the cap; the app keeps reading past the breach (covering the
+    # already-rejected branch and the disconnect passthrough) and its own late
+    # response is suppressed so it cannot clobber the 413.
+    import asyncio
+
+    # Two over-cap body chunks (the cap is 4): the first breaches and triggers
+    # the 413; a (deliberately stubborn) app keeps reading, so the wrapper is
+    # re-entered on a second over-cap chunk and must NOT emit a second 413 (the
+    # already-rejected branch), then yields a disconnect.
+    incoming: list[dict[str, Any]] = [
+        {"type": "http.request", "body": b"aaaaa", "more_body": True},
+        {"type": "http.request", "body": b"bbbbb", "more_body": False},
+    ]
+
+    async def _receive() -> dict[str, Any]:
+        if incoming:
+            return incoming.pop(0)
+        return {"type": "http.disconnect"}
+
+    sent: list[dict[str, Any]] = []
+
+    async def _send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    async def _app(scope: Any, receive: Any, send: Any) -> None:
+        # A stubborn body-reading app: pull a couple of frames even past a
+        # disconnect (forcing the wrapper to re-enter after rejection), then try
+        # to respond (this late response must be suppressed).
+        for _ in range(3):
+            await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"late"})
+
+    mw = server_module._BodySizeLimitMiddleware(_app, max_body_bytes=4)  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(mw({"type": "http", "headers": []}, _receive, _send))
+
+    # Exactly one response was emitted: the middleware's 413 (the app's 200 +
+    # body were suppressed).
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert len(starts) == 1
+    assert starts[0]["status"] == 413
+    assert not any(m.get("body") == b"late" for m in sent)
+
+
+def test_body_size_middleware_within_cap_streamed_passes_through() -> None:
+    # A streamed body within the cap passes through untouched: the app reads all
+    # frames and its own response is delivered (no 413, no suppression).
+    import asyncio
+
+    incoming: list[dict[str, Any]] = [
+        {"type": "http.request", "body": b"ab", "more_body": True},
+        {"type": "http.request", "body": b"c", "more_body": False},
+    ]
+
+    async def _receive() -> dict[str, Any]:
+        if incoming:
+            return incoming.pop(0)
+        return {"type": "http.disconnect"}
+
+    sent: list[dict[str, Any]] = []
+
+    async def _send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    async def _app(scope: Any, receive: Any, send: Any) -> None:
+        total = 0
+        while True:
+            message = await receive()
+            if message.get("type") != "http.request":
+                break
+            total += len(message.get("body", b""))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": str(total).encode()})
+
+    mw = server_module._BodySizeLimitMiddleware(_app, max_body_bytes=4)  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(mw({"type": "http", "headers": []}, _receive, _send))
+
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert len(starts) == 1 and starts[0]["status"] == 200
+    # The app saw the full 3-byte body.
+    assert any(m.get("body") == b"3" for m in sent)
+
+
 def test_transcribe_file_over_limit_without_content_length() -> None:
     # A chunked upload (no Content-Length) bypasses the early middleware guard;
     # the handler still rejects the materialised oversize body with 413.

@@ -26,12 +26,15 @@ Launch with `standard-asr serve` or `standard_asr.server.run(...)`.
   report. The safe structured fields (`type`, `loc`, `msg`) are preserved so the
   caller can still fix the request.
 - **Request-body cap.** `DEFAULT_MAX_BODY_BYTES` = `16 * 1024 * 1024` (16 MiB),
-  overridable per app via `create_app(max_body_bytes=...)`.
-  - Enforced *before* decoding, by a pure-ASGI middleware inspecting
-    `Content-Length`. Oversize → **413**; non-integer `Content-Length` → **400**.
-  - A chunked/streamed request with no `Content-Length` bypasses the early
-    guard, but both transcribe endpoints re-check the materialised payload size
-    (`len(file)` / `len(audio)`) and reject oversize with **413**.
+  overridable per app via `create_app(max_body_bytes=...)`. Enforced by a
+  pure-ASGI middleware in two layers, *before* the body is parsed:
+  - **Declared size (early).** A non-integer `Content-Length` → **400**; a
+    `Content-Length` over the cap → **413**, before any body is read.
+  - **Actual size (true cap).** `Content-Length` is advisory — a chunked /
+    streamed request may omit or under-state it. The middleware therefore counts
+    body bytes off the ASGI receive channel and aborts with **413** the moment
+    the cumulative total exceeds the cap, so an oversize body is never fully
+    buffered or parsed downstream (no Content-Length-bypass gap).
   - The body-size middleware covers the **HTTP scope only**; the WebSocket
     surface (`/v1/stream`) is byte-bounded separately (see §4.4).
 - **WebSocket audio caps.** The streaming bridge bounds audio bytes directly:

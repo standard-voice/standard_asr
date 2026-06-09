@@ -183,18 +183,23 @@ def _sanitized_validation_message(exc: ValidationError) -> str:
 class _BodySizeLimitMiddleware:
     """Pure-ASGI middleware that rejects over-large request bodies (413).
 
-    Implemented as raw ASGI rather than a ``BaseHTTPMiddleware`` so it inspects
-    only the ``Content-Length`` header and never buffers or re-streams the body.
-    A ``BaseHTTPMiddleware`` here would consume the request stream and break
-    multipart ``request.form()`` parsing on starlette < 0.40 (the well-known
-    BaseHTTPMiddleware body bug), which the lower-bounds CI lane caught.
+    Implemented as raw ASGI rather than a ``BaseHTTPMiddleware`` so it never has
+    to buffer the whole body itself: a ``BaseHTTPMiddleware`` here would consume
+    the request stream and break multipart ``request.form()`` parsing on
+    starlette < 0.40 (the well-known BaseHTTPMiddleware body bug), which the
+    lower-bounds CI lane caught.
 
-    This is an early, cheap guard on the *declared* size. A chunked / streamed
-    request with no ``Content-Length`` bypasses it, but **both** transcribe
-    endpoints then enforce the limit on the materialised payload (the multipart
-    ``len(file)`` and the JSON ``len(payload.audio)``), so oversize payloads are
-    always rejected; the only residual exposure is that such a body is buffered
-    before rejection.
+    Enforcement is two-layered:
+
+    1. **Declared size (cheap, early).** A bad ``Content-Length`` header → 400;
+       a ``Content-Length`` over the cap → 413, before any body is read.
+    2. **Actual size (true cap).** ``Content-Length`` is advisory: a chunked /
+       streamed request may omit it or under-state it, slipping past layer 1 and
+       being parsed by FastAPI / pydantic first. So the ``receive`` channel is
+       wrapped to count body bytes as they arrive and abort with 413 the moment
+       the cumulative total exceeds the cap -- bounding peak memory regardless of
+       the declared length. (The WS scope has its own per-frame / per-session
+       caps and is passed straight through.)
 
     Args:
         app: The wrapped ASGI application.
@@ -206,40 +211,80 @@ class _BodySizeLimitMiddleware:
         self.max_body_bytes = max_body_bytes
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        """Reject the request with 413/400 on a bad/oversize Content-Length.
+        """Reject the request with 413/400 on an oversize declared or actual body.
 
         Args:
             scope: The ASGI connection scope.
             receive: The ASGI receive callable.
             send: The ASGI send callable.
         """
-        if scope.get("type") == "http":
-            from fastapi.responses import JSONResponse
+        if scope.get("type") != "http":
+            # WebSocket / lifespan: no HTTP body to bound here (the WS surface
+            # enforces its own per-frame / per-session caps).
+            await self.app(scope, receive, send)
+            return
 
-            for name, value in scope.get("headers", []):
-                if name != b"content-length":
-                    continue
-                try:
-                    declared = int(value)
-                except ValueError:
-                    await JSONResponse(
-                        status_code=400,
-                        content={"detail": "Invalid Content-Length header."},
-                    )(scope, receive, send)
-                    return
-                if declared > self.max_body_bytes:
-                    await JSONResponse(
-                        status_code=413,
-                        content={
-                            "detail": (
-                                f"Request body too large: {declared} bytes exceeds "
-                                f"the {self.max_body_bytes}-byte limit."
-                            )
-                        },
-                    )(scope, receive, send)
-                    return
-                break
-        await self.app(scope, receive, send)
+        from fastapi.responses import JSONResponse
+
+        for name, value in scope.get("headers", []):
+            if name != b"content-length":
+                continue
+            try:
+                declared = int(value)
+            except ValueError:
+                await JSONResponse(
+                    status_code=400,
+                    content={"detail": "Invalid Content-Length header."},
+                )(scope, receive, send)
+                return
+            if declared > self.max_body_bytes:
+                await JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"Request body too large: {declared} bytes exceeds "
+                            f"the {self.max_body_bytes}-byte limit."
+                        )
+                    },
+                )(scope, receive, send)
+                return
+            break
+
+        # Enforce the *actual* cap by counting bytes off the receive channel.
+        # ``Content-Length`` is advisory; this catches a chunked / under-stated
+        # body before it is fully buffered/parsed downstream.
+        state = {"received": 0, "rejected": False}
+
+        async def receive_capped() -> Any:
+            message = await receive()
+            if message.get("type") != "http.request":
+                return message
+            state["received"] += len(message.get("body", b""))
+            if state["received"] <= self.max_body_bytes:
+                return message
+            # Cap breached. Emit the 413 directly (once), then hand the app a
+            # disconnect so its body read unwinds promptly. ``send_capped`` drops
+            # the app's subsequent (now-moot) response so it cannot clobber ours.
+            if not state["rejected"]:
+                state["rejected"] = True
+                await JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"Request body too large: exceeds the {self.max_body_bytes}-byte limit."
+                        )
+                    },
+                )(scope, receive, send)
+            return {"type": "http.disconnect"}
+
+        async def send_capped(message: Any) -> None:
+            # Suppress the app's response once we've committed our own 413 (its
+            # body read raised on the injected disconnect).
+            if state["rejected"]:
+                return
+            await send(message)
+
+        await self.app(scope, receive_capped, send_capped)
 
 
 class ModelInfo(BaseModel):
@@ -448,14 +493,9 @@ def create_app(
         Raises:
             HTTPException: If decoding or transcription fails.
         """
-        if len(file) > max_body_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"Uploaded file too large: {len(file)} bytes exceeds the "
-                    f"{max_body_bytes}-byte limit."
-                ),
-            )
+        # The request-body cap is enforced at the ASGI boundary by
+        # _BodySizeLimitMiddleware (Content-Length *and* actual bytes), so the
+        # uploaded ``file`` is already bounded by the time it materialises here.
         try:
             parsed_options = json.loads(options) if options else None
         except Exception as exc:  # noqa: BLE001
@@ -494,14 +534,9 @@ def create_app(
         Raises:
             HTTPException: If decoding or transcription fails.
         """
-        if len(payload.audio) > max_body_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"Encoded audio too large: {len(payload.audio)} bytes exceeds the "
-                    f"{max_body_bytes}-byte limit."
-                ),
-            )
+        # The request-body cap is enforced at the ASGI boundary by
+        # _BodySizeLimitMiddleware (Content-Length *and* actual bytes), so the
+        # encoded ``audio`` is already bounded by the time it materialises here.
         try:
             # `payload.options` is already a parsed object, so the only failure
             # here is params validation (bad value, unknown key, or a non-portable
