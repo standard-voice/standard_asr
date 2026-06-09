@@ -36,7 +36,7 @@ from .exceptions import (
     UnsupportedFeatureError,
 )
 from .results import TranscriptionResult
-from .runtime_params import RuntimeParams
+from .runtime_params import RuntimeParams, WireRuntimeParams
 from .streaming import TranscriptionEvent, TranscriptionSession
 
 if TYPE_CHECKING:
@@ -457,13 +457,18 @@ def create_app(
                 ),
             )
         try:
-            params = _build_params(json.loads(options) if options else None)
+            parsed_options = json.loads(options) if options else None
+        except Exception as exc:  # noqa: BLE001
+            # Malformed options *syntax* (un-parseable JSON) is a bad request.
+            raise HTTPException(status_code=400, detail=f"Invalid options JSON: {exc}") from exc
+        try:
+            params = _build_params(parsed_options)
         except ValidationError as exc:
+            # A semantically invalid options object (bad value, unknown key, or a
+            # non-portable provider_params key, D5) is an unprocessable entity.
             # Surface a sanitized message: pydantic's str(exc) echoes the
             # offending input value (a mis-placed secret would be reflected).
-            raise HTTPException(status_code=400, detail=_sanitized_validation_message(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=_sanitized_validation_message(exc)) from exc
 
         # Hand the encoded bytes to the engine's own negotiation rather than
         # pre-decoding here. The standard layer then converts/resamples per the
@@ -499,12 +504,13 @@ def create_app(
             )
         try:
             # `payload.options` is already a parsed object, so the only failure
-            # here is RuntimeParams validation -- whose str(exc) echoes the
+            # here is params validation (bad value, unknown key, or a non-portable
+            # provider_params key, D5) -> 422. pydantic's str(exc) echoes the
             # offending input value (a mis-placed secret would be reflected), so
             # surface a sanitized message instead.
             params = _build_params(payload.options)
         except ValidationError as exc:
-            raise HTTPException(status_code=400, detail=_sanitized_validation_message(exc)) from exc
+            raise HTTPException(status_code=422, detail=_sanitized_validation_message(exc)) from exc
 
         # Pass the base64/data-URI payload straight to engine negotiation, which
         # decodes and converts per the engine's accepted_input (see the
@@ -905,20 +911,28 @@ async def _run_transcription(
 
 
 def _build_params(options: dict[str, Any] | None) -> RuntimeParams | None:
-    """Build :class:`RuntimeParams` from a JSON options object.
+    """Build :class:`RuntimeParams` from an untyped JSON options object (D5).
 
-    Only the portable standard set is supported over the wire (engine
-    ``provider_params`` are not constructible without the engine type).
+    Validation goes through :class:`WireRuntimeParams`, the **portable-only** wire
+    view, so a request that includes the engine-specific ``provider_params``
+    escape hatch is rejected with a clear validation error (``provider_params``
+    cannot be sent -- it is discover-only via the params-schema endpoint and is
+    not constructible from untyped wire JSON). The validated portable params are
+    then promoted to the internal :class:`RuntimeParams`.
 
     Args:
         options: A JSON options object, or ``None``.
 
     Returns:
         Parsed runtime parameters, or ``None``.
+
+    Raises:
+        ValidationError: If ``options`` is not a valid portable params object
+            (including when it carries a ``provider_params`` key).
     """
     if options is None:
         return None
-    return RuntimeParams.model_validate(options)
+    return WireRuntimeParams.model_validate(options).to_runtime_params()
 
 
 def _engine_class_or_404(

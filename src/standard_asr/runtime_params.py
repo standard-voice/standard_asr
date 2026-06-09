@@ -144,18 +144,128 @@ class RuntimeParams(BaseModel):
             ValueError: If ``value`` is a non-empty, non-``"auto"`` string that
                 is not a well-formed BCP-47 tag.
         """
-        if value is None or value == "auto":
-            return value
-        if not is_valid_bcp47(value):
-            raise ValueError(
-                f"language {value!r} is not a well-formed BCP-47 language tag "
-                "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'."
-            )
+        return _validate_language_tag(value)
+
+
+def _validate_language_tag(value: str | None) -> str | None:
+    """Validate a per-request language tag (shared by the params models).
+
+    ``"auto"`` and ``None`` are permitted; any other value must be a well-formed
+    BCP-47 tag (membership against an engine's languages is enforced separately).
+
+    Args:
+        value: The provided language tag, ``"auto"``, or ``None``.
+
+    Returns:
+        The validated value unchanged.
+
+    Raises:
+        ValueError: If ``value`` is a non-empty, non-``"auto"`` string that is
+            not a well-formed BCP-47 tag.
+    """
+    if value is None or value == "auto":
         return value
+    if not is_valid_bcp47(value):
+        raise ValueError(
+            f"language {value!r} is not a well-formed BCP-47 language tag "
+            "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'."
+        )
+    return value
+
+
+class WireRuntimeParams(BaseModel):
+    """The portable runtime params accepted over an untyped wire (D5).
+
+    The server (and any other transport that accepts JSON it did not type) MUST
+    accept **only** the portable standard set. The engine-specific
+    ``provider_params`` escape hatch on :class:`RuntimeParams` is **discover-only**
+    -- its JSON Schema is published for discovery / UI generation, but it cannot
+    be *constructed* from untyped wire JSON without the engine's params type, and
+    accepting a raw ``provider_params`` object would let it reach the engine
+    ambiguously (untyped, unvalidated). This model therefore carries exactly the
+    portable fields and **rejects** a ``provider_params`` key via
+    ``extra="forbid"`` (it has no such field), so a request that sends one fails
+    loudly with a clear validation error instead of silently dropping or
+    mis-routing it.
+
+    A module-level drift assertion (below) binds this model's field set to
+    ``RuntimeParams`` minus ``provider_params`` so an additive change to the
+    portable set cannot silently desync the wire view.
+
+    Args:
+        language: See :class:`RuntimeParams`.
+        candidate_languages: See :class:`RuntimeParams`.
+        word_timestamps: See :class:`RuntimeParams`.
+        prompt: See :class:`RuntimeParams`.
+        phrase_hints: See :class:`RuntimeParams`.
+        on_unsupported: See :class:`RuntimeParams`.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If field validation fails, or a non-portable key (e.g.
+            ``provider_params``) is supplied.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    language: str | None = Field(
+        default=None, description="Per-request language (BCP-47 or 'auto')."
+    )
+    candidate_languages: list[str] | None = Field(
+        default=None, description="Candidate languages (auto mode only)."
+    )
+    word_timestamps: WordTimestampGranularity | None = Field(
+        default=None, description="Requested word-timestamp granularity."
+    )
+    prompt: str | None = Field(default=None, description="Free-text guidance prompt.")
+    phrase_hints: list[str] | None = Field(default=None, description="Phrase-hint boost terms.")
+    on_unsupported: Literal["fail", "degrade_to_prompt"] = Field(
+        default="fail",
+        description="Guidance degradation policy (opt-in one-way to prompt).",
+    )
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, value: str | None) -> str | None:
+        """Reject a malformed language tag at construction (fail-fast).
+
+        Args:
+            value: The provided language tag, ``"auto"``, or ``None``.
+
+        Returns:
+            The validated value unchanged.
+
+        Raises:
+            ValueError: If the tag is malformed (see :func:`_validate_language_tag`).
+        """
+        return _validate_language_tag(value)
+
+    def to_runtime_params(self) -> RuntimeParams:
+        """Build the internal :class:`RuntimeParams` from the validated wire set.
+
+        ``provider_params`` is necessarily ``None`` (it cannot be sent), so the
+        resulting params carry only the portable, already-validated fields.
+
+        Returns:
+            The equivalent internal :class:`RuntimeParams`.
+        """
+        return RuntimeParams.model_validate(self.model_dump())
+
+
+# D5 drift guard: the wire view is exactly the portable set, i.e. RuntimeParams
+# minus the discover-only ``provider_params`` escape hatch. Defining the two
+# field sets independently risks them desyncing as the portable set evolves; this
+# import-time invariant (and a drift test) makes such a desync a hard failure.
+assert set(WireRuntimeParams.model_fields) == (
+    set(RuntimeParams.model_fields) - {"provider_params"}
+), "WireRuntimeParams desynced from the portable RuntimeParams field set"
 
 
 __all__ = [
     "ProviderParams",
     "RuntimeParams",
+    "WireRuntimeParams",
     "WordTimestampGranularity",
 ]

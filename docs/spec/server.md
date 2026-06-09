@@ -52,9 +52,25 @@ engine's `accepted_input`, so per-engine sample-rate requirements are honored
 and encoded-only / URL-only engines remain servable. The upload's true sample
 rate is never silently overridden.
 
-Only the portable standard `RuntimeParams` set is accepted over the wire.
-Engine `provider_params` cannot be *sent* (they are not constructible without
-the engine type); they can only be *discovered* via §3.6.
+### 2.1 Runtime params: portable-only over the wire (D5)
+
+Over the wire the server accepts **only** the portable standard `RuntimeParams`
+set, modeled by `WireRuntimeParams` (the portable fields, `extra="forbid"`).
+The engine-specific `provider_params` escape hatch is **discover-only, not
+sendable**:
+
+- It can be **discovered** — its JSON Schema is published at §3.6 for UI
+  generation and tooling.
+- It **cannot be sent.** It is not constructible from untyped wire JSON without
+  the engine's params type, and accepting a raw object would let it reach the
+  engine untyped and unvalidated. A request whose `options` (REST) or config
+  `options` (WebSocket) include a `provider_params` key is therefore **rejected
+  with a clear 422** (REST) / `bad_request` (WS) rather than silently dropped or
+  mis-routed.
+
+> The long-term JSON-Schema-over-wire path (validating `provider_params` against
+> the discovered schema) is **deferred**; for v1 the escape hatch is in-process
+> only (pass it to `transcribe(...)` / `start_transcription(...)` directly).
 
 ## 3. REST Endpoints
 
@@ -72,12 +88,14 @@ Transcribe an uploaded file.
 |---|---|---|---|
 | `model` | form string | yes | Model key in `engine/model` format. |
 | `file` | file upload | yes | Encoded audio payload (forwarded as `AudioBytes`). |
-| `options` | form string | no | JSON object mapping onto `RuntimeParams`. |
+| `options` | form string | no | JSON object mapping onto the portable `WireRuntimeParams` set (§2.1). |
 
 Returns a `TranscribeResponse`:
 `{"model": "<engine/model>", "result": <TranscriptionResult>}`.
 
-Invalid `options` JSON or `RuntimeParams` → **400** before transcription.
+Un-parseable `options` JSON (malformed syntax) → **400**. A *semantically*
+invalid `options` object — a bad value, an unknown key, or a non-portable
+`provider_params` key (§2.1) — → **422**, before transcription.
 
 ### 3.4 `POST /v1/transcribe:json` (JSON body)
 Transcribe a base64 / data-URI payload.
@@ -92,8 +110,10 @@ Transcribe a base64 / data-URI payload.
 
 - `audio` is forwarded as `AudioBase64`; decode failures surface as
   `AudioProcessingError` → **400** (see §3.7).
-- `options` may be `null`. Unknown top-level keys are rejected (`extra="forbid"`).
-- Invalid `options` (`RuntimeParams`) → **400** before transcription.
+- `options` may be `null`. It is validated against the portable
+  `WireRuntimeParams` set (§2.1); unknown keys and a non-portable
+  `provider_params` key are rejected (`extra="forbid"`).
+- A semantically invalid `options` object → **422** before transcription.
 
 Returns a `TranscribeResponse` (same shape as §3.3).
 
@@ -122,7 +142,8 @@ The transcribe endpoints map errors from **both** engine construction
 | Client config error during construction — bad config, missing credentials, or validation (`ConfigError`, `InvalidProviderParamError`, `ValidationError`) | **422** |
 | Invalid provider param / unsupported standard feature / config error / validation error during transcription (`InvalidProviderParamError`, `UnsupportedFeatureError`, `ConfigError`, `ValidationError`) | **422** |
 | Audio decode/processing failure (`AudioProcessingError`) | **400** |
-| Bad `options` (parse / `RuntimeParams` build, before transcription) | **400** |
+| Un-parseable `options` JSON syntax (multipart, before transcription) | **400** |
+| Semantically invalid `options` / non-portable `provider_params` (`WireRuntimeParams` build, before transcription) | **422** |
 | Any other / unexpected error (construction or transcription) | **500** |
 
 Engine construction errors are mapped the same way (`unknown model → 404`,

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from standard_asr.runtime_params import (
     ProviderParams,
     RuntimeParams,
+    WireRuntimeParams,
     WordTimestampGranularity,
 )
 
@@ -88,3 +89,59 @@ def test_language_rejects_malformed_tags(tag: str) -> None:
     # regardless of strict/best_effort (like provider_params errors).
     with pytest.raises(ValidationError, match="well-formed BCP-47"):
         RuntimeParams(language=tag)
+
+
+# --- WireRuntimeParams (portable-only wire view, D5) --------------------------
+
+
+def test_wire_params_field_set_matches_portable_runtime_params() -> None:
+    # D5 drift guard: the wire view is exactly RuntimeParams minus the
+    # discover-only provider_params escape hatch. An additive change to the
+    # portable set must update both, or this fails (mirrors the import-time
+    # assertion in runtime_params).
+    assert set(WireRuntimeParams.model_fields) == (
+        set(RuntimeParams.model_fields) - {"provider_params"}
+    )
+
+
+def test_wire_params_forbids_provider_params() -> None:
+    # provider_params cannot be sent over the wire; supplying it is rejected.
+    with pytest.raises(ValidationError) as exc_info:
+        WireRuntimeParams.model_validate({"provider_params": {"beam": 5}})
+    assert any(err["loc"] == ("provider_params",) for err in exc_info.value.errors())
+
+
+def test_wire_params_validates_language() -> None:
+    # The wire view applies the same language validation as RuntimeParams.
+    assert WireRuntimeParams(language="en").language == "en"
+    with pytest.raises(ValidationError, match="well-formed BCP-47"):
+        WireRuntimeParams(language="english")
+
+
+def test_wire_params_to_runtime_params_round_trips_portable_fields() -> None:
+    wire = WireRuntimeParams(
+        language="en",
+        candidate_languages=["en", "fr"],
+        word_timestamps=WordTimestampGranularity.WORD,
+        prompt="hi",
+        phrase_hints=["foo"],
+        on_unsupported="degrade_to_prompt",
+    )
+    params = wire.to_runtime_params()
+    assert isinstance(params, RuntimeParams)
+    assert params.language == "en"
+    assert params.candidate_languages == ["en", "fr"]
+    assert params.word_timestamps is WordTimestampGranularity.WORD
+    assert params.prompt == "hi"
+    assert params.phrase_hints == ["foo"]
+    assert params.on_unsupported == "degrade_to_prompt"
+    # provider_params is necessarily None (it cannot be sent).
+    assert params.provider_params is None
+
+
+def test_wire_params_is_frozen_and_forbids_extra() -> None:
+    with pytest.raises(ValidationError):
+        WireRuntimeParams(unknown=1)  # type: ignore[call-arg]
+    wire = WireRuntimeParams(language="en")
+    with pytest.raises(ValidationError):
+        wire.language = "fr"  # type: ignore[misc]

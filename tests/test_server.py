@@ -658,9 +658,9 @@ def test_transcribe_json_with_options_builds_params() -> None:
     assert resp.status_code == 200
 
 
-def test_transcribe_json_with_bad_options_maps_to_400() -> None:
-    # Invalid options in the JSON body (a malformed language tag) are a client
-    # error caught while building RuntimeParams.
+def test_transcribe_json_with_bad_options_maps_to_422() -> None:
+    # A semantically invalid options object in the JSON body (a malformed
+    # language tag) is an unprocessable entity (422), not a malformed-syntax 400.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -672,7 +672,7 @@ def test_transcribe_json_with_bad_options_maps_to_400() -> None:
         "options": {"language": "english"},
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_transcribe_file_with_bad_options_maps_to_400() -> None:
@@ -747,7 +747,7 @@ def test_options_validation_error_does_not_echo_secret() -> None:
         "options": {"api_key": secret},
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     assert secret not in resp.text
     assert "api_key" in resp.json()["detail"]
 
@@ -767,7 +767,7 @@ def test_options_validation_error_message_omits_input_value() -> None:
         "options": {"language": "definitely-not-a-tag-XYZ"},
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     detail = resp.json()["detail"]
     assert "language" in detail
     assert "input_value" not in detail
@@ -786,9 +786,86 @@ def test_transcribe_file_options_validation_error_is_sanitized() -> None:
     secret = "sk-MULTIPART-SECRET"
     data = {"model": "dummy/echo", "options": json.dumps({"api_key": secret})}
     resp: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     assert secret not in resp.text
     assert "api_key" in resp.json()["detail"]
+
+
+def test_transcribe_json_rejects_provider_params_over_wire() -> None:
+    # D5: provider_params is discover-only, never sendable. A request whose
+    # options carry it must be rejected with a clear 422 (not silently dropped
+    # or mis-routed into the internal model).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    payload = {
+        "model": "dummy/echo",
+        "audio": "Zm9v",
+        "options": {"language": "en", "provider_params": {"beam": 5}},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 422
+    assert "provider_params" in resp.json()["detail"]
+
+
+def test_transcribe_file_rejects_provider_params_over_wire() -> None:
+    # The multipart endpoint enforces the same portable-only wire contract.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    files = {"file": ("audio.wav", b"fake", "audio/wav")}
+    data = {"model": "dummy/echo", "options": json.dumps({"provider_params": {"beam": 5}})}
+    resp: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
+    assert resp.status_code == 422
+    assert "provider_params" in resp.json()["detail"]
+
+
+def test_transcribe_json_portable_params_still_work() -> None:
+    # A request carrying only portable params validates and transcribes normally.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(b"fake").decode(),
+        "options": {
+            "language": "en",
+            "word_timestamps": "word",
+            "prompt": "hello",
+            "phrase_hints": ["foo"],
+            "on_unsupported": "degrade_to_prompt",
+        },
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["result"]["text"] == "dummy"
+
+
+def test_ws_rejects_provider_params_over_wire() -> None:
+    # The WS config-frame path shares _build_params; provider_params in its
+    # options must be rejected (bad_request), never reach the session.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {
+                "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                "options": {"provider_params": {"beam": 5}},
+            }
+        )
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "bad_request"
+    assert "provider_params" in err["message"]
 
 
 def test_loc_to_list_wraps_a_scalar() -> None:
@@ -814,7 +891,7 @@ def test_validation_error_with_non_string_loc_index_is_handled() -> None:
         "options": {"candidate_languages": [123]},
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     assert "candidate_languages" in resp.json()["detail"]
 
 
