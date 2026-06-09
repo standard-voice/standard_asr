@@ -197,23 +197,29 @@ def effective_candidate_languages(
     deduped: list[str] = []
     deduped_seen: set[str] = set()
     for tag in chosen:
-        # 'auto' is a directive, not a candidate; its presence is a caller bug,
-        # so it ALWAYS raises -- independent of strict/best_effort -- mirroring
-        # the provider_params "always-raise on a code bug" policy (R3 step 4 /
-        # language design note: candidate_languages MUST NOT contain 'auto').
-        if tag == AUTO:
-            raise ValueError("candidate_languages MUST NOT contain 'auto'.")
         # A malformed tag is an invalid *value*, not an unsupported feature, so
         # -- like the scalar `language` validator (runtime_params.py) and the
-        # 'auto' guard above -- it ALWAYS raises, independent of strict/
+        # 'auto' guard below -- it ALWAYS raises, independent of strict/
         # best_effort. Validating here keeps a common mistake ('english' instead
         # of 'en') from being silently dropped or misreported as "not detectable".
+        # This runs before the 'auto' check so an empty/whitespace tag (which is
+        # not 'auto') is attributed as malformed rather than tripping the
+        # normalizer's empty-tag ValueError; 'auto' is well-formed by this guard
+        # (it is a real lowercase word), so it survives to the reserved-word check.
         if not is_valid_bcp47(tag):
             raise ValueError(
                 f"candidate_languages contains a malformed BCP-47 tag {tag!r} "
                 "(e.g. 'en', 'en-US', 'zh-Hans')."
             )
         norm = normalize_bcp47(tag)
+        # 'auto' is a directive, not a candidate; its presence is a caller bug,
+        # so it ALWAYS raises -- independent of strict/best_effort -- mirroring
+        # the provider_params "always-raise on a code bug" policy (R3 step 4 /
+        # language design note: candidate_languages MUST NOT contain 'auto').
+        # Compare AFTER normalization so 'AUTO'/'Auto'/'auto' are all rejected
+        # with this explicit reason, not misreported as "not detectable".
+        if norm == AUTO:
+            raise ValueError("candidate_languages MUST NOT contain 'auto'.")
         if norm in deduped_seen:
             continue
         deduped_seen.add(norm)

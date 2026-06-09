@@ -253,6 +253,23 @@ def test_malformed_candidate_always_raises(strict: bool) -> None:
         )
 
 
+@pytest.mark.parametrize("candidates", [["AUTO"], ["Auto", "en"], ["auto"]])
+def test_reserved_auto_token_matched_case_insensitively(candidates: list[str]) -> None:
+    # NEW-LANG-1: the reserved 'auto' token is matched case-insensitively (after
+    # normalization), so 'AUTO' / 'Auto' / 'auto' all hit the explicit
+    # reserved-word error rather than being misreported as "not detectable".
+    with pytest.raises(ValueError, match="MUST NOT contain 'auto'"):
+        effective_candidate_languages(
+            AUTO,
+            candidates,
+            None,
+            candidate_supported=True,
+            detectable_languages=["en"],
+            max_count=3,
+            strict=True,
+        )
+
+
 def test_effective_candidates_defaults_when_no_request() -> None:
     result, _ = effective_candidate_languages(
         AUTO,
