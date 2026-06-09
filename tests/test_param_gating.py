@@ -456,8 +456,69 @@ def test_degrade_respects_max_tokens_best_effort_truncates() -> None:
     assert gated.phrase_hints is None
     assert gated.prompt is not None
     assert len(gated.prompt.split()) == 3
+    # Some hint content survived ("Anthropic"), so this is a normal (generic)
+    # degrade -- NOT the all-hints-dropped distinct signal.
+    assert "Anthropic" in gated.prompt
     assert any(d.code == "guidance_degraded_to_prompt" for d in diags)
     assert any(d.code == "prompt_truncated" for d in diags)
+    assert not any(d.code == "guidance_degrade_phrase_hints_dropped" for d in diags)
+
+
+def test_degrade_truncation_drops_all_hints_emits_distinct_signal() -> None:
+    # The budget is so small that truncating the framed block cuts away EVERY
+    # phrase-hint term, so no hint content reaches the prompt. The degrade must
+    # then emit a distinct, explicit diagnostic instead of the misleading
+    # guidance_degraded_to_prompt (which would imply the hints were honored).
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=2)),
+                phrase_hints=PhraseHintsCap(supported=False),
+            )
+        )
+    )
+    params = RuntimeParams(phrase_hints=["Anthropic"], on_unsupported="degrade_to_prompt")
+    gated, diags = gate_params(params, caps, "batch", strict=False)
+
+    assert gated.phrase_hints is None
+    # "Relevant terms: Anthropic." truncated to 2 tokens -> "Relevant terms:":
+    # the framing survives but no hint term did.
+    assert gated.prompt is not None
+    assert "Anthropic" not in gated.prompt
+    # The loss is explicit (distinct code), and the misleading "degraded into the
+    # prompt channel" success diagnostic is NOT emitted.
+    dropped = next(d for d in diags if d.code == "guidance_degrade_phrase_hints_dropped")
+    assert dropped.level == "warning"
+    assert dropped.provided == ["Anthropic"]
+    assert dropped.effective is None
+    assert not any(d.code == "guidance_degraded_to_prompt" for d in diags)
+    # The generic prompt_truncated still fires (the prompt was truncated).
+    assert any(d.code == "prompt_truncated" for d in diags)
+
+
+def test_degrade_truncation_drops_hints_but_keeps_free_prompt_text_signals_loss() -> None:
+    # The original bug: free prompt text is ordered before the framed hints, so a
+    # tight budget keeps the free text and silently cuts the hints while still
+    # reporting a successful degrade. The fix makes that loss explicit.
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=2)),
+                phrase_hints=PhraseHintsCap(supported=False),
+            )
+        )
+    )
+    params = RuntimeParams(
+        prompt="keep me",
+        phrase_hints=["Anthropic"],
+        on_unsupported="degrade_to_prompt",
+    )
+    gated, diags = gate_params(params, caps, "batch", strict=False)
+
+    assert gated.phrase_hints is None
+    assert gated.prompt == "keep me"  # free text survives, framed hints cut.
+    assert any(d.code == "guidance_degrade_phrase_hints_dropped" for d in diags)
+    assert not any(d.code == "guidance_degraded_to_prompt" for d in diags)
 
 
 def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:

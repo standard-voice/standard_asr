@@ -532,6 +532,15 @@ def _try_degrade_to_prompt(
     through to the standard unsupported-phrase_hints handling rather than
     applying a lossy degrade silently.
 
+    The framed phrase-hints block sits at the tail of the synthesized prompt, so
+    forward truncation cuts it first. If the budget is too small to keep ANY
+    phrase-hint term, the degrade is reported with a distinct
+    ``guidance_degrade_phrase_hints_dropped`` diagnostic (not the generic
+    ``guidance_degraded_to_prompt``), because no hint content actually reached the
+    prompt -- claiming a successful degrade there would mislead the caller into
+    thinking the hints were folded in when they were silently cut. The normal
+    path (where hint content survives) is unchanged.
+
     Args:
         params: The request parameters.
         capabilities: The engine's effective capabilities.
@@ -587,6 +596,31 @@ def _try_degrade_to_prompt(
             )
         )
         combined = truncated
+        # The framed hints sit at the tail of ``combined``, so forward truncation
+        # cuts them first. If the budget is so small that NONE of the hint terms
+        # survived, the degrade folded no hint content into the prompt at all --
+        # reporting a plain ``guidance_degraded_to_prompt`` here would mislead the
+        # caller into thinking the hints were honored when they were silently cut.
+        # Emit a distinct, explicit signal instead (the loss is honest, not a
+        # generic prompt_truncated; spec §Runtime R4: never silently degrade).
+        if not any(hint in combined for hint in hints):
+            updates["prompt"] = combined
+            updates["phrase_hints"] = None
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    code="guidance_degrade_phrase_hints_dropped",
+                    message=(
+                        "phrase_hints unsupported; the synthesized prompt was truncated to "
+                        f"the {max_tokens}-token budget before any phrase-hint term fit, so "
+                        f"NO phrase-hint content reached the prompt in {mode} mode."
+                    ),
+                    param="phrase_hints",
+                    provided=hints,
+                    effective=None,
+                )
+            )
+            return True
 
     updates["prompt"] = combined
     updates["phrase_hints"] = None
