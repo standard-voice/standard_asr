@@ -1771,6 +1771,21 @@ class SyncSession:
         """
         return self._session.result()
 
+    def diagnostics(self) -> list[Diagnostic]:
+        """Return the session's standard-layer and lifecycle diagnostics.
+
+        Mirrors :meth:`TranscriptionSession.diagnostics` (forwarded directly, like
+        :meth:`result`) so a synchronously-driven session exposes the same
+        parameter-gating / language-resolution / lifecycle-suppression
+        diagnostics as the async one. Without this the sync bridge would silently
+        drop a first-class, compliance-checked part of the session surface (spec
+        ST.6.5: the sync bridge is a faithful mirror of the async session).
+
+        Returns:
+            The accumulated diagnostics.
+        """
+        return self._session.diagnostics()
+
 
 __all__ = [
     "DEFAULT_AUDIO_HISTORY_MAXLEN",

@@ -499,6 +499,22 @@ def test_sync_bridge_manual() -> None:
     assert finals[0].text == "hi"
 
 
+def test_sync_bridge_forwards_diagnostics() -> None:
+    # The sync bridge must mirror the async session's diagnostics() surface (a
+    # first-class, compliance-checked method), not just feed/result -- otherwise a
+    # synchronously-driven session silently loses the parameter-gating / language
+    # diagnostics the async session exposes.
+    from standard_asr.results import Diagnostic
+
+    session = _EchoSession()
+    session._attach_initial_diagnostics(  # pyright: ignore[reportPrivateUsage]
+        [Diagnostic(level="warning", code="unsupported_parameter_ignored", message="dropped")]
+    )
+    with SyncSession(session) as sync:
+        diags = sync.diagnostics()
+    assert [d.code for d in diags] == ["unsupported_parameter_ignored"]
+
+
 # --------------------------------------------------------------------------- #
 # C5 -- coalescing buffer: stale partial dropped by terminal-for-segment event
 # --------------------------------------------------------------------------- #
