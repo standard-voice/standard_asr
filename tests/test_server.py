@@ -1202,6 +1202,22 @@ def _stream_echo_factory() -> _StreamEchoEngine:  # pyright: ignore[reportUnused
     return _StreamEchoEngine()
 
 
+class _StreamBestEffortEngine(_StreamEchoEngine):
+    """A best_effort streaming engine: an unsupported standard param requested at
+    session start is dropped + diagnosed (rather than raising), so the session
+    carries a standard-layer diagnostic to forward to the WS client."""
+
+    def __init__(self) -> None:
+        # best_effort: unsupported params are dropped with a diagnostic.
+        self.config = _DummyConfig(engine="stream", strict=False)
+
+
+def _stream_best_effort_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _StreamBestEffortEngine
+):
+    return _StreamBestEffortEngine()
+
+
 def test_ws_stream_happy_path() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -1223,6 +1239,74 @@ def test_ws_stream_happy_path() -> None:
                 break
     finals = {e["text"] for e in events if e["type"] == "final"}
     assert finals == {"abc", "de"}
+
+
+def test_ws_stream_forwards_degrade_diagnostics() -> None:
+    # A best_effort session whose params are degraded (an unsupported
+    # word_timestamps request is dropped) must deliver the standard-layer
+    # diagnostic to the WS client -- up front, before audio events -- mirroring
+    # how REST returns diagnostics on the result.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_best_effort_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {
+                "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                "options": {"word_timestamps": "word"},
+            }
+        )
+        # The diagnostics frame arrives before any audio is sent.
+        first = ws.receive_json()
+        ws.send_text("end")
+        rest: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            rest.append(event)
+            if event["type"] == "done":
+                break
+    assert first["type"] == "diagnostics"
+    codes = {d["code"] for d in first["diagnostics"]}
+    assert "unsupported_parameter_ignored" in codes
+    assert any(d.get("param") == "word_timestamps" for d in first["diagnostics"])
+    # The diagnostics frame is distinct from the event stream.
+    assert all(e["type"] != "diagnostics" for e in rest)
+
+
+def test_ws_stream_no_diagnostics_frame_when_none() -> None:
+    # A session with no standard-layer diagnostics must NOT emit a diagnostics
+    # frame: the client sees only events (the happy path is unchanged).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": None}
+        )
+        ws.send_bytes(b"abc")
+        ws.send_text("end")
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "done":
+                break
+    assert all(e["type"] != "diagnostics" for e in events)
+    assert {e["text"] for e in events if e["type"] == "final"} == {"abc"}
+
+
+def test_initial_diagnostics_frame_none_when_empty() -> None:
+    # A session reporting no diagnostics yields no frame (the caller then sends
+    # nothing, leaving the happy path untouched).
+    class _EmptyChannel:
+        def diagnostics(self) -> list[Any]:
+            return []
+
+    assert server_module._initial_diagnostics_frame(_EmptyChannel()) is None  # pyright: ignore[reportPrivateUsage, reportArgumentType]
 
 
 def test_ws_stream_bad_config_reports_error() -> None:

@@ -178,12 +178,26 @@ Bridges a WebSocket to an engine streaming session (the incremental
      `sample_rate` is in Hz (> 0); `channels` is optional and defaults to `1`.
    - `options` maps onto the portable `RuntimeParams` set, or may be `null`.
 
-2. **Audio frames (client → server).** Subsequent **binary** frames are raw PCM
+2. **Diagnostics frame (server → client).** Immediately after the session
+   starts — *before* any audio is sent — the server forwards the standard-layer
+   diagnostics attached at session establishment (best-effort parameter degrade,
+   language resolution, audio conversion), so the client learns **why** a
+   parameter was dropped or changed (the REST path returns these on the result).
+   Sent as a single JSON **text** frame, and **only when** the session has
+   diagnostics:
+   ```json
+   { "type": "diagnostics", "diagnostics": [ { "level": "...", "code": "...", "message": "...", "param": "...", "provided": ..., "effective": ... } ] }
+   ```
+   These messages are standard-layer-authored (not raw exception text), so they
+   are forwarded verbatim. A client with no degradations never receives this
+   frame.
+
+3. **Audio frames (client → server).** Subsequent **binary** frames are raw PCM
    chunks, fed to the session via `send_audio`. **Any text frame** OR a
    disconnect signals end-of-audio (`end_audio`); after that, no further audio
    is accepted.
 
-3. **Event frames (server → client).** The server streams each
+4. **Event frames (server → client).** The server streams each
    `TranscriptionEvent` back as a JSON text frame
    (`event.model_dump(mode="json")`) until a terminal event, then closes the
    socket. Event `type` is one of

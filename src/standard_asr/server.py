@@ -680,6 +680,15 @@ def create_app(
             await websocket.close()
             return
 
+        # Forward the standard-layer diagnostics (best-effort parameter degrade,
+        # language resolution, audio conversion) attached at session
+        # establishment, so a WS client can see WHY word_timestamps / prompt /
+        # language were dropped or changed -- the REST path returns these on the
+        # result, and the WS surface must not silently hide them.
+        diagnostics_frame = _initial_diagnostics_frame(session)
+        if diagnostics_frame is not None:
+            await websocket.send_json(diagnostics_frame)
+
         await _bridge_stream(
             websocket,
             session,
@@ -689,6 +698,38 @@ def create_app(
         await websocket.close()
 
     return app
+
+
+def _initial_diagnostics_frame(session: TranscriptionSession) -> dict[str, Any] | None:
+    """Build the standard-layer diagnostics frame for a freshly-started session.
+
+    The base ``start_transcription`` template attaches the parameter-gating and
+    language-axis diagnostics (best-effort degrade, language resolution, audio
+    conversion) to the session before handing it back, so they are available via
+    :meth:`~standard_asr.streaming.TranscriptionSession.diagnostics` immediately.
+    The REST path returns these on the result; the WS surface forwards them as a
+    single ``diagnostics`` frame up front so the client learns WHY a parameter
+    was dropped or changed before audio flows.
+
+    Unlike the ``engine_error`` detail (raw ``str(exc)``, scrubbed by
+    :func:`_scrub_event_for_client`), these messages are standard-layer-authored
+    (not raw exception text), so they are forwarded verbatim -- exactly as REST
+    returns them.
+
+    Args:
+        session: The just-established streaming session.
+
+    Returns:
+        A ``{"type": "diagnostics", "diagnostics": [...]}`` frame, or ``None``
+        when the session exposes no diagnostics.
+    """
+    diagnostics = session.diagnostics()
+    if not diagnostics:
+        return None
+    return {
+        "type": "diagnostics",
+        "diagnostics": [diag.model_dump(mode="json") for diag in diagnostics],
+    }
 
 
 def _scrub_event_for_client(event: TranscriptionEvent) -> dict[str, Any]:
