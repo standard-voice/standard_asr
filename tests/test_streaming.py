@@ -73,6 +73,31 @@ def test_event_model_rejects_structurally_illegal_events() -> None:
         TranscriptionEvent(type="supersede", new_ids=["s1"])
     with pytest.raises(ValidationError, match="disjoint"):
         TranscriptionEvent(type="supersede", old_ids=["s1"], new_ids=["s1"])
+
+
+def test_event_model_rejects_invalid_time_fields() -> None:
+    from pydantic import ValidationError
+
+    # Time-frame fields share Word/Segment's TR.2 invariant: non-negative, finite.
+    # A bad time is rejected AT THE EVENT, not deferred to result reduction (or
+    # emitted silently over the wire on a partial/progress event).
+    with pytest.raises(ValidationError):
+        TranscriptionEvent.final("s0", "hi", start=-0.5)
+    with pytest.raises(ValidationError):
+        TranscriptionEvent.final("s0", "hi", end=-1.0)
+    with pytest.raises(ValidationError):
+        TranscriptionEvent.partial("s0", "hi", audio_processed_until=-0.1)
+    with pytest.raises(ValidationError):
+        TranscriptionEvent.final("s0", "hi", start=float("nan"))
+    with pytest.raises(ValidationError):
+        TranscriptionEvent.final("s0", "hi", end=float("inf"))
+    with pytest.raises(ValidationError):
+        TranscriptionEvent(type="progress", gap_start=-1.0)
+    with pytest.raises(ValidationError):
+        TranscriptionEvent(type="error", code="x", retriable_after=-2.0)
+    # A valid non-negative finite span still constructs.
+    ev = TranscriptionEvent.final("s0", "hi", start=0.0, end=1.5)
+    assert ev.start == 0.0 and ev.end == 1.5
     # progress / done need no segment fields.
     assert TranscriptionEvent(type="progress").type == "progress"
 

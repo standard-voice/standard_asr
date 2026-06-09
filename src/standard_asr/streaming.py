@@ -142,7 +142,11 @@ class TranscriptionEvent(BaseModel):
         extra: Engine-specific extra data.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # allow_inf_nan=False matches Word/Segment: a NaN/Inf time is rejected at
+    # construction, so a malformed adapter timestamp fails loudly on the event
+    # rather than silently flowing over the wire or deferring the crash to result
+    # reduction (a silent wrong timestamp is the cardinal sin; spec TR.2).
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     type: EventType
     segment_id: str | None = None
@@ -150,17 +154,21 @@ class TranscriptionEvent(BaseModel):
     stable_until: int | None = None
     finality: Literal["final", "closed"] = "final"
     words: list[Word] | None = None
-    start: float | None = None
-    end: float | None = None
-    audio_processed_until: float | None = None
+    # Time-frame fields share Word/Segment's TR.2 invariant: non-negative finite
+    # seconds (origin = first session sample). ``ge=0`` rejects a negative time
+    # here instead of letting it pass event validation only to crash later when
+    # StreamReducer builds a Segment from it.
+    start: float | None = Field(default=None, ge=0.0)
+    end: float | None = Field(default=None, ge=0.0)
+    audio_processed_until: float | None = Field(default=None, ge=0.0)
     old_ids: list[str] = Field(default_factory=list)
     new_ids: list[str] = Field(default_factory=list)
     code: str | None = None
     recoverable: bool | None = None
-    retriable_after: float | None = None
+    retriable_after: float | None = Field(default=None, ge=0.0)
     reconnect: bool | None = None
-    gap_start: float | None = None
-    gap_end: float | None = None
+    gap_start: float | None = Field(default=None, ge=0.0)
+    gap_end: float | None = Field(default=None, ge=0.0)
     detected_language: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
