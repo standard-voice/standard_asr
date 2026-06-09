@@ -87,6 +87,36 @@ def test_array_encode_to_wav() -> None:
     assert any(d.code == "audio_conversion" for d in prepared.diagnostics)
 
 
+def test_array_encode_to_wav_resamples_to_accepted_rate() -> None:
+    # C1: an array at a non-accepted rate must be resampled BEFORE WAV-encoding
+    # for an encoded-input engine, never forwarded off-rate (spec R7). A 48 kHz
+    # array to an engine that accepts only 16 kHz encoded WAV must yield 16 kHz.
+    prepared = _exec(
+        AudioArray(np.zeros(48000, dtype=np.float32), 48000),
+        {InputKind.ENCODED_BYTES},
+        accepted_sample_rates=[16000],
+        native_sample_rate=16000,
+    )
+    assert prepared.kind is InputKind.ENCODED_BYTES
+    assert prepared.container == "wav"
+    assert any(
+        d.code == "resampled_with" and d.provided == "48000->16000" for d in prepared.diagnostics
+    )
+    with wave.open(io.BytesIO(prepared.data or b""), "rb") as wf:
+        assert wf.getframerate() == 16000
+
+
+def test_array_encode_to_wav_enforces_max_duration() -> None:
+    # C1: max_audio_duration is now enforced on the ENCODE_WAV array (duration is
+    # measurable), matching the bare-array path.
+    with pytest.raises(AudioProcessingError):
+        _exec(
+            AudioArray(np.zeros(48000, dtype=np.float32), 16000),  # 3.0 s
+            {InputKind.ENCODED_BYTES},
+            max_audio_duration=1.0,
+        )
+
+
 def test_array_encode_downmix_diagnostic() -> None:
     stereo = np.zeros((8, 2), dtype=np.float32)
     prepared = _exec(AudioArray(stereo, 16000), {InputKind.ENCODED_BYTES})

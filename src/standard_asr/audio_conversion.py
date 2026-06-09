@@ -187,7 +187,17 @@ def execute_plan(
         return PreparedAudio(kind=target, storage_uri=provided.value, diagnostics=diags)
 
     if target in (InputKind.ENCODED_FILE, InputKind.ENCODED_BYTES):
-        prepared = _prepare_encoded(provided, plan, max_file_size, strict, diags)
+        prepared = _prepare_encoded(
+            provided,
+            plan,
+            accepted_sample_rates=accepted_sample_rates,
+            native_sample_rate=native_sample_rate,
+            required_input_sample_rate=required_input_sample_rate,
+            max_file_size=max_file_size,
+            max_audio_duration=max_audio_duration,
+            strict=strict,
+            diags=diags,
+        )
         prepared.diagnostics = diags
         return prepared
 
@@ -214,7 +224,12 @@ def execute_plan(
 def _prepare_encoded(
     provided: AudioInput,
     plan: ConversionPlan,
+    *,
+    accepted_sample_rates: list[int] | str,
+    native_sample_rate: int,
+    required_input_sample_rate: int | None,
     max_file_size: int | None,
+    max_audio_duration: float | None,
     strict: bool,
     diags: list[Diagnostic],
 ) -> PreparedAudio:
@@ -223,7 +238,15 @@ def _prepare_encoded(
     Args:
         provided: The provided audio input.
         plan: The conversion plan (target is file/bytes).
+        accepted_sample_rates: Engine accepted sample rates, or ``"any"``. The
+            array-to-WAV (``ENCODE_WAV``) path resamples to an accepted rate
+            before encoding, so an encoded-input engine never receives off-rate
+            WAV content (spec R7).
+        native_sample_rate: The model's native sample rate.
+        required_input_sample_rate: A hard-required rate, if any.
         max_file_size: Engine max payload size for the WAV-encode precheck.
+        max_audio_duration: Engine max accepted duration in seconds, enforced on
+            the ``ENCODE_WAV`` array (where duration is measurable).
         strict: Whether to raise (vs assume + diagnostic) when a bare array has
             no sample rate before encoding it to WAV (spec R6).
         diags: Diagnostics accumulator.
@@ -256,17 +279,22 @@ def _prepare_encoded(
         )
     if ConversionOp.ENCODE_WAV in ops:
         assert isinstance(provided, AudioArray)
-        if provided.sample_rate is None and strict:
-            # R6: never silently assume a rate before encoding to WAV. The
-            # array path (``_apply_sample_rate``) raises the same way.
-            raise AudioProcessingError(
-                "Audio array has no sample rate. Pass "
-                "AudioArray(samples, sample_rate) or enable best_effort."
-            )
-        sr = provided.sample_rate or ASSUMED_SAMPLE_RATE
-        if provided.sample_rate is None:
-            diags.append(_assumed_sample_rate_diag())
-        result = encode_array_to_wav_bytes(provided.samples, sr, max_file_size=max_file_size)
+        # R6/R7: resolve a missing rate (strict raises, best_effort assumes +
+        # diagnoses) and resample the array to an accepted rate BEFORE encoding,
+        # so an encoded-input engine that declares a restricted
+        # accepted_sample_rates never receives off-rate WAV content. The bare
+        # array path enforces the identical policy via the same helper.
+        samples, sr = _apply_sample_rate(
+            provided.samples,
+            provided.sample_rate,
+            accepted_sample_rates,
+            native_sample_rate,
+            required_input_sample_rate,
+            strict,
+            diags,
+        )
+        _check_duration(samples, sr, max_audio_duration)
+        result = encode_array_to_wav_bytes(samples, sr, max_file_size=max_file_size)
         diags.append(
             Diagnostic(
                 level="warning",
