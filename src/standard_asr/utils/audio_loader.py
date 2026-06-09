@@ -233,6 +233,56 @@ def ensure_datatype(audio: NDArray[Any], data_type: DTypeLike = np.float32) -> N
     return audio
 
 
+def _to_normalized_float32(audio: NDArray[Any]) -> NDArray[np.float32]:
+    """Convert any common PCM dtype to ``float32`` scaled to ``[-1.0, 1.0]``.
+
+    Integer PCM stores samples as raw codes, not amplitudes in ``[-1, 1]``, so a
+    bare ``astype(float32)`` followed by a ``[-1, 1]`` clip silently corrupts the
+    waveform (e.g. ``int16`` ``32767`` would clip to ``1.0`` and ``1000`` would
+    clip to ``1.0`` as well -- a silent-wrong-result). This rescales by the
+    dtype's full-scale magnitude instead:
+
+    * **Signed integers** (``int8``/``int16``/``int32``/``int64``) divide by
+      ``2**(bits-1)`` (e.g. ``int16`` -> ``/32768``), so ``-min`` maps to exactly
+      ``-1.0`` and ``+max`` to just under ``+1.0`` (the standard asymmetric PCM
+      convention).
+    * **Unsigned integers** (``uint8``/``uint16``/``uint32``/``uint64``) are
+      midpoint-centered then scaled: ``(x - 2**(bits-1)) / 2**(bits-1)`` (e.g.
+      ``uint8`` centers at ``128`` then divides by ``128``).
+    * **Floating** dtypes are taken as already-normalized amplitudes and only
+      cast to ``float32`` (the caller still clips for safety).
+
+    The division is performed in ``float64`` before the final ``float32`` cast so
+    a 32/64-bit integer full-scale value does not lose precision mid-scale.
+
+    Args:
+        audio: Input waveform of any signed/unsigned PCM integer or floating
+            dtype.
+
+    Returns:
+        A ``float32`` array scaled to ``[-1.0, 1.0]`` (integers) or cast as-is
+        (floats).
+    """
+    dtype = audio.dtype
+    if np.issubdtype(dtype, np.floating):
+        return ensure_datatype(audio, "float32")
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        if info.min == 0:
+            # Unsigned PCM: center on the midpoint, then scale by the half-range.
+            half_range = (int(info.max) + 1) / 2.0
+            scaled = (audio.astype(np.float64) - half_range) / half_range
+        else:
+            # Signed PCM: divide by the full-scale magnitude (``-min``), so the
+            # most-negative code maps to exactly -1.0.
+            scaled = audio.astype(np.float64) / float(-int(info.min))
+        return np.asarray(scaled, dtype=np.float32)
+    # Anything exotic (e.g. bool, complex) is handled by a plain cast; clipping by
+    # the caller keeps the contract range. This mirrors the historical behavior
+    # for non-PCM dtypes rather than failing the rare caller.
+    return ensure_datatype(audio, "float32")
+
+
 def normalize_audio(
     audio: NDArray[Any],
     original_sr: int,
@@ -250,7 +300,11 @@ def normalize_audio(
 
     Args:
         audio: Input waveform, 1D ``(n_samples,)`` or 2D ``(n_samples, n_channels)``.
-            Any dtype (will be converted to ``float32``).
+            Signed/unsigned PCM **integer** dtypes are rescaled to ``[-1, 1]`` by
+            their full-scale magnitude (e.g. ``int16`` is divided by ``32768``,
+            ``uint8`` is centered at ``128`` then divided by ``128``); **floating**
+            dtypes are taken as already-normalized amplitudes (and clipped for
+            safety). All inputs become ``float32``.
         original_sr: Sample rate of the input audio (Hz). Must be > 0.
         target_sr: Target sample rate. Default: ``16000`` Hz.
         target_channels: Target channel count. ``1`` = mono (default), ``2`` = stereo,
@@ -278,7 +332,10 @@ def normalize_audio(
 
         **Invalid values:** NaN/Inf are sanitized (NaN→0.0, ±Inf→±1.0) with a warning.
     """
-    processed_audio: NDArray[np.float32] = ensure_datatype(audio, "float32")
+    # Scale integer PCM to [-1, 1] by its full-scale magnitude before any
+    # processing; a bare float cast + clip would corrupt integer samples
+    # (e.g. int16 32767 -> 1.0 AND 1000 -> 1.0). Floats pass through unscaled.
+    processed_audio: NDArray[np.float32] = _to_normalized_float32(audio)
     # Basic parameter validation
 
     if original_sr <= 0:

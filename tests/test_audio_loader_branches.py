@@ -60,6 +60,67 @@ def test_normalize_audio_invalid_original_sr() -> None:
         audio_loader.normalize_audio(audio, 0, 16000, 1)
 
 
+def test_normalize_audio_scales_int16_pcm() -> None:
+    # int16 PCM is raw codes, not amplitudes: full-scale must map to ~+-1, not
+    # clip to 1.0 across the board. -32768 maps to exactly -1.0; 32767 ~ 0.99997.
+    audio = np.array([32767, -32768, 16384], dtype=np.int16)
+
+    out = audio_loader.normalize_audio(audio, 16000, 16000, 1)
+
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out, [32767 / 32768, -1.0, 0.5], atol=1e-6)
+
+
+def test_normalize_audio_scales_int32_pcm() -> None:
+    audio = np.array([2**31 - 1, -(2**31), 2**30], dtype=np.int32)
+
+    out = audio_loader.normalize_audio(audio, 16000, 16000, 1)
+
+    np.testing.assert_allclose(out, [(2**31 - 1) / 2**31, -1.0, 0.5], atol=1e-6)
+
+
+def test_normalize_audio_scales_uint8_pcm() -> None:
+    # uint8 PCM centers at 128: 128 -> 0.0, 255 -> ~+1, 0 -> -1, 192 -> 0.5.
+    audio = np.array([128, 255, 0, 192], dtype=np.uint8)
+
+    out = audio_loader.normalize_audio(audio, 16000, 16000, 1)
+
+    np.testing.assert_allclose(out, [0.0, 127 / 128, -1.0, 0.5], atol=1e-6)
+
+
+def test_normalize_audio_float_unchanged_modulo_clip() -> None:
+    # Floating input is treated as already-normalized amplitude: in-range values
+    # are preserved exactly, only out-of-range values are clipped for safety.
+    audio = np.array([0.25, -0.5, 2.0, -3.0], dtype=np.float32)
+
+    out = audio_loader.normalize_audio(audio, 16000, 16000, 1)
+
+    np.testing.assert_allclose(out, [0.25, -0.5, 1.0, -1.0], atol=1e-7)
+
+
+def test_normalize_audio_scales_int_stereo() -> None:
+    # 2D integer PCM scales per-sample before any channel handling; preserving
+    # both channels keeps the scaled amplitudes.
+    audio = np.array([[16384, -16384], [32767, -32768]], dtype=np.int16)
+
+    out = audio_loader.normalize_audio(audio, 16000, 16000, None)
+
+    assert out.shape == (2, 2)
+    np.testing.assert_allclose(out, [[0.5, -0.5], [32767 / 32768, -1.0]], atol=1e-6)
+
+
+def test_normalize_audio_exotic_dtype_plain_cast() -> None:
+    # A non-integer, non-floating dtype (bool) is neither PCM nor an amplitude:
+    # it falls through to a plain float cast (clipped by the contract), rather
+    # than failing the rare caller.
+    audio = np.array([True, False, True], dtype=bool)
+
+    out = audio_loader.normalize_audio(audio, 16000, 16000, 1)
+
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out, [1.0, 0.0, 1.0], atol=1e-7)
+
+
 def test_normalize_audio_resample_fallback_without_scipy(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
