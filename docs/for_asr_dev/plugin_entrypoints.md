@@ -140,7 +140,7 @@ uv run standard-asr compliance entrypoints
 uv run python cookbook/sample_client.py
 ```
 
-The sample client will pick the first discovered model (``dummy/echo``) and emit a
+The sample client selects the demo model (``dummy/echo``) explicitly and emits a
 synthetic transcript so you can see the full discovery → instantiation → usage
 cycle without heavy dependencies.
 

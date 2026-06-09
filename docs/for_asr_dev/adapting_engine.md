@@ -22,7 +22,8 @@ Subclass `EngineBase` and provide:
    network (spec IC.9). Load weights lazily in `_ensure_model_loaded`.
 5. `_transcribe(prepared, params) -> TranscriptionResult` — run your model on
    already-negotiated audio (`prepared.kind` is one of your `accepted_input`).
-6. (Streaming) override `_start_transcription(gated_params, audio_format, audio)`
+6. (Streaming) override
+   `_start_transcription(*, gated_params, audio_format, prepared_audio)`
    returning a `TranscriptionSession` subclass.
 
 ## Minimal batch engine
@@ -123,14 +124,24 @@ calls your hook. Before your hook runs, the base has already:
   raises `InvalidProviderParamError`), capability gating (R2), guidance degradation
   (R4) — and resolved the language axis. The gating / language **diagnostics** are
   attached to the returned session and surface through `session.diagnostics()`.
+- for the **whole-input** path (`audio=...`, e.g. OpenAI-style streaming output),
+  run that complete input through the **same** audio negotiation/conversion pipeline
+  as batch `transcribe` and hand your hook the result as `prepared_audio` (a
+  `PreparedAudio` already in one of your `accepted_input` shapes, with its
+  conversion diagnostics attached to the session). For the incremental
+  `audio_format=...` path there is no whole input, so `prepared_audio` is `None`.
 
 Your hook receives the **already-gated, frozen** `gated_params` (spec R5: streaming
 params are frozen at `start_transcription` and MUST NOT change mid-stream). Use them
-directly — do not re-gate or re-accept raw params.
+directly — do not re-gate or re-accept raw params. The signature is
+keyword-only: `gated_params`, `audio_format` (the wire format, or `None`), and
+`prepared_audio` (the negotiated whole input, or `None`).
 
 ```python
-def _start_transcription(self, *, gated_params, audio_format, audio):
-    # Guards + gating already ran in the base. gated_params is frozen (R5).
+def _start_transcription(self, *, gated_params, audio_format, prepared_audio):
+    # Guards + gating + (whole-input) audio prep already ran in the base.
+    # gated_params is frozen (R5); prepared_audio is None for the incremental
+    # audio_format path and a PreparedAudio for the whole-input audio path.
     return MySession(gated_params, ...)
 ```
 
