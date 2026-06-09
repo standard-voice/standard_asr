@@ -316,6 +316,36 @@ def test_default_language_must_be_selectable() -> None:
         _BadDefaultEngine().transcribe(_audio())
 
 
+class _NonCanonicalLangProps(_ArrayProps):
+    selectable_languages: list[str] = ["en-US", "auto"]
+    detectable_languages: list[str] = ["en-US"]
+
+
+class _NonCanonicalLangConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
+    engine: Literal["arr"] = "arr"
+    default_language: str | None = "en-us"  # non-canonical casing on purpose
+
+
+class _NonCanonicalLangEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _NonCanonicalLangProps()
+
+    def __init__(self) -> None:
+        self.config = _NonCanonicalLangConfig()
+
+
+def test_non_canonical_default_language_is_canonicalized_not_rejected() -> None:
+    # Regression: BCP-47 language matching is case-insensitive. A non-canonical
+    # default_language ("en-us") declared against a canonical selectable set
+    # (["en-US"]) -- both as class-level defaults, which pydantic does NOT run the
+    # field validators on -- must be matched case-insensitively instead of
+    # spuriously failing the LANG R1 totality check and blocking the engine.
+    engine = _NonCanonicalLangEngine()
+    # No ConfigError is raised, and the engine receives the CANONICAL effective
+    # language (echoed as detected_language), not the raw "en-us".
+    result = engine.transcribe(_audio())
+    assert result.detected_language == "en-US"
+
+
 class _NoLangProps(_ArrayProps):
     selectable_languages: list[str] = []
     detectable_languages: list[str] = []

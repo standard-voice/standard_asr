@@ -129,6 +129,27 @@ class StandardASR(Protocol):
         ...
 
 
+def _canonical_language(tag: str) -> str:
+    """Canonicalize a BCP-47 tag for case-insensitive matching, preserving AUTO.
+
+    ``selectable_languages`` and ``default_language`` may be declared as
+    non-canonical class-level defaults -- pydantic does not run the field
+    validators on defaults -- so language membership tests must canonicalize BOTH
+    sides here rather than trusting either to be pre-normalized. The reserved
+    ``auto`` directive is not a BCP-47 tag, so it is matched verbatim.
+
+    Args:
+        tag: A BCP-47 tag or the reserved ``auto`` token.
+
+    Returns:
+        The canonical form (``auto`` returned unchanged).
+
+    Raises:
+        ValueError: If ``tag`` is empty/whitespace (a malformed declaration).
+    """
+    return tag if tag == AUTO else normalize_bcp47(tag)
+
+
 class EngineBase(ABC):
     """Abstract base implementing the standard transcribe pipeline.
 
@@ -266,7 +287,13 @@ class EngineBase(ABC):
                 "(selectable_languages is non-empty) so its config MUST set "
                 "default_language (spec IC.6 / LANG R1)."
             )
-        if default not in self.properties.selectable_languages:
+        # Canonicalize BOTH sides: BCP-47 membership is case-insensitive, and
+        # either default_language or selectable_languages may be a non-canonical
+        # class-level default, so a raw "en-us" must still match a canonical
+        # "en-US" instead of spuriously failing LANG R1 and blocking the engine.
+        if _canonical_language(default) not in {
+            _canonical_language(tag) for tag in self.properties.selectable_languages
+        }:
             raise ConfigError(
                 f"default_language {default!r} is not in selectable_languages "
                 f"{self.properties.selectable_languages!r} "
@@ -298,7 +325,13 @@ class EngineBase(ABC):
         if not self.properties.has_language_axis:
             return params, []
         caps = self.effective_capabilities
-        default_language = cast("str | None", getattr(self.config, "default_language", None))
+        # default_language is non-None here: _validate_language_config (always run
+        # before this) enforces it whenever has_language_axis is True. Canonicalize
+        # it up front so the best-effort fallback below (and the diagnostic it
+        # emits) carry a canonical tag, never a raw class-level default ("en-us").
+        default_language = _canonical_language(
+            cast("str", getattr(self.config, "default_language", None))
+        )
         default_candidates = cast(
             "list[str] | None", getattr(self.config, "default_candidate_languages", None)
         )
@@ -312,7 +345,10 @@ class EngineBase(ABC):
             eff_lang = normalize_bcp47(eff_lang)
 
         diagnostics: list[Diagnostic] = []
-        if eff_lang is not None and eff_lang not in self.properties.selectable_languages:
+        # Canonicalize the selectable set too (it may be a non-canonical
+        # class-level default), so a canonical eff_lang matches case-insensitively.
+        selectable = {_canonical_language(tag) for tag in self.properties.selectable_languages}
+        if eff_lang is not None and eff_lang not in selectable:
             if self._strict:
                 raise UnsupportedFeatureError(
                     f"language {eff_lang!r} is not selectable in {mode} mode "
