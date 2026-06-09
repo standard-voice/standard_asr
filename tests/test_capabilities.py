@@ -460,6 +460,31 @@ def test_dict_node_mode_does_not_override_explicit_supported_false() -> None:
     assert caps.supports("batch.x_mode_only") is True
 
 
+def test_dict_node_mode_is_strict_string() -> None:
+    # A raw x_* dict node's `mode` is read as a STRICT string archetype token: a
+    # non-string (bool, number, None) is a malformed declaration and is
+    # fail-CLOSED to False, never silently promoted to supported. Without the type
+    # guard, `True`/`1` would pass the `not in {off-modes}` frozenset check (the
+    # off-modes are strings) and be wrongly reported as supported (spec §C R1).
+    caps = _x_caps(
+        {
+            "x_mode_true": {"mode": True},
+            "x_mode_one": {"mode": 1},
+            "x_mode_none": {"mode": None},
+            "x_mode_str": {"mode": "lossy"},
+        }
+    )
+    assert caps.supports("batch.x_mode_true") is False
+    assert caps.supports("batch.x_mode_one") is False
+    assert caps.supports("batch.x_mode_none") is False
+    # A real string mode (not an off-mode) still derives as supported.
+    assert caps.supports("batch.x_mode_str") is True
+    # canonical_json injects the same fail-closed value for cross-language clients.
+    cj = caps.canonical_json()
+    assert cj["batch"]["x_mode_true"]["supported"] is False
+    assert cj["batch"]["x_mode_str"]["supported"] is True
+
+
 def test_covers_with_dict_nodes_constraint_narrowing() -> None:
     # Both declared and effective carry an x_* dict node with a numeric upper
     # bound; widening it must be rejected, narrowing/equal accepted (the dict

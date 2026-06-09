@@ -643,7 +643,14 @@ def _derive_supported(node: object) -> bool:
         if "supported" in mapping:
             return mapping["supported"] is True
         if "mode" in mapping:
-            return mapping["mode"] not in _UNSUPPORTED_MODES
+            mode = mapping["mode"]
+            # A `mode` value MUST be a string archetype token. A non-string (bool,
+            # number, None, ...) is a malformed declaration and is fail-CLOSED to
+            # ``False`` -- never silently promoted to supported (spec §C R1) --
+            # mirroring the strict-boolean reading of `supported` above. Without
+            # the ``isinstance`` guard, ``True``/``1`` would pass ``not in`` (a
+            # frozenset of strings) and be wrongly reported as supported.
+            return isinstance(mode, str) and mode not in _UNSUPPORTED_MODES
         return True  # present container dict
     return False
 
