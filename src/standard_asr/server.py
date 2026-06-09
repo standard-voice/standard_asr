@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -63,6 +64,120 @@ DEFAULT_MAX_WS_FRAME_BYTES: int = DEFAULT_MAX_BODY_BYTES
 #: memory/CPU even within the per-frame limit. Override per app via
 #: ``create_app(max_ws_session_bytes=...)``.
 DEFAULT_MAX_WS_SESSION_BYTES: int = 256 * 1024 * 1024
+
+#: Substring tokens that mark a field name as credential-like. A request field
+#: whose name contains any of these (case-insensitive) has its value redacted
+#: from validation-error detail, so a mis-placed secret (e.g. an ``api_key`` put
+#: in the JSON body / ``options``) is never reflected back to the
+#: client / proxy / bug-report logs.
+_CREDENTIAL_FIELD_TOKENS: tuple[str, ...] = (
+    "api_key",
+    "apikey",
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "authorization",
+    "auth",
+    "credential",
+    "private_key",
+    "access_key",
+    "session_key",
+    "bearer",
+)
+
+#: Placeholder substituted for a redacted credential value in error detail.
+_REDACTED: str = "[redacted]"
+
+
+def _loc_to_list(loc: object) -> list[object]:
+    """Normalize a pydantic error ``loc`` into a plain list.
+
+    Args:
+        loc: The ``loc`` value from a single pydantic error entry (a tuple/list
+            of path components, or a scalar).
+
+    Returns:
+        The components as a list (a scalar is wrapped in a single-element list).
+    """
+    if isinstance(loc, (list, tuple)):
+        return list(loc)  # pyright: ignore[reportUnknownArgumentType]
+    return [loc]
+
+
+def _loc_is_credential(loc: list[object]) -> bool:
+    """Return whether a pydantic error ``loc`` names a credential-like field.
+
+    Args:
+        loc: The normalized ``loc`` path components.
+
+    Returns:
+        ``True`` if any string component of ``loc`` contains a credential token.
+    """
+    for part in loc:
+        if isinstance(part, str):
+            lowered = part.lower()
+            if any(token in lowered for token in _CREDENTIAL_FIELD_TOKENS):
+                return True
+    return False
+
+
+def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict[str, Any]]:
+    """Strip the echoed ``input`` (and ``url``) from pydantic error entries.
+
+    FastAPI / pydantic's default error detail echoes the offending ``input``
+    value verbatim (and may repeat it under ``ctx``). When a caller mis-places a
+    secret (e.g. an ``api_key`` in the JSON body or ``options``), that value is
+    reflected back into the client / any intermediary proxy / a copied bug report
+    -- a credential leak. This rebuilds each entry from only the safe structured
+    fields (``type``, ``loc``, ``msg``), thereby dropping the ``input`` echo, the
+    ``ctx``, and the ``url`` entirely, and additionally redacts the ``msg`` of any
+    entry whose ``loc`` names a credential-like field (whose validator message
+    could itself contain the value).
+
+    Args:
+        errors: The raw ``ValidationError.errors()`` / ``RequestValidationError``
+            error list.
+
+    Returns:
+        A new list of sanitized error entries safe to return to a client.
+    """
+    sanitized: list[dict[str, Any]] = []
+    for raw in errors:
+        error: dict[str, Any] = dict(raw)
+        loc = _loc_to_list(error.get("loc", ()))
+        is_credential = _loc_is_credential(loc)
+        entry: dict[str, Any] = {
+            "type": error.get("type"),
+            "loc": loc,
+            # Redact the message for credential fields (it can echo the value);
+            # otherwise keep the validator's own message (never the raw input).
+            "msg": _REDACTED if is_credential else error.get("msg"),
+        }
+        sanitized.append(entry)
+    return sanitized
+
+
+def _sanitized_validation_message(exc: ValidationError) -> str:
+    """Build a safe, input-free summary string from a pydantic error.
+
+    Used where a single ``detail`` string is expected (the ``options`` build
+    path). Mirrors :func:`_sanitize_validation_errors`: it names the offending
+    field(s) and the validator message but never echoes the submitted value, and
+    redacts credential-like fields entirely.
+
+    Args:
+        exc: The pydantic validation error.
+
+    Returns:
+        A human-readable, secret-free error string.
+    """
+    parts: list[str] = []
+    for entry in _sanitize_validation_errors(exc.errors()):
+        loc = ".".join(str(p) for p in entry["loc"]) or "(root)"
+        parts.append(f"{loc}: {entry['msg']}")
+    joined = "; ".join(parts) or "invalid options"
+    return f"Invalid options: {joined}"
 
 
 class _BodySizeLimitMiddleware:
@@ -233,8 +348,10 @@ def create_app(
     if max_ws_session_bytes <= 0:
         raise ValueError("max_ws_session_bytes must be a positive integer.")
     try:
-        from fastapi import FastAPI, File, Form, HTTPException
+        from fastapi import FastAPI, File, Form, HTTPException, Request
         from fastapi import WebSocket as _WebSocket
+        from fastapi.exceptions import RequestValidationError
+        from fastapi.responses import JSONResponse
     except ImportError as exc:
         raise ImportError(
             "FastAPI dependencies are missing. Install with: pip install 'standard-asr[server]'."
@@ -251,6 +368,32 @@ def create_app(
     # Pure-ASGI body-size guard (see _BodySizeLimitMiddleware): rejects over-large
     # bodies via Content-Length before they are read, without buffering the body.
     app.add_middleware(_BodySizeLimitMiddleware, max_body_bytes=max_body_bytes)
+
+    @app.exception_handler(RequestValidationError)
+    async def _on_validation_error(  # pyright: ignore[reportUnusedFunction]
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Return a 422 that never echoes the offending request ``input``.
+
+        FastAPI's default handler reflects each error's ``input`` value verbatim.
+        A caller who mis-places a secret (e.g. an ``api_key`` in the JSON body or
+        ``options``) would have it bounced back into the client / any proxy / a
+        copied bug report. We strip the ``input`` echo (and the ``url``) and
+        redact credential-like fields (see :func:`_sanitize_validation_errors`),
+        preserving the safe structured fields so the caller can still fix the
+        request.
+
+        Args:
+            _request: The incoming request (unused).
+            exc: The raised request-validation error.
+
+        Returns:
+            A ``422`` JSON response with sanitized error detail.
+        """
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _sanitize_validation_errors(exc.errors())},
+        )
 
     @app.get("/v1/health")
     def health() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
@@ -315,6 +458,10 @@ def create_app(
             )
         try:
             params = _build_params(json.loads(options) if options else None)
+        except ValidationError as exc:
+            # Surface a sanitized message: pydantic's str(exc) echoes the
+            # offending input value (a mis-placed secret would be reflected).
+            raise HTTPException(status_code=400, detail=_sanitized_validation_message(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -351,9 +498,13 @@ def create_app(
                 ),
             )
         try:
+            # `payload.options` is already a parsed object, so the only failure
+            # here is RuntimeParams validation -- whose str(exc) echoes the
+            # offending input value (a mis-placed secret would be reflected), so
+            # surface a sanitized message instead.
             params = _build_params(payload.options)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=_sanitized_validation_message(exc)) from exc
 
         # Pass the base64/data-URI payload straight to engine negotiation, which
         # decodes and converts per the engine's accepted_input (see the
@@ -432,6 +583,18 @@ def create_app(
             config = await websocket.receive_json()
             audio_format = AudioFormat(**config["audio_format"])
             params = _build_params(config.get("options"))
+        except ValidationError as exc:
+            # Sanitize: pydantic's str(exc) echoes the offending input value, so
+            # a mis-placed secret in options would be reflected to the client.
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "bad_request",
+                    "message": _sanitized_validation_message(exc),
+                }
+            )
+            await websocket.close()
+            return
         except Exception as exc:  # noqa: BLE001
             await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
             await websocket.close()

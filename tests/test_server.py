@@ -689,6 +689,158 @@ def test_transcribe_file_with_bad_options_maps_to_400() -> None:
     assert resp.status_code == 400
 
 
+def test_body_validation_error_does_not_echo_input() -> None:
+    # A body-validation failure (here: wrong type for `audio`) must NOT reflect
+    # the offending submitted value -- FastAPI's default handler would echo it.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+
+    # `audio` must be a string; send a recognisable sentinel as the wrong type.
+    resp: httpx.Response = client.post(
+        "/v1/transcribe:json", json={"model": "dummy/echo", "audio": 1234567890}
+    )
+    assert resp.status_code == 422
+    assert "1234567890" not in resp.text
+
+
+def test_body_validation_error_redacts_credential_field_value() -> None:
+    # A mis-placed secret (an `api_key` put at the top level of the JSON body)
+    # is rejected by extra="forbid"; its value must be redacted, never bounced
+    # back to the client / proxy / a copied bug report.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+
+    secret = "sk-LEAKED-SECRET-VALUE"
+    resp: httpx.Response = client.post(
+        "/v1/transcribe:json",
+        json={"model": "dummy/echo", "audio": "Zm9v", "api_key": secret},
+    )
+    assert resp.status_code == 422
+    assert secret not in resp.text
+    detail = resp.json()["detail"]
+    # The credential entry is present (so the caller knows what to fix) but its
+    # message is redacted.
+    assert any("api_key" in entry["loc"] for entry in detail)
+    assert any(entry["msg"] == "[redacted]" for entry in detail)
+
+
+def test_options_validation_error_does_not_echo_secret() -> None:
+    # A secret mis-placed inside `options` reaches _build_params, whose pydantic
+    # str(exc) would otherwise echo input_value=. The sanitized message must not
+    # contain it (and the offending field is named).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+
+    secret = "sk-OPTIONS-SECRET"
+    payload = {
+        "model": "dummy/echo",
+        "audio": "Zm9v",
+        "options": {"api_key": secret},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 400
+    assert secret not in resp.text
+    assert "api_key" in resp.json()["detail"]
+
+
+def test_options_validation_error_message_omits_input_value() -> None:
+    # A malformed language tag in options must surface a useful message but never
+    # the raw input_value pydantic would otherwise embed.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+
+    payload = {
+        "model": "dummy/echo",
+        "audio": "Zm9v",
+        "options": {"language": "definitely-not-a-tag-XYZ"},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "language" in detail
+    assert "input_value" not in detail
+
+
+def test_transcribe_file_options_validation_error_is_sanitized() -> None:
+    # The multipart endpoint's options (valid JSON, invalid RuntimeParams) take
+    # the sanitized ValidationError branch (a mis-placed secret is not echoed).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+
+    files = {"file": ("audio.wav", b"fake", "audio/wav")}
+    secret = "sk-MULTIPART-SECRET"
+    data = {"model": "dummy/echo", "options": json.dumps({"api_key": secret})}
+    resp: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
+    assert resp.status_code == 400
+    assert secret not in resp.text
+    assert "api_key" in resp.json()["detail"]
+
+
+def test_loc_to_list_wraps_a_scalar() -> None:
+    # Defensive: a scalar (non tuple/list) loc is wrapped into a single-element
+    # list so the redaction scan can iterate it uniformly.
+    assert server_module._loc_to_list("api_key") == ["api_key"]  # pyright: ignore[reportPrivateUsage]
+    assert server_module._loc_to_list(("a", 0)) == ["a", 0]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_validation_error_with_non_string_loc_index_is_handled() -> None:
+    # A bad element inside a list field yields a loc with an int index
+    # (e.g. ["candidate_languages", 0]); the redaction scan must skip the
+    # non-string component without error.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+
+    payload = {
+        "model": "dummy/echo",
+        "audio": "Zm9v",
+        "options": {"candidate_languages": [123]},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 400
+    assert "candidate_languages" in resp.json()["detail"]
+
+
+def test_ws_options_validation_error_does_not_echo_secret() -> None:
+    # The WS config-frame path shares _build_params; a mis-placed secret in
+    # options must not be echoed in the bad_request frame.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
+    client = TestClient(app)
+    secret = "sk-WS-OPTIONS-SECRET"
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {
+                "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                "options": {"api_key": secret},
+            }
+        )
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "bad_request"
+    assert secret not in json.dumps(err)
+    assert "api_key" in err["message"]
+
+
 def test_capabilities_endpoint_none_caps_returns_404() -> None:
     # An engine class with declared_capabilities=None has no caps to serve.
     pytest.importorskip("fastapi")

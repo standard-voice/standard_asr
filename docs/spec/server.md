@@ -16,6 +16,15 @@ Launch with `standard-asr serve` or `standard_asr.server.run(...)`.
 - The capability and params-schema endpoints are deliberately readable without
   auth (spec §3.1 / §C: declared metadata is discoverable without instantiation
   or authentication).
+- **Validation errors never echo the request input.** A global
+  `RequestValidationError` handler (and the `options` build path) returns a
+  structured **422** that strips the offending `input` value (which FastAPI /
+  pydantic echo by default) and **redacts credential-looking fields**
+  (`api_key`, `token`, `secret`, `password`, `authorization`, …). This prevents
+  a mis-placed secret (e.g. an API key put in the JSON body or `options`) from
+  being reflected back into the client, an intermediary proxy, or a copied bug
+  report. The safe structured fields (`type`, `loc`, `msg`) are preserved so the
+  caller can still fix the request.
 - **Request-body cap.** `DEFAULT_MAX_BODY_BYTES` = `16 * 1024 * 1024` (16 MiB),
   overridable per app via `create_app(max_body_bytes=...)`.
   - Enforced *before* decoding, by a pure-ASGI middleware inspecting
