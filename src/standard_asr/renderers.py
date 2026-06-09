@@ -50,22 +50,20 @@ def _sanitize_cue_text(text: str, *, neutralize_arrow: bool) -> str:
 def _format_timestamp(seconds: float, *, millis_sep: str) -> str:
     """Format a time offset as ``HH:MM:SS<sep>mmm``.
 
-    Negative offsets are clamped to zero. The SRT/WebVTT timestamp grammars
-    cannot represent a negative offset, so clamping is a hard format constraint
-    here, not a silent masking of upstream data errors -- the data model itself
-    permits negative ``start``/``end`` (e.g. streaming pre-roll before t=0; see
-    :class:`~standard_asr.results.Word`). Validating time signs is the data
-    model's / a compliance check's responsibility, not the renderer's.
+    The renderer trusts the validated data model: :class:`~standard_asr.results.Segment`
+    / :class:`~standard_asr.results.Word` guarantee a non-negative finite
+    ``start`` / ``end`` (spec TR.2), so no negative offset can reach here. The
+    renderer therefore does NOT clamp negatives -- clamping would silently mask
+    an upstream timestamp bug (a wrong result), and the model already rejects one
+    loudly at construction.
 
     Args:
-        seconds: Time offset in seconds.
+        seconds: Time offset in seconds (non-negative, finite).
         millis_sep: Separator before milliseconds (``","`` SRT, ``"."`` VTT).
 
     Returns:
         The formatted timestamp string.
     """
-    if seconds < 0:
-        seconds = 0.0
     total_ms = int(round(seconds * 1000))
     hours, rem = divmod(total_ms, 3_600_000)
     minutes, rem = divmod(rem, 60_000)
