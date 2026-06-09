@@ -192,20 +192,22 @@ class ConversionOp(str, Enum):
 class ConversionPlan:
     """A viable plan for delivering provided audio to an engine.
 
+    The plan describes *what* to do (``operations``) and the resulting shape
+    (``target_kind``). Whether a step is lossy or needs the ``[audio]`` extra is
+    not carried here: the lossy/decoded-rate diagnostics are emitted by the op
+    that performs the work in :mod:`standard_asr.audio_conversion`, the single
+    source of truth (a duplicate flag on the plan only invited drift, since
+    ``execute_plan`` never read it).
+
     Args:
         source_type: Name of the provided variant (e.g. ``"AudioPath"``).
         target_kind: The :class:`InputKind` the engine receives.
         operations: Ordered conversion steps to apply.
-        lossy: Whether the conversion loses information (e.g. float32->int16).
-        requires_audio_extra: Whether the conversion needs the ``[audio]`` extra
-            (decoding compressed formats).
     """
 
     source_type: str
     target_kind: InputKind
     operations: tuple[ConversionOp, ...]
-    lossy: bool
-    requires_audio_extra: bool
 
     @property
     def is_passthrough(self) -> bool:
@@ -318,16 +320,15 @@ def _negotiate_array(source: str, accepted: frozenset[InputKind]) -> ConversionP
         A plan (passthrough to array, or lossy WAV encode), or no viable path.
     """
     if InputKind.ARRAY in accepted:
-        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.PASSTHROUGH,), False, False)
+        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.PASSTHROUGH,))
     # The encoder writes to an in-memory BytesIO (R4: MUST NOT touch disk), so the
     # encoded result is ENCODED_BYTES. A file-only engine cannot receive it, so
     # this path is viable only when ENCODED_BYTES is accepted (otherwise a
     # wrong-shape silent result -- R3).
     if InputKind.ENCODED_BYTES in accepted:
-        # Encode to WAV/16-bit PCM bytes (float32 -> int16 is lossy).
-        return ConversionPlan(
-            source, InputKind.ENCODED_BYTES, (ConversionOp.ENCODE_WAV,), True, False
-        )
+        # Encode to WAV/16-bit PCM bytes (float32 -> int16 is lossy; the
+        # ENCODE_WAV op emits the lossy diagnostic at execution time).
+        return ConversionPlan(source, InputKind.ENCODED_BYTES, (ConversionOp.ENCODE_WAV,))
     if InputKind.ENCODED_FILE in accepted:
         return NoViablePath(
             source,
@@ -354,15 +355,11 @@ def _negotiate_path(source: str, accepted: frozenset[InputKind]) -> ConversionPl
         A plan (passthrough file, read-to-bytes, or decode), or no viable path.
     """
     if InputKind.ENCODED_FILE in accepted:
-        return ConversionPlan(
-            source, InputKind.ENCODED_FILE, (ConversionOp.PASSTHROUGH,), False, False
-        )
+        return ConversionPlan(source, InputKind.ENCODED_FILE, (ConversionOp.PASSTHROUGH,))
     if InputKind.ENCODED_BYTES in accepted:
-        return ConversionPlan(
-            source, InputKind.ENCODED_BYTES, (ConversionOp.READ_FILE,), False, False
-        )
+        return ConversionPlan(source, InputKind.ENCODED_BYTES, (ConversionOp.READ_FILE,))
     if InputKind.ARRAY in accepted:
-        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,), False, True)
+        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,))
     return NoViablePath(source, accepted, "The standard does not synthesize a fetchable URL in v1.")
 
 
@@ -382,11 +379,9 @@ def _negotiate_bytes(source: str, accepted: frozenset[InputKind]) -> ConversionP
     # ENCODED_BYTES payload would be a silent wrong-shape result (R3). Require
     # ENCODED_BYTES to be accepted before passing through.
     if InputKind.ENCODED_BYTES in accepted:
-        return ConversionPlan(
-            source, InputKind.ENCODED_BYTES, (ConversionOp.PASSTHROUGH,), False, False
-        )
+        return ConversionPlan(source, InputKind.ENCODED_BYTES, (ConversionOp.PASSTHROUGH,))
     if InputKind.ARRAY in accepted:
-        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,), False, True)
+        return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,))
     return NoViablePath(source, accepted, _bytes_only_file_hint(accepted))
 
 
@@ -403,16 +398,12 @@ def _negotiate_base64(source: str, accepted: frozenset[InputKind]) -> Conversion
     # As with AudioBytes: base64 decodes to in-memory bytes, which a file-only
     # engine cannot accept without the standard writing a temp file (forbidden).
     if InputKind.ENCODED_BYTES in accepted:
-        return ConversionPlan(
-            source, InputKind.ENCODED_BYTES, (ConversionOp.B64_DECODE,), False, False
-        )
+        return ConversionPlan(source, InputKind.ENCODED_BYTES, (ConversionOp.B64_DECODE,))
     if InputKind.ARRAY in accepted:
         return ConversionPlan(
             source,
             InputKind.ARRAY,
             (ConversionOp.B64_DECODE, ConversionOp.DECODE),
-            False,
-            True,
         )
     return NoViablePath(source, accepted, _bytes_only_file_hint(accepted))
 
@@ -452,9 +443,7 @@ def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPla
         A passthrough plan if the engine accepts URLs, otherwise no viable path.
     """
     if InputKind.FETCHABLE_URL in accepted:
-        return ConversionPlan(
-            source, InputKind.FETCHABLE_URL, (ConversionOp.PASSTHROUGH,), False, False
-        )
+        return ConversionPlan(source, InputKind.FETCHABLE_URL, (ConversionOp.PASSTHROUGH,))
     return NoViablePath(
         source,
         accepted,
@@ -485,9 +474,7 @@ def _negotiate_storage_uri(
         viable path.
     """
     if InputKind.STORAGE_URI in accepted:
-        return ConversionPlan(
-            source, InputKind.STORAGE_URI, (ConversionOp.PASSTHROUGH,), False, False
-        )
+        return ConversionPlan(source, InputKind.STORAGE_URI, (ConversionOp.PASSTHROUGH,))
     return NoViablePath(
         source,
         accepted,

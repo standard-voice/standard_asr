@@ -52,8 +52,9 @@ def test_array_passthrough_to_array_engine() -> None:
 def test_array_encodes_to_wav_for_file_engine() -> None:
     plan = negotiate(_arr(), {FILE, BYTES})
     assert isinstance(plan, ConversionPlan)
+    # The ENCODE_WAV op is the (lossy) float32->int16 step; the lossy diagnostic
+    # is emitted by that op at execution time, not flagged on the plan.
     assert plan.operations == (ConversionOp.ENCODE_WAV,)
-    assert plan.lossy is True
     assert plan.target_kind is BYTES
 
 
@@ -78,8 +79,9 @@ def test_path_read_to_bytes_when_only_bytes() -> None:
 def test_path_decode_to_array_needs_extra() -> None:
     plan = negotiate(AudioPath("a.mp3"), {ARR})
     assert isinstance(plan, ConversionPlan)
+    # The DECODE op is the step that needs the [audio] extra; the plan no longer
+    # carries a duplicate flag (execute_plan never read it).
     assert plan.operations == (ConversionOp.DECODE,)
-    assert plan.requires_audio_extra is True
 
 
 def test_bytes_passthrough() -> None:
