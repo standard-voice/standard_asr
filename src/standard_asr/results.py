@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Diagnostic(BaseModel):
@@ -52,16 +52,19 @@ class Word(BaseModel):
     """Word-level detail, shared between batch results and streaming events.
 
     Note:
-        ``start`` / ``end`` are NOT constrained to ``>= 0``. The origin is the
-        first submitted sample (t=0), but negative offsets are intentionally
-        permitted to support streaming pre-roll (audio buffered before the
-        nominal session start). Forbidding negatives would make those legitimate
-        cases unrepresentable; renderers clamp to zero for the SRT/VTT grammar.
+        Time is measured in float seconds with the origin at the first submitted
+        sample (audio time ``t=0``), the same origin as the streaming cursor
+        (spec TR.2 / ST). ``start`` / ``end`` are therefore non-negative finite
+        floats and ``end >= start`` (a zero-duration span is allowed). NaN / Inf
+        are rejected (``allow_inf_nan=False``). Adapters convert ms /
+        protobuf-duration / ticks into this frame; a negative or inverted span is
+        an adapter bug, so the model refuses to represent one rather than let it
+        surface as a silent wrong timestamp downstream.
 
     Args:
         start: Word start time in seconds (origin = first submitted sample;
-            may be negative for pre-roll).
-        end: Word end time in seconds.
+            non-negative, finite).
+        end: Word end time in seconds (non-negative, finite, ``>= start``).
         text: Word text.
         probability: Optional confidence in ``[0, 1]``.
         logprob: Optional log-probability (kept separate from ``probability``).
@@ -73,13 +76,14 @@ class Word(BaseModel):
         None.
 
     Raises:
-        ValueError: If field validation fails.
+        ValueError: If field validation fails (incl. NaN/Inf, a negative time,
+            or ``end < start``).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    start: float = Field(..., description="Word start time in seconds.")
-    end: float = Field(..., description="Word end time in seconds.")
+    start: float = Field(..., ge=0.0, description="Word start time in seconds (>= 0).")
+    end: float = Field(..., ge=0.0, description="Word end time in seconds (>= 0, >= start).")
     text: str = Field(..., description="Word text.")
     probability: float | None = Field(
         default=None, ge=0.0, le=1.0, description="Confidence in [0, 1]."
@@ -91,18 +95,41 @@ class Word(BaseModel):
     channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
     extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
 
+    @model_validator(mode="after")
+    def _check_span(self) -> Word:
+        """Reject an inverted span (``end < start``) at construction.
+
+        ``ge=0`` and ``allow_inf_nan=False`` already constrain each bound to a
+        non-negative finite value; this enforces the remaining TR.2 invariant
+        that a span never runs backwards. Equal bounds (zero duration) are
+        allowed.
+
+        Returns:
+            The validated word.
+
+        Raises:
+            ValueError: If ``end`` is earlier than ``start``.
+        """
+        if self.end < self.start:
+            raise ValueError(f"Word end ({self.end}) must be >= start ({self.start}).")
+        return self
+
 
 class Segment(BaseModel):
     """Segment-level detail, shared between batch results and streaming events.
 
     Note:
-        ``start`` / ``end`` are NOT constrained to ``>= 0``; negative offsets
-        are permitted for streaming pre-roll (see :class:`Word`).
+        ``start`` / ``end`` follow the same time frame as :class:`Word`:
+        non-negative finite float seconds with origin at the first submitted
+        sample (``t=0``), ``end >= start`` (zero-duration allowed), and NaN / Inf
+        rejected (spec TR.2). Within one channel segments are time-ordered; the
+        top-level :class:`TranscriptionResult.segments` are sorted by
+        ``(start, channel)`` (cross-channel spans may overlap).
 
     Args:
         start: Segment start time in seconds (origin = first submitted sample;
-            may be negative for pre-roll).
-        end: Segment end time in seconds.
+            non-negative, finite).
+        end: Segment end time in seconds (non-negative, finite, ``>= start``).
         text: Segment transcript text.
         words: Optional word-level details for this segment.
         speaker: Optional speaker label (authoritative diarization shape).
@@ -117,13 +144,14 @@ class Segment(BaseModel):
         None.
 
     Raises:
-        ValueError: If field validation fails.
+        ValueError: If field validation fails (incl. NaN/Inf, a negative time,
+            or ``end < start``).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    start: float = Field(..., description="Segment start time in seconds.")
-    end: float = Field(..., description="Segment end time in seconds.")
+    start: float = Field(..., ge=0.0, description="Segment start time in seconds (>= 0).")
+    end: float = Field(..., ge=0.0, description="Segment end time in seconds (>= 0, >= start).")
     text: str = Field(..., description="Segment transcript text.")
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this segment."
@@ -139,6 +167,25 @@ class Segment(BaseModel):
         default=None, description="Optional compression-ratio metric."
     )
     extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
+
+    @model_validator(mode="after")
+    def _check_span(self) -> Segment:
+        """Reject an inverted span (``end < start``) at construction.
+
+        ``ge=0`` and ``allow_inf_nan=False`` already constrain each bound to a
+        non-negative finite value; this enforces the remaining TR.2 invariant
+        that a span never runs backwards. Equal bounds (zero duration) are
+        allowed.
+
+        Returns:
+            The validated segment.
+
+        Raises:
+            ValueError: If ``end`` is earlier than ``start``.
+        """
+        if self.end < self.start:
+            raise ValueError(f"Segment end ({self.end}) must be >= start ({self.start}).")
+        return self
 
 
 class ChannelResult(BaseModel):
@@ -179,9 +226,10 @@ class TranscriptionResult(BaseModel):
 
     Args:
         text: Full transcript (required).
-        detected_language: Detected language (BCP-47) in ``auto`` mode.
+        detected_language: Detected language as a well-formed BCP-47 tag in
+            ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
-        duration: Audio duration in seconds, if known.
+        duration: Audio duration in seconds, if known (non-negative, finite).
         segments: Time-ordered segments across all channels, if available.
         words: Flattened word-level details, if available.
         channels: Per-channel results when channel separation was performed.
@@ -193,19 +241,22 @@ class TranscriptionResult(BaseModel):
         None.
 
     Raises:
-        ValueError: If field validation fails.
+        ValueError: If field validation fails (incl. NaN/Inf, a negative
+            ``duration``, or a malformed ``detected_language``).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     text: str = Field(..., description="Full transcript text.")
     detected_language: str | None = Field(
-        default=None, description="Detected language (BCP-47) in auto mode."
+        default=None, description="Detected language (well-formed BCP-47) in auto mode."
     )
     language_confidence: float | None = Field(
         default=None, ge=0.0, le=1.0, description="Detection confidence in [0, 1]."
     )
-    duration: float | None = Field(default=None, description="Audio duration in seconds, if known.")
+    duration: float | None = Field(
+        default=None, ge=0.0, description="Audio duration in seconds, if known (>= 0)."
+    )
     segments: list[Segment] | None = Field(
         default=None, description="Time-ordered segments, if available."
     )
@@ -225,6 +276,46 @@ class TranscriptionResult(BaseModel):
     extra: dict[str, Any] = Field(
         default_factory=dict, description="Engine-specific / experimental data."
     )
+
+    @field_validator("detected_language")
+    @classmethod
+    def _check_detected_language(cls, value: str | None) -> str | None:
+        """Validate and canonicalize ``detected_language`` (spec TR.1).
+
+        ``detected_language`` is the language the engine *resolved to*, so it must
+        be a concrete, well-formed BCP-47 tag -- never the reserved ``"auto"``
+        directive (which is a request to detect, not a detection result). A
+        malformed value (e.g. the native name ``"English"``) is rejected loudly
+        rather than echoed back, mirroring how :mod:`standard_asr.language`
+        validates request tags. A valid tag is normalized to canonical casing so
+        echoed values read consistently (``zh-Hans``). The import is deferred
+        because :mod:`standard_asr.language` imports from this module.
+
+        Args:
+            value: The candidate detected-language tag, or ``None``.
+
+        Returns:
+            The canonicalized tag, or ``None`` when not applicable.
+
+        Raises:
+            ValueError: If ``value`` is the reserved ``"auto"`` token or is not a
+                well-formed BCP-47 tag.
+        """
+        if value is None:
+            return None
+        from .language import AUTO, is_valid_bcp47, normalize_bcp47
+
+        if not is_valid_bcp47(value):
+            raise ValueError(
+                f"detected_language is not a well-formed BCP-47 tag: {value!r} "
+                "(e.g. 'en', 'en-US', 'zh-Hans')."
+            )
+        normalized = normalize_bcp47(value)
+        if normalized == AUTO:
+            raise ValueError(
+                "detected_language MUST be a concrete detected tag, not the reserved 'auto'."
+            )
+        return normalized
 
 
 __all__ = [

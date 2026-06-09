@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from standard_asr.renderers import to_srt, to_vtt
@@ -24,6 +26,42 @@ def test_minimal_result() -> None:
     assert result.diagnostics == []
 
 
+def test_result_rejects_negative_duration() -> None:
+    with pytest.raises(ValueError):
+        TranscriptionResult(text="x", duration=-1.0)
+
+
+def test_result_rejects_nonfinite_duration() -> None:
+    with pytest.raises(ValueError):
+        TranscriptionResult(text="x", duration=math.nan)
+    with pytest.raises(ValueError):
+        TranscriptionResult(text="x", duration=math.inf)
+
+
+def test_result_accepts_zero_duration() -> None:
+    assert TranscriptionResult(text="x", duration=0.0).duration == 0.0
+
+
+def test_result_rejects_malformed_detected_language() -> None:
+    # A native language name is not a BCP-47 tag; reject loudly, do not echo it.
+    with pytest.raises(ValueError):
+        TranscriptionResult(text="x", detected_language="English")
+
+
+def test_result_rejects_auto_as_detected_language() -> None:
+    # 'auto' is the detect-me directive, never a detection *result* (spec TR.1).
+    with pytest.raises(ValueError):
+        TranscriptionResult(text="x", detected_language="auto")
+    with pytest.raises(ValueError):
+        TranscriptionResult(text="x", detected_language="AUTO")
+
+
+def test_result_canonicalizes_detected_language() -> None:
+    # A valid tag is accepted and normalized to canonical casing.
+    result = TranscriptionResult(text="x", detected_language="zh-hans")
+    assert result.detected_language == "zh-Hans"
+
+
 def test_segment_and_word_models() -> None:
     word = Word(start=0.0, end=0.5, text="hi", probability=0.9)
     segment = Segment(start=0.0, end=1.0, text="hi", words=[word], channel=0)
@@ -37,6 +75,51 @@ def test_segment_and_word_models() -> None:
 def test_probability_bounds() -> None:
     with pytest.raises(ValueError):
         Word(start=0.0, end=0.1, text="x", probability=1.5)
+
+
+# --------------------------------------------------------------------------- #
+# Timestamp invariants (spec TR.1/TR.2): non-negative, finite, ordered floats.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_time_rejects_negative_start(model: type[Word | Segment]) -> None:
+    with pytest.raises(ValueError):
+        model(start=-0.1, end=1.0, text="x")
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_time_rejects_negative_end(model: type[Word | Segment]) -> None:
+    with pytest.raises(ValueError):
+        model(start=0.0, end=-0.1, text="x")
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_time_rejects_inverted_span(model: type[Word | Segment]) -> None:
+    with pytest.raises(ValueError):
+        model(start=1.0, end=0.5, text="x")
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_time_rejects_nan(model: type[Word | Segment]) -> None:
+    with pytest.raises(ValueError):
+        model(start=math.nan, end=1.0, text="x")
+    with pytest.raises(ValueError):
+        model(start=0.0, end=math.nan, text="x")
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_time_rejects_inf(model: type[Word | Segment]) -> None:
+    with pytest.raises(ValueError):
+        model(start=0.0, end=math.inf, text="x")
+    with pytest.raises(ValueError):
+        model(start=-math.inf, end=0.0, text="x")
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_time_allows_zero_duration_span(model: type[Word | Segment]) -> None:
+    # end == start (zero duration) is a valid span, not an inverted one.
+    item = model(start=1.5, end=1.5, text="x")
+    assert item.start == 1.5
+    assert item.end == 1.5
 
 
 def test_logprob_separate_from_probability() -> None:
@@ -230,17 +313,9 @@ def test_srt_sorts_none_channel_before_real_channel() -> None:
     assert srt.index("none") < srt.index("ch0")
 
 
-def test_renderer_clamps_negative_preroll_time() -> None:
-    # Data model allows negative (pre-roll) start; renderer clamps to zero for
-    # the SRT/VTT grammar (documented format constraint, not a silent mask).
-    seg = Segment(start=-0.5, end=0.5, text="pre-roll")
-    srt = to_srt(TranscriptionResult(text="x", segments=[seg]))
-    assert "00:00:00,000 --> 00:00:00,500" in srt
-
-
-def test_word_segment_allow_negative_times() -> None:
-    # ge=0 decision: negatives are permitted (streaming pre-roll).
-    w = Word(start=-0.2, end=0.0, text="pre")
-    s = Segment(start=-0.2, end=0.0, text="pre")
-    assert w.start == -0.2
-    assert s.start == -0.2
+def test_renderer_rejects_negative_preroll_time() -> None:
+    # The data model now forbids negative times (spec TR.2), so a "pre-roll"
+    # segment can never reach the renderer: it is rejected at construction. This
+    # is why the renderer no longer needs to clamp negative timestamps.
+    with pytest.raises(ValueError):
+        Segment(start=-0.5, end=0.5, text="pre-roll")

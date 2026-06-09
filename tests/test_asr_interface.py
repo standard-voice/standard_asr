@@ -40,6 +40,7 @@ from standard_asr.exceptions import (
     InvalidProviderParamError,
     UnsupportedFeatureError,
 )
+from standard_asr.language import AUTO
 from standard_asr.runtime_params import ProviderParams, WordTimestampGranularity
 from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
 
@@ -82,9 +83,13 @@ class _ArrayEngine(EngineBase):
     def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         assert prepared.kind is InputKind.ARRAY
         assert prepared.array is not None
-        return TranscriptionResult(
-            text=f"n={prepared.array.size}", detected_language=params.language
-        )
+        # detected_language echoes the effective language so tests can observe
+        # language resolution. The 'auto' directive is a request to detect, not
+        # a detection result, so this stub (which performs no detection) reports
+        # None for it -- mirroring what a real engine must do (TranscriptionResult
+        # rejects 'auto' as a detected value).
+        detected = None if params.language == AUTO else params.language
+        return TranscriptionResult(text=f"n={prepared.array.size}", detected_language=detected)
 
 
 class _CapturingArrayEngine(_ArrayEngine):
