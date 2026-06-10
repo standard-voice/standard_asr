@@ -512,3 +512,12 @@ def test_packaging_unavailable_without_plugins_stays_clean(
     assert report.analysis_unavailable is False
     assert report.has_conflict is False
     assert "No Standard ASR plugins" in doctor.format_report(report)
+
+
+def test_is_clean_is_the_single_verdict() -> None:
+    # The one verdict consumed by the CLI exit code and the report headline:
+    # clean requires BOTH no detected conflict AND that analysis ran (M8: an
+    # unprovable environment must not read as clean).
+    assert doctor.DoctorReport(python_version="3.12").is_clean is True
+    assert doctor.DoctorReport(python_version="3.12", conflicts=["x vs y"]).is_clean is False
+    assert doctor.DoctorReport(python_version="3.12", analysis_unavailable=True).is_clean is False

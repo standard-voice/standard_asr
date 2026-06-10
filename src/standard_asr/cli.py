@@ -219,15 +219,14 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         args: Parsed CLI arguments.
 
     Returns:
-        Exit code: ``1`` if a conflict was detected or conflict analysis was
-        unavailable (the environment cannot be proven conflict-free), else
-        ``0``.
+        Exit code: ``0`` iff the report verdict is clean (no conflict detected
+        and conflict analysis ran -- ``DoctorReport.is_clean``), else ``1``.
     """
     from .doctor import diagnose, format_report
 
     report = diagnose()
     print(format_report(report))
-    return 1 if report.has_conflict or report.analysis_unavailable else 0
+    return 0 if report.is_clean else 1
 
 
 def _cmd_models_list(args: argparse.Namespace) -> int:

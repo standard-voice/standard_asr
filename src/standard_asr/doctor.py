@@ -131,6 +131,22 @@ class DoctorReport:
         """
         return bool(self.conflicts)
 
+    @property
+    def is_clean(self) -> bool:
+        """Whether the environment is proven conflict-free (the verdict).
+
+        The single source of the doctor verdict, consumed by both the CLI exit
+        code and the :func:`format_report` headline: clean requires BOTH no
+        detected conflict AND that conflict analysis actually ran
+        (``analysis_unavailable`` is a non-clean state -- an unprovable
+        environment must not read as clean, M8). A future non-clean state is
+        wired in here once, not re-derived in every consumer.
+
+        Returns:
+            ``True`` when no conflict was detected and analysis ran.
+        """
+        return not self.has_conflict and not self.analysis_unavailable
+
 
 def packaging_available() -> bool:
     """Return whether the optional ``packaging`` library is importable.
@@ -478,19 +494,23 @@ def format_report(report: DoctorReport) -> str:
         for p in report.plugins:
             lines.append(f"  - {p.entrypoint} [{p.distribution}] numpy {p.numpy_spec}")
     lines.append("")
-    if report.has_conflict:
+    if report.is_clean:
+        # The clean claim is gated on the report's single verdict property, so
+        # a new non-clean state added to is_clean can never read as clean here
+        # (it still needs its own rendering branch below).
+        lines.append("No dependency conflicts detected.")
+    elif report.has_conflict:
         lines.append("Conflicts:")
         lines.extend(f"  ! {c}" for c in report.conflicts)
-    elif report.analysis_unavailable:
-        # No analyzer means no verdict: claiming "no conflicts" here would be a
-        # silent wrong result. The headline must carry the non-clean state.
+    else:
+        # Non-clean without a classified conflict: analysis could not run.
+        # Claiming "no conflicts" here would be a silent wrong result; the
+        # headline must carry the non-clean state.
         lines.append(
             "Conflict analysis unavailable: the 'packaging' distribution is "
             "not installed (pip install packaging). Cannot prove the "
             "environment conflict-free."
         )
-    else:
-        lines.append("No dependency conflicts detected.")
     if report.notes:
         lines.append("")
         lines.extend(f"  note: {n}" for n in report.notes)

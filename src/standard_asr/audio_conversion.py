@@ -33,7 +33,12 @@ from .audio_negotiation import ConversionOp, ConversionPlan, validate_fetchable_
 from .exceptions import AudioProcessingError
 from .resampling import resample_with_backend
 from .results import Diagnostic
-from .utils.audio_loader import decode_audio, decode_base64_audio, estimate_base64_decoded_size
+from .utils.audio_loader import (
+    _base64_payload,  # pyright: ignore[reportPrivateUsage]
+    _decode_base64_payload,  # pyright: ignore[reportPrivateUsage]
+    _estimate_payload_decoded_size,  # pyright: ignore[reportPrivateUsage]
+    decode_audio,
+)
 from .utils.save_utils import encode_array_to_wav_bytes
 
 #: Canonical fallback sample rate when a bare array omits its rate (spec R6).
@@ -318,16 +323,42 @@ def _prepare_encoded(
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=result.data, container="wav")
     if ConversionOp.B64_DECODE in ops:  # base64 -> bytes
         assert isinstance(provided, AudioBase64)
-        # Cheap pre-decode gate (R9): the decoded size is estimated from the
-        # base64 length alone, so an oversize payload is rejected BEFORE the
-        # decode allocates it. The estimate never exceeds the true decoded size,
-        # so an under-limit payload is never falsely rejected; the exact
-        # post-decode check below stays authoritative.
-        _check_payload_size(estimate_base64_decoded_size(provided.value), max_file_size)
-        decoded = decode_base64_audio(provided.value)
-        _check_payload_size(len(decoded), max_file_size)
+        decoded = _decode_bounded_base64(provided.value, max_file_size)
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=decoded)
     raise AudioProcessingError("Unsupported encoded conversion plan.")  # pragma: no cover
+
+
+def _decode_bounded_base64(value: str, max_file_size: int | None) -> bytes:
+    """Size-gate (pre-decode, spec R9) and decode a base64 payload in one step.
+
+    The conversion layer's single base64 entry point, shared by the
+    encoded-delivery and decode-to-array paths: the gate and the decode travel
+    together, so a future third base64-accepting path cannot take the decode
+    without the gate (re-opening R9). The decoded size is estimated from the
+    payload length alone and checked BEFORE the decode allocates it; the
+    estimate never exceeds the true decoded size, so an under-limit payload is
+    never falsely rejected, and the exact post-decode check stays
+    authoritative. The ``data:``-URI payload is extracted ONCE and shared by
+    the estimate and the decode (separate top-level calls each re-ran the
+    extraction: a duplicate O(n) scan plus, for a data: URI, a second
+    payload-sized transient slice copy).
+
+    Args:
+        value: A ``data:...;base64,...`` URI or a bare base64 string.
+        max_file_size: The engine's declared limit, or ``None`` for no limit.
+
+    Returns:
+        The decoded bytes (within ``max_file_size``).
+
+    Raises:
+        AudioProcessingError: If the estimated or exact decoded size exceeds
+            ``max_file_size``, or the payload is malformed.
+    """
+    payload = _base64_payload(value)
+    _check_payload_size(_estimate_payload_decoded_size(payload), max_file_size)
+    decoded = _decode_base64_payload(payload)
+    _check_payload_size(len(decoded), max_file_size)
+    return decoded
 
 
 def _diagnose_non_finite(array: NDArray[np.float32], diags: list[Diagnostic]) -> None:
@@ -343,9 +374,10 @@ def _diagnose_non_finite(array: NDArray[np.float32], diags: list[Diagnostic]) ->
         array: The waveform about to be delivered (passthrough or resampled).
         diags: Diagnostics accumulator.
     """
-    if bool(np.isfinite(array).all()):
+    finite = np.isfinite(array)
+    if bool(finite.all()):
         return
-    bad = int(np.count_nonzero(~np.isfinite(array)))
+    bad = int(np.count_nonzero(~finite))
     diags.append(
         Diagnostic(
             level="warning",
@@ -459,11 +491,9 @@ def _prepare_array(
     elif isinstance(provided, AudioBytes):
         source = provided.data
     elif isinstance(provided, AudioBase64):
-        # Same cheap pre-decode gate as the encoded path (R9): estimate the
-        # decoded size from the base64 length before allocating the decode;
-        # decode_audio's exact length check below stays authoritative.
-        _check_payload_size(estimate_base64_decoded_size(provided.value), max_file_size)
-        source = decode_base64_audio(provided.value)
+        # Same gate-and-decode as the encoded path (R9): the decoded size is
+        # estimated and checked BEFORE the decode allocates it.
+        source = _decode_bounded_base64(provided.value, max_file_size)
     else:  # pragma: no cover - matrix guarantees the above
         raise AudioProcessingError("Cannot decode this input to an array.")
 

@@ -116,7 +116,25 @@ def decode_base64_audio(value: str) -> bytes:
         AudioProcessingError: If a ``data:`` URI lacks the ``;base64,`` marker,
             or the payload is not valid base64.
     """
-    payload = _base64_payload(value)
+    return _decode_base64_payload(_base64_payload(value))
+
+
+def _decode_base64_payload(payload: str) -> bytes:
+    """Strictly decode an already-extracted base64 payload.
+
+    The payload-level half of :func:`decode_base64_audio`, split out so the
+    gate-and-decode helpers can extract a ``data:`` URI's payload ONCE and
+    share it between the size estimate and the decode.
+
+    Args:
+        payload: The raw base64 payload (no ``data:`` wrapper).
+
+    Returns:
+        The decoded bytes.
+
+    Raises:
+        AudioProcessingError: If the payload is not valid base64.
+    """
     try:
         return base64.b64decode(payload, validate=True)
     except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
@@ -126,8 +144,9 @@ def decode_base64_audio(value: str) -> bytes:
 def _base64_payload(value: str) -> str:
     """Extract the raw base64 payload from a possible ``data:`` URI wrapper.
 
-    Shared by :func:`decode_base64_audio` and
-    :func:`estimate_base64_decoded_size` so both apply exactly the same
+    Shared by :func:`decode_base64_audio` and the gate-and-decode helpers
+    (:func:`_decode_base64_bounded` here, ``_decode_bounded_base64`` in the
+    conversion layer) so every entry point applies exactly the same
     ``data:``-URI parse rules (single source of truth, AUDI-4).
 
     Args:
@@ -151,28 +170,57 @@ def _base64_payload(value: str) -> str:
     return value
 
 
-def estimate_base64_decoded_size(value: str) -> int:
+def _estimate_payload_decoded_size(payload: str) -> int:
     """Estimate the decoded byte size of a base64 payload without decoding it.
 
     Computed from the payload length alone (every 4 base64 characters decode to
     3 bytes, minus trailing padding), so a size gate can run *before* the
-    allocation that :func:`decode_base64_audio` performs. The estimate is exact
-    for a valid padded payload and a floor (underestimate) for a malformed one,
-    so a gate using it never rejects a payload whose decoded form would actually
-    fit -- the exact post-decode length check stays authoritative.
+    allocation that :func:`_decode_base64_payload` performs. The estimate is
+    exact for a valid padded payload and a floor (underestimate) for a
+    malformed one, so a gate using it never rejects a payload whose decoded
+    form would actually fit -- the exact post-decode length check stays
+    authoritative. Takes the already-extracted payload (no ``data:`` wrapper)
+    so the gate-and-decode helpers extract a ``data:`` URI's payload ONCE and
+    share it between the estimate and the decode (extraction is an O(n) scan
+    plus, for a data: URI, a payload-sized transient slice copy).
 
     Args:
-        value: A ``data:...;base64,...`` URI or a bare base64 string.
+        payload: The raw base64 payload (no ``data:`` wrapper).
 
     Returns:
         The estimated decoded size in bytes (never negative).
-
-    Raises:
-        AudioProcessingError: If a ``data:`` URI lacks the ``;base64,`` marker.
     """
-    payload = _base64_payload(value)
     padding = 2 if payload.endswith("==") else 1 if payload.endswith("=") else 0
     return max((len(payload) // 4) * 3 - padding, 0)
+
+
+def _decode_base64_bounded(value: str, max_bytes: int | None) -> bytes:
+    """Size-gate (pre-decode, spec R9) and decode a base64 payload in one step.
+
+    The gate and the decode travel together so a base64-accepting loader path
+    cannot take the decode without the gate: the decoded size is estimated
+    from the payload length BEFORE the decode allocates it (the estimate never
+    exceeds the true size, so an under-limit payload is never falsely
+    rejected), and the exact decoded length is re-checked after. The
+    ``data:``-URI payload is extracted once and shared by both steps.
+
+    Args:
+        value: A ``data:...;base64,...`` URI or a bare base64 string.
+        max_bytes: The encoded-payload cap, or ``None`` for unbounded.
+
+    Returns:
+        The decoded bytes (within ``max_bytes``).
+
+    Raises:
+        AudioProcessingError: If the estimated or exact decoded size exceeds
+            ``max_bytes``, the payload is not valid base64, or a ``data:`` URI
+            lacks the ``;base64,`` marker.
+    """
+    payload = _base64_payload(value)
+    _enforce_decode_size(_estimate_payload_decoded_size(payload), max_bytes)
+    decoded = _decode_base64_payload(payload)
+    _enforce_decode_size(len(decoded), max_bytes)
+    return decoded
 
 
 def _validate_local_source_path(path: str) -> str:
@@ -260,6 +308,48 @@ class _DecodedOutputCeilingError(AudioProcessingError):
     fallback would just re-decode the same expansive input). It remains an
     :class:`AudioProcessingError`, so public callers handle it uniformly.
     """
+
+
+def _read_with_soundfile(source: str | io.BytesIO) -> tuple[NDArray[np.float32], int] | None:
+    """Decode with ``soundfile``, or return ``None`` when fallback should run.
+
+    The single ``soundfile`` attempt shared by every decode path, so the
+    exception-ladder discipline lives in exactly one place:
+
+    * a missing ``soundfile`` (ImportError) or an ordinary decode failure
+      returns ``None`` -- the caller falls through to the FFmpeg layer;
+    * a decoded output past the module ceiling re-raises
+      (:class:`_DecodedOutputCeilingError`): the FFmpeg fallback would just
+      re-decode the same expansive input, so a copied ladder that forgot this
+      re-raise would route a decompression bomb into a SECOND full decode.
+
+    Args:
+        source: A local file path or a ``BytesIO`` over encoded bytes.
+
+    Returns:
+        The decoded ``(float32 waveform, native sample rate)`` pair, or
+        ``None`` when the caller should fall back to FFmpeg.
+
+    Raises:
+        _DecodedOutputCeilingError: If the decoded array exceeds the
+            decoded-output ceiling (hard rejection, never falls back).
+    """
+    try:
+        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
+
+        sf_read: Any = getattr(sf, "read")
+        audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(source, dtype="float32"))
+        _enforce_decoded_output_ceiling(audio)
+    except ImportError:
+        logger.debug("`soundfile` not installed; falling back to FFmpeg.")
+        return None
+    except _DecodedOutputCeilingError:
+        # Hard rejection: every fallback would re-decode the same input.
+        raise
+    except Exception as e:
+        logger.debug("soundfile decode failed, falling back. Error: %s", e)
+        return None
+    return audio, orig_sr
 
 
 def _enforce_decoded_output_ceiling(audio: NDArray[Any]) -> None:
@@ -680,7 +770,9 @@ def load_audio(
 
         # First check: if it has explicit base64 data URI prefix, treat as base64
         if s.lower().startswith("data:") and ";base64," in s:
-            source_bytes = decode_base64_audio(s)
+            # Gate-and-decode (R9): the decoded size is estimated from the
+            # payload length and checked BEFORE the decode allocates it.
+            source_bytes = _decode_base64_bounded(s, max_bytes)
             return load_audio_from_bytes(
                 source_bytes, target_sr, target_channels, max_bytes=max_bytes
             )
@@ -853,24 +945,14 @@ def load_audio_from_path(
                 f"falling back to soundfile/ffmpeg... Error: {e}"
             )
 
-    # Layer 2: Use `soundfile` for formats like FLAC, OGG, etc.
-    try:
-        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
-
-        sf_read: Any = getattr(sf, "read")
-        audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(path, dtype="float32"))
-        _enforce_decoded_output_ceiling(audio)
+    # Layer 2: Use `soundfile` for formats like FLAC, OGG, etc. (the shared
+    # attempt owns the fall-back-vs-hard-reject exception discipline).
+    decoded = _read_with_soundfile(path)
+    if decoded is not None:
+        audio, orig_sr = decoded
         # normalize_audio never raises ImportError: a missing scipy degrades to
         # the built-in anti-aliasing fallback resampler internally (spec AI R8).
         return normalize_audio(audio, orig_sr, target_sr, target_channels)
-    except ImportError:
-        logger.debug("`soundfile` not installed, cannot load non-WAV formats without FFmpeg.")
-    except _DecodedOutputCeilingError:
-        # A decoded output past the ceiling is a hard rejection: the FFmpeg
-        # fallback would just re-decode the same expansive input.
-        raise
-    except Exception as e:
-        logger.debug(f"Could not load with `soundfile`, falling back... Error: {e}")
 
     # Layer 3: Final fallback to FFmpeg
     return _load_with_ffmpeg(path, target_sr, target_channels)
@@ -920,26 +1002,14 @@ def load_audio_from_bytes(
     if target_channels is not None and target_channels <= 0:
         raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
     _enforce_decode_size(len(data), max_bytes)
-    # Layer 2: `soundfile` is the best primary method for bytes
-    try:
-        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
-
-        sf_read: Any = getattr(sf, "read")
-        audio, orig_sr = cast(
-            tuple[NDArray[np.float32], int], sf_read(io.BytesIO(data), dtype="float32")
-        )
-        _enforce_decoded_output_ceiling(audio)
+    # Layer 2: `soundfile` is the best primary method for bytes (the shared
+    # attempt owns the fall-back-vs-hard-reject exception discipline).
+    decoded = _read_with_soundfile(io.BytesIO(data))
+    if decoded is not None:
+        audio, orig_sr = decoded
         # normalize_audio never raises ImportError: a missing scipy degrades to
         # the built-in anti-aliasing fallback resampler internally (spec AI R8).
         return normalize_audio(audio, orig_sr, target_sr, target_channels)
-    except ImportError:
-        logger.debug("`soundfile` not installed, cannot load from bytes without FFmpeg.")
-    except _DecodedOutputCeilingError:
-        # A decoded output past the ceiling is a hard rejection: the FFmpeg
-        # fallback would just re-decode the same expansive input.
-        raise
-    except Exception as e:
-        logger.debug(f"Could not load bytes with `soundfile`, falling back... Error: {e}")
 
     # Layer 3: Final fallback to FFmpeg
     return _load_with_ffmpeg(data, target_sr, target_channels)
@@ -987,8 +1057,10 @@ def decode_audio(
     if isinstance(source, str):
         s = source.strip()
         if s.lower().startswith("data:") and ";base64," in s:
-            decoded = decode_base64_audio(s)
-            _enforce_decode_size(len(decoded), max_bytes)
+            # Gate-and-decode (R9): the decoded size is estimated from the
+            # payload length and checked BEFORE the decode allocates it (the
+            # exact decoded length is re-checked inside).
+            decoded = _decode_base64_bounded(s, max_bytes)
             return _decode_bytes_native(decoded, target_channels)
         path = _validate_local_source_path(s)
         _enforce_decode_size(pathlib.Path(path).stat().st_size, max_bytes)
@@ -1064,21 +1136,10 @@ def _decode_path_native(
         except (wave.Error, AudioProcessingError, OSError, ValueError) as e:
             logger.debug("stdlib wave decode failed, falling back. Error: %s", e)
 
-    try:
-        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
-
-        sf_read: Any = getattr(sf, "read")
-        audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(path, dtype="float32"))
-        _enforce_decoded_output_ceiling(audio)
+    decoded = _read_with_soundfile(path)
+    if decoded is not None:
+        audio, orig_sr = decoded
         return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
-    except ImportError:
-        logger.debug("`soundfile` not installed; using FFmpeg for native decode.")
-    except _DecodedOutputCeilingError:
-        # A decoded output past the ceiling is a hard rejection: the FFmpeg
-        # fallback would just re-decode the same expansive input.
-        raise
-    except Exception as e:
-        logger.debug("soundfile decode failed, falling back. Error: %s", e)
 
     return _decode_with_ffmpeg_native(path, target_channels)
 
@@ -1099,23 +1160,10 @@ def _decode_bytes_native(
         AudioProcessingError: Decoding failed.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
     """
-    try:
-        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
-
-        sf_read: Any = getattr(sf, "read")
-        audio, orig_sr = cast(
-            tuple[NDArray[np.float32], int], sf_read(io.BytesIO(data), dtype="float32")
-        )
-        _enforce_decoded_output_ceiling(audio)
+    decoded = _read_with_soundfile(io.BytesIO(data))
+    if decoded is not None:
+        audio, orig_sr = decoded
         return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
-    except ImportError:
-        logger.debug("`soundfile` not installed; using FFmpeg for native decode.")
-    except _DecodedOutputCeilingError:
-        # A decoded output past the ceiling is a hard rejection: the FFmpeg
-        # fallback would just re-decode the same expansive input.
-        raise
-    except Exception as e:
-        logger.debug("soundfile decode failed, falling back. Error: %s", e)
 
     return _decode_with_ffmpeg_native(data, target_channels)
 

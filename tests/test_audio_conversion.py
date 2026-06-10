@@ -176,10 +176,10 @@ def test_base64_invalid_raises() -> None:
 def _forbid_b64_decode(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make any actual base64 decode fail the test (the gate must run first)."""
 
-    def _boom(_value: str) -> bytes:
-        raise AssertionError("decode_base64_audio must not run for an oversize payload")
+    def _boom(_payload: str) -> bytes:
+        raise AssertionError("the base64 decode must not run for an oversize payload")
 
-    monkeypatch.setattr("standard_asr.audio_conversion.decode_base64_audio", _boom)
+    monkeypatch.setattr("standard_asr.audio_conversion._decode_base64_payload", _boom)
 
 
 def test_base64_oversize_rejected_before_decode(monkeypatch: pytest.MonkeyPatch) -> None:
