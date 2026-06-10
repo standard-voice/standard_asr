@@ -115,10 +115,13 @@ calls your hook. Before your hook runs, the base has already:
   silently mistranscribed) and a wire `sample_rate` you do not accept: per spec R7's
   v1 note the standard does **not** resample streaming wire frames in v1 (only the
   batch `transcribe` path resamples), so an unreachable wire rate is a loud error.
-  The rate is accepted when `accepted_sample_rates` is `"any"`, when it is in that
-  concrete list, or when it equals `required_input_sample_rate`. (Standard-layer
-  streaming resampling is a deferred capability; this guard becomes a resample once
-  it lands.)
+  When `required_input_sample_rate` is set, the wire rate MUST equal it — even when
+  another rate appears in `accepted_sample_rates` (that list describes the batch
+  path, which resamples to the required rate before your engine; unresampled wire
+  frames at any other rate would be misread). Otherwise the rate is accepted when
+  `accepted_sample_rates` is `"any"` or when it is in that concrete list.
+  (Standard-layer streaming resampling is a deferred capability; this guard becomes
+  a resample once it lands.)
 - **gated the runtime parameters** against your `streaming` capabilities — provider
   `provider_params` swap-safety (Runtime R3: a wrong `provider_params` type always
   raises `InvalidProviderParamError`), capability gating (R2), guidance degradation
@@ -177,6 +180,12 @@ unreplayable audio was permanently lost. The base does **not** infer loss from
 rolling-buffer eviction (a live ring is always evicting, so that would falsely
 claim loss on every long session); you decide, because only you know whether the
 replay actually bridged the gap.
+
+**`error` events fail safe to terminal.** An `error` event with `recoverable`
+unset is normalized to `recoverable=false` (terminal) at construction: unknown
+recoverability must not leave consumers waiting on a stream that may never
+continue. If you emit an advisory, non-fatal error (the session keeps going),
+set `recoverable=True` explicitly — otherwise your event ends the session.
 
 ### Sequence invariants the guard enforces for free
 
