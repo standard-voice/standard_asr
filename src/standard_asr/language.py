@@ -31,12 +31,15 @@ def _canonical_case_subtag(index: int, subtag: str) -> str:
     Casing rules (RFC 5646 §2.1.1): the primary language subtag (index 0) is
     lowercase; a 4-alpha script subtag is Title-case; a 2-alpha or 3-digit
     region subtag is UPPERCASE; everything else (variants, 3-8 alpha extended
-    subtags, extensions) is lowercase. Casing is purely cosmetic -- membership
+    subtags) is lowercase. These rules apply only to subtags BEFORE the first
+    singleton (a 1-char subtag such as the ``u`` extension or ``x`` private-use
+    marker); :func:`normalize_bcp47` lowercases everything after a singleton and
+    never routes those subtags here. Casing is purely cosmetic -- membership
     comparisons remain exact because every tag is canonicalized identically.
 
     Args:
         index: The subtag's position (0 = primary language).
-        subtag: The subtag text (no separators).
+        subtag: The subtag text (no separators, not preceded by a singleton).
 
     Returns:
         The subtag in canonical casing.
@@ -60,9 +63,12 @@ def normalize_bcp47(tag: str) -> str:
     (language lowercase, script Titlecase, region UPPERCASE) so values echoed
     back to applications -- e.g. ``detected_language`` and diagnostic
     ``provided``/``effective`` fields -- read canonically (``zh-Hans``, not
-    ``zh-hans``). Membership comparisons are unaffected: both the declared set
-    and the request are canonicalized through this same function, so matching
-    stays case-insensitive in effect.
+    ``zh-hans``). Per RFC 5646 §2.1.1 the script/region conventions apply only
+    before the first singleton (a 1-char subtag); every subtag after it --
+    extension and private-use subtags -- stays lowercase
+    (``zh-Hans-u-co-pinyin``, never ``u-CO``). Membership comparisons are
+    unaffected: both the declared set and the request are canonicalized through
+    this same function, so matching stays case-insensitive in effect.
 
     Args:
         tag: Input language tag.
@@ -76,8 +82,13 @@ def normalize_bcp47(tag: str) -> str:
     normalized = tag.strip().replace("_", "-")
     if not normalized:
         raise ValueError("Language tag must not be empty.")
-    parts = normalized.split("-")
-    return "-".join(_canonical_case_subtag(i, part) for i, part in enumerate(parts))
+    canonical: list[str] = []
+    seen_singleton = False
+    for index, part in enumerate(normalized.split("-")):
+        canonical.append(part.lower() if seen_singleton else _canonical_case_subtag(index, part))
+        if len(part) == 1:
+            seen_singleton = True
+    return "-".join(canonical)
 
 
 def is_valid_bcp47(tag: str) -> bool:
@@ -225,7 +236,12 @@ def effective_candidate_languages(
         deduped_seen.add(norm)
         deduped.append(norm)
 
-    detectable = set(detectable_languages)
+    # Canonicalize the DECLARED side exactly like the candidates above: engines
+    # may declare detectable_languages as non-canonical class-level defaults
+    # (pydantic does not run field validators on defaults), and a raw 'zh-hans'
+    # must not misreport a canonical 'zh-Hans' candidate as non-detectable.
+    # normalize_bcp47 is idempotent on already-canonical tags.
+    detectable = {normalize_bcp47(t) for t in detectable_languages}
     result: list[str] = []
     for norm in deduped:
         if norm not in detectable:

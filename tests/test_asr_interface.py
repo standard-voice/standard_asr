@@ -316,6 +316,51 @@ def test_default_language_must_be_selectable() -> None:
         _BadDefaultEngine().transcribe(_audio())
 
 
+class _WhitespaceDefaultConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
+    engine: Literal["arr"] = "arr"
+    # Whitespace-only: set (not None) but malformed -- canonicalization rejects it.
+    default_language: str | None = "   "
+
+
+class _WhitespaceDefaultEngine(_ArrayEngine):
+    def __init__(self) -> None:
+        self.config = _WhitespaceDefaultConfig()
+
+
+def test_malformed_default_language_raises_config_error() -> None:
+    # R3-INTERFACE-05: an empty/whitespace default_language must surface as the
+    # documented ConfigError naming the engine and the malformed value, not leak
+    # the normalizer's bare ValueError.
+    from standard_asr.exceptions import ConfigError
+
+    with pytest.raises(ConfigError, match="malformed") as exc_info:
+        _WhitespaceDefaultEngine().transcribe(_audio())
+    assert "'   '" in str(exc_info.value)
+    assert "'arr'" in str(exc_info.value)
+
+
+class _WhitespaceSelectableProps(_ArrayProps):
+    # A malformed (whitespace-only) DECLARED tag: constructible because pydantic
+    # does not run field validators on class-level defaults.
+    selectable_languages: list[str] = ["en", "   "]
+
+
+class _WhitespaceSelectableEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _WhitespaceSelectableProps()
+
+
+def test_malformed_declared_selectable_tag_raises_config_error() -> None:
+    # R3-INTERFACE-05: a malformed declared selectable tag is an engine-author
+    # bug; the membership canonicalization must report it as ConfigError naming
+    # the offending declaration, not leak a bare ValueError.
+    from standard_asr.exceptions import ConfigError
+
+    with pytest.raises(ConfigError, match="selectable_languages") as exc_info:
+        _WhitespaceSelectableEngine().transcribe(_audio())
+    assert "malformed" in str(exc_info.value)
+    assert "'arr'" in str(exc_info.value)
+
+
 class _NonCanonicalLangProps(_ArrayProps):
     selectable_languages: list[str] = ["en-US", "auto"]
     detectable_languages: list[str] = ["en-US"]
@@ -466,6 +511,36 @@ def test_candidate_languages_best_effort_filtered_and_truncated_flow_to_batch_ho
     assert _CapturingAutoEngine.received.candidate_languages == ["ja", "en"]
     assert any(d.code == "candidate_language_dropped" for d in result.diagnostics)
     assert any(d.code == "candidate_languages_truncated" for d in result.diagnostics)
+
+
+class _NonCanonicalDetectableProps(_ArrayProps):
+    selectable_languages: list[str] = ["auto"]
+    # Non-canonical class-level defaults: pydantic does NOT run field validators
+    # on defaults, so these reach the standard layer raw.
+    detectable_languages: list[str] = ["zh-hans", "en", "pt-br"]
+
+
+class _NonCanonicalDetectableEngine(_CapturingArrayEngine):
+    properties: ClassVar[BaseProperties] = _NonCanonicalDetectableProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAND_CAPS
+
+    def __init__(self, *, strict: bool = True) -> None:
+        self.config = _AutoConfig(strict=strict)
+
+
+def test_canonical_candidates_match_non_canonical_detectable_declaration() -> None:
+    # M5/R3-LANGUAGE-01 (engine path): a strict request with canonical candidate
+    # tags must match the engine's raw, non-canonical detectable declaration
+    # instead of raising "not detectable" for languages the engine CAN detect.
+    _NonCanonicalDetectableEngine.received = None
+
+    result = _NonCanonicalDetectableEngine(strict=True).transcribe(
+        _audio(), RuntimeParams(language="auto", candidate_languages=["zh-Hans", "pt-BR"])
+    )
+
+    assert _NonCanonicalDetectableEngine.received is not None
+    assert _NonCanonicalDetectableEngine.received.candidate_languages == ["zh-Hans", "pt-BR"]
+    assert not any(d.code == "candidate_language_dropped" for d in result.diagnostics)
 
 
 class _NoCandConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
@@ -702,6 +777,30 @@ def test_ensure_stream_format_supported_allows_any_rate_for_any_engine() -> None
     _AnyEngine().ensure_stream_format_supported(
         AudioFormat(encoding="pcm_s16le", sample_rate=44100)
     )
+
+
+def test_ensure_stream_format_supported_enforces_required_rate_under_any() -> None:
+    # R3-INTERFACE-03: required_input_sample_rate + accepted_sample_rates="any"
+    # is constructible (the declaration-time reachability validator only checks
+    # concrete lists), so the session guard must still fail-closed on a wire
+    # rate that differs from the hard-required one -- v1 does not resample
+    # streaming wire frames.
+    from standard_asr.audio_format import AudioFormat
+
+    class _ReqAnyProps(_ArrayProps):
+        accepted_sample_rates: list[int] | Literal["any"] = "any"
+        required_input_sample_rate: int | None = 24000
+
+    class _ReqAnyEngine(_ArrayEngine):
+        properties: ClassVar[BaseProperties] = _ReqAnyProps()
+
+    engine = _ReqAnyEngine()
+    engine.ensure_stream_format_supported(AudioFormat(encoding="pcm_s16le", sample_rate=24000))
+    with pytest.raises(UnsupportedFeatureError, match="required_input_sample_rate") as exc_info:
+        engine.ensure_stream_format_supported(AudioFormat(encoding="pcm_s16le", sample_rate=44100))
+    assert exc_info.value.param == "audio_format.sample_rate"
+    assert exc_info.value.mode == "streaming"
+    assert exc_info.value.hint is not None
 
 
 def test_required_input_sample_rate_must_be_accepted() -> None:

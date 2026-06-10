@@ -344,7 +344,9 @@ _CJK_PROMPT = "前文提到了量子计算与超导"
 
 
 def test_count_tokens_latin_is_word_count() -> None:
-    # Latin behaviour is unchanged: still a conservative whitespace word count.
+    # Latin text counts whitespace words. This MAY under-count an engine's BPE
+    # subword tokenization of long Latin/number/URL tokens -- a documented
+    # trade-off (no heuristic long-token splitting; engines declare headroom).
     assert _count_tokens("the quick brown fox") == 4
     assert _count_tokens("  spaced   out  ") == 2
 
@@ -546,6 +548,42 @@ def test_degrade_dropped_signal_not_fooled_by_hint_substring_in_prompt() -> None
     assert gated.prompt == "categorize"  # the framed hint block was cut entirely.
     # "cat" survives only as a substring of "categorize", NOT as folded-in hint
     # content -> the loss must be the distinct dropped signal, not a false success.
+    assert any(d.code == "guidance_degrade_phrase_hints_dropped" for d in diags)
+    assert not any(d.code == "guidance_degraded_to_prompt" for d in diags)
+
+
+def test_degrade_after_prompt_truncation_composes_on_gated_prompt() -> None:
+    # M4/R3-GATING-01: prompt is gated BEFORE phrase_hints, so when the hints
+    # then degrade into the prompt channel, the degrade must fold onto the
+    # already-truncated (gated) prompt -- not the original request value -- and
+    # the request must carry exactly ONE coherent prompt_truncated diagnostic
+    # reflecting the final composition (previously: two, with contradictory
+    # provided counts).
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=4)),
+                phrase_hints=PhraseHintsCap(supported=False),
+            )
+        )
+    )
+    params = RuntimeParams(
+        prompt="one two three four five six seven eight",  # 8 tokens > 4 budget
+        phrase_hints=["Anthropic"],
+        on_unsupported="degrade_to_prompt",
+    )
+    gated, diags = gate_params(params, caps, "batch", strict=False)
+
+    assert gated.prompt == "one two three four"
+    truncs = [d for d in diags if d.code == "prompt_truncated"]
+    assert len(truncs) == 1
+    # provided counts the FINAL composition (the gated 4-token prompt + the
+    # 3-token framed hints = 7), not the original 8-token prompt nor the
+    # original-plus-hints 11.
+    assert truncs[0].provided == 7
+    assert truncs[0].effective == "one two three four"
+    # Forward truncation cut the framed tail entirely -> explicit dropped
+    # signal, never the misleading "degraded successfully" diagnostic.
     assert any(d.code == "guidance_degrade_phrase_hints_dropped" for d in diags)
     assert not any(d.code == "guidance_degraded_to_prompt" for d in diags)
 

@@ -257,7 +257,8 @@ class EngineBase(ABC):
 
         Raises:
             ConfigError: If the engine exposes a language axis but its
-                ``default_language`` is unset or not in ``selectable_languages``.
+                ``default_language`` is unset, malformed, or not in
+                ``selectable_languages``.
             IncompatibleAudioInputError: If no conversion path exists.
             UnsupportedFeatureError: In strict mode, on an unsupported parameter.
             InvalidProviderParamError: On wrong provider params.
@@ -329,7 +330,9 @@ class EngineBase(ABC):
 
         Raises:
             ConfigError: If the language axis is exposed but ``default_language``
-                is unset or not in ``selectable_languages``.
+                is unset, malformed (empty/whitespace), or not in
+                ``selectable_languages``; or if a declared selectable tag is
+                itself malformed.
         """
         if not self.properties.has_language_axis:
             return
@@ -344,9 +347,24 @@ class EngineBase(ABC):
         # either default_language or selectable_languages may be a non-canonical
         # class-level default, so a raw "en-us" must still match a canonical
         # "en-US" instead of spuriously failing LANG R1 and blocking the engine.
-        if _canonical_language(default) not in {
-            _canonical_language(tag) for tag in self.properties.selectable_languages
-        }:
+        # Canonicalization raises ValueError on an empty/whitespace tag; this
+        # method promises ConfigError, so wrap it naming the malformed value (a
+        # language tag is not a secret -- echoing it is safe and actionable).
+        try:
+            canonical_default = _canonical_language(default)
+        except ValueError as exc:
+            raise ConfigError(
+                f"default_language {default!r} is malformed for engine "
+                f"{self.properties.engine_id!r}: {exc} (spec LANG R1)."
+            ) from exc
+        try:
+            selectable = {_canonical_language(tag) for tag in self.properties.selectable_languages}
+        except ValueError as exc:
+            raise ConfigError(
+                f"selectable_languages {self.properties.selectable_languages!r} declared "
+                f"by engine {self.properties.engine_id!r} contains a malformed tag: {exc}"
+            ) from exc
+        if canonical_default not in selectable:
             raise ConfigError(
                 f"default_language {default!r} is not in selectable_languages "
                 f"{self.properties.selectable_languages!r} "
@@ -539,9 +557,12 @@ class EngineBase(ABC):
         standard-layer streaming resampling lands, a wire ``sample_rate`` that the
         engine does not accept MUST be rejected here rather than forwarded as
         frames the engine never declared -- a loud error beats a silent
-        mistranscription. The rate is accepted when ``accepted_sample_rates`` is
-        ``"any"``, when it is in that concrete list, or when it equals the
-        engine's ``required_input_sample_rate``.
+        mistranscription. When ``required_input_sample_rate`` is set, the wire
+        rate MUST equal it -- even when ``accepted_sample_rates`` is ``"any"``
+        (that combination is constructible; the declaration-time reachability
+        validator only checks concrete lists). Otherwise the rate is accepted
+        when ``accepted_sample_rates`` is ``"any"`` or when it is in that
+        concrete list.
 
         Args:
             audio_format: The wire format the session declared.
@@ -575,20 +596,35 @@ class EngineBase(ABC):
                 hint="Open the session with AudioFormat(..., channels=1) and downmix client-side.",
             )
 
+        rate = audio_format.sample_rate
+        required = props.required_input_sample_rate
+        # A hard-required wire rate binds regardless of accepted_sample_rates:
+        # "any" + required_input_sample_rate is constructible (the declaration
+        # reachability validator only checks concrete lists), and v1 does not
+        # resample streaming wire frames, so a differing rate fails closed here.
+        if required is not None and rate != required:
+            raise UnsupportedFeatureError(
+                f"Streaming wire sample_rate {rate} Hz does not match the "
+                f"required_input_sample_rate={required} Hz that engine "
+                f"{props.engine_id!r} hard-requires. v1 does not resample streaming "
+                "wire frames, so the required rate is enforced at session "
+                "establishment even when accepted_sample_rates is 'any'.",
+                param="audio_format.sample_rate",
+                mode="streaming",
+                hint=f"Open the session at sample_rate={required}.",
+            )
         accepted = props.accepted_sample_rates
-        if isinstance(accepted, list):
-            rate = audio_format.sample_rate
-            if rate not in accepted and rate != props.required_input_sample_rate:
-                raise UnsupportedFeatureError(
-                    f"Streaming wire sample_rate {rate} Hz is not accepted by engine "
-                    f"{props.engine_id!r} (accepted_sample_rates={accepted}). v1 does "
-                    "not resample streaming wire frames, so an unreachable rate is "
-                    "rejected at session establishment rather than silently "
-                    "mistranscribed. Open the session at an accepted rate.",
-                    param="audio_format.sample_rate",
-                    mode="streaming",
-                    hint=f"Open the session at an accepted_sample_rates value: {accepted}.",
-                )
+        if isinstance(accepted, list) and rate not in accepted:
+            raise UnsupportedFeatureError(
+                f"Streaming wire sample_rate {rate} Hz is not accepted by engine "
+                f"{props.engine_id!r} (accepted_sample_rates={accepted}). v1 does "
+                "not resample streaming wire frames, so an unreachable rate is "
+                "rejected at session establishment rather than silently "
+                "mistranscribed. Open the session at an accepted rate.",
+                param="audio_format.sample_rate",
+                mode="streaming",
+                hint=f"Open the session at an accepted_sample_rates value: {accepted}.",
+            )
 
     def _overrides_streaming(self) -> bool:
         """Return whether this engine implements the streaming hook.
@@ -654,7 +690,8 @@ class EngineBase(ABC):
         Raises:
             ValueError: If both ``audio_format`` and ``audio`` are provided.
             ConfigError: If the engine exposes a language axis but its
-                ``default_language`` is unset or not in ``selectable_languages``.
+                ``default_language`` is unset, malformed, or not in
+                ``selectable_languages``.
             UnsupportedFeatureError: When the requested streaming input/output
                 axis is unsupported, when streaming is unsupported, when the wire
                 format is unreachable, or, in strict mode, on an unsupported

@@ -24,6 +24,19 @@ def test_normalize_bcp47_canonical_casing() -> None:
     assert normalize_bcp47("en") == "en"
 
 
+def test_normalize_bcp47_lowercases_after_singleton() -> None:
+    # R3-LANGUAGE-03 / RFC 5646 §2.1.1: the script/region casing conventions
+    # apply only BEFORE the first singleton; extension subtags (after 'u') and
+    # private-use subtags (after 'x') stay lowercase. 'co' is an extension key
+    # here, not a region -- never 'u-CO'.
+    assert normalize_bcp47("zh-Hans-u-co-pinyin") == "zh-Hans-u-co-pinyin"
+    assert normalize_bcp47("ZH-HANS-U-CO-PINYIN") == "zh-Hans-u-co-pinyin"
+    assert normalize_bcp47("en-x-private-AB") == "en-x-private-ab"
+    # Ordinary casing before any singleton is unaffected.
+    assert normalize_bcp47("en-us") == "en-US"
+    assert normalize_bcp47("zh-hans") == "zh-Hans"
+
+
 def test_normalize_bcp47_membership_is_case_insensitive_in_effect() -> None:
     # Two differently-cased spellings canonicalize to the same value, so
     # membership comparisons remain exact regardless of input casing.
@@ -169,6 +182,25 @@ def test_effective_candidates_best_effort_drops_non_detectable() -> None:
     )
     assert result == ["en"]
     assert any(d.code == "candidate_language_dropped" for d in diags)
+
+
+def test_detectable_membership_canonicalizes_declared_side() -> None:
+    # M5/R3-LANGUAGE-01: detectable_languages may reach here as a non-canonical
+    # class-level default (pydantic does not run field validators on defaults).
+    # A canonical candidate ('zh-Hans') must match the raw declaration
+    # ('zh-hans') instead of raising in strict mode (or being dropped as
+    # "non-detectable" in best_effort) for a language the engine CAN detect.
+    result, diags = effective_candidate_languages(
+        AUTO,
+        ["zh-Hans", "pt-BR"],
+        None,
+        candidate_supported=True,
+        detectable_languages=["zh-hans", "en", "pt-br"],
+        max_count=3,
+        strict=True,
+    )
+    assert result == ["zh-Hans", "pt-BR"]
+    assert diags == []
 
 
 def test_effective_candidates_strict_over_max_raises() -> None:

@@ -20,7 +20,7 @@ rules:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from .capabilities import (
     DeclaredCapabilities,
@@ -274,7 +274,7 @@ def _is_no_space_codepoint(ch: str) -> bool:
 
 
 def _count_tokens(text: str) -> int:
-    """Conservatively approximate a prompt's token count (script-aware).
+    """Approximate a prompt's token count (script-aware, engine-agnostic).
 
     The standard layer has no engine tokenizer, so ``max_tokens`` is enforced
     against an engine-agnostic, deterministic approximation of "prompt length":
@@ -282,11 +282,16 @@ def _count_tokens(text: str) -> int:
     (CJK / kana / Hangul / Thai / ...) codepoint**. The CJK term is essential --
     a whitespace word count alone collapses a long no-space prompt (the spec's
     Qwen3 ``context`` -> ``prompt`` example) to ~1 token and would let it slip
-    past a ``max_tokens`` limit it actually blows. For Latin scripts there are no
-    space-less codepoints, so this is exactly the (conservative) word count.
+    past a ``max_tokens`` limit it actually blows.
 
-    This is a deliberate over-approximation, not the engine's exact tokenizer;
-    it is documented as such on :attr:`~standard_asr.capabilities.PromptConstraints.max_tokens`.
+    Scope of the guarantee: this count never under-counts relative to
+    whitespace + no-space-script tokenization, but it MAY under-count an
+    engine's subword (BPE) tokenization of long Latin / number / URL tokens --
+    a long URL or a 19-digit number is one word here but many BPE tokens.
+    Heuristic long-token splitting is deliberately NOT applied (it would risk
+    over-truncating valid prompts), so engine authors should declare
+    ``max_tokens`` with headroom below the provider's hard limit; see
+    :attr:`~standard_asr.capabilities.PromptConstraints.max_tokens`.
 
     Args:
         text: The prompt text.
@@ -300,8 +305,8 @@ def _count_tokens(text: str) -> int:
 def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
     """Truncate *text* so its :func:`_count_tokens` is at most ``max_tokens``.
 
-    Latin behaviour is preserved exactly: whole whitespace-delimited words are
-    sliced (``" ".join(words[:max_tokens])``) and, having no space-less
+    For Latin text, whole whitespace-delimited words are sliced
+    (``" ".join(words[:max_tokens])``) and, having no space-less
     codepoints, that already fits the budget. For space-less scripts the
     whole-word slice can still exceed the budget (its codepoints each cost a
     token), so trailing codepoints are dropped until the script-aware count fits.
@@ -342,9 +347,10 @@ def _enforce_prompt_limit(
     A supported ``prompt`` MUST still respect the engine's declared token budget
     (spec §Runtime 3.3 / R4 -- guidance is best-effort but MUST NOT silently
     exceed a declared bound). The budget is measured with the script-aware
-    :func:`_count_tokens` (a conservative approximation, not the engine's exact
-    tokenizer) so a long no-space / CJK prompt cannot slip past a limit it
-    actually blows. In best_effort mode an over-budget prompt is truncated to fit
+    :func:`_count_tokens` (an approximation, not the engine's exact tokenizer;
+    see its docstring for the guarantee scope) so a long no-space / CJK prompt
+    cannot slip past a limit it actually blows. In best_effort mode an
+    over-budget prompt is truncated to fit
     with a diagnostic; in strict mode it raises. An absent (``None``) limit is
     unbounded -- nothing to do.
 
@@ -529,13 +535,16 @@ def _try_degrade_to_prompt(
 ) -> bool:
     """Attempt the opt-in one-way phrase_hints -> prompt degradation.
 
+    The hints are folded onto the *already-gated* prompt (the running value in
+    ``updates``, falling back to ``params.prompt``), never the raw request value.
     The synthesized prompt MUST itself respect the prompt channel's declared
     ``max_tokens`` budget -- degradation must never silently emit a prompt the
     engine cannot accept (spec §Runtime R4: never silently degrade). When the
     combined prompt would exceed the budget: in best_effort it is truncated to
-    ``max_tokens`` tokens with a ``prompt_truncated`` diagnostic (in addition to
-    the degrade diagnostic); in strict mode it raises, so the caller falls
-    through to the standard unsupported-phrase_hints handling rather than
+    ``max_tokens`` tokens with a ``prompt_truncated`` diagnostic that supersedes
+    any earlier prompt-only truncation diagnostic (exactly one per request, in
+    addition to the degrade diagnostic); in strict mode it raises, so the caller
+    falls through to the standard unsupported-phrase_hints handling rather than
     applying a lossy degrade silently.
 
     The framed phrase-hints block sits at the tail of the synthesized prompt, so
@@ -573,7 +582,12 @@ def _try_degrade_to_prompt(
     if not capabilities.supports(f"{mode}.guidance.prompt"):
         return False
     framed = _PHRASE_HINTS_FRAME_PREFIX + ", ".join(hints) + "."
-    existing = params.prompt
+    # Compose on the RUNNING gated value: prompt is gated before phrase_hints in
+    # _GATED_PARAMS order, so _enforce_prompt_limit may already have truncated
+    # the prompt into ``updates``. Folding the hints onto the original
+    # ``params.prompt`` would resurrect over-budget content and report a second,
+    # contradictory truncation.
+    existing = cast("str | None", updates.get("prompt", params.prompt))
     combined = f"{existing}\n{framed}" if existing else framed
 
     node = capabilities.node_at(f"{mode}.guidance.prompt")
@@ -591,6 +605,11 @@ def _try_degrade_to_prompt(
                 ),
             )
         truncated = _truncate_to_token_budget(combined, max_tokens)
+        # This truncation reflects the FINAL composition (gated prompt + framed
+        # hints); a prompt_truncated emitted earlier by _enforce_prompt_limit for
+        # the prompt channel alone is superseded, so each request carries exactly
+        # ONE coherent prompt_truncated diagnostic.
+        diagnostics[:] = [d for d in diagnostics if d.code != "prompt_truncated"]
         diagnostics.append(
             Diagnostic(
                 level="warning",
