@@ -1,0 +1,20 @@
+# zizmor configuration for Standard ASR
+# https://docs.zizmor.sh/configuration/
+#
+# We deliberately keep zizmor's strictest defaults. This file makes the
+# project's intent explicit rather than relaxing any audit:
+#   - unpinned-uses: blanket hash-pin policy. EVERY `uses:` (including
+#     first-party actions/*) must be pinned to a full-length commit SHA with
+#     a trailing `# vX.Y.Z` comment. This is already zizmor's default; we
+#     state it here so a future contributor cannot loosen it unnoticed.
+#
+# Per-finding suppressions are kept inline in the workflows (via
+# `# zizmor: ignore[<rule>]` with a justification) so the reason lives next
+# to the code it applies to. The only such suppression today is the
+# artipacked finding on mkdocs.yml, where the checkout credentials are
+# required for `mkdocs gh-deploy` to push to the gh-pages branch.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin

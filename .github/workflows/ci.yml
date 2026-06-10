@@ -1,0 +1,309 @@
+name: CI
+
+# Primary pull-request gate (dependency-policy channel 1). Everything here runs
+# against the committed uv.lock (`--locked`), so CI is byte-for-byte reproducible
+# and a stale lock fails loudly. The lower-bounds lane additionally re-resolves
+# at each direct dependency's floor (`--resolution lowest-direct`) to keep the
+# declared lower bounds honest. Branch protection requires the single aggregate
+# check `checks-complete` (ADR D8); do NOT add path filters here — a skipped
+# required check would block merges forever.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin uv so resolution/lock behaviour is reproducible across runs and matches
+  # the [tool.uv] required-version floor. Bump deliberately.
+  UV_VERSION: "0.11.19"
+
+jobs:
+  lock-check:
+    name: Lock up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+
+  lint:
+    name: Lint & Typecheck (Ruff + Pyright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install dependencies (locked)
+        # --all-packages installs the cookbook workspace members so pyright can
+        # resolve their imports (the cookbook tests are in pyright's include set).
+        run: uv sync --locked --all-packages --all-extras --all-groups
+      - name: Ruff format check
+        run: uv run --no-sync ruff format --check
+      - name: Ruff lint
+        run: uv run --no-sync ruff check
+      - name: Pyright
+        run: uv run --no-sync pyright
+
+  test:
+    name: Test py${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Full Python support range (ADR D7) on Linux ...
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          # ... plus macOS/Windows edges on a representative interpreter so the
+          # cross-platform contract (audio I/O, path handling) stays green.
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+    env:
+      # Force uv to the matrix interpreter (overrides .python-version).
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install dependencies (locked)
+        run: uv sync --locked --all-extras --all-groups
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  lower-bounds:
+    name: Lower bounds (lowest-direct, py3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.10"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Resolve at each direct dependency's floor and install
+        # No --locked: this lane deliberately re-resolves to the lowest
+        # compatible direct versions to prove the declared lower bounds work.
+        run: uv sync --resolution lowest-direct --all-extras --all-groups
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  numpy-floor:
+    # The lower-bounds lane runs on py3.10, where the active numpy floor is
+    # `numpy>=1.26`. The OTHER declared floor — `numpy>=2.1` for py>=3.13 — would
+    # otherwise never be exercised at its floor (a full lowest-direct on 3.13 is
+    # impractical: pydantic's floor lacks cp313 wheels). So we pin numpy to its
+    # py3.13 floor against the locked rest and run the suite, keeping that floor
+    # honest (ADR D4).
+    name: numpy floor (py3.13, numpy 2.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.13"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked deps, then pin numpy to the py3.13 floor (>=2.1)
+        run: |
+          uv sync --locked --all-extras --all-groups
+          uv pip install "numpy==2.1.*"
+      - name: Show numpy version
+        run: uv run --no-sync python -c "import numpy; print('numpy', numpy.__version__)"
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  build:
+    # Packaging-hygiene gate (ADR D1): build the wheel and assert it ships ONLY
+    # source files (.py/.pyi/py.typed). uv_build ignores .gitignore and packages
+    # everything under the module dir, so this guards against stray artifacts
+    # (a coverage DB, scratch notes) leaking to downstream consumers.
+    name: Build & package hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+      - name: Assert the wheel ships only source files
+        run: |
+          contents="$(unzip -Z1 dist/*.whl)"
+          echo "${contents}"
+          # Files inside the package dir that are NOT .py/.pyi/py.typed (ignore
+          # directory entries and the dist-info metadata dir).
+          stray="$(printf '%s\n' "${contents}" \
+            | grep -E '^standard_asr/' \
+            | grep -vE '(/|\.py|\.pyi|/py\.typed)$' || true)"
+          if [ -n "${stray}" ]; then
+            echo "::error::Wheel ships unexpected non-source files:"
+            printf '%s\n' "${stray}"
+            exit 1
+          fi
+          echo "Wheel is clean (source files only)."
+
+  coverage:
+    # Dedicated 100%-coverage gate. The matrix `test` lanes stay correctness-only
+    # (and lower-bounds/numpy-floor may skip optional-dep paths), so the strict
+    # `--cov-fail-under=100` lives here on a single, fully-provisioned interpreter
+    # with every workspace member + extra installed. Covers the core package AND
+    # each cookbook plugin against ITS OWN source.
+    name: Coverage 100% (py3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.13"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install everything (members + groups + extras, locked)
+        run: uv sync --locked --all-packages --all-groups --all-extras
+      - name: Core coverage (100%)
+        # --cov=standard_asr is already in addopts; only add the strict gate here.
+        run: uv run --no-sync pytest --cov-fail-under=100
+      - name: Cookbook coverage — std_dummy_asr (100%)
+        run: >-
+          uv run --no-sync pytest cookbook/std_dummy_asr/tests
+          -c cookbook/std_dummy_asr/pyproject.toml --cov-fail-under=100
+      - name: Cookbook coverage — std_faster_whisper (100%)
+        run: >-
+          uv run --no-sync pytest cookbook/std_faster_whisper/tests
+          -c cookbook/std_faster_whisper/pyproject.toml --cov-fail-under=100
+
+  zizmor:
+    # GitHub Actions security audit. Folded into ci.yml (rather than a standalone
+    # workflow) so it GATES merges via checks-complete instead of merely
+    # reporting — under D8, branch protection requires only `checks-complete`, so
+    # a separate workflow's red status would not block a merge. Fails on
+    # high-severity findings (zizmor's default exit) and uploads SARIF.
+    name: Run zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      security-events: write # github/codeql-action/upload-sarif
+      contents: read # clone the repo (private repos)
+      actions: read # upload-sarif reads workflow run info (private repos)
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Run zizmor (SARIF)
+        # zizmor exits non-zero on findings at/above its default (high) threshold,
+        # so this step fails the job — and thus checks-complete — on a finding.
+        run: uvx zizmor@latest --format=sarif .github/workflows/ > results.sarif
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload SARIF to GitHub code scanning
+        # SARIF upload needs a public repo or GitHub Advanced Security; if neither
+        # applies the upload (not the audit) fails soft — the audit step already
+        # gated the job above.
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          sarif_file: results.sarif
+          category: zizmor
+
+  checks-complete:
+    # Single aggregate status required by branch protection (ADR D8). Adding a
+    # new job above automatically tightens the gate via `needs`.
+    name: checks-complete
+    if: always()
+    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, coverage, zizmor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all required jobs succeeded
+        env:
+          # join() expands matrix legs; values are job results, not user input.
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Dependency job results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            if [ "${result}" != "success" ]; then
+              echo "::error::A required job did not succeed (got '${result}')."
+              exit 1
+            fi
+          done
+          echo "All required jobs succeeded."
