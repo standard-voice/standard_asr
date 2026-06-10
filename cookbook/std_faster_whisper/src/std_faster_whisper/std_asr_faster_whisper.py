@@ -196,8 +196,13 @@ class FasterWhisperASR(EngineBase):
         config = cast(FasterWhisperConfig, self.config)
         local_only = config.local_files_only or not allow_downloads()
         # Spec IC.9 precedence: explicit download_root > STANDARD_ASR_MODEL_DIR >
-        # library default (faster-whisper has none) > the shared standard cache.
-        download_root = resolve_download_root(config.download_root)
+        # the library's own default cache > the shared standard cache.
+        # faster-whisper HAS a library default: WhisperModel(download_root=None)
+        # resolves via the HuggingFace hub cache, so the resolver's None
+        # passthrough is forwarded unchanged. Forcing a concrete directory on an
+        # unconfigured install would break offline loads of hub-cached models
+        # and silently re-download them into a second cache.
+        download_root = resolve_download_root(config.download_root, has_library_default=True)
         try:
             self._model = WhisperModel(
                 model_size_or_path=config.model_path,
@@ -206,7 +211,7 @@ class FasterWhisperASR(EngineBase):
                 compute_type=config.compute_type,
                 cpu_threads=config.cpu_threads,
                 num_workers=config.num_workers,
-                download_root=str(download_root),
+                download_root=None if download_root is None else str(download_root),
                 local_files_only=local_only,
                 revision=config.revision,
             )

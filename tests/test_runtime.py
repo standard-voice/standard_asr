@@ -85,7 +85,7 @@ def test_cache_dir_relative_env_resolves_against_cwd(
 def test_download_root_explicit_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", str(tmp_path / "env"))
     explicit = tmp_path / "explicit"
-    resolved = resolve_download_root(explicit, library_default=tmp_path / "lib")
+    resolved = resolve_download_root(explicit, has_library_default=True)
     assert resolved == explicit
 
 
@@ -93,28 +93,32 @@ def test_download_root_env_beats_library_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", str(tmp_path / "env"))
-    resolved = resolve_download_root(library_default=tmp_path / "lib")
+    resolved = resolve_download_root(has_library_default=True)
     assert resolved == tmp_path / "env"
 
 
-def test_download_root_library_default_when_env_unset(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_download_root_library_default_passthrough_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # FV-3: unconfigured + env unset on an engine whose library has its own
+    # default cache resolves to the LIBRARY tier -- a None passthrough the
+    # adapter forwards (e.g. WhisperModel(download_root=None) -> the HF hub
+    # cache) -- never a forced concrete directory that would relocate every
+    # unconfigured install's models.
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
-    resolved = resolve_download_root(library_default=tmp_path / "lib")
-    assert resolved == tmp_path / "lib"
+    assert resolve_download_root(has_library_default=True) is None
 
 
 def test_download_root_whitespace_env_falls_to_library_default(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The env tier reads the variable like resolve_cache_dir: whitespace-only is
-    # unset, so the chain continues to the library default.
+    # unset, so the chain continues to the library-default passthrough.
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", "   ")
-    resolved = resolve_download_root(library_default=tmp_path / "lib")
-    assert resolved == tmp_path / "lib"
+    assert resolve_download_root(has_library_default=True) is None
 
 
 def test_download_root_falls_back_to_standard_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Without a library default the chain ends at the shared standard cache.
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
     assert resolve_download_root() == resolve_cache_dir()

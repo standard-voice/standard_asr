@@ -32,7 +32,6 @@ from standard_asr import RuntimeParams, StandardASR
 from standard_asr.audio_input import AudioArray, AudioPath
 from standard_asr.capabilities import DeclaredCapabilities
 from standard_asr.exceptions import DiscoveryError
-from standard_asr.runtime import resolve_cache_dir
 from standard_asr.runtime_params import WordTimestampGranularity
 
 from .conftest import FakeInfo, FakeSegment, FakeWhisperModel, FakeWord
@@ -140,16 +139,18 @@ def test_init_download_root_honors_standard_model_dir_env(
     assert fake_faster_whisper.last_init_kwargs["download_root"] == str(tmp_path)
 
 
-def test_init_download_root_defaults_to_standard_cache(
+def test_init_download_root_defers_to_library_default(
     fake_faster_whisper: type[FakeWhisperModel], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Spec IC.9 last tier: no explicit download_root, no STANDARD_ASR_MODEL_DIR,
-    # and no faster-whisper library default -> the shared standard cache dir
-    # (never faster-whisper's own opaque default location).
+    # Spec IC.9 third tier (FV-3): no explicit download_root, no
+    # STANDARD_ASR_MODEL_DIR -> defer to faster-whisper's OWN default cache by
+    # passing download_root=None through (WhisperModel resolves it via the
+    # HuggingFace hub cache). Forcing a concrete directory here would break
+    # offline loads of hub-cached models and silently re-download them.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "1")
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
     FasterWhisperASR(model_path="tiny").prepare()
-    assert fake_faster_whisper.last_init_kwargs["download_root"] == str(resolve_cache_dir())
+    assert fake_faster_whisper.last_init_kwargs["download_root"] is None
     assert fake_faster_whisper.last_init_kwargs["local_files_only"] is False
 
 

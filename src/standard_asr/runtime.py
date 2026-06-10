@@ -15,6 +15,22 @@ import os
 from pathlib import Path
 
 
+def _env_override(env_var: str) -> str:
+    """Read an environment path override, treating whitespace-only as unset.
+
+    The single reading of the "is the override set" rule shared by the IC.9
+    consumers (:func:`resolve_cache_dir` and :func:`resolve_download_root`),
+    so the two can never drift on it.
+
+    Args:
+        env_var: The environment variable name.
+
+    Returns:
+        The stripped value, or ``""`` when unset or whitespace-only.
+    """
+    return (os.getenv(env_var) or "").strip()
+
+
 def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
     """Return whether model downloads are allowed at runtime.
 
@@ -50,7 +66,7 @@ def resolve_cache_dir(
     Raises:
         OSError: If the path cannot be resolved.
     """
-    override = (os.getenv(env_var) or "").strip()
+    override = _env_override(env_var)
     if override:
         path = Path(override).expanduser()
         if not path.is_absolute():
@@ -67,36 +83,49 @@ def resolve_cache_dir(
 
 
 def resolve_download_root(
-    explicit: Path | None = None, *, library_default: Path | None = None
-) -> Path:
+    explicit: Path | None = None, *, has_library_default: bool = False
+) -> Path | None:
     """Resolve an engine's model download root per the spec IC.9 precedence.
 
     Implements the normative four-level chain engines MUST follow when picking
     where model artifacts land: **explicit** config (the engine's
     ``download_root`` field) > the ``STANDARD_ASR_MODEL_DIR`` environment
-    override > the engine library's own default cache (when it has one) > the
-    shared Standard ASR cache directory (:func:`resolve_cache_dir`,
-    ``~/.cache/standard-asr`` or the platform equivalent). The environment tier
-    inherits :func:`resolve_cache_dir`'s reading of the variable: a
-    whitespace-only value is unset and a relative value resolves against the
-    current working directory at call time.
+    override > the engine library's **own default cache** (when it has one;
+    expressed as a ``None`` passthrough, see below) > the shared Standard ASR
+    cache directory (:func:`resolve_cache_dir`, ``~/.cache/standard-asr`` or
+    the platform equivalent). The environment tier inherits
+    :func:`resolve_cache_dir`'s reading of the variable: a whitespace-only
+    value is unset and a relative value resolves against the current working
+    directory at call time.
+
+    The library tier is a **passthrough**: engine libraries typically express
+    "use my own default cache" as an unset download path (e.g. faster-whisper's
+    ``WhisperModel(download_root=None)`` resolves via the HuggingFace hub
+    cache), so when the chain lands on that tier this returns ``None`` and the
+    adapter forwards it unchanged. Substituting a concrete directory here would
+    delete the spec's third tier: every unconfigured install's models would
+    relocate away from the library's existing cache, breaking offline loads of
+    already-downloaded models and silently re-downloading them.
 
     Args:
         explicit: Explicitly configured download root (highest priority); a
             leading ``~`` is expanded.
-        library_default: The engine library's own default cache directory, used
-            only when neither an explicit value nor the environment override is
-            present; a leading ``~`` is expanded.
+        has_library_default: Whether the engine library has its own default
+            model cache (the spec's third tier). When ``True`` and neither an
+            explicit value nor the environment override is present, ``None``
+            is returned for the adapter to forward; an adapter that knows the
+            library's concrete cache path may substitute it for the ``None``.
 
     Returns:
-        The resolved download root.
+        The resolved download root, or ``None`` when the engine library's own
+        default cache applies (only possible with ``has_library_default``).
     """
     if explicit is not None:
         return explicit.expanduser()
-    if (os.getenv("STANDARD_ASR_MODEL_DIR") or "").strip():
+    if _env_override("STANDARD_ASR_MODEL_DIR"):
         return resolve_cache_dir()
-    if library_default is not None:
-        return library_default.expanduser()
+    if has_library_default:
+        return None
     return resolve_cache_dir()
 
 
