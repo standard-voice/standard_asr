@@ -4,7 +4,7 @@
 > 得有个懂 Python 最佳实践 (或者说有提高代码品味的意愿的人 + 懂最佳实践的 AI...)，去改变现在 asr / tts 库领域混乱的现状。
 > 事实就是，现在 asr / tts 库乱七八糟，调用困难，测试困难。写一个使用本地 asr / tts 的项目，每个 asr / tts 引擎都得单独做适配。每个项目都得给每个引擎单独做适配。这很累，而且我深刻的理解这一点。
 > 开源项目应该要能轻松的适配各种 asr / tts 引擎，毕竟从 Open-LLM-VTuber 就能知道，他们的调用方式大同小异。
-> 
+>
 
 # motivation
 - 剥离 Open-LLM-VTuber 的 ASR 模块，让 ASR 维护的分工程度更高。
@@ -47,7 +47,7 @@ https://g.co/gemini/share/ddf9ef577e40
 - 模型下载器
 - web ui
 - 测试工具
-- 
+-
 
 - 支持 web api 交互，自带 fastapi 服务器 (dep group)，可以用 stainless 生成 sdk 库
 - 只要实现了 interface，就可以直接变成 ASR plugin
@@ -74,7 +74,7 @@ ASR
 初始化参数 和 推理参数，都可以传入额外的参数
 推理参数就是单次 request 可以选择要不要丢进去的东西
 
-推理可选参数，由 asr 定义，写在 pydantic 模型中。 
+推理可选参数，由 asr 定义，写在 pydantic 模型中。
 
 
 
@@ -82,7 +82,7 @@ ASR
 一个 organization，包含核心，和适配的 ASR。
 
 适配我们标准的 ASR:
-- pip 安装后，可以直接 drop-in 
+- pip 安装后，可以直接 drop-in
 - 提供 web interface，测试工具等等。
 
 
@@ -119,5 +119,3 @@ asr 引擎加入新的自己的功能时，加到 extra 条目里面，如果未
 # 对适配的 asr 库的要求
 
 - 做好 migration 的准备: 初始化的 config 不能乱动，要遵守语义化版本号的规范，如果要删除某些项，先 deprecate，然后过几个版本删除，删除的版本应该要是大版本。
-
-

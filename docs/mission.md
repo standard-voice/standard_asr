@@ -1,63 +1,83 @@
-# 项目使命与哲学 (Mission and Philosophy)
+# Mission & Philosophy
 
-## 引言：为何需要 Standard ASR？
+## Why Standard ASR?
 
-当前的自动语音识别（Automatic Speech Recognition, ASR）库生态呈现出一种混乱且碎片化的状态。每个库都有其独特的调用方式、依赖关系和配置方法。对于应用开发者而言，每集成一个新的 ASR 引擎，都意味着需要编写一套全新的、独立的适配代码。这种重复性的工作不仅耗费精力，也阻碍了创新和技术迭代。
+Speech recognition never got its standard interface. Every ASR library and cloud
+API ships its own calling convention, audio-input rules, and streaming protocol.
+Integrating one engine means writing an adapter; integrating five means
+maintaining five. In practice, most applications hard-wire two or three engines,
+and their users are stuck with whatever languages and domains those engines happen
+to cover.
 
-这样的结果，是应用开发者普遍难以跟上最新的模型进展，难以适配所有尖端的 ASR 模型，也无法对更多语言提供更好的体验。
+Meanwhile, the model that would actually serve them best already exists -- as an
+open-source checkpoint, a cloud endpoint, or a research prototype. The problem is
+not a lack of good ASR; it is the absence of a shared protocol that lets
+applications and engines meet without per-pair integration work.
 
-用户也无法体验到最佳的体验，特别是细分领域和特定语言的用户。由于不同模型对语言的支持参差不齐，许多语言的用户无法体验到最佳的体验。就算针对特定语言训练的模型问世，应用开发者不适配，用户也无法享受最新的成果。
+## Mission
 
-但这并不是 ASR 开发者的错。他们应该把精力花在创造新模型上，而不是重复设计 API，接口，打包，构建 CLI 等等。
+**Become the standard interface for ASR inference.**
 
-Standard ASR 的诞生，正是为了解决这一痛点。我们深刻理解，无论是 ASR 的使用者还是开发者，都渴望一个更简单、更统一的标准，以及更完善的工具链。
+Standard ASR defines a vendor-neutral protocol for the application-to-engine
+boundary. Like USB-C for physical connectors, it lets both sides implement once
+and interoperate with everything on the other side.
 
-## M.1: 项目使命 (Project Mission)
+- Applications code against the protocol and gain every compliant engine.
+- Engines implement it once and reach every application.
+- Switching engines becomes a one-line model-key change, not another adapter.
 
-**成为 ASR 推理领域的标准。**
+### Streaming semantics are the core value proposition
 
-我们的核心使命是为 ASR 推理定义一套通用的、即插即用的接口标准。如同 USB-C 统一了不同设备的物理连接一样，Standard ASR 旨在统一应用层与 ASR 模型层的交互方式。我们的目标是让开发者可以 "一次编写，运行所有" ——应用代码只需适配 Standard ASR 协议，就能无缝地使用任何遵循该协议的 ASR 引擎，无需为每个引擎单独编写适配逻辑。
+Real-time ASR is the most fragmented part of the ecosystem: some engines rewrite
+interim results, some never revise a token, some merge segments after a second
+decoding pass. Standard ASR unifies all of this under one event protocol with
+explicit stability guarantees -- designed against an in-repo survey of 30+ real
+engine APIs.
 
-## P.1: 项目哲学 (Project Philosophies)
+### Two layers, kept in sync
 
-我们遵循两大核心哲学来指导项目的设计与发展：
+The standard has two layers that share the same capability model, result schema,
+and event semantics:
 
-### P.1.1: 调用者友好 (Application Developer Friendly)
+- **In-process Python protocol** -- the zero-copy layer for local inference and
+  the host of the plugin ecosystem.
+- **Wire protocol (HTTP / WebSocket)** -- the cross-language layer, so non-Python
+  applications get the same capabilities via the network.
 
-对于应用开发者（ASR 库的使用者），我们的目标是提供极致的便利性。遵循此标准的 ASR 库应该是 "即插即用" 的。开发者编写的代码，应该能够以接近零配置的方式，调用几乎所有符合 Standard ASR 规范的模型。开发者无需关心用户最终会选择哪个具体的 ASR 引擎，只需知道他们使用的是一个 "Standard ASR Compliant" 的库即可。
+## Philosophy
 
-### P.1.2: ASR 开发者友好 (ASR Developer Friendly)
+### Application-developer friendly
 
-对于 ASR 库和模型的开发者，我们的目标是大幅降低集成门槛。我们提供清晰的规范、完善的测试套件、开箱即用的工具（如 CLI、Web API 服务）以及 boilerplate 模板。即使是只具备基础 Python 知识的开发者，也应该能够快速地将自己的 ASR 模型适配到 Standard ASR 标准中来，从而让他们能专注于模型本身的优化，而非编写繁琐的接口和工具代码。
+The primary stakeholder. Zero-config, zero-surprise, zero-ambiguity.
+Battery-included where it helps (audio loading, SRT/VTT renderers), but heavy
+dependencies stay optional.
 
-===
+### ASR-developer friendly
 
+Low barrier to publish a compliant plugin. Implement one interface and get a CLI,
+an HTTP/WebSocket server, and a compliance test suite for free.
 
-## S.1: 利益相关者 (Stakeholders)
+### Explicit over implicit
 
-`standard_asr` 旨在服务于一个多层次的生态系统。清晰地识别这个生态价值链中的每一个角色、理解他们的需求与痛点，是我们设计所有功能和接口的基石。
+Silent wrong results are the cardinal sin. When in doubt, fail loudly or emit a
+structured diagnostic -- never silently degrade. When convenience and
+explicitness conflict, correctness wins.
 
-### 1. ASR 提供者 (ASR Providers)
-他们是向应用开发者提供 ASR 功能的个人、社区或企业。我们的目标是为所有类型的提供者提供统一的工具和标准。
+### Standard-library rigor
 
-#### 1.1 开源模型提供者 (Open-Source Model Providers)
-* **角色定位**: 他们是 ASR 技术的创造者，涵盖了**研究者**和**推理库开发者**，他们有时候是同一个人或实体。
-* **核心诉求**: 希望自己的工作能产生广泛影响力，并能以专业、低成本的方式被社区使用，而无需深陷于复杂的软件工程细节。
-* **我们如何赋能**: 我们赋能创新者，让他们能**毫不费力地将自己的模型打包成一个工程化、高质量的库**。研究人员的时间和精力应该被花在创造更好的模型，而非繁杂的工程实践。通过提供标准化的项目模板、自动化的测试与发布流程，我们让模型的分享与应用变得前所未有的简单和专业，极大地加速了开源创新的传播和应用。
+This is infrastructure others build on for years. Types complete, boundaries
+sharp, error paths explicit, no implicit behavior.
 
-#### 1.2 商业服务提供者 (Commercial Service Providers)
-* **角色定位**: 以企业为主体，通过提供闭源的云 API 或商业化 SDK 来提供 ASR 服务。
-* **核心诉求**: 追求更广泛的市场采用率和商业成功，希望开发者能尽可能简单、顺畅地集成自己的付费服务。
-* **我们如何服务**: `standard_asr` 为他们提供了一个**标准化的客户接入渠道**。通过发布一个符合我们规范的官方 SDK，他们可以立即进入所有使用 `standard_asr` 的应用生态。这使得应用开发者可以无缝地在开源模型和商业服务之间切换、比较和选择，极大地降低了企业获取新用户的门槛。
+### Security by default
 
-### 2. 应用开发者 (Application Developers)
-* **角色定位**: 他们是我们的**核心用户**，是所有需要将 ASR 作为功能模块集成到其项目中的开发者。这既包括了构建面向最终用户的商业产品的工程师，也包括了在其**研究流程或开源工具**中需要 ASR 功能的科研人员与开源贡献者。这群人不仅包含 Python 的开发者，也有其他语言使用 API 或 SDK 调用 ASR 引擎的开发者。
-* **核心诉求**: 需要一个简单、统一、稳定的接口来集成 ASR 功能，并保持技术选型的灵活性，避免被任何单一的解决方案绑定。
-* **我们如何服务**: 我们为他们提供 **"终极的解耦与自由"**。我们的标准接口是**对抗 "厂商锁定" (Vendor Lock-in) 的强大武器**。它确保了开发者可以随时在不同的 ASR 提供者（无论是开源还是商业）之间无缝切换，而无需重写核心业务代码。这种灵活性让开发者可以根据成本、性能和项目需求自由选择最佳方案，并极大程度上避免了不同 ASR 库之间的 "依赖地狱" 问题。对于其他语言的开发者，我们工具链自带 API 端点和 SDK，他们不用再眼巴巴的看着 Python 社区丰富的 ASR 库。
+Credentials use `SecretStr`. URLs are validated (HTTPS-only, no SSRF). Unsafe
+options require explicit opt-in.
 
-### 3. 最终用户 (End Users)
-* **角色定位**: 他们是整个价值链的最终服务对象，他们可以透过应用使用 ASR 功能，也可以直接透过 `standard_asr` 的工具链使用 ASR 功能。他们来自世界各地，说着不同的语言。
-* **核心诉求**: 获得快速、准确、可靠的语音转写服务，并能持续享受到技术进步带来的红利。
-* **我们如何服务**: 我们的贡献是多维度的。我们**极大地缩短了前沿技术从实验室走向市场的距离**，让用户能更快体验到创新。更重要的是，高度解耦的插件化架构 **将 ASR 模型的选择权从应用开发者下放给了社区和用户**。用户，特别是**不同语言和专业细分领域的用户，不再需要完全被锁定在应用开发者选择的 ASR 模型上，不再需要等待遥遥无期的应用官方支持，用户只需安装心仪的 ASR 引擎，即可直接在应用内使用**。
+## Stakeholders
 
-
+1. **Application developers** (primary) -- one stable interface, no vendor
+   lock-in, zero-config discovery.
+2. **ASR engine developers** -- focus on models, not plumbing. Implement once,
+   reach the whole ecosystem.
+3. **End users** -- choose the best ASR for their language or domain. Install a
+   plugin, use it immediately.

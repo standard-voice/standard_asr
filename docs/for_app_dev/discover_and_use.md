@@ -1,70 +1,98 @@
-# Discovering Standard ASR Plugins (for app developers)
+# Discover and use an engine (app developers)
 
-This guide shows how an application can discover and use Standard ASR–compliant
-models via Python entry points.
+> Authoritative reference: [`docs/spec/specification.md`](../spec/specification.md).
+> This guide shows the common app-developer flow on the current API.
 
-## One‑time setup in this repo (uv workspace)
+## 1. Discover installed engines
 
-```bash
-uv run uv pip install -e cookbook/std_dummy_asr
-```
-
-The dummy plugin is dependency‑free and exposes two model keys: `dummy/echo` and
-`dummy/` (default alias).
-
-## Inspect available models
-
-```bash
-uv run standard-asr models list
-uv run standard-asr models show dummy/echo
-```
-
-## Run compliance checks
-
-```bash
-uv run standard-asr compliance entrypoints
-```
-
-## Minimal client code
+Engines are pip-installable plugins discovered via entry points — zero config.
 
 ```python
 from standard_asr import discover_models
-import numpy as np
 
 registry = discover_models()
-asr = registry.create("dummy/echo")
-audio = np.zeros(16_000, dtype=np.float32)
-result = asr.transcribe(audio)
-print(result.text)
+for name in registry.names():
+    spec = registry.spec(name)
+    print(name, spec.engine_id, spec.model_name)
 ```
 
-The same snippet is available at `cookbook/sample_client.py`. Replace the model
-key with any other discovered entry point to switch engines without changing
-your application logic.
-
-## Transcription Result
-
-`StandardASR.transcribe()` returns a structured `TranscriptionResult`:
+## 2. Create an engine
 
 ```python
-result = asr.transcribe(audio)
-print(result.text)
+engine = registry.create("faster-whisper/large-v3", device="cpu")
 ```
 
-Use `result.segments` or `result.words` when the engine supports timestamps.
+## 3. Pass audio — whatever you have
 
-## Passing Options
+`transcribe` accepts a discriminated `AudioInput` union; bare values are coerced.
+A bare `str` is **always** a local path (never a URL — wrap URLs explicitly).
 
 ```python
-from standard_asr import BaseTranscribeOptions
+from standard_asr import AudioArray, AudioUrl
 
-options = BaseTranscribeOptions(language="en", word_timestamps=True)
-result = asr.transcribe(audio, options=options)
+engine.transcribe("meeting.mp3")                   # -> AudioPath
+engine.transcribe((samples, 16000))                # -> AudioArray(samples, sr)
+engine.transcribe(AudioUrl("https://.../a.flac"))  # explicit URL (engine-fetched)
 ```
 
-## CLI Quick Usage
+The standard layer negotiates and converts to whatever the engine accepts
+(decode, encode-to-WAV, read-file, resample) and reports any lossy step in
+`result.diagnostics`.
 
-```bash
-standard-asr models list
-standard-asr transcribe dummy/echo path/to/audio.wav
+## 4. Per-request parameters (portable + escape hatch)
+
+```python
+from standard_asr import RuntimeParams, WordTimestampGranularity
+
+result = engine.transcribe(
+    "meeting.mp3",
+    RuntimeParams(
+        language="en",                              # or "auto"
+        word_timestamps=WordTimestampGranularity.WORD,
+        prompt="Q3 budget review.",                 # free-text guidance
+        phrase_hints=["Anthropic", "Claude"],       # term boosting
+    ),
+)
 ```
+
+Engine-specific knobs go through `provider_params` (typed, swap-safe — passing
+the wrong engine's params raises `InvalidProviderParamError`).
+
+## 5. Check capabilities before relying on a feature
+
+```python
+if engine.supports("batch.word_timestamps"):
+    ...
+```
+
+Missing capabilities are **fail-closed** (`supports(...)` returns `False`).
+
+## 6. Use the result (constant shape)
+
+```python
+print(result.text)
+print(result.detected_language, result.duration)
+for seg in result.segments or []:
+    print(seg.start, seg.end, seg.text)
+
+from standard_asr import to_srt, to_vtt
+open("out.srt", "w").write(to_srt(result))
+```
+
+## 7. Streaming
+
+```python
+fmt = engine.recommended_wire_format()   # the engine's preferred PCM wire format
+async with engine.start_transcription(audio_format=fmt) as session:
+    session.feed(microphone)
+    async for event in session:
+        if event.type == "partial":
+            show(event.segment_id, event.text)
+        elif event.type == "final":
+            commit(event.segment_id, event.text)
+        elif event.type == "supersede":
+            for old in event.old_ids:
+                remove(old)
+```
+
+A synchronous bridge (`SyncSession`) is available if you can't use `async`.

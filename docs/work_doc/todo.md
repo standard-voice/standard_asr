@@ -11,7 +11,6 @@
 - [ ] 完整的核心
     - [ ] Properties 设计
     - [ ] Config 设计
-    - [ ] 
 
 - 文档
     - 开发人员协作
@@ -32,4 +31,3 @@
     - 应用开发者如何使用 std asr compliant 的 asr
     - ASR 开发者如何开发 std asr compliant 的 asr
 - 最后做视频介绍
-

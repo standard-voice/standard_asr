@@ -1,5 +1,9 @@
-from standard_asr import StandardASR
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 from faster_whisper import StandardWhisperModel
+
+from standard_asr import StandardASR
 
 whisper_instance: StandardASR = StandardWhisperModel()
 
@@ -8,6 +12,4 @@ audio = b""
 
 whisper_instance.transcribe(audio)
 whisper_instance.transcribe_async(audio, options={"language": "en-US"})
-whisper_instance.transcribe_async(
-    audio, options=whisper_instance.options(language="en-US")
-)
+whisper_instance.transcribe_async(audio, options=whisper_instance.options(language="en-US"))

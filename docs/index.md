@@ -1,29 +1,30 @@
-# Standard ASR Documentation
+# Standard ASR
 
-Standard ASR is the **USB‑C of ASR inference**: a unified interface that lets
-application developers integrate any ASR engine without rewriting integration
-code. It also gives ASR developers a clean, minimal standard and tooling so they
-can focus on models instead of infrastructure.
+**The open standard interface between applications and speech-recognition
+engines.**
 
-## Quick Start (Local Demo)
+Standard ASR defines a vendor-neutral protocol so applications integrate
+speech-to-text once and gain every compliant engine, and engines implement once
+and reach every application. Think USB-C for ASR inference.
 
-```bash
-uv run uv pip install -e cookbook/std_dummy_asr
-uv run standard-asr models list
-uv run standard-asr transcribe dummy/echo path/to/audio.wav
-```
+!!! warning "Pre-release"
+    Standard ASR is a work in progress. Breaking changes may land before
+    `v1.0.0`. Try it out and tell us what you think.
 
-## Key Docs
+## Who is this for?
 
-- Protocol & data models: `docs/spec/`
-- App developer guide: `docs/for_app_dev/discover_and_use.md`
-- ASR developer guide: `docs/for_asr_dev/plugin_entrypoints.md`
-- Cookbook examples: `cookbook/`
+| You are... | You get... |
+| ---------- | ---------- |
+| **An application developer** | One integration that works with every compliant engine. Zero vendor lock-in. Automatic discovery of whatever the user installs. |
+| **An ASR engine developer** | Focus on the model. Implement one interface and get a CLI, a Web API server, and a compliance test suite for free. |
+| **An end user** | Install the engine that fits your language or domain and use it immediately, without waiting for the app author to add support. |
 
-## Principles
+## Start here
 
-- Application developer friendly (zero‑config, plug‑and‑play).
-- ASR developer friendly (clear spec + toolchain).
-- Optional heavy dependencies, lean core.
-
-See `docs/mission.md` and `docs/goals.md` for full project philosophy.
+- **[Quickstart](quickstart.md)** -- transcribe in under a minute.
+- **[Installation](installation.md)** -- install options and optional extras.
+- **[Discover & Use](for_app_dev/discover_and_use.md)** -- the full
+  app-developer guide.
+- **[Adapt an Engine](for_asr_dev/adapting_engine.md)** -- build a compliant
+  plugin.
+- **[API Reference](reference/index.md)** -- the complete public surface.
