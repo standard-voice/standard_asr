@@ -26,8 +26,9 @@ models.
 
 ### `standard-asr transcribe <engine/model> <audio>`
 Transcribe an audio file and print text or JSON output. `--options` accepts a
-JSON object mapping onto the portable `RuntimeParams` standard set (e.g.
-`'{"language": "en"}'`).
+JSON object mapping onto the portable standard set (`WireRuntimeParams`, e.g.
+`'{"language": "en"}'`). The engine-specific `provider_params` escape hatch is
+not constructible from untyped JSON and is rejected as a validation error.
 
 ### `standard-asr serve`
 Launch the FastAPI server (requires `standard-asr[server]`).
@@ -35,7 +36,11 @@ Launch the FastAPI server (requires `standard-asr[server]`).
 ### `standard-asr doctor`
 Read-only dependency diagnostic: enumerates installed plugins and reports numpy
 1.x-vs-2.x conflicts that cannot share a process (spec §DEP.5). Exit code `1` if
-a conflict is found, else `0`. Does not resolve or install anything.
+a conflict is found, or if plugins are installed but the optional `packaging`
+distribution is missing — conflict analysis is then unavailable and the
+environment cannot be proven conflict-free; else `0` (including when no plugins
+are installed, since there is nothing to analyze). Does not resolve or install
+anything.
 
 ### Global Flags
 

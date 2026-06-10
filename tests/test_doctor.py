@@ -83,16 +83,17 @@ def test_missing_dist(monkeypatch: pytest.MonkeyPatch) -> None:
     assert report.plugins[0].numpy_spec is None
 
 
-def test_classify_no_false_positive_for_bounded_range() -> None:
-    """``>=1.26,<2.3`` admits both 1.x and 2.x -> NOT a hard numpy1-only split."""
-    only1, req2 = doctor._classify_numpy(">=1.26,<2.3")  # pyright: ignore[reportPrivateUsage]
+@pytest.mark.parametrize("spec", [">=1.26,<2.3", ">=1.26"])
+def test_classify_no_false_positive_for_both_compatible_range(spec: str) -> None:
+    """A range admitting both 1.x and 2.x (bounded or open) -> NOT a hard split."""
+    only1, req2 = doctor._classify_numpy(spec)  # pyright: ignore[reportPrivateUsage]
     assert only1 is False
     assert req2 is False
 
 
 @pytest.mark.parametrize(
     "spec",
-    ["==1.26.*", "~=1.26.0", ">=1.21,<1.27", "<2"],
+    ["==1.26.*", "~=1.26.0", ">=1.21,<1.27", "<2", "==1.26.4"],
 )
 def test_classify_detects_numpy1_only(spec: str) -> None:
     only1, req2 = doctor._classify_numpy(spec)  # pyright: ignore[reportPrivateUsage]
@@ -102,6 +103,16 @@ def test_classify_detects_numpy1_only(spec: str) -> None:
 
 @pytest.mark.parametrize("spec", [">=2", ">=2.1", "==2.*"])
 def test_classify_detects_numpy2_required(spec: str) -> None:
+    only1, req2 = doctor._classify_numpy(spec)  # pyright: ignore[reportPrivateUsage]
+    assert only1 is False
+    assert req2 is True
+
+
+@pytest.mark.parametrize("spec", ["==2.2.0", "==2.4.0"])
+def test_classify_exact_off_grid_pin_is_numpy2_required(spec: str) -> None:
+    """An exact pin to a 2.x version absent from any probe grid must classify as
+    numpy-2-only -- the old fixed grid read it as admitting neither major
+    (R3-CLI-DOCTOR-04)."""
     only1, req2 = doctor._classify_numpy(spec)  # pyright: ignore[reportPrivateUsage]
     assert only1 is False
     assert req2 is True
@@ -388,6 +399,8 @@ def test_numpy_spec_display_fallback_when_packaging_missing(
     assert report.plugins[0].numpy_spec == "<2"
     # But with packaging absent, the real numpy1-vs-2 conflict is NOT classified.
     assert report.has_conflict is False
+    # The unclassified state is explicit, never a silent "all clean" (M8).
+    assert report.analysis_unavailable is True
     assert any("packaging" in n for n in report.notes)
 
 
@@ -468,3 +481,34 @@ def test_packaging_unavailable_adds_note(monkeypatch: pytest.MonkeyPatch) -> Non
     report = doctor.diagnose()
     assert any("packaging" in n for n in report.notes)
     assert "note:" in doctor.format_report(report)
+
+
+def test_packaging_unavailable_with_plugins_headline_is_not_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With plugins present but ``packaging`` missing, the report carries an
+    explicit analysis-unavailable state and the headline must NOT claim "no
+    conflicts" -- doctor cannot prove the environment conflict-free (M8)."""
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))],
+    )
+    monkeypatch.setattr(doctor, "packaging_available", lambda: False)
+    report = doctor.diagnose()
+    assert report.analysis_unavailable is True
+    rendered = doctor.format_report(report)
+    assert "Conflict analysis unavailable" in rendered
+    assert "No dependency conflicts detected." not in rendered
+
+
+def test_packaging_unavailable_without_plugins_stays_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no plugins there is nothing to analyze, so ``packaging`` absence is
+    a non-issue: the report stays clean and analysis is not flagged."""
+    _patch_eps(monkeypatch, [])
+    monkeypatch.setattr(doctor, "packaging_available", lambda: False)
+    report = doctor.diagnose()
+    assert report.analysis_unavailable is False
+    assert report.has_conflict is False
+    assert "No Standard ASR plugins" in doctor.format_report(report)

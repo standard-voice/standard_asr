@@ -194,6 +194,56 @@ def test_cli_doctor_conflict_returns_1(
     assert exit_code == 1
 
 
+def test_cli_doctor_packaging_unavailable_with_plugins_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Plugins installed but `packaging` missing: doctor cannot prove the
+    # environment conflict-free, so the headline is non-clean and "cannot prove
+    # clean" is operationally a failure -> exit 1 (M8).
+    from dataclasses import dataclass
+
+    from standard_asr import doctor as doctor_module
+
+    @dataclass
+    class _Dist:
+        name: str
+        requires: list[str] | None
+
+    @dataclass
+    class _EP:
+        name: str
+        dist: _Dist | None
+
+    def _entry_points(*, group: str) -> list[_EP]:
+        return [_EP("a/x", _Dist("std-a", ["numpy>=1.26"]))]
+
+    monkeypatch.setattr(doctor_module, "entry_points", _entry_points)
+    monkeypatch.setattr(doctor_module, "packaging_available", lambda: False)
+    exit_code = cli.main(["doctor"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "unavailable" in output
+
+
+def test_cli_doctor_packaging_unavailable_no_plugins_exits_0(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # With no plugins there is nothing to analyze: `packaging` absence stays a
+    # non-issue and the clean exit 0 is preserved (M8).
+    from standard_asr import doctor as doctor_module
+
+    def _entry_points(*, group: str) -> list[object]:
+        return []
+
+    monkeypatch.setattr(doctor_module, "entry_points", _entry_points)
+    monkeypatch.setattr(doctor_module, "packaging_available", lambda: False)
+    exit_code = cli.main(["doctor"])
+    capsys.readouterr()
+
+    assert exit_code == 0
+
+
 def test_cli_models_cache(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -257,6 +307,49 @@ def test_cli_transcribe_invalid_options(
 
     assert exit_code == 2
     assert captured.err != ""
+
+
+def test_cli_transcribe_options_portable_keys(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = _demo_registry()
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+
+    exit_code = cli.main(
+        ["transcribe", "alpha/first", "dummy.wav", "--options", '{"language": "en"}']
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "dummy" in output
+
+
+def test_cli_transcribe_options_provider_params_rejected(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Mirrors the server's untyped-wire rule (D5): provider_params cannot be
+    # validated from untyped JSON, so the CLI rejects the key itself loudly as
+    # a usage / validation error (exit 2) instead of passing it to the engine.
+    # An empty object is the regression case: the old RuntimeParams path
+    # silently accepted it as a bare ProviderParams().
+    registry = _demo_registry()
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+
+    exit_code = cli.main(
+        ["transcribe", "alpha/first", "dummy.wav", "--options", '{"provider_params": {}}']
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "provider_params" in captured.err
 
 
 def test_cli_models_list_entrypoint_error(
@@ -467,10 +560,12 @@ def test_cli_serve_missing_server_dependency(
     monkeypatch.setitem(sys.modules, "standard_asr.server", None)
 
     exit_code = cli.main(["serve"])
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "dependencies are missing" in output
+    # Errors go to stderr (cli.md §2), never stdout.
+    assert "dependencies are missing" in captured.err
+    assert captured.out == ""
 
 
 def test_cli_serve_importerror_from_run(
@@ -485,10 +580,12 @@ def test_cli_serve_importerror_from_run(
     monkeypatch.setitem(__import__("sys").modules, "standard_asr.server", module)
 
     exit_code = cli.main(["serve"])
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "boom" in output
+    # Errors go to stderr (cli.md §2), never stdout.
+    assert "boom" in captured.err
+    assert captured.out == ""
 
 
 def test_cli_models_prepare_no_prepare_hook_is_noop(
@@ -550,3 +647,9 @@ def test_parse_options() -> None:
 
     with pytest.raises(ValueError):
         cli._parse_options("[1, 2, 3]")  # pyright: ignore[reportPrivateUsage]
+
+    # The non-portable provider_params key is rejected outright (D5): even an
+    # empty object -- which the old RuntimeParams path silently accepted as a
+    # bare ProviderParams() -- must fail through WireRuntimeParams.
+    with pytest.raises(ValueError, match="provider_params"):
+        cli._parse_options('{"provider_params": {}}')  # pyright: ignore[reportPrivateUsage]

@@ -37,21 +37,26 @@ if TYPE_CHECKING:
 # authoritative parser (it evaluates environment markers and the legacy
 # parenthesized form ``numpy (>=1.26)``); this regex is used solely to render a
 # best-effort specifier string when ``packaging`` cannot be imported, in which
-# case doctor degrades to listing-without-classifying and never reports a
-# conflict it could not verify. It captures the text before any marker (``;``);
-# the extras group (``numpy[foo]``) is discarded.
+# case doctor degrades to listing-without-classifying, never reports a conflict
+# it could not verify, and marks the report ``analysis_unavailable`` (a
+# non-clean verdict) when plugins exist. It captures the text before any marker
+# (``;``); the extras group (``numpy[foo]``) is discarded.
 _NUMPY_REQ = re.compile(r"^\s*numpy\b(?:\[[^\]]*\])?(?P<spec>[^;]*)", re.IGNORECASE)
 
-# Representative probe versions spanning the numpy 1.x / 2.x boundary, used to
-# classify a single spec as numpy1-only / numpy2-required for the human-readable
-# conflict message and the 3.13 wheel special case. The probes bracket the
-# meaningful inflection points: oldest supported 1.x, the 1.x ceiling, the 2.0
-# boundary, and well beyond the current 2.x line. (Emptiness of a *combined*
-# specifier is decided separately and boundary-derived -- see
-# ``_intersection_is_empty`` -- never against a bounded grid, which would
-# misread a high pin such as ``>=2.40`` or ``>=3.0`` as empty.)
+# Representative versions spanning the numpy 1.x / 2.x boundary, seeded into the
+# emptiness probe's candidate set (see ``_emptiness_candidates``) alongside the
+# boundary-derived candidates. They are NOT a classification grid: classifying a
+# single spec as numpy1/numpy2 intersects it with the full major ranges below,
+# because a fixed grid misreads an exact off-grid pin such as ``==2.2.0`` as
+# admitting neither major (R3-CLI-DOCTOR-04).
 _NUMPY1_PROBES = ("1.21.0", "1.24.0", "1.26.4", "1.26.99", "1.99.99")
 _NUMPY2_PROBES = ("2.0.0", "2.1.0", "2.3.0", "2.99.99")
+
+# The full numpy major-version ranges. A spec admits a 1.x (resp. 2.x) release
+# iff its intersection with the corresponding range is non-empty, decided by the
+# boundary-derived emptiness oracle (``_intersection_is_empty``).
+_NUMPY1_RANGE = ">=1.0,<2.0"
+_NUMPY2_RANGE = ">=2.0,<3.0"
 
 # A sentinel "arbitrarily large" release, used to witness that an open upper
 # bound (``>=``/``>`` with no ceiling) is satisfiable. Any real numpy pin is far
@@ -104,12 +109,18 @@ class DoctorReport:
         python_version: The running interpreter version (``X.Y``).
         plugins: The discovered plugins and their numpy requirements.
         conflicts: Human-readable conflict descriptions.
+        notes: Supplementary remediation hints (non-verdict footer lines).
+        analysis_unavailable: Whether conflict analysis could not run at all --
+            plugins are installed but the optional ``packaging`` distribution is
+            missing -- so the environment cannot be proven conflict-free. This
+            is a non-clean state distinct from "no conflicts detected".
     """
 
     python_version: str
     plugins: list[PluginNumpy] = field(default_factory=_empty_plugins)
     conflicts: list[str] = field(default_factory=_empty_strs)
     notes: list[str] = field(default_factory=_empty_strs)
+    analysis_unavailable: bool = False
 
     @property
     def has_conflict(self) -> bool:
@@ -141,11 +152,14 @@ def packaging_available() -> bool:
 def _classify_numpy(numpy_spec: str | None) -> tuple[bool, bool]:
     """Classify a numpy specifier as numpy1-only and/or numpy2-required.
 
-    Uses :class:`packaging.specifiers.SpecifierSet` membership (when the optional
-    ``packaging`` library is installed) rather than token regexes, so bounded
-    ranges and ``==``/``~=`` pins are handled correctly. When ``packaging`` is
-    absent the classifier conservatively returns ``(False, False)`` (no hard
-    split) so it never reports a conflict it cannot verify.
+    Whether the spec admits a 1.x (resp. 2.x) release is decided by intersecting
+    it with the full major range (``[1.0, 2.0)`` / ``[2.0, 3.0)``) and testing
+    emptiness against the intersection's own boundary-derived candidates
+    (:func:`_intersection_is_empty`) -- never against a fixed probe grid, which
+    misreads an exact off-grid pin such as ``==2.2.0`` as admitting neither
+    major (R3-CLI-DOCTOR-04). When ``packaging`` is absent the classifier
+    conservatively returns ``(False, False)`` (no hard split) so it never
+    reports a conflict it cannot verify.
 
     Args:
         numpy_spec: The raw numpy specifier (e.g. ``"<2"``, ``"~=1.26.0"``,
@@ -160,10 +174,10 @@ def _classify_numpy(numpy_spec: str | None) -> tuple[bool, bool]:
     spec_set = _specset(numpy_spec)
     if spec_set is None:
         return (False, False)
-    from packaging.version import Version
+    from packaging.specifiers import SpecifierSet
 
-    admits1 = any(Version(p) in spec_set for p in _NUMPY1_PROBES)
-    admits2 = any(Version(p) in spec_set for p in _NUMPY2_PROBES)
+    admits1 = not _intersection_is_empty([spec_set, SpecifierSet(_NUMPY1_RANGE)])
+    admits2 = not _intersection_is_empty([spec_set, SpecifierSet(_NUMPY2_RANGE)])
     return (admits1 and not admits2, admits2 and not admits1)
 
 
@@ -256,10 +270,12 @@ def _intersection_is_empty(specs: list[SpecifierSet]) -> bool:
     have misreported as empty (NEW-DOCTOR-1).
 
     Args:
-        specs: The per-plugin :class:`packaging.specifiers.SpecifierSet`s to
-            intersect. Must be non-empty and contain only real specifier sets.
-            A single internally-unsatisfiable set (e.g. ``<2`` and ``>=2.1``
-            declared by one plugin) is a valid -- and detected -- input.
+        specs: The :class:`packaging.specifiers.SpecifierSet`s to intersect
+            (per-plugin specs, or a spec paired with a major range for
+            classification). Must be non-empty and contain only real specifier
+            sets. A single internally-unsatisfiable set (e.g. ``<2`` and
+            ``>=2.1`` declared by one plugin) is a valid -- and detected --
+            input.
 
     Returns:
         ``True`` if no candidate version satisfies the combined specifier.
@@ -377,6 +393,11 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         report.plugins.append(PluginNumpy(ep.name, dist_name, spec))
 
     if report.plugins and not packaging_available():
+        # With plugins present but no analyzer, doctor cannot prove the
+        # environment conflict-free; the report must say so loudly rather than
+        # let an empty conflict list read as a clean verdict (M8). With no
+        # plugins there is nothing to analyze and absence is a non-issue.
+        report.analysis_unavailable = True
         report.notes.append(
             "Install the optional 'packaging' library for precise numpy "
             "conflict analysis; without it, version-range conflicts are not "
@@ -460,6 +481,14 @@ def format_report(report: DoctorReport) -> str:
     if report.has_conflict:
         lines.append("Conflicts:")
         lines.extend(f"  ! {c}" for c in report.conflicts)
+    elif report.analysis_unavailable:
+        # No analyzer means no verdict: claiming "no conflicts" here would be a
+        # silent wrong result. The headline must carry the non-clean state.
+        lines.append(
+            "Conflict analysis unavailable: the 'packaging' distribution is "
+            "not installed (pip install packaging). Cannot prove the "
+            "environment conflict-free."
+        )
     else:
         lines.append("No dependency conflicts detected.")
     if report.notes:

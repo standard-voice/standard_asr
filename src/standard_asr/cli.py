@@ -22,7 +22,7 @@ from .exceptions import (
     TranscriptionError,
 )
 from .runtime import ensure_cache_dir, resolve_cache_dir
-from .runtime_params import RuntimeParams
+from .runtime_params import RuntimeParams, WireRuntimeParams
 
 
 def _add_models_subcommands(subparsers: Any) -> None:
@@ -219,13 +219,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         args: Parsed CLI arguments.
 
     Returns:
-        Exit code (``1`` if a conflict was detected, else ``0``).
+        Exit code: ``1`` if a conflict was detected or conflict analysis was
+        unavailable (the environment cannot be proven conflict-free), else
+        ``0``.
     """
     from .doctor import diagnose, format_report
 
     report = diagnose()
     print(format_report(report))
-    return 1 if report.has_conflict else 0
+    return 1 if report.has_conflict or report.analysis_unavailable else 0
 
 
 def _cmd_models_list(args: argparse.Namespace) -> int:
@@ -420,7 +422,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         from .server import run
     except ImportError:
-        print(
+        _print_error(
             "FastAPI server dependencies are missing. Install with: "
             "pip install 'standard-asr[server]'."
         )
@@ -429,7 +431,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         run(host=args.host, port=args.port, reload=args.reload, log_level=args.log_level)
     except ImportError as exc:
-        print(str(exc))
+        _print_error(str(exc))
         return 1
     return 0
 
@@ -437,8 +439,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _parse_options(raw: str | None) -> RuntimeParams | None:
     """Parse a JSON options string into :class:`RuntimeParams`.
 
-    Only the portable standard-set fields are supported on the CLI; engine
-    ``provider_params`` are not constructible without the engine type.
+    Mirrors the server's untyped-wire rule (D5): validation goes through
+    :class:`WireRuntimeParams`, the portable-only wire view, so an options
+    object that includes the engine-specific ``provider_params`` escape hatch
+    is rejected with a clear validation error -- it is not constructible from
+    untyped JSON and must never reach the engine unvalidated. The validated
+    portable params are then promoted to the internal :class:`RuntimeParams`.
 
     Args:
         raw: Raw JSON string.
@@ -447,14 +453,16 @@ def _parse_options(raw: str | None) -> RuntimeParams | None:
         Parsed runtime parameters, or ``None``.
 
     Raises:
-        ValueError: If JSON does not decode to an object.
+        ValueError: If JSON does not decode to an object, or the object is not
+            a valid portable params object (including when it carries a
+            ``provider_params`` key).
     """
     if raw is None:
         return None
     payload = json.loads(raw)
     if not isinstance(payload, dict):
         raise ValueError("Options JSON must decode to an object.")
-    return RuntimeParams.model_validate(cast(dict[str, Any], payload))
+    return WireRuntimeParams.model_validate(cast(dict[str, Any], payload)).to_runtime_params()
 
 
 def main(argv: list[str] | None = None) -> int:
