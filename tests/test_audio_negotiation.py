@@ -162,18 +162,19 @@ def test_array_to_file_only_engine_no_viable_path() -> None:
 
 def test_path_to_url_only_engine_no_viable_path() -> None:
     # A local file cannot be turned into a fetchable URL; the standard does not
-    # synthesize one in v1.
+    # synthesize one in v1. The hint points at the remote shape the engine
+    # accepts (uploading is the caller's job).
     result = negotiate(AudioPath("a.wav"), {URL})
     assert isinstance(result, NoViablePath)
-    assert "fetchable URL" in result.hint
+    assert "AudioUrl" in result.hint
 
 
 def test_bytes_to_url_only_engine_no_viable_path() -> None:
     # Bytes to a URL-only engine: neither encoded_file nor array is accepted, so
-    # the hint falls through to the no-URL-synthesis explanation.
+    # the hint falls through to the upload-it-yourself explanation.
     result = negotiate(AudioBytes(b"x"), {URL})
     assert isinstance(result, NoViablePath)
-    assert "fetchable URL" in result.hint
+    assert "AudioUrl" in result.hint
 
 
 def test_bytes_to_file_and_bytes_engine_passthrough() -> None:
@@ -182,6 +183,81 @@ def test_bytes_to_file_and_bytes_engine_passthrough() -> None:
     assert isinstance(plan, ConversionPlan)
     assert plan.target_kind is BYTES
     assert plan.is_passthrough
+
+
+# --- Dead-end hints: local data to a remote-only (url/storage) engine ---
+
+
+def _assert_remote_only_hint(hint: str, *, url: bool, storage: bool) -> None:
+    """Assert a hint recommends exactly the engine's accepted remote shapes."""
+    # Recommending AudioPath would be a dead end: this engine class rejects
+    # every local shape too.
+    assert "AudioPath" not in hint
+    assert "upload" in hint.lower()
+    assert ("AudioUrl" in hint) is url
+    assert ("AudioStorageUri" in hint) is storage
+
+
+def test_array_to_url_only_engine_dead_end_hint() -> None:
+    result = negotiate(_arr(), {URL})
+    assert isinstance(result, NoViablePath)
+    _assert_remote_only_hint(result.hint, url=True, storage=False)
+
+
+def test_array_to_storage_only_engine_dead_end_hint() -> None:
+    result = negotiate(_arr(), {STORAGE})
+    assert isinstance(result, NoViablePath)
+    _assert_remote_only_hint(result.hint, url=False, storage=True)
+    assert "s3://" in result.hint
+
+
+def test_path_to_storage_only_engine_dead_end_hint() -> None:
+    result = negotiate(AudioPath("a.wav"), {STORAGE})
+    assert isinstance(result, NoViablePath)
+    _assert_remote_only_hint(result.hint, url=False, storage=True)
+
+
+def test_bytes_to_url_and_storage_engine_hint_lists_both() -> None:
+    result = negotiate(AudioBytes(b"x"), {URL, STORAGE})
+    assert isinstance(result, NoViablePath)
+    _assert_remote_only_hint(result.hint, url=True, storage=True)
+
+
+def test_base64_to_storage_only_engine_dead_end_hint() -> None:
+    result = negotiate(AudioBase64("AAAA"), {STORAGE})
+    assert isinstance(result, NoViablePath)
+    _assert_remote_only_hint(result.hint, url=False, storage=True)
+
+
+def test_url_to_storage_only_engine_dead_end_hint() -> None:
+    # AudioUrl to a storage-only engine: suggesting AudioPath would be the same
+    # dead end, so the hint points at AudioStorageUri instead.
+    result = negotiate(AudioUrl("https://x/a.wav"), {STORAGE})
+    assert isinstance(result, NoViablePath)
+    _assert_remote_only_hint(result.hint, url=False, storage=True)
+
+
+def test_url_to_array_engine_keeps_audiopath_hint() -> None:
+    # The engine accepts a local shape, so suggesting AudioPath stays correct.
+    result = negotiate(AudioUrl("https://x/a.wav"), {ARR})
+    assert isinstance(result, NoViablePath)
+    assert "AudioPath" in result.hint
+
+
+def test_array_to_empty_accepted_set_has_explicit_hint() -> None:
+    # Degenerate declaration: no accepted kinds at all still fails explicitly
+    # with a hint, never a misleading AudioPath/AudioUrl recommendation.
+    result = negotiate(_arr(), set())
+    assert isinstance(result, NoViablePath)
+    assert "no accepted input kinds" in result.hint
+
+
+def test_dead_end_hint_reaches_incompatible_error() -> None:
+    # negotiate_or_raise carries the direction-aware hint into the raised error.
+    with pytest.raises(IncompatibleAudioInputError) as exc:
+        negotiate_or_raise(AudioPath("a.wav"), {URL, STORAGE})
+    assert "AudioUrl" in str(exc.value)
+    assert "AudioStorageUri" in str(exc.value)
 
 
 # --- AudioStorageUri (H6) ---
@@ -258,6 +334,44 @@ def test_validate_url_rejects_ipv4_mapped_ipv6_private() -> None:
 def test_validate_url_allows_public_ip_literal() -> None:
     # A public IP literal needs no DNS; this must pass.
     validate_fetchable_url("https://93.184.216.34/a.wav")
+
+
+def test_validate_url_rejects_cgnat_literal() -> None:
+    # CGNAT 100.64.0.0/10 (RFC 6598) is neither is_private nor is_loopback etc.,
+    # so only the not-is_global hardening catches it. Its classification is
+    # stable (non-global) across Python 3.10-3.13.
+    with pytest.raises(UnsafeAudioUrlError, match="private/reserved"):
+        validate_fetchable_url("https://100.64.0.1/a.wav")
+
+
+def test_validate_url_rejects_test_net_literal() -> None:
+    # TEST-NET-1 (192.0.2.0/24) is consistently non-forwardable: is_private on
+    # older Pythons, non-global on 3.12+; rejected either way.
+    with pytest.raises(UnsafeAudioUrlError, match="private/reserved"):
+        validate_fetchable_url("https://192.0.2.1/a.wav")
+
+
+def test_validate_url_allows_global_dns_literal() -> None:
+    # 8.8.8.8 is is_global on every supported Python; the not-is_global
+    # hardening must not over-reject genuinely public addresses.
+    validate_fetchable_url("https://8.8.8.8/a.wav")
+
+
+def test_validate_url_rejects_resolved_cgnat_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The hardening also applies to resolved (named-host) addresses.
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("100.64.0.1"))
+    with pytest.raises(UnsafeAudioUrlError, match="private/reserved"):
+        validate_fetchable_url("https://cgnat.example.com/a.wav")
+
+
+def test_validate_url_malformed_url_raises_unsafe() -> None:
+    # urlsplit raises a bare ValueError for an unbalanced IPv6 bracket; the
+    # validator must re-raise it as the contracted UnsafeAudioUrlError (its
+    # documented single exception type), never leak the ValueError.
+    with pytest.raises(UnsafeAudioUrlError, match="malformed"):
+        validate_fetchable_url("https://[::1/a.wav")
 
 
 def test_validate_url_opt_in_allows_private() -> None:

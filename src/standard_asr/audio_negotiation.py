@@ -70,7 +70,10 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
 
     Covers the SSRF target set from spec R5.1: RFC1918, 127/8, 169.254/16, ::1,
     fc00::/7 (and their relatives, plus reserved/unspecified) -- including
-    IPv4-mapped IPv6 addresses, which are unwrapped first.
+    IPv4-mapped IPv6 addresses, which are unwrapped first. As a hardening layer
+    beyond the R5.1 MUSTs, any address that is not globally routable is also
+    rejected (``not is_global``), which covers e.g. CGNAT 100.64.0.0/10
+    (RFC 6598) and the documentation/TEST-NET ranges.
 
     Args:
         ip: The parsed address to classify.
@@ -80,6 +83,10 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     """
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
+    # ``is_global`` classification of a few exotic ranges shifted slightly across
+    # Python 3.10-3.13 (e.g. 192.0.0.9/32 PCP anycast became global in 3.12's
+    # IANA-registry alignment); the explicit predicates above it are the stable
+    # R5.1 floor, so version drift can only make the check stricter, never weaker.
     return (
         ip.is_private
         or ip.is_loopback
@@ -87,6 +94,7 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
         or ip.is_reserved
         or ip.is_unspecified
         or ip.is_multicast
+        or not ip.is_global
     )
 
 
@@ -115,12 +123,18 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
             is still required.
 
     Raises:
-        UnsafeAudioUrlError: If the URL is not HTTPS, has no host, has a
-            malformed port, fails to resolve, or resolves to a disallowed
+        UnsafeAudioUrlError: If the URL is malformed, not HTTPS, has no host,
+            has a malformed port, fails to resolve, or resolves to a disallowed
             address. This is the only exception type the validator raises, so a
             caller (e.g. the server) can map it to a single contracted response.
     """
-    parts = urlsplit(url)
+    # urlsplit raises a bare ValueError for some malformed URLs (e.g. an
+    # unbalanced IPv6 bracket); re-raise as the contracted error type so the
+    # validator's single-exception contract holds for every malformed input.
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise UnsafeAudioUrlError(url, f"the URL is malformed ({exc})") from exc
     if parts.scheme.lower() != "https":
         raise UnsafeAudioUrlError(url, f"scheme {parts.scheme!r} is not HTTPS")
     host = parts.hostname
@@ -240,6 +254,39 @@ class NoViablePath:
     hint: str
 
 
+#: The input kinds an application can satisfy with data it holds locally.
+_LOCAL_KINDS = frozenset({InputKind.ARRAY, InputKind.ENCODED_FILE, InputKind.ENCODED_BYTES})
+
+
+def _remote_only_hint(accepted: frozenset[InputKind]) -> str:
+    """Build a hint for audio offered to an engine that accepts no local shape.
+
+    Recommending AudioPath here would be a dead end: an engine that accepts only
+    ``fetchable_url`` and/or ``storage_uri`` (the AWS/Google storage engine
+    class) rejects every local shape too. The actionable fix is on the caller's
+    side -- host the media and pass the matching remote reference -- because the
+    standard deliberately does not upload media on the caller's behalf.
+
+    Args:
+        accepted: Engine-accepted input kinds (no local kind present).
+
+    Returns:
+        An actionable hint naming the remote variant(s) the engine accepts.
+    """
+    options: list[str] = []
+    if InputKind.FETCHABLE_URL in accepted:
+        options.append("AudioUrl (a public HTTPS URL the engine fetches itself)")
+    if InputKind.STORAGE_URI in accepted:
+        options.append("AudioStorageUri (a provider storage URI such as s3:// or gs://)")
+    if not options:
+        return "This engine declares no accepted input kinds it can receive this audio through."
+    return (
+        "This engine accepts only remote audio references, and the standard does "
+        "not upload media on the caller's behalf. Upload the media yourself and "
+        "pass " + " or ".join(options) + "."
+    )
+
+
 def negotiate(
     provided: AudioInput, accepted: set[InputKind] | frozenset[InputKind]
 ) -> ConversionPlan | NoViablePath:
@@ -343,11 +390,8 @@ def _negotiate_array(source: str, accepted: frozenset[InputKind]) -> ConversionP
             "encodes arrays to in-memory bytes and will not write a temp file. "
             "Use an engine that accepts arrays or encoded_bytes.",
         )
-    return NoViablePath(
-        source,
-        accepted,
-        "Provide a local file via AudioPath, or use an engine that accepts arrays.",
-    )
+    # No local kind is accepted: AudioPath would be a dead end too (R3).
+    return NoViablePath(source, accepted, _remote_only_hint(accepted))
 
 
 def _negotiate_path(source: str, accepted: frozenset[InputKind]) -> ConversionPlan | NoViablePath:
@@ -366,7 +410,9 @@ def _negotiate_path(source: str, accepted: frozenset[InputKind]) -> ConversionPl
         return ConversionPlan(source, InputKind.ENCODED_BYTES, (ConversionOp.READ_FILE,))
     if InputKind.ARRAY in accepted:
         return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,))
-    return NoViablePath(source, accepted, "The standard does not synthesize a fetchable URL in v1.")
+    # Only remote kinds remain; the standard does not synthesize a fetchable URL
+    # or upload to provider storage in v1, so the caller must host the media.
+    return NoViablePath(source, accepted, _remote_only_hint(accepted))
 
 
 def _negotiate_bytes(source: str, accepted: frozenset[InputKind]) -> ConversionPlan | NoViablePath:
@@ -429,7 +475,8 @@ def _bytes_only_file_hint(accepted: frozenset[InputKind]) -> str:
             "bytes; the standard will not write a temporary file (SSRF/TOCTOU "
             "safety). Pass the audio as AudioPath to a real local file."
         )
-    return "The standard does not synthesize a fetchable URL in v1."
+    # Only remote kinds remain; AudioPath would be an equally dead end (R3).
+    return _remote_only_hint(accepted)
 
 
 def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPlan | NoViablePath:
@@ -450,12 +497,16 @@ def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPla
     """
     if InputKind.FETCHABLE_URL in accepted:
         return ConversionPlan(source, InputKind.FETCHABLE_URL, (ConversionOp.PASSTHROUGH,))
-    return NoViablePath(
-        source,
-        accepted,
-        "This engine does not fetch URLs; in v1 the standard does not fetch them "
-        "either. Provide a local file via AudioPath.",
-    )
+    if accepted & _LOCAL_KINDS:
+        return NoViablePath(
+            source,
+            accepted,
+            "This engine does not fetch URLs; in v1 the standard does not fetch "
+            "them either. Provide a local file via AudioPath.",
+        )
+    # A storage-only engine cannot fetch an HTTPS URL either, so suggesting
+    # AudioPath would be a dead end (R3); point at the remote shape it accepts.
+    return NoViablePath(source, accepted, _remote_only_hint(accepted))
 
 
 def _negotiate_storage_uri(

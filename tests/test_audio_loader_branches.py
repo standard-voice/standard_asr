@@ -1100,3 +1100,51 @@ def test_probe_channels_ffprobe_called_process_error(
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
     assert audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav") is None  # pyright: ignore[reportPrivateUsage]
+
+
+# --------------------------------------------------------------------------- #
+# R3-AUDIO-LOADER-01 -- the soundfile paths enforce the decoded-output ceiling
+# (a hard rejection that must NOT fall back to the FFmpeg decoder).
+# --------------------------------------------------------------------------- #
+def _install_big_soundfile_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install a soundfile stub whose decode exceeds a tiny ceiling."""
+    module = types.ModuleType("soundfile")
+
+    def _read(source: object, dtype: str = "float32") -> tuple[NDArray[np.float32], int]:
+        return np.zeros(64, dtype=np.float32), 16000
+
+    setattr(module, "read", _read)
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", module)
+    monkeypatch.setattr(audio_loader, "_DEFAULT_MAX_DECODE_BYTES", 8)
+
+
+def test_load_audio_from_path_decoded_ceiling_rejects_hard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_big_soundfile_stub(monkeypatch)
+    with pytest.raises(AudioProcessingError, match="decoded-output ceiling"):
+        audio_loader.load_audio_from_path("dummy.flac")
+
+
+def test_load_audio_from_bytes_decoded_ceiling_rejects_hard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_big_soundfile_stub(monkeypatch)
+    with pytest.raises(AudioProcessingError, match="decoded-output ceiling"):
+        audio_loader.load_audio_from_bytes(b"fLaC not really")
+
+
+def test_decode_path_native_decoded_ceiling_rejects_hard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_big_soundfile_stub(monkeypatch)
+    with pytest.raises(AudioProcessingError, match="decoded-output ceiling"):
+        audio_loader._decode_path_native("dummy.flac", 1)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_decode_bytes_native_decoded_ceiling_rejects_hard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_big_soundfile_stub(monkeypatch)
+    with pytest.raises(AudioProcessingError, match="decoded-output ceiling"):
+        audio_loader._decode_bytes_native(b"fLaC not really", 1)  # pyright: ignore[reportPrivateUsage]

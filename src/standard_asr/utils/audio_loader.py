@@ -70,11 +70,13 @@ from ..exceptions import (
 
 logger = logging.getLogger(__name__)
 
-#: Hard ceiling (bytes) on a single buffered **encoded** payload when no engine
-#: limit is supplied (spec R9). 2 GiB comfortably covers multi-hour PCM while
-#: bounding memory. NOTE: this bounds the *encoded* input only, not the decoded
-#: array -- a compressed codec can still expand well past this once decoded (see
-#: :func:`_enforce_decode_size`).
+#: Hard ceiling (bytes) on a single buffered payload when no engine limit is
+#: supplied (spec R9). 2 GiB comfortably covers multi-hour PCM while bounding
+#: memory. Serves two distinct bounds: the default cap on a buffered **encoded**
+#: input (see :func:`_enforce_decode_size`), and the dedicated **decoded-output**
+#: ceiling applied by every decode backend (the stdlib WAV header guard, the
+#: soundfile ceiling in :func:`_enforce_decoded_output_ceiling`, and the FFmpeg
+#: ``-fs`` limit in :func:`_load_with_ffmpeg`).
 _DEFAULT_MAX_DECODE_BYTES = 2 * 1024 * 1024 * 1024
 
 # --- Public API ---
@@ -114,6 +116,30 @@ def decode_base64_audio(value: str) -> bytes:
         AudioProcessingError: If a ``data:`` URI lacks the ``;base64,`` marker,
             or the payload is not valid base64.
     """
+    payload = _base64_payload(value)
+    try:
+        return base64.b64decode(payload, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
+        raise AudioProcessingError("Invalid base64 audio payload.") from exc
+
+
+def _base64_payload(value: str) -> str:
+    """Extract the raw base64 payload from a possible ``data:`` URI wrapper.
+
+    Shared by :func:`decode_base64_audio` and
+    :func:`estimate_base64_decoded_size` so both apply exactly the same
+    ``data:``-URI parse rules (single source of truth, AUDI-4).
+
+    Args:
+        value: A ``data:...;base64,...`` URI (any case for the scheme) or a bare
+            base64 string.
+
+    Returns:
+        The base64 payload portion of ``value``.
+
+    Raises:
+        AudioProcessingError: If a ``data:`` URI lacks the ``;base64,`` marker.
+    """
     if value[:5].lower() == "data:":
         marker = ";base64,"
         if marker not in value:
@@ -121,13 +147,32 @@ def decode_base64_audio(value: str) -> bytes:
                 "Malformed data: URI -- only base64-encoded data URIs are "
                 "supported; the ';base64,' marker is required."
             )
-        payload = value.split(marker, 1)[1]
-    else:
-        payload = value
-    try:
-        return base64.b64decode(payload, validate=True)
-    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
-        raise AudioProcessingError("Invalid base64 audio payload.") from exc
+        return value.split(marker, 1)[1]
+    return value
+
+
+def estimate_base64_decoded_size(value: str) -> int:
+    """Estimate the decoded byte size of a base64 payload without decoding it.
+
+    Computed from the payload length alone (every 4 base64 characters decode to
+    3 bytes, minus trailing padding), so a size gate can run *before* the
+    allocation that :func:`decode_base64_audio` performs. The estimate is exact
+    for a valid padded payload and a floor (underestimate) for a malformed one,
+    so a gate using it never rejects a payload whose decoded form would actually
+    fit -- the exact post-decode length check stays authoritative.
+
+    Args:
+        value: A ``data:...;base64,...`` URI or a bare base64 string.
+
+    Returns:
+        The estimated decoded size in bytes (never negative).
+
+    Raises:
+        AudioProcessingError: If a ``data:`` URI lacks the ``;base64,`` marker.
+    """
+    payload = _base64_payload(value)
+    padding = 2 if payload.endswith("==") else 1 if payload.endswith("=") else 0
+    return max((len(payload) // 4) * 3 - padding, 0)
 
 
 def _validate_local_source_path(path: str) -> str:
@@ -169,10 +214,12 @@ def _enforce_decode_size(num_bytes: int, max_bytes: int | None) -> None:
     Honesty note: this bounds only the size of the ENCODED input (a file's
     ``st_size`` or ``len(bytes)``) before it is buffered. It does NOT bound the
     decoded float32 array, whose size is ``duration x sample_rate x 4`` and can
-    be many times larger for a compressed codec. It is therefore an
-    oversize-input guard, not a full decompression-bomb guard; bounding the
-    decoded output would require probing duration / capping the decoder, which
-    v1 does not do (the FFmpeg path still buffers its whole stdout).
+    be many times larger for a compressed codec. The decoded output is bounded
+    separately, per decode backend: the stdlib WAV path probes the
+    header-declared frame count (:func:`_guard_wav_nframes`), the soundfile path
+    checks the decoded array against the module ceiling
+    (:func:`_enforce_decoded_output_ceiling`), and the FFmpeg path self-limits
+    via ``-fs`` plus a post-capture check (:func:`_load_with_ffmpeg`).
 
     Args:
         num_bytes: Size of the encoded payload about to be buffered, in bytes.
@@ -202,6 +249,42 @@ class _WavAllocationGuardError(AudioProcessingError):
     (every decoder would parse the same hostile header). It remains an
     :class:`AudioProcessingError`, so public callers handle it uniformly.
     """
+
+
+class _DecodedOutputCeilingError(AudioProcessingError):
+    """A decoded waveform exceeded the module's decoded-output ceiling (spec R9).
+
+    A dedicated subclass so the soundfile decode paths can re-raise it past
+    their broad ``except Exception`` fallback: a decoded output past the ceiling
+    is a hard rejection, not a "try the next decoder" signal (the FFmpeg
+    fallback would just re-decode the same expansive input). It remains an
+    :class:`AudioProcessingError`, so public callers handle it uniformly.
+    """
+
+
+def _enforce_decoded_output_ceiling(audio: NDArray[Any]) -> None:
+    """Reject a decoded waveform larger than the decoded-output ceiling (R9).
+
+    The encoded-size cap (``max_bytes``) cannot bound the decoded array -- a
+    compressed codec can expand far past it. The FFmpeg path bounds its decoded
+    output with ``-fs`` plus a post-capture check; this is the soundfile path's
+    equivalent, applied to the decoded array. The ceiling is the module's
+    dedicated decode bound, deliberately NOT the engine's ``max_file_size``
+    (which is an encoded-size contract).
+
+    Args:
+        audio: The freshly decoded waveform.
+
+    Raises:
+        _DecodedOutputCeilingError: If the array exceeds the ceiling. This is a
+            hard rejection that must not fall back to another decoder.
+    """
+    if audio.nbytes > _DEFAULT_MAX_DECODE_BYTES:
+        raise _DecodedOutputCeilingError(
+            f"Decoded audio is {audio.nbytes} bytes, exceeding the "
+            f"{_DEFAULT_MAX_DECODE_BYTES}-byte decoded-output ceiling. The input "
+            "likely declares a very long duration; provide a shorter clip."
+        )
 
 
 def _guard_wav_nframes(wf: wave.Wave_read, max_bytes: int | None) -> None:
@@ -550,10 +633,11 @@ def load_audio(
             defaulting to the 2 GiB ceiling (spec R9). It bounds the encoded
             payload only -- a file via ``stat``, ``bytes`` via length, and a
             ``BinaryIO`` stream via a capped read that aborts past the limit
-            instead of buffering the whole stream -- not the decoded array, and
-            the FFmpeg fallback still buffers its full output. Pass ``None`` to
-            disable the cap entirely (truly unbounded); set it explicitly for
-            untrusted input.
+            instead of buffering the whole stream. The decoded array is bounded
+            separately by the module's fixed decoded-output ceiling, which
+            ``max_bytes`` does not change. Pass ``None`` to disable the encoded
+            cap entirely (truly unbounded); set it explicitly for untrusted
+            input.
 
     Returns:
         Waveform as ``np.float32`` array:
@@ -678,9 +762,10 @@ def load_audio_from_path(
 
     This is a convenience loader, **not** the engine input boundary. The
     ``max_bytes`` cap bounds only the on-disk ENCODED file size via ``stat``
-    (spec R9); it does not bound the decoded array, and the FFmpeg fallback
-    buffers its full output. Callers handling untrusted input SHOULD set
-    ``max_bytes`` (or ``None`` to disable the default 2 GiB ceiling).
+    (spec R9); the decoded array is bounded separately by the module's fixed
+    decoded-output ceiling on every decode backend. Callers handling untrusted
+    input SHOULD set ``max_bytes`` (or ``None`` to disable the default 2 GiB
+    encoded cap).
 
     Args:
         path: Path to audio file. Supports ``~`` expansion.
@@ -774,11 +859,16 @@ def load_audio_from_path(
 
         sf_read: Any = getattr(sf, "read")
         audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(path, dtype="float32"))
+        _enforce_decoded_output_ceiling(audio)
         # normalize_audio never raises ImportError: a missing scipy degrades to
         # the built-in anti-aliasing fallback resampler internally (spec AI R8).
         return normalize_audio(audio, orig_sr, target_sr, target_channels)
     except ImportError:
         logger.debug("`soundfile` not installed, cannot load non-WAV formats without FFmpeg.")
+    except _DecodedOutputCeilingError:
+        # A decoded output past the ceiling is a hard rejection: the FFmpeg
+        # fallback would just re-decode the same expansive input.
+        raise
     except Exception as e:
         logger.debug(f"Could not load with `soundfile`, falling back... Error: {e}")
 
@@ -800,10 +890,11 @@ def load_audio_from_bytes(
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
     This is a convenience loader, **not** the engine input boundary. The
-    ``max_bytes`` cap bounds only the ENCODED ``data`` length (spec R9); it does
-    not bound the decoded array (a compressed codec can still expand past it) and
-    the FFmpeg fallback buffers its full output. Callers handling untrusted input
-    SHOULD set ``max_bytes`` (or ``None`` to disable the default 2 GiB ceiling).
+    ``max_bytes`` cap bounds only the ENCODED ``data`` length (spec R9); the
+    decoded array (which a compressed codec can expand far past it) is bounded
+    separately by the module's fixed decoded-output ceiling on every decode
+    backend. Callers handling untrusted input SHOULD set ``max_bytes`` (or
+    ``None`` to disable the default 2 GiB encoded cap).
 
     Args:
         data: Raw bytes of an audio file (any format: WAV, MP3, FLAC, etc.).
@@ -837,11 +928,16 @@ def load_audio_from_bytes(
         audio, orig_sr = cast(
             tuple[NDArray[np.float32], int], sf_read(io.BytesIO(data), dtype="float32")
         )
+        _enforce_decoded_output_ceiling(audio)
         # normalize_audio never raises ImportError: a missing scipy degrades to
         # the built-in anti-aliasing fallback resampler internally (spec AI R8).
         return normalize_audio(audio, orig_sr, target_sr, target_channels)
     except ImportError:
         logger.debug("`soundfile` not installed, cannot load from bytes without FFmpeg.")
+    except _DecodedOutputCeilingError:
+        # A decoded output past the ceiling is a hard rejection: the FFmpeg
+        # fallback would just re-decode the same expansive input.
+        raise
     except Exception as e:
         logger.debug(f"Could not load bytes with `soundfile`, falling back... Error: {e}")
 
@@ -973,9 +1069,14 @@ def _decode_path_native(
 
         sf_read: Any = getattr(sf, "read")
         audio, orig_sr = cast(tuple[NDArray[np.float32], int], sf_read(path, dtype="float32"))
+        _enforce_decoded_output_ceiling(audio)
         return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
     except ImportError:
         logger.debug("`soundfile` not installed; using FFmpeg for native decode.")
+    except _DecodedOutputCeilingError:
+        # A decoded output past the ceiling is a hard rejection: the FFmpeg
+        # fallback would just re-decode the same expansive input.
+        raise
     except Exception as e:
         logger.debug("soundfile decode failed, falling back. Error: %s", e)
 
@@ -1005,9 +1106,14 @@ def _decode_bytes_native(
         audio, orig_sr = cast(
             tuple[NDArray[np.float32], int], sf_read(io.BytesIO(data), dtype="float32")
         )
+        _enforce_decoded_output_ceiling(audio)
         return normalize_audio(audio, orig_sr, orig_sr, target_channels), orig_sr
     except ImportError:
         logger.debug("`soundfile` not installed; using FFmpeg for native decode.")
+    except _DecodedOutputCeilingError:
+        # A decoded output past the ceiling is a hard rejection: the FFmpeg
+        # fallback would just re-decode the same expansive input.
+        raise
     except Exception as e:
         logger.debug("soundfile decode failed, falling back. Error: %s", e)
 
@@ -1227,8 +1333,8 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        The integer value, or ``None`` if ffprobe is unavailable or detection
-        failed.
+        The positive integer value, or ``None`` if ffprobe is unavailable,
+        detection failed, or the reported value is not a positive integer.
 
     Raises:
         None.
@@ -1263,7 +1369,13 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
             cmd, capture_output=True, input=input_data, check=True, timeout=timeout
         )
         text = proc.stdout.decode().strip()
-        return int(text) if text.isdigit() else None
+        if not text.isdigit():
+            return None
+        value = int(text)
+        # ffprobe can report 0 for a hostile/broken stream; a non-positive count
+        # or rate is "unknown", never forwarded (``-ar 0`` is a silent no-op on
+        # some ffmpeg builds, which would skip resampling without any error).
+        return value if value > 0 else None
     except subprocess.TimeoutExpired:
         return None
     except subprocess.CalledProcessError:

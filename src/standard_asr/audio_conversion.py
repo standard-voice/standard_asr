@@ -33,7 +33,7 @@ from .audio_negotiation import ConversionOp, ConversionPlan, validate_fetchable_
 from .exceptions import AudioProcessingError
 from .resampling import resample_with_backend
 from .results import Diagnostic
-from .utils.audio_loader import decode_audio, decode_base64_audio
+from .utils.audio_loader import decode_audio, decode_base64_audio, estimate_base64_decoded_size
 from .utils.save_utils import encode_array_to_wav_bytes
 
 #: Canonical fallback sample rate when a bare array omits its rate (spec R6).
@@ -213,6 +213,7 @@ def execute_plan(
         diags,
     )
     _check_duration(array, sample_rate, max_audio_duration)
+    _diagnose_non_finite(array, diags)
     return PreparedAudio(
         kind=InputKind.ARRAY,
         array=array,
@@ -317,10 +318,45 @@ def _prepare_encoded(
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=result.data, container="wav")
     if ConversionOp.B64_DECODE in ops:  # base64 -> bytes
         assert isinstance(provided, AudioBase64)
+        # Cheap pre-decode gate (R9): the decoded size is estimated from the
+        # base64 length alone, so an oversize payload is rejected BEFORE the
+        # decode allocates it. The estimate never exceeds the true decoded size,
+        # so an under-limit payload is never falsely rejected; the exact
+        # post-decode check below stays authoritative.
+        _check_payload_size(estimate_base64_decoded_size(provided.value), max_file_size)
         decoded = decode_base64_audio(provided.value)
         _check_payload_size(len(decoded), max_file_size)
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=decoded)
     raise AudioProcessingError("Unsupported encoded conversion plan.")  # pragma: no cover
+
+
+def _diagnose_non_finite(array: NDArray[np.float32], diags: list[Diagnostic]) -> None:
+    """Diagnose -- never sanitize -- non-finite samples in an array delivery.
+
+    NaN/Inf in application-provided float audio is forwarded unchanged: clipping
+    or zeroing here would silently mutate audio the application may have shaped
+    deliberately, and the decode paths already sanitize their own output. The
+    structured warning makes the condition visible to the caller instead of
+    letting it degrade transcription silently (explicit > implicit).
+
+    Args:
+        array: The waveform about to be delivered (passthrough or resampled).
+        diags: Diagnostics accumulator.
+    """
+    if bool(np.isfinite(array).all()):
+        return
+    bad = int(np.count_nonzero(~np.isfinite(array)))
+    diags.append(
+        Diagnostic(
+            level="warning",
+            code="non_finite_audio",
+            message=(
+                f"Array delivery contains {bad} non-finite sample(s) (NaN/Inf); "
+                "forwarded unchanged."
+            ),
+            param="audio",
+        )
+    )
 
 
 def _check_duration(
@@ -423,6 +459,10 @@ def _prepare_array(
     elif isinstance(provided, AudioBytes):
         source = provided.data
     elif isinstance(provided, AudioBase64):
+        # Same cheap pre-decode gate as the encoded path (R9): estimate the
+        # decoded size from the base64 length before allocating the decode;
+        # decode_audio's exact length check below stays authoritative.
+        _check_payload_size(estimate_base64_decoded_size(provided.value), max_file_size)
         source = decode_base64_audio(provided.value)
     else:  # pragma: no cover - matrix guarantees the above
         raise AudioProcessingError("Cannot decode this input to an array.")

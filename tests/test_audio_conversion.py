@@ -170,6 +170,44 @@ def test_base64_invalid_raises() -> None:
         _exec(AudioBase64("!!!notb64!!!"), {InputKind.ENCODED_BYTES})
 
 
+# --- R9: oversize base64 is rejected BEFORE the decode allocates it ---
+
+
+def _forbid_b64_decode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any actual base64 decode fail the test (the gate must run first)."""
+
+    def _boom(_value: str) -> bytes:
+        raise AssertionError("decode_base64_audio must not run for an oversize payload")
+
+    monkeypatch.setattr("standard_asr.audio_conversion.decode_base64_audio", _boom)
+
+
+def test_base64_oversize_rejected_before_decode(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 4000 base64 chars estimate to 3000 decoded bytes > the 100-byte limit, so
+    # the pre-decode gate rejects without ever decoding the payload.
+    _forbid_b64_decode(monkeypatch)
+    with pytest.raises(AudioProcessingError, match="max_file_size"):
+        _exec(AudioBase64("A" * 4000), {InputKind.ENCODED_BYTES}, max_file_size=100)
+
+
+def test_base64_to_array_oversize_rejected_before_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The decode-to-array path applies the same pre-decode gate.
+    _forbid_b64_decode(monkeypatch)
+    with pytest.raises(AudioProcessingError, match="max_file_size"):
+        _exec(AudioBase64("A" * 4000), {InputKind.ARRAY}, max_file_size=100)
+
+
+def test_base64_exactly_at_limit_still_decodes() -> None:
+    # The estimate is exact for valid padded base64, so a payload exactly at the
+    # limit must NOT be falsely rejected by the pre-decode gate.
+    raw = b"z" * 30
+    payload = base64.b64encode(raw).decode()
+    prepared = _exec(AudioBase64(payload), {InputKind.ENCODED_BYTES}, max_file_size=len(raw))
+    assert prepared.data == raw
+
+
 def test_url_passthrough() -> None:
     # allow_private_addresses bypasses DNS resolution so the test does not depend
     # on network/DNS; the URL is still required to be HTTPS.
@@ -239,6 +277,42 @@ def test_array_within_max_duration_ok() -> None:
         max_audio_duration=10.0,
     )
     assert prepared.kind is InputKind.ARRAY
+
+
+# --- Non-finite samples on array delivery: diagnose, never mutate ---
+
+
+def test_array_passthrough_nan_diagnosed_and_forwarded_unchanged() -> None:
+    samples = np.array([0.0, np.nan, np.inf, -np.inf, 0.5], dtype=np.float32)
+    prepared = _exec(AudioArray(samples, 16000), {InputKind.ARRAY})
+    diag = next(d for d in prepared.diagnostics if d.code == "non_finite_audio")
+    assert diag.level == "warning"
+    assert "3 non-finite" in diag.message
+    # The payload is forwarded unchanged: no clipping/zeroing of the samples.
+    assert prepared.array is not None
+    assert np.isnan(prepared.array[1])
+    assert prepared.array[2] == np.inf
+    assert prepared.array[3] == -np.inf
+    assert prepared.array[4] == np.float32(0.5)
+
+
+def test_array_resampled_nan_still_diagnosed() -> None:
+    # NaN propagates through resampling, so the post-resample delivery is also
+    # diagnosed (the check runs on the array the engine actually receives).
+    samples = np.zeros(48000, dtype=np.float32)
+    samples[100] = np.nan
+    prepared = _exec(
+        AudioArray(samples, 48000),
+        {InputKind.ARRAY},
+        accepted_sample_rates=[16000],
+        native_sample_rate=16000,
+    )
+    assert any(d.code == "non_finite_audio" for d in prepared.diagnostics)
+
+
+def test_clean_array_has_no_non_finite_diagnostic() -> None:
+    prepared = _exec(AudioArray(np.zeros(8, dtype=np.float32), 16000), {InputKind.ARRAY})
+    assert not any(d.code == "non_finite_audio" for d in prepared.diagnostics)
 
 
 def test_decode_bytes_to_array() -> None:
