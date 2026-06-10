@@ -14,9 +14,31 @@ standard-asr = { workspace = true }
 "dummy/" = "std_dummy_asr.entrypoint:create_default"
 
 [build-system]
-requires = ["uv-build"]
+requires = ["uv-build>=0.9,<0.12"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = "src"
 module-name = "std_dummy_asr"
+
+# Test tooling lives in this package's own group so the cookbook is
+# self-contained and can be covered to 100% independently.
+[dependency-groups]
+test = ["pytest>=8.4.1", "pytest-cov>=7.0.0"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "-q",
+    "--cov=std_dummy_asr",
+    "--cov-branch",
+    "--cov-report=term-missing:skip-covered",
+]
+testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["std_dummy_asr"]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:"]
