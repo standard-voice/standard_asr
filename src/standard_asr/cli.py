@@ -77,10 +77,6 @@ def _add_models_subcommands(subparsers: Any) -> None:
         "prepare", help="Warm up a model (download/load weights if required)."
     )
     prepare_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
-    prepare_parser.add_argument(
-        "--options",
-        help="JSON string of transcription options passed to the engine.",
-    )
     prepare_parser.set_defaults(func=_cmd_models_prepare)
 
 
