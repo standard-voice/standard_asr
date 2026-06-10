@@ -1,12 +1,17 @@
 site_name: Standard ASR
+site_description: The open standard interface between applications and speech-recognition engines.
 
 theme:
   name: material
-  language: zh
+  language: en
   features:
     - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
     - header.autohide
-    # - navigation.tabs 
+    - content.code.copy
+    - toc.follow
   favicon: assets/branding/icon.png
   font:
     text: Noto Sans
@@ -31,29 +36,64 @@ plugins:
   - search
   - privacy
   - offline
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            merge_init_into_class: true
+            docstring_style: google
+            docstring_section_style: spacy
+            show_if_no_docstring: false
 
 extra_css:
   - stylesheets/extra.css
 
+# Exclude internal docs (design notes, research, work docs, legacy) from the
+# published site. They stay in the repo as historical records but are not
+# user-facing documentation.
+exclude_docs: |
+  design-notes/
+  research/
+  work_doc/
+  legacy/
+  feat_plan/
+  misc.md
+  compatibility-advisories.md
+
 nav:
   - Home: index.md
-  - Introduction: intro.md
-  - Mission: mission.md
-  - Goals: goals.md
-  - Roadmap: roadmap.md
-  - App Developers:
+  - Getting Started:
+      - Quickstart: quickstart.md
+      - Installation: installation.md
+  - For App Developers:
       - Discover & Use: for_app_dev/discover_and_use.md
-  - ASR Developers:
+      - Streaming: for_app_dev/streaming.md
+      - Errors & Diagnostics: for_app_dev/errors.md
+  - For Engine Authors:
       - Adapt an Engine: for_asr_dev/adapting_engine.md
-      - Properties: for_asr_dev/properties.md
       - Plugin Entrypoints: for_asr_dev/plugin_entrypoints.md
-  - Specs:
-      - Protocol: spec/protocol.md
-      - Results: spec/results.md
-      - Options: spec/options.md
-      - Properties: spec/properties.md
-      - Features: spec/features.md
-      - Streaming: spec/streaming.md
+  - API Reference:
+      - standard_asr: reference/index.md
+      - standard_asr.engine: reference/engine.md
+      - standard_asr.compliance: reference/compliance.md
+      - standard_asr.streaming: reference/streaming.md
+      - standard_asr.results: reference/results.md
+      - standard_asr.capabilities: reference/capabilities.md
+      - standard_asr.exceptions: reference/exceptions.md
+      - standard_asr.wire: reference/wire.md
+  - Specification:
+      - Protocol: spec/specification.md
+      - Server API: spec/server.md
       - CLI: spec/cli.md
-      - API: spec/api.md
       - Download Policy: spec/download-policy.md
+  - Project:
+      - Mission: mission.md
+      - Goals: goals.md
+      - Roadmap: roadmap.md
