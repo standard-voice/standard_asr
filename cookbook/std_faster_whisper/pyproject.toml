@@ -1,12 +1,49 @@
 [project]
 name = "std-faster-whisper"
 version = "0.1.0"
-description = "Add your description here"
+description = "Standard ASR plugin wrapping faster-whisper"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["faster-whisper>=1.2.0", "standard-asr>=0.1.0"]
+
 [tool.uv.sources]
 standard-asr = { workspace = true }
 
+# One entry point per preset (spec IC.7: model selection = entry-point preset).
+# faster-whisper ships ~15 sizes; we register a representative few. See README
+# for how to add more.
 [project.entry-points."standard_asr.models"]
-"faster-whisper/whisper" = "std_faster_whisper.entrypoint:create"
+"faster-whisper/large-v3" = "std_faster_whisper.entrypoint:create"
+"faster-whisper/distil-large-v3" = "std_faster_whisper.entrypoint:create_distil_large_v3"
+"faster-whisper/turbo" = "std_faster_whisper.entrypoint:create_turbo"
+
+[build-system]
+requires = ["uv-build>=0.9,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "src"
+module-name = "std_faster_whisper"
+
+# Tests mock faster_whisper / WhisperModel; they never download weights. The test
+# tooling lives in this package's own group so the cookbook is self-contained.
+[dependency-groups]
+test = ["pytest>=8.4.1", "pytest-cov>=7.0.0"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "-q",
+    "--cov=std_faster_whisper",
+    "--cov-branch",
+    "--cov-report=term-missing:skip-covered",
+]
+testpaths = ["tests"]
+# Warnings-as-errors mirrors the core suite: our own deprecations/bugs fail.
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["std_faster_whisper"]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:"]
