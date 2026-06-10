@@ -1,0 +1,168 @@
+name: Canary (latest deps)
+
+# Dependency-policy channel 3 (ADR D5). Daily, this lane re-resolves EVERY
+# dependency to its newest version (and, on the prerelease axis, allows
+# pre-releases) and runs the suite against that. It is the early-warning system
+# for breakage that has shipped (or is about to ship) upstream but is not yet in
+# our committed uv.lock. It never gates a PR; on failure it opens/updates a
+# single tracking issue. Replaces the old numpy-nightly canary with an
+# all-dependency sweep.
+
+on:
+  schedule:
+    # 05:17 UTC daily (offset from the hour to dodge scheduler congestion).
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.19"
+
+jobs:
+  # Newest STABLE resolution: a released version that already broke us. This is
+  # the actionable signal — its failure opens/updates the tracking issue.
+  canary-latest:
+    name: Canary (latest stable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false # The whole point is to ignore cached resolutions.
+      - name: Re-resolve to newest versions and capture lock drift
+        run: |
+          cp uv.lock uv.lock.committed
+          uv lock --upgrade
+          diff -u uv.lock.committed uv.lock > lock-drift.diff || true
+          echo "----- lock drift (committed -> newest) -----"
+          cat lock-drift.diff
+      - name: Upload lock drift
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: lock-drift-latest
+          path: lock-drift.diff
+          if-no-files-found: ignore
+      - name: Sync the upgraded resolution
+        run: uv sync --all-extras --all-groups
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  # Newest including PRE-RELEASES: breakage about to ship (e.g. numpy NEP 50 /
+  # pydantic majors). This is the numpy-nightly successor and a SOFT signal — it
+  # reports red on its own for visibility but does NOT file an issue (pre-release
+  # churn would otherwise keep a tracking issue permanently open). continue-on-
+  # error keeps it from coloring the overall workflow run.
+  canary-prerelease:
+    name: Canary (prerelease)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: Re-resolve to newest (incl. pre-releases) and capture lock drift
+        run: |
+          cp uv.lock uv.lock.committed
+          uv lock --upgrade --prerelease allow
+          diff -u uv.lock.committed uv.lock > lock-drift.diff || true
+          echo "----- lock drift (committed -> newest incl. prerelease) -----"
+          cat lock-drift.diff
+      - name: Upload lock drift
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: lock-drift-prerelease
+          path: lock-drift.diff
+          if-no-files-found: ignore
+      - name: Sync the upgraded resolution
+        run: uv sync --all-extras --all-groups
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  report-failure:
+    name: Open or update canary tracking issue
+    # Keyed to the latest-STABLE axis only: a stable release broke us, which is
+    # actionable. The prerelease axis is intentionally excluded to avoid a
+    # permanently-open issue from expected pre-release churn.
+    needs: [canary-latest]
+    # Only when the latest-stable canary failed, and only on the scheduled run so
+    # a manual dispatch does not spam issues.
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # Elevated only on this job (top-level stays contents: read) so the canary
+      # can file/update its own tracking issue. Nothing else needs write.
+      issues: write # file/update the canary tracking issue
+    steps:
+      - name: Find or create the tracking issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const label = "canary";
+            const title = "Canary: latest dependency resolution is failing";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const stamp = new Date().toISOString();
+            const body = [
+              "The daily canary (latest **stable** resolution) failed. This lane",
+              "re-resolves all dependencies to their newest released versions and",
+              "runs the suite — so a failure means a shipped upstream release is",
+              "incompatible with our code.",
+              "",
+              `Latest failing run: ${runUrl}`,
+              "",
+              "Check the run's `lock-drift-latest` artifact to see which dependency",
+              "moved, then decide: adapt our code, raise a lower bound, or (only",
+              "for a real, tracked incompatibility) add a capped constraint with a",
+              "revisit date per docs/compatibility-advisories.md.",
+            ].join("\n");
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: label,
+              per_page: 100,
+            });
+            const found = existing.data.find((issue) => issue.title === title);
+            if (found) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: found.number,
+                body: `Still failing as of ${stamp}: ${runUrl}`,
+              });
+              core.info(`Updated existing tracking issue #${found.number}.`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              });
+              core.info(`Opened tracking issue #${created.data.number}.`);
+            }
