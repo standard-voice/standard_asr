@@ -91,6 +91,22 @@ def test_language_rejects_malformed_tags(tag: str) -> None:
         RuntimeParams(language=tag)
 
 
+@pytest.mark.parametrize("model", [RuntimeParams, WireRuntimeParams])
+def test_language_error_never_echoes_raw_value(
+    model: type[RuntimeParams | WireRuntimeParams],
+) -> None:
+    # The malformed-tag message must not embed the submitted value: it is
+    # surfaced verbatim by the server's unauthenticated 422 body (spec server.md
+    # "validation errors never echo the request input"), CLI output, and logs,
+    # so a mis-pasted secret sent as `language` would otherwise be reflected.
+    sentinel = "my secret passphrase here"
+    with pytest.raises(ValidationError) as exc_info:
+        model(language=sentinel)
+    # The server's sanitizer forwards `msg` verbatim for non-credential fields,
+    # so `msg` itself must already be value-free.
+    assert all(sentinel not in err["msg"] for err in exc_info.value.errors())
+
+
 # --- WireRuntimeParams (portable-only wire view, D5) --------------------------
 
 

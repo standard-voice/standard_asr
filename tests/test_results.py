@@ -135,6 +135,35 @@ def test_channels_field() -> None:
     assert result.channels[0].channel == 1
 
 
+def test_channel_segments_require_top_level_segments() -> None:
+    # Spec TR.4: ignoring `channels` must be lossless. A channel entry carrying
+    # segments while the top level has none would make channel-agnostic
+    # consumers (e.g. the renderers) silently drop all per-channel timing, so
+    # the shape is rejected at construction.
+    chan = ChannelResult(channel=0, text="hi", segments=[Segment(start=0.0, end=1.0, text="hi")])
+    with pytest.raises(ValueError, match="time-merged union"):
+        TranscriptionResult(text="hi", channels=[chan])
+
+
+def test_channel_words_require_top_level_words() -> None:
+    # Same TR.4 derivability invariant for the flattened word-level view.
+    chan = ChannelResult(channel=0, text="hi", words=[Word(start=0.0, end=0.5, text="hi")])
+    with pytest.raises(ValueError, match="time-merged union"):
+        TranscriptionResult(text="hi", channels=[chan])
+
+
+def test_channels_with_top_level_segments_and_words_construct() -> None:
+    # The TR.4-conformant shape (top level = time-merge of all channels) is
+    # accepted; per-channel detail with a populated top level is the contract.
+    word = Word(start=0.0, end=0.5, text="hi")
+    seg = Segment(start=0.0, end=1.0, text="hi")
+    chan = ChannelResult(channel=0, text="hi", segments=[seg], words=[word])
+    result = TranscriptionResult(text="hi", segments=[seg], words=[word], channels=[chan])
+    assert result.channels is not None
+    assert result.segments == [seg]
+    assert result.words == [word]
+
+
 def test_diagnostic_model() -> None:
     diag = Diagnostic(
         level="warning",
@@ -196,6 +225,18 @@ def test_none_segments_with_text_synthesizes_one_cue() -> None:
     assert "1\n00:00:00,000 --> 00:00:02,000\nwhole text" in srt
     # Exactly one cue.
     assert "2\n" not in srt
+
+
+def test_synthetic_cue_without_duration_has_visible_span() -> None:
+    # segments=None + unknown duration (e.g. a reduced stream): the synthetic
+    # cue must not be zero-duration -- ffmpeg / VLC / browser WebVTT silently
+    # drop zero-duration cues, hiding the only transcript content. The
+    # renderer falls back to a fixed 3 s span.
+    result = TranscriptionResult(text="only text")
+    srt = to_srt(result)
+    assert "1\n00:00:00,000 --> 00:00:03,000\nonly text" in srt
+    vtt = to_vtt(result)
+    assert "00:00:00.000 --> 00:00:03.000\nonly text" in vtt
 
 
 def test_srt_skips_empty_segment_and_renumbers() -> None:

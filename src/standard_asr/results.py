@@ -317,6 +317,39 @@ class TranscriptionResult(BaseModel):
             )
         return normalized
 
+    @model_validator(mode="after")
+    def _check_top_level_derivable_from_channels(self) -> TranscriptionResult:
+        """Reject a result whose top level is not derivable from ``channels``.
+
+        Spec TR.4 promises that ignoring ``channels`` is always safe and
+        lossless: when ``channels`` is present, the top-level fields are the
+        time-merge of all channels. A result whose channel entries carry
+        ``segments`` / ``words`` while the corresponding top-level field is
+        ``None`` breaks that promise -- a channel-agnostic consumer (e.g. the
+        SRT/VTT renderers, built over the constant top-level ``segments``)
+        would silently lose all per-channel detail. That shape is an engine
+        bug, so the model refuses to represent it.
+
+        Returns:
+            The validated result.
+
+        Raises:
+            ValueError: If any ``channels`` entry carries ``segments`` (or
+                ``words``) while the top-level field is ``None``.
+        """
+        if self.channels is not None:
+            for name in ("segments", "words"):
+                if getattr(self, name) is None and any(
+                    getattr(entry, name) is not None for entry in self.channels
+                ):
+                    raise ValueError(
+                        f"channels entries carry {name} but the top-level {name} is None; "
+                        f"spec TR.4 requires the top level to be derivable from channels "
+                        f"(ignoring channels must be lossless). Populate the top-level "
+                        f"{name} with the time-merged union of all channels' {name}."
+                    )
+        return self
+
 
 __all__ = [
     "ChannelResult",

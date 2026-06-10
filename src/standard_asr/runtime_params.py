@@ -166,8 +166,13 @@ def _validate_language_tag(value: str | None) -> str | None:
     if value is None or value == "auto":
         return value
     if not is_valid_bcp47(value):
+        # The raw value MUST NOT be embedded in the message: this error is
+        # surfaced verbatim by every transport (CLI, logs, the server's
+        # unauthenticated 422 body -- spec server.md "validation errors never
+        # echo the request input"), and a mis-pasted secret sent as `language`
+        # would otherwise be reflected back.
         raise ValueError(
-            f"language {value!r} is not a well-formed BCP-47 language tag "
+            "language tag is not a well-formed BCP-47 language tag "
             "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'."
         )
     return value

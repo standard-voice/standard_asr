@@ -810,20 +810,24 @@ def test_options_validation_error_does_not_echo_secret() -> None:
 
 def test_options_validation_error_message_omits_input_value() -> None:
     # A malformed language tag in options must surface a useful message but never
-    # the raw input_value pydantic would otherwise embed.
+    # the raw value: neither pydantic's input_value echo nor the validator's own
+    # message may reflect it (a secret mis-pasted as `language` is not
+    # credential-NAMED, so field-name redaction alone would not catch it).
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
 
+    sentinel = "my secret passphrase here"
     payload = {
         "model": "dummy/echo",
         "audio": "Zm9v",
-        "options": {"language": "definitely-not-a-tag-XYZ"},
+        "options": {"language": sentinel},
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
+    assert sentinel not in resp.text
     detail = resp.json()["detail"]
     assert "language" in detail
     assert "input_value" not in detail

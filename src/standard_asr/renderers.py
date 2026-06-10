@@ -23,6 +23,12 @@ from .results import Segment, TranscriptionResult
 #: delimited in both SRT and WebVTT).
 _BLANK_LINE_RUN = re.compile(r"(?:\r?\n[ \t]*){2,}")
 
+#: End time (seconds) of the synthetic whole-text cue when ``duration`` is
+#: unknown. Players (ffmpeg, VLC, browser WebVTT) silently drop zero-duration
+#: cues, so the fallback cue MUST have a non-zero span to display at all; 3 s
+#: is long enough to be visible and short enough to read as synthetic.
+_SYNTHETIC_CUE_FALLBACK_END = 3.0
+
 
 def _sanitize_cue_text(text: str, *, neutralize_arrow: bool) -> str:
     """Sanitize segment text so it cannot forge or break cue structure.
@@ -93,7 +99,9 @@ def _cues(result: TranscriptionResult) -> list[Segment]:
         The segments to render, ordered by ``(start, channel)``. For
         ``segments == []`` this is empty. When ``segments is None`` and
         ``text`` is non-empty, a single synthetic segment spanning
-        ``[0, duration]`` with the full text is returned; when ``text`` is
+        ``[0, duration]`` with the full text is returned -- or
+        ``[0, 3 s]`` when ``duration`` is unknown (e.g. a reduced stream),
+        because players silently drop zero-duration cues; when ``text`` is
         empty too, no cues are produced.
     """
     if result.segments is not None:
@@ -103,7 +111,7 @@ def _cues(result: TranscriptionResult) -> list[Segment]:
         )
     if not result.text:
         return []
-    end = result.duration if result.duration is not None else 0.0
+    end = result.duration if result.duration is not None else _SYNTHETIC_CUE_FALLBACK_END
     return [Segment(start=0.0, end=end, text=result.text)]
 
 
