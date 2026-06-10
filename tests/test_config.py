@@ -75,6 +75,41 @@ def test_secret_marked_non_secretstr_field_rejected_at_definition() -> None:
             api_key: str | None = secret_field()  # type: ignore[assignment]
 
 
+def test_secret_marked_container_of_secrets_rejected_at_definition() -> None:
+    # R3-CONFIG-03: a container parametrized by a secret type satisfied the old
+    # recursive __args__ unwrap, but the whitespace-preserving wrapper and the
+    # masking dumps only handle scalar secrets -- half-protected. The check is
+    # scalar-only, so a secret-marked container fails loud at class definition.
+    with pytest.raises(TypeError, match="separate scalar fields"):
+
+        class _BadListCfg(BaseConfig[Literal["bad"]]):  # pyright: ignore[reportUnusedClass]
+            engine: Literal["bad"] = "bad"
+            api_keys: list[SecretStr] = secret_field(default=[])  # type: ignore[assignment]
+
+
+def test_secret_marked_optional_container_of_secrets_rejected_at_definition() -> None:
+    # A union does not launder a container: `list[SecretStr] | None` is still a
+    # container of secrets, not a scalar secret type.
+    with pytest.raises(TypeError, match="separate scalar fields"):
+
+        class _BadOptListCfg(BaseConfig[Literal["bad"]]):  # pyright: ignore[reportUnusedClass]
+            engine: Literal["bad"] = "bad"
+            api_keys: list[SecretStr] | None = secret_field()  # type: ignore[assignment]
+
+
+def test_secret_marked_scalar_annotations_still_pass_definition() -> None:
+    # Bare SecretStr and SecretStr | None remain the supported scalar shapes.
+    class _ScalarCfg(BaseConfig[Literal["ok"]]):
+        engine: Literal["ok"] = "ok"
+        required_key: SecretStr = secret_field(default=SecretStr("preset"))
+        optional_key: SecretStr | None = secret_field()
+
+    cfg = _ScalarCfg(optional_key=SecretStr("tok"))
+    assert cfg.required_key.get_secret_value() == "preset"
+    assert cfg.optional_key is not None
+    assert cfg.optional_key.get_secret_value() == "tok"
+
+
 def test_public_dump_redacts_secret_marked_field_by_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

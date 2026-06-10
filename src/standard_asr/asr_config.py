@@ -28,8 +28,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import types
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, Union, cast, get_args, get_origin
 
 from pydantic import (
     BaseModel,
@@ -95,23 +96,30 @@ def _is_secret_marked(field: Any) -> bool:
 
 
 def _annotation_is_secret_type(annotation: Any) -> bool:
-    """Return whether an annotation resolves to a masking secret type.
+    """Return whether an annotation is a *scalar* masking secret type.
 
     Accepts ``SecretStr`` / ``SecretBytes`` directly or as a member of an
-    ``Optional`` / ``Union`` (e.g. ``SecretStr | None``).
+    ``Optional`` / ``Union`` (e.g. ``SecretStr | None``). A generic container
+    parametrized by a secret type (``list[SecretStr]``, ``dict[str, SecretStr]``,
+    ``tuple[SecretStr, ...]``) is deliberately **not** accepted: the
+    whitespace-preserving wrapper and the masking dump paths only handle scalar
+    secrets, so a container field would be half-protected (hidden by the UI
+    markers while its items leak through the secret pipeline).
 
     Args:
         annotation: The field's resolved annotation.
 
     Returns:
-        ``True`` if the annotation is (or unions in) a masking secret type.
+        ``True`` if the annotation is (or unions in) a scalar secret type.
     """
     if isinstance(annotation, type) and issubclass(annotation, _SECRET_TYPES):
         return True
-    # Unwrap Optional/Union: any masking member satisfies the requirement.
-    args = getattr(annotation, "__args__", None)
-    if args:
-        return any(_annotation_is_secret_type(arg) for arg in args)
+    # Only union members are unwrapped (both typing.Union and the PEP 604
+    # ``X | Y`` form). Any other parametrized origin is a generic container and
+    # MUST NOT satisfy the requirement.
+    origin = get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        return any(_annotation_is_secret_type(arg) for arg in get_args(annotation))
     return False
 
 
@@ -195,23 +203,28 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         A field marked ``secret=True`` (via :func:`secret_field`) but annotated
         with a plain type (e.g. ``str | None``) would be hidden from REST/auto-UI
         while leaking plaintext in ``repr``/``str``/``model_dump``/
-        :meth:`public_dump`. Fail loud at class-definition time so the leak can
-        never reach runtime.
+        :meth:`public_dump`. A container of secrets (e.g. ``list[SecretStr]``)
+        is equally rejected: the masking/whitespace-preserving paths handle only
+        scalar secrets, so it would be half-protected. Fail loud at
+        class-definition time so the leak can never reach runtime.
 
         Args:
             **kwargs: Forwarded subclass keyword arguments.
 
         Raises:
-            TypeError: If a secret-marked field is not annotated ``SecretStr`` or
-                ``SecretBytes`` (optionally unioned with ``None``).
+            TypeError: If a secret-marked field is not annotated as a scalar
+                ``SecretStr`` or ``SecretBytes`` (optionally unioned with
+                ``None``).
         """
         super().__pydantic_init_subclass__(**kwargs)
         for name, field in cls.model_fields.items():
             if _is_secret_marked(field) and not _annotation_is_secret_type(field.annotation):
                 raise TypeError(
                     f"{cls.__name__}.{name} is marked secret (secret_field) but its "
-                    f"annotation {field.annotation!r} is not SecretStr/SecretBytes. "
-                    f"Secret-marked fields MUST use SecretStr to avoid plaintext leaks "
+                    f"annotation {field.annotation!r} is not a scalar "
+                    f"SecretStr/SecretBytes (optionally unioned with None). Containers "
+                    f"of secrets (e.g. list[SecretStr]) are not masked by the secret "
+                    f"pipeline; model multiple credentials as separate scalar fields "
                     f"(spec IC.3)."
                 )
 

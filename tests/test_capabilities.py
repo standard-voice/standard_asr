@@ -98,12 +98,12 @@ def test_default_is_fail_closed() -> None:
 
 def test_covers_subset_invariant() -> None:
     declared = _rich()
-    # Effective narrows: drop word_timestamps support.
+    # Effective narrows: drop word_timestamps support, the streaming domain and
+    # (per fail-closed consistency) the streaming axis flags along with it.
     effective = DeclaredCapabilities(
         batch=BatchCapabilities(
             language=LanguageCaps(runtime_override=FlagCap(supported=True)),
         ),
-        streaming_input=FlagCap(supported=True),
     )
     assert declared.covers(effective) is True
 
@@ -276,6 +276,55 @@ def test_covers_rejects_timestamps_mode_widening() -> None:
         streaming=StreamingCapabilities(timestamps=StreamTimestampsCap(mode="native_frame_aligned"))
     )
     assert declared.covers(effective) is False
+
+
+def test_covers_allows_standard_mode_reduction_between_supported_modes() -> None:
+    # A change to a provably-weaker (but still supported) standard mode is a
+    # legal narrowing: the fail-closed guard must fall through, not reject it.
+    declared = DeclaredCapabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="seamless"))
+    )
+    effective = DeclaredCapabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="lossy"))
+    )
+    assert declared.covers(effective) is True
+
+
+def test_covers_unknown_mode_change_is_fail_closed() -> None:
+    # R3-CAPS-03: tokens outside the standard reduction map (an x_* experimental
+    # enum node) have no provable strength order, so a mode CHANGE between them
+    # MUST NOT pass as a legal narrowing (fail-closed); an identical mode is a
+    # trivially-valid non-widening.
+    declared = _x_caps({"x_acme_decode": {"mode": "alpha"}})
+    changed = _x_caps({"x_acme_decode": {"mode": "beta"}})
+    unchanged = _x_caps({"x_acme_decode": {"mode": "alpha"}})
+    assert declared.covers(changed) is False
+    assert declared.covers(unchanged) is True
+
+
+def test_streaming_flags_require_streaming_domain() -> None:
+    # R3-CAPS-04: a supported streaming axis flag with an omitted streaming
+    # domain is self-contradictory (an omitted domain means streaming is
+    # unsupported, fail-closed) -> rejected at construction.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="streaming_output"):
+        DeclaredCapabilities(streaming_output=FlagCap(supported=True))
+    with pytest.raises(ValidationError, match="streaming_input"):
+        DeclaredCapabilities(
+            streaming_input=FlagCap(supported=True),
+            streaming_output=FlagCap(supported=True),
+        )
+    # Flags + domain is the legitimate streaming declaration.
+    ok = DeclaredCapabilities(
+        streaming=StreamingCapabilities(),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+    assert ok.supports("streaming_input") is True
+    # No flags + no domain (batch-only) stays valid.
+    batch_only = DeclaredCapabilities(batch=BatchCapabilities())
+    assert batch_only.supports("streaming") is False
 
 
 def test_unsupported_feature_constraints_not_in_supported_paths() -> None:

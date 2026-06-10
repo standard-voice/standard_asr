@@ -42,7 +42,7 @@ from standard_asr.capabilities import (
 from standard_asr.exceptions import DiscoveryError, TranscriptionError
 from standard_asr.language import effective_language, normalize_bcp47
 from standard_asr.results import Segment, Word
-from standard_asr.runtime import allow_downloads
+from standard_asr.runtime import allow_downloads, resolve_download_root
 from standard_asr.runtime_params import ProviderParams
 
 # A representative subset of Whisper's languages (it supports ~99).
@@ -195,6 +195,9 @@ class FasterWhisperASR(EngineBase):
 
         config = cast(FasterWhisperConfig, self.config)
         local_only = config.local_files_only or not allow_downloads()
+        # Spec IC.9 precedence: explicit download_root > STANDARD_ASR_MODEL_DIR >
+        # library default (faster-whisper has none) > the shared standard cache.
+        download_root = resolve_download_root(config.download_root)
         try:
             self._model = WhisperModel(
                 model_size_or_path=config.model_path,
@@ -203,7 +206,7 @@ class FasterWhisperASR(EngineBase):
                 compute_type=config.compute_type,
                 cpu_threads=config.cpu_threads,
                 num_workers=config.num_workers,
-                download_root=str(config.download_root) if config.download_root else None,
+                download_root=str(download_root),
                 local_files_only=local_only,
                 revision=config.revision,
             )

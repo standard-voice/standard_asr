@@ -153,11 +153,14 @@ class PromptConstraints(BaseModel):
             has no engine tokenizer, so it enforces this bound against a
             **conservative, script-aware approximation** -- whitespace-delimited
             words plus one unit per space-less (CJK / kana / Hangul / Thai / ...)
-            codepoint -- not the engine's exact token count. The approximation
-            never under-counts (a long no-space prompt cannot slip past the
-            limit), so an engine MAY receive a prompt slightly shorter than its
-            true budget; declare ``max_tokens`` as the engine's own hard limit and
-            the standard will not exceed it.
+            codepoint -- not the engine's exact token count. Honest scope of the
+            guarantee: the approximation never under-counts relative to that
+            whitespace + no-space-script tokenization, but it MAY under-count an
+            engine's subword (BPE) tokenization of long Latin words / URLs /
+            digit runs (counted as 1 here, often 6-17 BPE tokens), so such a
+            prompt can exceed the engine's true budget despite passing the gate.
+            Declare ``max_tokens`` with headroom below the engine's hard limit
+            rather than at it; the standard will not exceed the declared value.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -434,8 +437,10 @@ class DeclaredCapabilities(_Container):
     Args:
         batch: Batch-mode capabilities, or ``None`` if batch is unsupported.
         streaming: Streaming-mode capabilities, or ``None`` if unsupported.
-        streaming_input: Whether the engine accepts incremental audio.
-        streaming_output: Whether the engine returns results incrementally.
+        streaming_input: Whether the engine accepts incremental audio. May only
+            be supported when a ``streaming`` domain is declared.
+        streaming_output: Whether the engine returns results incrementally. May
+            only be supported when a ``streaming`` domain is declared.
         self_resamples: Whether the engine resamples audio internally. This is
             the single *behavioural* capability the spec places in Capabilities
             rather than Properties (spec §AI 3.2, §C R7); it is engine-global
@@ -456,6 +461,43 @@ class DeclaredCapabilities(_Container):
     streaming_input: FlagCap = Field(default_factory=FlagCap)
     streaming_output: FlagCap = Field(default_factory=FlagCap)
     self_resamples: FlagCap = Field(default_factory=FlagCap)
+
+    @model_validator(mode="after")
+    def _require_streaming_domain_for_streaming_flags(self) -> DeclaredCapabilities:
+        """Reject a supported streaming axis flag without a ``streaming`` domain.
+
+        An omitted ``streaming`` domain means streaming is unsupported
+        (fail-closed), so declaring ``streaming_input`` / ``streaming_output``
+        as supported alongside it is self-contradictory: the flags advertise a
+        transport axis for a mode the tree says does not exist (streaming input
+        without a streaming-events domain is equally meaningless). Making the
+        combination unrepresentable keeps the two signals from disagreeing.
+
+        Returns:
+            The validated capability tree.
+
+        Raises:
+            ValueError: If ``streaming_input`` or ``streaming_output`` is
+                supported while ``streaming`` is ``None``.
+        """
+        if self.streaming is None:
+            contradictory = [
+                name
+                for name, flag in (
+                    ("streaming_input", self.streaming_input),
+                    ("streaming_output", self.streaming_output),
+                )
+                if flag.is_supported
+            ]
+            if contradictory:
+                raise ValueError(
+                    f"{' and '.join(contradictory)} declared supported, but the "
+                    "'streaming' capabilities domain is omitted -- an omitted domain "
+                    "means streaming is unsupported (fail-closed), so the declaration "
+                    "is self-contradictory. Declare streaming=StreamingCapabilities(...) "
+                    "or drop the flag(s)."
+                )
+        return self
 
     def supports(self, dot_path: str) -> bool:
         """Return whether the capability at ``dot_path`` is supported.
@@ -792,9 +834,18 @@ def _node_narrows(declared: object, effective: object) -> bool:
     # enum/mode nodes: the effective mode must be a reduction of the declared.
     declared_mode = _read_attr(declared, "mode")
     effective_mode = _read_attr(effective, "mode")
-    if isinstance(declared_mode, str) and isinstance(effective_mode, str):
+    if (
+        isinstance(declared_mode, str)
+        and isinstance(effective_mode, str)
+        and declared_mode != effective_mode
+    ):
+        # An identical mode is trivially a non-widening; a CHANGE must be a
+        # provably-weaker mode. Tokens outside _MODE_REDUCTIONS (an x_*
+        # experimental enum node, or an unknown future token) have no known
+        # strength order, so a change between them is fail-CLOSED: it MUST NOT
+        # silently pass as a legal narrowing.
         allowed = _MODE_REDUCTIONS.get(declared_mode)
-        if allowed is not None and effective_mode not in allowed:
+        if allowed is None or effective_mode not in allowed:
             return False
 
     # granularities: effective set MUST be a subset of declared set. An empty

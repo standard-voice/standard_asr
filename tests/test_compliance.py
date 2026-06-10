@@ -22,6 +22,7 @@ from standard_asr.capabilities import (
     GuidanceCaps,
     LanguageCaps,
     PromptCap,
+    PromptConstraints,
     StreamingCapabilities,
     WordTimestampsCap,
 )
@@ -906,11 +907,48 @@ class _BatchOnlyEngine(EngineBase):
 
 
 class _AllSupportedStreamEngine(_GatingStreamEngine):
-    """Supports every probed standard param in streaming -> nothing to gate."""
+    """Supports every probed param with no violable sub-constraint -> nothing to gate.
+
+    Every granularity is offered and the prompt budget is unbounded, so neither
+    the feature-level probes nor the sub-constraint fallback can build a
+    violating request.
+    """
 
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         streaming=StreamingCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word", "segment"]),
+            word_timestamps=WordTimestampsCap(
+                supported=True, granularities=["word", "segment", "char"]
+            ),
+            guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
+        ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+
+class _PromptConstrainedStreamEngine(_GatingStreamEngine):
+    """Supports every probed feature; prompt carries a small ``max_tokens`` budget."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            word_timestamps=WordTimestampsCap(
+                supported=True, granularities=["word", "segment", "char"]
+            ),
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=3))
+            ),
+        ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+
+class _GranularityLimitedStreamEngine(_GatingStreamEngine):
+    """Supports every probed feature; word timestamps offer only ``word``."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
             guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
         ),
         streaming_input=FlagCap(supported=True),
@@ -965,3 +1003,92 @@ def test_streaming_gating_best_effort_engine_raising_fails() -> None:
     report = check_streaming_param_gating(_RaisingBestEffortEngine(strict=False))
     assert report.passed is False
     assert any("MUST drop it" in i.message for i in report.issues)
+
+
+def test_streaming_gating_engine_crash_is_reported_not_raised() -> None:
+    # R3-COMPLIANCE-02: a non-UnsupportedFeatureError exception (an engine bug)
+    # MUST surface as a compliance error, never crash the whole compliance run.
+    class _CrashingEngine(_GatingStreamEngine):
+        def start_transcription(
+            self, *, audio_format: Any = None, params: Any = None, audio: Any = None
+        ) -> TranscriptionSession:
+            raise RuntimeError("engine exploded")
+
+    report = check_streaming_param_gating(_CrashingEngine(strict=True))
+    assert report.passed is False
+    assert any(
+        "RuntimeError" in i.message and "UnsupportedFeatureError" in i.message
+        for i in report.issues
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Sub-constraint gating fallback (R3-COMPLIANCE-01): every probed feature is
+# supported, so the check must violate a declared sub-constraint instead.
+# --------------------------------------------------------------------------- #
+def test_streaming_gating_sub_constraint_prompt_strict_passes() -> None:
+    # Strict engine on the base template raises for the over-budget prompt.
+    report = check_streaming_param_gating(_PromptConstrainedStreamEngine(strict=True))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_streaming_gating_sub_constraint_prompt_best_effort_passes() -> None:
+    # best_effort engine truncates and surfaces the prompt_truncated diagnostic.
+    report = check_streaming_param_gating(_PromptConstrainedStreamEngine(strict=False))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+class _UngatedPromptConstrainedEngine(_PromptConstrainedStreamEngine):
+    """Bypasses the template: accepts the over-budget prompt without gating."""
+
+    def start_transcription(
+        self, *, audio_format: Any = None, params: Any = None, audio: Any = None
+    ) -> TranscriptionSession:
+        return _GatingSession()
+
+
+def test_streaming_gating_sub_constraint_ungated_strict_fails() -> None:
+    report = check_streaming_param_gating(_UngatedPromptConstrainedEngine(strict=True))
+    assert report.passed is False
+    assert any("'prompt'" in i.message and "without raising" in i.message for i in report.issues)
+
+
+def test_streaming_gating_sub_constraint_ungated_best_effort_fails() -> None:
+    report = check_streaming_param_gating(_UngatedPromptConstrainedEngine(strict=False))
+    assert report.passed is False
+    assert any("'prompt_truncated'" in i.message for i in report.issues)
+
+
+def test_streaming_gating_sub_constraint_granularity_strict_passes() -> None:
+    # The prompt is unconstrained, so the fallback probes an unoffered
+    # word-timestamp granularity instead; the template engine gates it.
+    report = check_streaming_param_gating(_GranularityLimitedStreamEngine(strict=True))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_streaming_gating_sub_constraint_granularity_best_effort_passes() -> None:
+    report = check_streaming_param_gating(_GranularityLimitedStreamEngine(strict=False))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_pick_sub_constraint_probe_granularity_carries_its_code() -> None:
+    # The granularity probe must request a granularity OUTSIDE the declared set
+    # and carry the drop diagnostic code the runtime emits for it.
+    probe = compliance_module._pick_sub_constraint_probe(  # pyright: ignore[reportPrivateUsage]
+        _GranularityLimitedStreamEngine()
+    )
+    assert probe is not None
+    field_name, params, expected_code = probe
+    assert field_name == "word_timestamps"
+    assert params.word_timestamps is not None
+    assert params.word_timestamps.value != "word"
+    assert expected_code == "unsupported_granularity_ignored"
+
+
+def test_pick_sub_constraint_probe_none_without_streaming_domain() -> None:
+    # No streaming domain -> no constrainable nodes resolve -> no probe. (The
+    # public check never reaches the helper in this state; it stays fail-safe.)
+    probe = compliance_module._pick_sub_constraint_probe(  # pyright: ignore[reportPrivateUsage]
+        _BatchOnlyEngine()
+    )
+    assert probe is None

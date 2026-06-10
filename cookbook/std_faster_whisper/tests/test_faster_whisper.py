@@ -10,6 +10,7 @@ real faster-whisper model is never instantiated and no weights are downloaded.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -31,6 +32,7 @@ from standard_asr import RuntimeParams, StandardASR
 from standard_asr.audio_input import AudioArray, AudioPath
 from standard_asr.capabilities import DeclaredCapabilities
 from standard_asr.exceptions import DiscoveryError
+from standard_asr.runtime import resolve_cache_dir
 from standard_asr.runtime_params import WordTimestampGranularity
 
 from .conftest import FakeInfo, FakeSegment, FakeWhisperModel, FakeWord
@@ -115,20 +117,39 @@ def test_init_passes_download_root_and_local_only(
     fake_faster_whisper: type[FakeWhisperModel], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # When downloads are globally disabled, local_files_only is forced True even
-    # if the config left it False; download_root is stringified when set.
+    # if the config left it False; the explicit download_root wins over the
+    # STANDARD_ASR_MODEL_DIR tier (spec IC.9) and is stringified.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "0")
+    monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", "/tmp/ignored-env-models")
     engine = FasterWhisperASR(model_path="tiny", download_root="/tmp/models")
     engine.prepare()
     assert fake_faster_whisper.last_init_kwargs["local_files_only"] is True
     assert fake_faster_whisper.last_init_kwargs["download_root"] == "/tmp/models"
 
 
-def test_init_download_root_none_when_unset(
+def test_init_download_root_honors_standard_model_dir_env(
+    fake_faster_whisper: type[FakeWhisperModel],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Spec IC.9 second tier (R3-DISCOVERY-02): with no explicit download_root,
+    # STANDARD_ASR_MODEL_DIR governs where model artifacts land.
+    monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "1")
+    monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", str(tmp_path))
+    FasterWhisperASR(model_path="tiny").prepare()
+    assert fake_faster_whisper.last_init_kwargs["download_root"] == str(tmp_path)
+
+
+def test_init_download_root_defaults_to_standard_cache(
     fake_faster_whisper: type[FakeWhisperModel], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Spec IC.9 last tier: no explicit download_root, no STANDARD_ASR_MODEL_DIR,
+    # and no faster-whisper library default -> the shared standard cache dir
+    # (never faster-whisper's own opaque default location).
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "1")
+    monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
     FasterWhisperASR(model_path="tiny").prepare()
-    assert fake_faster_whisper.last_init_kwargs["download_root"] is None
+    assert fake_faster_whisper.last_init_kwargs["download_root"] == str(resolve_cache_dir())
     assert fake_faster_whisper.last_init_kwargs["local_files_only"] is False
 
 

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from .asr_config import BaseConfig
 from .asr_interface import EngineBase
 from .asr_properties import BaseProperties
-from .capabilities import DeclaredCapabilities
+from .capabilities import DeclaredCapabilities, PromptCap, WordTimestampsCap
 from .discovery import FactoryLoadError, ModelRegistry, ModelSpec, discover_models
 from .exceptions import ConfigError, UnsupportedFeatureError
 from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
@@ -38,7 +38,9 @@ __all__ = [
 #: Candidate (param-field, params-builder, capability-suffix) probes for an
 #: unsupported standard streaming parameter. The check picks the first whose
 #: capability the engine does NOT support, so it always exercises the gating
-#: drop/raise path. The builder returns a fully-typed :class:`RuntimeParams`.
+#: drop/raise path; when every probe is supported it falls back to a
+#: sub-constraint probe (:func:`_pick_sub_constraint_probe`). The builder
+#: returns a fully-typed :class:`RuntimeParams`.
 _GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
     (
         "word_timestamps",
@@ -51,6 +53,52 @@ _GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
         "streaming.guidance.prompt",
     ),
 )
+
+#: Diagnostic code the runtime emits when a wholly-unsupported parameter is
+#: dropped under best_effort (spec Runtime R2).
+_FEATURE_DROP_CODE = "unsupported_parameter_ignored"
+
+
+def _pick_sub_constraint_probe(engine: EngineBase) -> tuple[str, RuntimeParams, str] | None:
+    """Build a probe violating a declared sub-constraint of a supported feature.
+
+    Used when the engine supports every probe in :data:`_GATING_PROBES` at the
+    feature level: gating MUST also enforce a supported feature's declared
+    *sub-constraints* (spec Runtime R2 -- a prompt over the declared
+    ``max_tokens`` budget, a word-timestamp granularity not in the declared
+    ``granularities``), so the check falls back to violating one of those. The
+    best_effort contract differs per constraint (an over-budget prompt is
+    truncated with ``prompt_truncated``; an unoffered granularity is dropped
+    with ``unsupported_granularity_ignored``), so each probe carries the
+    diagnostic code it must surface.
+
+    Args:
+        engine: The engine under test.
+
+    Returns:
+        A ``(field_name, params, expected_diagnostic_code)`` triple, or ``None``
+        when the engine declares no violable sub-constraint.
+    """
+    capabilities = engine.effective_capabilities
+    prompt = capabilities.node_at("streaming.guidance.prompt")
+    if isinstance(prompt, PromptCap) and prompt.is_supported:
+        max_tokens = prompt.constraints.max_tokens
+        if max_tokens is not None:
+            # One whitespace word per token: max_tokens + 1 words is over budget
+            # under the standard's conservative token approximation.
+            over_budget = " ".join(["token"] * (max_tokens + 1))
+            return "prompt", RuntimeParams(prompt=over_budget), "prompt_truncated"
+    timestamps = capabilities.node_at("streaming.word_timestamps")
+    if isinstance(timestamps, WordTimestampsCap) and timestamps.is_supported:
+        offered = set(timestamps.granularities)
+        missing = next((g for g in WordTimestampGranularity if g.value not in offered), None)
+        if missing is not None:
+            return (
+                "word_timestamps",
+                RuntimeParams(word_timestamps=missing),
+                "unsupported_granularity_ignored",
+            )
+    return None
 
 
 def _is_closed_model(model: type[BaseModel]) -> bool:
@@ -741,17 +789,28 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
 
     * **strict** policy -- the call MUST raise
       :class:`~standard_asr.exceptions.UnsupportedFeatureError`;
-    * **best_effort** policy -- the call MUST succeed, drop the parameter, and
-      surface an ``unsupported_parameter_ignored`` diagnostic via
-      ``session.diagnostics()``.
+    * **best_effort** policy -- the call MUST succeed, drop (or degrade) the
+      parameter, and surface the probe's expected diagnostic (e.g.
+      ``unsupported_parameter_ignored``) via ``session.diagnostics()``.
+
+    When the engine supports every probed parameter at the feature level, the
+    check falls back to violating a declared **sub-constraint** of a supported
+    feature (a prompt over its ``max_tokens`` budget, or a word-timestamp
+    granularity outside the declared ``granularities``; see
+    :func:`_pick_sub_constraint_probe`) and asserts the same strict-raise /
+    best_effort-diagnose contract.
 
     An engine that declared streaming support (``streaming_input`` or
-    ``streaming_output``) yet accepts the unsupported parameter -- the "forgot
+    ``streaming_output``) yet accepts the violating parameter -- the "forgot
     to gate" engine that bypassed the base template -- is a compliance
-    **failure** here, so the gap is loud rather than silent.
+    **failure** here, so the gap is loud rather than silent. An engine that
+    raises anything *other* than ``UnsupportedFeatureError`` from the probe is
+    likewise recorded as a compliance error (never re-raised), so one crashing
+    engine cannot abort the run.
 
     Engines that declare no streaming support, or that support every probed
-    parameter, yield a clean (no-op) pass -- there is nothing to gate.
+    parameter and declare no violable sub-constraint, yield a clean (no-op)
+    pass -- there is nothing to gate.
 
     Args:
         engine: The engine instance to exercise. Its ``config.strict`` selects
@@ -773,16 +832,20 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
         return ComplianceReport(registry=ModelRegistry({}), issues=issues)
 
     probe = next(
-        (p for p in _GATING_PROBES if not engine.supports(p[2])),
+        ((p[0], p[1](), _FEATURE_DROP_CODE) for p in _GATING_PROBES if not engine.supports(p[2])),
         None,
     )
     if probe is None:
-        # The engine supports every probed standard parameter, so there is no
-        # unsupported-parameter path to exercise here.
+        # Every probed parameter is supported at the feature level; fall back to
+        # violating a declared sub-constraint of a supported feature so the
+        # finer-grained half of the gating contract is exercised too.
+        probe = _pick_sub_constraint_probe(engine)
+    if probe is None:
+        # The engine supports every probed standard parameter and declares no
+        # violable sub-constraint, so there is no gating path to exercise here.
         return ComplianceReport(registry=ModelRegistry({}), issues=issues)
 
-    field_name, build_params, _cap = probe
-    params = build_params()
+    field_name, params, expected_code = probe
     strict = bool(getattr(engine.config, "strict", True))
 
     try:
@@ -801,29 +864,47 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
                 )
             )
         return ComplianceReport(registry=ModelRegistry({}), issues=issues)
+    except Exception as exc:  # noqa: BLE001
+        # Any other exception is the engine crashing on the probe, not a gating
+        # verdict. Mirror the broad-except guards used elsewhere in this module:
+        # record an error and keep the compliance run alive (this function
+        # promises ``Raises: None``).
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    f"start_transcription raised {exc!r} while probing streaming "
+                    f"parameter {field_name!r}; the only contractual exception for a "
+                    "gated parameter is UnsupportedFeatureError (spec Runtime R2)."
+                ),
+                model=model,
+            )
+        )
+        return ComplianceReport(registry=ModelRegistry({}), issues=issues)
 
     # The session was created: only valid under best_effort, and only if the
-    # parameter was dropped + diagnosed.
+    # probe was dropped/degraded + diagnosed.
     if strict:
         issues.append(
             ComplianceIssue(
                 level="error",
                 message=(
-                    f"strict engine accepted an unsupported streaming parameter "
-                    f"{field_name!r} without raising; it MUST raise "
-                    "UnsupportedFeatureError (spec Runtime R2 / RUNT-3 gating gap)."
+                    f"strict engine accepted streaming parameter {field_name!r} "
+                    "violating its declared capabilities without raising; it MUST "
+                    "raise UnsupportedFeatureError (spec Runtime R2 / RUNT-3 "
+                    "gating gap)."
                 ),
                 model=model,
             )
         )
-    elif not any(d.code == "unsupported_parameter_ignored" for d in session.diagnostics()):
+    elif not any(d.code == expected_code for d in session.diagnostics()):
         issues.append(
             ComplianceIssue(
                 level="error",
                 message=(
-                    f"best_effort engine silently swallowed unsupported streaming "
-                    f"parameter {field_name!r}: no 'unsupported_parameter_ignored' "
-                    "diagnostic surfaced via session.diagnostics() (spec Runtime R2)."
+                    f"best_effort engine silently swallowed streaming parameter "
+                    f"{field_name!r}: no {expected_code!r} diagnostic surfaced via "
+                    "session.diagnostics() (spec Runtime R2)."
                 ),
                 model=model,
             )
