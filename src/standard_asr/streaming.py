@@ -37,9 +37,9 @@ import unicodedata
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import AsyncIterator, Iterable, Iterator
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .exceptions import StreamClosedError
 from .results import Diagnostic, Segment, TranscriptionResult, Word
@@ -210,6 +210,70 @@ class TranscriptionEvent(BaseModel):
             return True
         return self.type == "error" and self.recoverable is False
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_error_recoverability(cls, data: Any) -> Any:
+        """Normalize an ``error`` event's unset ``recoverable`` to ``False``.
+
+        ``recoverable=None`` on an error would be an undefined third state:
+        :attr:`is_terminal` checks ``recoverable is False``, so ``None`` would
+        silently read as "recoverable" and leave consumers waiting on a stream
+        that may never continue. Unknown recoverability MUST fail safe to
+        terminal (the :meth:`make_error` factory already defaults ``False``;
+        this covers direct construction).
+
+        Args:
+            data: The raw constructor input.
+
+        Returns:
+            The input, with ``recoverable=False`` filled in for error events.
+        """
+        if not isinstance(data, dict):
+            return data
+        mapping = cast("dict[str, Any]", data)
+        if mapping.get("type") == "error" and mapping.get("recoverable") is None:
+            updated: dict[str, Any] = {**mapping, "recoverable": False}
+            return updated
+        return mapping
+
+    @field_validator("detected_language")
+    @classmethod
+    def _check_detected_language(cls, value: str | None) -> str | None:
+        """Validate and canonicalize ``detected_language`` (mirrors spec TR.1).
+
+        The event field is the §6.3 reconnect-continuity mechanism, so it must
+        hold a concrete, well-formed BCP-47 tag -- never the reserved ``auto``
+        directive or a native name like ``"English"`` -- exactly like
+        ``TranscriptionResult.detected_language``. The import is deferred to
+        mirror :mod:`standard_asr.results` (``standard_asr.language`` imports
+        from that module).
+
+        Args:
+            value: The candidate detected-language tag, or ``None``.
+
+        Returns:
+            The canonicalized tag, or ``None`` when not applicable.
+
+        Raises:
+            ValueError: If ``value`` is the reserved ``auto`` token or is not a
+                well-formed BCP-47 tag.
+        """
+        if value is None:
+            return None
+        from .language import AUTO, is_valid_bcp47, normalize_bcp47
+
+        if not is_valid_bcp47(value):
+            raise ValueError(
+                f"detected_language is not a well-formed BCP-47 tag: {value!r} "
+                "(e.g. 'en', 'en-US', 'zh-Hans')."
+            )
+        normalized = normalize_bcp47(value)
+        if normalized == AUTO:
+            raise ValueError(
+                "detected_language MUST be a concrete detected tag, not the reserved 'auto'."
+            )
+        return normalized
+
     @model_validator(mode="after")
     def _check_invariants(self) -> TranscriptionEvent:
         """Reject structurally illegal events at construction (spec ST.5).
@@ -231,6 +295,18 @@ class TranscriptionEvent(BaseModel):
         if self.type in ("partial", "final"):
             if self.segment_id is None or self.text is None:
                 raise ValueError(f"{self.type} event MUST carry both segment_id and text.")
+            su = self.stable_until
+            if su is not None and not 0 <= su <= len(self.text):
+                # Structural bound only: ``text[:stable_until]`` must be a real
+                # prefix, or every consumer (UI, wire client) receives an
+                # unsatisfiable frozen-prefix claim. The *combining-character*
+                # boundary rule stays at the guard/compliance layer (spec ST.4.2
+                # keeps it a sequence-level concern with clamp-and-diagnose
+                # semantics, not a construction error).
+                raise ValueError(
+                    f"stable_until {su} is out of range for text of length "
+                    f"{len(self.text)} (text[:stable_until] must be a real prefix)."
+                )
         elif self.type == "supersede":
             if not self.old_ids:
                 raise ValueError("supersede event MUST retire at least one segment (old_ids).")
@@ -753,9 +829,12 @@ class _LifecycleGuard:
                 if new in self._state:
                     self._reject(
                         "supersede_reintroduces_segment",
-                        f"supersede new_ids reintroduces already-known segment "
-                        f"{new!r} (state {self._state[new]!r}); suppressed "
-                        "(spec ST.5.2: a new_id MUST be fresh).",
+                        f"supersede new_ids contains already-known segment "
+                        f"{new!r} (state {self._state[new]!r}); suppressed. "
+                        "Either the id is being reused (spec ST.5.2: a new_id "
+                        "MUST be fresh) or this supersede was delivered out of "
+                        "order (spec ST.5.2: a supersede MUST precede any "
+                        "partial/final of its new_ids).",
                     )
                     return None
             # Concatenate the retired segments' frozen prefixes, in old_ids
@@ -831,7 +910,7 @@ class _LifecycleGuard:
                 obligation.frozen.get(sid, "") if obligation is not None else ""
             )
 
-            event = self._clamp_stable_until(event, sid)
+            event = self._clamp_stable_until(event, sid, allow_decrease=is_closed_final)
             su = event.stable_until or 0
             if su > 0 and event.text is not None:
                 self._frozen_text[sid] = event.text[:su]
@@ -878,16 +957,30 @@ class _LifecycleGuard:
 
         return event
 
-    def _clamp_stable_until(self, event: TranscriptionEvent, sid: str) -> TranscriptionEvent:
+    def _clamp_stable_until(
+        self, event: TranscriptionEvent, sid: str, *, allow_decrease: bool = False
+    ) -> TranscriptionEvent:
         """Clamp a decreasing or invalid ``stable_until`` (spec ST.4.2).
+
+        With ``allow_decrease`` (the terminal ``closed`` event), a *smaller*
+        ``stable_until`` is spec-legal: the post-processing rewrite (ITN /
+        punctuation / casing, spec ST.5.3) may shorten the text -- e.g.
+        "twenty twenty" -> "2020" -- so the monotonic-increase rule MUST NOT
+        clamp it back up above the new text. Only the structural bounds
+        (``0 <= stable_until <= len(text)``, non-combining cut) are repaired,
+        and the closed frontier is **not** recorded as the segment's running
+        frontier (the segment is terminal; recording it would poison nothing
+        but means nothing).
 
         Args:
             event: The partial/final event.
             sid: The segment id.
+            allow_decrease: ``True`` for a terminal ``closed`` event, whose
+                ``stable_until`` may legally shrink along with the text.
 
         Returns:
-            The event, with ``stable_until`` clamped if it decreased or was an
-            invalid boundary; otherwise the event unchanged.
+            The event, with ``stable_until`` clamped if it decreased illegally
+            or was an invalid boundary; otherwise the event unchanged.
         """
         su = event.stable_until
         if su is None:
@@ -896,7 +989,7 @@ class _LifecycleGuard:
         text = event.text or ""
         clamped = su
         reason = ""
-        if su < prior:
+        if su < prior and not allow_decrease:
             clamped = prior
             reason = (
                 f"stable_until decreased {su} -> clamped to {prior} "
@@ -904,9 +997,11 @@ class _LifecycleGuard:
             )
         if not validate_stable_until(text, clamped):
             # Fall back to the largest valid boundary <= clamped without moving
-            # below the previously-published frozen frontier.
-            safe = clamped
-            while safe > prior and not validate_stable_until(text, safe):
+            # below the previously-published frozen frontier (for a closed
+            # event the frontier constraint is void, so the floor is 0).
+            floor = 0 if allow_decrease else prior
+            safe = min(clamped, len(text))
+            while safe > floor and not validate_stable_until(text, safe):
                 safe -= 1
             if reason:
                 reason += "; "
@@ -916,7 +1011,8 @@ class _LifecycleGuard:
             self._reject("stable_until_clamped", reason)
         if clamped != su:
             event = event.model_copy(update={"stable_until": clamped})
-        self._stable_until[sid] = clamped
+        if not allow_decrease:
+            self._stable_until[sid] = clamped
         return event
 
     def _frozen_prefix_rewritten(self, event: TranscriptionEvent, sid: str) -> bool:
@@ -1100,7 +1196,27 @@ class TranscriptionSession(ABC):
                 used to replay recent audio after a reconnect.
             strict_lifecycle: If ``True``, raise on illegal lifecycle
                 transitions instead of suppressing + diagnosing them.
+
+        Raises:
+            ValueError: If a deadline is not positive (or ``None`` where
+                allowed) or a buffer/queue bound is not positive. In particular
+                ``audio_queue_maxsize=0`` would mean an UNBOUNDED
+                ``asyncio.Queue`` -- silently disabling the documented feed
+                backpressure -- so it is rejected rather than passed through.
         """
+        if done_timeout <= 0:
+            raise ValueError("done_timeout must be > 0 seconds.")
+        if max_idle is not None and max_idle <= 0:
+            raise ValueError("max_idle must be > 0 seconds, or None to disable.")
+        if max_session_seconds is not None and max_session_seconds <= 0:
+            raise ValueError("max_session_seconds must be > 0 seconds, or None to disable.")
+        if event_buffer_capacity <= 0:
+            raise ValueError("event_buffer_capacity must be > 0 events.")
+        if audio_queue_maxsize <= 0:
+            raise ValueError(
+                "audio_queue_maxsize must be > 0 chunks (0 means an unbounded "
+                "asyncio.Queue, which would silently disable feed backpressure)."
+            )
         self._audio_queue: asyncio.Queue[bytes | _InputSourceFailure | None] = asyncio.Queue(
             maxsize=audio_queue_maxsize
         )
@@ -1444,6 +1560,12 @@ class TranscriptionSession(ABC):
                     continue  # illegal transition: suppressed (diagnosed).
                 self._reducer.add(admitted)
                 if admitted.is_terminal:
+                    # The obligation sweep MUST run before EVERY terminal, not
+                    # only the clean-end ``done`` below: an engine-emitted
+                    # terminal would otherwise silently drop the spec-mandated
+                    # ``supersede_obligation_unfulfilled`` diagnostic
+                    # (idempotent, so the clean path's call stays).
+                    self._guard.finalize()
                     self._buffer.put_forced(admitted)
                     return
                 self._buffer.put(admitted)
@@ -1489,6 +1611,7 @@ class TranscriptionSession(ABC):
             code: The error code.
             detail: Human-readable detail stored under ``extra["detail"]``.
         """
+        self._guard.finalize()
         self._buffer.put_forced(
             TranscriptionEvent.make_error(code=code, recoverable=False, extra={"detail": detail})
         )
@@ -1524,7 +1647,7 @@ class TranscriptionSession(ABC):
             if self._max_session_seconds is not None:
                 remaining = self._max_session_seconds - (now - start)
                 if remaining <= 0:
-                    yield TranscriptionEvent.make_error(code="session_timeout", recoverable=False)
+                    yield self._synthesize_terminal("session_timeout")
                     return
                 timeout = min(timeout, remaining)
             try:
@@ -1532,15 +1655,15 @@ class TranscriptionSession(ABC):
             except asyncio.TimeoutError:
                 now = self._monotonic()
                 if self._max_idle is not None and (now - last_content) >= self._max_idle:
-                    yield TranscriptionEvent.make_error(code="stream_stalled", recoverable=False)
+                    yield self._synthesize_terminal("stream_stalled")
                     return
                 if (
                     self._max_session_seconds is not None
                     and (now - start) >= self._max_session_seconds
                 ):
-                    yield TranscriptionEvent.make_error(code="session_timeout", recoverable=False)
+                    yield self._synthesize_terminal("session_timeout")
                     return
-                yield TranscriptionEvent.make_error(code="done_timeout", recoverable=False)
+                yield self._synthesize_terminal("done_timeout")
                 return
             if event is None:
                 return
@@ -1549,6 +1672,30 @@ class TranscriptionSession(ABC):
             yield event
             if event.is_terminal:
                 return
+
+    def _synthesize_terminal(self, code: str) -> TranscriptionEvent:
+        """Build a deadline terminal and stop the producer behind it.
+
+        A synthesized terminal (``done_timeout`` / ``stream_stalled`` /
+        ``session_timeout``) ends iteration while the producer may still be
+        running; left alive until ``__aexit__`` it keeps feeding the reducer
+        events the consumer never saw, so :meth:`result` would diverge from
+        the delivered stream (the stream == result invariant). Cancel the
+        producer/feed tasks now -- cancellation is idempotent and
+        ``__aexit__`` still awaits them -- and run the obligation sweep so
+        :meth:`diagnostics` stays complete on this exit path too.
+
+        Args:
+            code: The terminal error code.
+
+        Returns:
+            The non-recoverable terminal ``error`` event.
+        """
+        for task in (self._producer_task, self._feed_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._guard.finalize()
+        return TranscriptionEvent.make_error(code=code, recoverable=False)
 
     def _attach_initial_diagnostics(self, diagnostics: list[Diagnostic]) -> None:
         """Record standard-layer diagnostics produced before the session ran.

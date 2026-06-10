@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Iterable, Iterator
+from typing import Any
 
 import pytest
 
@@ -181,8 +182,8 @@ class _YieldingEchoSession(TranscriptionSession):
 class _ScriptedSession(TranscriptionSession):
     """Replays a fixed event sequence through the session guard and reducer."""
 
-    def __init__(self, events: Iterable[TranscriptionEvent]) -> None:
-        super().__init__()
+    def __init__(self, events: Iterable[TranscriptionEvent], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self._events = list(events)
 
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
@@ -1657,9 +1658,189 @@ def test_session_accepts_closed_punctuation_itn_within_frozen_prefix() -> None:
         return events, session.result().text, [d.code for d in session.diagnostics()]
 
     events, text, diagnostic_codes = asyncio.run(run())
-    assert any(e.type == "final" and e.finality == "closed" for e in events)
+    closed_events = [e for e in events if e.type == "final" and e.finality == "closed"]
+    assert closed_events
     assert text == corrected
     assert "frozen_prefix_rewritten" not in diagnostic_codes
+    # R3-STREAM-CORE-01: the legal closed shrink MUST be forwarded as-is -- not
+    # clamped back up above the corrected text (an out-of-range wire value).
+    assert "stable_until_clamped" not in diagnostic_codes
+    closed = closed_events[0]
+    assert closed.stable_until == len(corrected)
+    assert closed.text is not None and closed.stable_until is not None
+    assert validate_stable_until(closed.text, closed.stable_until)
+
+
+def test_guard_closed_shrink_forwards_in_range_stable_until() -> None:
+    # The canonical R3-STREAM-CORE-01 case: "twenty twenty" (su=13) post-
+    # processed by ITN into "2020" (su=4). The closed event is spec-legal; the
+    # guard must forward stable_until=4, not clamp it to the prior frontier 13.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("s0", "twenty twenty", stable_until=13))
+    admitted = guard.admit(TranscriptionEvent.closed("s0", "2020", stable_until=4))
+    assert admitted is not None
+    assert admitted.stable_until == 4
+    assert admitted.text is not None
+    assert validate_stable_until(admitted.text, admitted.stable_until)
+    assert not any(d.code == "stable_until_clamped" for d in guard.diagnostics)
+
+
+def test_guard_closed_out_of_range_stable_until_is_repaired() -> None:
+    # A buggy adapter carrying the OLD frontier onto the shrunk closed text is
+    # still repaired to a structurally valid in-range boundary + diagnostic.
+    # (Constructed via model_copy to bypass the construction-time bound, which
+    # already rejects this shape -- the guard is defense-in-depth.)
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("s0", "twenty twenty", stable_until=13))
+    bad = TranscriptionEvent.closed("s0", "2020", stable_until=4).model_copy(
+        update={"stable_until": 13}
+    )
+    admitted = guard.admit(bad)
+    assert admitted is not None
+    assert admitted.text is not None and admitted.stable_until is not None
+    assert validate_stable_until(admitted.text, admitted.stable_until)
+    assert admitted.stable_until == 4  # min(13, len("2020")) -> 4, a valid cut
+    assert any(d.code == "stable_until_clamped" for d in guard.diagnostics)
+
+
+def test_check_event_sequence_accepts_legal_closed_itn_shrink() -> None:
+    # R3-STREAM-CORE-01 compliance half: the suite must NOT fail a spec-legal
+    # closed-ITN engine with a stable_until_clamped error.
+    from standard_asr.compliance import check_event_sequence
+
+    report = check_event_sequence(
+        [
+            TranscriptionEvent.final("s0", "twenty twenty", stable_until=13),
+            TranscriptionEvent.closed("s0", "2020", stable_until=4),
+            TranscriptionEvent.done(),
+        ]
+    )
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_event_construction_rejects_out_of_range_stable_until() -> None:
+    # R3-STREAM-CORE-02: text[:stable_until] must be a real prefix; an
+    # unsatisfiable claim is rejected at construction (negative or > len).
+    with pytest.raises(ValueError, match="out of range"):
+        TranscriptionEvent.partial("s", "hi", stable_until=3)
+    with pytest.raises(ValueError, match="out of range"):
+        TranscriptionEvent.partial("s", "hello", stable_until=-2)
+
+
+def test_event_model_validate_passes_non_dict_through() -> None:
+    # The before-validator must pass non-dict input through untouched and let
+    # pydantic's own type validation reject it (not mask it with a TypeError).
+    with pytest.raises(ValueError):
+        TranscriptionEvent.model_validate(123)
+
+
+def test_event_explicit_none_detected_language_passes() -> None:
+    # Explicit None runs the field validator (unlike the omitted default).
+    assert TranscriptionEvent.partial("s", "hi", detected_language=None).detected_language is None
+
+
+def test_error_event_unset_recoverable_defaults_to_terminal() -> None:
+    # R3-STREAM-CORE-03: recoverable=None would be an undefined third state
+    # that is_terminal silently reads as "recoverable"; unknown recoverability
+    # must fail safe to terminal.
+    event = TranscriptionEvent(type="error", code="boom")
+    assert event.recoverable is False
+    assert event.is_terminal is True
+    explicit = TranscriptionEvent(type="error", code="boom", recoverable=True)
+    assert explicit.recoverable is True
+    assert explicit.is_terminal is False
+
+
+def test_event_detected_language_is_validated_and_canonicalized() -> None:
+    # R3-STREAM-CORE-05: the event field is the reconnect-continuity mechanism
+    # (spec ST.6.3) and must hold a concrete BCP-47 tag, like the result model.
+    event = TranscriptionEvent.partial("s", "hola", detected_language="ES-es")
+    assert event.detected_language == "es-ES"
+    with pytest.raises(ValueError, match="well-formed BCP-47"):
+        TranscriptionEvent.partial("s", "hi", detected_language="English")
+    with pytest.raises(ValueError, match="reserved 'auto'"):
+        TranscriptionEvent.partial("s", "hi", detected_language="auto")
+    assert TranscriptionEvent.partial("s", "hi").detected_language is None
+
+
+def test_guard_supersede_out_of_order_diagnostic_names_both_causes() -> None:
+    # R3-STREAM-CORE-14: a supersede arriving AFTER its new_id's first
+    # partial/final is an ordering violation, not (only) an id-reuse one; the
+    # diagnostic must name the out-of-order cause instead of mislabeling it.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "hello"))
+    guard.admit(TranscriptionEvent.partial("b", "wor"))  # new_id announced early
+    rejected = guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    assert rejected is None
+    diag = next(d for d in guard.diagnostics if d.code == "supersede_reintroduces_segment")
+    assert "out of order" in diag.message
+
+
+def test_session_constructor_rejects_degenerate_bounds() -> None:
+    # R3-STREAM-ROBUST-01: audio_queue_maxsize=0 would mean an UNBOUNDED
+    # asyncio.Queue (silently disabling feed backpressure); zero/negative
+    # deadlines and buffer bounds are configuration bugs, not no-ops.
+    with pytest.raises(ValueError, match="audio_queue_maxsize"):
+        _ScriptedSession([], audio_queue_maxsize=0)
+    with pytest.raises(ValueError, match="done_timeout"):
+        _ScriptedSession([], done_timeout=0)
+    with pytest.raises(ValueError, match="max_idle"):
+        _ScriptedSession([], max_idle=0)
+    with pytest.raises(ValueError, match="max_session_seconds"):
+        _ScriptedSession([], max_session_seconds=-1)
+    with pytest.raises(ValueError, match="event_buffer_capacity"):
+        _ScriptedSession([], event_buffer_capacity=0)
+
+
+def test_obligation_sweep_runs_on_engine_emitted_terminal() -> None:
+    # R3-STREAM-ROBUST-03: the supersede_obligation_unfulfilled sweep must run
+    # before an ENGINE-emitted terminal too, not only the clean-end done path
+    # (byte-identical streams must not differ in diagnostics()).
+    async def run() -> list[str]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.final("a", "hello world", stable_until=11),
+                TranscriptionEvent.supersede(["a"], ["b"]),
+                # b never re-freezes the retired frozen text...
+                TranscriptionEvent.final("b", "hello", stable_until=2),
+                # ...and the ENGINE emits its own terminal error.
+                TranscriptionEvent.make_error(code="engine_gave_up", recoverable=False),
+            ]
+        )
+        session.feed([])
+        await _collect(session)
+        return [d.code for d in session.diagnostics()]
+
+    codes = asyncio.run(run())
+    assert "supersede_obligation_unfulfilled" in codes
+
+
+def test_deadline_terminal_stops_producer_so_result_matches_stream() -> None:
+    # R3-STREAM-ROBUST-04: a synthesized deadline terminal ends iteration; the
+    # producer must be stopped with it, or it keeps feeding the reducer events
+    # the consumer never saw and result() diverges from the delivered stream.
+    class _LateContentSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.final("s0", "delivered")
+            await asyncio.sleep(0.2)
+            yield TranscriptionEvent.final("s1", "never delivered")
+
+    async def run() -> tuple[list[TranscriptionEvent], str]:
+        session = _LateContentSession(done_timeout=0.05)
+        events: list[TranscriptionEvent] = []
+        async with session:
+            session.feed([])
+            async for event in session:
+                events.append(event)
+            # Give a not-cancelled producer ample time to emit the late final
+            # before reducing -- without the fix this makes result() diverge.
+            await asyncio.sleep(0.3)
+        return events, session.result().text
+
+    events, text = asyncio.run(run())
+    assert any(e.type == "error" and e.code == "done_timeout" for e in events)
+    assert "never delivered" not in text
+    assert text == "delivered"
 
 
 def test_guard_suppresses_closed_after_superseded_segment() -> None:
@@ -1718,8 +1899,13 @@ def test_session_suppresses_illegal_transition_in_stream() -> None:
 
 def test_stable_text_guards_invalid_stable_until() -> None:
     # Negative / out-of-range stable_until must not produce a wrong prefix.
-    assert TranscriptionEvent.partial("s", "hello", stable_until=-2).stable_text == ""
-    assert TranscriptionEvent.partial("s", "hi", stable_until=99).stable_text == "hi"
+    # Construction now rejects these shapes (R3-STREAM-CORE-02), so build them
+    # via model_copy (which skips validation) -- the property stays defensive
+    # for events materialized through model_construct/copy paths.
+    base = TranscriptionEvent.partial("s", "hello")
+    assert base.model_copy(update={"stable_until": -2}).stable_text == ""
+    short = TranscriptionEvent.partial("s", "hi")
+    assert short.model_copy(update={"stable_until": 99}).stable_text == "hi"
 
 
 # --------------------------------------------------------------------------- #
