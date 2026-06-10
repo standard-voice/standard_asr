@@ -18,6 +18,12 @@ from .asr_properties import BaseProperties
 from .capabilities import DeclaredCapabilities, PromptCap, WordTimestampsCap
 from .discovery import FactoryLoadError, ModelRegistry, ModelSpec, discover_models
 from .exceptions import ConfigError, UnsupportedFeatureError
+from .param_gating import (
+    DIAG_PROMPT_TRUNCATED,
+    DIAG_UNSUPPORTED_GRANULARITY_IGNORED,
+    DIAG_UNSUPPORTED_PARAMETER_IGNORED,
+    _count_tokens,  # pyright: ignore[reportPrivateUsage]
+)
 from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
 from .streaming import (
     SyncSession,
@@ -54,9 +60,15 @@ _GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
     ),
 )
 
-#: Diagnostic code the runtime emits when a wholly-unsupported parameter is
-#: dropped under best_effort (spec Runtime R2).
-_FEATURE_DROP_CODE = "unsupported_parameter_ignored"
+#: Upper bound (in approximate tokens) on the synthesized over-budget prompt
+#: probe. The gating contract is violated by ANY prompt over the declared
+#: budget, so a compliant probe never needs to be longer than the smallest
+#: violating prompt -- and a legal-but-extreme ``max_tokens`` declaration
+#: (``PromptConstraints.max_tokens`` has no upper bound; an LLM-backed engine
+#: may advertise a 10^9-token context) MUST NOT make the compliance suite
+#: allocate gigabytes and OOM the run it exists to keep alive. Budgets at or
+#: above the cap skip the prompt probe (the granularity probe may still apply).
+_SUB_CONSTRAINT_PROBE_MAX_TOKENS = 4096
 
 
 def _pick_sub_constraint_probe(engine: EngineBase) -> tuple[str, RuntimeParams, str] | None:
@@ -70,7 +82,13 @@ def _pick_sub_constraint_probe(engine: EngineBase) -> tuple[str, RuntimeParams, 
     best_effort contract differs per constraint (an over-budget prompt is
     truncated with ``prompt_truncated``; an unoffered granularity is dropped
     with ``unsupported_granularity_ignored``), so each probe carries the
-    diagnostic code it must surface.
+    diagnostic code (imported from the gating layer, the single source of
+    truth) it must surface.
+
+    The prompt probe is bounded by
+    :data:`_SUB_CONSTRAINT_PROBE_MAX_TOKENS`: a declared budget at or above
+    the cap falls through to the granularity probe instead of materializing an
+    arbitrarily large string.
 
     Args:
         engine: The engine under test.
@@ -83,11 +101,16 @@ def _pick_sub_constraint_probe(engine: EngineBase) -> tuple[str, RuntimeParams, 
     prompt = capabilities.node_at("streaming.guidance.prompt")
     if isinstance(prompt, PromptCap) and prompt.is_supported:
         max_tokens = prompt.constraints.max_tokens
-        if max_tokens is not None:
-            # One whitespace word per token: max_tokens + 1 words is over budget
-            # under the standard's conservative token approximation.
+        if max_tokens is not None and max_tokens < _SUB_CONSTRAINT_PROBE_MAX_TOKENS:
+            # Gating's own _count_tokens is the reference: one whitespace word
+            # costs one token, so max_tokens + 1 words is over budget by
+            # construction. The explicit check binds the probe to the helper
+            # rather than to this comment, so a future counting refinement
+            # cannot silently turn the probe into an in-budget prompt that
+            # exercises nothing.
             over_budget = " ".join(["token"] * (max_tokens + 1))
-            return "prompt", RuntimeParams(prompt=over_budget), "prompt_truncated"
+            if _count_tokens(over_budget) > max_tokens:  # pragma: no branch
+                return "prompt", RuntimeParams(prompt=over_budget), DIAG_PROMPT_TRUNCATED
     timestamps = capabilities.node_at("streaming.word_timestamps")
     if isinstance(timestamps, WordTimestampsCap) and timestamps.is_supported:
         offered = set(timestamps.granularities)
@@ -96,7 +119,7 @@ def _pick_sub_constraint_probe(engine: EngineBase) -> tuple[str, RuntimeParams, 
             return (
                 "word_timestamps",
                 RuntimeParams(word_timestamps=missing),
-                "unsupported_granularity_ignored",
+                DIAG_UNSUPPORTED_GRANULARITY_IGNORED,
             )
     return None
 
@@ -826,20 +849,43 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
     issues: list[ComplianceIssue] = []
     model = engine.properties.engine_id
 
-    if not (engine.supports("streaming_input") or engine.supports("streaming_output")):
-        # The engine does not declare streaming support; there is no streaming
-        # gating contract to exercise.
-        return ComplianceReport(registry=ModelRegistry({}), issues=issues)
+    try:
+        if not (engine.supports("streaming_input") or engine.supports("streaming_output")):
+            # The engine does not declare streaming support; there is no
+            # streaming gating contract to exercise.
+            return ComplianceReport(registry=ModelRegistry({}), issues=issues)
 
-    probe = next(
-        ((p[0], p[1](), _FEATURE_DROP_CODE) for p in _GATING_PROBES if not engine.supports(p[2])),
-        None,
-    )
-    if probe is None:
-        # Every probed parameter is supported at the feature level; fall back to
-        # violating a declared sub-constraint of a supported feature so the
-        # finer-grained half of the gating contract is exercised too.
-        probe = _pick_sub_constraint_probe(engine)
+        probe = next(
+            (
+                (p[0], p[1](), DIAG_UNSUPPORTED_PARAMETER_IGNORED)
+                for p in _GATING_PROBES
+                if not engine.supports(p[2])
+            ),
+            None,
+        )
+        if probe is None:
+            # Every probed parameter is supported at the feature level; fall
+            # back to violating a declared sub-constraint of a supported
+            # feature so the finer-grained half of the gating contract is
+            # exercised too.
+            probe = _pick_sub_constraint_probe(engine)
+    except Exception as exc:  # noqa: BLE001
+        # Probe selection reads engine-author surface (supports() /
+        # effective_capabilities); contain a crash there exactly like the
+        # start_transcription containment below -- this function promises
+        # ``Raises: None`` and one broken engine must not abort the run.
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                message=(
+                    f"selecting a streaming gating probe raised {exc!r}; "
+                    "supports()/effective_capabilities must not raise while the "
+                    "compliance suite probes the engine's declarations."
+                ),
+                model=model,
+            )
+        )
+        return ComplianceReport(registry=ModelRegistry({}), issues=issues)
     if probe is None:
         # The engine supports every probed standard parameter and declares no
         # violable sub-constraint, so there is no gating path to exercise here.

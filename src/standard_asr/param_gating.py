@@ -34,6 +34,16 @@ from .runtime_params import ProviderParams, RuntimeParams
 
 Mode = Literal["batch", "streaming"]
 
+#: Diagnostic codes the gating layer emits (spec Runtime R2). These strings are
+#: part of the standard's contract -- applications match on them and the
+#: compliance suite (:mod:`standard_asr.compliance`) asserts engines surface
+#: them -- so they live here, in the module that emits them, as the single
+#: source of truth. A consumer hard-coding the literal instead of importing it
+#: would silently test (or log) the wrong contract after a rename.
+DIAG_UNSUPPORTED_PARAMETER_IGNORED = "unsupported_parameter_ignored"
+DIAG_UNSUPPORTED_GRANULARITY_IGNORED = "unsupported_granularity_ignored"
+DIAG_PROMPT_TRUNCATED = "prompt_truncated"
+
 #: Portable standard-set fields and their capability dot-path suffixes.
 #:
 #: ``candidate_languages`` is deliberately absent: the language axis is owned
@@ -42,11 +52,17 @@ Mode = Literal["batch", "streaming"]
 #: resolve to ``None`` + a single diagnostic and **never raise** (even in strict),
 #: which contradicts this table's strict-raises gating. Gating it here too would
 #: also double-diagnose in best_effort. So it has exactly one owner (language.py).
+#:
+#: ``prompt`` is deliberately LAST -- after ``phrase_hints`` -- so the opt-in
+#: phrase_hints -> prompt degradation composes the final prompt BEFORE the
+#: prompt budget is enforced. The budget is then enforced exactly once, on the
+#: final composed value, and exactly one ``prompt_truncated`` diagnostic can
+#: ever be produced per request (no retroactive deletion of an earlier one).
 _GATED_PARAMS: tuple[tuple[str, str], ...] = (
     ("language", "language.runtime_override"),
     ("word_timestamps", "word_timestamps"),
-    ("prompt", "guidance.prompt"),
     ("phrase_hints", "guidance.phrase_hints"),
+    ("prompt", "guidance.prompt"),
 )
 
 #: List-typed channels whose empty-list value (``[]``) is the spec §R.3.3
@@ -150,7 +166,7 @@ def gate_params(
         diagnostics.append(
             Diagnostic(
                 level="warning",
-                code="unsupported_parameter_ignored",
+                code=DIAG_UNSUPPORTED_PARAMETER_IGNORED,
                 message=f"Ignored unsupported parameter {field_name!r} in {mode} mode.",
                 param=field_name,
                 provided=value,
@@ -222,7 +238,7 @@ def _gate_granularity(
     diagnostics.append(
         Diagnostic(
             level="warning",
-            code="unsupported_granularity_ignored",
+            code=DIAG_UNSUPPORTED_GRANULARITY_IGNORED,
             message=(
                 f"Ignored unsupported word_timestamps granularity "
                 f"{requested.value!r} in {mode} mode."
@@ -354,6 +370,13 @@ def _enforce_prompt_limit(
     with a diagnostic; in strict mode it raises. An absent (``None``) limit is
     unbounded -- nothing to do.
 
+    Enforcement reads the RUNNING value (``updates`` first, then the request):
+    ``prompt`` is gated last (see :data:`_GATED_PARAMS`), so a phrase-hints
+    degrade composed earlier in the request is what gets budgeted -- and a
+    degrade-truncated composition (already within budget by construction)
+    passes through untouched, keeping exactly one ``prompt_truncated``
+    diagnostic per request without any retroactive filtering.
+
     Args:
         params: The request parameters.
         capabilities: The engine's effective capabilities.
@@ -365,7 +388,7 @@ def _enforce_prompt_limit(
     Raises:
         UnsupportedFeatureError: In strict mode, if the prompt exceeds the limit.
     """
-    prompt = params.prompt
+    prompt = cast("str | None", updates.get("prompt", params.prompt))
     if prompt is None:
         return
     node = capabilities.node_at(f"{mode}.guidance.prompt")
@@ -389,7 +412,7 @@ def _enforce_prompt_limit(
     diagnostics.append(
         Diagnostic(
             level="warning",
-            code="prompt_truncated",
+            code=DIAG_PROMPT_TRUNCATED,
             message=(f"Truncated prompt from ~{count} to {max_tokens} tokens in {mode} mode."),
             param="prompt",
             provided=count,
@@ -535,17 +558,17 @@ def _try_degrade_to_prompt(
 ) -> bool:
     """Attempt the opt-in one-way phrase_hints -> prompt degradation.
 
-    The hints are folded onto the *already-gated* prompt (the running value in
-    ``updates``, falling back to ``params.prompt``), never the raw request value.
-    The synthesized prompt MUST itself respect the prompt channel's declared
-    ``max_tokens`` budget -- degradation must never silently emit a prompt the
-    engine cannot accept (spec §Runtime R4: never silently degrade). When the
-    combined prompt would exceed the budget: in best_effort it is truncated to
-    ``max_tokens`` tokens with a ``prompt_truncated`` diagnostic that supersedes
-    any earlier prompt-only truncation diagnostic (exactly one per request, in
-    addition to the degrade diagnostic); in strict mode it raises, so the caller
-    falls through to the standard unsupported-phrase_hints handling rather than
-    applying a lossy degrade silently.
+    The hints are folded onto the request prompt and the composition is
+    budgeted HERE, exactly once: ``phrase_hints`` is gated before ``prompt``
+    (see :data:`_GATED_PARAMS`), so no prompt-only truncation has run yet, and
+    the later prompt gate reads the running (already-budgeted) composition and
+    emits nothing. The synthesized prompt MUST itself respect the prompt
+    channel's declared ``max_tokens`` budget -- degradation must never
+    silently emit a prompt the engine cannot accept (spec §Runtime R4: never
+    silently degrade). When the combined prompt would exceed the budget: in
+    best_effort it is truncated to ``max_tokens`` tokens with the request's
+    single ``prompt_truncated`` diagnostic; in strict mode it raises, so the
+    caller never applies a lossy degrade silently.
 
     The framed phrase-hints block sits at the tail of the synthesized prompt, so
     forward truncation cuts it first. If the budget is too small to keep ANY
@@ -582,11 +605,12 @@ def _try_degrade_to_prompt(
     if not capabilities.supports(f"{mode}.guidance.prompt"):
         return False
     framed = _PHRASE_HINTS_FRAME_PREFIX + ", ".join(hints) + "."
-    # Compose on the RUNNING gated value: prompt is gated before phrase_hints in
-    # _GATED_PARAMS order, so _enforce_prompt_limit may already have truncated
-    # the prompt into ``updates``. Folding the hints onto the original
-    # ``params.prompt`` would resurrect over-budget content and report a second,
-    # contradictory truncation.
+    # Compose on the RUNNING value (``updates`` first, then the request) so the
+    # composition is correct under any gating order. In the actual order
+    # (phrase_hints before prompt, _GATED_PARAMS) no prompt truncation has run
+    # yet: the budget below is the FIRST and ONLY enforcement of the composed
+    # prompt -- the later prompt gate reads this already-budgeted value back
+    # out of ``updates`` and emits nothing.
     existing = cast("str | None", updates.get("prompt", params.prompt))
     combined = f"{existing}\n{framed}" if existing else framed
 
@@ -605,15 +629,15 @@ def _try_degrade_to_prompt(
                 ),
             )
         truncated = _truncate_to_token_budget(combined, max_tokens)
-        # This truncation reflects the FINAL composition (gated prompt + framed
-        # hints); a prompt_truncated emitted earlier by _enforce_prompt_limit for
-        # the prompt channel alone is superseded, so each request carries exactly
-        # ONE coherent prompt_truncated diagnostic.
-        diagnostics[:] = [d for d in diagnostics if d.code != "prompt_truncated"]
+        # This truncation reflects the FINAL composition (request prompt +
+        # framed hints) and is the request's ONLY prompt-budget enforcement:
+        # phrase_hints is gated before prompt, so nothing was emitted earlier,
+        # and the later prompt gate sees the within-budget result and emits
+        # nothing -- exactly one prompt_truncated per request by construction.
         diagnostics.append(
             Diagnostic(
                 level="warning",
-                code="prompt_truncated",
+                code=DIAG_PROMPT_TRUNCATED,
                 message=(f"Truncated degraded prompt to {max_tokens} tokens in {mode} mode."),
                 param="prompt",
                 provided=_count_tokens(combined),
@@ -672,4 +696,10 @@ def _try_degrade_to_prompt(
     return True
 
 
-__all__ = ["Mode", "gate_params"]
+__all__ = [
+    "DIAG_PROMPT_TRUNCATED",
+    "DIAG_UNSUPPORTED_GRANULARITY_IGNORED",
+    "DIAG_UNSUPPORTED_PARAMETER_IGNORED",
+    "Mode",
+    "gate_params",
+]

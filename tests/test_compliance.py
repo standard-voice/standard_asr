@@ -1092,3 +1092,73 @@ def test_pick_sub_constraint_probe_none_without_streaming_domain() -> None:
         _BatchOnlyEngine()
     )
     assert probe is None
+
+
+# --------------------------------------------------------------------------- #
+# FV-4 -- the sub-constraint probe is bounded against extreme declarations
+# --------------------------------------------------------------------------- #
+class _ExtremeBudgetEngine(_GatingStreamEngine):
+    """Legal-but-extreme ``max_tokens`` (no upper bound exists on the field)."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
+            guidance=GuidanceCaps(
+                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=10**9))
+            ),
+        ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+
+def test_streaming_gating_extreme_max_tokens_completes() -> None:
+    # FV-4: a 10^9-token budget must not make the probe materialize a
+    # multi-gigabyte prompt (it was allocated OUTSIDE the crash containment and
+    # would OOM the run). Past the cap the prompt probe is skipped and the
+    # granularity probe exercises the sub-constraint contract instead.
+    probe = compliance_module._pick_sub_constraint_probe(  # pyright: ignore[reportPrivateUsage]
+        _ExtremeBudgetEngine()
+    )
+    assert probe is not None
+    assert probe[0] == "word_timestamps"
+    report = check_streaming_param_gating(_ExtremeBudgetEngine(strict=True))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_streaming_gating_extreme_max_tokens_without_other_probe_is_clean() -> None:
+    # Past the cap with every granularity offered there is no violable
+    # sub-constraint left: the check completes as a clean no-op pass.
+    class _ExtremeBudgetOnlyEngine(_GatingStreamEngine):
+        declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+            streaming=StreamingCapabilities(
+                word_timestamps=WordTimestampsCap(
+                    supported=True, granularities=["word", "segment", "char"]
+                ),
+                guidance=GuidanceCaps(
+                    prompt=PromptCap(
+                        supported=True, constraints=PromptConstraints(max_tokens=10**9)
+                    )
+                ),
+            ),
+            streaming_input=FlagCap(supported=True),
+            streaming_output=FlagCap(supported=True),
+        )
+
+    report = check_streaming_param_gating(_ExtremeBudgetOnlyEngine(strict=True))
+    assert report.passed is True
+    assert report.issues == []
+
+
+def test_streaming_gating_probe_selection_crash_contained() -> None:
+    # Probe selection reads engine-author surface (supports() delegates to
+    # effective_capabilities); a crash there must surface as a compliance
+    # error, never escape a function promising ``Raises: None``.
+    class _BrokenCapsEngine(_GatingStreamEngine):
+        @property
+        def effective_capabilities(self) -> DeclaredCapabilities:
+            raise RuntimeError("capabilities exploded")
+
+    report = check_streaming_param_gating(_BrokenCapsEngine(strict=True))
+    assert report.passed is False
+    assert any("selecting a streaming gating probe" in i.message for i in report.issues)
