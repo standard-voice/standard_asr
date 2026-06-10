@@ -117,7 +117,7 @@ class _NoCapsClass:
 
     def transcribe(self, audio: object, options: object = None) -> object:
         # A real engine must expose the defining 'transcribe' method even when
-        # it declares no capabilities (DISC-5).
+        # it declares no capabilities.
         return None
 
 
@@ -199,7 +199,7 @@ def test_cli_doctor_packaging_unavailable_with_plugins_exits_1(
 ) -> None:
     # Plugins installed but `packaging` missing: doctor cannot prove the
     # environment conflict-free, so the headline is non-clean and "cannot prove
-    # clean" is operationally a failure -> exit 1 (M8).
+    # clean" is operationally a failure -> exit 1.
     from dataclasses import dataclass
 
     from standard_asr import doctor as doctor_module
@@ -230,7 +230,7 @@ def test_cli_doctor_packaging_unavailable_no_plugins_exits_0(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # With no plugins there is nothing to analyze: `packaging` absence stays a
-    # non-issue and the clean exit 0 is preserved (M8).
+    # non-issue and the clean exit 0 is preserved.
     from standard_asr import doctor as doctor_module
 
     def _entry_points(*, group: str) -> list[object]:

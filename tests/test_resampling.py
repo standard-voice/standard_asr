@@ -106,7 +106,7 @@ def test_single_tone_below_nyquist_roundtrip() -> None:
 def test_matches_scipy_resample(n_in: int, num: int) -> None:
     """Exhaustive regression: match scipy.signal.resample across odd/even sizes.
 
-    This is the C3 guard: the hand-written Fourier resampler must agree with the
+    The hand-written Fourier resampler must agree with the
     reference implementation to floating-point precision for *both* parities of
     ``min(num, n_in)``. The previous implementation diverged by ~1e-1 whenever
     that value was odd.
@@ -121,7 +121,7 @@ def test_matches_scipy_resample(n_in: int, num: int) -> None:
 
 
 def test_matches_scipy_realtime_16k_to_24k_odd_frame() -> None:
-    """C3 hot path: 16k->24k on an odd-length realtime frame matches scipy."""
+    """Hot path: 16k->24k on an odd-length realtime frame matches scipy."""
     scipy_signal = _require_scipy_signal()
     rng = np.random.default_rng(7)
     # 321 samples at 16 kHz -> min(num, n_in) is odd, the broken case.

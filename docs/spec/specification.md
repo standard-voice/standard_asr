@@ -998,7 +998,7 @@ elif event.type == "supersede":
 - 跨 lossy 缝隙 MUST 发一条 `progress` 事件，携带 `reconnect=true`、`gap_start`、`gap_end`。
 - session 拥有一个**有界的滚动音频缓冲区**（用于重连后向引擎重喂最近音频）。
 
-**按音频源分类**（修复验证 B-NEW-1：live mic 不可回放）：
+**按音频源分类**（live mic 不可回放）：
 
 | 音频源类型 | 行为 |
 |---|---|

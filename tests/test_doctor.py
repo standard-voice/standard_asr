@@ -111,8 +111,7 @@ def test_classify_detects_numpy2_required(spec: str) -> None:
 @pytest.mark.parametrize("spec", ["==2.2.0", "==2.4.0"])
 def test_classify_exact_off_grid_pin_is_numpy2_required(spec: str) -> None:
     """An exact pin to a 2.x version absent from any probe grid must classify as
-    numpy-2-only -- the old fixed grid read it as admitting neither major
-    (R3-CLI-DOCTOR-04)."""
+    numpy-2-only -- the old fixed grid read it as admitting neither major."""
     only1, req2 = doctor._classify_numpy(spec)  # pyright: ignore[reportPrivateUsage]
     assert only1 is False
     assert req2 is True
@@ -165,7 +164,7 @@ def test_disjoint_same_major_ranges_are_conflicting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``==2.0.*`` vs ``>=2.3`` share no satisfying numpy release: a real
-    intersection conflict the 1.x/2.x major split alone would miss (CLI-4)."""
+    intersection conflict the 1.x/2.x major split alone would miss."""
     _patch_eps(
         monkeypatch,
         [
@@ -218,7 +217,7 @@ def test_intersection_empty_helper_direct() -> None:
     "specs",
     [
         # High pins that all land ABOVE the old bounded grid but share a
-        # satisfying version -- the false "empty intersection" of NEW-DOCTOR-1.
+        # satisfying version -- previously misread as an empty intersection.
         [">=2.40", ">=2.1"],
         ["==2.45.*", ">=2.40"],
         [">=3.0", ">=2.1"],
@@ -227,7 +226,7 @@ def test_intersection_empty_helper_direct() -> None:
 )
 def test_high_pins_are_not_falsely_empty(specs: list[str]) -> None:
     """A satisfiable intersection of high pins must NOT read as empty just
-    because every satisfying version sits above any fixed grid (NEW-DOCTOR-1)."""
+    because every satisfying version sits above any fixed grid."""
     from packaging.specifiers import SpecifierSet
 
     sets = [SpecifierSet(s) for s in specs]
@@ -284,7 +283,7 @@ def test_single_plugin_internally_unsatisfiable_is_conflict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A SINGLE plugin whose own numpy declaration is internally unsatisfiable
-    (``<2`` AND ``>=2.1``) must be flagged, not silently passed (NEW-DOCTOR-2)."""
+    (``<2`` AND ``>=2.1``) must be flagged, not silently passed."""
     _patch_eps(
         monkeypatch,
         [_FakeEP("a/x", _FakeDist("std-a", ["numpy<2", "numpy>=2.1"]))],
@@ -301,7 +300,7 @@ def test_canonical_dual_line_resolves_to_numpy2_on_py313(
 ) -> None:
     """The canonical interpreter-conditional dual-line form (DEP.1) must resolve
     to the line whose marker holds on the running interpreter -- on 3.13 that is
-    ``>=2.1``, so no bogus 'no numpy<2 wheel' conflict fires (CLI-1 / H2)."""
+    ``>=2.1``, so no bogus 'no numpy<2 wheel' conflict fires."""
     _patch_eps(
         monkeypatch,
         [
@@ -328,7 +327,7 @@ def test_marker_false_line_imposes_no_constraint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A numpy line whose marker is False on the running interpreter must be
-    ignored entirely, not treated as an active constraint (CLI-1 / H2)."""
+    ignored entirely, not treated as an active constraint."""
     # On 3.13 the marker python_version < "3.10" is False, so numpy is not
     # required at all -> no constraint, no conflict.
     _patch_eps(
@@ -346,7 +345,7 @@ def test_legacy_parenthesized_specifier_parsed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Legacy parenthesized Requires-Dist (``numpy (>=1.26)``) must parse to the
-    real specifier rather than being swallowed as unconstrained (CLI-2)."""
+    real specifier rather than being swallowed as unconstrained."""
     _patch_eps(
         monkeypatch,
         [
@@ -399,7 +398,7 @@ def test_numpy_spec_display_fallback_when_packaging_missing(
     assert report.plugins[0].numpy_spec == "<2"
     # But with packaging absent, the real numpy1-vs-2 conflict is NOT classified.
     assert report.has_conflict is False
-    # The unclassified state is explicit, never a silent "all clean" (M8).
+    # The unclassified state is explicit, never a silent "all clean".
     assert report.analysis_unavailable is True
     assert any("packaging" in n for n in report.notes)
 
@@ -488,7 +487,7 @@ def test_packaging_unavailable_with_plugins_headline_is_not_clean(
 ) -> None:
     """With plugins present but ``packaging`` missing, the report carries an
     explicit analysis-unavailable state and the headline must NOT claim "no
-    conflicts" -- doctor cannot prove the environment conflict-free (M8)."""
+    conflicts" -- doctor cannot prove the environment conflict-free."""
     _patch_eps(
         monkeypatch,
         [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))],
@@ -516,7 +515,7 @@ def test_packaging_unavailable_without_plugins_stays_clean(
 
 def test_is_clean_is_the_single_verdict() -> None:
     # The one verdict consumed by the CLI exit code and the report headline:
-    # clean requires BOTH no detected conflict AND that analysis ran (M8: an
+    # clean requires BOTH no detected conflict AND that analysis ran (an
     # unprovable environment must not read as clean).
     assert doctor.DoctorReport(python_version="3.12").is_clean is True
     assert doctor.DoctorReport(python_version="3.12", conflicts=["x vs y"]).is_clean is False

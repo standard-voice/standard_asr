@@ -70,7 +70,7 @@ def test_unsupported_strict_raises() -> None:
     with pytest.raises(UnsupportedFeatureError) as exc_info:
         gate_params(RuntimeParams(language="en"), _caps(), "batch", strict=True)
     # The strict error exposes the same structured context as the best_effort
-    # diagnostic (INTE-4): which parameter, in which mode, and a hint.
+    # diagnostic: which parameter, in which mode, and a hint.
     err = exc_info.value
     assert err.param == "language"
     assert err.mode == "batch"
@@ -134,7 +134,7 @@ def test_degrade_but_prompt_unsupported_strict_raises() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# H4: word_timestamps granularity validated against the offered granularities.
+# word_timestamps granularity validated against the offered granularities.
 # --------------------------------------------------------------------------- #
 def _wt_caps(*granularities: str) -> DeclaredCapabilities:
     return DeclaredCapabilities(
@@ -172,7 +172,7 @@ def test_granularity_not_offered_best_effort_drops() -> None:
 
 
 def test_supported_word_timestamps_cannot_have_empty_granularities() -> None:
-    # RUNT-6: a supported WordTimestampsCap MUST enumerate granularities, so the
+    # A supported WordTimestampsCap MUST enumerate granularities, so the
     # ambiguous "empty => honor anything" state is unrepresentable. Constructing
     # _wt_caps() (supported=True, no granularities) raises at validation time.
     with pytest.raises(ValueError, match="non-empty"):
@@ -187,7 +187,7 @@ def test_word_timestamps_feature_unsupported_strict_raises() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# H5: empty list ([]) is the "requested-but-empty" sentinel -> not a request.
+# Empty list ([]) is the "requested-but-empty" sentinel -> not a request.
 # --------------------------------------------------------------------------- #
 def test_empty_phrase_hints_not_gated_when_unsupported() -> None:
     # phrase_hints unsupported, but [] carries nothing to honor -> no raise,
@@ -208,7 +208,7 @@ def test_empty_phrase_hints_no_garbage_degrade() -> None:
 
 
 def test_candidate_languages_not_gated_here_when_unsupported() -> None:
-    # RUNT-1/RUNT-2: candidate_languages is owned solely by language.py (spec
+    # candidate_languages is owned solely by language.py (spec
     # §Language R3), so gate_params must NOT touch it -- even an unsupported,
     # non-empty request in strict mode passes through untouched (no raise, no
     # diagnostic). language.effective_candidate_languages resolves the axis to
@@ -276,7 +276,7 @@ def test_try_degrade_empty_hints_returns_false() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# RUNT-4: declared guidance limits are enforced (truncate/raise), and degrade
+# Declared guidance limits are enforced (truncate/raise), and degrade
 # respects max_tokens instead of silently exceeding it.
 # --------------------------------------------------------------------------- #
 def _guidance_caps(
@@ -339,7 +339,7 @@ def test_prompt_unbounded_limit_noop() -> None:
 
 
 # A 12-codepoint no-space Mandarin prompt. ``.split()`` yields ONE whitespace
-# token, so the old word-count check let it pass any max_tokens >= 1 (NEW-RUNT-1).
+# token, so the old word-count check let it pass any max_tokens >= 1.
 _CJK_PROMPT = "前文提到了量子计算与超导"
 
 
@@ -395,7 +395,7 @@ def test_truncate_to_token_budget_cjk_trims_codepoints() -> None:
 def test_prompt_constraints_max_tokens_documents_approximation() -> None:
     # The :attr: cross-reference is honest: the field documents that the
     # standard-layer count is a conservative approximation, not the exact
-    # tokenizer (NEW-RUNT-1 broken cross-reference).
+    # tokenizer.
     desc = PromptConstraints.model_fields["max_tokens"].description
     assert desc is not None
     assert "approximation" in desc.lower()
@@ -553,12 +553,12 @@ def test_degrade_dropped_signal_not_fooled_by_hint_substring_in_prompt() -> None
 
 
 def test_degrade_with_over_budget_prompt_yields_single_coherent_truncation() -> None:
-    # M4/R3-GATING-01 + CL-1: when over-budget free prompt text and degraded
-    # hints meet, the request must carry exactly ONE coherent prompt_truncated
-    # diagnostic for the final composition. CL-1 restructured the mechanism:
-    # phrase_hints is now gated BEFORE prompt, the degrade composes on the
-    # request prompt, and the budget is enforced exactly once on the composed
-    # value -- no diagnostic is ever emitted and then retroactively deleted.
+    # When over-budget free prompt text and degraded hints meet, the request
+    # must carry exactly ONE coherent prompt_truncated diagnostic for the final
+    # composition. The mechanism is structured so that phrase_hints is gated
+    # BEFORE prompt, the degrade composes on the request prompt, and the budget
+    # is enforced exactly once on the composed value -- no diagnostic is ever
+    # emitted and then retroactively deleted.
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(
             guidance=GuidanceCaps(
@@ -609,7 +609,7 @@ def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:
 
 def test_guidance_limits_enforced_in_streaming_mode() -> None:
     # Mode-correctness: the same guidance-limit enforcement applies under
-    # mode="streaming" (RUNT-3 follow-up wires gate_params(mode="streaming")).
+    # mode="streaming" (the streaming path wires gate_params(mode="streaming")).
     caps = DeclaredCapabilities(
         streaming=StreamingCapabilities(
             guidance=GuidanceCaps(

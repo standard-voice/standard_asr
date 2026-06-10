@@ -228,7 +228,7 @@ class WordTimestampsCap(_FlagLikeNode):
 
     A supported word-timestamp capability MUST enumerate at least one
     granularity: an engine that declares ``supported=True`` but lists no
-    granularities is ambiguous (RUNT-6) -- gating could not tell whether a
+    granularities is ambiguous -- gating could not tell whether a
     requested granularity is offered, and silently honoring an unlisted one is
     the cardinal sin. Requiring explicit enumeration makes the "supported but
     unenumerated" state unrepresentable, so gating always validates against a
@@ -729,7 +729,7 @@ def _to_canonical(node: object, *, inject_supported: bool) -> Any:
         out_dict: dict[str, Any] = {
             key: _to_canonical(value, inject_supported=True) for key, value in mapping.items()
         }
-        # CAPA-3: a JSON-sourced x_* capability lands here as a raw dict (not a
+        # A JSON-sourced x_* capability lands here as a raw dict (not a
         # typed _CapNode). Inject the derived `supported` so cross-language
         # clients get the same uniform probe the typed path provides (spec §C R6).
         # A dict is a capability node iff it carries `mode` or `supported`; a bare

@@ -145,7 +145,7 @@ def nparray_to_audio_file(
         OSError: If writing to ``file_path`` fails (permissions, disk, etc.).
     """
     # Pin little-endian (``<i2``) for canonical WAV PCM regardless of host byte
-    # order (spec R4); ``tobytes()`` would otherwise use native order (AUDI-2).
+    # order (spec R4); ``tobytes()`` would otherwise use native order.
     audio_integer = _to_int16_pcm(audio).astype("<i2")
 
     if audio_integer.ndim == 1:

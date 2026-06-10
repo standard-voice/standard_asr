@@ -24,7 +24,7 @@ def test_save_utils_writes_multichannel(tmp_path: Path) -> None:
 
 
 def test_save_utils_writes_little_endian_pcm(tmp_path: Path) -> None:
-    # AUDI-2: nparray_to_audio_file must serialize 16-bit PCM little-endian
+    # nparray_to_audio_file must serialize 16-bit PCM little-endian
     # regardless of host byte order. +1.0 -> 32767 -> bytes (0xFF, 0x7F) LE.
     audio = np.array([1.0], dtype=np.float32)
     path = tmp_path / "le.wav"

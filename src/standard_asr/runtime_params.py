@@ -49,7 +49,7 @@ class WordTimestampGranularity(str, Enum):
     CHAR = "char"
 
 
-# X-EL-3: enforce the single-source-of-truth link at import time. The request
+# Enforce the single-source-of-truth link at import time. The request
 # enum (`WordTimestampGranularity`) and the capability `Literal`
 # (`WordTimestampGranularityName`) historically defined the same vocabulary in
 # two places with no link; an additive change to one could silently desync the

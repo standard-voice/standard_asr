@@ -834,7 +834,7 @@ def test_check_event_sequence_flags_empty_new_ids_deleting_frozen() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# check_streaming_param_gating (RUNT-3)
+# check_streaming_param_gating
 # --------------------------------------------------------------------------- #
 class _StreamProps(BaseProperties):
     engine_id: str = "streamer"
@@ -1006,7 +1006,7 @@ def test_streaming_gating_best_effort_engine_raising_fails() -> None:
 
 
 def test_streaming_gating_engine_crash_is_reported_not_raised() -> None:
-    # R3-COMPLIANCE-02: a non-UnsupportedFeatureError exception (an engine bug)
+    # A non-UnsupportedFeatureError exception (an engine bug)
     # MUST surface as a compliance error, never crash the whole compliance run.
     class _CrashingEngine(_GatingStreamEngine):
         def start_transcription(
@@ -1023,7 +1023,7 @@ def test_streaming_gating_engine_crash_is_reported_not_raised() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Sub-constraint gating fallback (R3-COMPLIANCE-01): every probed feature is
+# Sub-constraint gating fallback: every probed feature is
 # supported, so the check must violate a declared sub-constraint instead.
 # --------------------------------------------------------------------------- #
 def test_streaming_gating_sub_constraint_prompt_strict_passes() -> None:
@@ -1095,7 +1095,7 @@ def test_pick_sub_constraint_probe_none_without_streaming_domain() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FV-4 -- the sub-constraint probe is bounded against extreme declarations
+# The sub-constraint probe is bounded against extreme declarations
 # --------------------------------------------------------------------------- #
 class _ExtremeBudgetEngine(_GatingStreamEngine):
     """Legal-but-extreme ``max_tokens`` (no upper bound exists on the field)."""
@@ -1113,7 +1113,7 @@ class _ExtremeBudgetEngine(_GatingStreamEngine):
 
 
 def test_streaming_gating_extreme_max_tokens_completes() -> None:
-    # FV-4: a 10^9-token budget must not make the probe materialize a
+    # A 10^9-token budget must not make the probe materialize a
     # multi-gigabyte prompt (it was allocated OUTSIDE the crash containment and
     # would OOM the run). Past the cap the prompt probe is skipped and the
     # granularity probe exercises the sub-constraint contract instead.

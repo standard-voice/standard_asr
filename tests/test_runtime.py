@@ -59,7 +59,7 @@ def test_cache_dir_windows_missing_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cache_dir_whitespace_only_env_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    # R3-DISCOVERY-03: a whitespace-only override carries no path; it MUST fall
+    # A whitespace-only override carries no path; it MUST fall
     # through to the default, never resolve to a whitespace-named directory.
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", "   ")
     with_whitespace = resolve_cache_dir()
@@ -70,7 +70,7 @@ def test_cache_dir_whitespace_only_env_is_unset(monkeypatch: pytest.MonkeyPatch)
 def test_cache_dir_relative_env_resolves_against_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # R3-DISCOVERY-03: a relative override resolves against the cwd at call time
+    # A relative override resolves against the cwd at call time
     # so the returned path is absolute (not dependent on a later chdir).
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", "models")
@@ -100,7 +100,7 @@ def test_download_root_env_beats_library_default(
 def test_download_root_library_default_passthrough_when_env_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # FV-3: unconfigured + env unset on an engine whose library has its own
+    # Unconfigured + env unset on an engine whose library has its own
     # default cache resolves to the LIBRARY tier -- a None passthrough the
     # adapter forwards (e.g. WhisperModel(download_root=None) -> the HF hub
     # cache) -- never a forced concrete directory that would relocate every

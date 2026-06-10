@@ -801,8 +801,9 @@ def check_event_sequence(
 def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
     """Assert a streaming engine gates an unsupported standard parameter.
 
-    Closes the RUNT-3 gap as a *compliance* failure rather than a silent one:
-    the base :meth:`~standard_asr.asr_interface.EngineBase.start_transcription`
+    Closes the streaming-gating bypass gap as a *compliance* failure rather
+    than a silent one: the base
+    :meth:`~standard_asr.asr_interface.EngineBase.start_transcription`
     template runs ``gate_params(mode="streaming")`` for every engine, so a
     "forgot to gate" engine (one that bypassed the template) must show up here.
 
@@ -937,8 +938,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
                 message=(
                     f"strict engine accepted streaming parameter {field_name!r} "
                     "violating its declared capabilities without raising; it MUST "
-                    "raise UnsupportedFeatureError (spec Runtime R2 / RUNT-3 "
-                    "gating gap)."
+                    "raise UnsupportedFeatureError (spec Runtime R2 gating gap)."
                 ),
                 model=model,
             )

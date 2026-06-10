@@ -120,7 +120,7 @@ def test_covers_rejects_widening() -> None:
 
 
 def test_covers_rejects_constraint_widening() -> None:
-    # H1: declared max=2; effective claims max=999 -> widening, must be rejected
+    # Declared max=2; effective claims max=999 -> widening, must be rejected
     # even though the SET of supported paths is identical.
     declared = DeclaredCapabilities(
         batch=BatchCapabilities(
@@ -225,11 +225,12 @@ def test_covers_rejects_granularity_widening() -> None:
 
 
 def test_covers_empty_declared_granularities_is_unbounded() -> None:
-    # CAPA-1: an empty declared granularities list means "unbounded (all)", so a
+    # An empty declared granularities list means "unbounded (all)", so a
     # narrowing from it to any concrete subset is a valid effective ⊆ declared
     # (must NOT false-fail). Mirrors param_gating's empty="offers all" semantics.
-    # Typed WordTimestampsCap can't be empty+supported (RUNT-6 validator), so the
-    # empty-declared case is exercised via an x_* dict node carrying the field.
+    # Typed WordTimestampsCap can't be empty+supported (the granularities-enumeration
+    # validator), so the empty-declared case is exercised via an x_* dict node
+    # carrying the field.
     assert granularity_offers_all([]) is True
     assert granularity_offers_all(["word"]) is False
     declared = _x_caps({"x_wt": {"supported": True, "granularities": []}})
@@ -240,7 +241,7 @@ def test_covers_empty_declared_granularities_is_unbounded() -> None:
 
 
 def test_word_timestamps_supported_requires_granularities() -> None:
-    # RUNT-6: a typed WordTimestampsCap that declares supported=True MUST
+    # A typed WordTimestampsCap that declares supported=True MUST
     # enumerate at least one granularity (no "supported but unenumerated"
     # ambiguity). Unsupported keeps the empty default.
     with pytest.raises(ValueError, match="non-empty"):
@@ -291,7 +292,7 @@ def test_covers_allows_standard_mode_reduction_between_supported_modes() -> None
 
 
 def test_covers_unknown_mode_change_is_fail_closed() -> None:
-    # R3-CAPS-03: tokens outside the standard reduction map (an x_* experimental
+    # Tokens outside the standard reduction map (an x_* experimental
     # enum node) have no provable strength order, so a mode CHANGE between them
     # MUST NOT pass as a legal narrowing (fail-closed); an identical mode is a
     # trivially-valid non-widening.
@@ -303,7 +304,7 @@ def test_covers_unknown_mode_change_is_fail_closed() -> None:
 
 
 def test_streaming_flags_require_streaming_domain() -> None:
-    # R3-CAPS-04: a supported streaming axis flag with an omitted streaming
+    # A supported streaming axis flag with an omitted streaming
     # domain is self-contradictory (an omitted domain means streaming is
     # unsupported, fail-closed) -> rejected at construction.
     from pydantic import ValidationError
@@ -328,7 +329,7 @@ def test_streaming_flags_require_streaming_domain() -> None:
 
 
 def test_unsupported_feature_constraints_not_in_supported_paths() -> None:
-    # H1: an unsupported feature's constraint sub-container MUST NOT appear as a
+    # An unsupported feature's constraint sub-container MUST NOT appear as a
     # supported path (constraints is a default-factory, never None).
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(
@@ -343,7 +344,7 @@ def test_unsupported_feature_constraints_not_in_supported_paths() -> None:
 
 
 def test_supports_fail_closed_on_constraints_subpaths() -> None:
-    # CAPA-2: a constraints submodel is NOT a capability node -- supports() on a
+    # A constraints submodel is NOT a capability node -- supports() on a
     # constraints sub-path is fail-CLOSED, even when the feature IS supported,
     # and obviously when it is not.
     caps = DeclaredCapabilities(
@@ -608,7 +609,7 @@ def test_canonical_json_preserves_unknown_extra_keys() -> None:
 
 
 def test_canonical_json_injects_supported_on_json_sourced_x_star_dicts() -> None:
-    # CAPA-3: an x_* capability parsed from JSON lands in model_extra as a raw
+    # An x_* capability parsed from JSON lands in model_extra as a raw
     # dict. canonical_json MUST inject the derived `supported` so cross-language
     # clients get the same uniform probe as typed nodes. A bare constraints-like
     # dict (no mode/supported) stays untouched.
@@ -635,7 +636,7 @@ def test_canonical_json_injects_supported_on_json_sourced_x_star_dicts() -> None
 
 
 def test_self_resamples_is_declarable_engine_global_flag() -> None:
-    # X-AU-1: `self_resamples` is the one behavioural capability the spec places
+    # `self_resamples` is the one behavioural capability the spec places
     # in Capabilities (spec §AI 3.2, §C R7). It is engine-global, queried via
     # `supports("self_resamples")` like streaming_input/streaming_output, and is
     # informational only -- it does not change any resampling decision.

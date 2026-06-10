@@ -42,7 +42,7 @@ def test_word_timestamps_enum() -> None:
 
 
 def test_granularity_vocabulary_single_source_of_truth() -> None:
-    # X-EL-3: the request-side enum (WordTimestampGranularity) and the
+    # The request-side enum (WordTimestampGranularity) and the
     # declaration-side capability Literal (WordTimestampGranularityName) define
     # the same granularity vocabulary. They MUST stay identical -- an additive
     # change to one without the other would silently desync gating from

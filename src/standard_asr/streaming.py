@@ -354,7 +354,7 @@ class TranscriptionEvent(BaseModel):
         *cardinality* of the re-segmentation (which ids retire, which appear)
         but not a per-old->per-new mapping. On a merge+split (many->many) a UI
         cannot tell which specific old segment a given new segment descends
-        from. This is a documented v1 limitation (X-ST-6); the spec does not
+        from. This is a documented v1 limitation; the spec does not
         require a pairwise mapping, and the frozen-prefix-preservation invariant
         (§ST 5.2) is enforced over the concatenated prefixes, not per pair.
         Per-pair edit-ops/diffs are the deferred §10 direction (additive later).

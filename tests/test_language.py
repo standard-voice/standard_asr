@@ -15,7 +15,7 @@ from standard_asr.language import (
 
 
 def test_normalize_bcp47_canonical_casing() -> None:
-    # LANG-2: canonical BCP-47 casing -- language lower, script Title, region UPPER.
+    # Canonical BCP-47 casing -- language lower, script Title, region UPPER.
     assert normalize_bcp47("EN-US") == "en-US"
     assert normalize_bcp47(" zh_cn ") == "zh-CN"
     assert normalize_bcp47("ZH-HANS") == "zh-Hans"
@@ -25,7 +25,7 @@ def test_normalize_bcp47_canonical_casing() -> None:
 
 
 def test_normalize_bcp47_lowercases_after_singleton() -> None:
-    # R3-LANGUAGE-03 / RFC 5646 §2.1.1: the script/region casing conventions
+    # RFC 5646 §2.1.1: the script/region casing conventions
     # apply only BEFORE the first singleton; extension subtags (after 'u') and
     # private-use subtags (after 'x') stay lowercase. 'co' is an extension key
     # here, not a region -- never 'u-CO'.
@@ -185,7 +185,7 @@ def test_effective_candidates_best_effort_drops_non_detectable() -> None:
 
 
 def test_detectable_membership_canonicalizes_declared_side() -> None:
-    # M5/R3-LANGUAGE-01: detectable_languages may reach here as a non-canonical
+    # detectable_languages may reach here as a non-canonical
     # class-level default (pydantic does not run field validators on defaults).
     # A canonical candidate ('zh-Hans') must match the raw declaration
     # ('zh-hans') instead of raising in strict mode (or being dropped as
@@ -227,7 +227,7 @@ def test_effective_candidates_best_effort_truncates() -> None:
         strict=False,
     )
     assert result == ["en", "ja"]
-    # LANG-3: the diagnostic carries the final effective list and the dropped
+    # The diagnostic carries the final effective list and the dropped
     # tags, not just a count.
     diag = next(d for d in diags if d.code == "candidate_languages_truncated")
     assert diag.provided == ["en", "ja", "ko"]
@@ -269,7 +269,7 @@ def test_auto_in_candidates_always_raises_even_best_effort() -> None:
 
 @pytest.mark.parametrize("strict", [True, False])
 def test_malformed_candidate_always_raises(strict: bool) -> None:
-    # LANG-1: a malformed BCP-47 candidate ('english' instead of 'en') is a
+    # A malformed BCP-47 candidate ('english' instead of 'en') is a
     # caller bug -> always raises with a clear malformed-tag message naming the
     # offending tag, independent of strict / best_effort. It must NOT be silently
     # dropped (best_effort) or misreported as "not detectable" (strict).
@@ -287,7 +287,7 @@ def test_malformed_candidate_always_raises(strict: bool) -> None:
 
 @pytest.mark.parametrize("candidates", [["AUTO"], ["Auto", "en"], ["auto"]])
 def test_reserved_auto_token_matched_case_insensitively(candidates: list[str]) -> None:
-    # NEW-LANG-1: the reserved 'auto' token is matched case-insensitively (after
+    # The reserved 'auto' token is matched case-insensitively (after
     # normalization), so 'AUTO' / 'Auto' / 'auto' all hit the explicit
     # reserved-word error rather than being misreported as "not detectable".
     with pytest.raises(ValueError, match="MUST NOT contain 'auto'"):

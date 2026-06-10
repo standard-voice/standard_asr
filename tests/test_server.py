@@ -1889,7 +1889,7 @@ def test_bridge_stream_pump_failure_is_logged_and_signalled(
     # A protocol violation on the pump side (send_audio raising, e.g.
     # StreamClosedError) must NOT be silently swallowed: it is logged
     # server-side and surfaced to the client as a single generic, non-leaking
-    # error frame (SERV-3).
+    # error frame.
     import asyncio
     import logging
 

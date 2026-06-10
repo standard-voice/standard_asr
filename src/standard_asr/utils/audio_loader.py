@@ -87,7 +87,7 @@ def decode_base64_audio(value: str) -> bytes:
 
     Single source of truth for the ``data:``-URI/base64 parse rules, shared by
     the convenience loaders, :func:`decode_audio`, and the conversion layer so
-    every entry point accepts and rejects exactly the same forms (AUDI-4).
+    every entry point accepts and rejects exactly the same forms.
 
     Rules:
 
@@ -147,7 +147,7 @@ def _base64_payload(value: str) -> str:
     Shared by :func:`decode_base64_audio` and the gate-and-decode helpers
     (:func:`_decode_base64_bounded` here, ``_decode_bounded_base64`` in the
     conversion layer) so every entry point applies exactly the same
-    ``data:``-URI parse rules (single source of truth, AUDI-4).
+    ``data:``-URI parse rules (single source of truth).
 
     Args:
         value: A ``data:...;base64,...`` URI (any case for the scheme) or a bare
@@ -914,7 +914,7 @@ def load_audio_from_path(
                 frames = wf.readframes(wf.getnframes())
                 # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
                 # read it with an explicit "<i2" dtype so a big-endian host does
-                # not silently byte-swap samples (AUDI-2). uint8 has no endianness.
+                # not silently byte-swap samples. uint8 has no endianness.
                 dtype_map: dict[int, np.dtype[np.unsignedinteger | np.signedinteger]] = {
                     1: np.dtype(np.uint8),
                     2: np.dtype("<i2"),
@@ -1115,7 +1115,7 @@ def _decode_path_native(
                 frames = wf.readframes(wf.getnframes())
                 # 16-bit PCM is little-endian by the WAV/canonical contract (spec R4):
                 # read it with an explicit "<i2" dtype so a big-endian host does
-                # not silently byte-swap samples (AUDI-2). uint8 has no endianness.
+                # not silently byte-swap samples. uint8 has no endianness.
                 dtype_map: dict[int, np.dtype[np.unsignedinteger | np.signedinteger]] = {
                     1: np.dtype(np.uint8),
                     2: np.dtype("<i2"),

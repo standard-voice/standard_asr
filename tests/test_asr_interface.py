@@ -114,7 +114,7 @@ def test_standard_asr_protocol_includes_full_surface() -> None:
     # The protocol now structurally describes the full spec surface: batch
     # (transcribe / transcribe_async) AND the streaming entry point
     # (start_transcription). A duck-typed object missing the streaming surface is
-    # NOT a StandardASR, so structural typing covers the whole contract (INTE-5).
+    # NOT a StandardASR, so structural typing covers the whole contract.
     class _Partial:
         config = _ArrayEngine().config
         properties = _ArrayProps()
@@ -235,7 +235,7 @@ def test_path_to_array_engine_needs_decode(tmp_path: object) -> None:
         _ArrayEngine().transcribe(AudioPath("/nonexistent/file.wav"))
 
 
-# --- H2: provider_params validated BEFORE audio decode (fail-fast) -----------
+# --- provider_params validated BEFORE audio decode (fail-fast) ---------------
 
 
 class _DecodeTracker(_ArrayEngine):
@@ -328,7 +328,7 @@ class _WhitespaceDefaultEngine(_ArrayEngine):
 
 
 def test_malformed_default_language_raises_config_error() -> None:
-    # R3-INTERFACE-05: an empty/whitespace default_language must surface as the
+    # An empty/whitespace default_language must surface as the
     # documented ConfigError naming the engine and the malformed value, not leak
     # the normalizer's bare ValueError.
     from standard_asr.exceptions import ConfigError
@@ -350,7 +350,7 @@ class _WhitespaceSelectableEngine(_ArrayEngine):
 
 
 def test_malformed_declared_selectable_tag_raises_config_error() -> None:
-    # R3-INTERFACE-05: a malformed declared selectable tag is an engine-author
+    # A malformed declared selectable tag is an engine-author
     # bug; the membership canonicalization must report it as ConfigError naming
     # the offending declaration, not leak a bare ValueError.
     from standard_asr.exceptions import ConfigError
@@ -372,7 +372,7 @@ class _WhitespaceDetectableEngine(_ArrayEngine):
 
 
 def test_malformed_declared_detectable_tag_raises_config_error() -> None:
-    # FV-6: the declared-side detectable canonicalization carries the same
+    # The declared-side detectable canonicalization carries the same
     # ConfigError contract as its default_language / selectable_languages
     # siblings. Previously a best_effort 'auto' request hit the per-request
     # canonicalization inside effective_candidate_languages and surfaced the
@@ -464,7 +464,7 @@ def test_no_language_axis_leaves_runtime_params_unchanged() -> None:
     assert _NoLangCapturingEngine.received is params
 
 
-# --- H3: candidate-language validation runs in the standard layer ------------
+# --- candidate-language validation runs in the standard layer ----------------
 
 
 _CAND_CAPS = DeclaredCapabilities(
@@ -556,7 +556,7 @@ class _NonCanonicalDetectableEngine(_CapturingArrayEngine):
 
 
 def test_canonical_candidates_match_non_canonical_detectable_declaration() -> None:
-    # M5/R3-LANGUAGE-01 (engine path): a strict request with canonical candidate
+    # Engine path: a strict request with canonical candidate
     # tags must match the engine's raw, non-canonical detectable declaration
     # instead of raising "not detectable" for languages the engine CAN detect.
     _NonCanonicalDetectableEngine.received = None
@@ -594,12 +594,12 @@ class _NoCandEngine(_ArrayEngine):
 
 
 def test_unsupported_candidate_languages_strict_does_not_raise_single_diagnostic() -> None:
-    # RUNT-1: §Language R3 step 2 -- an unsupported candidate_languages axis
+    # §Language R3 step 2 -- an unsupported candidate_languages axis
     # resolves to None + exactly one diagnostic and never raises, even in strict.
     result = _NoCandEngine(strict=True).transcribe(
         _audio(), RuntimeParams(language="auto", candidate_languages=["en", "ja"])
     )
-    # RUNT-2: exactly ONE diagnostic for this axis (no gate_params duplicate).
+    # Exactly ONE diagnostic for this axis (no gate_params duplicate).
     cand_diags = [d for d in result.diagnostics if d.param == "candidate_languages"]
     assert len(cand_diags) == 1
     assert cand_diags[0].code == "candidate_languages_ignored"
@@ -759,7 +759,7 @@ def test_ensure_stream_format_supported_skips_encoding_when_no_wire_encodings() 
 
 
 def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> None:
-    # X-AU-5: v1 does NOT resample streaming wire frames, so a wire sample_rate
+    # v1 does NOT resample streaming wire frames, so a wire sample_rate
     # the engine does not accept must be rejected (fail-closed), not forwarded as
     # frames the engine never declared (silent mistranscription). _ArrayProps
     # accepts only [16000] and declares no required_input_sample_rate.
@@ -807,7 +807,7 @@ def test_ensure_stream_format_supported_allows_any_rate_for_any_engine() -> None
 
 
 def test_ensure_stream_format_supported_enforces_required_rate_under_any() -> None:
-    # R3-INTERFACE-03: required_input_sample_rate + accepted_sample_rates="any"
+    # required_input_sample_rate + accepted_sample_rates="any"
     # is constructible (the declaration-time reachability validator only checks
     # concrete lists), so the session guard must still fail-closed on a wire
     # rate that differs from the hard-required one -- v1 does not resample
@@ -875,7 +875,7 @@ def test_required_input_sample_rate_must_be_accepted() -> None:
     _ArrayProps(accepted_sample_rates="any", required_input_sample_rate=24000)
 
 
-# --- RUNT-3: streaming runtime-param gating via the template seam -------------
+# --- Streaming runtime-param gating via the template seam ---------------------
 
 
 class _StreamSession(TranscriptionSession):

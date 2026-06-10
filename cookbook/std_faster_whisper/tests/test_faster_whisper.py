@@ -131,7 +131,7 @@ def test_init_download_root_honors_standard_model_dir_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # Spec IC.9 second tier (R3-DISCOVERY-02): with no explicit download_root,
+    # Spec IC.9 second tier: with no explicit download_root,
     # STANDARD_ASR_MODEL_DIR governs where model artifacts land.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "1")
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", str(tmp_path))
@@ -142,7 +142,7 @@ def test_init_download_root_honors_standard_model_dir_env(
 def test_init_download_root_defers_to_library_default(
     fake_faster_whisper: type[FakeWhisperModel], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Spec IC.9 third tier (FV-3): no explicit download_root, no
+    # Spec IC.9 third tier: no explicit download_root, no
     # STANDARD_ASR_MODEL_DIR -> defer to faster-whisper's OWN default cache by
     # passing download_root=None through (WhisperModel resolves it via the
     # HuggingFace hub cache). Forcing a concrete directory here would break

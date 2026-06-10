@@ -260,7 +260,7 @@ def test_dead_end_hint_reaches_incompatible_error() -> None:
     assert "AudioStorageUri" in str(exc.value)
 
 
-# --- AudioStorageUri (H6) ---
+# --- AudioStorageUri ---
 
 
 def _su() -> AudioStorageUri:

@@ -811,7 +811,7 @@ def test_decode_audio_bad_base64_data_uri() -> None:
 
 
 def test_shared_base64_decoder_accepts_data_uri_and_bare() -> None:
-    # AUDI-4: one shared decoder for both entry points. A base64 data URI and the
+    # One shared decoder for both entry points. A base64 data URI and the
     # equivalent bare base64 string decode to the same bytes.
     import base64 as _b64
 
@@ -822,7 +822,7 @@ def test_shared_base64_decoder_accepts_data_uri_and_bare() -> None:
 
 
 def test_shared_base64_decoder_rejects_data_uri_without_base64_marker() -> None:
-    # AUDI-4: a data: URI without the ';base64,' marker is rejected, not silently
+    # A data: URI without the ';base64,' marker is rejected, not silently
     # treated as base64 (the old conversion._decode_b64 split on ',' and accepted
     # percent-encoded data URIs). Both entry points now share this strict rule.
     with pytest.raises(AudioProcessingError, match="';base64,' marker is required"):
@@ -1103,7 +1103,7 @@ def test_probe_channels_ffprobe_called_process_error(
 
 
 # --------------------------------------------------------------------------- #
-# R3-AUDIO-LOADER-01 -- the soundfile paths enforce the decoded-output ceiling
+# The soundfile paths enforce the decoded-output ceiling
 # (a hard rejection that must NOT fall back to the FFmpeg decoder).
 # --------------------------------------------------------------------------- #
 def _install_big_soundfile_stub(monkeypatch: pytest.MonkeyPatch) -> None:

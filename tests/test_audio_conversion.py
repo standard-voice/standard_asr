@@ -88,7 +88,7 @@ def test_array_encode_to_wav() -> None:
 
 
 def test_array_encode_to_wav_resamples_to_accepted_rate() -> None:
-    # C1: an array at a non-accepted rate must be resampled BEFORE WAV-encoding
+    # An array at a non-accepted rate must be resampled BEFORE WAV-encoding
     # for an encoded-input engine, never forwarded off-rate (spec R7). A 48 kHz
     # array to an engine that accepts only 16 kHz encoded WAV must yield 16 kHz.
     prepared = _exec(
@@ -107,7 +107,7 @@ def test_array_encode_to_wav_resamples_to_accepted_rate() -> None:
 
 
 def test_array_encode_to_wav_enforces_max_duration() -> None:
-    # C1: max_audio_duration is now enforced on the ENCODE_WAV array (duration is
+    # max_audio_duration is enforced on the ENCODE_WAV array (duration is
     # measurable), matching the bare-array path.
     with pytest.raises(AudioProcessingError):
         _exec(
@@ -371,9 +371,9 @@ def test_array_resampled_to_accepted_rate() -> None:
 
 
 def test_array_required_rate_overrides_any() -> None:
-    # C2/D7: required_input_sample_rate is authoritative even when
-    # accepted_sample_rates is "any". The "any" short-circuit previously returned
-    # the source unchanged, ignoring the hard requirement.
+    # D7: required_input_sample_rate is authoritative even when
+    # accepted_sample_rates is "any" -- the "any" short-circuit must not return
+    # the source unchanged and ignore the hard requirement.
     prepared = _exec(
         AudioArray(np.zeros(16000, dtype=np.float32), 16000),
         {InputKind.ARRAY},
@@ -400,7 +400,7 @@ def test_array_required_rate_overrides_in_accepted_source() -> None:
     assert prepared.sample_rate == 24000
 
 
-# --- C4: decode preserves the native sample rate (no silent forced 16k) ---
+# --- decode preserves the native sample rate (no silent forced 16k) ---
 
 
 def test_decode_preserves_native_8k_for_telephony_engine(tmp_path: Path) -> None:
@@ -443,7 +443,7 @@ def test_decode_native_rate_in_diagnostic(tmp_path: Path) -> None:
     assert "8000 Hz" in decode_diag.message
 
 
-# --- H9: max_file_size enforced on every encoded path ---
+# --- max_file_size enforced on every encoded path ---
 
 
 def test_bytes_passthrough_oversize_raises() -> None:
@@ -483,7 +483,7 @@ def test_path_passthrough_file_within_limit(tmp_path: Path) -> None:
     assert prepared.kind is InputKind.ENCODED_FILE
 
 
-# --- C1: SSRF validation at execution time ---
+# --- SSRF validation at execution time ---
 
 
 def test_url_execution_rejects_private_address() -> None:
@@ -517,7 +517,7 @@ def test_malformed_data_uri_clear_error() -> None:
 
 
 def test_data_uri_without_base64_marker_rejected() -> None:
-    # AUDI-4: the conversion entry point now shares the loader's strict decoder,
+    # The conversion entry point now shares the loader's strict decoder,
     # so a data: URI lacking the ';base64,' marker is rejected (previously this
     # path split on ',' and accepted percent-encoded data URIs).
     with pytest.raises(AudioProcessingError, match="';base64,' marker is required"):
@@ -531,7 +531,7 @@ def test_target_sample_rate_self_describing_returns_native() -> None:
 
 
 def test_target_sample_rate_falls_back_to_smallest_when_source_unknown() -> None:
-    # RESA-3: neither required nor native is accepted and the source rate is
+    # Neither required nor native is accepted and the source rate is
     # unknown -> deterministically pick the SMALLEST accepted rate (minimises
     # gratuitous upsampling), independent of declaration order.
     assert _target_array_sample_rate([44100, 22050], 16000, None) == 22050
@@ -545,7 +545,7 @@ def test_target_sample_rate_prefers_required_then_native() -> None:
 
 
 def test_target_sample_rate_picks_nearest_no_upsample() -> None:
-    # RESA-3: with a known source rate the target is the nearest reachable rate,
+    # With a known source rate the target is the nearest reachable rate,
     # preferring not to upsample. accepted[0] (order-dependent) would have
     # upsampled here; the policy must pick the nearest non-upsampling rate.
     # 22050 Hz source, accepted [48000, 16000]: 16000 (downsample) is nearer than
@@ -559,7 +559,7 @@ def test_target_sample_rate_picks_nearest_no_upsample() -> None:
 
 
 def test_array_resampled_picks_no_upsample_target(tmp_path: Path) -> None:
-    # End-to-end RESA-3: a 22050 Hz file delivered to an engine accepting
+    # End-to-end nearest-rate resampling: a 22050 Hz file delivered to an engine accepting
     # [48000, 16000] resamples to 16000 (no upsample), regardless of list order.
     f = tmp_path / "src.wav"
     f.write_bytes(_wav_bytes(samples=441, rate=22050))
@@ -589,7 +589,7 @@ def test_resample_diagnostic_names_backend() -> None:
 
 
 def test_resample_diagnostic_backend_in_structured_field() -> None:
-    # RESA-2: a (cross-language/REST) client must be able to tell scipy from the
+    # A (cross-language/REST) client must be able to tell scipy from the
     # low-quality numpy fallback WITHOUT parsing English prose. The backend is
     # carried in the structured ``effective`` field so the spec R8 contract reads
     # as resampled_with=<scipy|fallback>; the rate transition lives in ``provided``.
@@ -609,7 +609,7 @@ def test_resample_diagnostic_backend_in_structured_field() -> None:
 def test_resample_diagnostic_backend_field_is_fallback_without_scipy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # RESA-2: when scipy is unavailable, the structured field MUST equal
+    # When scipy is unavailable, the structured field MUST equal
     # ``fallback`` (spec R8's machine-readable resampled_with=fallback contract).
     # Break only the in-method ``scipy.signal`` import, mirroring the resampling
     # test, to avoid the numpy-reload artifact of purging scipy from sys.modules.

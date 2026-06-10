@@ -286,8 +286,8 @@ class ModelSpec:
           that class is returned. We deliberately do not evaluate the whole
           annotation namespace (e.g. via :func:`typing.get_type_hints`): an
           unrelated parameter carrying an unresolvable forward reference must
-          not turn a static metadata read into a ``FactoryLoadError`` (DISC-4,
-          spec §C "免实例化即可读").
+          not turn a static metadata read into a ``FactoryLoadError``
+          (spec §C "免实例化即可读").
 
         Returns:
             The engine class declaring the static metadata.
@@ -320,7 +320,7 @@ class ModelSpec:
 
         Unlike :func:`typing.get_type_hints`, this never evaluates parameter
         annotations, so an unrelated unresolvable forward reference on a
-        parameter does not block reading the engine class (DISC-4). A string
+        parameter does not block reading the engine class. A string
         return annotation (e.g. under ``from __future__ import annotations``) is
         evaluated against the factory's own module globals.
 
@@ -377,7 +377,7 @@ class ModelSpec:
         (e.g. one pointed at the engine's ``Config`` object, which commonly
         exposes generic names like ``properties`` / ``supports``) into a clear
         :class:`~standard_asr.exceptions.FactoryLoadError` instead of a later
-        ``AttributeError`` (DISC-5).
+        ``AttributeError``.
 
         The check is intentionally narrow: per-attribute completeness (a class
         that has ``transcribe`` but is missing ``declared_capabilities`` /
@@ -797,7 +797,7 @@ def _dist_identity(ep: EntryPoint) -> str:
     single ``"<unknown>"`` sentinel, hiding a real collision between two
     distinct providers of the same engine id. We instead fall back to the entry
     point's ``module:attr`` target so two genuinely different dist-less
-    providers still register as distinct identities (DISC-3).
+    providers still register as distinct identities.
 
     Args:
         ep: The entry point to inspect.

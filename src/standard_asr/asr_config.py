@@ -231,7 +231,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
     @model_validator(mode="before")
     @classmethod
     def _preserve_secret_whitespace(cls, data: Any) -> Any:
-        """Wrap raw secret strings before global whitespace stripping (X-EL-5).
+        """Wrap raw secret strings before global whitespace stripping.
 
         ``str_strip_whitespace=True`` silently trims every plain ``str`` input,
         including a raw credential passed via ``from_env`` (which hands the

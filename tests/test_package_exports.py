@@ -17,7 +17,7 @@ def test_all_names_are_importable_and_unique() -> None:
 
 
 def test_capability_vocabulary_is_re_exported_from_top_level() -> None:
-    # X-EL-2: engine authors MUST be able to import the capability vocabulary
+    # Engine authors MUST be able to import the capability vocabulary
     # (node archetypes / cap classes / constraint models / the granularity
     # vocabulary / the unbounded helper) from the package top level without
     # reaching into the `capabilities` submodule.
@@ -42,7 +42,7 @@ def test_capability_vocabulary_is_re_exported_from_top_level() -> None:
     )
     from standard_asr import capabilities as caps_module
 
-    # Dynamic X-EL-2 drift guard (mirrors the X-EL-3 granularity drift test):
+    # Dynamic export-vocabulary drift guard (mirrors the granularity drift test):
     # EVERY name the capabilities submodule advertises in its `__all__` MUST be
     # re-exported from the package top level. A hardcoded list would silently miss
     # a future capability type added to capabilities.__all__ but forgotten in the

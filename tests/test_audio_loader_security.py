@@ -5,7 +5,7 @@
 
 Covers the bare-str-never-URL / LFI defense (ffmpeg ``-protocol_whitelist`` and
 local-file validation), the decompression-bomb size guard (spec R9), and the
-native-rate :func:`decode_audio` primitive (spec R7/C4).
+native-rate :func:`decode_audio` primitive (spec R7).
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def _wav_with_inflated_nframes(
     return riff + fmt + data_hdr + real_data
 
 
-# --- C2: ffmpeg/ffprobe LFI/SSRF defense (path validation) ---
+# --- ffmpeg/ffprobe LFI/SSRF defense (path validation) ---
 
 
 @pytest.mark.parametrize(
@@ -165,7 +165,7 @@ def test_valid_wav_with_honest_header_loads(tmp_path: Path) -> None:
     assert arr.shape == (100,)
 
 
-# --- AUDI-2 (loader-security): convenience loaders thread max_bytes ---
+# --- loader security: convenience loaders thread max_bytes ---
 
 
 def test_load_audio_from_bytes_size_guard() -> None:
@@ -274,7 +274,7 @@ def test_load_audio_stream_none_reads_whole_stream() -> None:
     assert -1 in stream.read_sizes  # bare read() of the entire stream
 
 
-# --- C4: native-rate decode (no forced 16k) ---
+# --- native-rate decode (no forced 16k) ---
 
 
 @pytest.mark.parametrize("rate", [8000, 16000, 22050, 44100, 48000])

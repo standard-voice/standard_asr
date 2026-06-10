@@ -5,7 +5,7 @@
 
 This module assembles the scattered pieces (config, properties, capabilities,
 runtime params, result model, audio negotiation) into the single authoritative
-engine contract (closing NEW-GAP-01). Two complementary forms are provided:
+engine contract. Two complementary forms are provided:
 
 * :class:`StandardASR` -- a structural :class:`typing.Protocol` describing the
   public surface every engine exposes. Use it for typing and ``isinstance``

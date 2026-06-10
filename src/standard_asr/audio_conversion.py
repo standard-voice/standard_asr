@@ -95,8 +95,8 @@ def _target_array_sample_rate(
     1. ``required_input_sample_rate`` if the engine accepts it (a hard wire
        requirement is authoritative).
     2. ``native_sample_rate`` if accepted (the model's own rate is ideal).
-    3. Otherwise an **explicit nearest-reachable** rate relative to the source
-       (RESA-3): the accepted rate closest in absolute distance to
+    3. Otherwise an **explicit nearest-reachable** rate relative to the
+       source: the accepted rate closest in absolute distance to
        ``source_sample_rate``, and -- to honour R7's anti-upsampling spirit --
        preferring a rate that does **not** upsample (``<= source``) over one
        that does when both are equally near. This is deterministic and
@@ -263,7 +263,7 @@ def _prepare_encoded(
     ops = plan.operations
     if ConversionOp.PASSTHROUGH in ops:
         if isinstance(provided, AudioPath):
-            # File path passthrough: prefer stat() over reading the file (R9/H9).
+            # File path passthrough: prefer stat() over reading the file (spec R9).
             _check_file_size(Path(provided.value), max_file_size)
             return PreparedAudio(kind=InputKind.ENCODED_FILE, path=str(provided.value))
         assert isinstance(provided, AudioBytes)
@@ -276,7 +276,7 @@ def _prepare_encoded(
     if ConversionOp.READ_FILE in ops:
         assert isinstance(provided, AudioPath)
         path = Path(provided.value)
-        # Precheck via stat() before reading the whole file into memory (R9/H9).
+        # Precheck via stat() before reading the whole file into memory (spec R9).
         _check_file_size(path, max_file_size)
         return PreparedAudio(
             kind=InputKind.ENCODED_BYTES,
@@ -421,7 +421,7 @@ def _check_duration(
 
 
 def _check_payload_size(num_bytes: int, max_file_size: int | None) -> None:
-    """Enforce an engine's ``max_file_size`` on an encoded payload (spec R4/H9).
+    """Enforce an engine's ``max_file_size`` on an encoded payload (spec R4).
 
     Args:
         num_bytes: Size of the encoded payload in bytes.
@@ -439,7 +439,7 @@ def _check_payload_size(num_bytes: int, max_file_size: int | None) -> None:
 
 
 def _check_file_size(path: Path, max_file_size: int | None) -> None:
-    """Enforce ``max_file_size`` against a file's size via ``stat`` (spec R9/H9).
+    """Enforce ``max_file_size`` against a file's size via ``stat`` (spec R9).
 
     Args:
         path: The local file path.

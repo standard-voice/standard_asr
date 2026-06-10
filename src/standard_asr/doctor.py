@@ -48,7 +48,7 @@ _NUMPY_REQ = re.compile(r"^\s*numpy\b(?:\[[^\]]*\])?(?P<spec>[^;]*)", re.IGNOREC
 # boundary-derived candidates. They are NOT a classification grid: classifying a
 # single spec as numpy1/numpy2 intersects it with the full major ranges below,
 # because a fixed grid misreads an exact off-grid pin such as ``==2.2.0`` as
-# admitting neither major (R3-CLI-DOCTOR-04).
+# admitting neither major.
 _NUMPY1_PROBES = ("1.21.0", "1.24.0", "1.26.4", "1.26.99", "1.99.99")
 _NUMPY2_PROBES = ("2.0.0", "2.1.0", "2.3.0", "2.99.99")
 
@@ -139,7 +139,7 @@ class DoctorReport:
         code and the :func:`format_report` headline: clean requires BOTH no
         detected conflict AND that conflict analysis actually ran
         (``analysis_unavailable`` is a non-clean state -- an unprovable
-        environment must not read as clean, M8). A future non-clean state is
+        environment must not read as clean). A future non-clean state is
         wired in here once, not re-derived in every consumer.
 
         Returns:
@@ -173,7 +173,7 @@ def _classify_numpy(numpy_spec: str | None) -> tuple[bool, bool]:
     emptiness against the intersection's own boundary-derived candidates
     (:func:`_intersection_is_empty`) -- never against a fixed probe grid, which
     misreads an exact off-grid pin such as ``==2.2.0`` as admitting neither
-    major (R3-CLI-DOCTOR-04). When ``packaging`` is absent the classifier
+    major. When ``packaging`` is absent the classifier
     conservatively returns ``(False, False)`` (no hard split) so it never
     reports a conflict it cannot verify.
 
@@ -281,9 +281,9 @@ def _intersection_is_empty(specs: list[SpecifierSet]) -> bool:
     against boundary-derived probe versions (:func:`_emptiness_candidates`). An
     empty intersection means no single numpy release satisfies every plugin -- a
     hard conflict. This catches disjoint same-major ranges (``==2.0.*`` vs
-    ``>=2.3``) that a 1.x/2.x major-boundary classification alone would miss
-    (CLI-4), *and* high pins (``>=2.40``, ``>=3.0``) that a bounded grid would
-    have misreported as empty (NEW-DOCTOR-1).
+    ``>=2.3``) that a 1.x/2.x major-boundary classification alone would miss,
+    *and* high pins (``>=2.40``, ``>=3.0``) that a bounded grid would have
+    misreported as empty.
 
     Args:
         specs: The :class:`packaging.specifiers.SpecifierSet`s to intersect
@@ -309,7 +309,7 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
     """Extract the *effective* numpy specifier for the running interpreter.
 
     Per-library seam: numpy is the only shared native dependency Standard ASR can
-    diagnose precisely (spec DEP.5 / CLI-3). Its 1.x-vs-2.x split is a clean
+    diagnose precisely (spec DEP.5). Its 1.x-vs-2.x split is a clean
     C-ABI break with a clean version-range signature, so a Requires-Dist version
     specifier fully determines compatibility. torch (CUDA build variants),
     onnxruntime vs onnxruntime-gpu (package-identity conflicts) and similar do
@@ -411,7 +411,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
     if report.plugins and not packaging_available():
         # With plugins present but no analyzer, doctor cannot prove the
         # environment conflict-free; the report must say so loudly rather than
-        # let an empty conflict list read as a clean verdict (M8). With no
+        # let an empty conflict list read as a clean verdict. With no
         # plugins there is nothing to analyze and absence is a non-issue.
         report.analysis_unavailable = True
         report.notes.append(
@@ -449,10 +449,10 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
     elif spec_sets and _intersection_is_empty(spec_sets):
         # Real-intersection conflict that the 1.x/2.x classification alone misses
         # -- e.g. disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``) that share
-        # no satisfying numpy release (CLI-4). A SINGLE plugin whose own numpy
+        # no satisfying numpy release. A SINGLE plugin whose own numpy
         # declaration is internally unsatisfiable (e.g. ``<2`` and ``>=2.1``) is
         # checked too (>= 1, not >= 2): an impossible self-pin is a real conflict
-        # the user must see, not a silently-passed declaration (NEW-DOCTOR-2).
+        # the user must see, not a silently-passed declaration.
         listing = ", ".join(f"{p.distribution} ({p.numpy_spec})" for p in constrained)
         if len(constrained) == 1:
             report.conflicts.append(

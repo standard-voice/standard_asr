@@ -221,7 +221,7 @@ def _gate_granularity(
     # was queried as supporting -- i.e. do not over-constrain unknown shapes.
     if not isinstance(node, WordTimestampsCap):
         return False
-    # RUNT-6: a supported WordTimestampsCap always enumerates its granularities
+    # A supported WordTimestampsCap always enumerates its granularities
     # (enforced by WordTimestampsCap's validator), so there is no "empty =>
     # honor anything" ambiguity here -- the requested value MUST be offered.
     if requested.value in set(node.granularities):

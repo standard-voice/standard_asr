@@ -517,7 +517,7 @@ def test_sync_bridge_forwards_diagnostics() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# C5 -- coalescing buffer: stale partial dropped by terminal-for-segment event
+# Coalescing buffer: stale partial dropped by terminal-for-segment event
 # --------------------------------------------------------------------------- #
 async def _drain_buffer(buf: _CoalescingBuffer) -> list[TranscriptionEvent]:
     out: list[TranscriptionEvent] = []
@@ -599,7 +599,7 @@ def test_coalescing_partial_after_delivery_starts_fresh_slot() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# C6 -- bounded buffers
+# Bounded buffers
 # --------------------------------------------------------------------------- #
 def test_event_buffer_overflow_raises() -> None:
     # Only NEW distinct-segment partials grow the buffer and can overflow;
@@ -742,7 +742,7 @@ def test_audio_queue_is_bounded() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# C7 + teardown -- sync bridge timeout / no leak
+# Teardown -- sync bridge timeout / no leak
 # --------------------------------------------------------------------------- #
 class _HangOpenSession(TranscriptionSession):
     async def _open(self) -> None:
@@ -852,7 +852,7 @@ def test_abstract_produce_raises_not_implemented() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# H10 -- reconnect scaffolding
+# Reconnect scaffolding
 # --------------------------------------------------------------------------- #
 class _ReconnectSession(TranscriptionSession):
     """Drains all audio, notes a reconnect, then finalizes -- continuity test."""
@@ -966,7 +966,7 @@ def test_lossy_reconnect_content_lost_is_non_terminal_and_stream_matches_result(
 
 
 def test_reconnect_no_content_lost_even_after_ring_wraps_many_times() -> None:
-    # H5: with content_lost defaulting False, a non-replayable source whose
+    # With content_lost defaulting False, a non-replayable source whose
     # rolling ring has wrapped many times during NORMAL operation MUST NOT get a
     # fabricated content_lost -- the old eviction-based false positive is gone.
     async def run() -> list[TranscriptionEvent]:
@@ -1139,7 +1139,7 @@ def test_reconnect_events_delivered_while_producer_blocked_on_slow_reconnect() -
 
 
 # --------------------------------------------------------------------------- #
-# H11 -- lifecycle enforcement + stable_until monotonicity
+# Lifecycle enforcement + stable_until monotonicity
 # --------------------------------------------------------------------------- #
 def test_guard_suppresses_partial_after_final() -> None:
     guard = _LifecycleGuard()
@@ -1289,7 +1289,7 @@ def test_guard_supersede_new_ids_open_then_partial_allowed() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# C1 -- supersede MUST preserve concatenated frozen text (spec ST.5.2)
+# Supersede MUST preserve concatenated frozen text (spec ST.5.2)
 # --------------------------------------------------------------------------- #
 def test_guard_supersede_2to1_merge_preserves_frozen_text() -> None:
     # Two retired segments froze "你好" and "世界"; the single replacement MUST
@@ -1558,7 +1558,7 @@ def test_session_reconciled_supersede_emits_no_obligation_diagnostic() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# STRE-2 / X-ST-2 -- supersede ordering & disjointness invariants (spec ST.5.2)
+# Supersede ordering & disjointness invariants (spec ST.5.2)
 # --------------------------------------------------------------------------- #
 def test_supersede_disjoint_enforced_at_construction() -> None:
     # old_ids n new_ids = empty MUST hold; the event model refuses to build one.
@@ -1599,7 +1599,7 @@ def test_guard_supersede_reintroduces_known_new_id_strict_raises() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# STRE-3/4 -- illegal final-after-final (spec ST.5.1)
+# Illegal final-after-final (spec ST.5.1)
 # --------------------------------------------------------------------------- #
 def test_guard_suppresses_final_after_final() -> None:
     guard = _LifecycleGuard()
@@ -1662,8 +1662,8 @@ def test_session_accepts_closed_punctuation_itn_within_frozen_prefix() -> None:
     assert closed_events
     assert text == corrected
     assert "frozen_prefix_rewritten" not in diagnostic_codes
-    # R3-STREAM-CORE-01: the legal closed shrink MUST be forwarded as-is -- not
-    # clamped back up above the corrected text (an out-of-range wire value).
+    # The legal closed shrink MUST be forwarded as-is -- not clamped back up
+    # above the corrected text (an out-of-range wire value).
     assert "stable_until_clamped" not in diagnostic_codes
     closed = closed_events[0]
     assert closed.stable_until == len(corrected)
@@ -1672,7 +1672,7 @@ def test_session_accepts_closed_punctuation_itn_within_frozen_prefix() -> None:
 
 
 def test_guard_closed_shrink_forwards_in_range_stable_until() -> None:
-    # The canonical R3-STREAM-CORE-01 case: "twenty twenty" (su=13) post-
+    # The canonical legal-closed-shrink case: "twenty twenty" (su=13) post-
     # processed by ITN into "2020" (su=4). The closed event is spec-legal; the
     # guard must forward stable_until=4, not clamp it to the prior frontier 13.
     guard = _LifecycleGuard()
@@ -1704,8 +1704,8 @@ def test_guard_closed_out_of_range_stable_until_is_repaired() -> None:
 
 
 def test_check_event_sequence_accepts_legal_closed_itn_shrink() -> None:
-    # R3-STREAM-CORE-01 compliance half: the suite must NOT fail a spec-legal
-    # closed-ITN engine with a stable_until_clamped error.
+    # The compliance half of the legal closed shrink: the suite must NOT fail
+    # a spec-legal closed-ITN engine with a stable_until_clamped error.
     from standard_asr.compliance import check_event_sequence
 
     report = check_event_sequence(
@@ -1719,8 +1719,8 @@ def test_check_event_sequence_accepts_legal_closed_itn_shrink() -> None:
 
 
 def test_event_construction_rejects_out_of_range_stable_until() -> None:
-    # R3-STREAM-CORE-02: text[:stable_until] must be a real prefix; an
-    # unsatisfiable claim is rejected at construction (negative or > len).
+    # text[:stable_until] must be a real prefix; an unsatisfiable claim is
+    # rejected at construction (negative or > len).
     with pytest.raises(ValueError, match="out of range"):
         TranscriptionEvent.partial("s", "hi", stable_until=3)
     with pytest.raises(ValueError, match="out of range"):
@@ -1740,9 +1740,9 @@ def test_event_explicit_none_detected_language_passes() -> None:
 
 
 def test_error_event_unset_recoverable_defaults_to_terminal() -> None:
-    # R3-STREAM-CORE-03: recoverable=None would be an undefined third state
-    # that is_terminal silently reads as "recoverable"; unknown recoverability
-    # must fail safe to terminal.
+    # recoverable=None would be an undefined third state that is_terminal
+    # silently reads as "recoverable"; unknown recoverability must fail safe
+    # to terminal.
     event = TranscriptionEvent(type="error", code="boom")
     assert event.recoverable is False
     assert event.is_terminal is True
@@ -1752,8 +1752,8 @@ def test_error_event_unset_recoverable_defaults_to_terminal() -> None:
 
 
 def test_event_detected_language_is_validated_and_canonicalized() -> None:
-    # R3-STREAM-CORE-05: the event field is the reconnect-continuity mechanism
-    # (spec ST.6.3) and must hold a concrete BCP-47 tag, like the result model.
+    # The event field is the reconnect-continuity mechanism (spec ST.6.3) and
+    # must hold a concrete BCP-47 tag, like the result model.
     event = TranscriptionEvent.partial("s", "hola", detected_language="ES-es")
     assert event.detected_language == "es-ES"
     with pytest.raises(ValueError, match="well-formed BCP-47"):
@@ -1764,9 +1764,9 @@ def test_event_detected_language_is_validated_and_canonicalized() -> None:
 
 
 def test_guard_supersede_out_of_order_diagnostic_names_both_causes() -> None:
-    # R3-STREAM-CORE-14: a supersede arriving AFTER its new_id's first
-    # partial/final is an ordering violation, not (only) an id-reuse one; the
-    # diagnostic must name the out-of-order cause instead of mislabeling it.
+    # A supersede arriving AFTER its new_id's first partial/final is an
+    # ordering violation, not (only) an id-reuse one; the diagnostic must name
+    # the out-of-order cause instead of mislabeling it.
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("a", "hello"))
     guard.admit(TranscriptionEvent.partial("b", "wor"))  # new_id announced early
@@ -1777,9 +1777,9 @@ def test_guard_supersede_out_of_order_diagnostic_names_both_causes() -> None:
 
 
 def test_session_constructor_rejects_degenerate_bounds() -> None:
-    # R3-STREAM-ROBUST-01: audio_queue_maxsize=0 would mean an UNBOUNDED
-    # asyncio.Queue (silently disabling feed backpressure); zero/negative
-    # deadlines and buffer bounds are configuration bugs, not no-ops.
+    # audio_queue_maxsize=0 would mean an UNBOUNDED asyncio.Queue (silently
+    # disabling feed backpressure); zero/negative deadlines and buffer bounds
+    # are configuration bugs, not no-ops.
     with pytest.raises(ValueError, match="audio_queue_maxsize"):
         _ScriptedSession([], audio_queue_maxsize=0)
     with pytest.raises(ValueError, match="done_timeout"):
@@ -1793,8 +1793,8 @@ def test_session_constructor_rejects_degenerate_bounds() -> None:
 
 
 def test_obligation_sweep_runs_on_engine_emitted_terminal() -> None:
-    # R3-STREAM-ROBUST-03: the supersede_obligation_unfulfilled sweep must run
-    # before an ENGINE-emitted terminal too, not only the clean-end done path
+    # The supersede_obligation_unfulfilled sweep must run before an
+    # ENGINE-emitted terminal too, not only the clean-end done path
     # (byte-identical streams must not differ in diagnostics()).
     async def run() -> list[str]:
         session = _ScriptedSession(
@@ -1816,9 +1816,9 @@ def test_obligation_sweep_runs_on_engine_emitted_terminal() -> None:
 
 
 def test_deadline_terminal_stops_producer_so_result_matches_stream() -> None:
-    # R3-STREAM-ROBUST-04: a synthesized deadline terminal ends iteration; the
-    # producer must be stopped with it, or it keeps feeding the reducer events
-    # the consumer never saw and result() diverges from the delivered stream.
+    # A synthesized deadline terminal ends iteration; the producer must be
+    # stopped with it, or it keeps feeding the reducer events the consumer
+    # never saw and result() diverges from the delivered stream.
     class _LateContentSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             yield TranscriptionEvent.final("s0", "delivered")
@@ -1853,7 +1853,7 @@ def test_guard_suppresses_closed_after_superseded_segment() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# X-ST-3 -- supersede with empty new_ids (pure deletion) (spec ST.5.2)
+# Supersede with empty new_ids (pure deletion) (spec ST.5.2)
 # --------------------------------------------------------------------------- #
 def test_guard_supersede_empty_new_ids_deleting_frozen_suppressed() -> None:
     guard = _LifecycleGuard()
@@ -1899,9 +1899,9 @@ def test_session_suppresses_illegal_transition_in_stream() -> None:
 
 def test_stable_text_guards_invalid_stable_until() -> None:
     # Negative / out-of-range stable_until must not produce a wrong prefix.
-    # Construction now rejects these shapes (R3-STREAM-CORE-02), so build them
-    # via model_copy (which skips validation) -- the property stays defensive
-    # for events materialized through model_construct/copy paths.
+    # Construction now rejects these shapes, so build them via model_copy
+    # (which skips validation) -- the property stays defensive for events
+    # materialized through model_construct/copy paths.
     base = TranscriptionEvent.partial("s", "hello")
     assert base.model_copy(update={"stable_until": -2}).stable_text == ""
     short = TranscriptionEvent.partial("s", "hi")
@@ -1909,7 +1909,7 @@ def test_stable_text_guards_invalid_stable_until() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# H12 -- termination guarantees (idle / wall clock) beyond per-event gap
+# Termination guarantees (idle / wall clock) beyond per-event gap
 # --------------------------------------------------------------------------- #
 def test_heartbeat_only_engine_still_terminates() -> None:
     class _HeartbeatSession(TranscriptionSession):
@@ -2196,10 +2196,10 @@ def test_survey_dsm_heartbeat_progress_does_not_reset_idle() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FV-1 -- a terminal releases the audio-input side (no feeder deadlock)
+# A terminal releases the audio-input side (no feeder deadlock)
 # --------------------------------------------------------------------------- #
 def test_deadline_terminal_wakes_feeder_blocked_in_send_audio() -> None:
-    # FV-1: a deadline terminal cancels the producer -- the bounded audio
+    # A deadline terminal cancels the producer -- the bounded audio
     # queue's only drainer -- so a feeder task blocked in send_audio() MUST be
     # released (and subsequent sends MUST raise StreamClosedError), or the
     # documented feeder+consumer pattern deadlocks inside `async with session:`.
@@ -2232,8 +2232,8 @@ def test_deadline_terminal_wakes_feeder_blocked_in_send_audio() -> None:
 
 
 def test_engine_terminal_wakes_feeder_blocked_in_send_audio() -> None:
-    # FV-1 (funnel breadth, CL-2): an ENGINE-emitted terminal also ends the
-    # producer, so the same input release MUST happen on that path too.
+    # Funnel breadth: an ENGINE-emitted terminal also ends the producer, so
+    # the same input release MUST happen on that path too.
     class _FailFastSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             await asyncio.sleep(0.05)  # let the feeder fill the queue and block
@@ -2262,10 +2262,10 @@ def test_engine_terminal_wakes_feeder_blocked_in_send_audio() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FV-2 -- deadline drains admitted-but-undelivered events (stream == result)
+# Deadline drains admitted-but-undelivered events (stream == result)
 # --------------------------------------------------------------------------- #
 def test_deadline_terminal_drains_admitted_but_undelivered_events_first() -> None:
-    # FV-2: an event admitted to the reducer but still undelivered in the
+    # An event admitted to the reducer but still undelivered in the
     # buffer when a deadline fires MUST be delivered ahead of the synthesized
     # terminal, so result() equals the streamed content (stream == result).
     class _BurstThenSilentSession(TranscriptionSession):
@@ -2300,7 +2300,7 @@ def test_deadline_terminal_drains_admitted_but_undelivered_events_first() -> Non
 
 
 def test_deadline_drain_stops_at_real_buffered_terminal() -> None:
-    # FV-2 edge: when the wall-clock cap fires with a REAL terminal already
+    # Drain edge case: when the wall-clock cap fires with a REAL terminal already
     # buffered, the drain ends with it -- exactly one terminal is delivered,
     # never a second synthesized one after it.
     class _FastDoneSession(TranscriptionSession):
@@ -2330,10 +2330,10 @@ def test_deadline_drain_stops_at_real_buffered_terminal() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FV-5 -- closed finals fulfil supersede obligations (no lying diagnostic)
+# Closed finals fulfil supersede obligations (no lying diagnostic)
 # --------------------------------------------------------------------------- #
 def test_closed_final_fulfils_supersede_obligation() -> None:
-    # FV-5: a closed final that is a replacement group's only freeze MUST
+    # A closed final that is a replacement group's only freeze MUST
     # register in the obligation ledger; finalize() must not emit a false
     # supersede_obligation_unfulfilled for fully-preserved frozen text.
     guard = _LifecycleGuard()
@@ -2358,7 +2358,7 @@ def test_closed_final_short_freeze_still_reports_unfulfilled_obligation() -> Non
 
 
 def test_feed_source_drains_without_blocking_after_terminal() -> None:
-    # FV-1 (feed mode): when the engine terminates while the fed source still
+    # Feed-mode input release: when the engine terminates while the fed source
     # has chunks, the feed task discards the remainder instead of blocking
     # forever on the dead queue -- it completes on its own.
     class _FailFastSession(TranscriptionSession):

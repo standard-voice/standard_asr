@@ -334,7 +334,7 @@ def test_srt_sorts_by_channel_on_tie() -> None:
 
 def test_channel_rejects_negative_index() -> None:
     # channel is constrained to >= 0, so the renderer's None=-1 sort sentinel
-    # can never collide with a real channel index (RESU-3).
+    # can never collide with a real channel index.
     with pytest.raises(ValueError):
         Segment(start=0.0, end=1.0, text="x", channel=-1)
     with pytest.raises(ValueError):

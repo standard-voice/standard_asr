@@ -125,7 +125,7 @@ def test_path_accepts_os_pathlike() -> None:
     assert isinstance(coerced, AudioPath)
 
 
-# --- AudioStorageUri (H6) ---
+# --- AudioStorageUri ---
 
 
 @pytest.mark.parametrize(

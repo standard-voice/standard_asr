@@ -55,7 +55,7 @@ def test_encode_rejects_3d() -> None:
 
 
 def test_encode_writes_little_endian_pcm() -> None:
-    # AUDI-2: WAV 16-bit PCM is canonically little-endian (spec R4). The encoded
+    # WAV 16-bit PCM is canonically little-endian (spec R4). The encoded
     # frame bytes must be LE regardless of host byte order. A sample of +1.0
     # maps to 32767 == 0x7FFF, which is bytes (0xFF, 0x7F) in little-endian.
     audio = np.array([1.0], dtype=np.float32)
@@ -66,7 +66,7 @@ def test_encode_writes_little_endian_pcm() -> None:
 
 
 def test_encode_sanitizes_nan_and_inf() -> None:
-    # AUDI-1: NaN/Inf must be sanitized BEFORE the int16 cast (np.clip does not
+    # NaN/Inf must be sanitized BEFORE the int16 cast (np.clip does not
     # replace NaN, and casting NaN to int16 yields garbage PCM). NaN->0,
     # +Inf->+full-scale, -Inf->-full-scale, and the result must round-trip sanely.
     audio = np.array([np.nan, np.inf, -np.inf, 0.5], dtype=np.float32)

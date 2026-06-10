@@ -94,7 +94,7 @@ class _LookAlikeConfig:
 
     A misconfigured entry point pointed at an engine's Config object would
     resolve here. It exposes ``properties`` / ``supports`` but NOT the defining
-    ``transcribe`` method, so it must be rejected (DISC-5).
+    ``transcribe`` method, so it must be rejected.
     """
 
     properties: ClassVar[dict[str, str]] = {}
@@ -125,7 +125,7 @@ def _bad_param_annotation_factory(  # pyright: ignore[reportUnusedFunction]
 ) -> _DummyASR:  # pragma: no cover - instantiation skipped
     # The parameter annotation is an unresolvable forward reference, but the
     # RETURN annotation is concrete. engine_class must read the return type
-    # without choking on the unrelated parameter (DISC-4).
+    # without choking on the unrelated parameter.
     return _DummyASR()
 
 
@@ -646,7 +646,7 @@ def test_check_entrypoints_model_id_mismatch() -> None:
     assert any("model_id" in issue.message for issue in errors)
 
 
-# ----- H6: no-instantiation engine class resolution ----------------------- #
+# ----- no-instantiation engine class resolution --------------------------- #
 
 
 def test_engine_class_resolves_from_factory_return_annotation() -> None:
@@ -763,8 +763,8 @@ def test_engine_class_raises_when_annotation_not_concrete() -> None:
 
 
 def test_engine_class_rejects_look_alike_with_only_generic_markers() -> None:
-    # DISC-5: a class exposing only generic names (properties/supports) but not
-    # the defining 'transcribe' method must be rejected -- the previous any(...)
+    # A class exposing only generic names (properties/supports) but not the
+    # defining 'transcribe' method must be rejected -- the previous any(...)
     # gate accepted it.
     eps = [
         EntryPoint(
@@ -855,8 +855,8 @@ def test_engine_class_raises_when_factory_has_no_signature() -> None:
 
 
 def test_engine_class_ignores_unresolvable_param_annotation() -> None:
-    # DISC-4: an unrelated parameter carrying an unresolvable forward reference
-    # must NOT block reading the engine class -- only the return annotation is
+    # An unrelated parameter carrying an unresolvable forward reference must
+    # NOT block reading the engine class -- only the return annotation is
     # resolved, so static metadata stays readable without instantiation.
     eps = [
         EntryPoint(
@@ -896,7 +896,7 @@ def test_engine_id_collision_strict_raises() -> None:
 def test_same_model_name_across_dists_is_shadowed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # DISC-3 regression: two DISTINCT distributions providing the SAME model key
+    # Regression guard: two DISTINCT distributions providing the SAME model key
     # (``whisper/large-v3``) are the most common engine-identity collision. The
     # ``on_conflict`` drop must not erase one provider before IC.2 counts it, or
     # the collision would silently survive (re-opening the mis-routing IC.2 guards
@@ -938,9 +938,9 @@ def test_single_dist_many_models_is_not_a_collision() -> None:
 def test_normalized_engine_id_collision_across_dists_is_shadowed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # DISC-1/H3: two distributions whose engine_ids only differ by PEP 503
-    # normalisation (``my_engine`` vs ``my-engine``) route to the same canonical
-    # id and the same env-var prefix, so they MUST be flagged as a collision.
+    # Two distributions whose engine_ids only differ by PEP 503 normalisation
+    # (``my_engine`` vs ``my-engine``) route to the same canonical id and the
+    # same env-var prefix, so they MUST be flagged as a collision.
     ep_a = _ep_with_dist("my_engine/a", "dist-one")
     ep_b = _ep_with_dist("my-engine/b", "dist-two")
 
@@ -961,9 +961,9 @@ def test_normalized_engine_id_collision_strict_raises() -> None:
 def test_dist_less_distinct_providers_collide(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # DISC-3: two entry points without distribution metadata but distinct
-    # module:attr targets are genuinely different providers of the same engine
-    # id; they must NOT collapse to a single "<unknown>" identity that hides the
+    # Two entry points without distribution metadata but distinct module:attr
+    # targets are genuinely different providers of the same engine id; they
+    # must NOT collapse to a single "<unknown>" identity that hides the
     # collision.
     ep_a = EntryPoint(
         name="whisper/a",
@@ -1022,7 +1022,7 @@ def test_create_shadowed_engine_id_warns_at_routing(
     assert any("routing is ambiguous" in r.message for r in caplog.records)
 
 
-# ----- H14: compliance class-level + sync-bridge checks -------------------- #
+# ----- compliance class-level + sync-bridge checks ------------------------- #
 
 
 def test_compliance_flags_unreadable_class_metadata() -> None:

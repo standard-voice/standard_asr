@@ -45,7 +45,7 @@ def test_secret_is_masked_in_public_dump() -> None:
 
 def test_reveal_dump_materializes_secret_plaintext() -> None:
     # reveal_dump() is the explicit, symmetric counterpart to public_dump() for
-    # in-process SDK calls (INIT-4): secrets are materialized as plaintext.
+    # in-process SDK calls: secrets are materialized as plaintext.
     cfg = _CloudConfig(api_key=SecretStr("super-secret"), base_url="https://api.acme.test")
     revealed = cfg.reveal_dump()
     assert revealed["api_key"] == "super-secret"
@@ -76,7 +76,7 @@ def test_secret_marked_non_secretstr_field_rejected_at_definition() -> None:
 
 
 def test_secret_marked_container_of_secrets_rejected_at_definition() -> None:
-    # R3-CONFIG-03: a container parametrized by a secret type satisfied the old
+    # A container parametrized by a secret type satisfied the old
     # recursive __args__ unwrap, but the whitespace-preserving wrapper and the
     # masking dumps only handle scalar secrets -- half-protected. The check is
     # scalar-only, so a secret-marked container fails loud at class definition.
@@ -146,7 +146,7 @@ def test_public_dump_leaves_unset_secret_as_none() -> None:
 
 def test_secret_whitespace_not_stripped_direct() -> None:
     # str_strip_whitespace MUST NOT silently trim a credential's contents, which
-    # could mask a paste error (X-EL-5). Plain routing fields still strip.
+    # could mask a paste error. Plain routing fields still strip.
     cfg = _CloudConfig(api_key=SecretStr("  pad-secret  "), base_url="  https://x  ")
     assert cfg.api_key is not None
     assert cfg.api_key.get_secret_value() == "  pad-secret  "
@@ -286,7 +286,7 @@ def test_from_env_wraps_secret_and_masks() -> None:
 
 def test_from_env_does_not_downgrade_strict_policy() -> None:
     # Env fallback MUST NOT let the environment flip the fail-loud `strict`
-    # safety policy to best_effort (X-EL-1).
+    # safety policy to best_effort.
     env = {"STANDARD_ASR_ACME_STRICT": "false"}
     assert "strict" not in _CloudConfig.env_overrides("acme", environ=env)
     cfg = _CloudConfig.from_env("acme", environ=env)
@@ -296,7 +296,7 @@ def test_from_env_does_not_downgrade_strict_policy() -> None:
 def test_from_env_loads_aliased_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     # IC.4: a credential declaring a provider-native alias (e.g. ElevenLabs
     # `xi-api-key`) must still load from its STANDARD_ASR_<ENGINE>_<FIELD> env var
-    # (keyed by attribute name), even under extra="forbid" (INIT-1).
+    # (keyed by attribute name), even under extra="forbid".
     from pydantic import Field
 
     class _ElevenConfig(BaseConfig[Literal["eleven"]]):
