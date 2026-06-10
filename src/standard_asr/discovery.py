@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Plugin discovery system for Standard ASR models in the current Python environment.
 
 **Quick Start:**
@@ -18,21 +21,27 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
+import typing
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, EntryPoints, entry_points
 from typing import (
+    TYPE_CHECKING,
     Any,
     Iterable,
     Iterator,
     Mapping,
     MutableMapping,
     Protocol,
-    TYPE_CHECKING,
     final,
 )
 
+from pydantic import ValidationError
+
+from .asr_config import BaseConfig
+from .error_redaction import config_error_from_validation
 from .exceptions import EntrypointValidationError, FactoryLoadError
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -76,7 +85,12 @@ def pep503_normalize(name: str) -> str:
 
 
 def _validate_engine_id(engine_id: str) -> None:
-    """Validate and log guidance for an engine identifier.
+    """Validate the *declared* form of an engine identifier.
+
+    This checks the surface syntax only. Canonicalisation to the PEP 503
+    routing identity is performed by :func:`parse_entrypoint_name` (IC.2); a
+    non-canonical-but-valid id such as ``my_engine`` passes here and is folded
+    to its canonical ``my-engine`` form downstream.
 
     Args:
         engine_id: Engine identifier string.
@@ -89,20 +103,11 @@ def _validate_engine_id(engine_id: str) -> None:
     """
 
     if "/" in engine_id:
-        raise EntrypointValidationError(
-            f"engine_id must not contain '/' (got {engine_id!r})"
-        )
+        raise EntrypointValidationError(f"engine_id must not contain '/' (got {engine_id!r})")
     if not _ENGINE_ID_RE.match(engine_id):
         raise EntrypointValidationError(
             "engine_id contains unsupported characters. Allowed: lowercase ASCII "
             "letters, digits, '.', '_' and '-'."
-        )
-    canonical = pep503_normalize(engine_id)
-    if canonical != engine_id:
-        logger.info(
-            "engine_id %r is not PEP 503 normalized. Recommended form: %r.",
-            engine_id,
-            canonical,
         )
 
 
@@ -126,9 +131,7 @@ def _validate_model_name(model_name: str) -> None:
         )
         return
     if "/" in model_name:
-        raise EntrypointValidationError(
-            f"model_name must not contain '/' (got {model_name!r})"
-        )
+        raise EntrypointValidationError(f"model_name must not contain '/' (got {model_name!r})")
     if not _MODEL_NAME_RE.match(model_name):
         raise EntrypointValidationError(
             "model_name contains unsupported characters. Allowed characters: "
@@ -166,31 +169,93 @@ def validate_model_name(model_name: str) -> None:
     _validate_model_name(model_name)
 
 
-def parse_entrypoint_name(name: str) -> tuple[str, str]:
-    """Parse an entry point name into ``(engine_id, model_name)``.
+def _parse_entrypoint_name(name: str, *, declaration: bool = False) -> tuple[str, str, str]:
+    """Parse an entry point name into ``(declared_id, canonical_id, model_name)``.
+
+    The *declared* engine id is the verbatim left segment; the *canonical* id is
+    its PEP 503 normalisation, which IC.2 makes the registry/routing identity so
+    that ``my_engine`` and ``my-engine`` resolve to one engine.
+
+    The ``declaration`` flag separates the two contexts this parser serves:
+
+    - **Lookup** (``declaration=False``, the public :func:`parse_entrypoint_name`
+      path used by :meth:`ModelRegistry.spec`/:meth:`~ModelRegistry.keys_by_engine`):
+      a bare ``"faster-whisper"`` is a convenience alias for the engine's default
+      ``"faster-whisper/"`` -- callers query the default without typing the
+      trailing slash.
+    - **Declaration** (``declaration=True``, the ``discover_models`` /
+      compliance path that reads ``pyproject.toml`` keys): the contract requires
+      the explicit ``<engine_id>/<model_name>`` form. A slash-less key is
+      rejected here, because ``plugin_entrypoints.md`` defines only
+      ``<engine_id>/<model_name>`` and the explicit-default ``<engine_id>/``; a
+      bare ``"faster-whisper"`` is an unspecified third form (most often a typo
+      that dropped ``/<model_name>``). ``discover_models`` decides whether that
+      rejection is fatal (strict) or a warn-and-accept default.
 
     Args:
-        name: Entry point name declared in pyproject.toml.
+        name: Entry point name (a ``pyproject.toml`` key when ``declaration`` is
+            ``True``, a lookup query otherwise).
+        declaration: Whether *name* is a plugin's declared key (strict form) as
+            opposed to a lookup query (lenient default alias).
 
     Returns:
-        Tuple containing engine identifier and model name (possibly empty).
+        Tuple of the declared engine id, its PEP 503 canonical form, and the
+        model name (possibly empty).
 
     Raises:
-        EntrypointValidationError: If the name does not meet formatting rules.
+        EntrypointValidationError: If the name does not meet formatting rules,
+            or is a slash-less declaration.
     """
 
     if "/" not in name:
-        engine_id, model_name = name, ""
+        if declaration:
+            raise EntrypointValidationError(
+                f"Entry point name {name!r} has no '/'. Declare it as "
+                f"{name + '/'!r} for the engine's default model, or "
+                f"{name + '/<model_name>'!r} for a named preset "
+                "(<engine_id>/<model_name>; a slash-less name is not a valid "
+                "entry point key)."
+            )
+        declared_id, model_name = name, ""
     else:
         parts = name.split("/")
         if len(parts) != 2:
             raise EntrypointValidationError(
                 f"Invalid entry point name {name!r}. Use '<engine_id>/<model_name>'."
             )
-        engine_id, model_name = parts[0], parts[1]
-    _validate_engine_id(engine_id)
+        declared_id, model_name = parts[0], parts[1]
+    _validate_engine_id(declared_id)
     _validate_model_name(model_name)
-    return engine_id, model_name
+    return declared_id, pep503_normalize(declared_id), model_name
+
+
+def parse_entrypoint_name(name: str) -> tuple[str, str]:
+    """Parse a model lookup key into ``(engine_id, model_name)``.
+
+    The returned ``engine_id`` is the **PEP 503 canonical** routing identity
+    (IC.2), not necessarily the verbatim declared segment: ``my_engine`` and
+    ``my-engine`` both yield ``my-engine`` so they resolve to a single engine.
+
+    This is the **lookup** parser (used by :meth:`ModelRegistry.spec` and
+    :meth:`~ModelRegistry.keys_by_engine`): a slash-less ``name`` is a convenience
+    alias for the engine's default model, so ``"faster-whisper"`` parses to
+    ``("faster-whisper", "")`` -- the same as ``"faster-whisper/"``. The stricter
+    declaration-side form (which requires the explicit slash) is enforced by
+    ``discover_models`` when it reads plugin keys, not here.
+
+    Args:
+        name: Model lookup key (``<engine_id>`` or ``<engine_id>/<model_name>``).
+
+    Returns:
+        Tuple containing the canonical engine identifier and model name
+        (possibly empty).
+
+    Raises:
+        EntrypointValidationError: If the name does not meet formatting rules.
+    """
+
+    _, canonical_id, model_name = _parse_entrypoint_name(name)
+    return canonical_id, model_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,8 +263,19 @@ class ModelSpec:
     """Metadata for a discovered ASR model entry point.
 
     Attributes:
-        key: Full entry point name (``engine_id/model_name``).
-        engine_id: Engine identifier (e.g., ``faster-whisper``).
+        model_id: Full routing key (``engine_id/model_name``), built from the
+            **canonical** engine id.
+        engine_id: PEP 503 canonical engine identifier and routing identity
+            (e.g., ``faster-whisper``). IC.2 makes this the unique discriminator.
+        declared_engine_id: The verbatim engine id as declared in the entry
+            point (e.g., ``faster_whisper``, which canonicalises to the
+            ``faster-whisper`` routing ``engine_id``). Kept for diagnostics
+            only; never used for routing. Equals ``engine_id`` when already
+            canonical. Note an upper-case form such as ``Faster_Whisper`` can
+            never appear here: the declared id is validated before normalisation
+            and rejects upper case outright (``plugin_entrypoints.md`` naming
+            table), unlike the non-canonical-but-valid ``_``/``.`` separators
+            which are folded.
         model_name: Model preset name (e.g., ``large-v3``), or empty for default.
         entry_point: The underlying ``importlib.metadata.EntryPoint`` object.
 
@@ -208,10 +284,11 @@ class ModelSpec:
         to get the callable that constructs the ASR engine.
     """
 
-    key: str
+    model_id: str
     engine_id: str
     model_name: str
     entry_point: EntryPoint
+    declared_engine_id: str = ""
 
     def load_factory(self) -> ASRFactory:
         """Load the factory callable for this entry point.
@@ -225,13 +302,193 @@ class ModelSpec:
         try:
             target = self.entry_point.load()
         except Exception as exc:  # noqa: BLE001
-            message = f"Failed to load entry point target for {self.key!r}: {exc!r}"
+            message = f"Failed to load entry point target for {self.model_id!r}: {exc!r}"
             raise FactoryLoadError(message) from exc
         if not callable(target):
             raise FactoryLoadError(
-                f"Entry point target for {self.key!r} is not callable (got {type(target).__name__})."
+                f"Entry point target for {self.model_id!r} is not callable "
+                f"(got {type(target).__name__})."
             )
         return target  # type: ignore[return-value]
+
+    def engine_class(self) -> type["StandardASR"]:
+        """Resolve the engine **class** without instantiating it.
+
+        This enables reading class-level ``ClassVar`` metadata
+        (``declared_capabilities``, ``properties``, ``provider_params_type``)
+        without calling the factory -- which spec §3.1 / §C requires to be
+        possible "without instantiation or authentication". Instantiating a
+        cloud engine would force credential resolution and a heavy ``__init__``,
+        turning an unauthenticated metadata read into a denial-of-service vector.
+
+        The entry-point target is *loaded* (its module is imported) but never
+        *called*. Resolution rules:
+
+        - If the target is itself a class, it is returned directly.
+        - If the target is a function (the common factory pattern), **only its
+          return annotation** is resolved and, if it names a concrete class,
+          that class is returned. We deliberately do not evaluate the whole
+          annotation namespace (e.g. via :func:`typing.get_type_hints`): an
+          unrelated parameter carrying an unresolvable forward reference must
+          not turn a static metadata read into a ``FactoryLoadError``
+          (spec §C "readable without instantiation").
+
+        Returns:
+            The engine class declaring the static metadata.
+
+        Raises:
+            FactoryLoadError: The target failed to load, or the class cannot be
+                determined without calling the factory (e.g. a factory with no
+                concrete return annotation). Callers SHOULD fall back to
+                instantiation only when they explicitly accept that cost.
+        """
+        target = self.load_factory()
+        if inspect.isclass(target):
+            return self._ensure_engine_class(target)
+
+        returned = self._resolve_return_annotation(target)
+        if inspect.isclass(returned):
+            return self._ensure_engine_class(returned)
+
+        raise FactoryLoadError(
+            f"Cannot resolve the engine class for {self.model_id!r} without "
+            "instantiation. The entry point is a factory whose return annotation "
+            f"is not a concrete class (got {returned!r}). Either expose the engine "
+            "class directly as the entry point, or annotate the factory with the "
+            "concrete engine return type so its static metadata is readable "
+            "without calling it."
+        )
+
+    def _resolve_return_annotation(self, target: ASRFactory) -> object:
+        """Resolve **only** the factory's return annotation.
+
+        Unlike :func:`typing.get_type_hints`, this never evaluates parameter
+        annotations, so an unrelated unresolvable forward reference on a
+        parameter does not block reading the engine class. A string return
+        annotation (e.g. under ``from __future__ import annotations``) is
+        resolved by a bounded attribute walk over the factory's own module
+        globals -- never ``eval`` -- so only a plain name or dotted name is
+        accepted and an annotation string cannot execute arbitrary code.
+
+        Args:
+            target: The loaded factory callable.
+
+        Returns:
+            The resolved return annotation object, or ``inspect.Signature.empty``
+            when the factory has no return annotation.
+
+        Raises:
+            FactoryLoadError: The return annotation is a string that is not a
+                plain/dotted name, or names a symbol that cannot be resolved.
+        """
+        try:
+            annotation = inspect.signature(target).return_annotation
+        except (TypeError, ValueError) as exc:
+            raise FactoryLoadError(
+                f"Cannot resolve the engine class for {self.model_id!r} without "
+                f"instantiation: the factory has no inspectable signature ({exc!r}). "
+                "Annotate the factory with a concrete engine return type."
+            ) from exc
+
+        if annotation is inspect.Signature.empty:
+            # No return annotation at all. ``inspect.Signature.empty`` is itself
+            # a class (``inspect._empty``), so return ``None`` to route the caller
+            # to its "not a concrete class" guidance rather than mis-resolving it.
+            return None
+        if not isinstance(annotation, str):
+            return annotation
+
+        module = inspect.getmodule(target)
+        globalns = getattr(module, "__dict__", {})
+        # Resolve the (string) return annotation WITHOUT eval. A factory's return
+        # type is a concrete engine class -- a plain name or a dotted name -- so a
+        # bounded attribute walk over the factory module's globals covers every
+        # legitimate case while refusing to execute arbitrary expressions (e.g. a
+        # malicious ``__import__(...)`` or ``os.system(...)`` annotation string).
+        # Anything that is not a plain/dotted name is an authoring error, reported
+        # the same way as a name that fails to resolve.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", annotation):
+            raise FactoryLoadError(
+                f"Cannot resolve the engine class for {self.model_id!r} without "
+                f"instantiation: the factory's return annotation {annotation!r} is "
+                "not a plain name or dotted name. Annotate the factory with a "
+                "concrete engine return type."
+            )
+        parts = annotation.split(".")
+        try:
+            resolved: object = globalns[parts[0]]
+            for part in parts[1:]:
+                resolved = getattr(resolved, part)
+            return resolved
+        except (KeyError, AttributeError) as exc:
+            raise FactoryLoadError(
+                f"Cannot resolve the engine class for {self.model_id!r} without "
+                f"instantiation: failed to resolve the factory's return "
+                f"annotation {annotation!r} ({exc!r}). Annotate the factory with "
+                "a concrete engine return type."
+            ) from exc
+
+    def _ensure_engine_class(self, cls: type) -> type["StandardASR"]:
+        """Validate ``cls`` is recognisably an engine class, then cast.
+
+        ``StandardASR`` is a ``runtime_checkable`` :class:`typing.Protocol` with
+        non-method (``ClassVar``) members, so ``issubclass`` against it raises
+        ``TypeError``; engines are also structural and need not subclass
+        :class:`~standard_asr.asr_interface.EngineBase`. We therefore duck-type
+        on the **unambiguous** engine marker: ``transcribe``, which spec §3.1
+        makes the always-present defining method of every engine. This converts
+        a misconfigured entry point that resolves to a wholly unrelated class
+        (e.g. one pointed at the engine's ``Config`` object, which commonly
+        exposes generic names like ``properties`` / ``supports``) into a clear
+        :class:`~standard_asr.exceptions.FactoryLoadError` instead of a later
+        ``AttributeError``.
+
+        The check is intentionally narrow: per-attribute completeness (a class
+        that has ``transcribe`` but is missing ``declared_capabilities`` /
+        ``properties``) is the job of the compliance suite, which emits precise
+        diagnostics; and metadata readers consume those attributes defensively
+        via ``getattr``, so a degenerate-but-intentional engine is still
+        tolerated. We only reject classes that lack the defining engine method,
+        plus the one machine-identifiable always-wrong case below.
+
+        The :class:`~standard_asr.asr_interface.StandardASR` protocol is rejected
+        explicitly. It is ``runtime_checkable`` so its ``transcribe`` is a real
+        method that would pass the duck-type below, yet it carries none of the
+        engine's ``ClassVar`` metadata -- annotating the factory ``-> StandardASR``
+        (the most common authoring mistake, called out in
+        ``plugin_entrypoints.md``) would otherwise resolve here and let discovery
+        silently report MISSING capabilities / a ``None`` config schema far from
+        the real cause. A protocol is never a concrete engine, so this is a
+        deterministic error, not a degenerate-but-intentional engine.
+
+        Args:
+            cls: The resolved candidate engine class.
+
+        Returns:
+            ``cls``, typed as a Standard ASR engine class.
+
+        Raises:
+            FactoryLoadError: If ``cls`` is a ``typing.Protocol`` (e.g. the
+                ``StandardASR`` protocol itself) or does not expose
+                ``transcribe``.
+        """
+        if getattr(cls, "_is_protocol", False):
+            raise FactoryLoadError(
+                f"Entry point {self.model_id!r} resolves to the {cls.__name__!r} "
+                "Protocol, not a concrete engine class. A protocol exposes no "
+                "class-level metadata (declared_capabilities / properties / "
+                "config_type), so discovery cannot read it. Annotate the factory "
+                "with your concrete engine class (e.g. '-> FasterWhisperASR'), "
+                "not the StandardASR protocol (see plugin_entrypoints.md)."
+            )
+        if not callable(getattr(cls, "transcribe", None)):
+            raise FactoryLoadError(
+                f"Entry point {self.model_id!r} resolves to {cls.__name__!r}, which does not "
+                "expose the defining Standard ASR engine method 'transcribe'. "
+                "Check the entry-point target (a common mistake is pointing it at "
+                "the engine's Config or Properties class instead of the engine)."
+            )
+        return typing.cast("type[StandardASR]", cls)
 
 
 @final
@@ -257,7 +514,7 @@ class ModelRegistry:
     **Key Methods:**
 
     - ``names()``: List all discovered model keys.
-    - ``by_engine(engine_id)``: List models for a specific engine.
+    - ``keys_by_engine(engine_id)``: List models for a specific engine.
     - ``create(name, **kwargs)``: Instantiate an ASR engine.
     - ``spec(name)``: Get metadata for a model.
 
@@ -266,9 +523,32 @@ class ModelRegistry:
         unless you're providing custom entry points for testing.
     """
 
-    def __init__(self, specs: Mapping[str, ModelSpec]) -> None:
-        """Initialize with a mapping of model specs (internal use)."""
+    def __init__(
+        self,
+        specs: Mapping[str, ModelSpec],
+        *,
+        shadowed_engine_ids: set[str] | None = None,
+    ) -> None:
+        """Initialize with a mapping of model specs (internal use).
+
+        Args:
+            specs: Mapping of ``engine_id/model_name`` keys to specs.
+            shadowed_engine_ids: Engine ids contributed by more than one
+                distribution (IC.2 identity collision). Routing on these is
+                ambiguous; consumers may surface or reject them.
+        """
         self._specs: dict[str, ModelSpec] = dict(specs)
+        self._shadowed_engine_ids: set[str] = set(shadowed_engine_ids or set())
+
+    @property
+    def shadowed_engine_ids(self) -> set[str]:
+        """Engine ids provided by more than one distribution (IC.2).
+
+        Returns:
+            A copy of the set of ambiguous engine ids. Empty when discovery
+            found no engine-identity collisions.
+        """
+        return set(self._shadowed_engine_ids)
 
     def names(self) -> list[str]:
         """List all discovered model keys, sorted alphabetically.
@@ -278,22 +558,27 @@ class ModelRegistry:
         """
         return sorted(self._specs.keys())
 
-    def by_engine(self, engine_id: str) -> list[str]:
+    def keys_by_engine(self, engine_id: str) -> list[str]:
         """List all model keys for a specific engine.
 
+        The argument is PEP 503-normalized to the canonical routing identity
+        before matching (IC.2), so a non-canonical form (e.g. ``my_engine``)
+        resolves to the same engine as :meth:`spec` / :meth:`create` -- the
+        stored ``engine_id`` is already canonical.
+
         Args:
-            engine_id: Engine identifier (e.g., ``faster-whisper``).
+            engine_id: Engine identifier (e.g., ``faster-whisper``). Any PEP 503
+                equivalent form (``Faster_Whisper``, ``faster.whisper``) matches.
 
         Returns:
             List of matching model keys, sorted alphabetically.
 
         Example:
-            >>> registry.by_engine("faster-whisper")
+            >>> registry.keys_by_engine("faster-whisper")
             ['faster-whisper/', 'faster-whisper/large-v3', 'faster-whisper/small']
         """
-        return sorted(
-            key for key, spec in self._specs.items() if spec.engine_id == engine_id
-        )
+        canonical = pep503_normalize(engine_id)
+        return sorted(key for key, spec in self._specs.items() if spec.engine_id == canonical)
 
     def spec(self, name: str) -> ModelSpec:
         """Get metadata for a model.
@@ -332,6 +617,63 @@ class ModelRegistry:
         """
         return self.spec(name).load_factory()
 
+    def engine_class(self, name: str) -> type["StandardASR"]:
+        """Resolve a model's engine class without instantiating it.
+
+        Use this to read class-level metadata (``declared_capabilities``,
+        ``properties``, ``provider_params_type``) for discovery, UI generation,
+        and REST endpoints without paying the cost (or auth requirements) of
+        constructing the engine. See :meth:`ModelSpec.engine_class`.
+
+        Args:
+            name: Model key in ``engine_id/model_name`` format.
+
+        Returns:
+            The engine class.
+
+        Raises:
+            EntrypointValidationError: Model not found.
+            FactoryLoadError: Entry point failed to load, or the class cannot be
+                determined without calling the factory.
+        """
+        return self.spec(name).engine_class()
+
+    def config_schema(self, name: str) -> dict[str, Any] | None:
+        """Return the JSON Schema of a model's init config, without instantiation.
+
+        Resolves the engine class and reads its ``config_type`` ClassVar. This
+        is the discovery path for settings UIs (G.3.1): an application can
+        render a configuration form for an engine **before** constructing it --
+        construction may require the very values (credentials, default
+        language) the form is meant to collect. Secret fields carry the
+        ``format: password`` / ``writeOnly: true`` markers in the schema, so a
+        schema-driven UI renders them safely.
+
+        Args:
+            name: Model key in ``engine_id/model_name`` format.
+
+        Returns:
+            The config JSON Schema, or ``None`` when the engine does not
+            declare a class-level ``config_type``.
+
+        Raises:
+            EntrypointValidationError: Model not found.
+            FactoryLoadError: Entry point failed to load, the engine class
+                cannot be determined without calling the factory, or
+                ``config_type`` is not a ``BaseConfig`` subclass.
+        """
+        engine_class = self.engine_class(name)
+        config_type = getattr(engine_class, "config_type", None)
+        if config_type is None:
+            return None
+        if not (isinstance(config_type, type) and issubclass(config_type, BaseConfig)):
+            raise FactoryLoadError(
+                f"Engine class for {name!r} declares config_type={config_type!r}, "
+                "which is not a BaseConfig subclass. Fix the engine's 'config_type' "
+                "ClassVar (it must reference the engine's init-config model)."
+            )
+        return config_type.model_json_schema()
+
     def create(self, name: str, /, *args: Any, **kwargs: Any) -> "StandardASR":
         """Create an ASR engine instance.
 
@@ -348,14 +690,43 @@ class ModelRegistry:
 
         Raises:
             EntrypointValidationError: Model not found.
-            FactoryLoadError: Factory failed to load or execute.
+            FactoryLoadError: Entry point failed to load or is not callable.
+            ConfigError: The model needs configuration that was missing or
+                invalid (a required credential, a bad ``default_language``, ...).
+                A construction-time pydantic ``ValidationError`` -- whether from
+                the bare constructor or an engine's own validator -- is wrapped
+                into ``ConfigError`` with the offending input scrubbed, so a
+                caller can ``except ConfigError`` uniformly (and the HTTP server
+                still maps it to 422). Use :meth:`config_schema` to discover what
+                configuration a model requires.
 
         Example:
             >>> asr = registry.create("faster-whisper/large-v3", device="cuda")
             >>> result = asr.transcribe(audio)
         """
         factory = self.get_factory(name)
-        return factory(*args, **kwargs)
+        engine_id = self.spec(name).engine_id
+        if engine_id in self._shadowed_engine_ids:
+            # IC.2: surface the ambiguity again at the point of use, not only at
+            # discovery -- routing to a shadowed engine_id is never silent.
+            logger.warning(
+                "Creating model %r whose engine_id %r is provided by more than one "
+                "distribution; config.engine routing is ambiguous. Install only one "
+                "provider for this engine_id.",
+                name,
+                engine_id,
+            )
+        try:
+            return factory(*args, **kwargs)
+        except ValidationError as exc:
+            # An engine that builds its config via the bare constructor (not
+            # Config.from_env) raises a raw pydantic ValidationError; wrap it as
+            # ConfigError here too so create() has the same explicit, secret-safe
+            # error contract as from_env (EC-1). Engines using from_env already
+            # raise ConfigError, which propagates through unwrapped.
+            raise config_error_from_validation(
+                exc, prefix=f"Invalid configuration for {name!r}"
+            ) from exc
 
     def __len__(self) -> int:  # pragma: no cover
         return len(self._specs)
@@ -413,22 +784,41 @@ def discover_models(
         raise ValueError("on_conflict must be 'warn_keep_first' or 'replace'.")
 
     found = _gather_entry_points(eps)
-    logger.debug(
-        "Discovering Standard ASR models: %d entry points located.", len(found)
-    )
+    logger.debug("Discovering Standard ASR models: %d entry points located.", len(found))
 
     specs: MutableMapping[str, ModelSpec] = {}
     errors: list[str] = []
+    # IC.2 engine-identity collision: the same engine_id MUST come from a single
+    # distribution. Accumulated over every legally-named entry point -- *before*
+    # ``on_conflict`` may drop a duplicate model key -- so that two distributions
+    # providing the same model name (the more common collision) are still both
+    # counted. The set semantics dedupe a single distribution's many models.
+    engine_dists: dict[str, set[str]] = {}
 
     for ep in found:
         if ep.group != ENTRYPOINT_GROUP:
             logger.debug("Skipping entry point with unexpected group: %r", ep)
             continue
         try:
-            engine_id, model_name = parse_entrypoint_name(ep.name)
+            # ``declaration=True``: a plugin key is held to the explicit
+            # ``<engine_id>/<model_name>`` contract, so a slash-less key (an
+            # unspecified third form, usually a dropped ``/<model_name>``) is an
+            # EntrypointValidationError handled below -- strict raises, default
+            # warns and skips, exactly like any other malformed key.
+            # The lenient slash-less alias remains available on the lookup side
+            # (``parse_entrypoint_name`` / ``spec`` / ``keys_by_engine``).
+            declared_id, engine_id, model_name = _parse_entrypoint_name(ep.name, declaration=True)
+            # IC.2: route on the PEP 503 canonical id. A non-canonical declared
+            # id (e.g. ``my_engine``) is folded to its canonical form so it
+            # cannot masquerade as a distinct engine, and so it collides with
+            # ``my-engine`` here exactly as it already does in env routing.
             key = f"{engine_id}/{model_name}"
             spec = ModelSpec(
-                key=key, engine_id=engine_id, model_name=model_name, entry_point=ep
+                model_id=key,
+                engine_id=engine_id,
+                model_name=model_name,
+                entry_point=ep,
+                declared_engine_id=declared_id,
             )
         except EntrypointValidationError as exc:
             dist = getattr(ep, "dist", None)
@@ -439,6 +829,18 @@ def discover_models(
             else:
                 logger.warning(message)
             continue
+
+        if declared_id != engine_id:
+            logger.info(
+                "engine_id %r is not PEP 503 normalized; routing it as %r (IC.2).",
+                declared_id,
+                engine_id,
+            )
+
+        # Count this provider for IC.2 *before* ``on_conflict`` can drop the spec:
+        # when two distributions expose the same model key, dropping one survivor
+        # must not hide that two distributions claim this engine_id.
+        engine_dists.setdefault(engine_id, set()).add(_dist_identity(ep))
 
         if key in specs and on_conflict == "warn_keep_first":
             logger.warning(
@@ -458,13 +860,59 @@ def discover_models(
 
         specs[key] = spec
 
+    # IC.2 engine-identity collision: the same engine_id MUST come from a single
+    # distribution. Two different distributions both claiming engine_id="whisper"
+    # (whether via distinct model names or the SAME model key) make
+    # ``config.engine`` routing ambiguous. ``engine_dists`` is populated inside
+    # the loop above so a duplicate model key resolved by ``on_conflict`` still
+    # counts both providers.
+    shadowed: dict[str, set[str]] = {
+        engine_id: dists for engine_id, dists in engine_dists.items() if len(dists) > 1
+    }
+    for engine_id, dists in shadowed.items():
+        message = (
+            f"Engine-identity collision: engine_id {engine_id!r} is provided by "
+            f"multiple distributions ({', '.join(sorted(dists))}). "
+            "config.engine routing is ambiguous; install only one provider for "
+            "this engine_id, or have authors choose distinct engine_ids."
+        )
+        if strict:
+            errors.append(message)
+        else:
+            logger.warning(message)
+
     if strict and errors:
         joined = "\n".join(f"- {message}" for message in errors)
         raise EntrypointValidationError("Invalid entry points detected:\n" + joined)
 
-    registry = ModelRegistry(specs)
+    registry = ModelRegistry(specs, shadowed_engine_ids=set(shadowed))
     logger.info("Discovered %d Standard ASR model(s).", len(registry))
     return registry
+
+
+def _dist_identity(ep: EntryPoint) -> str:
+    """Return a provider identity for *ep* used in IC.2 collision detection.
+
+    Normally this is the PEP 503-normalized distribution name. When the entry
+    point carries no distribution metadata (e.g. the ``eps=`` test-injection /
+    custom-registry path), every such entry point would otherwise collapse to a
+    single ``"<unknown>"`` sentinel, hiding a real collision between two
+    distinct providers of the same engine id. We instead fall back to the entry
+    point's ``module:attr`` target so two genuinely different dist-less
+    providers still register as distinct identities.
+
+    Args:
+        ep: The entry point to inspect.
+
+    Returns:
+        The normalized distribution name, or an ``ep:<module:attr>`` identity
+        derived from the entry point target when no distribution is available.
+    """
+    dist = getattr(ep, "dist", None)
+    name = getattr(dist, "name", None) if dist is not None else None
+    if name:
+        return pep503_normalize(name)
+    return f"ep:{ep.value}"
 
 
 __all__ = [
