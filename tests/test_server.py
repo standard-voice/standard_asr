@@ -155,6 +155,45 @@ def _config_error_construct_factory() -> (  # pyright: ignore[reportUnusedFuncti
     return _ConfigErrorOnConstructASR()
 
 
+class _ValidationErrorOnConstructASR(_DummyASR):
+    """Construction raises a pydantic ValidationError whose echoed ``input``
+    is SERVER-side material (a malformed credential from config/env)."""
+
+    def __init__(self) -> None:
+        from pydantic import BaseModel
+
+        class _EnvConfig(BaseModel):
+            api_key: int
+
+        _EnvConfig.model_validate({"api_key": "sk-SERVER-ENV-SECRET"})
+
+
+def _validation_error_construct_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ValidationErrorOnConstructASR
+):
+    return _ValidationErrorOnConstructASR()
+
+
+class _ValidationErrorTranscribeASR(_DummyASR):
+    """``transcribe`` raises a pydantic ValidationError echoing a mis-placed
+    secret (engine-side params re-validation)."""
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        from pydantic import BaseModel
+
+        class _EngineParams(BaseModel):
+            beam: int
+
+        _EngineParams.model_validate({"beam": "sk-ENGINE-SIDE-SECRET"})
+        return TranscriptionResult(text="unreachable")  # pragma: no cover
+
+
+def _validation_error_transcribe_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ValidationErrorTranscribeASR
+):
+    return _ValidationErrorTranscribeASR()
+
+
 # --- Real EngineBase engines that record what negotiation hands them ----------
 
 #: Set by the recording engines' ``_transcribe`` so tests can assert on the
@@ -610,6 +649,47 @@ def test_transcribe_file_construction_config_error_maps_to_422() -> None:
     assert resp.status_code == 422
 
 
+def test_transcribe_construction_validation_error_maps_to_422_sanitized() -> None:
+    """A pydantic ValidationError at construction -> 422 with a sanitized detail.
+
+    At construction time the echoed ``input_value`` is server-side config/env
+    material (e.g. a malformed credential), so reflecting pydantic's raw text
+    would leak it across the trust boundary.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_validation_error_construct_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 422
+    assert "sk-SERVER-ENV-SECRET" not in resp.text
+    detail = resp.json()["detail"]
+    assert detail.startswith("Invalid configuration")
+    assert "api_key" in detail
+
+
+def test_transcribe_engine_validation_error_maps_to_422_sanitized() -> None:
+    # A pydantic ValidationError raised inside transcribe() (engine-side
+    # re-validation) is client-caused -> 422, but its detail must never echo
+    # the offending input value.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_validation_error_transcribe_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 422
+    assert "sk-ENGINE-SIDE-SECRET" not in resp.text
+    detail = resp.json()["detail"]
+    assert detail.startswith("Invalid options")
+    assert "beam" in detail
+
+
 def test_ws_stream_construction_config_error_reports_bad_request() -> None:
     # A client config error during engine construction (e.g. missing credential)
     # is surfaced as a pre-bridge bad_request frame, not a route crash.
@@ -624,6 +704,25 @@ def test_ws_stream_construction_config_error_reports_bad_request() -> None:
     assert err["type"] == "error"
     assert err["code"] == "bad_request"
     assert "missing API key" in err["message"]
+
+
+def test_ws_stream_construction_validation_error_sanitized() -> None:
+    # The WS counterpart of the sanitized 422: a construction-time pydantic
+    # ValidationError surfaces as bad_request with the input echo stripped
+    # (the echoed value is server-side config/env material).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_validation_error_construct_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "bad_request"
+    assert "sk-SERVER-ENV-SECRET" not in err["message"]
+    assert err["message"].startswith("Invalid configuration")
+    assert "api_key" in err["message"]
 
 
 def test_ws_stream_construction_unexpected_error_reports_internal_no_leak() -> None:
@@ -1311,6 +1410,29 @@ def _stream_echo_factory() -> _StreamEchoEngine:  # pyright: ignore[reportUnused
     return _StreamEchoEngine()
 
 
+class _IterationFaultSession(_StreamEchoSession):
+    """Faults the bridge's forward loop itself: iteration raises directly
+    instead of being funneled into an ``engine_error`` event by the base."""
+
+    def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
+        raise RuntimeError("forward-loop fault: /secret/internal/path")
+
+
+class _IterationFaultEngine(_StreamEchoEngine):
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return _IterationFaultSession()
+
+
+def _iteration_fault_factory() -> _IterationFaultEngine:  # pyright: ignore[reportUnusedFunction]
+    return _IterationFaultEngine()
+
+
 class _StreamBestEffortEngine(_StreamEchoEngine):
     """A best_effort streaming engine: an unsupported standard param requested at
     session start is dropped + diagnosed (rather than raising), so the session
@@ -1526,6 +1648,28 @@ def test_ws_stream_establishment_unexpected_error_reports_internal_no_leak() -> 
     assert err["code"] == "internal_error"
     assert "boom" not in err["message"]
     assert "secret" not in err["message"]
+
+
+def test_ws_stream_forward_loop_fault_reports_internal_no_leak() -> None:
+    """A fault in the forward loop itself is logged and reported, not swallowed.
+
+    Engine faults are normally funneled into ``engine_error`` events by the
+    session base; this exercises the bridge's own failure path (session
+    iteration / event serialization), which must emit one generic, non-leaking
+    ``internal_error`` frame instead of silently dropping the stream.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_iteration_fault_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+    assert err["type"] == "error"
+    assert err["code"] == "internal_error"
+    assert "/secret/internal/path" not in err["message"]
+    assert "See server logs" in err["message"]
 
 
 def test_ws_stream_client_disconnect_is_handled() -> None:
@@ -1749,6 +1893,7 @@ def test_bridge_stream_pump_failure_is_logged_and_signalled(
     import asyncio
     import logging
 
+    pytest.importorskip("fastapi")
     from standard_asr.exceptions import StreamClosedError
 
     class _FakeWS:
@@ -1807,9 +1952,13 @@ def test_bridge_stream_pump_failure_is_logged_and_signalled(
 
 
 def test_bridge_stream_tolerates_send_failure() -> None:
-    # If the client vanishes mid-stream, a failing send must not propagate: the
-    # bridge swallows it, ends input, and tears the session down cleanly.
+    # If the client vanishes mid-stream, the send raises WebSocketDisconnect
+    # (starlette maps the transport OSError to it): the bridge treats it as the
+    # quiet teardown path -- no propagation, input ended, session torn down.
     import asyncio
+
+    pytest.importorskip("fastapi")
+    from fastapi import WebSocketDisconnect
 
     class _FakeWS:
         def __init__(self) -> None:
@@ -1820,7 +1969,7 @@ def test_bridge_stream_tolerates_send_failure() -> None:
 
         async def send_json(self, data: Any) -> None:
             self.send_attempted = True
-            raise RuntimeError("client gone")
+            raise WebSocketDisconnect(code=1006)
 
     class _FakeSession:
         def __init__(self) -> None:
@@ -1855,3 +2004,63 @@ def test_bridge_stream_tolerates_send_failure() -> None:
     )
     # The send was attempted and its failure was swallowed (the run completed).
     assert websocket.send_attempted is True
+
+
+def test_bridge_stream_unexpected_send_failure_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A NON-disconnect send failure must not be silently swallowed like a
+    # vanished client: it is logged server-side, and the best-effort generic
+    # frame is attempted (here it fails too, which must still not propagate).
+    import asyncio
+    import logging
+
+    pytest.importorskip("fastapi")
+
+    class _FakeWS:
+        def __init__(self) -> None:
+            self.send_attempts = 0
+
+        async def receive(self) -> dict[str, Any]:
+            return {"type": "websocket.disconnect"}
+
+        async def send_json(self, data: Any) -> None:
+            self.send_attempts += 1
+            raise RuntimeError("serialization fault: /secret/path")
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.ended = False
+
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+        async def send_audio(self, chunk: bytes) -> None:  # pragma: no cover - unused
+            return None
+
+        async def end_audio(self) -> None:
+            self.ended = True
+
+        def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
+            async def _gen() -> AsyncIterator[TranscriptionEvent]:
+                yield TranscriptionEvent.done()
+
+            return _gen()
+
+    websocket = _FakeWS()
+    with caplog.at_level(logging.ERROR, logger="standard_asr.server"):
+        asyncio.run(
+            server_module._bridge_stream(  # pyright: ignore[reportPrivateUsage]
+                websocket,  # pyright: ignore[reportArgumentType]
+                _FakeSession(),  # pyright: ignore[reportArgumentType]
+                max_frame_bytes=1024,
+                max_session_bytes=1024,
+            )
+        )
+    # The fault was logged (with detail, server-side only) and the bridge also
+    # attempted the generic internal_error frame before tearing down.
+    assert any("event forwarding failed" in rec.getMessage().lower() for rec in caplog.records)
+    assert websocket.send_attempts == 2

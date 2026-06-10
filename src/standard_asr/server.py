@@ -158,16 +158,19 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict[str, Any]]:
     return sanitized
 
 
-def _sanitized_validation_message(exc: ValidationError) -> str:
+def _sanitized_validation_message(exc: ValidationError, *, prefix: str = "Invalid options") -> str:
     """Build a safe, input-free summary string from a pydantic error.
 
     Used where a single ``detail`` string is expected (the ``options`` build
-    path). Mirrors :func:`_sanitize_validation_errors`: it names the offending
-    field(s) and the validator message but never echoes the submitted value, and
-    redacts credential-like fields entirely.
+    path, engine-construction failures). Mirrors
+    :func:`_sanitize_validation_errors`: it names the offending field(s) and the
+    validator message but never echoes the submitted value, and redacts
+    credential-like fields entirely.
 
     Args:
         exc: The pydantic validation error.
+        prefix: Leading label naming what failed validation (e.g.
+            ``"Invalid configuration"`` for engine-construction errors).
 
     Returns:
         A human-readable, secret-free error string.
@@ -176,8 +179,8 @@ def _sanitized_validation_message(exc: ValidationError) -> str:
     for entry in _sanitize_validation_errors(exc.errors()):
         loc = ".".join(str(p) for p in entry["loc"]) or "(root)"
         parts.append(f"{loc}: {entry['msg']}")
-    joined = "; ".join(parts) or "invalid options"
-    return f"Invalid options: {joined}"
+    joined = "; ".join(parts) or "invalid value"
+    return f"{prefix}: {joined}"
 
 
 class _BodySizeLimitMiddleware:
@@ -700,10 +703,25 @@ def create_app(
             )
             await websocket.close()
             return
-        except (InvalidProviderParamError, ConfigError, ValidationError) as exc:
+        except ValidationError as exc:
+            # Client-fixable, but sanitized: pydantic's str(exc) echoes the
+            # offending input value, and at construction time that value can be
+            # SERVER-side config/env material (e.g. a malformed credential), so
+            # reflecting it would cross the trust boundary.
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "bad_request",
+                    "message": _sanitized_validation_message(exc, prefix="Invalid configuration"),
+                }
+            )
+            await websocket.close()
+            return
+        except (InvalidProviderParamError, ConfigError) as exc:
             # Client-caused construction failure (bad config / missing
             # credentials / invalid options) -- the caller can fix it, so it is a
-            # bad_request, mirroring the REST 422 mapping.
+            # bad_request, mirroring the REST 422 mapping. These messages are
+            # authored for the caller (unlike pydantic's input echo above).
             await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
             await websocket.close()
             return
@@ -910,6 +928,10 @@ async def _bridge_stream(
         max_frame_bytes: Maximum size of a single binary audio frame in bytes.
         max_session_bytes: Cumulative cap on total ingested audio bytes.
     """
+    # Deferred import, mirroring create_app: fastapi is an optional extra, and
+    # this function is only ever reached from the fastapi WS route.
+    from fastapi import WebSocketDisconnect
+
     # Out-of-band terminal frames the pump asks the forward loop to deliver. A
     # byte-cap ``violation`` (``payload_too_large``) or a swallowed pump
     # ``failure`` (``stream_input_error``) stops the loop forwarding engine
@@ -997,9 +1019,26 @@ async def _bridge_stream(
                         "message": "Audio input failed. See server logs for details.",
                     }
                 )
-        except Exception:  # noqa: BLE001
+        except WebSocketDisconnect:
             # The client went away mid-stream; stop forwarding and tear down.
             pass
+        except Exception:  # noqa: BLE001
+            # Any other forward-loop fault (session iteration, event
+            # serialization) MUST NOT vanish silently (explicit > implicit /
+            # fail-loud). Log the full detail server-side and best-effort send
+            # one generic, non-leaking frame (mirrors the _pump_audio contract).
+            logger.exception("WebSocket event forwarding failed")
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "internal_error",
+                        "message": "Internal streaming error. See server logs for details.",
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                # The socket may be unusable too; the fault is already logged.
+                pass
         finally:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
@@ -1020,7 +1059,9 @@ async def _create_engine_or_http_error(
     - a client-supplied config problem surfaced during construction -- bad
       config, missing credentials, or a ``pydantic`` validation error
       (``ConfigError`` / ``InvalidProviderParamError`` / ``ValidationError``) --
-      is the caller's to fix -> ``422``;
+      is the caller's to fix -> ``422`` (the ``ValidationError`` detail is
+      sanitized: pydantic echoes input values, which here can be server-side
+      config/env material);
     - anything else is an internal fault -> a generic, scrubbed ``500`` whose
       raw text is logged server-side only (same non-leak contract as
       :func:`_run_transcription`).
@@ -1040,9 +1081,16 @@ async def _create_engine_or_http_error(
         return await asyncio.to_thread(registry.create, model)
     except (EntrypointValidationError, FactoryLoadError) as exc:
         raise http_exception(status_code=404, detail=str(exc)) from exc  # type: ignore[call-arg]
-    except (InvalidProviderParamError, ConfigError, ValidationError) as exc:
+    except ValidationError as exc:
+        # 422 like the clause below, but sanitized: pydantic's str(exc) echoes
+        # the offending input value, and at construction time that value can be
+        # server-side config/env material (e.g. a malformed credential).
+        detail = _sanitized_validation_message(exc, prefix="Invalid configuration")
+        raise http_exception(status_code=422, detail=detail) from exc  # type: ignore[call-arg]
+    except (InvalidProviderParamError, ConfigError) as exc:
         # Client-caused construction failure (bad config / missing credentials /
         # invalid options) -- the caller can fix it, so it is a 422, not a 500.
+        # These messages are authored for the caller (unlike pydantic's echo).
         raise http_exception(status_code=422, detail=str(exc)) from exc  # type: ignore[call-arg]
     except Exception as exc:  # noqa: BLE001
         # Internal/unexpected construction fault: log details, return a stable
@@ -1084,11 +1132,15 @@ async def _run_transcription(
 
     try:
         result = await asyncio.to_thread(asr.transcribe, audio, params)
+    except ValidationError as exc:
+        # Client-caused, but sanitized: pydantic's str(exc) echoes the offending
+        # input value (a mis-placed secret would be reflected back).
+        detail = _sanitized_validation_message(exc)
+        raise http_exception(status_code=422, detail=detail) from exc  # type: ignore[call-arg]
     except (
         InvalidProviderParamError,
         UnsupportedFeatureError,
         ConfigError,
-        ValidationError,
     ) as exc:
         # Client-caused: bad params / unsupported standard feature / invalid config.
         raise http_exception(status_code=422, detail=str(exc)) from exc  # type: ignore[call-arg]
