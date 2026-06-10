@@ -130,7 +130,9 @@ Returns a `TranscribeResponse` (same shape as §3.3).
 ### 3.5 `GET /v1/capabilities/{model}`
 Returns the engine's declared capability tree as `canonical_json()` — read from
 the engine **class** without instantiation. Every node carries a derived
-`supported` field. **404** if the model is unknown or declares no capabilities.
+`supported` field. **404** if the model is unknown **or unloadable** (an
+installed-but-broken plugin maps to 404 like an unknown key; the bodies differ),
+or declares no capabilities.
 
 ### 3.6 `GET /v1/params-schema/{model}`
 Returns the JSON Schema of the engine's `provider_params` (read from the engine

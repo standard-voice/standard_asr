@@ -169,8 +169,9 @@ monotonicity clamping. **You** must: emit cumulative/replace `text`; set
 reconnect, detect the disconnect, re-establish, replay `self.replay_buffer()`,
 keep `segment_id`/timestamps/language continuous, and call
 `self.note_reconnect(gap_start, gap_end, content_lost=...)`. The base always
-emits the `progress(reconnect)` event; it emits a trailing terminal
-`content_lost` error **only if you pass `content_lost=True`** — your own
+emits the `progress(reconnect)` event; it emits a trailing **non-terminal**
+`content_lost` error (`recoverable=true` — a fidelity warning; the session
+stays alive and events keep flowing) **only if you pass `content_lost=True`** — your own
 determination that the reconnect + replay could not cover the gap and
 unreplayable audio was permanently lost. The base does **not** infer loss from
 rolling-buffer eviction (a live ring is always evicting, so that would falsely

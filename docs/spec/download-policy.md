@@ -6,11 +6,14 @@ and heavy startup costs. This is critical for server environments and CI.
 ## 1. Environment Toggle
 
 `STANDARD_ASR_ALLOW_DOWNLOAD` controls whether plugins are allowed to download
-model weights at runtime.
+model weights at runtime. The table below is the **contract**
+(`standard_asr.runtime.allow_downloads()` implements it):
 
 - `1`, `true`, `yes` → downloads allowed
 - `0`, `false`, `no` → downloads disabled
 - unset → **allowed by default** (recommended for local/dev)
+- any other value → **disabled** (fail-safe: an unrecognized value must not
+  silently enable downloads; the downstream `DiscoveryError` names the fix)
 
 ## 2. Expected Engine Behavior
 
