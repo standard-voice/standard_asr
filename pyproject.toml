@@ -4,40 +4,132 @@ version = "0.1.0"
 description = "USB protocol for speech recognition libraries"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+# PEP 639 SPDX expression (Metadata 2.4). The bare `license = "Apache-2.0"`
+# string keeps the license out of the free-text License field (the deprecated
+# `{ file = ... }` form embeds the whole license text); `license-files` ships
+# the file in the sdist/wheel. The OSI license *classifier* is intentionally
+# omitted -- PEP 639 deprecates it as redundant with the expression.
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Yi-Ting Chiu", email = "mytim710@gmail.com" }]
+keywords = [
+    "asr",
+    "speech-to-text",
+    "speech-recognition",
+    "stt",
+    "transcription",
+    "audio",
+    "streaming",
+    "plugin",
+    "interface",
+    "protocol",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
 dependencies = [
-    "numpy>=1.24, <3",
-    "pydantic>=2.5, <3",
+    # Direct dependencies declare a meaningful, verified lower bound and NO
+    # speculative upper cap (dependency policy D4). Interpreter-conditional numpy
+    # floor (spec DEP.1): numpy 1.x has no cp313 wheel, so 3.13+ needs numpy 2.x.
+    "numpy>=1.26; python_version < '3.13'",
+    "numpy>=2.1; python_version >= '3.13'",
+    "pydantic>=2.5",
 ]
 
 [project.scripts]
 standard-asr = "standard_asr.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/standard-voice/standard_asr"
+Repository = "https://github.com/standard-voice/standard_asr"
+Documentation = "https://standard-voice.github.io/standard_asr/"
+Issues = "https://github.com/standard-voice/standard_asr/issues"
+Changelog = "https://github.com/standard-voice/standard_asr/blob/main/CHANGELOG.md"
+
+# PEP 735 dependency groups. `dev` aggregates the focused groups so a single
+# `uv sync` (dev is uv's default group) installs everything for local work + CI.
 [dependency-groups]
-dev = [
-    "fastapi>=0.110",
-    "httpx>=0.27",
-    "pyright>=1.1.405",
+test = [
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
+    # The FastAPI server tests drive it via httpx's TestClient. fastapi>=0.118
+    # is the verified floor where `bytes = File(...)` coerces a filename'd
+    # multipart part to bytes (0.116 still 422s); httpx>=0.28 matches starlette's
+    # TestClient transport. Both verified by the lower-bounds CI lane.
+    "httpx>=0.28",
+    "fastapi>=0.118",
     "python-multipart>=0.0.9",
-    "ruff>=0.12.11",
     "uvicorn>=0.30",
+    # Mirror the [server] extra's WS library so the dev/CI environment matches
+    # the documented `standard-asr[server]` install (TestClient bypasses the
+    # real WS transport, which is how a missing WS lib stayed green in CI).
+    "websockets>=12",
+]
+lint = ["ruff>=0.12.11"]
+typing = ["pyright>=1.1.405"]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    { include-group = "typing" },
 ]
 
 [project.optional-dependencies]
 audio = ["soundfile>=0.12", "scipy>=1.10"]
-docs = ["mkdocs-material>=9.6.18"]
-server = ["fastapi>=0.110", "python-multipart>=0.0.9", "uvicorn>=0.30"]
+docs = [
+    "mkdocs-material>=9.6.18",
+    "mkdocstrings[python]>=0.29",
+]
+# websockets is REQUIRED here: server.md promises a WebSocket streaming
+# endpoint, and bare uvicorn ships no WS protocol implementation -- without it
+# /v1/stream answers 404 on upgrade Pinned explicitly
+# instead of `uvicorn[standard]`, which would drag in uvloop/watchfiles/etc.
+server = ["fastapi>=0.118", "python-multipart>=0.0.9", "uvicorn>=0.30", "websockets>=12"]
 
 [build-system]
-requires = ["uv-build"]
+# Cap the build backend: uv_build can introduce breaking sdist/wheel format
+# changes between minors (uv's own build warns without this bound). This governs
+# the BUILD tool, not a runtime dependency, so D4's "no caps on deps" does not
+# apply. Bump deliberately alongside the [tool.uv] required-version.
+requires = ["uv-build>=0.9,<0.12"]
 build-backend = "uv_build"
+
+[tool.uv]
+# Guard against contributors rewriting the lockfile format with an old uv.
+required-version = ">=0.9"
+# Known incompatibility (see docs/compatibility-advisories.md): starlette 1.x's
+# TestClient requires `httpx2`; our server tests use the httpx-based TestClient.
+# This is a uv-level constraint on THIS repo's lock/dev resolution ONLY — it does
+# not narrow the downstream contract in [project]. Revisit 2026-09 (migrate to
+# httpx2, then drop this).
+constraint-dependencies = ["starlette<1.0"]
 
 [tool.uv.build-backend]
 module-root = "src"
 module-name = "standard_asr"
+# uv_build does NOT honor .gitignore, and it packages every file under the
+# module directory. Explicitly keep stray artifacts (a coverage DB that landed
+# in the package dir, scratch notes) from leaking downstream. The `build` CI job
+# asserts this stays true.
+# - wheel-exclude: the wheel contains ONLY the module (src/standard_asr), where
+#   no legitimate .md lives, so excluding *.md there is safe and blocks scratch
+#   notes. (README.md sits at the repo root and is never in the wheel anyway.)
+# - source-exclude: the sdist legitimately ships the root README.md (referenced
+#   by `readme = "README.md"`), so we must NOT exclude *.md here — only the
+#   coverage DBs.
+wheel-exclude = ["*.md", ".coverage", ".coverage.*"]
+source-exclude = [".coverage", ".coverage.*"]
 
 [tool.uv.workspace]
 members = ["cookbook/std_faster_whisper", "cookbook/std_dummy_asr"]
@@ -48,7 +140,12 @@ include = ["src/standard_asr", "tests", "cookbook/std_faster_whisper", "cookbook
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"
-reportUnknownMemberType = "error"
+# Downgraded from strict's default "error": this check is hostage to the
+# completeness of third-party type stubs (notably numpy, whose stubs for
+# clip/reshape/etc. vary across the 1.26 -> 2.x -> nightly versions we
+# deliberately test). Keep it visible as a warning; every other strict check
+# stays an error.
+reportUnknownMemberType = "warning"
 
 [tool.pytest.ini_options]
 addopts = [
@@ -59,7 +156,25 @@ addopts = [
     "--cov-report=xml",
 ]
 testpaths = ["tests"]
+# Warnings-as-errors so OUR deprecations/bugs fail the suite, with targeted
+# ignores for third-party (test-tooling) deprecations we don't control.
+filterwarnings = [
+    "error",
+    # starlette's TestClient deprecates the httpx backend in favour of httpx2.
+    "ignore:Using `httpx` with `starlette.testclient`:DeprecationWarning",
+    # httpx's `app=` shortcut deprecation, used by starlette's TestClient.
+    "ignore:The 'app' shortcut is now deprecated:DeprecationWarning",
+]
 
 [tool.coverage.run]
 branch = true
 source = ["standard_asr"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# NPY201 flags numpy 2.0 removed/renamed APIs so the core stays compatible with
+# both numpy 1.x and 2.x (spec DEP.2). E/F/I/W are baseline lint + import order.
+select = ["E", "F", "I", "W", "NPY201"]
