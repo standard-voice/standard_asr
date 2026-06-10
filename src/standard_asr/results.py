@@ -1,103 +1,201 @@
-"""Standard ASR transcription result models."""
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+"""Standard ASR transcription result models (constant schema).
+
+The result schema is **constant**: capabilities and parameters decide whether
+optional fields are *populated*, never the return type's shape (spec, section
+"Transcription Result"). The same :class:`Segment` / :class:`Word` submodels are
+shared between batch results and streaming events.
+
+Null rules (disambiguation):
+
+* A field is ``None`` -> the data was **not requested / not applicable**.
+* A field is ``[]`` -> it **was requested but is empty** (e.g. silence).
+* Whether a feature is *supported* is answered by capabilities, never by a
+  field being ``None``.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class Diagnostic(BaseModel):
+    """A structured, non-fatal notification from the standard layer.
+
+    Diagnostics report lossy conversions, assumed parameters, best_effort
+    degradations, and similar non-ideal paths.
+
+    Args:
+        level: Severity, ``"info"`` or ``"warning"``.
+        code: Stable machine-readable code (e.g. ``"audio_conversion"``).
+        message: Human-readable explanation.
+        param: The parameter the diagnostic concerns, if any.
+        provided: The value the application provided, if relevant.
+        effective: The value that took effect, if relevant.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    level: Literal["info", "warning"] = Field(default="info")
+    code: str = Field(..., description="Stable machine-readable diagnostic code.")
+    message: str = Field(..., description="Human-readable explanation.")
+    param: str | None = Field(default=None, description="Parameter concerned, if any.")
+    provided: Any | None = Field(default=None, description="Value provided, if any.")
+    effective: Any | None = Field(default=None, description="Value applied, if any.")
 
 
 class Word(BaseModel):
-    """Word-level timestamp information.
+    """Word-level detail, shared between batch results and streaming events.
+
+    Note:
+        Time is measured in float seconds with the origin at the first submitted
+        sample (audio time ``t=0``), the same origin as the streaming cursor
+        (spec TR.2 / ST). ``start`` / ``end`` are therefore non-negative finite
+        floats and ``end >= start`` (a zero-duration span is allowed). NaN / Inf
+        are rejected (``allow_inf_nan=False``). Adapters convert ms /
+        protobuf-duration / ticks into this frame; a negative or inverted span is
+        an adapter bug, so the model refuses to represent one rather than let it
+        surface as a silent wrong timestamp downstream.
 
     Args:
-        start: Start time in seconds.
-        end: End time in seconds.
+        start: Word start time in seconds (origin = first submitted sample;
+            non-negative, finite).
+        end: Word end time in seconds (non-negative, finite, ``>= start``).
         text: Word text.
-        probability: Optional probability score.
+        probability: Optional confidence in ``[0, 1]``.
+        logprob: Optional log-probability (kept separate from ``probability``).
         speaker: Optional speaker label.
+        channel: Optional channel index for provenance (``>= 0``).
         extra: Engine-specific extra data.
 
     Returns:
         None.
 
     Raises:
-        ValueError: If field validation fails.
+        ValueError: If field validation fails (incl. NaN/Inf, a negative time,
+            or ``end < start``).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    start: float = Field(..., description="Word start time in seconds.")
-    end: float = Field(..., description="Word end time in seconds.")
+    start: float = Field(..., ge=0.0, description="Word start time in seconds (>= 0).")
+    end: float = Field(..., ge=0.0, description="Word end time in seconds (>= 0, >= start).")
     text: str = Field(..., description="Word text.")
     probability: float | None = Field(
-        default=None, description="Optional probability score for the word."
+        default=None, ge=0.0, le=1.0, description="Confidence in [0, 1]."
+    )
+    logprob: float | None = Field(
+        default=None, description="Log-probability (separate from probability)."
     )
     speaker: str | None = Field(default=None, description="Optional speaker label.")
-    extra: dict[str, Any] = Field(
-        default_factory=dict, description="Engine-specific extra data."
-    )
+    channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
+    extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
+
+    @model_validator(mode="after")
+    def _check_span(self) -> Word:
+        """Reject an inverted span (``end < start``) at construction.
+
+        ``ge=0`` and ``allow_inf_nan=False`` already constrain each bound to a
+        non-negative finite value; this enforces the remaining TR.2 invariant
+        that a span never runs backwards. Equal bounds (zero duration) are
+        allowed.
+
+        Returns:
+            The validated word.
+
+        Raises:
+            ValueError: If ``end`` is earlier than ``start``.
+        """
+        if self.end < self.start:
+            raise ValueError(f"Word end ({self.end}) must be >= start ({self.start}).")
+        return self
 
 
 class Segment(BaseModel):
-    """Segment-level transcription metadata.
+    """Segment-level detail, shared between batch results and streaming events.
+
+    Note:
+        ``start`` / ``end`` follow the same time frame as :class:`Word`:
+        non-negative finite float seconds with origin at the first submitted
+        sample (``t=0``), ``end >= start`` (zero-duration allowed), and NaN / Inf
+        rejected (spec TR.2). Within one channel segments are time-ordered; the
+        top-level :class:`TranscriptionResult.segments` are sorted by
+        ``(start, channel)`` (cross-channel spans may overlap).
 
     Args:
-        start: Segment start time in seconds.
-        end: Segment end time in seconds.
+        start: Segment start time in seconds (origin = first submitted sample;
+            non-negative, finite).
+        end: Segment end time in seconds (non-negative, finite, ``>= start``).
         text: Segment transcript text.
         words: Optional word-level details for this segment.
-        speaker: Optional speaker label.
-        temperature: Optional decoding temperature.
-        avg_logprob: Optional average log probability.
-        compression_ratio: Optional compression ratio metric.
+        speaker: Optional speaker label (authoritative diarization shape).
+        channel: Optional channel index for provenance (``>= 0``).
+        avg_logprob: Optional average log-probability.
         no_speech_prob: Optional no-speech probability.
+        temperature: Optional decoding temperature.
+        compression_ratio: Optional compression-ratio metric.
         extra: Engine-specific extra data.
 
     Returns:
         None.
 
     Raises:
-        ValueError: If field validation fails.
+        ValueError: If field validation fails (incl. NaN/Inf, a negative time,
+            or ``end < start``).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    start: float = Field(..., description="Segment start time in seconds.")
-    end: float = Field(..., description="Segment end time in seconds.")
+    start: float = Field(..., ge=0.0, description="Segment start time in seconds (>= 0).")
+    end: float = Field(..., ge=0.0, description="Segment end time in seconds (>= 0, >= start).")
     text: str = Field(..., description="Segment transcript text.")
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this segment."
     )
     speaker: str | None = Field(default=None, description="Optional speaker label.")
-    temperature: float | None = Field(
-        default=None, description="Optional decoding temperature."
-    )
-    avg_logprob: float | None = Field(
-        default=None, description="Optional average log probability."
-    )
-    compression_ratio: float | None = Field(
-        default=None, description="Optional compression ratio metric."
-    )
+    channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
+    avg_logprob: float | None = Field(default=None, description="Optional average log-probability.")
     no_speech_prob: float | None = Field(
         default=None, description="Optional no-speech probability."
     )
-    extra: dict[str, Any] = Field(
-        default_factory=dict, description="Engine-specific extra data."
+    temperature: float | None = Field(default=None, description="Optional decoding temperature.")
+    compression_ratio: float | None = Field(
+        default=None, description="Optional compression-ratio metric."
     )
+    extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
+
+    @model_validator(mode="after")
+    def _check_span(self) -> Segment:
+        """Reject an inverted span (``end < start``) at construction.
+
+        ``ge=0`` and ``allow_inf_nan=False`` already constrain each bound to a
+        non-negative finite value; this enforces the remaining TR.2 invariant
+        that a span never runs backwards. Equal bounds (zero duration) are
+        allowed.
+
+        Returns:
+            The validated segment.
+
+        Raises:
+            ValueError: If ``end`` is earlier than ``start``.
+        """
+        if self.end < self.start:
+            raise ValueError(f"Segment end ({self.end}) must be >= start ({self.start}).")
+        return self
 
 
-class TranscriptionResult(BaseModel):
-    """Standard transcription result returned by Standard ASR engines.
+class ChannelResult(BaseModel):
+    """Per-channel transcription for multi-channel audio.
 
     Args:
-        text: Full transcript text.
-        language: Detected or forced language tag (BCP 47).
-        duration: Audio duration in seconds (if known).
-        segments: Optional list of segment metadata.
-        words: Optional flattened word-level list.
-        metadata: Engine-agnostic metadata.
-        extra: Engine-specific extra data.
+        channel: Channel index.
+        text: Full transcript for this channel.
+        segments: Optional segment-level details for this channel.
+        words: Optional flattened word-level details for this channel.
 
     Returns:
         None.
@@ -108,41 +206,181 @@ class TranscriptionResult(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    channel: int = Field(..., ge=0, description="Channel index (>= 0).")
+    text: str = Field(..., description="Full transcript for this channel.")
+    segments: list[Segment] | None = Field(
+        default=None, description="Segment-level details for this channel."
+    )
+    words: list[Word] | None = Field(
+        default=None, description="Word-level details for this channel."
+    )
+
+
+class TranscriptionResult(BaseModel):
+    """The constant-shape result returned by ``transcribe`` and stream reduction.
+
+    The top-level ``text`` / ``segments`` / ``words`` are always the complete,
+    channel- and speaker-agnostic transcription. For multi-channel audio they
+    are the time-merge of all channels (never channel-0-only), so ignoring
+    ``channels`` is always safe and lossless.
+
+    Args:
+        text: Full transcript (required).
+        detected_language: Detected language as a well-formed BCP-47 tag in
+            ``auto`` mode; ``None`` when not applicable.
+        language_confidence: Detection confidence in ``[0, 1]``.
+        duration: Audio duration in seconds, if known (non-negative, finite).
+        segments: Segments across all channels, if available. Per spec TR.2 they
+            SHOULD be sorted by ``(start, channel)`` (monotonic within a
+            channel); this ordering is an **engine obligation** the compliance
+            suite verifies, not a construct-time invariant (the streaming
+            reducer legitimately keeps arrival order for timestamp-less engines).
+            The SRT/VTT renderers re-sort defensively.
+        words: Flattened word-level details, if available.
+        channels: Per-channel results when channel separation was performed. Each
+            ``channel`` index MUST be unique (TR.4: one entry per channel),
+            enforced at construction.
+        diagnostics: Conversion / best_effort / degradation diagnostics.
+        metadata: Standardized engine-agnostic metadata.
+        extra: Engine-specific / experimental data (incl. provider formats).
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If field validation fails (incl. NaN/Inf, a negative
+            ``duration``, or a malformed ``detected_language``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
     text: str = Field(..., description="Full transcript text.")
-    language: str | None = Field(
-        default=None, description="Detected or forced language tag (BCP 47)."
+    detected_language: str | None = Field(
+        default=None, description="Detected language (well-formed BCP-47) in auto mode."
+    )
+    language_confidence: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="Detection confidence in [0, 1]."
     )
     duration: float | None = Field(
-        default=None, description="Audio duration in seconds, if available."
+        default=None, ge=0.0, description="Audio duration in seconds, if known (>= 0)."
     )
     segments: list[Segment] | None = Field(
-        default=None, description="Segment-level details, if available."
+        default=None, description="Time-ordered segments, if available."
     )
     words: list[Word] | None = Field(
         default=None, description="Flattened word-level details, if available."
     )
+    channels: list[ChannelResult] | None = Field(
+        default=None, description="Per-channel results, if channel-separated."
+    )
+    diagnostics: list[Diagnostic] = Field(
+        default_factory=lambda: cast("list[Diagnostic]", []),
+        description="Non-fatal diagnostics.",
+    )
     metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Engine-agnostic metadata for this transcription.",
+        default_factory=dict, description="Standardized engine-agnostic metadata."
     )
     extra: dict[str, Any] = Field(
-        default_factory=dict, description="Engine-specific extra data."
+        default_factory=dict, description="Engine-specific / experimental data."
     )
 
-    def text_only(self) -> str:
-        """Return the transcript text.
+    @field_validator("detected_language")
+    @classmethod
+    def _check_detected_language(cls, value: str | None) -> str | None:
+        """Validate and canonicalize ``detected_language`` (spec TR.1).
+
+        Delegates to the shared
+        :func:`~standard_asr.language.validate_detected_language` -- the same
+        rule as ``TranscriptionEvent.detected_language``, because the event
+        field feeds the next session's ``language`` (§6.3 reconnect
+        continuity) and the two sides MUST accept exactly the same tags. The
+        import is deferred because :mod:`standard_asr.language` imports from
+        this module.
 
         Args:
-            None.
+            value: The candidate detected-language tag, or ``None``.
 
         Returns:
-            Transcript text.
+            The canonicalized tag, or ``None`` when not applicable.
 
         Raises:
-            None.
+            ValueError: If ``value`` is the reserved ``"auto"`` token or is not a
+                well-formed BCP-47 tag.
         """
+        from .language import validate_detected_language
 
-        return self.text
+        return validate_detected_language(value)
+
+    @model_validator(mode="after")
+    def _check_top_level_derivable_from_channels(self) -> TranscriptionResult:
+        """Reject channel shapes the spec forbids (TR.4): duplicates and lossy top level.
+
+        Two construct-time TR.4 invariants over ``channels`` (cheap to check in
+        the single pass that already walks the list):
+
+        1. **Unique channel index.** TR.4 defines ``channels`` as one
+           ``ChannelResult`` *per channel*, so two entries with the same
+           ``channel`` index is a semantically illegal shape (which channel's
+           ``text`` wins? how does the "top level derivable from channels"
+           invariant resolve the ambiguity?). A consumer keying a dict by
+           ``channel`` index would silently lose one entry, so the model refuses
+           to represent the duplicate.
+        2. **Top level derivable from channels.** TR.4 promises that ignoring
+           ``channels`` is always safe and lossless: when ``channels`` is
+           present, the top-level fields are the time-merge of all channels. A
+           result whose channel entries carry ``segments`` / ``words`` while the
+           corresponding top-level field is ``None`` breaks that promise -- a
+           channel-agnostic consumer (e.g. the SRT/VTT renderers, built over the
+           constant top-level ``segments``) would silently lose all per-channel
+           detail. That shape is an engine bug, so the model refuses it.
+
+        The complementary TR.2 ordering invariant (top-level ``segments`` sorted
+        by ``(start, channel)``, monotonic within a channel) is intentionally
+        *not* enforced here: the streaming reducer
+        (:class:`~standard_asr.streaming.StreamReducer`) legitimately preserves
+        arrival order for timestamp-less engines and sorts only by ``start``
+        (no channel tie-break), so a strict ``(start, channel)`` construct-time
+        check would reject valid reduced results. Ordering is an engine
+        obligation the compliance suite verifies; the renderers defensively
+        re-sort at their boundary.
+
+        Returns:
+            The validated result.
+
+        Raises:
+            ValueError: If two ``channels`` entries share a ``channel`` index, or
+                if any ``channels`` entry carries ``segments`` (or ``words``)
+                while the top-level field is ``None``.
+        """
+        if self.channels is not None:
+            seen: set[int] = set()
+            for entry in self.channels:
+                if entry.channel in seen:
+                    raise ValueError(
+                        f"channels contains duplicate entries for channel index "
+                        f"{entry.channel}; spec TR.4 defines channels as one ChannelResult "
+                        f"per channel, so each channel index MUST be unique (a duplicate "
+                        f"makes the top-level merge ambiguous and silently drops data for "
+                        f"consumers keyed by channel)."
+                    )
+                seen.add(entry.channel)
+            for name in ("segments", "words"):
+                if getattr(self, name) is None and any(
+                    getattr(entry, name) is not None for entry in self.channels
+                ):
+                    raise ValueError(
+                        f"channels entries carry {name} but the top-level {name} is None; "
+                        f"spec TR.4 requires the top level to be derivable from channels "
+                        f"(ignoring channels must be lossless). Populate the top-level "
+                        f"{name} with the time-merged union of all channels' {name}."
+                    )
+        return self
 
 
-__all__ = ["Segment", "TranscriptionResult", "Word"]
+__all__ = [
+    "ChannelResult",
+    "Diagnostic",
+    "Segment",
+    "TranscriptionResult",
+    "Word",
+]
