@@ -361,6 +361,33 @@ def test_malformed_declared_selectable_tag_raises_config_error() -> None:
     assert "'arr'" in str(exc_info.value)
 
 
+class _WhitespaceDetectableProps(_ArrayProps):
+    # A malformed (whitespace-only) DECLARED detectable tag: constructible
+    # because pydantic does not run field validators on class-level defaults.
+    detectable_languages: list[str] = ["en", "   "]
+
+
+class _WhitespaceDetectableEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _WhitespaceDetectableProps()
+
+
+def test_malformed_declared_detectable_tag_raises_config_error() -> None:
+    # FV-6: the declared-side detectable canonicalization carries the same
+    # ConfigError contract as its default_language / selectable_languages
+    # siblings. Previously a best_effort 'auto' request hit the per-request
+    # canonicalization inside effective_candidate_languages and surfaced the
+    # normalizer's bare ValueError (an uncontracted HTTP 500 via the server)
+    # with the engine-misdeclaration cause invisible.
+    from standard_asr.exceptions import ConfigError
+
+    with pytest.raises(ConfigError, match="detectable_languages") as exc_info:
+        _WhitespaceDetectableEngine(strict=False).transcribe(
+            _audio(), RuntimeParams(language="auto")
+        )
+    assert "malformed" in str(exc_info.value)
+    assert "'arr'" in str(exc_info.value)
+
+
 class _NonCanonicalLangProps(_ArrayProps):
     selectable_languages: list[str] = ["en-US", "auto"]
     detectable_languages: list[str] = ["en-US"]
@@ -801,6 +828,31 @@ def test_ensure_stream_format_supported_enforces_required_rate_under_any() -> No
     assert exc_info.value.param == "audio_format.sample_rate"
     assert exc_info.value.mode == "streaming"
     assert exc_info.value.hint is not None
+
+
+def test_ensure_stream_format_supported_required_rate_beats_accepted_list() -> None:
+    # FV §7.1: required_input_sample_rate binds even when the wire rate IS in
+    # the concrete accepted_sample_rates list. accepted_sample_rates describes
+    # the batch path (which resamples to the required rate before the engine);
+    # v1 does not resample streaming wire frames, so a 16 kHz wire against a
+    # 24 kHz-required engine would be interpreted as 24 kHz frames -- a silent
+    # mistranscription. The deliberate semantics: hard-reject at establishment.
+    from standard_asr.audio_format import AudioFormat
+
+    class _ReqListProps(_ArrayProps):
+        native_sample_rate: int = 24000
+        accepted_sample_rates: list[int] | Literal["any"] = [16000, 24000]
+        required_input_sample_rate: int | None = 24000
+
+    class _ReqListEngine(_ArrayEngine):
+        properties: ClassVar[BaseProperties] = _ReqListProps()
+
+    engine = _ReqListEngine()
+    engine.ensure_stream_format_supported(AudioFormat(encoding="pcm_s16le", sample_rate=24000))
+    with pytest.raises(UnsupportedFeatureError, match="required_input_sample_rate") as exc_info:
+        engine.ensure_stream_format_supported(AudioFormat(encoding="pcm_s16le", sample_rate=16000))
+    assert exc_info.value.param == "audio_format.sample_rate"
+    assert exc_info.value.mode == "streaming"
 
 
 def test_required_input_sample_rate_must_be_accepted() -> None:

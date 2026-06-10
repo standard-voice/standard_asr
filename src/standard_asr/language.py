@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 from .results import Diagnostic
 
@@ -128,6 +129,44 @@ def is_valid_bcp47(tag: str) -> bool:
     return True
 
 
+def validate_detected_language(value: str | None) -> str | None:
+    """Validate and canonicalize a ``detected_language`` value (spec TR.1).
+
+    ``detected_language`` is the language an engine *resolved to*, so it must
+    be a concrete, well-formed BCP-47 tag -- never the reserved ``auto``
+    directive (a request to detect, not a detection result) and never a native
+    name like ``"English"``. The single shared implementation behind the
+    ``TranscriptionResult.detected_language`` and
+    ``TranscriptionEvent.detected_language`` field validators: the event field
+    is the spec §6.3 reconnect-continuity mechanism (it feeds the next
+    session's ``language``), so the two sides MUST accept exactly the same
+    tags or continuity breaks.
+
+    Args:
+        value: The candidate detected-language tag, or ``None``.
+
+    Returns:
+        The canonicalized tag, or ``None`` when not applicable.
+
+    Raises:
+        ValueError: If ``value`` is the reserved ``auto`` token or is not a
+            well-formed BCP-47 tag.
+    """
+    if value is None:
+        return None
+    if not is_valid_bcp47(value):
+        raise ValueError(
+            f"detected_language is not a well-formed BCP-47 tag: {value!r} "
+            "(e.g. 'en', 'en-US', 'zh-Hans')."
+        )
+    normalized = normalize_bcp47(value)
+    if normalized == AUTO:
+        raise ValueError(
+            "detected_language MUST be a concrete detected tag, not the reserved 'auto'."
+        )
+    return normalized
+
+
 def effective_language(
     request_language: str | None,
     default_language: str | None,
@@ -160,7 +199,7 @@ def effective_candidate_languages(
     default_candidates: list[str] | None,
     *,
     candidate_supported: bool,
-    detectable_languages: list[str],
+    detectable_languages: Collection[str],
     max_count: int | None,
     strict: bool,
 ) -> tuple[list[str] | None, list[Diagnostic]]:
@@ -171,7 +210,9 @@ def effective_candidate_languages(
         request_candidates: Per-request candidate languages, if any.
         default_candidates: The engine's default candidate languages.
         candidate_supported: Whether candidate languages are supported.
-        detectable_languages: Languages detectable in ``auto`` mode.
+        detectable_languages: Languages detectable in ``auto`` mode. Tags are
+            canonicalized here (idempotent on already-canonical input; the
+            engine base passes its pre-canonicalized, ConfigError-checked set).
         max_count: Maximum candidate count, if constrained.
         strict: Whether to raise (vs truncate/drop + diagnostic) on violations.
 
@@ -181,8 +222,11 @@ def effective_candidate_languages(
 
     Raises:
         ValueError: Unconditionally (independent of ``strict``) if a candidate is
-            a malformed BCP-47 tag or the reserved ``"auto"`` token; or, in strict
-            mode, on a non-detectable or over-limit candidate list.
+            a malformed BCP-47 tag or the reserved ``"auto"`` token, or if a
+            ``detectable_languages`` entry is empty/whitespace (engine paths
+            pre-validate this into a ``ConfigError``; the bare error is the
+            direct-call contract); or, in strict mode, on a non-detectable or
+            over-limit candidate list.
     """
     diagnostics: list[Diagnostic] = []
     if effective_lang != AUTO:
@@ -236,11 +280,13 @@ def effective_candidate_languages(
         deduped_seen.add(norm)
         deduped.append(norm)
 
-    # Canonicalize the DECLARED side exactly like the candidates above: engines
-    # may declare detectable_languages as non-canonical class-level defaults
-    # (pydantic does not run field validators on defaults), and a raw 'zh-hans'
-    # must not misreport a canonical 'zh-Hans' candidate as non-detectable.
-    # normalize_bcp47 is idempotent on already-canonical tags.
+    # Canonicalize the DECLARED side exactly like the candidates above: direct
+    # callers may pass detectable_languages as raw non-canonical declarations,
+    # and a raw 'zh-hans' must not misreport a canonical 'zh-Hans' candidate as
+    # non-detectable. normalize_bcp47 is idempotent on already-canonical tags,
+    # so the engine base's pre-canonicalized set passes through unchanged (and,
+    # having been ConfigError-checked there, can never trip the empty-tag
+    # ValueError mid-request).
     detectable = {normalize_bcp47(t) for t in detectable_languages}
     result: list[str] = []
     for norm in deduped:
@@ -287,4 +333,5 @@ __all__ = [
     "effective_language",
     "is_valid_bcp47",
     "normalize_bcp47",
+    "validate_detected_language",
 ]

@@ -282,14 +282,13 @@ class TranscriptionResult(BaseModel):
     def _check_detected_language(cls, value: str | None) -> str | None:
         """Validate and canonicalize ``detected_language`` (spec TR.1).
 
-        ``detected_language`` is the language the engine *resolved to*, so it must
-        be a concrete, well-formed BCP-47 tag -- never the reserved ``"auto"``
-        directive (which is a request to detect, not a detection result). A
-        malformed value (e.g. the native name ``"English"``) is rejected loudly
-        rather than echoed back, mirroring how :mod:`standard_asr.language`
-        validates request tags. A valid tag is normalized to canonical casing so
-        echoed values read consistently (``zh-Hans``). The import is deferred
-        because :mod:`standard_asr.language` imports from this module.
+        Delegates to the shared
+        :func:`~standard_asr.language.validate_detected_language` -- the same
+        rule as ``TranscriptionEvent.detected_language``, because the event
+        field feeds the next session's ``language`` (§6.3 reconnect
+        continuity) and the two sides MUST accept exactly the same tags. The
+        import is deferred because :mod:`standard_asr.language` imports from
+        this module.
 
         Args:
             value: The candidate detected-language tag, or ``None``.
@@ -301,21 +300,9 @@ class TranscriptionResult(BaseModel):
             ValueError: If ``value`` is the reserved ``"auto"`` token or is not a
                 well-formed BCP-47 tag.
         """
-        if value is None:
-            return None
-        from .language import AUTO, is_valid_bcp47, normalize_bcp47
+        from .language import validate_detected_language
 
-        if not is_valid_bcp47(value):
-            raise ValueError(
-                f"detected_language is not a well-formed BCP-47 tag: {value!r} "
-                "(e.g. 'en', 'en-US', 'zh-Hans')."
-            )
-        normalized = normalize_bcp47(value)
-        if normalized == AUTO:
-            raise ValueError(
-                "detected_language MUST be a concrete detected tag, not the reserved 'auto'."
-            )
-        return normalized
+        return validate_detected_language(value)
 
     @model_validator(mode="after")
     def _check_top_level_derivable_from_channels(self) -> TranscriptionResult:

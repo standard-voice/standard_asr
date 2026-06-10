@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast, runtime_checkable
 
 from .asr_config import BaseConfig
@@ -150,7 +151,7 @@ def _canonical_language(tag: str) -> str:
     return tag if tag == AUTO else normalize_bcp47(tag)
 
 
-def _language_is_selectable(tag: str, selectable: set[str]) -> bool:
+def _language_is_selectable(tag: str, selectable: AbstractSet[str]) -> bool:
     """Whether a canonical BCP-47 tag is selectable, via RFC 4647 lookup matching.
 
     A request is selectable if its canonical form -- or any prefix obtained by
@@ -198,6 +199,57 @@ class EngineBase(ABC):
     config_type: ClassVar[type[BaseConfig[str]] | None] = None
 
     config: BaseConfig[str]
+
+    #: Per-instance cache for :meth:`_canonical_language_sets` (the declared
+    #: sets are class-level and immutable for the instance's lifetime).
+    _language_sets_cache: tuple[frozenset[str], frozenset[str]] | None = None
+
+    def _canonical_language_sets(self) -> tuple[frozenset[str], frozenset[str]]:
+        """Canonicalize the declared language sets, once per engine instance.
+
+        The single owner of the declared-side canonicalization shared by
+        :meth:`_validate_language_config` and :meth:`_resolve_language_axis`:
+        ``selectable_languages`` / ``detectable_languages`` may be declared as
+        non-canonical class-level defaults (pydantic does not run field
+        validators on defaults), and BCP-47 membership is case-insensitive, so
+        every membership test must canonicalize both sides through the same
+        rule. Centralizing it also gives a malformed declared tag ONE
+        contract: the engine-naming :class:`ConfigError` (HTTP 422 through the
+        server) on every path -- previously the detectable set was
+        canonicalized per request inside
+        :func:`~standard_asr.language.effective_candidate_languages`, where an
+        empty class-default tag surfaced as an uncontracted bare
+        ``ValueError`` (an opaque HTTP 500) instead.
+
+        Returns:
+            A ``(selectable, detectable)`` pair of canonical tag sets.
+
+        Raises:
+            ConfigError: If a declared selectable or detectable tag is
+                malformed (empty or whitespace-only), naming the engine.
+        """
+        if self._language_sets_cache is not None:
+            return self._language_sets_cache
+        try:
+            selectable = frozenset(
+                _canonical_language(tag) for tag in self.properties.selectable_languages
+            )
+        except ValueError as exc:
+            raise ConfigError(
+                f"selectable_languages {self.properties.selectable_languages!r} declared "
+                f"by engine {self.properties.engine_id!r} contains a malformed tag: {exc}"
+            ) from exc
+        try:
+            detectable = frozenset(
+                _canonical_language(tag) for tag in self.properties.detectable_languages
+            )
+        except ValueError as exc:
+            raise ConfigError(
+                f"detectable_languages {self.properties.detectable_languages!r} declared "
+                f"by engine {self.properties.engine_id!r} contains a malformed tag: {exc}"
+            ) from exc
+        self._language_sets_cache = (selectable, detectable)
+        return self._language_sets_cache
 
     @property
     def effective_capabilities(self) -> DeclaredCapabilities:
@@ -331,8 +383,8 @@ class EngineBase(ABC):
         Raises:
             ConfigError: If the language axis is exposed but ``default_language``
                 is unset, malformed (empty/whitespace), or not in
-                ``selectable_languages``; or if a declared selectable tag is
-                itself malformed.
+                ``selectable_languages``; or if a declared selectable or
+                detectable tag is itself malformed.
         """
         if not self.properties.has_language_axis:
             return
@@ -344,7 +396,7 @@ class EngineBase(ABC):
                 "default_language (spec IC.6 / LANG R1)."
             )
         # Canonicalize BOTH sides: BCP-47 membership is case-insensitive, and
-        # either default_language or selectable_languages may be a non-canonical
+        # either default_language or the declared sets may be a non-canonical
         # class-level default, so a raw "en-us" must still match a canonical
         # "en-US" instead of spuriously failing LANG R1 and blocking the engine.
         # Canonicalization raises ValueError on an empty/whitespace tag; this
@@ -357,13 +409,7 @@ class EngineBase(ABC):
                 f"default_language {default!r} is malformed for engine "
                 f"{self.properties.engine_id!r}: {exc} (spec LANG R1)."
             ) from exc
-        try:
-            selectable = {_canonical_language(tag) for tag in self.properties.selectable_languages}
-        except ValueError as exc:
-            raise ConfigError(
-                f"selectable_languages {self.properties.selectable_languages!r} declared "
-                f"by engine {self.properties.engine_id!r} contains a malformed tag: {exc}"
-            ) from exc
+        selectable, _ = self._canonical_language_sets()
         if canonical_default not in selectable:
             raise ConfigError(
                 f"default_language {default!r} is not in selectable_languages "
@@ -416,12 +462,13 @@ class EngineBase(ABC):
             eff_lang = normalize_bcp47(eff_lang)
 
         diagnostics: list[Diagnostic] = []
-        # Canonicalize the selectable set too (it may be a non-canonical
-        # class-level default), so a canonical eff_lang matches case-insensitively.
-        # Membership uses RFC 4647 lookup so a region/script refinement of a
-        # selectable primary subtag (e.g. "en-US" against "en") is accepted and
-        # handed to the engine to reduce -- engines need not enumerate variants.
-        selectable = {_canonical_language(tag) for tag in self.properties.selectable_languages}
+        # Both declared sets come canonical (and ConfigError-checked) from the
+        # shared per-engine canonicalization, so a canonical eff_lang matches
+        # case-insensitively. Membership uses RFC 4647 lookup so a region/script
+        # refinement of a selectable primary subtag (e.g. "en-US" against "en")
+        # is accepted and handed to the engine to reduce -- engines need not
+        # enumerate variants.
+        selectable, detectable = self._canonical_language_sets()
         if eff_lang is not None and not _language_is_selectable(eff_lang, selectable):
             if self._strict:
                 raise UnsupportedFeatureError(
@@ -456,7 +503,7 @@ class EngineBase(ABC):
             params.candidate_languages,
             default_candidates,
             candidate_supported=caps.supports(f"{mode}.language.candidate_languages"),
-            detectable_languages=self.properties.detectable_languages,
+            detectable_languages=detectable,
             max_count=constraints,
             strict=self._strict,
         )
