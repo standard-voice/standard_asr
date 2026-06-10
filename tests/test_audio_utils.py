@@ -1,16 +1,5 @@
-# Copyright 2025 The Standard ASR Authors
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-License-Identifier: Apache-2.0
 
 """Essential tests for audio_loader module focusing on key functionality and regressions."""
 
@@ -18,20 +7,20 @@ import base64
 import io
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import numpy as np
 import pytest
-from typing import Any, cast
 from numpy.typing import NDArray
 
+from standard_asr.exceptions import AudioProcessingError, FFmpegNotFoundError
 from standard_asr.utils.audio_loader import (
+    _load_with_ffmpeg,  # pyright: ignore[reportPrivateUsage]
     load_audio,
     normalize_audio,
 )
-from standard_asr.utils.audio_loader import _load_with_ffmpeg  # pyright: ignore[reportPrivateUsage]
-from standard_asr.utils.save_utils import nparray_to_audio_file
-from standard_asr.exceptions import AudioProcessingError, FFmpegNotFoundError
+from standard_asr.utils.save_utils import save_wav
 
 
 def create_sine_wave(
@@ -39,10 +28,8 @@ def create_sine_wave(
 ) -> NDArray[np.float32]:
     """Create a test sine wave."""
     n_samples = int(sr * duration)
-    t: NDArray[np.float32] = np.arange(n_samples, dtype=np.float32) / np.float32(sr)
-    omega: np.float32 = np.float32(2.0 * np.pi * 440.0)
-    raw = np.sin(omega * t)
-    sine = raw.astype(np.float32, copy=False)
+    t = (np.arange(n_samples, dtype=np.float32) / sr).astype(np.float32)
+    sine = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
 
     if channels == 1:
         return sine
@@ -101,7 +88,9 @@ def test_nan_inf_cleanup():
     assert cleaned[1] == 0.0  # NaN -> 0
     assert cleaned[2] == 1.0  # +Inf -> 1
     assert cleaned[3] == -1.0  # -Inf -> -1
-    assert cleaned[4] == 0.3  # Good value preserved
+    # float32(0.3) != float64 0.3; use approx (NEP 50 makes the exact compare
+    # pass on numpy 2.x but fail on 1.26 — see the lower-bounds lane).
+    assert cleaned[4] == pytest.approx(0.3)  # Good value preserved
 
 
 def test_mono_stereo_shapes():
@@ -123,7 +112,7 @@ def test_load_from_bytes():
     # Create test audio and save to bytes
     audio = create_sine_wave()
     temp_path = "temp_test.wav"
-    nparray_to_audio_file(audio, temp_path, 16000)
+    save_wav(audio, temp_path, 16000)
 
     try:
         with open(temp_path, "rb") as f:
@@ -145,7 +134,7 @@ def test_load_from_base64():
     # Create test audio and convert to base64
     audio = create_sine_wave()
     temp_path = "temp_test.wav"
-    nparray_to_audio_file(audio, temp_path, 16000)
+    save_wav(audio, temp_path, 16000)
 
     try:
         with open(temp_path, "rb") as f:
@@ -189,12 +178,12 @@ def test_invalid_parameters():
     """Test various invalid parameter scenarios."""
     audio = np.array([0.1, 0.2], dtype=np.float32)
 
-    # Invalid target_sr
+    # Invalid target_sample_rate
     try:
         normalize_audio(audio, 16000, 0, 1)
         assert False, "Should have raised AudioProcessingError"
     except AudioProcessingError as e:
-        assert "target_sr must be > 0" in str(e)
+        assert "target_sample_rate must be > 0" in str(e)
 
     # Invalid target_channels
     try:
@@ -252,13 +241,13 @@ def test_resampling_length():
     """Resampled audio length should be approximately correct."""
     # Create 0.5 second of audio at 8kHz
     original_sr = 8000
-    target_sr = 16000
+    target_sample_rate = 16000
     duration = 0.5
 
     audio = create_sine_wave(original_sr, duration, 1)
-    resampled = normalize_audio(audio, original_sr, target_sr, 1)
+    resampled = normalize_audio(audio, original_sr, target_sample_rate, 1)
 
-    expected_length = int(duration * target_sr)
+    expected_length = int(duration * target_sample_rate)
     # Allow ±2 sample tolerance due to resampling
     assert abs(len(resampled) - expected_length) <= 2
 
@@ -287,7 +276,7 @@ def test_bytes_like_inputs_variants():
     """bytearray/memoryview inputs should load successfully with float32 dtype."""
     audio = create_sine_wave()
     temp_path = "temp_test_variants.wav"
-    nparray_to_audio_file(audio, temp_path, 16000)
+    save_wav(audio, temp_path, 16000)
 
     try:
         with open(temp_path, "rb") as f:
