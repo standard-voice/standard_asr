@@ -241,12 +241,12 @@ class TranscriptionEvent(BaseModel):
     def _check_detected_language(cls, value: str | None) -> str | None:
         """Validate and canonicalize ``detected_language`` (mirrors spec TR.1).
 
-        The event field is the §6.3 reconnect-continuity mechanism, so it must
-        hold a concrete, well-formed BCP-47 tag -- never the reserved ``auto``
-        directive or a native name like ``"English"`` -- exactly like
-        ``TranscriptionResult.detected_language``. The import is deferred to
-        mirror :mod:`standard_asr.results` (``standard_asr.language`` imports
-        from that module).
+        Delegates to the shared
+        :func:`~standard_asr.language.validate_detected_language` -- the same
+        rule as ``TranscriptionResult.detected_language``, because the event
+        field is the §6.3 reconnect-continuity mechanism and the two sides MUST
+        accept exactly the same tags. The import is deferred because
+        :mod:`standard_asr.language` imports from :mod:`standard_asr.results`.
 
         Args:
             value: The candidate detected-language tag, or ``None``.
@@ -258,21 +258,9 @@ class TranscriptionEvent(BaseModel):
             ValueError: If ``value`` is the reserved ``auto`` token or is not a
                 well-formed BCP-47 tag.
         """
-        if value is None:
-            return None
-        from .language import AUTO, is_valid_bcp47, normalize_bcp47
+        from .language import validate_detected_language
 
-        if not is_valid_bcp47(value):
-            raise ValueError(
-                f"detected_language is not a well-formed BCP-47 tag: {value!r} "
-                "(e.g. 'en', 'en-US', 'zh-Hans')."
-            )
-        normalized = normalize_bcp47(value)
-        if normalized == AUTO:
-            raise ValueError(
-                "detected_language MUST be a concrete detected tag, not the reserved 'auto'."
-            )
-        return normalized
+        return validate_detected_language(value)
 
     @model_validator(mode="after")
     def _check_invariants(self) -> TranscriptionEvent:
@@ -654,6 +642,27 @@ class _CoalescingBuffer:
         self._closed = True
         self._event.set()
 
+    def _pop_live(self) -> TranscriptionEvent | None:
+        """Pop the next live pending event without waiting.
+
+        Returns:
+            The next live event, or ``None`` when nothing live is pending.
+        """
+        while self._items:
+            slot = self._items.popleft()
+            if not slot.alive:
+                continue  # invalidated (coalesced-away) partial: skip.
+            self._live_count -= 1
+            event = slot.event
+            if (
+                event.type == "partial"
+                and event.segment_id is not None
+                and self._partial_slot.get(event.segment_id) is slot
+            ):
+                del self._partial_slot[event.segment_id]
+            return event
+        return None
+
     async def get(self) -> TranscriptionEvent | None:
         """Pop the next live event, awaiting one if necessary.
 
@@ -661,23 +670,29 @@ class _CoalescingBuffer:
             The next event, or ``None`` once closed and drained.
         """
         while True:
-            while self._items:
-                slot = self._items.popleft()
-                if not slot.alive:
-                    continue  # invalidated (coalesced-away) partial: skip.
-                self._live_count -= 1
-                event = slot.event
-                if (
-                    event.type == "partial"
-                    and event.segment_id is not None
-                    and self._partial_slot.get(event.segment_id) is slot
-                ):
-                    del self._partial_slot[event.segment_id]
+            event = self._pop_live()
+            if event is not None:
                 return event
             if self._closed:
                 return None
             self._event.clear()
             await self._event.wait()
+
+    def drain(self) -> list[TranscriptionEvent]:
+        """Synchronously pop every live pending event (deadline-drain path).
+
+        Used when an iteration deadline fires: events already admitted to the
+        reducer (and therefore part of ``result()``) but still buffered MUST
+        reach the consumer ahead of the synthesized terminal, or ``result()``
+        would diverge from the delivered stream.
+
+        Returns:
+            The pending live events, in delivery order.
+        """
+        drained: list[TranscriptionEvent] = []
+        while (event := self._pop_live()) is not None:
+            drained.append(event)
+        return drained
 
 
 class _Slot:
@@ -914,6 +929,17 @@ class _LifecycleGuard:
             su = event.stable_until or 0
             if su > 0 and event.text is not None:
                 self._frozen_text[sid] = event.text[:su]
+                if is_closed_final and obligation is not None:
+                    # Bookkeeping only: a closed final may legally rewrite frozen
+                    # text (the divergence rejection below is exempted for it),
+                    # but its freeze still fulfils the segment's supersede
+                    # obligation. Without recording it here -- the rejection
+                    # path's _supersede_preserves_frozen is the ledger's only
+                    # other writer -- a closed final that is a replacement
+                    # group's sole freeze never registers, and finalize() emits
+                    # a false supersede_obligation_unfulfilled for fully
+                    # preserved text (a lying diagnostic).
+                    obligation.frozen[sid] = self._frozen_text[sid]
                 if not is_closed_final and not self._supersede_preserves_frozen(sid):
                     assert obligation is not None
                     # Capture the diverging comparison BEFORE the rollback below
@@ -1224,6 +1250,10 @@ class TranscriptionSession(ABC):
         self._guard = _LifecycleGuard(strict=strict_lifecycle)
         self._mode: Literal["feed", "manual"] | None = None
         self._ended = False
+        #: Set by :meth:`_terminate` once a terminal event is on its way to the
+        #: consumer: the audio queue has no consumer anymore, so the put side is
+        #: released (blocked putters wake; new ``send_audio`` calls raise).
+        self._input_released = False
         self._done_timeout = done_timeout
         self._max_idle = max_idle
         self._max_session_seconds = max_session_seconds
@@ -1459,7 +1489,17 @@ class TranscriptionSession(ABC):
         Args:
             chunk: The audio chunk.
         """
+        if self._input_released:
+            # A terminal was already delivered: the queue has no consumer.
+            # Discard instead of blocking forever on a dead queue.
+            return
         await self._audio_queue.put(chunk)
+        if self._input_released:
+            # The session terminated while this put was blocked; it only
+            # completed because _release_audio_input() drained the queue.
+            # Re-drain so any putter still blocked behind this one wakes too
+            # (cascade), discarding the chunk just queued (nothing consumes it).
+            self._release_audio_input()
 
     async def send_audio(self, chunk: bytes) -> None:
         """Manually send one audio chunk (mutually exclusive with ``feed``).
@@ -1470,7 +1510,10 @@ class TranscriptionSession(ABC):
             chunk: The audio chunk.
 
         Raises:
-            StreamClosedError: If ``feed`` was used or the input was ended.
+            StreamClosedError: If ``feed`` was used, the input was ended, or
+                the session already delivered a terminal event (the audio
+                queue has no consumer anymore; raising beats blocking forever
+                on a dead queue).
         """
         # Claim manual ownership FIRST so mixing with an active feed always
         # raises the deterministic mixing error -- otherwise the feed task
@@ -1479,6 +1522,11 @@ class TranscriptionSession(ABC):
         self._claim_mode("manual")
         if self._ended:
             raise StreamClosedError("Cannot send_audio after end_audio().")
+        if self._input_released:
+            raise StreamClosedError(
+                "Cannot send_audio after the session terminated (a terminal "
+                "event ended the stream; no consumer reads the audio queue)."
+            )
         await self._put_audio(chunk)
 
     async def end_audio(self) -> None:
@@ -1491,7 +1539,10 @@ class TranscriptionSession(ABC):
             StreamClosedError: If ``feed`` was used.
         """
         self._claim_mode("manual")
-        if self._ended:
+        if self._ended or self._input_released:
+            # Already ended -- or the session terminated and released the
+            # input side, in which case the end-marker would land in a dead
+            # queue (and could block on a full one).
             return
         self._ended = True
         await self._audio_queue.put(None)
@@ -1560,23 +1611,18 @@ class TranscriptionSession(ABC):
                     continue  # illegal transition: suppressed (diagnosed).
                 self._reducer.add(admitted)
                 if admitted.is_terminal:
-                    # The obligation sweep MUST run before EVERY terminal, not
-                    # only the clean-end ``done`` below: an engine-emitted
-                    # terminal would otherwise silently drop the spec-mandated
-                    # ``supersede_obligation_unfulfilled`` diagnostic
-                    # (idempotent, so the clean path's call stays).
-                    self._guard.finalize()
-                    self._buffer.put_forced(admitted)
+                    # Engine-emitted terminal: run the shared terminal funnel,
+                    # then deliver drop-proof.
+                    self._buffer.put_forced(self._terminate(admitted))
                     return
                 self._buffer.put(admitted)
             self._drain_pending_reconnects()
-            # Session ended cleanly: sweep for supersede obligations whose
-            # replacement never re-froze all the retired frozen text. Any such
-            # lineage loss is permitted but MUST be reported honestly as a soft
-            # diagnostic (spec ST.5.2); it surfaces through diagnostics().
-            self._guard.finalize()
+            # Session ended cleanly: the funnel sweeps for supersede obligations
+            # whose replacement never re-froze all the retired frozen text. Any
+            # such lineage loss is permitted but MUST be reported honestly as a
+            # soft diagnostic (spec ST.5.2); it surfaces through diagnostics().
             # done MUST never be dropped: bypass the bound so it always lands.
-            self._buffer.put_forced(TranscriptionEvent.done())
+            self._buffer.put_forced(self._terminate(TranscriptionEvent.done()))
         except asyncio.CancelledError:  # pragma: no cover - teardown path
             raise
         except EventBufferOverflow:
@@ -1611,9 +1657,12 @@ class TranscriptionSession(ABC):
             code: The error code.
             detail: Human-readable detail stored under ``extra["detail"]``.
         """
-        self._guard.finalize()
         self._buffer.put_forced(
-            TranscriptionEvent.make_error(code=code, recoverable=False, extra={"detail": detail})
+            self._terminate(
+                TranscriptionEvent.make_error(
+                    code=code, recoverable=False, extra={"detail": detail}
+                )
+            )
         )
 
     def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
@@ -1647,7 +1696,8 @@ class TranscriptionSession(ABC):
             if self._max_session_seconds is not None:
                 remaining = self._max_session_seconds - (now - start)
                 if remaining <= 0:
-                    yield self._synthesize_terminal("session_timeout")
+                    for tail in self._deadline_events("session_timeout"):
+                        yield tail
                     return
                 timeout = min(timeout, remaining)
             try:
@@ -1655,15 +1705,16 @@ class TranscriptionSession(ABC):
             except asyncio.TimeoutError:
                 now = self._monotonic()
                 if self._max_idle is not None and (now - last_content) >= self._max_idle:
-                    yield self._synthesize_terminal("stream_stalled")
-                    return
-                if (
+                    code = "stream_stalled"
+                elif (
                     self._max_session_seconds is not None
                     and (now - start) >= self._max_session_seconds
                 ):
-                    yield self._synthesize_terminal("session_timeout")
-                    return
-                yield self._synthesize_terminal("done_timeout")
+                    code = "session_timeout"
+                else:
+                    code = "done_timeout"
+                for tail in self._deadline_events(code):
+                    yield tail
                 return
             if event is None:
                 return
@@ -1673,29 +1724,92 @@ class TranscriptionSession(ABC):
             if event.is_terminal:
                 return
 
-    def _synthesize_terminal(self, code: str) -> TranscriptionEvent:
-        """Build a deadline terminal and stop the producer behind it.
+    def _terminate(self, terminal: TranscriptionEvent) -> TranscriptionEvent:
+        """Run the bookkeeping every terminal-emission path MUST share.
 
-        A synthesized terminal (``done_timeout`` / ``stream_stalled`` /
-        ``session_timeout``) ends iteration while the producer may still be
-        running; left alive until ``__aexit__`` it keeps feeding the reducer
-        events the consumer never saw, so :meth:`result` would diverge from
-        the delivered stream (the stream == result invariant). Cancel the
-        producer/feed tasks now -- cancellation is idempotent and
-        ``__aexit__`` still awaits them -- and run the obligation sweep so
-        :meth:`diagnostics` stays complete on this exit path too.
+        The single funnel for all terminal sites (engine-emitted terminal,
+        clean-end ``done``, :meth:`_force_error`, and the deadline synthesis
+        in :meth:`_deadline_events`), so a future terminal path cannot
+        silently skip a step:
+
+        * run the supersede-obligation sweep (idempotent) so
+          :meth:`diagnostics` is complete on every exit path; and
+        * release the audio-input side: a terminal also ends the producer --
+          the audio queue's only drainer -- so without a release, an
+          application feeder blocked in :meth:`send_audio` on the bounded
+          queue would never wake (a deadlock inside ``async with session:``).
 
         Args:
-            code: The terminal error code.
+            terminal: The terminal event about to be delivered.
 
         Returns:
-            The non-recoverable terminal ``error`` event.
+            The terminal event, for delivery by the caller.
+        """
+        self._guard.finalize()
+        self._release_audio_input()
+        return terminal
+
+    def _release_audio_input(self) -> None:
+        """Release the put side of the bounded audio queue (terminal teardown).
+
+        After a terminal, nothing consumes the audio queue anymore (the
+        producer -- :meth:`audio_chunks`'s ``get`` loop -- is finished or
+        cancelled), but a feeder may be blocked in ``await queue.put(...)``.
+        Mark the input released and drain the queue: each drained item wakes
+        one blocked putter (whose now-completing chunk is discarded -- the
+        stream already carries the terminal), and the putter path
+        (:meth:`_put_audio`) re-drains after its put completes, so a cascade
+        of blocked putters all wake. Subsequent :meth:`send_audio` calls
+        raise :class:`StreamClosedError` instead of blocking on a dead queue.
+        """
+        self._input_released = True
+        while True:
+            try:
+                self._audio_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+    def _deadline_events(self, code: str) -> list[TranscriptionEvent]:
+        """Build the deadline-termination tail: drained backlog + terminal.
+
+        A deadline (``done_timeout`` / ``stream_stalled`` /
+        ``session_timeout``) ends iteration while the producer may still be
+        running. Three things MUST happen, in order, for the stream == result
+        invariant to hold:
+
+        1. Cancel the producer/feed tasks so no FURTHER event reaches the
+           reducer (cancellation is idempotent; ``__aexit__`` still awaits
+           the tasks).
+        2. Drain events already admitted to the reducer but still undelivered
+           in the buffer: they are part of :meth:`result`, so the consumer
+           must see them ahead of the terminal (the deadline is about engine
+           silence, not about suppressing legally admitted work). The drain
+           is synchronous and the producer is cancellation-pending, so the
+           backlog cannot grow underneath it.
+        3. Append the synthesized terminal through the shared
+           :meth:`_terminate` funnel -- unless the backlog already ends in a
+           REAL terminal (possible when the wall-clock cap fires at the top
+           of the iteration loop with a terminal still buffered), which ends
+           the stream itself; a second terminal after it would violate the
+           single-terminal contract.
+
+        Args:
+            code: The synthesized terminal error code.
+
+        Returns:
+            The events to deliver, ending in exactly one terminal.
         """
         for task in (self._producer_task, self._feed_task):
             if task is not None and not task.done():
                 task.cancel()
-        self._guard.finalize()
-        return TranscriptionEvent.make_error(code=code, recoverable=False)
+        events: list[TranscriptionEvent] = []
+        for event in self._buffer.drain():
+            events.append(event)
+            if event.is_terminal:
+                # The producer already ran the _terminate funnel for it.
+                return events
+        events.append(self._terminate(TranscriptionEvent.make_error(code=code, recoverable=False)))
+        return events
 
     def _attach_initial_diagnostics(self, diagnostics: list[Diagnostic]) -> None:
         """Record standard-layer diagnostics produced before the session ran.

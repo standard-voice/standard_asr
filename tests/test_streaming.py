@@ -2193,3 +2193,186 @@ def test_survey_dsm_heartbeat_progress_does_not_reset_idle() -> None:
     assert TranscriptionEvent.partial("s", "x").is_content is True
     assert TranscriptionEvent.final("s", "x").is_content is True
     assert TranscriptionEvent.supersede(["a"], ["b"]).is_content is True
+
+
+# --------------------------------------------------------------------------- #
+# FV-1 -- a terminal releases the audio-input side (no feeder deadlock)
+# --------------------------------------------------------------------------- #
+def test_deadline_terminal_wakes_feeder_blocked_in_send_audio() -> None:
+    # FV-1: a deadline terminal cancels the producer -- the bounded audio
+    # queue's only drainer -- so a feeder task blocked in send_audio() MUST be
+    # released (and subsequent sends MUST raise StreamClosedError), or the
+    # documented feeder+consumer pattern deadlocks inside `async with session:`.
+    class _SilentEngineSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            await asyncio.sleep(10)  # consumes no audio, emits nothing
+            yield TranscriptionEvent.done()  # pragma: no cover
+
+    async def run() -> tuple[list[TranscriptionEvent], str]:
+        session = _SilentEngineSession(done_timeout=0.05, audio_queue_maxsize=1)
+        async with session:
+
+            async def _feeder() -> str:
+                try:
+                    while True:
+                        await session.send_audio(b"x")
+                except StreamClosedError:
+                    return "released"
+
+            feeder = asyncio.create_task(_feeder())
+            events = [event async for event in session]
+            # Without the input release this await never completes (deadlock).
+            outcome = await asyncio.wait_for(feeder, timeout=2.0)
+        return events, outcome
+
+    events, outcome = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "done_timeout"
+    assert outcome == "released"
+
+
+def test_engine_terminal_wakes_feeder_blocked_in_send_audio() -> None:
+    # FV-1 (funnel breadth, CL-2): an ENGINE-emitted terminal also ends the
+    # producer, so the same input release MUST happen on that path too.
+    class _FailFastSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            await asyncio.sleep(0.05)  # let the feeder fill the queue and block
+            yield TranscriptionEvent.make_error(code="engine_gave_up", recoverable=False)
+
+    async def run() -> tuple[list[TranscriptionEvent], str]:
+        session = _FailFastSession(audio_queue_maxsize=1)
+        async with session:
+
+            async def _feeder() -> str:
+                try:
+                    while True:
+                        await session.send_audio(b"x")
+                except StreamClosedError:
+                    return "released"
+
+            feeder = asyncio.create_task(_feeder())
+            events = [event async for event in session]
+            outcome = await asyncio.wait_for(feeder, timeout=2.0)
+        return events, outcome
+
+    events, outcome = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "engine_gave_up"
+    assert outcome == "released"
+
+
+# --------------------------------------------------------------------------- #
+# FV-2 -- deadline drains admitted-but-undelivered events (stream == result)
+# --------------------------------------------------------------------------- #
+def test_deadline_terminal_drains_admitted_but_undelivered_events_first() -> None:
+    # FV-2: an event admitted to the reducer but still undelivered in the
+    # buffer when a deadline fires MUST be delivered ahead of the synthesized
+    # terminal, so result() equals the streamed content (stream == result).
+    class _BurstThenSilentSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.final("s0", "seen")
+            yield TranscriptionEvent.final("s1", "buffered")
+            await asyncio.sleep(10)  # then go silent (no terminal)
+
+    async def run() -> tuple[list[TranscriptionEvent], str]:
+        session = _BurstThenSilentSession(done_timeout=5.0, max_idle=None, max_session_seconds=1.0)
+        # Deterministic clock: deliver s0, then jump past the wall-clock budget
+        # so the next top-of-loop check fires with s1 still buffered.
+        ticks = iter([0.0, 0.0, 0.0, 2.0])
+
+        def _clock() -> float:
+            try:
+                return next(ticks)
+            except StopIteration:  # pragma: no cover - safety for extra reads
+                return 2.0
+
+        session._monotonic = _clock  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        session.feed([])
+        events = await _collect(session)
+        return events, session.result().text
+
+    events, text = asyncio.run(run())
+    # Both admitted finals are delivered, in order, before the terminal.
+    assert [e.text for e in events if e.type == "final"] == ["seen", "buffered"]
+    assert events[-1].type == "error"
+    assert events[-1].code == "session_timeout"
+    assert text == "seen buffered"
+
+
+def test_deadline_drain_stops_at_real_buffered_terminal() -> None:
+    # FV-2 edge: when the wall-clock cap fires with a REAL terminal already
+    # buffered, the drain ends with it -- exactly one terminal is delivered,
+    # never a second synthesized one after it.
+    class _FastDoneSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.final("s0", "x")
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _FastDoneSession(done_timeout=5.0, max_idle=None, max_session_seconds=1.0)
+        # The producer finishes (final + done buffered) before the first get;
+        # the clock then jumps past the budget at the top of the loop.
+        ticks = iter([0.0, 2.0])
+
+        def _clock() -> float:
+            try:
+                return next(ticks)
+            except StopIteration:  # pragma: no cover - safety for extra reads
+                return 2.0
+
+        session._monotonic = _clock  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        session.feed([])
+        async with session:
+            await asyncio.sleep(0.05)  # let the producer buffer final + done
+            return [event async for event in session]
+
+    events = asyncio.run(run())
+    assert [event.type for event in events] == ["final", "done"]
+
+
+# --------------------------------------------------------------------------- #
+# FV-5 -- closed finals fulfil supersede obligations (no lying diagnostic)
+# --------------------------------------------------------------------------- #
+def test_closed_final_fulfils_supersede_obligation() -> None:
+    # FV-5: a closed final that is a replacement group's only freeze MUST
+    # register in the obligation ledger; finalize() must not emit a false
+    # supersede_obligation_unfulfilled for fully-preserved frozen text.
+    guard = _LifecycleGuard()
+    assert guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11)) is not None
+    assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None
+    closed = guard.admit(TranscriptionEvent.closed("b", "hello world.", stable_until=12))
+    assert closed is not None
+    assert guard.finalize() == []
+    assert not any(d.code == "supersede_obligation_unfulfilled" for d in guard.diagnostics)
+
+
+def test_closed_final_short_freeze_still_reports_unfulfilled_obligation() -> None:
+    # The true-positive direction stays intact: a closed final whose freeze is
+    # genuinely shorter than the retired frozen text still reports the
+    # (soft, info-level) unfulfilled obligation.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
+    guard.admit(TranscriptionEvent.closed("b", "hello", stable_until=5))
+    emitted = guard.finalize()
+    assert [d.code for d in emitted] == ["supersede_obligation_unfulfilled"]
+
+
+def test_feed_source_drains_without_blocking_after_terminal() -> None:
+    # FV-1 (feed mode): when the engine terminates while the fed source still
+    # has chunks, the feed task discards the remainder instead of blocking
+    # forever on the dead queue -- it completes on its own.
+    class _FailFastSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.make_error(code="engine_gave_up", recoverable=False)
+
+    async def run() -> None:
+        session = _FailFastSession(audio_queue_maxsize=1)
+        session.feed([b"x"] * 8)
+        async with session:
+            events = [event async for event in session]
+            assert events[-1].code == "engine_gave_up"
+            feed_task = session._feed_task  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            assert feed_task is not None
+            await asyncio.wait_for(feed_task, timeout=2.0)
+
+    asyncio.run(run())
