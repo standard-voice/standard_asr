@@ -4,8 +4,8 @@
 
 # Standard ASR
 
-**A universal, plug-and-play protocol for speech recognition.**
-*Write your app once — run it with any ASR engine, today's and tomorrow's.*
+**The open standard interface between applications and speech-recognition engines.**
+_Apps integrate speech-to-text once and gain every engine. Engines implement once and reach every app._
 
 [![CI](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml)
 [![Canary](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml/badge.svg)](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml)
@@ -26,19 +26,18 @@
 
 ## The problem
 
-Every ASR library and cloud API has its own calling convention, its own audio-input rules,
-its own streaming protocol, its own dependencies. Integrating one engine means writing an
-adapter; integrating five means maintaining five. So in practice most applications hard-wire
-two or three engines — and their users are stuck with whatever languages and domains those
-engines happen to be good at, waiting for an "official support" release that usually never
-comes. Meanwhile the model that would actually serve them best already exists.
+Speech recognition never got its standard interface. Every ASR library and cloud API ships
+its own calling convention, its own audio-input rules, its own streaming protocol.
+Integrating one engine means writing an adapter; integrating five means maintaining five.
+So in practice most applications hard-wire two or three engines — and their users are stuck
+with whatever languages and domains those engines happen to be good at, waiting for an
+"official support" release that usually never comes. Meanwhile the model that would actually
+serve them best already exists.
 
-**Standard ASR** removes that tax. It is a universal protocol between applications and
-speech-recognition engines:
-
-> **Think of it as the OpenAI Chat Completions API for speech recognition** — one common
-> interface, so any application can use any compliant engine, cloud API or local model,
-> without a single line of app code changing.
+**Standard ASR** removes that tax: one vendor-neutral interface that both sides implement.
+Applications code against the protocol and gain every compliant engine, cloud API or local
+model. Engines implement it once and reach every application. Switching engines becomes a
+one-line model-key change — not another adapter.
 
 ## "Nice idea — but how does a protocol with no adopters get adopted?"
 
@@ -46,15 +45,12 @@ That's the right question to ask, so let's answer it up front.
 
 **Standard ASR does not need any vendor's cooperation to be useful today.** For existing
 engines, compliance is a thin adapter — not a rewrite — and adapters are ordinary
-pip-installable plugin packages that anyone can publish. We maintain first-party adapter
-plugins in this repo (see [`cookbook/`](cookbook/), including a real
-[faster-whisper](cookbook/std_faster_whisper) adapter and a dependency-free demo engine you
-can run in under a minute). An application developer gets the payoff — one interface,
-swappable engines — from day one, with zero engines "officially" on board. If the protocol
-earns an ecosystem, engine authors gain an organic incentive to ship native compliance:
-one interface implemented means every Standard ASR application is a potential user, plus a
-CLI, an HTTP/WebSocket server, and a compliance test suite for free. But nothing waits on
-that flywheel to start turning.
+pip-installable plugin packages that anyone can publish. An application developer gets the
+payoff — one interface, swappable engines — from day one, with zero engines "officially" on
+board. If the protocol earns an ecosystem, engine authors gain an organic incentive to ship
+native compliance: one interface implemented means every Standard ASR application is a
+potential user, plus a CLI, an HTTP/WebSocket server, and a compliance test suite for free.
+But nothing waits on that flywheel to start turning.
 
 **"Why a protocol and plugins, and not another all-in-one package?"** Because the
 all-in-one shape has been tried, repeatedly, and it structurally fails: a monolith that
@@ -88,26 +84,21 @@ the people who know each engine best, and the core never becomes the bottleneck.
 
 ---
 
-## Quickstart — see it work in 60 seconds
+## Quickstart
 
-Standard ASR discovers compliant plugins through the `standard_asr.models` entry-point
-group; each plugin exposes model presets keyed as `<engine_id>/<model_name>`. A tiny demo
-plugin ships in `cookbook/std_dummy_asr` so you can try the whole workflow with **no extra
-dependencies**. The demo plugin and sample client live in this repo, so clone it first:
+Install Standard ASR and a compliant engine plugin, then discover and transcribe:
 
 ```bash
-git clone https://github.com/standard-voice/standard_asr.git
-cd standard_asr
+# Install (see Installation below for extras)
+pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+# uv: uv pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
 
-pip install standard-asr
-pip install -e cookbook/std_dummy_asr      # the demo plugin (echoes a synthetic transcript)
+# Install a compliant engine plugin (e.g. std-faster-whisper)
+pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
 
 standard-asr models list                   # discover installed engines
-standard-asr compliance entrypoints        # check the plugins resolve correctly
-python cookbook/sample_client.py           # discover -> instantiate -> transcribe
+standard-asr compliance entrypoints        # verify the plugins resolve correctly
 ```
-
-Use this flow as a template when building or trying your own plugin.
 
 ---
 
@@ -121,7 +112,7 @@ Discover whatever compliant engines are installed, then transcribe:
 from standard_asr import discover_models
 
 registry = discover_models()
-engine = registry.create("dummy/echo")     # swap this key for any installed engine
+engine = registry.create("faster-whisper/large-v3")   # any installed engine's model key
 
 # Pass the audio you already have — a file path, raw bytes, a base64 data URI, or a
 # NumPy array. Standard ASR negotiates the right form for the chosen engine and converts
@@ -130,8 +121,7 @@ result = engine.transcribe("meeting.wav")
 print(result.text)
 ```
 
-The **same app code** runs against any other compliant engine — only the model key changes
-(e.g. swapping `dummy/echo` for a real local or cloud engine you've installed as a plugin).
+The **same app code** runs against any other compliant engine — only the model key changes.
 
 Results always have the **same shape** — no format flags that turn the return value into a
 string, no fields that appear and disappear. Render subtitles from any engine's result:
@@ -151,7 +141,7 @@ engine.supports("batch.word_timestamps")          # True / False, fail-closed
 engine.supports("streaming.guidance.phrase_hints")
 engine.supports("streaming_input")                # can it consume live audio?
 
-registry.config_schema("dummy/echo")              # the engine's init-config JSON Schema —
+registry.config_schema("faster-whisper/large-v3") # the engine's init-config JSON Schema —
                                                   # render a settings UI without
                                                   # instantiating (secrets are marked)
 ```
@@ -166,11 +156,10 @@ ignored and why (`best_effort`).
 streaming-capable engine:
 
 ```python
-from standard_asr import AudioFormat
-
-# Declare the wire format of the PCM frames you'll send (must match the engine's
-# advertised wire_encodings).
-audio_format = AudioFormat(encoding="pcm_s16le", sample_rate=16_000)
+# Ask the engine for the PCM wire format it wants (sample rate + encoding), and
+# encode your microphone frames to match. A correctly-declared streaming engine
+# returns a concrete format; build an `AudioFormat` yourself if you need a specific one.
+audio_format = engine.recommended_wire_format()
 
 async with engine.start_transcription(audio_format=audio_format) as session:
     session.feed(microphone())             # any (async) iterable of PCM byte chunks
@@ -201,38 +190,67 @@ frozen and will never change.
 
 ## Who benefits?
 
-| You are… | You get… |
-|---|---|
-| **An application developer** | One integration that works with every compliant engine; zero vendor lock-in; automatic discovery of whatever the user installs. |
+| You are…                                 | You get…                                                                                                                                                                     |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **An application developer**             | One integration that works with every compliant engine; zero vendor lock-in; automatic discovery of whatever the user installs.                                              |
 | **An ASR engine developer / researcher** | Focus on the model, not boilerplate. Implement one interface and get a CLI, a Web API server, and a compliance test suite **for free**. Reach the whole ecosystem instantly. |
-| **An end user** | Access to cutting-edge models sooner, and the freedom to pick the engine that fits your language or domain — not whatever the app author happened to choose. |
+| **An end user**                          | Access to cutting-edge models sooner, and the freedom to pick the engine that fits your language or domain — not whatever the app author happened to choose.                 |
 
 ---
 
 ## CLI
 
 ```bash
-standard-asr models list                            # what's installed?
-standard-asr models show dummy/echo                 # properties & capabilities
-standard-asr transcribe dummy/echo audio.wav        # quick transcription
-standard-asr serve                                  # expose engines over HTTP/WS
-standard-asr doctor                                 # diagnose plugin dependency conflicts
+standard-asr models list                                       # what's installed?
+standard-asr models show faster-whisper/large-v3               # properties & capabilities
+standard-asr transcribe faster-whisper/large-v3 audio.wav      # quick transcription
+standard-asr serve                                             # expose engines over HTTP/WS
+standard-asr doctor                                            # diagnose plugin dependency conflicts
 ```
 
 ---
 
-## Installation & optional extras
+## Installation
+
+> [!NOTE]
+> Standard ASR is **not yet published to PyPI**. Install directly from GitHub as shown below.
+> Once published, `pip install standard-asr` / `uv add standard-asr` will work and this
+> section will be updated.
+
+```bash
+# pip
+pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+
+# uv
+uv pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+# or, in a uv project:
+uv add "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+```
+
+With extras:
+
+```bash
+# pip
+pip install "standard-asr[audio] @ git+https://github.com/standard-voice/standard_asr.git"
+pip install "standard-asr[server] @ git+https://github.com/standard-voice/standard_asr.git"
+pip install "standard-asr[audio,server] @ git+https://github.com/standard-voice/standard_asr.git"
+
+# uv
+uv pip install "standard-asr[audio,server] @ git+https://github.com/standard-voice/standard_asr.git"
+```
+
+### Optional extras
 
 The **core package is intentionally light** — only `numpy` and `pydantic`. Everything heavy
 is an **opt-in extra**, so you install exactly the capabilities you need and nothing else.
 This is how Standard ASR stays a clean protocol layer instead of a dependency monster.
 
-| Extra | Install | What it adds | Pulls in |
-|---|---|---|---|
-| **(core)** | `pip install standard-asr` | The protocol itself: engine discovery, capability/properties negotiation, input/output validation, and the `standard-asr` CLI. Decodes basic `.wav` with the standard library — no extra install. | `numpy`, `pydantic` |
-| **audio** | `pip install "standard-asr[audio]"` | **Battery-included audio loading.** Hand over almost any audio — MP3, FLAC, OGG, M4A, raw bytes, base64 — and still drive engines that only accept NumPy arrays. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` *(plus optional system **FFmpeg** on `PATH` for the widest format coverage)* |
-| **server** | `pip install "standard-asr[server]"` | A **FastAPI server** exposing any compliant engine over HTTP (and WebSocket for streaming), so non-Python apps can use the ecosystem too. | `fastapi`, `python-multipart`, `uvicorn` |
-| **docs** | `pip install "standard-asr[docs]"` | Builds the documentation site. *(For maintainers/contributors.)* | `mkdocs-material` |
+| Extra      | What it adds                                                                                                                                                                                                       | Pulls in                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| **(core)** | The protocol itself: engine discovery, capability/properties negotiation, input/output validation, and the `standard-asr` CLI. Decodes basic `.wav` with the standard library — no extra install.                  | `numpy`, `pydantic`                                                                               |
+| **audio**  | **Battery-included audio loading.** Hand over almost any audio — MP3, FLAC, OGG, M4A, raw bytes, base64 — and still drive engines that only accept NumPy arrays. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` _(plus optional system **FFmpeg** on `PATH` for the widest format coverage)_ |
+| **server** | A **FastAPI server** exposing any compliant engine over HTTP (and WebSocket for streaming), so non-Python apps can use the ecosystem too.                                                                          | `fastapi`, `python-multipart`, `uvicorn`, `websockets`                                            |
+| **docs**   | Builds the documentation site. _(For maintainers/contributors.)_                                                                                                                                                   | `mkdocs-material`                                                                                 |
 
 > [!NOTE]
 > **Why the `audio` extra matters.** Audio wrangling — formats, sample rates, channels — is one
@@ -246,7 +264,7 @@ This is how Standard ASR stays a clean protocol layer instead of a dependency mo
 ### FastAPI server
 
 ```bash
-pip install "standard-asr[server]"
+# install with the server extra (see Installation above), then:
 standard-asr serve --host 0.0.0.0 --port 8000
 ```
 
@@ -266,8 +284,8 @@ supports), and **config** (its typed, UI-discoverable settings model), and regis
 gating, language resolution, and the sync/async bridge — you implement the model call, and
 the CLI, the HTTP/WebSocket server, and the compliance checks come for free.
 
-Start from the runnable examples in [`cookbook/`](cookbook/) (`std_dummy_asr` is a minimal
-skeleton; `std_faster_whisper` wraps a real local engine), then validate with:
+See [`docs/for_asr_dev/`](docs/for_asr_dev/) for the plugin authoring guide, then validate
+your implementation with:
 
 ```bash
 standard-asr compliance entrypoints
@@ -298,7 +316,6 @@ authoritative material lives in-repo:
 - `docs/spec/` — the protocol specification.
 - `docs/research/` — the engine surveys the design is tested against.
 - `CONTRIBUTING.md` — dev setup, the dependency policy, and the CI channel model.
-- `cookbook/` — runnable example plugins (`std_dummy_asr`, `std_faster_whisper`).
 
 ## Communication
 
