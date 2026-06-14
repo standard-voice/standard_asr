@@ -1,0 +1,110 @@
+name: Release
+
+# Publish standard-asr (the core package ONLY) to PyPI via OIDC Trusted
+# Publishing -- no long-lived API token ever exists. The cookbook plugins
+# (std-dummy-asr, std-faster-whisper) are in-repo examples and are NOT published
+# from here.
+#
+# Trigger: a *published* GitHub Release (human-gated -- the release notes and the
+# tag are created together). The release tag MUST equal `project.version` in
+# pyproject.toml; the guard below fails the run on any mismatch. Tag pre-releases
+# as vX.Y.ZaN / bN / rcN and PyPI marks them as pre-releases automatically.
+#
+# Dry run: trigger manually ("Run workflow") with target=testpypi to publish to
+# TestPyPI first. That path needs its own trusted publisher and a `testpypi`
+# Environment (see RELEASING.md).
+#
+# One-time setup (PyPI side + the protected `pypi` GitHub Environment that gates
+# the publish job) is documented in RELEASING.md.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+
+# Least privilege at the top level; the publish job opts up to id-token: write
+# for OIDC only.
+permissions:
+  contents: read
+
+env:
+  # Pin the uv version to match the rest of CI (reproducible builds).
+  UV_VERSION: "0.11.19"
+
+jobs:
+  publish:
+    name: Build and publish (standard-asr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Route to the matching protected Environment: a real Release (or an explicit
+    # manual target=pypi) goes to `pypi`; a manual dry run goes to `testpypi`. The
+    # Environment is where the human-approval gate and the trusted-publisher scope
+    # live.
+    environment: ${{ (github.event_name == 'release' || github.event.inputs.target == 'pypi') && 'pypi' || 'testpypi' }}
+    permissions:
+      id-token: write # OIDC: mint the short-lived PyPI upload token
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          # No cache on the publish path: a poisoned cache entry could taint the
+          # artifact we sign and upload. A release build is infrequent, so a clean
+          # uncached resolution is the right trade (zizmor: cache-poisoning).
+          enable-cache: false
+
+      - name: Assert release tag matches project version
+        if: github.event_name == 'release'
+        # GITHUB_REF_NAME is a trusted default env var (the tag, e.g. "v0.1.0").
+        # Read it as a shell variable -- never interpolate ${{ github.* }} into a
+        # run block (script-injection safe).
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(uv version --short)"
+          echo "release tag:     ${GITHUB_REF_NAME} (version part: ${tag})"
+          echo "project version: ${version}"
+          if [ "${tag}" != "${version}" ]; then
+            echo "::error::Release tag '${GITHUB_REF_NAME}' != pyproject version '${version}'. Bump 'version' in pyproject.toml and re-tag."
+            exit 1
+          fi
+
+      - name: Build sdist + wheel (core package only)
+        run: uv build --package standard-asr --out-dir dist
+
+      - name: Assert the wheel ships only source files
+        # Mirrors the CI "Build & package hygiene" gate: the wheel must contain
+        # only the module's source (.py/.pyi/py.typed), never stray artifacts.
+        run: |
+          contents="$(unzip -Z1 dist/*.whl)"
+          echo "${contents}"
+          stray="$(printf '%s\n' "${contents}" \
+            | grep -E '^standard_asr/' \
+            | grep -vE '(/|\.py|\.pyi|/py\.typed)$' || true)"
+          if [ -n "${stray}" ]; then
+            echo "::error::Wheel ships unexpected non-source files:"
+            printf '%s\n' "${stray}"
+            exit 1
+          fi
+          echo "Wheel is clean (source files only)."
+
+      - name: Publish (Trusted Publishing + PEP 740 attestations)
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: dist
+          # Real Release or explicit target=pypi -> PyPI; otherwise TestPyPI.
+          repository-url: ${{ (github.event_name == 'release' || github.event.inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          attestations: true
+          print-hash: true
