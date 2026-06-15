@@ -16,7 +16,7 @@ it, only WAV files work out of the box.
 ## Discover installed engines
 
 ```bash
-standard-asr models list
+standard-asr list
 ```
 
 Every compliant engine plugin registers itself via entry points. No configuration

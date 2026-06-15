@@ -138,13 +138,13 @@ These are validated by `standard-asr compliance entrypoints`.
 Install your plugin in the same environment and use the new CLI:
 
 ```bash
-$ standard-asr models list
+$ standard-asr list
 Discovered models:
  - faster-whisper/large-v3         engine=faster-whisper  model=large-v3
  - faster-whisper/distil-large-v3  engine=faster-whisper  model=distil-large-v3
  - faster-whisper/turbo            engine=faster-whisper  model=large-v3-turbo
 
-$ standard-asr models show faster-whisper/large-v3
+$ standard-asr show faster-whisper/large-v3
 Model: faster-whisper/large-v3
   Engine ID   : faster-whisper
   Model name  : large-v3
@@ -168,7 +168,7 @@ Install the demo plugin and run the checks end‑to‑end:
 
 ```bash
 uv run uv pip install -e cookbook/std_dummy_asr
-uv run standard-asr models list
+uv run standard-asr list
 uv run standard-asr compliance entrypoints
 uv run python cookbook/sample_client.py
 ```

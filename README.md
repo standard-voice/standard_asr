@@ -96,7 +96,7 @@ pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.g
 # Install a compliant engine plugin (e.g. std-faster-whisper)
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
 
-standard-asr models list                   # discover installed engines
+standard-asr list                          # discover installed engines
 standard-asr compliance entrypoints        # verify the plugins resolve correctly
 ```
 
@@ -201,8 +201,8 @@ frozen and will never change.
 ## CLI
 
 ```bash
-standard-asr models list                                       # what's installed?
-standard-asr models show faster-whisper/large-v3               # properties & capabilities
+standard-asr list                                              # what's installed?
+standard-asr show faster-whisper/large-v3                      # properties & capabilities
 standard-asr transcribe faster-whisper/large-v3 audio.wav      # quick transcription
 standard-asr serve                                             # expose engines over HTTP/WS
 standard-asr doctor                                            # diagnose plugin dependency conflicts

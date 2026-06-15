@@ -65,4 +65,4 @@ Response schema:
 ## 3. Deployment
 
 The server respects `STANDARD_ASR_ALLOW_DOWNLOAD`. For production, set it to
-`0` and warm up models using `standard-asr models prepare`.
+`0` and warm up models using `standard-asr prepare`.

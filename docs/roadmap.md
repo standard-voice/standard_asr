@@ -27,7 +27,7 @@ Build the working prototype and validate it end-to-end.
 ### Tooling
 
 - [x] Plugin discovery via entry points (`discover_models()`).
-- [x] CLI: `models list`, `models show`, `transcribe`, `compliance`, `doctor`.
+- [x] CLI: `list`, `show`, `transcribe`, `compliance`, `doctor`.
 - [x] FastAPI server (HTTP batch + WebSocket streaming).
 - [x] SRT / VTT renderers.
 - [x] Dependency-conflict doctor.
