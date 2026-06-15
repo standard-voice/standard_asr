@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Pin uv to match the rest of CI (ci.yml); used only to run `uv export`.
+  UV_VERSION: "0.11.19"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -22,6 +26,22 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Export the distributed dependency surface for FOSSA
+        # License compliance only concerns what we distribute. FOSSA's uv
+        # analyzer would ingest the whole uv.lock (all dev groups + extras +
+        # transitives); instead emit a prod-only requirements file -- runtime
+        # deps + every optional extra, dev dependency-groups excluded -- for
+        # FOSSA to read (see .fossa.yml). Generated here, never committed:
+        # pyproject.toml/uv.lock stay the single source of truth.
+        run: >
+          uv export --format requirements-txt --frozen --no-hashes
+          --no-default-groups --all-extras --no-emit-project
+          -o requirements.txt
       - uses: fossas/fossa-action@ff70fe9fe17cbd2040648f1c45e8ec4e4884dcf3 # v1.9.0
         with:
           api-key: ${{ secrets.fossaApiKey }}
