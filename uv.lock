@@ -1847,7 +1847,7 @@ typing = [
 requires-dist = [
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.118" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.6.18" },
-    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.29" },
+    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=1.0.4" },
     { name = "numpy", marker = "python_full_version < '3.13'", specifier = ">=1.26" },
     { name = "numpy", marker = "python_full_version >= '3.13'", specifier = ">=2.1" },
     { name = "pydantic", specifier = ">=2.5" },

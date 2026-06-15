@@ -89,7 +89,7 @@ dev = [
 audio = ["soundfile>=0.12", "scipy>=1.10"]
 docs = [
     "mkdocs-material>=9.6.18",
-    "mkdocstrings[python]>=0.29",
+    "mkdocstrings[python]>=1.0.4",
 ]
 # websockets is REQUIRED here: server.md promises a WebSocket streaming
 # endpoint, and bare uvicorn ships no WS protocol implementation -- without it
