@@ -28,17 +28,25 @@ updates:
   # ---- Python dependencies (managed by uv) ----------------------------------
   #
   # ADR D3 — the bot updates uv.lock and MUST NOT narrow the pyproject.toml
-  # compatibility contract. Dependabot's `versioning-strategy: lockfile-only` is
-  # not yet supported for the uv ecosystem (dependabot/dependabot-core#12162), so
-  # we deliberately do NOT set it (TODO(verify): add it once that ships). We get
-  # the same outcome structurally instead: every direct dependency declares a
-  # lower-bound-only range with no speculative upper cap (ADR D4), so in-range
-  # upgrades never fall outside the constraint and Dependabot only rewrites the
-  # lock, leaving [project.dependencies] untouched.
+  # compatibility contract. We enforce that with `versioning-strategy:
+  # lockfile-only` (set below): Dependabot rewrites uv.lock and never edits
+  # [project]. uv-ecosystem support for the option landed in
+  # dependabot/dependabot-core#12162 (completed 2026-02). Do NOT remove it — the
+  # lower-bound-only convention (ADR D4) does NOT prevent floor edits on its own:
+  # Dependabot's default strategy raises even in-range floors (observed in
+  # practice — it rewrote the `uv-build` and `mkdocstrings` floors that already
+  # permitted the new version), which silently narrows the contract for any
+  # runtime dep it touches.
   #
-  # The sanctioned exception is Dependabot *security* updates (a separate
-  # channel, enabled in repo settings): when no in-range fix exists they MAY
-  # raise a floor in pyproject. That is the one time the contract moves.
+  # Floors are human-owned and CI-verified instead: the `lower-bounds` lane in
+  # ci.yml re-resolves at each declared floor (`--resolution lowest-direct`), so a
+  # floor moves only when a maintainer raises it deliberately and CI re-proves it.
+  #
+  # The sanctioned exception is Dependabot *security* updates (a separate channel,
+  # enabled in repo settings): they still run. For an uncapped lower-bound dep the
+  # fix lands via the lock and downstream resolves to the patched version
+  # automatically; a capped dep (the uv-build build-backend cap, or the tool.uv
+  # `starlette<1.0` constraint) is bumped deliberately by hand.
   #
   # NOTE on grouping: `groups.*.dependency-type` (development/production) is NOT
   # supported for the uv ecosystem (dependabot/dependabot-core#13202 — uv
@@ -49,6 +57,8 @@ updates:
   # ungrouped so it lands in its own PR for deliberate, isolated review.
   - package-ecosystem: uv
     directory: "/"
+    # ADR D3 enforcement (see note above): only ever refresh uv.lock.
+    versioning-strategy: lockfile-only
     schedule:
       interval: weekly
       day: monday
