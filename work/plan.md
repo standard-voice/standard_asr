@@ -35,7 +35,7 @@ must be tracked in `work/todo.csv` and completed before final acceptance.
 ### 2.3 Documentation
 - Update `faster-whisper/README.md` with a Standard ASR section:
   - Installation (`faster-whisper[standard-asr]` + `standard-asr`).
-  - Discovery + usage (`standard-asr models list`, `transcribe`).
+  - Discovery + usage (`standard-asr list`, `transcribe`).
   - Compliance proof (`standard-asr compliance entrypoints`).
   - Link/mention Standard ASR compliance docs for reference.
 

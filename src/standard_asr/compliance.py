@@ -832,7 +832,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
     already supplied, so neither counts.
 
     This is the single definition of the zero-argument half of the contract,
-    shared by :func:`_check_prepare_hook` and the ``standard-asr models prepare``
+    shared by :func:`_check_prepare_hook` and the ``standard-asr prepare``
     CLI command so the compliance verdict and the runtime behaviour cannot drift
     (goal G.2.1).
 
@@ -869,7 +869,7 @@ def _check_prepare_hook(instance: object, name: str, issues: list[ComplianceIssu
     ``prepare()`` is optional, but when present (overridden past the
     :class:`~standard_asr.asr_interface.EngineBase` no-op) it MUST be a
     **synchronous, zero-argument** method (spec IC.11). A coroutine ``prepare``
-    is the dangerous case: ``standard-asr models prepare`` would call it, get an
+    is the dangerous case: ``standard-asr prepare`` would call it, get an
     un-awaited coroutine, and report a false "prepare complete" without ever
     warming up -- a silent success the suite must catch. A ``prepare`` that
     requires arguments can never be driven by the toolchain. Both are recorded as

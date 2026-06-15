@@ -35,7 +35,7 @@ pip install "standard-asr[audio,server] @ git+https://github.com/standard-voice/
 ## Install an engine plugin
 
 Standard ASR discovers engines automatically via entry points. Install a plugin
-and it appears in `standard-asr models list`:
+and it appears in `standard-asr list`:
 
 ```bash
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
@@ -44,7 +44,7 @@ pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-fast
 ## Verify
 
 ```bash
-standard-asr models list               # discover installed engines
+standard-asr list                      # discover installed engines
 standard-asr compliance entrypoints    # verify plugins resolve correctly
 standard-asr doctor                    # diagnose dependency conflicts
 ```

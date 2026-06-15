@@ -31,7 +31,7 @@ model weights at runtime. The table below is the **contract**
 - **Raise clear errors**: if downloads are disabled and weights are missing,
   raise `DiscoveryError` with a clear next action.
 - **`prepare()` honours the same gate**: the optional warm-up hook (spec IC.11),
-  used by `standard-asr models prepare` below, materializes weights at an
+  used by `standard-asr prepare` below, materializes weights at an
   explicit, transcription-free call point. An engine that overrides it MUST
   apply the same download gate as transcription — check `allow_downloads()` and
   raise `DiscoveryError` when downloads are disabled and weights are missing —
@@ -59,5 +59,5 @@ Use `standard_asr.runtime.ensure_cache_dir()` to create it.
 ## 4. Operational Guidance
 
 - In production or CI, set `STANDARD_ASR_ALLOW_DOWNLOAD=0`.
-- Use `standard-asr models prepare <engine/model>` to pre‑warm caches.
+- Use `standard-asr prepare <engine/model>` to pre‑warm caches.
 - For air‑gapped environments, pre‑download weights into the cache directory.

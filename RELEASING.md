@@ -203,7 +203,7 @@ Then smoke-test:
 python -c "import importlib.metadata as m; print(m.version('standard-asr'))"  # prints X.Y.Z
 python -c "import standard_asr"   # imports cleanly
 standard-asr --help
-standard-asr models list
+standard-asr list
 ```
 
 Confirm the TestPyPI project page renders the README, classifiers, and links.

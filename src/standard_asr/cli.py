@@ -55,9 +55,26 @@ _FAIL = "[FAIL]"
 _WARN = "[WARN]"
 _INFO = "[INFO]"
 
+#: Copy-pasteable examples shown at the bottom of ``standard-asr --help`` so the
+#: top-level help alone is enough to get started (no drilling into per-command
+#: ``--help`` to learn the common invocations).
+_EPILOG = """\
+Examples:
+  standard-asr list                                   # what engines/models are installed
+  standard-asr show faster-whisper/large-v3           # properties, capabilities, config schema
+  standard-asr transcribe faster-whisper/tiny a.wav   # transcribe an audio file
+  standard-asr prepare faster-whisper/tiny            # pre-download / warm up weights
+  standard-asr serve --port 8000                      # expose every engine over HTTP + WebSocket
+  standard-asr doctor                                 # diagnose environment / dependency issues
+"""
 
-def _add_models_subcommands(subparsers: Any) -> None:
-    """Register ``models`` subcommands.
+
+def _add_inspection_subcommands(subparsers: Any) -> None:
+    """Register the model-inspection verbs as flat top-level commands.
+
+    ``list`` / ``show`` / ``cache`` / ``prepare`` are registered directly on the
+    root parser (not nested under a ``models`` group), so the common commands are
+    visible in ``standard-asr --help`` without a second-level menu.
 
     Args:
         subparsers: Subparser collection for the root CLI.
@@ -68,10 +85,7 @@ def _add_models_subcommands(subparsers: Any) -> None:
     Raises:
         None.
     """
-    models_parser = subparsers.add_parser("models", help="Inspect discovered Standard ASR models.")
-    models_sub = models_parser.add_subparsers(dest="models_command", required=True)
-
-    list_parser = models_sub.add_parser("list", help="List available models.")
+    list_parser = subparsers.add_parser("list", help="List discovered models.")
     list_parser.add_argument(
         "--strict",
         action="store_true",
@@ -83,33 +97,35 @@ def _add_models_subcommands(subparsers: Any) -> None:
         default="warn_keep_first",
         help="Strategy for duplicate model keys.",
     )
-    list_parser.set_defaults(func=_cmd_models_list)
+    list_parser.set_defaults(func=_cmd_list)
 
-    show_parser = models_sub.add_parser("show", help="Display details about a single model.")
+    show_parser = subparsers.add_parser(
+        "show", help="Show a model's properties, capabilities, and config schema."
+    )
     show_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
     show_parser.add_argument(
         "--strict",
         action="store_true",
         help="Fail on invalid entry points during discovery.",
     )
-    show_parser.set_defaults(func=_cmd_models_show)
+    show_parser.set_defaults(func=_cmd_show)
 
-    cache_parser = models_sub.add_parser(
-        "cache", help="Show or create the Standard ASR cache directory."
+    cache_parser = subparsers.add_parser(
+        "cache", help="Show (or create) the Standard ASR cache directory."
     )
     cache_parser.add_argument(
         "--ensure",
         action="store_true",
         help="Create the cache directory if it does not exist.",
     )
-    cache_parser.set_defaults(func=_cmd_models_cache)
+    cache_parser.set_defaults(func=_cmd_cache)
 
-    prepare_parser = models_sub.add_parser(
+    prepare_parser = subparsers.add_parser(
         "prepare", help="Warm up a model (download/load weights if required)."
     )
     prepare_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
     _add_init_config_args(prepare_parser)
-    prepare_parser.set_defaults(func=_cmd_models_prepare)
+    prepare_parser.set_defaults(func=_cmd_prepare)
 
 
 def _add_compliance_subcommands(subparsers: Any) -> None:
@@ -245,18 +261,26 @@ def build_parser() -> argparse.ArgumentParser:
     Raises:
         None.
     """
-    parser = argparse.ArgumentParser(description="Standard ASR utilities")
+    parser = argparse.ArgumentParser(
+        prog="standard-asr",
+        description="Standard ASR -- a universal interface for speech-to-text engines.",
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--debug",
         action="store_true",
         help="Show stack traces for unexpected errors.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    _add_models_subcommands(subparsers)
-    _add_compliance_subcommands(subparsers)
+    # required=False so a bare `standard-asr` prints help instead of an argparse
+    # "arguments are required" error; main() routes the no-command case to
+    # parser.print_help().
+    subparsers = parser.add_subparsers(dest="command")
+    _add_inspection_subcommands(subparsers)
     _add_transcribe_subcommand(subparsers)
     _add_serve_subcommand(subparsers)
     _add_doctor_subcommand(subparsers)
+    _add_compliance_subcommands(subparsers)
     return parser
 
 
@@ -296,8 +320,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if report.is_clean else 1
 
 
-def _cmd_models_list(args: argparse.Namespace) -> int:
-    """Handle ``models list`` command.
+def _cmd_list(args: argparse.Namespace) -> int:
+    """Handle the ``list`` command.
 
     Args:
         args: Parsed CLI arguments.
@@ -324,8 +348,8 @@ def _cmd_models_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_models_show(args: argparse.Namespace) -> int:
-    """Handle ``models show`` command.
+def _cmd_show(args: argparse.Namespace) -> int:
+    """Handle the ``show`` command.
 
     Args:
         args: Parsed CLI arguments.
@@ -354,7 +378,7 @@ def _cmd_models_show(args: argparse.Namespace) -> int:
 def _print_declared_capabilities(spec: Any) -> None:
     """Print an engine's DeclaredCapabilities without instantiating it.
 
-    Spec §264 lists ``standard-asr models show`` as a consumer of
+    Spec §264 lists ``standard-asr show`` as a consumer of
     DeclaredCapabilities. The capabilities are read from the engine *class*
     (ClassVar), so no engine is constructed and no credentials are resolved.
 
@@ -377,7 +401,7 @@ def _print_declared_capabilities(spec: Any) -> None:
         print("  Capabilities: <none declared>")
         return
     # Render the *canonical* JSON (the single capability serialization shared with
-    # `GET /v1/.../capabilities`), so a `models show` output can be compared
+    # `GET /v1/.../capabilities`), so a `show` output can be compared
     # field-for-field with the wire view: every node carries the derived
     # `supported` boolean and the reader never has to know the "none"/"unsupported"
     # sentinels (spec §C R6; G.5.2 two-layer isomorphism).
@@ -385,7 +409,7 @@ def _print_declared_capabilities(spec: Any) -> None:
     if not callable(canonical_json):
         # `declared_capabilities` is not a DeclaredCapabilities model (e.g. an
         # engine mis-declared it as a dict). discovery.py consumes metadata
-        # defensively via getattr; mirror that here so the rest of `models show`
+        # defensively via getattr; mirror that here so the rest of `show`
         # (Engine ID, Module, ...) still renders and the author is pointed at the
         # precise diagnostic instead of an opaque AttributeError.
         type_name = type(caps).__name__
@@ -401,8 +425,8 @@ def _print_declared_capabilities(spec: Any) -> None:
         print(f"    {line}")
 
 
-def _cmd_models_cache(args: argparse.Namespace) -> int:
-    """Handle ``models cache`` command.
+def _cmd_cache(args: argparse.Namespace) -> int:
+    """Handle the ``cache`` command.
 
     Args:
         args: Parsed CLI arguments.
@@ -420,8 +444,8 @@ def _cmd_models_cache(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_models_prepare(args: argparse.Namespace) -> int:
-    """Handle ``models prepare`` command.
+def _cmd_prepare(args: argparse.Namespace) -> int:
+    """Handle the ``prepare`` command.
 
     Args:
         args: Parsed CLI arguments.
@@ -881,7 +905,7 @@ def _add_init_config_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Engine init-config as a JSON object, e.g. "
             '--config \'{"device": "cpu"}\'. Merged under --set. Run '
-            "'standard-asr models show <model>' to see the config schema."
+            "'standard-asr show <model>' to see the config schema."
         ),
     )
     parser.add_argument(
@@ -1099,7 +1123,13 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
-    command: Callable[[argparse.Namespace], int] = args.func
+    command: Callable[[argparse.Namespace], int] | None = getattr(args, "func", None)
+    if command is None:
+        # Bare `standard-asr` with no subcommand: print help and exit cleanly
+        # rather than an argparse "arguments are required" error (friendlier
+        # first-run UX; the subparsers are registered with required=False).
+        parser.print_help()
+        return 0
     try:
         return command(args)
     except EntrypointValidationError as exc:
