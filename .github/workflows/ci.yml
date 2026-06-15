@@ -216,6 +216,9 @@ jobs:
     name: Coverage 100% (py3.13)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read # clone the repo
+      id-token: write # mint the OIDC token for tokenless Codecov upload
     env:
       UV_PYTHON: "3.13"
     steps:
@@ -236,6 +239,17 @@ jobs:
       - name: Core coverage (100%)
         # --cov=standard_asr is already in addopts; only add the strict gate here.
         run: uv run --no-sync pytest --cov-fail-under=100
+      - name: Upload coverage to Codecov
+        # Uploads the core standard_asr coverage.xml (written by --cov-report=xml
+        # in addopts) before the cookbook runs overwrite it. Auth is via OIDC
+        # (use_oidc + the job's id-token: write) — no static CODECOV_TOKEN secret,
+        # and uploads are cryptographically verified as coming from this workflow.
+        # Soft-fail: a Codecov outage must never break CI.
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          use_oidc: true
+          files: coverage.xml
+          fail_ci_if_error: false
       - name: Cookbook coverage — std_dummy_asr (100%)
         run: >-
           uv run --no-sync pytest cookbook/std_dummy_asr/tests
