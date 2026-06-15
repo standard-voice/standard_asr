@@ -9,6 +9,8 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 
 [![CI](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml)
 [![Canary](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml/badge.svg)](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/standard-voice/standard_asr/badge)](https://scorecard.dev/viewer/?uri=github.com/standard-voice/standard_asr)
+[![Socket](https://socket.dev/api/badge/gh/standard-voice/standard_asr)](https://socket.dev/gh/standard-voice/standard_asr)
 [![Checked with pyright](https://microsoft.github.io/pyright/img/pyright_badge.svg)](https://microsoft.github.io/pyright/)
 [![Chat on Zulip](https://img.shields.io/badge/Join%20Chat-Zulip?style=flat&logo=zulip&label=Zulip&color=blue)](https://standard-voice.zulipchat.com)
 
