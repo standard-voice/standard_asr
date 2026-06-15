@@ -288,7 +288,7 @@ Register an entry point under `standard_asr.models` (see
 return type as your engine class, e.g. `-> MyEngine`), **not** the `StandardASR`
 protocol. Capabilities and the params schema are read from class-level
 `ClassVar`s *without instantiating or authenticating* the engine (CLI
-`models show`, the registry, REST `GET /v1/capabilities` and
+`show`, the registry, REST `GET /v1/capabilities` and
 `/v1/params-schema`); a Protocol return type has no readable `ClassVar`s, so it
 breaks instantiation-free discovery. The compliance suite enforces this.
 

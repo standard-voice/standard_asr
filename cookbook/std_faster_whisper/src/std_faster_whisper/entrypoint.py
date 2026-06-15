@@ -4,7 +4,7 @@
 """Entry point targets for the std-faster-whisper plugin demo.
 
 One factory per preset (spec IC.7: model selection = entry-point preset, never an
-init ``model`` field), so ``standard-asr models list`` / the registry / a settings
+init ``model`` field), so ``standard-asr list`` / the registry / a settings
 UI can enumerate the available models. Each factory's return annotation is the
 **concrete** preset class (not the ``StandardASR`` protocol) so the registry can
 resolve the class -- and read its class-level ``properties`` /

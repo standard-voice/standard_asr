@@ -12,7 +12,7 @@ Two layers exist:
 
 * :class:`DeclaredCapabilities` -- the static, class-level (``ClassVar``) full
   capability set, discoverable without instantiating or authenticating the
-  engine. Used by ``models show``, the registry, UI generation and REST.
+  engine. Used by ``show``, the registry, UI generation and REST.
 * ``effective_capabilities`` -- an instance-level subset that may *narrow* the
   declared set based on runtime configuration. The invariant
   ``effective ⊆ declared`` is enforced by compliance tests (see

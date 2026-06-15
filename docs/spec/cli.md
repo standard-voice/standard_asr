@@ -5,7 +5,7 @@ quick transcription.
 
 ## 1. Commands
 
-### `standard-asr models list`
+### `standard-asr list`
 List all discovered models.
 
 Flags:
@@ -14,7 +14,7 @@ Flags:
 - `--on-conflict {warn_keep_first,replace}`: strategy for duplicate model keys
   (default: `warn_keep_first`).
 
-### `standard-asr models show <engine/model>`
+### `standard-asr show <engine/model>`
 Show metadata about a specific model entry point. The declared capabilities are
 rendered as **canonical JSON** — the same serialization the REST
 `GET /v1/.../capabilities` endpoint returns, with a derived `supported` boolean
@@ -26,11 +26,11 @@ problem and the rest of the metadata still renders.
 Flags:
 - `--strict`: fail on invalid entry points during discovery.
 
-### `standard-asr models cache [--ensure]`
+### `standard-asr cache [--ensure]`
 Display (and optionally create, `--ensure`) the Standard ASR model cache
 directory.
 
-### `standard-asr models prepare <engine/model>`
+### `standard-asr prepare <engine/model>`
 Warm up a model by loading or downloading weights. `prepare` is best-effort and
 maps onto the optional `prepare()` hook (spec IC.11): an engine that does not
 override the `EngineBase` default no-op is a reported no-op ("nothing to warm

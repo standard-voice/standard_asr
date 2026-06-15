@@ -332,7 +332,7 @@ class EngineBase(ABC):
         """Warm up the engine (download / load weights) without transcribing.
 
         The optional, **synchronous, idempotent** pre-warm hook (spec IC.11),
-        invoked by ``standard-asr models prepare`` and by production / CI
+        invoked by ``standard-asr prepare`` and by production / CI
         pre-warming (download-policy §4) to move the IC.9 lazy side effects
         (weight download / model load) off the first transcription to one
         billing-free, transcription-free call. The base implementation is a

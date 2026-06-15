@@ -12,7 +12,7 @@ and compliance tools:
 
 ```bash
 uv run uv pip install -e cookbook/std_dummy_asr
-uv run standard-asr models list
+uv run standard-asr list
 uv run standard-asr compliance entrypoints
 ```
 

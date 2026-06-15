@@ -6,14 +6,14 @@ Standard ASR protocol, options model, and lazy‑loading rules.
 
 ```bash
 uv run uv pip install -e cookbook/std_faster_whisper
-standard-asr models list
+standard-asr list
 standard-asr transcribe faster-whisper/large-v3 path/to/audio.wav
 ```
 
 ## Presets
 
 Each model is a separate **entry-point preset** (spec IC.7: model selection =
-entry-point preset, never an init `model` field), so `standard-asr models list`,
+entry-point preset, never an init `model` field), so `standard-asr list`,
 the registry, and any settings UI can enumerate the available models:
 
 | Entry point key                 | Model           |

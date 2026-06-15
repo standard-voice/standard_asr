@@ -201,7 +201,7 @@ class FasterWhisperASR(EngineBase):
     This is the canonical large-v3 multilingual preset. Each Whisper variant is a
     SEPARATE preset with its own entry point (spec IC.7: model selection =
     entry-point preset, never an init ``model`` field), so the discovery layer
-    (``models list`` / registry / UI) can enumerate the available models. Other
+    (``list`` / registry / UI) can enumerate the available models. Other
     variants subclass this and override :attr:`model_size` + :attr:`properties`
     only -- see :class:`DistilLargeV3ASR` / :class:`TurboASR`.
 

@@ -30,7 +30,7 @@ current Standard ASR specification.
 
 ## 4) Documentation & Proof
 - [x] faster-whisper docs explain Standard ASR usage and installation.
-- [x] Proof steps are documented, including `standard-asr models list` and
+- [x] Proof steps are documented, including `standard-asr list` and
       `standard-asr compliance entrypoints`.
 - [x] Standard ASR documentation reference is linked for compliance guidance.
 

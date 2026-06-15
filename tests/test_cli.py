@@ -83,7 +83,7 @@ def test_cli_models_list(
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "list"])
+    exit_code = cli.main(["list"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -101,7 +101,7 @@ def test_cli_models_list_empty(
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "list"])
+    exit_code = cli.main(["list"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -118,7 +118,7 @@ def test_cli_models_show(
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "show", "alpha/first"])
+    exit_code = cli.main(["show", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -146,7 +146,7 @@ def test_cli_models_show_unresolvable_class(
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "show", "alpha/first"])
+    exit_code = cli.main(["show", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -283,7 +283,7 @@ def test_cli_models_show_no_capabilities(
 
     monkeypatch.setattr(cli, "discover_models", _discover)
 
-    exit_code = cli.main(["models", "show", "alpha/first"])
+    exit_code = cli.main(["show", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -392,7 +392,7 @@ def test_cli_models_cache(
 ) -> None:
     monkeypatch.setattr(cli, "resolve_cache_dir", lambda: tmp_path)
 
-    exit_code = cli.main(["models", "cache"])
+    exit_code = cli.main(["cache"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -501,7 +501,7 @@ def test_cli_models_list_entrypoint_error(
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "list"])
+    exit_code = cli.main(["list"])
     captured = capsys.readouterr()
 
     assert exit_code == 2
@@ -567,10 +567,10 @@ def test_cli_debug_shows_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
     def _print_exc() -> None:
         called["traceback"] = True
 
-    monkeypatch.setattr(cli, "_cmd_models_list", _raise)
+    monkeypatch.setattr(cli, "_cmd_list", _raise)
     monkeypatch.setattr(cli.traceback, "print_exc", _print_exc)
 
-    exit_code = cli.main(["--debug", "models", "list"])
+    exit_code = cli.main(["--debug", "list"])
 
     assert exit_code == 1
     assert called["traceback"] is True
@@ -582,9 +582,9 @@ def test_cli_generic_exception_no_debug(
     def _raise(_: object) -> int:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(cli, "_cmd_models_list", _raise)
+    monkeypatch.setattr(cli, "_cmd_list", _raise)
 
-    exit_code = cli.main(["models", "list"])
+    exit_code = cli.main(["list"])
     captured = capsys.readouterr()
 
     assert exit_code == 1
@@ -745,7 +745,7 @@ def test_cli_models_prepare_no_prepare_hook_is_noop(
 
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "prepare", "alpha/first"])
+    exit_code = cli.main(["prepare", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -774,7 +774,7 @@ def test_cli_models_prepare_calls_prepare(
     monkeypatch.setattr(registry, "create", _create)
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "prepare", "alpha/first"])
+    exit_code = cli.main(["prepare", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -874,7 +874,7 @@ def test_cli_models_prepare_construction_error_no_secret_echo(
     _patch_discover(monkeypatch, registry)
     monkeypatch.setattr(registry, "create", _create)
 
-    exit_code = cli.main(["models", "prepare", "alpha/first"])
+    exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
     assert exit_code == 2
@@ -896,6 +896,51 @@ def test_cli_serve_doc_does_not_list_unparsed_reload_flag() -> None:
     doc = cli_md.read_text(encoding="utf-8")
     serve_section = doc.split("### `standard-asr serve`", 1)[1].split("\n### ", 1)[0]
     assert "--reload" not in serve_section
+
+
+def test_cli_no_command_prints_help_and_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    """A bare `standard-asr` prints help (with examples) and exits 0, not an error.
+
+    The flat-verb redesign registers the subparsers with ``required=False`` so the
+    first-run experience is the help screen rather than an argparse "arguments are
+    required" error.
+    """
+    exit_code = cli.main([])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "usage: standard-asr" in out
+    assert "Examples:" in out  # the epilog is shown
+
+
+def test_cli_flat_verbs_resolve_to_handlers() -> None:
+    """The common verbs are flat top-level commands (no nested `models` group).
+
+    Asserted against the parser's actual registration -- each verb resolves to its
+    handler -- rather than help-text substrings, which the epilog examples would
+    satisfy even if a subparser were dropped or re-nested under `models`.
+    """
+    parser = cli.build_parser()
+    resolved = {
+        "list": parser.parse_args(["list"]).func.__name__,
+        "show": parser.parse_args(["show", "e/m"]).func.__name__,
+        "cache": parser.parse_args(["cache"]).func.__name__,
+        "prepare": parser.parse_args(["prepare", "e/m"]).func.__name__,
+        "transcribe": parser.parse_args(["transcribe", "e/m", "a.wav"]).func.__name__,
+        "serve": parser.parse_args(["serve"]).func.__name__,
+        "doctor": parser.parse_args(["doctor"]).func.__name__,
+    }
+    assert resolved == {
+        "list": "_cmd_list",
+        "show": "_cmd_show",
+        "cache": "_cmd_cache",
+        "prepare": "_cmd_prepare",
+        "transcribe": "_cmd_transcribe",
+        "serve": "_cmd_serve",
+        "doctor": "_cmd_doctor",
+    }
+    # The old nested `models` group is gone: it is no longer a valid command.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["models"])
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +968,7 @@ def test_cli_models_prepare_rejects_coroutine_hook(
     monkeypatch.setattr(registry, "create", _create)
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "prepare", "alpha/first"])
+    exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
     assert exit_code == 2
@@ -950,7 +995,7 @@ def test_cli_models_prepare_rejects_non_callable_hook(
     monkeypatch.setattr(registry, "create", _create)
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "prepare", "alpha/first"])
+    exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
     assert exit_code == 2
@@ -979,7 +1024,7 @@ def test_cli_models_prepare_rejects_required_args_hook(
     monkeypatch.setattr(registry, "create", _create)
     monkeypatch.setattr(cli, "discover_models", _discover_models)
 
-    exit_code = cli.main(["models", "prepare", "alpha/first"])
+    exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
     assert exit_code == 2
@@ -1012,7 +1057,7 @@ def test_cli_models_prepare_engine_base_default_is_noop(
     # no-op, so transcribe is never invoked here.
     _ = np  # imported to assert the dependency is present in the test env
 
-    exit_code = cli.main(["models", "prepare", "alpha/first"])
+    exit_code = cli.main(["prepare", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -1160,7 +1205,7 @@ def test_cli_models_show_uses_canonical_json(
     registry = _demo_registry()
     _patch_discover(monkeypatch, registry)
 
-    exit_code = cli.main(["models", "show", "alpha/first"])
+    exit_code = cli.main(["show", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -1175,7 +1220,7 @@ def test_cli_models_show_defends_mistyped_capabilities(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # An engine that mis-declares declared_capabilities as a dict must
-    # not crash `models show` with an opaque AttributeError; the rest of the
+    # not crash `show` with an opaque AttributeError; the rest of the
     # metadata still renders and the author is pointed at compliance.
     eps = [
         EntryPoint(
@@ -1187,7 +1232,7 @@ def test_cli_models_show_defends_mistyped_capabilities(
     registry = discover_models(eps=eps, strict=True)
     _patch_discover(monkeypatch, registry)
 
-    exit_code = cli.main(["models", "show", "alpha/first"])
+    exit_code = cli.main(["show", "alpha/first"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -1218,10 +1263,10 @@ def test_cli_debug_traceback_for_named_branch(
     def _print_exc() -> None:
         called["traceback"] = True
 
-    monkeypatch.setattr(cli, "_cmd_models_list", _raise)
+    monkeypatch.setattr(cli, "_cmd_list", _raise)
     monkeypatch.setattr(cli.traceback, "print_exc", _print_exc)
 
-    exit_code = cli.main(["--debug", "models", "list"])
+    exit_code = cli.main(["--debug", "list"])
 
     assert exit_code == 2
     assert called["traceback"] is True
@@ -1236,10 +1281,10 @@ def test_cli_no_debug_no_traceback_for_named_branch(
     def _raise(_: object) -> int:
         raise ValueError("engine internal value error")
 
-    monkeypatch.setattr(cli, "_cmd_models_list", _raise)
+    monkeypatch.setattr(cli, "_cmd_list", _raise)
     monkeypatch.setattr(cli.traceback, "print_exc", lambda: called.__setitem__("traceback", True))
 
-    exit_code = cli.main(["models", "list"])
+    exit_code = cli.main(["list"])
     captured = capsys.readouterr()
 
     assert exit_code == 2
