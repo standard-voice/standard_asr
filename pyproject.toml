@@ -102,12 +102,12 @@ server = ["fastapi>=0.118", "python-multipart>=0.0.9", "uvicorn>=0.30", "websock
 # changes between minors (uv's own build warns without this bound). This governs
 # the BUILD tool, not a runtime dependency, so D4's "no caps on deps" does not
 # apply. Bump deliberately alongside the [tool.uv] required-version.
-requires = ["uv-build>=0.9,<0.12"]
+requires = ["uv-build>=0.11.21,<0.12"]
 build-backend = "uv_build"
 
 [tool.uv]
 # Guard against contributors rewriting the lockfile format with an old uv.
-required-version = ">=0.9"
+required-version = ">=0.11.21"
 # Known incompatibility (see docs/compatibility-advisories.md): starlette 1.x's
 # TestClient requires `httpx2`; our server tests use the httpx-based TestClient.
 # This is a uv-level constraint on THIS repo's lock/dev resolution ONLY — it does
