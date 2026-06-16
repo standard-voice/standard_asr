@@ -194,6 +194,10 @@ Wait for `checks-complete` to pass on `main`.
 
 ### Step 4 - Dry-Run To TestPyPI
 
+The manual dispatch runs the same CI-green guard as a real release, so
+`checks-complete` must already be green on the `main` commit (Step 3) -- the
+build job fails fast otherwise.
+
 1. GitHub -> **Actions** -> **Release** -> **Run workflow**.
 2. Select the `main` branch and run it. There are no inputs.
 3. Approve the `testpypi` environment if it is protected.
@@ -202,12 +206,18 @@ Wait for `checks-complete` to pass on `main`.
 ### Step 5 - Verify TestPyPI
 
 TestPyPI does not mirror all dependencies, so let TestPyPI provide
-`standard-asr` and real PyPI provide dependencies:
+`standard-asr` while real PyPI provides the dependencies. uv defaults to a
+`first-index` strategy (a dependency-confusion safeguard): when a dependency such
+as `numpy` also exists on TestPyPI at an incompatible version, uv will not fall
+back to PyPI and resolution fails loudly. Pass `--index-strategy
+unsafe-best-match` so uv considers every index -- safe here because both indexes
+are trusted:
 
 ```bash
 uv venv /tmp/standard-asr-testpypi
 source /tmp/standard-asr-testpypi/bin/activate
 uv pip install \
+  --index-strategy unsafe-best-match \
   --index https://test.pypi.org/simple/ \
   --default-index https://pypi.org/simple/ \
   "standard-asr==X.Y.Z"
@@ -295,7 +305,7 @@ published GitHub Release or PyPI upload yet. For the first release:
 | Trusted publisher 403 | PyPI/TestPyPI publisher fields do not exactly match owner, repo, workflow filename, and environment. |
 | Job waits before publish | The GitHub Environment requires approval. Review and approve the deployment. |
 | Upload says file already exists | PyPI/TestPyPI versions are immutable. Bump to a new version or pre-release. |
-| TestPyPI install cannot find dependencies | Use real PyPI as the fallback dependency index. |
+| TestPyPI install cannot resolve a dependency | uv's default first-index strategy will not fall back to PyPI for a package TestPyPI also hosts (e.g. `numpy`). Add `--index-strategy unsafe-best-match` (both indexes are trusted). |
 | No PyPI attestations | Confirm the upload used Trusted Publishing with `id-token: write` and the PyPA publish action. |
 
 ## Future Plugin Releases
