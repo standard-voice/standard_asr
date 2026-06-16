@@ -10,7 +10,7 @@ releases may include breaking changes.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-06-16
+## [0.1.1] - 2026-06-16
 
 Initial public release: a universal, plug-and-play interface protocol for ASR
 (speech-to-text) inference, plus the runtime library and toolchain that enforce
@@ -64,5 +64,5 @@ that Standard ASR discovers automatically.
 - Typed end to end (`py.typed`, pyright strict), 100% test coverage, tested on
   CPython 3.10–3.14 across Linux/macOS/Windows and against numpy 1.26 and 2.x.
 
-[Unreleased]: https://github.com/standard-voice/standard_asr/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/standard-voice/standard_asr/releases/tag/v0.1.0
+[Unreleased]: https://github.com/standard-voice/standard_asr/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/standard-voice/standard_asr/releases/tag/v0.1.1
