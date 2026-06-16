@@ -10,7 +10,7 @@ releases may include breaking changes.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-06-13
+## [0.1.0] - 2026-06-16
 
 Initial public release: a universal, plug-and-play interface protocol for ASR
 (speech-to-text) inference, plus the runtime library and toolchain that enforce
