@@ -132,29 +132,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  attach-release-assets:
-    name: Attach distributions to GitHub Release
-    if: github.event_name == 'release'
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - name: Download verified distributions
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          name: standard-asr-distributions
-          path: dist/
-
-      - name: Attach distributions
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # This job intentionally has no checkout, so gh cannot infer the repo
-        # from a git remote -- pass it explicitly via --repo. GITHUB_REF_NAME is
-        # the release tag; both are trusted default env vars.
-        run: gh release upload "${GITHUB_REF_NAME}" dist/* --clobber --repo "${GITHUB_REPOSITORY}"
-
   publish-testpypi:
     name: Publish to TestPyPI
     if: github.event_name == 'workflow_dispatch'
@@ -190,7 +167,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     if: github.event_name == 'release'
-    needs: [build, attach-release-assets]
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:

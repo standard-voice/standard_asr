@@ -21,7 +21,7 @@ After the one-time setup exists, every release is:
 4. Verify the TestPyPI install.
 5. Publish a GitHub Release tagged `vX.Y.Z` at the release commit. Approve the
    protected `pypi` environment.
-6. Verify PyPI, attestations, and the GitHub Release assets.
+6. Verify PyPI, attestations, and the GitHub Release.
 
 There are no long-lived PyPI API tokens. Production PyPI publishing is only
 triggered by a GitHub Release; manual dispatch publishes only to TestPyPI.
@@ -75,8 +75,10 @@ The `build` job refuses to continue unless:
 - The wheel contains only package source files (`.py`, `.pyi`, `py.typed`).
 - Both wheel and sdist import correctly outside the project workspace.
 
-Release events also attach the verified sdist and wheel to the GitHub Release
-before the PyPI upload job runs.
+The build artifacts are published only to PyPI (the canonical channel for a pip
+package) with PEP 740 attestations; the GitHub Release carries the notes and
+GitHub's auto-generated source archives. The workflow never uploads wheels or
+sdists to the Release, so it stays compatible with immutable releases.
 
 ## One-Time Setup
 
@@ -152,8 +154,7 @@ No production PyPI path exists for manual dispatch.
 `release: published` runs when a maintainer publishes a GitHub Release:
 
 1. `build`
-2. `attach-release-assets`
-3. `publish-pypi`
+2. `publish-pypi`
 
 The `pypi` environment approval happens immediately before upload to PyPI.
 
@@ -252,8 +253,9 @@ metadata correctly.
 6. Publish the GitHub Release.
 7. Approve the `pypi` environment when the workflow pauses.
 
-The workflow then attaches the verified sdist/wheel to the GitHub Release and
-uploads the same artifacts to PyPI with attestations.
+The workflow then uploads the verified sdist/wheel to PyPI with PEP 740
+attestations. Artifacts are not attached to the GitHub Release -- PyPI is the
+canonical distribution channel for the package.
 
 ### Step 7 - Verify PyPI
 
@@ -268,7 +270,7 @@ Then verify:
 
 - <https://pypi.org/project/standard-asr/> shows `X.Y.Z`.
 - PyPI shows verified provenance / attestations.
-- The GitHub Release contains the `.tar.gz` and `.whl` assets.
+- The built wheel and sdist are on PyPI (they are not attached to the GitHub Release).
 - The release notes match `CHANGELOG.md`.
 
 ## Versioning Policy
