@@ -40,7 +40,8 @@ Build the working prototype and validate it end-to-end.
 
 ### Packaging
 
-- [x] PyPI trusted-publishing workflow.
+- [x] Guarded PyPI trusted-publishing workflow with TestPyPI dry-run.
+- [x] Maintainer release runbook.
 - [ ] First PyPI release (`v0.1.0`).
 - [ ] Plugin project template (cookiecutter / copier).
 

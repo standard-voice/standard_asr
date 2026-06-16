@@ -59,6 +59,7 @@ uv run ruff format --check     # formatting (CI uses --check)
 uv run ruff check              # lint (incl. NPY201 for numpy 1.x/2.x safety)
 uv run pyright                 # strict type check
 uv run pytest                  # tests (+ coverage via the default addopts)
+actionlint .github/workflows/*.yml  # GitHub Actions syntax/semantic lint
 uvx zizmor .github/workflows/  # GitHub Actions security audit
 uv run standard-asr doctor     # diagnose plugin numpy conflicts
 ```
@@ -67,6 +68,10 @@ If you run a type checker yourself, run it via **`uv run pyright`** from the rep
 root so it uses the project venv and the `[tool.pyright]` scope (which excludes
 vendored `reference/` and sample code). Running a bare `pyright`/IDE checker with
 a different interpreter will report spurious unresolved-import errors.
+
+`actionlint` is not a Python dependency. CI downloads a pinned binary and
+verifies its checksum; for local use, install it with your system package
+manager or run the equivalent check in CI.
 
 ## Dependency policy
 
@@ -141,12 +146,20 @@ Four channels keep both contracts honest. Only the first gates a PR:
 GitHub Actions enforces the gates on every PR through a single workflow,
 [`ci.yml`](.github/workflows/ci.yml): lock-freshness (`uv lock --check`), ruff
 format + lint + pyright, the test suite across Python 3.10–3.14 on Linux plus
-macOS/Windows edges (all `--locked`), and the lower-bounds lane. They roll up
-into one required aggregate check, **`checks-complete`** — the only status branch
-protection needs. A daily [`canary.yml`](.github/workflows/canary.yml) and the
-[`zizmor.yml`](.github/workflows/zizmor.yml) Actions-security audit run
-alongside. All actions are pinned to commit SHAs (kept fresh by Dependabot) with
-least-privilege `permissions:`.
+macOS/Windows edges (all `--locked`), lower-bounds, package hygiene,
+actionlint, zizmor, and coverage. They roll up into one required aggregate
+check, **`checks-complete`** — the only status branch protection needs. A daily
+[`canary.yml`](.github/workflows/canary.yml) watches newest dependency
+resolutions outside the PR gate. All actions are pinned to commit SHAs (kept
+fresh by Dependabot) with least-privilege `permissions:`.
+
+## Releasing
+
+Maintainer release steps live in [`RELEASING.md`](RELEASING.md). The short
+version: release commits land on `main` with `checks-complete` green, manual
+workflow dispatch publishes only to TestPyPI, and production PyPI publishing is
+triggered only by a published GitHub Release whose tag matches
+`pyproject.toml`.
 
 ## Contribution licensing
 

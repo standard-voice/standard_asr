@@ -25,7 +25,7 @@ concurrency:
 env:
   # Pin uv so resolution/lock behaviour is reproducible across runs and matches
   # the [tool.uv] required-version floor. Bump deliberately.
-  UV_VERSION: "0.11.19"
+  UV_VERSION: "0.11.21"
 
 jobs:
   lock-check:
@@ -190,7 +190,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Build sdist and wheel
-        run: uv build --out-dir dist
+        run: uv build --package standard-asr --no-sources --out-dir dist --clear
       - name: Assert the wheel ships only source files
         run: |
           contents="$(unzip -Z1 dist/*.whl)"
@@ -206,6 +206,32 @@ jobs:
             exit 1
           fi
           echo "Wheel is clean (source files only)."
+
+  actionlint:
+    # Syntax and semantic validation for GitHub Actions workflows. This catches
+    # expression, event, permission, and shell interpolation mistakes before they
+    # can break the release path. We download a fixed upstream binary and verify
+    # its published digest instead of adding another third-party action.
+    name: Run actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "${archive}" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p .tools/actionlint
+          tar -xzf "${archive}" -C .tools/actionlint actionlint
+      - name: Run actionlint
+        run: .tools/actionlint/actionlint -color
 
   coverage:
     # Dedicated 100%-coverage gate. The matrix `test` lanes stay correctness-only
@@ -304,7 +330,7 @@ jobs:
     # new job above automatically tightens the gate via `needs`.
     name: checks-complete
     if: always()
-    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, coverage, zizmor]
+    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, actionlint, coverage, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
