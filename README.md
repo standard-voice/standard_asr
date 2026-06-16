@@ -8,10 +8,15 @@
 _Apps integrate speech-to-text once and gain every engine. Engines implement once and reach every app._
 
 [![CI](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/standard-voice/standard_asr/graph/badge.svg)](https://codecov.io/gh/standard-voice/standard_asr)
 [![Canary](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml/badge.svg)](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/standard-voice/standard_asr/badge)](https://scorecard.dev/viewer/?uri=github.com/standard-voice/standard_asr)
-[![Socket](https://socket.dev/api/badge/gh/standard-voice/standard_asr)](https://socket.dev/gh/standard-voice/standard_asr)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Checked with pyright](https://microsoft.github.io/pyright/img/pyright_badge.svg)](https://microsoft.github.io/pyright/)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/standard-voice/standard_asr/blob/main/.pre-commit-config.yaml)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/standard-voice/standard_asr/blob/main/LICENSE)
+[![Python versions](https://img.shields.io/pypi/pyversions/standard-asr)](https://pypi.org/project/standard-asr/)
 [![Chat on Zulip](https://img.shields.io/badge/Join%20Chat-Zulip?style=flat&logo=zulip&label=Zulip&color=blue)](https://standard-voice.zulipchat.com)
 
 </div>
