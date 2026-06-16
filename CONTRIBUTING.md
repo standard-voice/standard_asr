@@ -146,8 +146,8 @@ Four channels keep both contracts honest. Only the first gates a PR:
 GitHub Actions enforces the gates on every PR through a single workflow,
 [`ci.yml`](.github/workflows/ci.yml): lock-freshness (`uv lock --check`), ruff
 format + lint + pyright, the test suite across Python 3.10–3.14 on Linux plus
-macOS/Windows edges (all `--locked`), lower-bounds, package hygiene,
-actionlint, zizmor, and coverage. They roll up into one required aggregate
+macOS/Windows edges (all `--locked`), lower-bounds, the numpy-floor lane, package hygiene, actionlint, zizmor,
+and coverage. They roll up into one required aggregate
 check, **`checks-complete`** — the only status branch protection needs. A daily
 [`canary.yml`](.github/workflows/canary.yml) watches newest dependency
 resolutions outside the PR gate. All actions are pinned to commit SHAs (kept

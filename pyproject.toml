@@ -1,7 +1,7 @@
 [project]
 name = "standard-asr"
 version = "0.1.0"
-description = "USB protocol for speech recognition libraries"
+description = "The open standard interface between apps and speech-to-text engines"
 readme = "README.md"
 requires-python = ">=3.10"
 # PEP 639 SPDX expression (Metadata 2.4). The bare `license = "Apache-2.0"`
