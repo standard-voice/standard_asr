@@ -97,10 +97,11 @@ Install Standard ASR and a compliant engine plugin, then discover and transcribe
 
 ```bash
 # Install (see Installation below for extras)
-pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
-# uv: uv pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+pip install standard-asr
+# uv: uv add standard-asr
 
-# Install a compliant engine plugin (e.g. std-faster-whisper)
+# Install a compliant engine plugin. Each engine is its own package; experimental
+# plugins install from their repo until they publish to PyPI.
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
 
 standard-asr list                          # discover installed engines
@@ -219,31 +220,28 @@ standard-asr doctor                                            # diagnose plugin
 
 ## Installation
 
-> [!NOTE]
-> Standard ASR is **not yet published to PyPI**. Install directly from GitHub as shown below.
-> Once published, `pip install standard-asr` / `uv add standard-asr` will work and this
-> section will be updated.
-
 ```bash
 # pip
-pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+pip install standard-asr
 
 # uv
-uv pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+uv pip install standard-asr
 # or, in a uv project:
-uv add "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
+uv add standard-asr
 ```
 
 With extras:
 
 ```bash
 # pip
-pip install "standard-asr[audio] @ git+https://github.com/standard-voice/standard_asr.git"
-pip install "standard-asr[server] @ git+https://github.com/standard-voice/standard_asr.git"
-pip install "standard-asr[audio,server] @ git+https://github.com/standard-voice/standard_asr.git"
+pip install "standard-asr[audio]"
+pip install "standard-asr[server]"
+pip install "standard-asr[audio,server]"
 
 # uv
-uv pip install "standard-asr[audio,server] @ git+https://github.com/standard-voice/standard_asr.git"
+uv pip install "standard-asr[audio,server]"
+# or, in a uv project:
+uv add "standard-asr[audio,server]"
 ```
 
 ### Optional extras
