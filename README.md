@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/branding/icon.png" alt="Standard ASR" width="120" />
+<img src="https://raw.githubusercontent.com/standard-voice/standard_asr/main/docs/assets/branding/icon.png" alt="Standard ASR" width="120" />
 
 # Standard ASR
 
@@ -27,7 +27,7 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 > and enforce a migration policy for breaking changes. We strictly follow semantic versioning.
 > Try it out and tell us what you think — let's shape the future of ASR tooling together.
 
-![Standard ASR concept](docs/assets/concept.jpg)
+![Standard ASR concept](https://raw.githubusercontent.com/standard-voice/standard_asr/main/docs/assets/concept.jpg)
 
 ---
 
