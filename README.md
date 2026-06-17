@@ -26,6 +26,7 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 > diarization, hardware metadata, and model cards are not yet part of the protocol.
 > Developer documentation and tooling are also incomplete. Breaking changes will happen.
 > For production use, wait for a stable release. We follow semantic versioning.
+> See the [Roadmap](https://github.com/standard-voice/standard_asr/issues/27) for what's planned.
 
 ![Standard ASR concept](https://raw.githubusercontent.com/standard-voice/standard_asr/main/docs/assets/concept.jpg)
 
