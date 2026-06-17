@@ -12,18 +12,11 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 [![Python versions](https://img.shields.io/pypi/pyversions/standard-asr)](https://pypi.org/project/standard-asr/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/standard-voice/standard_asr/blob/main/LICENSE)
 [![Chat on Zulip](https://img.shields.io/badge/Join%20Chat-Zulip?style=flat&logo=zulip&label=Zulip&color=blue)](https://standard-voice.zulipchat.com)
-
-<!-- Build & health -->
 [![CI](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml)
 [![Canary](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml/badge.svg)](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml)
 [![codecov](https://codecov.io/gh/standard-voice/standard_asr/graph/badge.svg)](https://codecov.io/gh/standard-voice/standard_asr)
 [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/standard-voice/standard_asr?label=OpenSSF%20Scorecard)](https://scorecard.dev/viewer/?uri=github.com/standard-voice/standard_asr)
-
-<!-- Dev tooling -->
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Checked with pyright](https://microsoft.github.io/pyright/img/pyright_badge.svg)](https://microsoft.github.io/pyright/)
-[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/standard-voice/standard_asr/blob/main/.pre-commit-config.yaml)
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![pyright strict](https://img.shields.io/badge/pyright-strict-2ea44f)](https://microsoft.github.io/pyright/)
 
 </div>
 
