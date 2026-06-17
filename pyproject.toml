@@ -131,12 +131,9 @@ module-name = "standard_asr"
 wheel-exclude = ["*.md", ".coverage", ".coverage.*"]
 source-exclude = [".coverage", ".coverage.*"]
 
-[tool.uv.workspace]
-members = ["cookbook/std_faster_whisper", "cookbook/std_dummy_asr"]
-
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src/standard_asr", "tests", "cookbook/std_faster_whisper", "cookbook/std_dummy_asr"]
+include = ["src/standard_asr", "tests"]
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"

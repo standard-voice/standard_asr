@@ -63,9 +63,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Install dependencies (locked)
-        # --all-packages installs the cookbook workspace members so pyright can
-        # resolve their imports (the cookbook tests are in pyright's include set).
-        run: uv sync --locked --all-packages --all-extras --all-groups
+        run: uv sync --locked --all-extras --all-groups
       - name: Ruff format check
         run: uv run --no-sync ruff format --check
       - name: Ruff lint
@@ -237,8 +235,7 @@ jobs:
     # Dedicated 100%-coverage gate. The matrix `test` lanes stay correctness-only
     # (and lower-bounds/numpy-floor may skip optional-dep paths), so the strict
     # `--cov-fail-under=100` lives here on a single, fully-provisioned interpreter
-    # with every workspace member + extra installed. Covers the core package AND
-    # each cookbook plugin against ITS OWN source.
+    # with every extra installed.
     name: Coverage 100% (py3.13)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -260,30 +257,20 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - name: Install everything (members + groups + extras, locked)
-        run: uv sync --locked --all-packages --all-groups --all-extras
+      - name: Install dependencies (locked)
+        run: uv sync --locked --all-groups --all-extras
       - name: Core coverage (100%)
-        # --cov=standard_asr is already in addopts; only add the strict gate here.
         run: uv run --no-sync pytest --cov-fail-under=100
       - name: Upload coverage to Codecov
-        # Uploads the core standard_asr coverage.xml (written by --cov-report=xml
-        # in addopts) before the cookbook runs overwrite it. Auth is via OIDC
-        # (use_oidc + the job's id-token: write) — no static CODECOV_TOKEN secret,
-        # and uploads are cryptographically verified as coming from this workflow.
-        # Soft-fail: a Codecov outage must never break CI.
+        # Auth is via OIDC (use_oidc + the job's id-token: write) — no static
+        # CODECOV_TOKEN secret, and uploads are cryptographically verified as
+        # coming from this workflow. Soft-fail: a Codecov outage must never
+        # break CI.
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           use_oidc: true
           files: coverage.xml
           fail_ci_if_error: false
-      - name: Cookbook coverage — std_dummy_asr (100%)
-        run: >-
-          uv run --no-sync pytest cookbook/std_dummy_asr/tests
-          -c cookbook/std_dummy_asr/pyproject.toml --cov-fail-under=100
-      - name: Cookbook coverage — std_faster_whisper (100%)
-        run: >-
-          uv run --no-sync pytest cookbook/std_faster_whisper/tests
-          -c cookbook/std_faster_whisper/pyproject.toml --cov-fail-under=100
 
   zizmor:
     # GitHub Actions security audit. Folded into ci.yml (rather than a standalone

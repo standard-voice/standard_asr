@@ -162,20 +162,17 @@ $ standard-asr compliance run faster-whisper/large-v3
 [OK] Compliance run passed.
 ```
 
-### Local testing in the uv workspace
+### Local testing with a plugin
 
-Install the demo plugin and run the checks end‑to‑end:
+Install a plugin (e.g.
+[std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)) and
+run the checks end‑to‑end:
 
 ```bash
-uv run uv pip install -e cookbook/std_dummy_asr
-uv run standard-asr list
-uv run standard-asr compliance entrypoints
-uv run python cookbook/sample_client.py
+pip install std-faster-whisper
+standard-asr list
+standard-asr compliance entrypoints
 ```
-
-The sample client selects the demo model (``dummy/echo``) explicitly and emits a
-synthetic transcript so you can see the full discovery → instantiation → usage
-cycle without heavy dependencies.
 
 Flags of interest:
 
