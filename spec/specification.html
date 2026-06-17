@@ -1,0 +1,3300 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The open standard interface between applications and speech-recognition engines.">
+      
+      
+      
+      
+        <link rel="prev" href="../reference/wire.html">
+      
+      
+        <link rel="next" href="server.html">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/branding/icon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Protocol - Standard ASR</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+        <script src="../assets/external/unpkg.com/iframe-worker/shim.js"></script>
+      
+    
+    
+      
+        
+        
+        
+        <link rel="stylesheet" href="../assets/external/fonts.googleapis.com/css.fa05aeac.css">
+        <style>:root{--md-text-font:"Noto Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#standard-asr" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../index.html" title="Standard ASR" class="md-header__button md-logo" aria-label="Standard ASR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Standard ASR
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Protocol
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../index.html" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../quickstart.html" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../for_app_dev/discover_and_use.html" class="md-tabs__link">
+          
+  
+  
+  For App Developers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../for_asr_dev/adapting_engine.html" class="md-tabs__link">
+          
+  
+  
+  For Engine Authors
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/index.html" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="specification.html" class="md-tabs__link">
+          
+  
+  
+  Specification
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../mission.html" class="md-tabs__link">
+          
+  
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../index.html" title="Standard ASR" class="md-nav__button md-logo" aria-label="Standard ASR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Standard ASR
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../index.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For App Developers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    For App Developers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/discover_and_use.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discover & Use
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/streaming.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/errors.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors & Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For Engine Authors
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    For Engine Authors
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_asr_dev/adapting_engine.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapt an Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_asr_dev/plugin_entrypoints.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin Entrypoints
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/index.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/engine.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/compliance.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/streaming.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/results.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.results
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/capabilities.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/exceptions.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.exceptions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/wire.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.wire
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specification
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specification
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="specification.html" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="server.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="cli.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="download-policy.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Download Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mission.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mission
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../goals.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Goals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/standard-voice/standard_asr/blob/main/RELEASING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="standard-asr">Standard ASR 设计规范</h1>
+<blockquote>
+<p>本文件是 Standard ASR 的<strong>当前权威规范</strong>。
+所有章节标题带「— NORMATIVE」,其中的 <strong>MUST / MUST NOT / SHOULD</strong> 按 RFC 2119 解读。
+经过 2026-06 的差距分析、设计、多轮独立审查定稿。</p>
+<p><strong>早期设计笔记</strong>（2025–2026 初的工作草稿,使用旧模型）已移至 → <code>设计/legacy/pre-normative-设计笔记-2025-2026初.md</code>,不再包含在本文件中。</p>
+</blockquote>
+<hr />
+<h1 id="audio-input-sample-rate-normative">音频输入与采样率 (Audio Input &amp; Sample Rate) — NORMATIVE</h1>
+<blockquote>
+<p><strong>本节定义</strong>：应用如何向引擎传递音频、标准层如何在应用提供的音频形态与引擎接受的形态之间进行协商与转换、以及采样率的声明与重采样责任。本节取代 idea_docs 中「所有引擎只吃 np.float32」的旧契约。
+<strong>另见</strong>：<a href="#能力系统-capabilities--normative">§能力系统</a>（Capabilities 树结构与 Properties 边界规则）、<a href="#流式协议-streaming--normative">§流式协议</a>（流式音频输入的 <code>audio_format</code> 与裸 PCM 帧）、<a href="#init-config-baseconfig--normative">§Init Config</a>（初始化配置）。
+<strong>组织</strong>：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。</p>
+</blockquote>
+<h2 id="1">1. 概述（为什么需要这套机制）</h2>
+<p>不同 ASR 引擎对音频输入的要求差别很大。有的引擎（如 OpenAI）只接受文件上传；有的（如 Faster Whisper、Sherpa-ONNX）直接消费内存中的 NumPy 数组；有的云服务（如 ElevenLabs、AWS）要求应用提供一个可公开访问的 URL，由服务端自行拉取音频。采样率同样复杂：大多数模型原生运行在 16 kHz，但 OpenAI Realtime 硬性要求 24 kHz，电话场景的专用模型运行在 8 kHz。</p>
+<p>本节定义了一套统一的音频输入类型体系、一个确定性的协商与转换矩阵、以及围绕采样率的声明与重采样规则，使应用代码在任何引擎上都能以相同的方式传递音频。</p>
+<h2 id="2">2. 术语</h2>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AudioInput</code></td>
+<td>标准定义的<strong>判别联合 (discriminated union)</strong>，是应用传给 <code>transcribe(audio, …)</code> 的音频参数类型。包含六种变体。判别依据是显式的类型标签，<strong>不是</strong>对字符串内容的嗅探。</td>
+</tr>
+<tr>
+<td><code>InputKind</code></td>
+<td>引擎在 Properties 中声明自己接受哪些音频形态的封闭枚举：<code>"array"</code> / <code>"encoded_bytes"</code> / <code>"encoded_file"</code> / <code>"fetchable_url"</code> / <code>"storage_uri"</code>。</td>
+</tr>
+<tr>
+<td><code>AudioStorageUri</code></td>
+<td>provider 云存储 URI（<code>s3://</code>、<code>gs://</code>、<code>oss://</code>、<code>abfs://</code> 等）。语义="引擎用自己的云 SDK 凭证解析此对象"。与 <code>AudioUrl</code> 区分：它<strong>不是</strong> HTTPS 可公开拉取的 URL，<strong>不经过</strong>标准的 SSRF 校验器（标准既不拉取也不能在无引擎凭证下访问云存储）。</td>
+</tr>
+<tr>
+<td>协商 (negotiation)</td>
+<td>标准层在应用提供的形态与引擎接受的形态之间寻找匹配或最小成本转换路径的过程。</td>
+</tr>
+<tr>
+<td>透传 (passthrough)</td>
+<td>应用提供的形态恰好是引擎接受的形态之一，标准层不做任何变换。</td>
+</tr>
+<tr>
+<td>diagnostic</td>
+<td>标准层在执行有损转换、假定参数等非理想路径时，返回给应用的结构化通知。</td>
+</tr>
+<tr>
+<td>canonical 格式</td>
+<td>标准规定的基准音频表示：数组 = <code>float32</code> 单声道 <code>[-1, 1]</code>；wire/流式 = 16-bit signed LE PCM；默认 16 kHz。</td>
+</tr>
+<tr>
+<td><code>[audio]</code> extra</td>
+<td><code>pip install standard-asr[audio]</code> 安装的可选依赖组，提供压缩格式解码和高质量重采样器。</td>
+</tr>
+<tr>
+<td>SSRF</td>
+<td>Server-Side Request Forgery——攻击者利用服务端 URL 拉取访问内网资源。本节对 <code>AudioUrl</code> 的安全策略正是防范此风险。</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3">3. 声明与参数</h2>
+<h3 id="31-audioinput">3.1 音频输入类型 <code>AudioInput</code></h3>
+<table>
+<thead>
+<tr>
+<th>变体</th>
+<th>构造参数</th>
+<th>含义</th>
+<th>自描述采样率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AudioPath(value: str \| PathLike)</code></td>
+<td>本地文件路径</td>
+<td>磁盘上的音频文件</td>
+<td>是（文件头）</td>
+</tr>
+<tr>
+<td><code>AudioBytes(data: bytes, container: str \| None = None)</code></td>
+<td>编码音频字节</td>
+<td>内存中的编码音频，<code>container</code> 为可选格式提示</td>
+<td>是（文件头）</td>
+</tr>
+<tr>
+<td><code>AudioArray(samples: NDArray, sample_rate: int \| None = None)</code></td>
+<td>波形数组</td>
+<td>已解码的原始波形</td>
+<td>否（除非给 <code>sample_rate</code>）</td>
+</tr>
+<tr>
+<td><code>AudioUrl(value: str)</code></td>
+<td>远程 URL</td>
+<td>语义="服务端可拉取"；安全约束见 R5</td>
+<td>是（远端头）</td>
+</tr>
+<tr>
+<td><code>AudioBase64(value: str)</code></td>
+<td>base64 / data-URI</td>
+<td>编码为 base64 的音频</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>AudioStorageUri(value: str)</code></td>
+<td>provider 云存储 URI</td>
+<td>引擎用自己的云 SDK 凭证解析（<code>s3://</code>/<code>gs://</code>/<code>oss://</code>/<code>abfs://</code> 等，scheme 白名单校验）；构造期校验 scheme，<strong>不</strong>经 SSRF 校验（见 R5.2）</td>
+<td>是（远端/服务端）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>便利强制转换 (coercion)</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>裸类型</th>
+<th>转换目标</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>str</code></td>
+<td><code>AudioPath</code></td>
+<td><strong>永远</strong>视为本地路径。URL/base64/storage-URI 须显式用 <code>AudioUrl</code>/<code>AudioBase64</code>/<code>AudioStorageUri</code>。</td>
+</tr>
+<tr>
+<td><code>bytes</code></td>
+<td><code>AudioBytes</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>(ndarray, int)</code></td>
+<td><code>AudioArray(samples, sample_rate)</code></td>
+<td>元组第二元素为采样率</td>
+</tr>
+<tr>
+<td><code>ndarray</code></td>
+<td><code>AudioArray(samples, sample_rate=None)</code></td>
+<td>未提供采样率，由 R6 的 strict/best_effort 决定</td>
+</tr>
+</tbody>
+</table>
+<p><strong>流式音频是另一套表示</strong>：流式通过 <code>start_transcription(audio_format=…)</code> 声明格式，<code>send_audio(chunk)</code> 喂裸 PCM 帧。batch 的 <code>AudioInput</code> 不用于流式逐块。唯一交叠：「整段输入+流式输出」（OpenAI SSE）中 <code>start_transcription</code> 的初始整段参数仍是 <code>AudioInput</code>（见 <a href="#流式协议-streaming--normative">§流式协议</a>）。</p>
+<h3 id="32-properties">3.2 引擎声明 —— Properties</h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>类型</th>
+<th>必填</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>accepted_input</code></td>
+<td><code>set[InputKind]</code></td>
+<td>是</td>
+<td>引擎接受的音频形态集合</td>
+</tr>
+<tr>
+<td><code>native_sample_rate</code></td>
+<td><code>int</code></td>
+<td>是</td>
+<td>模型原生采样率（通常 16000 或 8000）</td>
+</tr>
+<tr>
+<td><code>accepted_sample_rates</code></td>
+<td><code>list[int] \| SampleRateRange \| "any"</code></td>
+<td>是</td>
+<td>引擎接受的采样率：离散列表、连续区间 <code>{min,max}</code>、或 <code>"any"</code></td>
+</tr>
+<tr>
+<td><code>required_input_sample_rate</code></td>
+<td><code>int \| None</code></td>
+<td>否</td>
+<td>线路协议硬性要求的采样率（如 OpenAI Realtime 24000）</td>
+</tr>
+<tr>
+<td><code>max_file_size</code></td>
+<td><code>int \| None</code></td>
+<td>否</td>
+<td>最大文件/数据大小（字节，如 OpenAI 25 MB）</td>
+</tr>
+<tr>
+<td><code>max_audio_duration</code></td>
+<td><code>float \| None</code></td>
+<td>否</td>
+<td>最大音频时长（秒）</td>
+</tr>
+<tr>
+<td><code>wire_encodings</code></td>
+<td><code>list[str] \| None</code></td>
+<td>否</td>
+<td>流式 <code>audio_format</code> 会话允许的 wire 编码白名单（如 <code>["pcm_s16le", "mulaw"]</code>）。缺席语义见下。</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td><code>str \| None</code></td>
+<td>否</td>
+<td>仅<strong>展示性</strong>的人类可读描述。MUST NOT 承载影响协商/门控的机器可读数据。</td>
+</tr>
+</tbody>
+</table>
+<p>仅行为性 <code>self_resamples: bool</code> 放 Capabilities（见 <a href="#能力系统-capabilities--normative">§能力系统 R7</a>）。引擎身份字段（<code>engine_id</code>/<code>model_name</code>/<code>protocol_version</code>）的 normative 定义见 <a href="#init-config-baseconfig--normative">§Init Config IC.2</a>。</p>
+<p><strong>无 blanket metadata（normative）。</strong> Properties <strong>不含</strong>自由 <code>extra: dict</code> 元数据口袋——与 §C 对能力树「砍掉 blanket <code>metadata</code>」（无已知用例、鼓励非结构化信息、破坏机器可读性）的决策对称。引擎需表达的机器可读信息 MUST 走结构化通道：标准字段（additive-minor 提案）或能力树的 <code>x_&lt;vendor&gt;_*</code> 实验命名空间；纯展示文本走 <code>description</code>。这避免在 wire 层形成无 schema、不可移植的私有并行声明通道。</p>
+<p><strong><code>accepted_sample_rates</code> 三种形态（normative）。</strong> 引擎按其真实 I/O 边界三选一声明：
+- <strong>离散列表</strong> <code>list[int]</code>：穷举接受的采样率（本地引擎常见）。
+- <strong>连续区间</strong> <code>SampleRateRange { min, max }</code>：接受 <code>[min, max]</code> 闭区间内<strong>任意</strong>采样率（如 AWS Transcribe 的 <code>8000–48000</code>，研究 4）。<code>min</code>/<code>max</code> MUST &gt; 0 且 <code>min ≤ max</code>；wire 序列化为 <code>{"min":8000,"max":48000}</code>。区间型引擎 MUST 用此形态而非退化为 <code>"any"</code>（过宽，丧失调用前判定）或穷举几个点（过窄，区间内合法率被无谓重采样有损）。
+- <strong><code>"any"</code></strong>：接受任意采样率（如自行重采样的引擎）。</p>
+<p><strong>声明卫生（normative）。</strong> 列表形态：<strong>重复</strong>采样率是声明错误，MUST 在 Properties 声明期拒绝（与 <code>wire_encodings</code>、语言列表的重复拒绝同款契约）；列表为空 MUST 拒绝（无意义；如需"接受任意"用 <code>"any"</code>）；每个值 MUST &gt; 0。</p>
+<p><strong>采样率隶属判定（normative）。</strong> 「输入采样率 ∈ <code>accepted_sample_rates</code>」对三形态的统一判定：<code>"any"</code>→恒真；列表→<code>rate ∈ list</code>；区间→<code>min ≤ rate ≤ max</code>（闭区间）。R7 的重采样决策、可达性不变量、流式会话率校验<strong>均</strong>用此统一判定（实现 <code>sample_rate_accepted</code>），任一调用点不得各行其是。重采样目标选择：列表取最近成员（偏好不升采样）；区间取输入<strong>钳制进</strong> <code>[min, max]</code>（最近可达点）。</p>
+<p><strong><code>wire_encodings</code> 缺席语义（normative）。</strong> 当引擎声明 <code>wire_encodings</code> 为具体列表时，会话建立 MUST fail-closed 拒绝列表外的 <code>audio_format.encoding</code>（实现：<code>EngineBase.ensure_stream_format_supported</code>）——一个引擎从未声明的编码 MUST NOT 被当作 PCM 误帧而静默错误转写。当 <code>wire_encodings</code> 为 <code>None</code> 时语义为「<strong>unconstrained</strong>」：标准层无法校验编码，遂跳过编码检查并信任引擎接受任意编码（典型为自管 wire 格式的适配器，仅经无参 <code>start_transcription()</code> 开会话、从不收 <code>audio_format</code>）。此处对编码是 <strong>fail-open</strong>——是对自管格式引擎的有意让步，而非能力系统 fail-closed 默认的例外（采样率与声道仍无条件 fail-closed）。补偿：合规套件对<strong>声明了 <code>streaming_input</code> 却未声明 <code>wire_encodings</code></strong> 的引擎发 <strong>warning</strong>（漏声明会在 <code>audio_format</code> 会话上打开静默误帧窗口；自管格式引擎可忽略此 warning）。<code>pcm_s16le</code> 是 canonical wire 编码（<a href="#音频输入与采样率-audio-input--sample-rate--normative">§AI 术语</a>：16-bit signed LE PCM）。</p>
+<h2 id="4">4. 行为（规范）</h2>
+<p><strong>R1 — 类型判别。</strong> <code>AudioInput</code> 的判别 MUST 基于显式类型标签，MUST NOT 基于字符串内容嗅探。</p>
+<p><strong>R2 — 引擎声明。</strong> 每个引擎 MUST 在 Properties 中声明 <code>accepted_input</code>。</p>
+<p><strong>R3 — 协商与转换矩阵。</strong> 有直接匹配时透传；无匹配走最低成本转换；无路径抛 <code>IncompatibleAudioInputError(provided, accepted, hint)</code>。</p>
+<table>
+<thead>
+<tr>
+<th>应用提供 ↓ ╲ 引擎接受 →</th>
+<th><code>array</code></th>
+<th><code>encoded_file/bytes</code></th>
+<th><code>fetchable_url</code></th>
+<th><code>storage_uri</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AudioPath</code></td>
+<td>decode→array（需 <code>[audio]</code>）</td>
+<td>读文件→bytes，透传</td>
+<td><strong>FAIL</strong></td>
+<td><strong>FAIL</strong></td>
+</tr>
+<tr>
+<td><code>AudioBytes</code></td>
+<td>decode→array（需 <code>[audio]</code>）</td>
+<td>透传</td>
+<td><strong>FAIL</strong></td>
+<td><strong>FAIL</strong></td>
+</tr>
+<tr>
+<td><code>AudioArray</code></td>
+<td>透传（+ 采样率 R6–R8）</td>
+<td>encode→WAV bytes（R4）</td>
+<td><strong>FAIL</strong></td>
+<td><strong>FAIL</strong></td>
+</tr>
+<tr>
+<td><code>AudioUrl</code></td>
+<td><strong>v1: FAIL</strong>（R5）；v2: fetch→decode</td>
+<td>透传给接受 URL 引擎</td>
+<td>透传</td>
+<td><strong>FAIL</strong></td>
+</tr>
+<tr>
+<td><code>AudioBase64</code></td>
+<td>b64decode→decode→array</td>
+<td>b64decode→bytes</td>
+<td><strong>FAIL</strong></td>
+<td><strong>FAIL</strong></td>
+</tr>
+<tr>
+<td><code>AudioStorageUri</code></td>
+<td><strong>FAIL</strong>（R5.2）</td>
+<td><strong>FAIL</strong>（R5.2）</td>
+<td><strong>FAIL</strong>（R5.2）</td>
+<td>透传（零转换）</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>有损单元格 MUST 发 <code>audio_conversion</code> diagnostic（统一 <code>Diagnostic</code> 形状：<code>level</code>/<code>code</code>/<code>message</code>/<code>param?</code>/<code>provided?</code>/<code>effective?</code>——from/to/lossy 等细节进 <code>message</code> 与 <code>provided</code>/<code>effective</code>，不是独立字段）。</li>
+<li>协商 MUST 支持调用前判定：<code>can_accept(provided, accepted) -&gt; bool</code> / <code>negotiate(provided, accepted) -&gt; ConversionPlan | NoViablePath</code>，并体现在引擎 card / 文档。</li>
+<li><strong>死角</strong>（本地数据 + 只接受 <code>fetchable_url</code>，或 storage-URI + 不接受 <code>storage_uri</code>）：MUST fail-explicit。标准 MUST NOT 做 upload-broker，且 MUST NOT 在无引擎凭证下拉取云存储。</li>
+<li><strong>内存源 → 只接受 <code>encoded_file</code>（不接受 <code>encoded_bytes</code>）的引擎</strong>：实现选择 <strong>FAIL</strong> 而非落临时文件——数组 encode 输出 <code>BytesIO</code>、bytes/base64 解码为内存字节，标准 MUST NOT 为投递而写临时文件（临时文件有泄漏/只读 FS/TOCTOU 风险，见 R4 理由）。此处行为以<strong>代码为准</strong>：上表 <code>AudioBytes</code>/<code>AudioBase64</code> × <code>encoded_file/bytes</code> 写作"透传"是针对接受 <code>encoded_bytes</code> 的引擎；当引擎<strong>仅</strong>接受 <code>encoded_file</code> 时，协商返回 <code>NoViablePath</code>（fail-explicit），比字面矩阵更严。</li>
+</ul>
+<p><strong>R4 — 数组→编码文件 encoder。</strong> 当 <code>AudioArray</code> 遇到只接受文件的引擎时：输出 MUST 为内存 <code>BytesIO</code>（MUST NOT 落磁盘）；canonical 编码 = WAV/16-bit PCM LE/mono；多声道 MUST 降混+diagnostic；float32→int16 有损 MUST 发 diagnostic；编码后 MUST 预检 <code>max_file_size</code>，超限抛清晰本地错误。</p>
+<blockquote>
+<p><strong>canonical 量化约定（normative，钉死跨语言一致性）</strong>：float32→int16 的量化 MUST 为：先 clip 到 <code>[-1.0, 1.0]</code>，再 <code>round_half(sample × 32767)</code>（四舍五入到最近整数，<strong>MUST NOT</strong> 向零截断——截断使量化误差上界从 0.5 LSB 翻倍到 1 LSB 并引入向零偏置），写为 little-endian int16。非有限样本（NaN/±Inf）在 cast 前 MUST 被消毒为 <code>0</code>/<code>±1</code>（int16 无法表示 NaN，cast 是未定义行为），且该消毒 MUST 发 <code>non_finite_audio</code> diagnostic（与数组直达路径同 code，使编码路径与数组路径对该输入的可观测性一致）。解码侧的反向缩放为 <code>÷32768</code>；编解码往返因此有一个 <code>32767/32768</code>（≈ −0.00027 dB）的有意衰减，可接受。钉死此约定是为了让 wire 协议的其他语言实现产生逐字节一致的 PCM，避免一致性测试出现 ±1 LSB 噪声。</p>
+</blockquote>
+<p><strong>R5 — <code>AudioUrl</code> 安全策略。</strong>
+- <strong>引擎/云自取</strong>：转发前 MUST 校验 HTTPS-only + 默认拒绝私网/环回/link-local IP 段（RFC1918、127/8、169.254/16、::1、fc00::/7；可显式 opt-in）+ 重定向上限+每跳重校验。<strong>opt-in 入口</strong>：私网拒绝的显式放宽是 <strong>Init Config 级</strong>部署开关 <code>allow_private_urls: bool</code>（<code>BaseConfig</code>，默认 <code>False</code>），由标准转写管线（<code>EngineBase._prepare_audio</code>）透传给校验器；HTTPS 要求<strong>不</strong>可放宽。它属部署属性而非请求属性，故归 Init Config 而非 <code>RuntimeParams</code>（不随请求漂移），且与 <code>strict</code> 同列 <code>_ENV_EXCLUDED_FIELDS</code>——环境变量 MUST NOT 静默放宽该安全策略。
+- <strong>标准自取</strong>：<strong>v1 MUST NOT 实现</strong>（SSRF 高危）。<code>AudioUrl</code> v1 仅作透传。
+- v2 若开放：MUST 额外 DNS pin + 流式读取硬上限 + 超时。
+- <strong>v1 校验边界（明示，非静默缺口）</strong>：v1 标准层<strong>只校验调用方给出的那个初始 URL</strong>——解析其 host、核验 HTTPS 与所有解析到的 IP 非私网（实现：<code>validate_fetchable_url</code>），随后把<strong>字面 URL</strong>透传给引擎；标准层<strong>自身不拉取、不发起任何请求、因此也不存在需要逐跳重校验的重定向链</strong>。上文第一条里的"重定向上限+每跳重校验"是<strong>引擎/云端 fetcher</strong>的责任（它在 fetch 时会独立地再次解析域名——故 resolve-time IP 检查对 DNS rebinding 仅是 advisory，不是硬保证）。也就是说：<strong>v1 里跟随并逐跳重校验重定向是引擎侧的义务，不是标准层的</strong>；待 v2 标准开放自取时，per-hop 重校验才落到标准层（连同上一条的 DNS pin / 读取上限 / 超时）。</p>
+<p><strong>R5.2 — <code>AudioStorageUri</code> 安全模型（独立于 R5）。</strong> provider 云存储 URI（<code>s3://</code>/<code>gs://</code>/<code>oss://</code>/<code>abfs://</code> 等）由<strong>引擎</strong>用自己的云 SDK 凭证解析，标准既不拉取也不能在无凭证下访问，因此：
+- 构造期 MUST 校验 scheme 落在 provider 存储 scheme 白名单内（小且 extensible-by-constant，无运行时注册表）；MUST 拒绝 <code>file://</code>、<code>http(s)://</code>、空值、未知 scheme，报清晰错误。
+- MUST NOT 经过 R5 的 HTTPS / public-IP SSRF 校验器（storage URI 不是 HTTPS-fetchable，标准无 SSRF 攻击面）。
+- 协商：仅当引擎接受 <code>storage_uri</code> 时透传（零转换）；其余一律 <strong>FAIL</strong>（标准不是 upload-broker）。</p>
+<p><strong>R6 — 采样率。</strong> canonical = 16 kHz mono。裸数组无采样率时：strict MUST 抛错（"pass AudioArray(samples, sample_rate)"）；best_effort MAY 假定 16k 但 MUST 每次发 <code>assumed_sample_rate</code> diagnostic。<strong>绝不静默假定。</strong> <code>sample_rate</code>：batch 选填；bare-PCM streaming 必填（会话锁定）；header-bearing buffered 输入（OpenAI SSE）自描述豁免。</p>
+<p><strong>R7 — 重采样责任。</strong> <code>accepted_sample_rates</code> <strong>始终权威</strong>，不论 <code>self_resamples</code>：输入 ∉ accepted 且 ≠ <code>required_input_sample_rate</code> → 标准 MUST 重采样；无可达目标 = 定义错误，MUST NOT 静默透传。8 kHz 电话 = 独立原生模型，MUST 经 entrypoint preset 选择，MUST NOT 升采样原生率输入。24 kHz realtime = <code>required_input_sample_rate</code>，标准重采样；流式缺 <code>[audio]</code> 时 MUST 在会话建立时报错。<strong>可达性不变量</strong>：<code>required_input_sample_rate</code>（若设）MUST 被 <code>accepted_sample_rates</code> 接受（当后者为具体列表<strong>或区间</strong>时，即非 <code>"any"</code>；按上文统一隶属判定）——重采样目标必须可达；同理 <code>native_sample_rate</code> MUST 被 <code>accepted_sample_rates</code> 接受（非 <code>"any"</code> 时）——否则引擎自身的原生率输入会被静默重采样（如 8 kHz 电话模型被升采样到 16k），而 8 kHz 是独立原生模型而非低采样率变体。两条不变量均在 Properties <strong>声明期</strong>即校验（<code>BaseProperties</code>），而非延迟到会话建立。</p>
+<p><strong>R7.1 — <code>required_input_sample_rate</code> 对 batch 路径绝对权威（normative）。</strong> 对 batch 的数组与编码（array / encoded）路径：当 <code>required_input_sample_rate</code> 已设且<strong>输入采样率 ≠ required</strong> 时，标准 <strong>MUST</strong> 重采样到 <code>required</code>，<strong>不论</strong> <code>accepted_sample_rates</code> 为 <code>"any"</code> 抑或其具体列表已含输入采样率。即「输入 ∈ accepted 但 ≠ required」这一可构造组合（如 <code>accepted_sample_rates=[16000, 24000]</code> + <code>required_input_sample_rate=24000</code> + 输入 16000）下，<strong>MUST</strong> 重采样到 24000 而 <strong>MUST NOT</strong> 透传 16000——硬性线路要求（如 OpenAI Realtime「Always 24000」）必须被精确满足。此条把参考实现既有行为升格为 normative，消除 R7 字面只覆盖「∉ accepted 且 ≠ required」时其它实现可能透传的歧义；流式侧 <code>ensure_stream_format_supported</code> 的 required 绝对优先与此同构（见下方 v1 实现说明 ①）。</p>
+<p><strong>R7.2 — 重采样目标率的选择顺序（normative）。</strong> 当 R7 判定必须重采样时，标准 <strong>MUST</strong> 按以下顺序选择目标采样率（首个适用者胜）：① <code>required_input_sample_rate</code>（若设）；② 否则 <code>native_sample_rate</code>。R7 的两条可达性不变量保证：经引擎管线（<code>accepted_sample_rates</code> 为具体列表或区间时 required 与 native 均被 accepted 接受）①②<strong>必然可达</strong>，故无需第三级。仅当调用者<strong>绕过 Properties 不变量直接调用</strong> <code>execute_plan</code>（声明不满足不变量）时，实现 MAY 退到一个防御性兜底：在 accepted 中选与源采样率<strong>绝对距离最近</strong>者，并在等距时<strong>偏好不升采样</strong>（<code>≤ source</code>）的目标（区间则把源钳入 <code>[min, max]</code>；源采样率未知时选 <code>min(accepted)</code> / 区间下界以最小化无谓升采样）。此兜底是实现细节而非 normative 要求，独立实现可自选等价的 fail-loud 策略。把目标选择写入规范，避免其它实现选 <code>accepted[0]</code> 或 <code>max(accepted)</code> 导致同一输入跨实现得到不同质量的重采样结果。</p>
+<blockquote>
+<p><strong>v1 实现说明</strong>：v1 不在标准层重采样<strong>流式裸帧</strong>（流式引擎自行处理 wire 帧），因此上文"流式缺 <code>[audio]</code> 时会话建立报错"针对的是<strong>未来</strong>标准层流式重采样落地后的路径。v1 的会话建立校验（<code>EngineBase.ensure_stream_format_supported</code>）做<strong>三项</strong> fail-closed：①<strong>wire 采样率可达性</strong>——<code>required_input_sample_rate</code>（若设）MUST 强等（<strong>含 <code>accepted_sample_rates="any"</code> + <code>required</code> 的可构造组合</strong>），否则 wire rate MUST 被 <code>accepted_sample_rates</code> 接受（非 <code>"any"</code> 时，按统一隶属判定——列表成员或区间内）；②<strong>mono-only</strong>——<code>audio_format.channels</code> MUST = <code>1</code>（与 <a href="#流式协议-streaming--normative">§ST 3.1</a>:"v1 增量 wire 输入仅支持单声道"一致）；③<strong>wire 编码</strong>——当引擎声明 <code>wire_encodings</code>（具体列表）时拒绝列表外编码（<code>wire_encodings=None</code> 为 unconstrained，编码 fail-open，缺席语义见 <a href="#音频输入与采样率-audio-input--sample-rate--normative">§AI 3.2</a>）。采样率拒绝是「标准层流式重采样」deferred 路径落地前的 v1 替代行为（届时该拒绝转为重采样）。批量 <code>transcribe</code> 路径的重采样与 <code>[audio]</code> 行为按本条全量生效。</p>
+</blockquote>
+<p><strong>R8 — 重采样质量与许可证。</strong> fallback MUST 抗混叠（FFT-based，MUST NOT 裸线性/抽取）；用了 fallback MUST 发 <code>resampled_with=fallback</code> diagnostic。许可证：SHOULD clean-room FFT；MUST NOT vendoring SoX/soxr(LGPL/GPL) 或 2016 前 libsamplerate；soxr 仅作 <code>[audio]</code> 依赖。</p>
+<p><strong>R9 — 内存与大媒体。</strong> <code>AudioBytes</code>/<code>AudioArray</code> = 装得下内存的形态；大媒体 SHOULD 用 <code>AudioPath</code>/<code>AudioUrl</code>；标准读文件/URL 给文件型引擎时 SHOULD 流式不全缓冲。</p>
+<p><strong>R10 — 新增 Properties。</strong> <code>accepted_input</code>/<code>max_file_size</code>/<code>max_audio_duration</code>/<code>native_sample_rate</code>/<code>accepted_sample_rates</code>/<code>required_input_sample_rate</code>/<code>wire_encodings</code> MUST 落在 §C 的层级化模型内。关于 <code>supported_input_formats</code>（容器格式协商）：v1 由 <code>accepted_input</code> + encoder 容器选择间接覆盖，后续可 additive 补充。<code>max_audio_duration</code> <strong>强制点</strong>：标准仅在输入<strong>已解码为数组</strong>（时长可测）时校验并 fail-loud；编码透传（file/bytes passthrough）MUST NOT 为测时长而强制全解码（见 R9），改由 <code>max_file_size</code> 作本地护栏 + 引擎自行兜底。</p>
+<h2 id="5">5. 示例</h2>
+<h3 id="a-openai">示例 A：本地数组 → OpenAI（只接受文件上传）</h3>
+<p>引擎：<code>accepted_input={"encoded_file","encoded_bytes"}</code>，<code>max_file_size=26214400</code>（25 MB）。应用传入 <code>AudioArray(samples=my_array, sample_rate=16000)</code>。</p>
+<ol>
+<li>协商：矩阵 <code>AudioArray</code> × <code>encoded_file/bytes</code> → R4 encode。</li>
+<li>执行：<code>BytesIO</code>；float32→16-bit PCM LE（有损，发 diagnostic）；mono。</li>
+<li>预检：12 MB &lt; 25 MB，通过。</li>
+<li>结果：WAV bytes 传给 OpenAI + <code>audio_conversion</code> diagnostic。</li>
+</ol>
+<h3 id="b-faster-whisper">示例 B：本地文件 → Faster Whisper（只接受数组）</h3>
+<p>引擎：<code>accepted_input={"array"}</code>，<code>self_resamples=true</code>，<code>accepted_sample_rates="any"</code>。应用传入 <code>AudioPath("/data/interview.mp3")</code>。</p>
+<ol>
+<li>协商：矩阵 <code>AudioPath</code> × <code>array</code> → decode（需 <code>[audio]</code>）。</li>
+<li>执行：解码 mp3→float32 数组，文件头读出 44100 Hz。</li>
+<li>重采样：<code>self_resamples=true</code> 且 <code>"any"</code> → 透传。引擎自行降至 16k。</li>
+<li>结果：float32 数组传给引擎 + decode diagnostic。</li>
+</ol>
+<h3 id="caudiourl-v1-fail">示例 C：AudioUrl → 只接受数组的引擎（v1 FAIL）</h3>
+<p>引擎：<code>accepted_input={"array"}</code>。应用传入 <code>AudioUrl("https://example.com/audio.wav")</code>。</p>
+<ol>
+<li>协商：矩阵 <code>AudioUrl</code> × <code>array</code> → v1: FAIL。</li>
+<li>结果：抛 <code>IncompatibleAudioInputError</code>，hint="请用 AudioPath 提供本地文件"。</li>
+</ol>
+<h3 id="daudiourl-elevenlabs-url">示例 D：AudioUrl → ElevenLabs（接受 URL）</h3>
+<p>引擎：<code>accepted_input={"encoded_file","encoded_bytes","fetchable_url"}</code>。应用传入 <code>AudioUrl("https://storage.example.com/audio.flac")</code>。</p>
+<ol>
+<li>协商：透传。R5.1 校验 HTTPS + 非私网 IP，通过。</li>
+<li>结果：URL 直接传给 ElevenLabs，零转换。</li>
+</ol>
+<h3 id="e24-khz-realtime">示例 E：24 kHz realtime 重采样</h3>
+<p>引擎：<code>required_input_sample_rate=24000</code>，<code>accepted_sample_rates=[24000]</code>，<code>self_resamples=false</code>。流式会话 <code>audio_format.sample_rate=16000</code>。</p>
+<ol>
+<li>16000 ∉ <code>[24000]</code> → 标准 MUST 重采样 16k→24k（R7）。</li>
+<li>检查 <code>[audio]</code> 已装；若未装，会话建立时报错（R7）。</li>
+<li>结果：24 kHz PCM 帧传给引擎 + <code>resampled_with</code> diagnostic。</li>
+</ol>
+<h2 id="6">6. 附注与理由</h2>
+<ul>
+<li><strong>为何用判别联合而非字符串嗅探</strong>：一个名为 <code>https%3A//...</code> 的本地文件、一个 base64 恰好以 <code>/</code> 开头的字符串，都会导致嗅探误判。显式类型标签消除所有歧义，对 IDE 类型提示也更友好。</li>
+<li><strong>为何裸 <code>str</code> 只映射 <code>AudioPath</code></strong>：最常见且最安全的语义是文件路径。如果允许裸 str 被推断为 URL，恶意输入可能触发 SSRF。URL/base64 强制显式类型是一道安全防线。</li>
+<li><strong>为何 v1 禁止标准自取 URL</strong>：SSRF 是 v1 最不值得冒的风险。"接受 URL 就透传；不接受就报错"比安全实现一个 URL fetcher 简单得多。</li>
+<li><strong>为何用独立的 <code>AudioStorageUri</code> 变体而非放宽 <code>AudioUrl</code></strong>：两者安全模型根本不同。<code>AudioUrl</code> 是 HTTPS 可公开拉取的 URL，标准的 SSRF 校验器（HTTPS-only + 拒私网 IP）正是为它而设。provider 云存储 URI（<code>s3://</code>/<code>gs://</code>/…）则由<strong>引擎用自己的云 SDK 凭证</strong>解析——标准无法、也不应在无凭证下拉取它，对它跑 public-IP SSRF 校验既无意义又会硬拒掉整类合法云引擎（AWS Transcribe batch 强绑 S3 URI、Google STT v2 仅接受 <code>gs://</code>）。把它放进 <code>AudioUrl</code> 会迫使一个变体承载两套互斥的安全语义；独立变体让"标准侧无 SSRF 面、引擎侧凭证解析"这一事实在类型与协商矩阵中显式可见，且 scheme 白名单在构造期即 fail-loud。</li>
+<li><strong>为何 encoder 输出到 BytesIO</strong>：临时文件有泄漏风险、在只读 FS 上失败、有 TOCTOU 竞态。BytesIO 在进程内完成全部操作。</li>
+<li><strong>为何 canonical = WAV/16-bit PCM LE</strong>：最简单的无压缩容器 + 行业标准量化深度 + 主流 CPU 字节序 = 最大兼容性。</li>
+<li><strong>为何采样率放 Properties</strong>：采样率是引擎的静态 I/O 边界，不随功能/模式改变。唯一例外 <code>self_resamples</code>（行为性）归 Capabilities。</li>
+<li><strong>为何 8 kHz 走 preset</strong>：8 kHz 模型是完全不同的模型（训练数据、声学特征不同），不是"同一模型的低采样率版"。阿里/Google 均明确警告升采样掉精度。</li>
+<li><strong>重采样许可证</strong>：soxr (LGPL) 不能 vendoring 进 Apache-2.0 核心。内置 FFT 实现（算法不可版权化）确保许可证干净。</li>
+<li><strong>为何 HTTP server 不预解码</strong>：工具链 server 收到上传后 MUST 以 <code>AudioBytes</code>（multipart）/<code>AudioBase64</code>（JSON）形态喂入引擎自身的标准协商，MUST NOT 自行预解码/归一到 16 kHz。否则会破坏按引擎的采样率要求（R7，如 8 kHz 电话被静默升采样、24 kHz realtime 无法协商），也会让只接受 encoded/url 的云引擎无法被 server 暴露（违背 G.2.2"封装任何引擎"）。base64 仅作传输编码，由协商层解码。</li>
+</ul>
+<h2 id="-">---</h2>
+<h1 id="language-selection-normative">语言选择 (Language Selection) — NORMATIVE</h1>
+<blockquote>
+<p><strong>本节定义</strong>：应用如何指定转写语言、引擎如何声明所支持的语言、以及未指定时如何解析出最终生效的语言。本节将已定稿的语言系统以本规范的 Capabilities 结构完整重述，并修正了若干边界情形。
+<strong>另见</strong>：<a href="#能力系统-capabilities--normative">§能力系统</a>（Capabilities 树结构）、<a href="#runtime-参数-runtime-parameters--normative">§Runtime 参数</a>（参数如何传入 <code>transcribe</code>）、<code>设计笔记和决策/1 language code 设计.md</code>（设计背景与决策记录）。
+<strong>组织</strong>：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。</p>
+</blockquote>
+<h2 id="1_1">1. 概述（为什么需要这套机制）</h2>
+<p>不同 ASR 引擎处理语言的方式差别很大，标准需要用一套接口同时覆盖所有情形：有的引擎<strong>初始化即锁定</strong>一种语言；有的<strong>每次转写都可切换</strong>；有的能<strong>自动识别</strong>（业界称 LID——只需传入 <code>auto</code>，引擎自行判断音频所属语言）；有的在自动识别的基础上还能用<strong>候选语言列表 (candidate languages)</strong> 缩小识别范围、提高准确率（例如"这段音频只可能是中文或英文"）。以下按"术语 → 声明 → 行为"逐步说明。</p>
+<h2 id="2_1">2. 术语</h2>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto</code></td>
+<td>标准保留字（<strong>不是</strong> BCP-47 标签），意为"让引擎自行识别语言"。可出现在 <code>selectable_languages</code> 与 <code>default_language</code> 中；<strong>不得</strong>出现在候选语言列表里——候选的语义是"在这些语言中选择"，而 <code>auto</code> 的语义是"自行识别"，二者互斥（normative 要求见 R3 步 4）。</td>
+</tr>
+<tr>
+<td><code>selectable_languages</code></td>
+<td>应用<strong>可显式指定</strong>的语言集合（BCP-47 标签 + 可选的 <code>auto</code>）。UI 的语言下拉框应据此生成。属 Properties（静态身份）。</td>
+</tr>
+<tr>
+<td><code>detectable_languages</code></td>
+<td><code>auto</code> 模式下引擎<strong>可能识别出</strong>的语言集合。可与 <code>selectable_languages</code> 不同——有的引擎能识别多种语言，但不接受显式指定，只能通过 <code>auto</code> 自动识别。属 Properties；用于 UI 展示、文档生成及候选语言校验。</td>
+</tr>
+<tr>
+<td><code>default_language</code></td>
+<td>初始化时设定的默认语言。有两个作用：① 对于不支持运行时切换语言的引擎，这就是其固定语言；② 对于支持的引擎，这是"请求未指定语言时"的回退值。何时必填见 §4 R1。</td>
+</tr>
+<tr>
+<td>候选语言<br>(candidate languages)</td>
+<td>一个<strong>有序列表</strong>，仅当 <code>effective_language</code> = <code>auto</code> 且引擎支持该功能时生效。语义为<strong>偏好顺序 + 允许集合 (allowlist)</strong>：引擎将识别范围限制在此列表内，并尽量优先列表中靠前的语言。</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3_1">3. 声明与参数</h2>
+<p><strong>引擎声明 —— Properties（静态身份）：</strong></p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>类型</th>
+<th>必填</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>selectable_languages</code></td>
+<td><code>list[BCP-47 \| "auto"]</code></td>
+<td>是</td>
+<td>应用可指定的语言集合</td>
+</tr>
+<tr>
+<td><code>detectable_languages</code></td>
+<td><code>list[BCP-47]</code></td>
+<td>支持 <code>auto</code> 时必填</td>
+<td><code>auto</code> 模式下可能识别的语言；候选语言的校验依据</td>
+</tr>
+</tbody>
+</table>
+<p><strong>声明卫生（normative）。</strong> 两个语言列表均在 Properties <strong>声明期</strong>规范化并校验（<code>BaseProperties</code>）：每个 BCP-47 标签 MUST 先<strong>归一化</strong>（大小写/分隔符），归一化后才与保留字 <code>auto</code> 比较——<code>"AUTO"</code>/<code>"Auto"</code> 等大小写写法 MUST 被识别为保留字 <code>auto</code>，<strong>不得</strong>被当作合法 BCP-47 标签放行（否则会绕过"<code>auto</code> 不得出现在 <code>detectable_languages</code>"这条 §2 约束）。两个列表均为<strong>集合</strong>语义：归一化后<strong>重复</strong>（含 <code>"en-US"</code>/<code>"EN-US"</code> 这类仅大小写不同的写法）是声明错误，MUST 拒绝（与 <code>wire_encodings</code>、<code>accepted_sample_rates</code> 的重复拒绝同款契约），报出冲突的原始写法。顺序保留（驱动 UI 下拉框）。</p>
+<p><strong>引擎声明 —— Capabilities</strong>（按 <code>&lt;mode&gt;</code> = <code>batch</code> / <code>streaming</code> <strong>分别</strong>声明；两种模式的能力可以不同，例如 batch 支持候选语言而 streaming 不支持）：</p>
+<table>
+<thead>
+<tr>
+<th>能力路径</th>
+<th>节点类型</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>capabilities.&lt;mode&gt;.language.runtime_override</code></td>
+<td>flag <code>{supported}</code></td>
+<td>是否允许单次请求通过 <code>language</code> 参数覆盖 <code>default_language</code>（<code>false</code> = 初始化后锁定）</td>
+</tr>
+<tr>
+<td><code>capabilities.&lt;mode&gt;.language.candidate_languages</code></td>
+<td>bounded <code>{supported, constraints:{max}}</code></td>
+<td>是否支持候选语言；<code>max</code> = 数量上限（一般 ≤ 4--5）。<strong>原 Properties 中的 <code>max_candidate_languages</code> 已移至此处</strong>（见 <a href="#能力系统-capabilities--normative">§能力系统 C.6</a>）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>应用传入的参数：</strong></p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>位置</th>
+<th>类型</th>
+<th>默认</th>
+<th>依赖能力</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>default_language</code></td>
+<td>Init Config</td>
+<td><code>BCP-47 \| "auto"</code></td>
+<td>见 §4 R1</td>
+<td>—</td>
+<td>默认语言</td>
+</tr>
+<tr>
+<td><code>default_candidate_languages</code></td>
+<td>Init Config</td>
+<td><code>list[BCP-47] \| None</code></td>
+<td><code>None</code></td>
+<td><code>candidate_languages</code></td>
+<td>默认候选语言列表</td>
+</tr>
+<tr>
+<td><code>language</code></td>
+<td>Runtime</td>
+<td><code>BCP-47 \| "auto" \| None</code></td>
+<td><code>None</code></td>
+<td><code>runtime_override</code></td>
+<td>覆盖本次请求的语言</td>
+</tr>
+<tr>
+<td><code>candidate_languages</code></td>
+<td>Runtime</td>
+<td><code>list[BCP-47] \| None</code></td>
+<td><code>None</code></td>
+<td><code>candidate_languages</code></td>
+<td>覆盖本次请求的候选语言列表</td>
+</tr>
+</tbody>
+</table>
+<p>传入<strong>不被支持</strong>的参数时，按全局 <strong>strict / best_effort</strong> 策略处理：strict 模式抛出 <code>UnsupportedFeatureError</code>；best_effort 模式忽略该参数并返回结构化 diagnostic（包含哪个参数被忽略、原因、以及最终生效的值）。</p>
+<h2 id="4_1">4. 行为（规范）</h2>
+<p><strong>R1 — <code>default_language</code> 必填规则。</strong> 只要引擎暴露语言轴（即 <code>selectable_languages</code> 有定义，哪怕只含一种语言或仅含 <code>["auto"]</code>），Init Config 就 <strong>MUST</strong> 提供 <code>default_language</code>（值可以是该唯一语言或 <code>auto</code>），且其值 MUST ∈ <code>selectable_languages</code>。完全没有语言概念的引擎（不暴露 <code>selectable_languages</code>）不受此要求约束，其 <code>effective_language</code> 按 R2 步 3 短路为 <code>None</code>。</p>
+<p><strong>R2 — <code>effective_language</code> 解析</strong>（每次转写时执行）：
+1. 若 <code>&lt;mode&gt;.language.runtime_override.supported</code> 为真 <strong>且</strong> 本次请求传入了 <code>language</code> → 使用该 <code>language</code>。
+2. 否则，若引擎有语言轴 → 使用 <code>default_language</code>（R1 保证其存在）。
+3. 否则 → <code>None</code>。</p>
+<blockquote>
+<p><strong>回退最终值诊断（best_effort）</strong>：当本次请求传入了 <code>language</code> 但引擎不支持 <code>runtime_override</code>（即走步 2 回退到 <code>default_language</code>）时，§Runtime 参数 R2 的门控会先把该 <code>language</code> 当作"不支持的标准集参数"丢弃（strict 抛错；best_effort 丢弃 + <code>unsupported_parameter_ignored</code>，其 <code>effective=None</code>）。但引擎<strong>实际</strong>用 <code>default_language</code> 转写——为兑现 best_effort 诊断"必须报告最终值"的契约（门控层无从得知 <code>default_language</code>），标准层 SHOULD 在此回退发生时<strong>补发</strong>一条诊断（<code>code="language_fell_back"</code>，<code>provided</code>=被丢弃的请求语言、<code>effective</code>=实际生效的 <code>default_language</code>）。strict 模式不到达此处（门控已先抛错）。</p>
+</blockquote>
+<p><strong>R3 — <code>effective_candidate_languages</code> 解析</strong>：
+1. 若 <code>effective_language</code> ≠ <code>auto</code> → <code>None</code>（候选语言仅在自动识别模式下有意义）。
+2. 否则，确定<strong>生效列表</strong>：优先使用本次请求的 <code>candidate_languages</code>；若未提供，则使用 <code>default_candidate_languages</code>。两者皆未提供（无可约束的列表）→ <code>None</code>，<strong>不发任何 diagnostic</strong>（无候选传入即无物可忽略）。
+3. 否则（确有生效列表），若 <code>&lt;mode&gt;.language.candidate_languages.supported</code> 为假 → <code>None</code> + 一条 diagnostic（"候选语言被忽略：当前引擎/当前模式不支持此功能"，<code>provided</code> = 被忽略的列表、<code>effective</code> = <code>None</code>）。该 diagnostic <strong>仅在步 2 确实拿到非空列表时发出</strong>——这样「<code>default_language=auto</code> 且不支持候选语言」这一常见引擎形态（多数本地 Whisper 系）在普通请求上不会被注入一条虚假 warning。
+4. 否则（支持且有生效列表），对结果列表执行校验：<strong>去重但保序</strong>；<strong>禁止包含 <code>auto</code></strong>；每个值 MUST ∈ <code>detectable_languages</code>；长度 MUST ≤ <code>…candidate_languages.constraints.max</code>（超出时：strict 模式抛错；best_effort 模式截断 + diagnostic）。</p>
+<blockquote>
+<p><strong>strict / best_effort 边界（与 <a href="#runtime-参数-runtime-parameters--normative">§Runtime 参数 R3</a> 的"不支持即报错"张力的澄清）</strong>：这里三类情况分属两套错误模型，<strong>不要混淆</strong>：
+- <strong>功能不支持</strong>（步 3，<code>candidate_languages.supported=false</code> 且确有候选列表）：这是一个<strong>不支持的标准集参数</strong>，但 R3 步 3 明确把它降为 <code>None</code> + diagnostic——<strong>永不抛错</strong>，<strong>独立于 strict/best_effort</strong>。它是 Runtime §R2"不支持参数 strict 抛错"的一个<strong>显式 carve-out</strong>：候选语言不支持时静默忽略并诚实诊断，比为一个纯优化项硬失败更合理。<strong>前提</strong>：确有候选语言被传入（步 2 拿到非空列表）；什么都没传时步 2 直接短路为 <code>None</code>，不发 diagnostic。
+- <strong>值非法</strong>（步 4 的"malformed BCP-47 标签"或包含保留字 <code>auto</code>）：这是<strong>调用方的代码 bug</strong>（如把 <code>"english"</code>/<code>"auto"</code> 当候选传入），MUST <strong>始终抛 <code>ValueError</code></strong>，<strong>独立于 strict/best_effort</strong>——与 §Runtime R3 的 <code>provider_params</code> 错误"始终抛、不被 strict/best_effort 吞掉"同源。
+- <strong>值合法但不可达</strong>（步 4 的"non-detectable"或"超 <code>constraints.max</code>"）：这才走 §R2 的 strict/best_effort 策略——strict 抛错，best_effort 丢弃/截断 + diagnostic。</p>
+<p>实现：<code>standard_asr.language.effective_candidate_languages</code>（其 <code>Raises</code> 文档逐条对应上述三类）。</p>
+</blockquote>
+<p><strong>R4 — 运行时 <code>language</code> 的可选性判定用 RFC 4647 lookup（细化标签接受 + 引擎归约义务）。</strong> 运行时 <code>language</code>（即 R2 解析出的 <code>effective_language</code>，<code>auto</code> 除外）对 <code>selectable_languages</code> 的成员判定 MUST 采用 <a href="https://www.rfc-editor.org/rfc/rfc4647#section-3.4">RFC 4647 §3.4 的 "Lookup"</a> 回退算法：请求标签<strong>或其逐级去尾得到的任一前缀</strong>命中 <code>selectable_languages</code> 即视为可选。去尾时 singleton（单字符）子标签 MUST 与其前一子标签一并去除（如 <code>zh-x-foo</code> 直接退到 <code>zh</code>）。这让引擎只声明主语言子标签（<code>en</code>）即可接受其地区/脚本细化（<code>en-US</code>、<code>zh-Hant</code>）。<strong>引擎归约义务</strong>：当请求以细化标签命中时，标准层把<strong>完整的请求标签</strong>原样交给引擎，引擎 MUST 自行归约到它能处理的粒度（实现见 std-faster-whisper 插件：<code>normalize_bcp47(resolved).split("-")[0]</code>）。标准层 SHOULD 在以细化命中（前缀匹配而非精确匹配）时发一条 informational diagnostic（<code>code="language_refinement_accepted"</code>），使调用方可见该标签是经归约接受而非精确成员；不改变任何值。</p>
+<blockquote>
+<p><strong>与 <code>default_language</code> / <code>candidate_languages</code> 的不对称（明示，非缺陷）</strong>：<code>default_language</code>（R1：MUST ∈ <code>selectable_languages</code>）与候选语言（R3 步 4：每个值 MUST ∈ <code>detectable_languages</code>）仍采用<strong>精确成员</strong>判定，<strong>不</strong>走 RFC 4647 lookup。理由：二者是<strong>引擎作者对自己声明集的一致性自检</strong>（声明期/配置期校验，故障域是「引擎声明是否自洽」），而运行时 <code>language</code> 是<strong>应用的请求</strong>（故障域是「用户请求能否被服务」）——放宽请求侧的匹配以提升 DX、同时保持声明侧的严格自检，是有意的设计，不要求三处同则。实现：<code>EngineBase._selectable_match</code>（运行时 lookup）vs <code>_validate_language_config</code>（<code>default_language</code> 精确）vs <code>language.effective_candidate_languages</code>（候选精确）。</p>
+</blockquote>
+<h2 id="5_1">5. 示例</h2>
+<p>引擎 <code>batch</code> 模式声明：<code>runtime_override.supported=true</code>、<code>candidate_languages.supported=true</code>、<code>constraints.max=3</code>、<code>detectable_languages=[en, zh-Hans, ja, ko]</code>。初始化配置：<code>default_language="auto"</code>。某次请求传入：<code>language="auto"</code>、<code>candidate_languages=["ja","en","ja"]</code>。</p>
+<ul>
+<li><strong><code>effective_language</code></strong>：R2 步 1——<code>runtime_override.supported</code> 为真且传入了 <code>language="auto"</code> → 结果为 <code>auto</code>。</li>
+<li><strong><code>effective_candidate_languages</code></strong>：R3 步 1——<code>effective_language</code> 为 <code>auto</code>，通过 → 步 2——<code>candidate_languages.supported</code> 为真，通过 → 步 3——本次请求提供了 <code>candidate_languages</code>，使用请求列表 → 步 4——去重保序得 <code>["ja","en"]</code>，两者均 ∈ <code>detectable_languages</code>，长度 2 ≤ 3 → 最终结果为 <strong><code>["ja","en"]</code></strong>（自动识别时优先考虑日语，其次英语）。</li>
+</ul>
+<h2 id="6_1">6. 附注与理由</h2>
+<ul>
+<li><strong>R1 为何如此严格（修复 totality 漏洞）</strong>：R2 步 2 会回退到 <code>default_language</code>。旧规则"仅多语言或支持 runtime override 的引擎才必填"在<strong>单语言</strong>引擎上留有漏洞——该引擎既非多语言、又不支持 runtime override，按旧规则无需提供 <code>default_language</code>，但 R2 步 2 仍会读取它 → 行为未定义。改为"有语言轴就必填"，以保证 R2 为全函数（total function）。</li>
+<li><strong><code>max_candidate_languages</code> 归位</strong>：从 Properties 移入 <code>capabilities.&lt;mode&gt;.language.candidate_languages.constraints.max</code>——"只有在某功能被支持时才有意义的上限"应与该功能定义在一起（<a href="#能力系统-capabilities--normative">§能力系统 C.6</a> 的边界规则）。旧 Properties 中的表述以本节为准。</li>
+</ul>
+<h2 id="-_1">---</h2>
+<h1 id="capabilities-normative">能力系统 (Capabilities) — NORMATIVE</h1>
+<blockquote>
+<p><strong>本节定义</strong>：引擎如何声明自身支持的功能集合（能力）、应用如何查询这些能力、以及标准如何保证能力系统在版本演进中的向前兼容性。本节将已定稿的统一层级化能力模型以完整的规范格式重述，取代此前三套并存系统（<code>supports_*</code> 布尔字段、<code>FeatureFlag</code> 枚举、<code>feat_flag</code> 字典）的旧设计。
+<strong>另见</strong>：<a href="#语言选择-language-selection--normative">§语言选择</a>（能力系统在语言功能上的具体应用）、<a href="#runtime-参数-runtime-parameters--normative">§Runtime 参数</a>（参数如何受能力门控）、<code>设计笔记和决策/6 核心设计决策 2026-06-06.md</code> D5（设计背景与决策记录）。
+<strong>组织</strong>：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。</p>
+</blockquote>
+<h2 id="1_2">1. 概述（为什么需要能力系统）</h2>
+<p>不同的 ASR 引擎支持的功能差异巨大：有的引擎能在 batch 模式下提供词级时间戳，却在 streaming 模式下不支持；有的支持候选语言列表，另一些完全不支持；有的能发射 partial 结果，有的只给 final。应用开发者需要一种统一的方式来<strong>发现</strong>引擎到底支持什么、<strong>查询</strong>某项具体功能是否可用、并在功能不可用时获得<strong>一致的行为</strong>（拒绝或降级）。</p>
+<p>能力系统解决的核心问题是：<strong>让引擎以结构化、机器可读的方式声明自身功能，让应用以统一的 API 查询这些功能，并让标准层据此进行一致的参数门控。</strong></p>
+<h2 id="2_2">2. 术语</h2>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Capabilities（能力）</td>
+<td>引擎支持的功能集合。以层级化树结构表达，按 mode 域分组。每个叶节点携带 <code>supported</code> 信息，告知应用该功能是否可用。</td>
+</tr>
+<tr>
+<td>mode 域 (mode domain)</td>
+<td>能力树的顶层分区。当前标准定义两个封闭的 mode 域：<code>batch</code>（对应 <code>transcribe</code>）和 <code>streaming</code>（对应 <code>start_transcription</code>）。<code>job</code> 保留待 major 版本扩展。引擎不支持某 mode 时，省略该域。</td>
+</tr>
+<tr>
+<td>DeclaredCapabilities（声明能力）</td>
+<td>引擎在<strong>类级别 (ClassVar)</strong> 静态声明的能力全集。无需实例化引擎、无需鉴权即可发现。<code>standard-asr show</code>、注册表、UI 生成、REST <code>GET .../capabilities</code> 均读取此值。</td>
+</tr>
+<tr>
+<td>effective_capabilities（生效能力）</td>
+<td>引擎<strong>实例化后</strong>，根据实际配置可能<strong>收窄</strong>的能力子集。例如，引擎声明支持 <code>word_timestamps</code>，但用户未配 <code>forced_aligner</code>，则运行时不可用。<strong>不变量 <code>effective ⊆ declared</code></strong>（只能关、不能凭空开）。合规测试强制校验此子集关系。</td>
+</tr>
+<tr>
+<td>引擎全局能力</td>
+<td>不绑定在任何 mode 域内的正交能力。放在能力树顶层，如 <code>streaming_input</code>、<code>streaming_output</code>。</td>
+</tr>
+<tr>
+<td>节点原型 (archetype)</td>
+<td>能力树叶节点的三种固定形态：flag、bounded、enum/mode（详见 §3.3）。</td>
+</tr>
+<tr>
+<td>点路径 (dot-path)</td>
+<td>用于 <code>engine.supports()</code> 查询的字符串，以 <code>.</code> 分隔层级。从 mode 域或顶层正交能力起始，<strong>不带</strong> <code>capabilities.</code> 前缀。如 <code>"batch.word_timestamps"</code>、<code>"streaming.guidance.phrase_hints"</code>。</td>
+</tr>
+<tr>
+<td>fail-closed</td>
+<td>能力系统的默认安全策略：任何未声明的能力键一律视为不支持，而非报错或假定支持。</td>
+</tr>
+<tr>
+<td><code>x_*</code> 命名空间</td>
+<td>实验性能力的保留前缀，格式 <code>x_&lt;vendor&gt;_&lt;feature&gt;</code>。显式标记为非标准，遵循与标准能力相同的门控规则。</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3_2">3. 声明与参数</h2>
+<h3 id="31-declared-effective">3.1 两层能力模型：Declared / Effective</h3>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>类型</th>
+<th>生命周期</th>
+<th>用途</th>
+<th>约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DeclaredCapabilities</code></td>
+<td>ClassVar（类级别静态量）</td>
+<td>免实例化、免鉴权即可读取</td>
+<td>发现与展示</td>
+<td>MUST 是 class-level 静态；MUST NOT 依赖运行时配置</td>
+</tr>
+<tr>
+<td><code>effective_capabilities</code></td>
+<td>实例属性（可选）</td>
+<td><code>__init__(config)</code> 后产生</td>
+<td>运行时门控</td>
+<td><code>effective ⊆ declared</code>（只能关闭已声明的能力）</td>
+</tr>
+</tbody>
+</table>
+<p><code>--no-instantiate</code> 发现路径（CLI <code>show</code>、注册表查询）只读 <code>DeclaredCapabilities</code>。</p>
+<h3 id="32-mode">3.2 层级结构与 mode 域</h3>
+<p>能力树的顶层是<strong>封闭的 mode 域</strong>（<code>batch</code> / <code>streaming</code>），引擎不支持某 mode 即省略（§4 R1 fail-closed：省略 = 不支持）。mode 内按功能分组；不绑定 mode 的引擎全局能力放顶层。<strong>mode 域与引擎全局能力 MUST 显式区分。</strong></p>
+<pre><code class="language-yaml">capabilities:
+
+  # ── batch mode ──
+  batch:
+    language:
+      runtime_override:     { supported }
+      candidate_languages:  { supported, constraints: { max } }
+    word_timestamps:        { supported, granularities: [word, segment, char] }
+    guidance:
+      prompt:               { supported, constraints: { max_tokens? } }
+      phrase_hints:         { supported, constraints: { max_terms, max_chars_per_term, max_words_per_term } }
+    diarization:            { supported, constraints: { max_speakers? } }   # v1 多为 false
+
+  # ── streaming mode ──
+  streaming:
+    language:               { ... }              # MAY 与 batch 不同
+    word_timestamps:        { supported, granularities: [word, segment, char] }
+    guidance:                                    # MAY 与 batch 不同（限额/可变性）
+      prompt:               { supported, constraints: { max_tokens? } }
+      phrase_hints:         { supported, constraints: { max_terms, max_chars_per_term, max_words_per_term } }
+      mutable_mid_stream:   { supported }        # 中途可变 guidance（§RT 3.3；流式专有；默认 false=会话锁定）
+    emits_partials:         { supported }
+    re_segments:            { supported }        # 是否可能发 supersede 事件
+    word_stability:         { supported }        # 是否提供有意义的 stable_until
+    reconnect:              { mode: seamless | lossy | unsupported }
+    finality_level:         { mode: final | closed }
+    timestamps:             { mode: native_frame_aligned | post_align | none }
+
+  # ── 引擎全局正交能力 ──
+  streaming_input:          { supported }
+  streaming_output:         { supported }
+  self_resamples:           { supported }   # 唯一行为性能力（§AI 3.2）；仅信息性，R7 仍以 accepted_sample_rates 为权威
+</code></pre>
+<p>同一功能（如 <code>language</code>、<code>guidance</code>）在 <code>batch</code> 和 <code>streaming</code> 下<strong>分别声明</strong>——同一引擎在不同模式下的能力可以不同。</p>
+<h3 id="33">3.3 节点原型</h3>
+<p>每个叶节点采用三种固定原型之一。所有原型都可派生出统一的 <code>.supported</code> 布尔值，使 strict/best_effort 门控对所有节点一致：</p>
+<table>
+<thead>
+<tr>
+<th>原型</th>
+<th>结构</th>
+<th><code>.supported</code> 派生</th>
+<th>适用场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>flag</strong></td>
+<td><code>{ supported: bool }</code></td>
+<td>直接取值</td>
+<td>简单支持/不支持，如 <code>emits_partials</code></td>
+</tr>
+<tr>
+<td><strong>bounded</strong></td>
+<td><code>{ supported: bool, constraints: { ... } }</code></td>
+<td>直接取值</td>
+<td>支持且有标准层机器可校验的限额，如 <code>candidate_languages</code></td>
+</tr>
+<tr>
+<td><strong>enum/mode</strong></td>
+<td><code>{ mode: Literal[...] }</code></td>
+<td><code>supported := mode not in {"none", "unsupported"}</code></td>
+<td>多种互斥实现级别，如 <code>reconnect</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>constraints</code> 专用于标准层<strong>机器可校验</strong>的限额。自由描述性信息 MUST NOT 塞入节点；标准<strong>无 blanket <code>metadata</code></strong>（已废弃）。</p>
+<p><strong>空枚举语义（normative）。</strong> bounded 节点的<strong>枚举型</strong>限额（如 <code>word_timestamps.granularities</code>）取空列表时语义为「<strong>未列举 = 不约束（全部）</strong>」，而非「不提供任何值」。但对标准 typed 节点这是<strong>不可表示</strong>态：典型如 <code>WordTimestampsCap</code> 的校验器强制 <code>supported=true</code> 时 <code>granularities</code> MUST 非空（消除「supported 却未列举」的歧义——静默兑现一个未列举的粒度是 cardinal sin）。因此「空 = 全部」仅对 JSON 来源的 raw <code>x_*</code>/dict 节点（无 typed 校验器）可达，并仅用于收窄比较（<code>covers()</code>）：从「空（全部）」收窄到任意具体子集均合法。运行时参数门控<strong>不</strong>依赖此语义——支持的 <code>word_timestamps</code> 总是列举其 granularities，故请求值 MUST ∈ 已列举集合。</p>
+<p><strong>enum/mode 强度序与 token 唯一性（normative）。</strong> enum/mode 节点的合法收窄由<strong>强度序</strong>定义（如 <code>reconnect</code>：<code>seamless</code> &gt; <code>lossy</code> &gt; <code>unsupported</code>；<code>timestamps</code>：<code>native_frame_aligned</code> &gt; <code>post_align</code> &gt; <code>none</code>；<code>finality_level</code>：<code>closed</code> &gt; <code>final</code>）——<code>effective</code> 的 mode MUST 是 <code>declared</code> 的同级或更弱级别，否则即放宽（违反 <code>effective ⊆ declared</code>）。该强度序按<strong>裸 token 全局键控</strong>（实现 <code>_MODE_REDUCTIONS</code>），故<strong>不变量</strong>：同一 major 内<strong>新增</strong>的标准 enum/mode 节点 MUST NOT 复用既有 token 而赋予<strong>不同</strong>的强度序（当前三族 token 互不相交）。未登记于强度序表的 token（含 <code>x_*</code> 实验节点的自定 token、未来未知 token）在收窄比较中 <strong>fail-closed</strong>（任何变化一律视为放宽拒绝）。</p>
+<h2 id="4_2">4. 行为（规范）</h2>
+<p><strong>R1 — 缺失即不支持 (fail-closed)。</strong> 应用 MUST 将能力树中<strong>缺失的键</strong>视为<strong>不支持</strong>。省略整个 <code>streaming</code> 域 = 不支持 streaming。</p>
+<p><strong>R2 — 容忍解析未知键。</strong> 能力容器 MUST 宽容解析未知键（忽略并继续，不报错）。这使新版引擎能被旧版应用安全解析。</p>
+<blockquote>
+<p>R1 和 R2 是一对<strong>不对称规则</strong>：缺失键 → 安全假定不支持；多出的未知键 → 安全忽略。共同保证向前兼容。</p>
+</blockquote>
+<p><strong>R3 — additive-within-major。</strong> 同一 major 版本内，能力键只能<strong>新增</strong>，不能修改语义或删除（改/删 ⇒ major 升级）。<strong>无 per-feature <code>version</code></strong>——兼容由协议大版本号统管。</p>
+<p><strong>R4 — 实验能力 <code>x_*</code>。</strong> 保留 <code>x_&lt;vendor&gt;_&lt;feature&gt;</code> 命名空间供实验性能力；门控规则与标准能力相同。提升为标准能力时 MUST 去掉 <code>x_</code> 前缀（遵循 RFC 6648）。</p>
+<p><strong>R5 — <code>engine.supports()</code> 点路径查询。</strong> 应用查询能力的<strong>唯一</strong>标准方式。缺失路径返回 <code>False</code>（R1 的体现）。应用 MUST NOT 手动遍历能力树或捕获缺键异常。</p>
+<p><strong>R6 — canonical JSON。</strong> <code>capabilities</code> 在 Python 侧是 typed pydantic 树；REST <code>GET .../capabilities</code> 暴露 canonical JSON，每个节点（叶节点 + <strong>存在的容器/mode 域</strong>）带（派生的）<code>supported</code> 字段。enum/mode 节点的 <code>supported</code> 由服务端注入（跨语言统一探针），实现见 <code>DeclaredCapabilities.canonical_json()</code>。结构契约（跨语言客户端 MUST 可依赖）：<strong>根对象本身不带 <code>supported</code></strong>（它是所有 mode 的容器，非能力）；<strong>缺席的 mode 域序列化为 <code>null</code></strong>（fail-closed，等价于不支持）；<code>constraints</code> 等限额子模型非能力节点，<strong>不注入</strong> <code>supported</code>（仅保留其限额字段）。</p>
+<p><strong>R7 — Capabilities 与 Properties 边界（定死一处家）。</strong></p>
+<table>
+<thead>
+<tr>
+<th>判定标准</th>
+<th>归属</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只有当特性 X 被支持时才有意义的限额</td>
+<td>X 的能力节点 <code>constraints</code></td>
+<td><code>batch.language.candidate_languages.constraints.max</code></td>
+</tr>
+<tr>
+<td>引擎固有 I/O 边界值</td>
+<td>Properties</td>
+<td><code>accepted_sample_rates</code>、<code>max_file_size</code></td>
+</tr>
+</tbody>
+</table>
+<p>据此 <strong><code>max_candidate_languages</code> 已从 Properties 移入</strong> <code>capabilities.&lt;mode&gt;.language.candidate_languages.constraints.max</code>。</p>
+<h2 id="5_2">5. 示例</h2>
+<p><strong>查询 streaming 模式是否支持 phrase_hints 引导：</strong></p>
+<p>假设引擎声明中 <code>streaming.guidance</code> 下没有 <code>phrase_hints</code> 键：</p>
+<pre><code class="language-python">engine.supports(&quot;streaming.guidance.phrase_hints&quot;)   # → False（R1 fail-closed）
+engine.supports(&quot;batch.guidance.phrase_hints&quot;)        # → True
+engine.supports(&quot;streaming_input&quot;)                    # → True（顶层正交能力）
+</code></pre>
+<p>如果应用在 streaming 下传入 <code>phrase_hints</code>，strict 抛 <code>UnsupportedFeatureError</code>；best_effort 忽略并返回 diagnostic。</p>
+<p><strong>effective 能力收窄：</strong> 引擎声明 <code>batch.word_timestamps.supported=true</code>，但用户未配 <code>forced_aligner</code> → <code>effective_capabilities</code> 中该项为 <code>false</code>。DeclaredCapabilities 不变（CLI/注册表仍显示"支持"），运行时门控拒绝该请求。子集不变量保持。</p>
+<h2 id="6_2">6. 附注与理由</h2>
+<ul>
+<li><strong>废弃三套旧系统</strong>：<code>supports_*</code>（无分域、无约束）、<code>FeatureFlag</code>（无法表达 batch/streaming 差异）、<code>feat_flag</code>（per-feature version 无用——协议兼容是大版本全有或全无）。统一层级树是三者的超集。</li>
+<li><strong>fail-closed 而非 fail-open</strong>：声明不完整的引擎不会被误认为支持所有功能。应用可放心依据 <code>engine.supports()</code> 做决策。</li>
+<li><strong>边界规则(R7)</strong>：消除「同一限额两个真相源」的歧义——限额与所约束的功能始终同住。</li>
+<li><strong>砍掉 blanket <code>metadata</code></strong>：无已知用例、鼓励非结构化信息、破坏机器可读性。需要时可通过 additive-minor 以结构化字段添加。</li>
+</ul>
+<h2 id="-_2">---</h2>
+<h1 id="runtime-runtime-parameters-normative">Runtime 参数 (Runtime Parameters) — NORMATIVE</h1>
+<blockquote>
+<p><strong>本节定义</strong>：应用在每次转写请求中可以传入哪些参数（可移植标准集 + 引擎特有逃生舱）、引擎如何校验和响应这些参数、以及 <code>guidance</code> 引导家族的共享契约与扩展机制。
+<strong>另见</strong>：<a href="#能力系统-capabilities--normative">§能力系统</a>（<code>engine.supports()</code> 点查）、<a href="#语言选择-language-selection--normative">§语言选择</a>（<code>language</code>/<code>candidate_languages</code> 解析）、<a href="#流式协议-streaming--normative">§流式协议</a>（流式参数冻结）、<a href="#init-config-baseconfig--normative">§Init Config</a>（init/runtime 边界）。
+<strong>组织</strong>：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。
+<strong>取代</strong>：idea_docs <code>spec/options.md</code> 的子类化方案。</p>
+</blockquote>
+<h2 id="1_3">1. 概述（可移植性与灵活性的张力）</h2>
+<p>"Runtime 参数"是应用在调用 <code>transcribe</code> 或 <code>start_transcription</code> 时、随每次请求传入的设置——比如语言、是否需要词级时间戳、或一段引导识别的提示文本。</p>
+<p>不同引擎暴露的旋钮千差万别。如果标准允许引擎自由添加字段（旧方案：子类化 <code>BaseTranscribeOptions</code>），可移植性从根上被打破。但如果只暴露固定字段，又会扼杀高级功能。</p>
+<p>Standard ASR 的解法是<strong>双层设计</strong>：封闭的<strong>可移植标准集</strong>（跨引擎验证过的标准字段，由 capability 门控）+ 受控的 <strong><code>provider_params</code></strong>（引擎特有的 typed 逃生舱，显式标注为锁定特定引擎）。在此之上，<code>guidance</code> 引导家族用<strong>扁平字段 + 共享契约</strong>统一不同引擎的引导能力。</p>
+<h2 id="2_3">2. 术语</h2>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RuntimeParams</code></td>
+<td>每次请求的参数容器。<strong>封闭的</strong> pydantic 模型（<code>extra="forbid"</code>, <code>frozen=True</code>）。ASR 作者不得新增顶层字段。</td>
+</tr>
+<tr>
+<td><code>provider_params</code></td>
+<td><code>RuntimeParams</code> 中唯一的引擎特有槽位。typed pydantic 模型（<code>extra="forbid"</code>），承载不可移植旋钮。使用即锁定该引擎。</td>
+</tr>
+<tr>
+<td><code>guidance</code> 家族</td>
+<td>可移植标准集中"引导识别"的一组扁平字段。v1 含 <code>prompt</code> 和 <code>phrase_hints</code>，共享一套行为契约。</td>
+</tr>
+<tr>
+<td>channel</td>
+<td><code>guidance</code> 家族中的单个字段。每个在能力树有节点 <code>capabilities.&lt;mode&gt;.guidance.&lt;channel&gt;</code>。</td>
+</tr>
+<tr>
+<td>strict / best_effort</td>
+<td>全局处理策略。strict：不支持的标准集参数抛 <code>UnsupportedFeatureError</code>。best_effort：忽略+返回结构化 diagnostic（哪个参数被忽略/为什么/最终值）。</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3_3">3. 声明与参数</h2>
+<h3 id="31-v1">3.1 v1 可移植标准集</h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>默认</th>
+<th>Capability 路径</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>language</code></td>
+<td><code>str \| None</code></td>
+<td><code>None</code></td>
+<td><code>&lt;mode&gt;.language.runtime_override</code></td>
+<td>本次语言（BCP-47 / <code>"auto"</code>），覆盖 <code>default_language</code>。解析见 <a href="#语言选择-language-selection--normative">§语言选择 R2</a>。</td>
+</tr>
+<tr>
+<td><code>candidate_languages</code></td>
+<td><code>list[str] \| None</code></td>
+<td><code>None</code></td>
+<td><code>&lt;mode&gt;.language.candidate_languages</code></td>
+<td>候选语言列表（仅 <code>auto</code> 下有意义）。解析见 <a href="#语言选择-language-selection--normative">§语言选择 R3</a>。</td>
+</tr>
+<tr>
+<td><code>word_timestamps</code></td>
+<td><code>WordTimestampGranularity \| None</code></td>
+<td><code>None</code></td>
+<td><code>&lt;mode&gt;.word_timestamps</code></td>
+<td>词级时间戳。<strong>枚举</strong>（<code>word \| segment \| char</code>），非 bool。</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td><code>str \| None</code></td>
+<td><code>None</code></td>
+<td><code>&lt;mode&gt;.guidance.prompt</code></td>
+<td>自由文本软提示（§3.3）。</td>
+</tr>
+<tr>
+<td><code>phrase_hints</code></td>
+<td><code>list[str] \| None</code></td>
+<td><code>None</code></td>
+<td><code>&lt;mode&gt;.guidance.phrase_hints</code></td>
+<td>词条 boost 集（§3.3）。</td>
+</tr>
+<tr>
+<td><code>on_unsupported</code></td>
+<td><code>Literal["fail", "degrade_to_prompt"]</code></td>
+<td><code>"fail"</code></td>
+<td>（无——策略指令）</td>
+<td><code>guidance</code> 降级策略（§3.3 opt-in 降级）。<strong>无 capability 路径</strong>：它是控制<em>遇到不支持的 guidance channel 时是否降级</em>的策略字段，不被能力门控。<code>"fail"</code> = <strong>不降级</strong>（按 strict/best_effort 走标准门控：strict 抛错、best_effort 丢弃+diagnostic）——它<strong>不</strong>强制本次请求整体失败，最终行为由全局 strict/best_effort 决定；<code>"degrade_to_prompt"</code> = 单向降级 rich→prompt。它是 <code>RuntimeParams</code> 顶层字段且<strong>随 wire 可移植集传输</strong>（<code>WireRuntimeParams</code>）。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-provider_params">3.2 <code>provider_params</code> 逃生舱</h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>provider_params</code></td>
+<td><code>&lt;EngineParams&gt; \| None</code></td>
+<td>引擎发布的 typed pydantic 模型（<code>extra="forbid"</code>）。传错引擎的 params 模型 = 校验错误（swap 安全）。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>类型匹配是精确的（normative）</strong>：swap 安全用<strong>精确类型</strong>核对（<code>type(provided) is &lt;EngineParams&gt;</code>），<strong>不是</strong> <code>isinstance</code>。<code>isinstance</code> 会静默接受 <code>&lt;EngineParams&gt;</code> 的<strong>子类</strong>——而同 vendor 引擎家族用继承复用参数模型是自然写法（<code>EngineBParams(EngineAParams)</code>），于是把 B 的 params 传给引擎 A 会通过，B 独有的旋钮被静默忽略（正是头号大罪）。因此<strong>每个引擎 MUST 发布独立的终端 params 类型</strong>；继承不是声明跨引擎兼容的通道。引擎 MUST NOT 把裸基类 <code>ProviderParams</code> 声明为其 <code>provider_params</code> 类型（裸基类无字段、对任何 params 都放行，使 swap 安全归零——合规套件 SHOULD 对此报 error）；调用方传裸基类实例（或被强转成裸基类的 mapping）在构造期即被 <code>RuntimeParams</code> 拒绝。</p>
+<p>要点：错误<strong>始终抛异常</strong>（独立于 best_effort——代码契约，非能力协商）；schema MUST 作 <strong>JSON Schema</strong> 暴露（<code>GET .../params-schema</code>，可移植契约是 JSON Schema 非 Python 类）；auto-UI MUST 隔离标注"engine-specific：用了锁定 {engine}"并默认折叠；治理：≥N 独立引擎语义等价 → minor 版本提升为标准集（单向）。</p>
+<h3 id="33-guidance">3.3 <code>guidance</code> 引导家族</h3>
+<p><strong>扁平字段</strong>直接在 <code>RuntimeParams</code> 上（<code>params.prompt</code>/<code>params.phrase_hints</code>），不嵌套子对象。对应 capability 在 <code>capabilities.&lt;mode&gt;.guidance.&lt;channel&gt;</code> 下。</p>
+<p><strong>v1 channels:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>类型</th>
+<th>Capability 约束</th>
+<th>映射</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td><code>str \| None</code></td>
+<td><code>{supported, max_tokens?}</code></td>
+<td>OpenAI <code>prompt</code> / Whisper <code>initial_prompt</code> / Qwen <code>context</code> / 火山 <code>context</code></td>
+</tr>
+<tr>
+<td><code>phrase_hints</code></td>
+<td><code>list[str] \| None</code></td>
+<td><code>{supported, max_terms, max_chars_per_term, max_words_per_term}</code>（<strong>per-mode</strong>，batch/streaming 限额可不同）</td>
+<td>ElevenLabs <code>keyterms</code> / faster-whisper <code>hotwords</code> / Tencent/FunASR hotwords</td>
+</tr>
+</tbody>
+</table>
+<p><strong>共享契约</strong>：每 channel = optional · best-effort · 非绑定 · <strong>正极性</strong> · capability 协商 · <strong>永不静默降级</strong>。</p>
+<p><strong><code>prompt.max_tokens</code> 计数（normative）</strong>：标准层无引擎 tokenizer，故对 <code>max_tokens</code> 的强制用一个<strong>保守的、脚本感知的近似</strong>——空白分词数 <strong>加上</strong> 每个<strong>无空格脚本</strong>（CJK / 假名 / 谚文 / 泰文 …）码点各计 1——<strong>不是</strong>引擎的精确 token 数。纯空白词数会把无空格长提示（如下 §5.3 Qwen3 <code>context</code>→<code>prompt</code>）坍缩成 ~1 token，从而漏过它实际超出的 <code>max_tokens</code>；CJK 项消除该漏判。<strong>「无空格脚本」按 Unicode Script 属性界定</strong>（normative）：凡 Script 为 CJK 表意文字、假名（Hiragana/Katakana，<strong>含</strong>半角片假名 U+FF66–FF9F、片假名音标扩展、Kana Supplement/Extended）、谚文（Hangul，<strong>含</strong> NFD 分解出的组合 Jamo U+1100–11FF 与兼容 Jamo）、泰文/老挝文/高棉文/缅甸文、彝文的码点均计入——逐 block 取主干子集是不允许的（半角片假名、NFD 谚文等是真实书写形态而非长尾）。<strong>保证的诚实范围</strong>：该近似相对「空白分词 + 无空格脚本逐码点」的计数永不少计；但相对引擎真实的 <strong>subword（BPE）tokenizer</strong>，长拉丁词 / URL / 长数字串（我们计 1，BPE 可能计 6–17）<strong>可能少计</strong>，超预算的此类 prompt 可能溜过门控。因此作者声明 <code>max_tokens</code> 时 SHOULD 在引擎硬上限之下预留余量（headroom），而非贴线声明；标准对声明值 MUST NOT 超出（strict 抛错，best_effort 截断+diagnostic）。</p>
+<p><strong>null 语义</strong>：<code>None</code>=未请求；<code>[]</code>=请求但空（显式"无 hints"）；capability <code>supported=true</code>=引擎能 honor。</p>
+<p><strong><code>prompt</code> 截断契约（normative）</strong>：当 best_effort 因超 <code>max_tokens</code> 而截断 <code>prompt</code> 时，结果 MUST 是原文的一个<strong>前缀</strong>（"丢弃尾部"），<strong>保留原文空白</strong>——不得把保留部分的换行/连续空白重排为单空格（多行提示保留其换行；降级路径用 <code>\n</code> 连接原 prompt 与框定 hints 的结构同样保留）。截断点 MUST NOT 落在<strong>组合字符序列</strong>（基码点 + 其后续组合标记，如泰文基辅音 U+0E01 与元音符 U+0E31）内部，以免留下基字符被切去标记的半成品字位（判定用 Unicode general category <code>M*</code>，而非 canonical combining class——后者对许多组合标记为 0）。</p>
+<p><strong><code>phrase_hints</code> 词条（normative）</strong>：每个词条 MUST 非空且非纯空白（空/纯空白词条无 boost 语义，且会击穿降级存活判定——<code>"" ∈ 任意串</code> 恒真——使标准层误报降级成功）；<code>RuntimeParams</code> / wire 在构造期拒绝含空白词条的列表（用 <code>[]</code> 表达"无 hints"）。</p>
+<p><strong>空哨兵的门控行为（normative）</strong>：list channel 的 <code>[]</code>（请求但空）<strong>MUST NOT 参与能力门控</strong>——它不计为一次请求，不被门控、不降级、不报 unsupported diagnostic，标准层原样透传（引擎即便不支持该 channel 也只会收到 <code>[]</code>，等同未请求）。这是为了让"用户清空了一个多选框"与"用户没碰它"在不支持的引擎上行为一致（最小惊讶）。与之相对，str channel 的空串 <code>""</code>（<code>prompt=""</code>）<strong>是一个真实值</strong>，按非空 prompt 一样门控（不支持 channel：strict 抛错、best_effort 丢弃+diagnostic；支持则计入 <code>max_tokens</code>）——str 没有独立的"请求但空"哨兵，<code>""</code> 即"请求了一个空提示"，显式优于隐式。独立实现 MUST 遵循此归属，否则同一请求跨实现行为分叉。</p>
+<p><strong>未知 channel 不对称</strong>：引擎收到未声明 channel = fail-closed（strict raise / best_effort diagnostic）；app 收到未知 capability 键 = 容忍忽略。</p>
+<p><strong>opt-in 降级</strong>：<code>on_unsupported="degrade_to_prompt"</code> 启用单向降级（rich→prompt，框定文本）；默认 fail-closed（直接序列化短语进 prompt 掉精度，禁自动）；每次降级 MUST 发 diagnostic。</p>
+<p><strong>明确不进 <code>guidance</code></strong>：verbatim/disfluency/标点/ITN → 标准三态 flag reserve（§4 R6）；profanity-mask/entity-redaction/格式化 → 结果/格式模型；系统指令 → 出 ASR 范围；domain → preset；<code>bias_resource</code>(注册词表) → Init Config。</p>
+<p><strong>扩展</strong>：新 channel = additive-minor；<code>x_&lt;vendor&gt;_&lt;channel&gt;</code> 实验 + 提升去前缀（RFC 6648）；无 per-channel version；channel 名不复用。</p>
+<p><strong>流式</strong>：guidance MAY 进 <code>capabilities.streaming.guidance.*</code>；中途可变性由 flag 节点 <code>capabilities.streaming.guidance.mutable_mid_stream</code>（<code>{ supported }</code>，§C 3.3）声明，经 <code>engine.supports("streaming.guidance.mutable_mid_stream")</code> 查询。该 flag <strong>流式专有</strong>（batch guidance 无此节点，单 shot 谈不上中途可变）。默认 <code>supported=false</code>=会话锁定（与 fail-closed 一致）；v1 <strong>保留</strong>该声明位但不承诺 <code>update_guidance()</code> 方法——合规套件不要求任何运行时行为，<code>covers()</code> 的集合包含自动拒绝 <code>declared=false→effective=true</code> 放宽。</p>
+<h2 id="4_3">4. 行为（规范）</h2>
+<p><strong>R1 — 请求类型封闭。</strong> <code>RuntimeParams</code> 是封闭类型（<code>extra="forbid"</code>）。ASR 作者 MUST NOT 新增顶层字段。合规测试强制。</p>
+<p><strong>R2 — strict / best_effort。</strong> 不支持的标准集参数：strict 抛 <code>UnsupportedFeatureError</code>；best_effort 忽略+结构化 diagnostic。<code>provider_params</code> 错误不走此策略（R3）。</p>
+<p><strong>R3 — <code>provider_params</code> 错误模型。</strong> 未知键/类型错/越界 MUST 始终抛 <code>InvalidProviderParamError</code>，独立于 strict/best_effort。校验顺序：先 <code>provider_params</code>（快失败），再标准集门控；二者 MUST NOT 互相吞掉。</p>
+<p><strong>R4 — <code>guidance</code> 共享契约。</strong> 每 channel MUST 遵守：optional / best-effort / 非绑定 / 正极性 / capability 协商 / 永不静默降级。未知 channel 不对称（引擎 fail-closed / app 容忍）。降级 opt-in+单向+diagnostic。</p>
+<p><strong>R5 — 流式参数冻结。</strong> 流式会话中 <code>RuntimeParams</code> 在 <code>start_transcription</code> 时锁定，MUST NOT 中途修改（<code>mutable_mid_stream</code> 除外，见 §3.3）。</p>
+<p><strong>R6 — 识别行为三态 flag（v1 占位）。</strong> verbatim/disfluency/punctuation/ITN/profanity-filter 未来作标准三态（<code>unset | on | off</code>，capability 门控），不进 <code>guidance</code>。v1 先走 <code>provider_params</code>。</p>
+<p><strong>R7 — 批量运行时失败错误契约。</strong> <code>transcribe</code> / <code>transcribe_async</code> 在引擎执行期（模型推理、网络调用、SDK）发生失败时 MUST 抛 <code>TranscriptionError</code>，并以 <code>raise TranscriptionError(...) from exc</code> 保留原始异常为 <code>__cause__</code>——使应用得以<strong>跨引擎</strong>用单一类型捕获运行时失败，而非各引擎各抛其原生异常（<code>RuntimeError</code> / SDK 异常 / <code>requests.HTTPError</code>…）。这是流式 <a href="#流式协议-streaming--normative">§6.2</a> <code>error</code> 事件 <code>engine_error</code> 码的批量对应物：流式把引擎逃逸异常包装为 <code>engine_error</code> 事件，批量把它包装为 <code>TranscriptionError</code>。它表示<strong>引擎/运行时故障</strong>，与调用方可修的错误（<code>ConfigError</code> / <code>UnsupportedFeatureError</code> / <code>InvalidProviderParamError</code> / <code>AudioProcessingError</code>）属不同故障域，server MUST 映射为 5xx（而非 4xx）。约束作用于引擎模板钩子 <code>_transcribe</code>（<code>EngineBase</code> 为批量管线提供包装位点）；合规套件无法静态核验引擎是否包装，故本契约由规范 + 模板 + 文档约束，不进运行时强制门控。</p>
+<h3 id="51-openaiprompt-temperature">5.1 OpenAI：prompt + temperature</h3>
+<pre><code class="language-python">result = engine.transcribe(
+    audio,
+    params=RuntimeParams(
+        language=&quot;en&quot;,
+        prompt=&quot;This is a meeting about the Q3 budget review.&quot;,
+        provider_params=OpenAIParams(temperature=0.0),  # 引擎特有
+    ),
+)
+</code></pre>
+<p><code>prompt</code> → 标准集（可移植）；<code>temperature</code> → <code>provider_params</code>（不可移植，换引擎会被捕获）。</p>
+<h3 id="52-elevenlabskeyterms-phrase_hints">5.2 ElevenLabs：keyterms → phrase_hints</h3>
+<pre><code class="language-python">result = engine.transcribe(
+    audio,
+    params=RuntimeParams(
+        phrase_hints=[&quot;Anthropic&quot;, &quot;Claude&quot;, &quot;Standard ASR&quot;],
+    ),
+)
+# 适配器内部：phrase_hints → ElevenLabs keyterms
+</code></pre>
+<h3 id="53-qwen3context-prompt">5.3 Qwen3：context → prompt</h3>
+<pre><code class="language-python">result = engine.transcribe(
+    audio,
+    params=RuntimeParams(
+        prompt=&quot;前文提到了量子计算和超导材料的最新进展。&quot;,
+    ),
+)
+# 适配器内部：prompt → Qwen3 context
+</code></pre>
+<h3 id="54-provider_params-swap">5.4 provider_params swap 安全</h3>
+<pre><code class="language-python"># 从引擎 A 切到 B，忘了改 provider_params：
+result = engine_b.transcribe(
+    audio,
+    params=RuntimeParams(
+        provider_params=EngineAParams(beam_size=5),  # 类型错！
+    ),
+)
+# → 立即抛 InvalidProviderParamError，不静默忽略
+# （精确类型核对：即便 EngineAParams 恰是 EngineBParams 的父/子类，也照样抛——
+#   继承不豁免 swap 安全，否则 A 独有旋钮会被引擎 B 静默忽略。）
+</code></pre>
+<p>合规套件提供 swap 安全探针 <code>check_provider_params_swap_safety</code>：以一个<strong>外来</strong> <code>provider_params</code> 子类（私有于套件、永不与引擎声明类型重合）调 <code>transcribe</code>，断言无论 strict / best_effort 都抛 <code>InvalidProviderParamError</code>。因 R3 规定 <code>provider_params</code> 先于音频解码校验（快失败），该探针在触达模型前即返回，<strong>无计费副作用</strong>——抓的是绕过 <code>EngineBase</code> 模板又忘了校验的引擎。</p>
+<h2 id="6_3">6. 附注与理由</h2>
+<ul>
+<li><strong>为何拆 prompt 为 prompt + phrase_hints</strong>：Whisper <code>initial_prompt</code>(free-text) ≠ ElevenLabs <code>keyterms</code>(phrase boost)。单一 <code>prompt</code> 字段让同样的值在不同引擎上做不同的事——假可移植。拆开后语义精确，capability 和 constraints 分别门控。</li>
+<li><strong>为何 provider_params always-raise</strong>：best_effort 为能力协商设计；<code>provider_params</code> 错误是代码 bug（如忘了改 params 就换引擎）。对 bug 快失败，不静默继续。</li>
+<li><strong>为何扁平字段而非子对象</strong>：子对象增嵌套无新信息；typed-item list 有 oneof null 歧义+丢可发现性。扁平最简——IDE 补全即可发现 channel。</li>
+<li><strong>路由出 guidance 的理由</strong>：识别行为开关有确定可检验效果（开/关），不是建议性引导；格式化/脱敏是输出后处理；系统指令会让 namespace 退化为指令垃圾桶。</li>
+<li><strong>reserve 候选</strong>：<code>context</code> 独立 channel（v1 并入 prompt）；<code>phrase_hints</code> 权重（先 provider_params）；<code>pronunciation_hints</code>；<code>negative_phrases</code>（须先加 polarity 轴）；音频载荷类（音频示例/few-shot → 独立家族）。</li>
+</ul>
+<h2 id="-_3">---</h2>
+<h1 id="transcription-result-normative">结果模型 (Transcription Result) — NORMATIVE</h1>
+<blockquote>
+<p><strong>本节定义</strong>：<code>transcribe</code> 和流式会话返回的转写结果的统一数据结构——顶层 <code>TranscriptionResult</code>、其子模型 <code>Segment</code> / <code>Word</code>、多通道与说话人分离的表示方式、以及格式渲染（SRT/VTT）的职责归属。
+<strong>另见</strong>：<a href="#能力系统-capabilities--normative">§能力系统</a>（capability 决定 optional 字段是否被填充）、<a href="#流式协议-streaming--normative">§流式协议</a>（<code>TranscriptionEvent</code> 与事件流中的 Segment/Word 共享）、<a href="#runtime-参数-runtime-parameters--normative">§Runtime 参数</a>（<code>word_timestamps</code> 等参数如何影响结果）。
+<strong>组织</strong>：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。
+<strong>取代</strong>：idea_docs <code>spec/results.md</code>。</p>
+</blockquote>
+<h2 id="tr1-transcriptionresult-schema">TR.1 <code>TranscriptionResult</code>（恒定 schema）</h2>
+<pre><code>TranscriptionResult:
+  text: str                              # 必填；完整转写
+  detected_language: str | None          # BCP-47；auto 模式回传
+  language_confidence: float | None      # 0-1
+  duration: float | None                 # 秒
+  segments: list[Segment] | None
+  words: list[Word] | None               # 扁平词级（也可嵌 segment 内）
+  channels: list[ChannelResult] | None   # 多通道分离（TR.4）
+  diagnostics: list[Diagnostic]          # best_effort / 转换 / 降级 诊断
+  metadata: dict[str, Any]               # 标准化元信息
+  extra: dict[str, Any]                  # 引擎特定/实验（含 provider 渲染格式）
+</code></pre>
+<ul>
+<li><strong>返回类型恒定</strong>：<code>response_format</code> 不把返回变字符串；多通道不把顶层换成 <code>transcripts[]</code>。</li>
+<li><strong>null 规则（消歧）</strong>：capability 声明「是否支持」；字段 <code>None</code>=<strong>未请求/不适用</strong>；<code>[]</code>=<strong>请求但空</strong>（如静音）。app 判「不支持」看 <strong>capability</strong>，不看字段 null。</li>
+</ul>
+<h2 id="tr2-segment-word">TR.2 <code>Segment</code> / <code>Word</code>（流批共享子模型）</h2>
+<pre><code>Segment: start:float  end:float  text:str
+         words:list[Word]|None  speaker:str|None  channel:int|None
+         avg_logprob/no_speech_prob/…:float|None  extra:dict
+Word:    start:float  end:float  text:str
+         probability:float|None  speaker:str|None  channel:int|None  extra:dict
+</code></pre>
+<ul>
+<li><strong>时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）</strong>，与 §ST 同一原点。<strong>每通道内</strong>跨段单调；多通道时不同通道的段 <code>[start, end]</code> <strong>允许重叠</strong>（双声道同时说话），顶层 segments 按 <code>start</code> 稳定排序、<code>start</code> 相同时按 <code>channel</code> 排。适配器把 ms / protobuf-duration / ticks 转入。<blockquote>
+<p><strong>排序是引擎义务，非构造期强制（明示，与 TR.4 不对称）</strong>：该 <code>(start, channel)</code> 排序与每通道单调性是<strong>引擎/适配器的义务</strong>，由合规套件校验（§G.2.1 合规与运行时共用校验逻辑），但<strong>不</strong>在 <code>TranscriptionResult</code> 构造期强制——<code>StreamReducer</code> 对无时间戳引擎合法地保留到达顺序、且仅按 <code>start</code> 排（无 channel tie-break），严格的 <code>(start, channel)</code> 构造校验会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是<strong>不可表示的歧义形状</strong>（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界防御性重排。</p>
+</blockquote>
+</li>
+<li><code>probability ∈ [0,1]</code>；若引擎给 logprob，<strong>另立字段</strong>，不与 probability 混。</li>
+<li><strong>流批共享</strong>：<code>TranscriptionEvent.segment/.words</code>（D10）MUST 用<strong>同一</strong> <code>Segment</code>/<code>Word</code>；流式专属字段（<code>stable_until</code> 等）加在<strong>事件包装层</strong>，不污染共享子模型。</li>
+<li><strong><code>session.result() -&gt; TranscriptionResult</code></strong>：流式会话可归约为最终结果（反映 <code>final</code>；late <code>closed</code> 重格式化可更新它）。</li>
+</ul>
+<h2 id="tr3">TR.3 时间戳粒度</h2>
+<p><code>word_timestamps</code> 枚举 <code>word|segment|char</code>；char 级 reserve（additive）。</p>
+<p><strong>声明语义（normative）</strong>：<code>capabilities.&lt;mode&gt;.word_timestamps.granularities</code> 声明的是引擎<strong>能诚实交付</strong>哪些粒度的时间戳，<strong>不是</strong>上游 API 是否有同名开关。引擎 MUST 声明它能服务的<strong>每一个</strong>粒度——包括零成本恒真的那些。多数模型每次转写都恒带 per-segment <code>start</code>/<code>end</code>：此种引擎 MUST 声明 <code>segment</code>，即便上游没有独立的 "segment 模式" 参数；否则标准层会把最便宜、恒可满足的 <code>segment</code> 请求当作"不支持"硬拒（strict）或丢弃（best_effort），制造<strong>假不兼容</strong>。声明后映射 MUST 按粒度精确：仅 <code>word</code> 触发词级（forced-alignment）计算，<code>segment</code> 请求 MUST NOT 回填未请求的词级数据（<code>words=None</code>=未请求，§TR.1 null 规则）。</p>
+<h2 id="tr4-shape-transcripts">TR.4 多通道（恒定 shape，非顶层 <code>transcripts[]</code>）</h2>
+<ul>
+<li>顶层 <code>text</code>/<code>segments</code>/<code>words</code> <strong>始终是全通道、说话人/通道无关的完整转写</strong>——多通道时是<strong>按时间合并所有通道</strong>（不是 channel-0-only；使「无视 channels」安全无损）。</li>
+<li><code>channels: list[ChannelResult] | None</code>：<code>None</code>=未做通道分离（常态）；present=每 <code>ChannelResult{channel:int, text, segments, words}</code>，<strong>每通道一条</strong>。</li>
+<li>顶层 <code>Segment/Word.channel</code> 可选，给单遍 app 看 provenance（纳入 Google <code>channelTag</code> / EL <code>channel_index</code>）。</li>
+<li><strong>不变量</strong>：present 时顶层可由 <code>channels</code> 按时间推导，两视图不冲突。<strong>构造期强制</strong>（不可表示的非法形状 MUST 在模型构造时被拒绝）：</li>
+<li><code>channels</code> 中任一通道携带 <code>segments</code>/<code>words</code> 而顶层对应字段为 <code>None</code> ——否则"无视 channels 安全无损"的承诺被静默打破（渲染器会把仅 channels 的结果坍缩成单条无时间 cue）。</li>
+<li><code>channels</code> 中 <code>channel</code> 索引<strong>重复</strong>——TR.4 语义是「每通道一条」，重复使顶层合并歧义、且按 channel 建字典的消费方静默丢一半数据。</li>
+</ul>
+<h2 id="tr5-v1-reserve-shapefeature">TR.5 说话人（v1 reserve shape，feature 延后）</h2>
+<p>diarization 特性 v1 多不支持，但 <strong>shape 现在就预留</strong>（additive-safe）：<code>Segment.speaker</code>（<strong>权威</strong>）+ <code>Word.speaker</code>；<strong>不</strong>加顶层 <code>speakers[]</code> roster（YAGNI，需要时 additive）。</p>
+<h2 id="tr6-srtvtt">TR.6 SRT/VTT 等格式（核心渲染，非返回类型）</h2>
+<ul>
+<li>禁 <code>response_format</code>→字符串。核心库提供 <strong><code>to_srt(result) -&gt; str</code> / <code>to_vtt(result) -&gt; str</code></strong>（基于恒定 <code>segments</code>），每个 compliant 引擎一键可得（<strong>强于现状</strong>：现状只有部分引擎给）。</li>
+<li><strong>cue 文本消毒（格式正确性，normative）</strong>：渲染器 MUST 保证 cue payload 既不能伪造/破坏 cue 结构，也不能被静默丢弃。</li>
+<li><strong>行终止符归一</strong>：先把 <code>\r\n</code> 与裸 <code>\r</code> 归一为 <code>\n</code>，再折叠空行——裸 <code>\r</code> 在 WebVTT 与多数 SRT 解析器中均是行终止符，不归一则 <code>\r\r</code> 可绕过空行折叠伪造 cue。</li>
+<li><strong>WebVTT 实体转义</strong>：<code>to_vtt</code> MUST 按 W3C WebVTT cue-text 文法转义 <code>&amp;</code>→<code>&amp;amp;</code>、<code>&lt;</code>→<code>&amp;lt;</code>、<code>&gt;</code>→<code>&amp;gt;</code>（先 <code>&amp;</code> 后 <code>&lt;</code>/<code>&gt;</code>，避免二次转义）。裸 <code>&lt;</code> 会开启 cue-span tag、被浏览器 tokenizer 消费至下一个 <code>&gt;</code>，使尖括号内文本（如引擎泄漏的 <code>&lt;unk&gt;</code>/<code>&lt;|...|&gt;</code> token、口述数学）在字幕中<strong>静默消失</strong>——正中「静默错误结果是头号大罪」。转义 <code>&gt;</code> 同时使 payload 中的 <code>--&gt;</code> 不再可能被读作 cue timing。</li>
+<li><strong>SRT 不转义</strong>：SRT 无字符引用机制，<code>to_srt</code> MUST NOT 套用实体转义（否则把字面 <code>&amp;amp;</code>/<code>&amp;lt;</code> 显示给用户）；<code>&amp;</code> 与尖括号原样透传，下游若需中和标签应在渲染前对转写文本处理。</li>
+<li><strong><code>segments</code> 缺失时的回退（normative，消除跨实现未定义行为）</strong>：基于 §TR.1 null 规则——<code>segments is None</code>（未请求/不适用）且 <code>text</code> 非空 → 合成一条覆盖全文的 cue：<code>[0, duration]</code>，<code>duration</code> 未知（如归约流）时用固定 <code>[0, 3s]</code>（播放器静默丢零时长 cue，故回退 cue MUST 非零时长）。<code>segments == []</code>（请求但空，如静音）→ 零 cue，绝不杜撰。其他语言 SDK MUST 采用同一回退以保「同结果同渲染」。</li>
+<li>provider 渲染的高保真格式仅作 <strong><code>result.extra["provider_formats"]["srt"]</code></strong> 透传，显式非可移植、非推荐路径。</li>
+<li>据此 <code>response_format</code>/<code>additional_formats</code> 退出可移植 runtime 集（渲染是事后，非参数）。</li>
+</ul>
+<h2 id="tr7">TR.7 演进规则</h2>
+<p>新结果字段 MUST optional + <code>None</code>/空默认；现有字段类型/名在 major 内冻结；<code>extra → 一等</code> 提升 additive。<strong>实体/脱敏（GAP-27）等 niche 家族走扩展命名空间，MUST NOT 进顶层</strong>——顶层只放普适字段（text/language/duration/segments/words + 可选 channel/speaker）。</p>
+<h2 id="-_4">---</h2>
+<h1 id="dependencies-normative">依赖与兼容 (Dependencies) — NORMATIVE</h1>
+<blockquote>
+<p>定稿。对应 D4。</p>
+</blockquote>
+<h2 id="dep1">DEP.1 核心依赖</h2>
+<p>核心 = <code>pydantic</code> + <code>numpy</code>（仅此）。numpy 用 <strong>interpreter-conditional 下界、无硬上限、只用长期稳定 API 子集</strong>：</p>
+<pre><code>numpy&gt;=1.26; python_version &lt;  &quot;3.13&quot;
+numpy&gt;=2.1;  python_version &gt;= &quot;3.13&quot;
+</code></pre>
+<p>（1.24/1.26 无 cp313 wheel；Python 3.13+ 起需 numpy 2.x。）<strong>无上限 cap</strong>（遵 numpy 下游指南 / SPEC-0）。</p>
+<h2 id="dep2">DEP.2 稳定子集强制</h2>
+<p>核心只用 numpy 1&amp;2 行为一致的 API；<strong><code>clip</code>/<code>astype</code> 等有行为变化的点 MUST 防御</strong>（编码路径**先 <code>clip</code> 再 cast<code>**；禁</code>copy=False<code>，用</code>np.asarray`）。</p>
+<p>CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 <code>.github/workflows/</code>,策略见 <code>CONTRIBUTING.md</code>「Dependency policy」):
+- <strong>ruff NPY201</strong> —— 静态拦截 numpy 2.0 移除/改名的 API。
+- <strong>warnings-as-errors</strong> —— <code>pytest</code> <code>filterwarnings=["error", …]</code>,把 numpy(及其他)的 deprecation 升级为失败(取代旧的逐 job <code>-W error</code>)。
+- <strong>锁定通道</strong>(<code>--locked</code>,py3.10–3.14):跑提交的 <code>uv.lock</code>,即当前 numpy 2.x。
+- <strong>下界通道</strong>(<code>--resolution lowest-direct</code>,py3.10):贴 <code>numpy&gt;=1.26</code> 下界跑,守住 numpy 1.x 兼容面。
+- <strong>numpy floor 通道</strong>(py3.13 钉 <code>numpy==2.1.*</code>):守住 <code>numpy&gt;=2.1</code> 这一 interpreter-conditional 下界(下界通道在 3.10 上不会触及它)。
+- <strong>每日 canary</strong>(两轴):<code>latest</code> 稳定 + <code>prerelease</code>(<code>uv lock --upgrade [--prerelease allow]</code>)。prerelease 轴是旧 <strong>numpy-nightly canary 的后继</strong>,提前捕捉 NEP 50 等尚未发布的上游行为变更;非 PR 门禁,失败仅开追踪 issue。</p>
+<blockquote>
+<p>旧表述「numpy 1.26 与最新 2.x 双测 + numpy-nightly canary lane」由上述锁定/下界/numpy-floor/canary 四通道等价替代(对应 D1/D4 与依赖管理规格)。</p>
+</blockquote>
+<h2 id="dep3-numpy-2">DEP.3 不强制 numpy 2+</h2>
+<p>标准固定 <strong>numpy-float32-ndarray 类型</strong>，不固定版本；不排除仍绑 numpy 1 的引擎（如 FunASR）。</p>
+<h2 id="dep4">DEP.4 硬冲突 = 进程隔离</h2>
+<p>插件-插件 numpy1-vs-2 <strong>无法在单进程共存</strong>（Python 事实，非设计可消除）。逃生舱：<strong>subprocess + UDS + <code>shared_memory</code></strong>（轻于 FastAPI；避免文本序列化、保零拷贝）为首选；FastAPI server 留给真·远程/跨语言。MUST 定义 <code>engine_id → endpoint</code> 寻址；提供薄 <strong>isolation shim</strong>（fast-follow）使 app 代码不变。</p>
+<h2 id="dep5-standard-asr-doctor">DEP.5 <code>standard-asr doctor</code></h2>
+<p>只读诊断：枚举已装插件 entrypoint，读各自 <code>Requires-Dist</code>，按<strong>运行解释器</strong>求值环境标记（PEP 508 marker；只取标记成立或缺失的行），算 numpy 版本区间交集，空交集报冲突 + 一行补救（含「3.13 上 <code>numpy&lt;2</code> 无 wheel」）。<strong>不做</strong> resolve/install。</p>
+<p><strong>v1 范围（诚实声明）</strong>：doctor <strong>只精确诊断 <code>numpy</code></strong>——它是标准本身唯一的共享原生依赖（DEP.1），其 1.x↔2.x 是干净的 C-ABI 断层、且冲突完整编码在版本区间里，故版本区间交集可判定。其余共享原生库的冲突在 v1 <strong>明确未覆盖（known-uncovered）</strong>，因为其冲突模型与 numpy 根本不同、无法用同一套版本区间交集判定：
+- <strong>torch</strong>：冲突是 CUDA 构建<em>变体</em>（<code>cpu</code>/<code>cu118</code>/<code>cu121</code>…），<strong>不</strong>体现在版本号 specifier 里。
+- <strong>onnxruntime vs onnxruntime-gpu</strong>：是包<em>身份</em>冲突（两个不同分发包），非版本区间冲突。</p>
+<p>把 numpy 的版本交集逻辑泛化到上述库会给出<strong>自信而错误</strong>的诊断（本工具的基数罪），故 v1 不做。对这些库的硬冲突，依 <strong>DEP.4</strong> 的通用进程隔离（subprocess + UDS + <code>shared_memory</code>）逃生舱处理。未来若要精确诊断，需为每类库引入其特有的冲突模型，而非复用 numpy 的版本交集。</p>
+<h2 id="-_5">---</h2>
+<h1 id="init-config-baseconfig-normative">Init Config (BaseConfig) — NORMATIVE</h1>
+<blockquote>
+<p>定稿。对应 D7。pydantic v2，UI-discoverable。</p>
+</blockquote>
+<h2 id="ic1">IC.1 结构</h2>
+<p><code>BaseConfig</code> = 判别器 <code>engine</code> + 「相关才用」可选标准字段（IC.5 mixin）+ 引擎声明字段。</p>
+<h2 id="ic2">IC.2 判别器（解碰撞 + 解身份混淆）</h2>
+<p><code>engine</code> MUST = <strong>entrypoint 派生的 <code>engine_id</code></strong>（registry 唯一、PEP503 规范化），作者<strong>不手写</strong>；跨插件路由是 <strong>registry 查找</strong>，<strong>不是</strong>宇宙级 pydantic <code>Union</code>（开放世界无法枚举）。发现层 MUST 检测重复 <code>engine_id</code>（两分发包归一同名）→ fail-loud / 标记 shadowed。</p>
+<p><strong>两层 fail-loud（normative）。</strong> 标记与报告分两层，互补：发现层把碰撞记入 <code>ModelRegistry.shadowed_engine_ids</code> 并在默认（非 strict）发现时 <code>logger.warning</code>、strict 发现时抛 <code>EntrypointValidationError</code>（实现：<code>discover_models</code>）；<strong>合规套件 MUST 把每个 shadowed <code>engine_id</code> 报告为 error</strong>（实现：<code>check_entrypoints</code>，code <code>engine_id_collision</code>），且 MUST 在默认运行中也报告它——碰撞使 <code>config.engine</code> 路由依赖安装顺序，是协议级身份混乱，不能仅以一行日志放行。无效 entrypoint 名（strict 发现会抛 <code>EntrypointValidationError</code>）同样 MUST 由合规套件转为 error issue 而非异常：合规检查永远返回报告（<code>check_entrypoints</code> 承诺 <code>Raises: None</code>），并随后以宽松模式重新发现，使同环境内合法引擎仍被检查。</p>
+<h2 id="ic3-normative">IC.3 凭证安全（normative）</h2>
+<ul>
+<li>凭证字段 MUST 用 <strong><code>SecretStr</code></strong>，且 MUST 是 <code>BaseConfig</code> 的<strong>顶层标量字段</strong>（mask <code>repr</code>/<code>str</code>/默认 <code>model_dump</code>）。secret-field 标记 MUST NOT 出现在嵌套 submodel 或 secret 容器（如 <code>list[SecretStr]</code>）上：脱敏管线（类定义期强制、空白保留 validator、<code>public_dump</code> 按名遮蔽）只覆盖顶层标量字段，嵌套/容器 secret 会静默泄漏明文——参考实现在<strong>类定义期 fail-loud 拒绝</strong>这两种形态（<code>__pydantic_init_subclass__</code>），指引把凭证提升为顶层标量。</li>
+<li>序列化：<code>/v1/models</code>、持久化、telemetry 用<strong>脱敏 dump</strong>（参考实现 <code>BaseConfig.public_dump()</code>，亦是默认 <code>model_dump</code>/<code>model_dump_json</code> 行为）；仅显式调用<strong>专门的 reveal-dump API</strong>（参考实现 <code>BaseConfig.reveal_dump()</code>——独立命名方法，比布尔开关更易 grep 审计）在进程内调引擎 SDK 时材料化明文。该明文结果 MUST NEVER 被日志/持久化/下发 <code>/v1/models</code>/telemetry。</li>
+<li>secret-field 标记（<code>json_schema_extra</code>）→ auto-UI 渲染 password / write-only；REST POST 收、GET 不回。</li>
+<li><strong>密（<code>api_key</code>/token） vs 端点路由（<code>base_url</code>/<code>region</code>/<code>org_id</code>，非密）分两类</strong>：后者可日志/UI/序列化。</li>
+</ul>
+<h2 id="ic4-env-normative">IC.4 env 回退（normative）</h2>
+<ul>
+<li><strong><code>STANDARD_ASR_&lt;NORMENGINE&gt;__&lt;NORMFIELD&gt;</code></strong>（引擎段与字段段之间用<strong>双下划线</strong> <code>__</code> 分隔）。normalization = 大写、把每个非字母数字<strong>连续段</strong>折成<strong>单个</strong> <code>_</code>（非每字符一个 <code>_</code>），故任一段不含 <code>__</code>，使 <code>__</code> 边界唯一可解析。<strong>为何双下划线</strong>：单下划线分隔下 <code>(engine="openai", field="api_key")</code> 与 <code>(engine="openai-api", field="key")</code> 都归一为 <code>STANDARD_ASR_OPENAI_API_KEY</code>，引擎边界不可恢复——两个引擎可能静默读到彼此凭证。<strong>碰撞检测</strong>：单 config 类内拒绝两字段归一同名（跨引擎碰撞已由 <code>__</code> 边界根治）。</li>
+<li>一约定 per 字段名（引擎 native 名如 EL <code>xi-api-key</code> 在适配器映射到标准名）。<strong>覆盖范围</strong>：env 回退覆盖 config 的<strong>所有字段</strong>——标准 mixin 字段（凭证/端点路由/device/语言/download root）<strong>与</strong>引擎声明字段（如 <code>beam_size</code>、<code>model_path</code>）均获得对应 env 入口，这是有意的全表 DX。<strong>仅排除三个 fail-loud 安全/身份字段</strong>：<code>engine</code>（entrypoint 派生身份，绝不由 env 设）、<code>strict</code> 与 <code>allow_private_urls</code>（env 不得静默翻转 best_effort 或放宽 SSRF 守卫）。</li>
+<li><strong>复合（非标量）字段的 env 值先按 JSON 解析</strong>：env 变量恒为裸字符串，无法强转为 <code>list</code>/<code>dict</code> 等（如标准字段 <code>default_candidate_languages: list[str]</code>），故对复合注解字段先 <code>json.loads</code>，<strong>解析失败保留原串</strong>让构造期<strong>响亮失败</strong>（绝不静默丢值）。标量字段（含凭证 <code>SecretStr</code>、<code>Path</code>）<strong>原样透传</strong>、不被重解释。</li>
+<li>优先级：<strong>显式 config &gt; env &gt; （必填缺失）报错</strong>。「显式」= 该字段名<strong>作为键出现</strong>在显式入参中——显式传入的 <code>None</code> <strong>是一个值</strong>、压过 env（规则是「显式即胜」，非「显式非 None 才胜」）；包装层若以 <code>None</code> 默认透传可选 kwargs，需先剔除 <code>None</code> 键才能让 env 回退生效。多账户：保留 profile 段 hook（v1 不实现）。</li>
+</ul>
+<h2 id="ic5-applicability-caiic">IC.5 适用性谓词（applicability —— 跨 §C/§AI/IC 同一规则）</h2>
+<p>可选标准字段用 <strong>capability-bearing config mixin</strong>（<code>DeviceConfigMixin</code>/<code>LanguageConfigMixin</code>/<code>DownloadConfigMixin</code>…）：<strong>字段出现在模型里 ⇒ 适用</strong>——auto-UI 据此渲染正确表单，无需逐字段隐藏。「缺失 ⇒ 不适用」；「present-with-default ⇒ 适用-默认」。</p>
+<h2 id="ic6-default_language">IC.6 <code>default_language</code>（解与语言设计的矛盾）</h2>
+<p><strong>适用 ⇒ 必填或标准默认</strong>：引擎声明语言能力（非 trivial <code>selectable_languages</code> 或 <code>supports_runtime_language_override</code>）则 MUST 供 <code>default_language</code>（可为 <code>auto</code>）——保 <code>effective_language</code> 算法 total。D7 <strong>不</strong>放松已定稿语言设计（取代原「对所有引擎非强制」表述）。</p>
+<h2 id="ic7-init-runtime">IC.7 init / runtime 边界</h2>
+<p>init = 实例存续期固定、属安装/部署选择（权重/路径、device、凭证、batch size、aligner 装配、默认语言）；runtime = 每请求可变。<strong>Tie-breaker：能按请求变 ⇒ runtime（<code>provider_params</code>），不进 init</strong>（即便引擎也接受构造期传）。模型选择 = <strong>entrypoint preset</strong>，非 init <code>model</code> 字段。</p>
+<h2 id="ic8-artifact">IC.8 多 artifact</h2>
+<p>nested 引擎声明 submodel（按 model-family）+ 标准 <strong>artifact 路径解析 helper</strong>（相对 cache-dir、存在性、可选 checksum）；标准<strong>不</strong>标准化 bundle 形状。</p>
+<h2 id="ic9-lazy">IC.9 lazy 纯度不变量</h2>
+<p><code>__init__</code> 捕获 config MUST 纯——无 FS 创建 / 路径探测 / GPU init / 网络。cache-dir、凭证仅在 <code>_ensure_model_loaded</code> 材料化，受 <code>allow_downloads()</code> 门控。download/cache 走 <code>DownloadConfigMixin</code>（<code>download_root</code> + 优先级：显式 &gt; <code>STANDARD_ASR_MODEL_DIR</code> &gt; 库默认 HF cache &gt; <code>~/.cache/standard-asr</code>）。</p>
+<h2 id="ic10-bias_resource">IC.10 <code>bias_resource</code> 归这里</h2>
+<p>注册词表/模型句柄（Aliyun <code>vocabulary_id</code>、Tencent <code>HotwordId</code>…）= 引擎声明 init 字段（账户级资源）；如需 per-request 选择，薄 <code>provider_params</code> 旋钮（资源<strong>身份</strong>仍在 init）。</p>
+<h2 id="ic11-prepare-optionalnormative">IC.11 <code>prepare()</code> 预热钩子（optional，normative）</h2>
+<p><strong>可选</strong>的实例方法，供 <code>standard-asr prepare</code> 与生产/CI 预热（download-policy §4）显式触发权重下载/加载，把 IC.9 的 lazy 副作用从首次转写挪到一个无计费、无转写的调用点。契约：
+- <strong>签名 MUST 为零参同步方法</strong> <code>def prepare(self) -&gt; None</code>：<strong>MUST NOT</strong> 是 coroutine function（<code>async def</code>）——否则零参调用只得到未 await 的 coroutine，工具链会误报"预热完成"（静默假成功）。<code>EngineBase</code> 提供默认 <strong>no-op</strong> 实现；声明语义不同的同名 <code>prepare</code> 即违规。
+- <strong>幂等</strong>：重复调用安全（内部应短路到已加载的模型，复用 <code>_ensure_model_loaded</code> 之类的守卫）。
+- <strong>MUST 自查 <code>runtime.allow_downloads()</code></strong>：禁止下载且权重缺失时 MUST 抛 <code>DiscoveryError</code>（与 IC.9 / download-policy §2 同一下载门控义务），<strong>绝不</strong>静默跳过或以真实转写代跑（云引擎会被计费）。
+- <strong>无钩子 = reported no-op</strong>：未覆盖 <code>prepare</code> 的引擎（落到 <code>EngineBase</code> 默认实现）视为"无需预热"，工具链报告 no-op 而非失败。
+- 合规：<code>compliance</code> 套件检查 <code>prepare</code> 存在时<strong>零参且非 coroutine function</strong>；CLI 对 coroutine function 显式报错（不静默）。</p>
+<h2 id="-_6">---</h2>
+<h1 id="streaming-normative">流式协议 (Streaming) — NORMATIVE</h1>
+<blockquote>
+<p><strong>本节定义</strong>：Standard ASR 引擎如何提供实时（流式）转写——应用如何开启流式会话、如何喂入和接收音频与结果、结果事件的格式与修订规则、以及连接中断时如何恢复。
+<strong>另见</strong>：<a href="#能力系统-capabilities--normative">§能力系统</a>（Capabilities 树结构）、<a href="#结果模型-transcription-result--normative">§结果模型</a>（Segment/Word 定义）、<a href="#音频输入与采样率-audio-input--sample-rate--normative">§音频输入</a>（输入类型）。
+<strong>组织</strong>：概述 → 术语 → 接口与能力 → 事件模型 → 段生命周期 → 生命周期与健壮性 → 示例 → 附注与理由 → 能力清单 → v1 ship vs defer。
+<strong>取代</strong>：idea_docs <code>spec/streaming.md</code>。</p>
+</blockquote>
+<hr />
+<h2 id="1_4">1. 概述（流式转写是什么、为什么复杂）</h2>
+<p>"流式"指<strong>应用在说话的同时就能看到转写结果</strong>——不用等整段录完。这在实时字幕、语音助手、电话客服等场景下是刚需。</p>
+<p>但不同引擎的流式做法差别极大（调查覆盖了 30+ 引擎），标准要用一套接口同时覆盖它们。主要分歧：</p>
+<ul>
+<li><strong>输入方式</strong>：有的引擎能在说话的同时<strong>逐块接收音频</strong>（如 ElevenLabs、Qwen3-ASR）；有的要求<strong>先把整段音频上传完</strong>，再流式返回结果（如 OpenAI Audio API <code>stream=true</code>）。</li>
+<li><strong>结果修订</strong>：有的引擎吐出的中间结果<strong>可能被推翻</strong>（Google/AWS/ElevenLabs）；有的<strong>一旦吐出就不改</strong>（Kyutai STT、Voxtral Realtime）。</li>
+<li><strong>分段边界</strong>：有的引擎按语句端点自动切段；有的（两遍重打分引擎如 WeNet）甚至会<strong>事后合并或拆分段</strong>。</li>
+</ul>
+<p>本节把这些统一为一套<strong>事件模型 + 段生命周期 + 能力声明</strong>。</p>
+<hr />
+<h2 id="2_4">2. 术语</h2>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TranscriptionSession</code></td>
+<td>一次流式转写会话。通过 <code>start_transcription(...)</code> 开启；应用在会话上喂入音频和接收事件。</td>
+</tr>
+<tr>
+<td><code>segment</code> / <code>segment_id</code></td>
+<td>一段连贯的转写文本（通常对应一句话或一段发言）。每段由引擎或适配器分配一个<strong>稳定 id</strong>（字符串），用于在事件流中追踪、更新和最终锁定该段。</td>
+</tr>
+<tr>
+<td><code>partial</code> 事件</td>
+<td>引擎对某段的<strong>当前最佳猜测</strong>。partial 的文本可能随着更多音频到来而变化（下一个 partial 会携带该段的完整当前文本，覆盖之前的）。</td>
+</tr>
+<tr>
+<td><code>final</code> 事件</td>
+<td>引擎<strong>不再因新音频改变</strong>该段文本。表示一个语句/段落的转写已确定。</td>
+</tr>
+<tr>
+<td><code>supersede</code> 事件</td>
+<td>引擎用一组新段<strong>替换</strong>一组旧段（用于两遍重打分等场景，详见 §5）。是<strong>核心事件</strong>，每个 compliant 应用都 MUST 处理。</td>
+</tr>
+<tr>
+<td><code>stable_until</code></td>
+<td>一个非负整数，标明 <code>text</code> 的前多少个 <strong>codepoint</strong> 已冻结、不会再变（<code>text[:stable_until]</code> 即冻结前缀）。适配器 SHOULD 使该值落在字素簇 (grapheme cluster) 边界上。简单应用可忽略它；语音助手用它判断"前缀中哪些字已安全可以行动"。</td>
+</tr>
+<tr>
+<td><code>audio_processed_until</code></td>
+<td>浮点数，表示引擎已处理到的音频时间点（秒），原点 = 本次会话的第一个音频采样。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3_4">3. 接口与能力</h2>
+<h3 id="31-vs">3.1 两个方法（批量 vs 流式，返回类型不同）</h3>
+<p>标准有两个入口，<strong>返回类型恒定、不会因某个 flag 变形</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>何时使用</th>
+<th>返回</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>transcribe(audio, params)</code></td>
+<td>整段音频、等全部转写完</td>
+<td><code>TranscriptionResult</code></td>
+</tr>
+<tr>
+<td><code>start_transcription(…)</code></td>
+<td>任何需要"流式输出"的场景</td>
+<td><code>TranscriptionSession</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>start_transcription</code> 的签名（修复验证 C-1：增量输入与整段输入共存）：</p>
+<pre><code class="language-python">start_transcription(
+    *,                                         # 全部 keyword-only：三个同型可选参数防位置混淆
+    audio_format: AudioFormat | None = None,   # 增量喂入时：编码 + 采样率 + 声道，会话锁定
+    params: RuntimeParams | None = None,
+    audio: AudioInputLike | None = None,       # 整段输入时（如 OpenAI SSE）：直接传完整音频
+    deadlines: StreamDeadlines | None = None,  # 应用侧 deadline 覆盖（§6.1），逐字段可选
+) -&gt; TranscriptionSession
+</code></pre>
+<ul>
+<li><strong>keyword-only（<code>*</code>）</strong>：<code>audio_format</code> / <code>params</code> / <code>audio</code> 三个可选参数同型易位置混淆，故签名全部 keyword-only——跨实现的可移植代码 MUST 用关键字实参调用。</li>
+<li>
+<p><strong><code>audio</code> 接受 coercion</strong>：<code>audio</code> 的类型是 <code>AudioInputLike</code>，与 <code>transcribe</code> 的 <code>audio</code> 同规则接受裸值强制转换（裸 <code>str</code> = 本地路径、<code>bytes</code> = 编码字节、<code>ndarray</code> / <code>(ndarray, sample_rate)</code> = 波形），由标准层 <code>coerce_audio_input</code> 归一为 <code>AudioInput</code>。</p>
+</li>
+<li>
+<p><strong>增量喂入</strong>（ElevenLabs realtime、Qwen3 streaming）：传 <code>audio_format</code>，之后用 <code>send_audio(chunk)</code> 逐块喂裸 PCM 帧。</p>
+</li>
+<li><strong><code>deadlines</code></strong>：应用对会话终止 deadline（<code>done_timeout</code> / <code>max_idle</code> / <code>max_session_seconds</code>，语义见 §6.1）的逐字段覆盖。优先级 MUST 为：应用显式设置 &gt; 适配器构造时选择 &gt; 标准默认；由标准层模板在适配器构造会话<strong>之后</strong>统一施加（不依赖适配器转发，杜绝静默丢失）。未显式设置的字段不受影响。</li>
+<li><strong>整段输入 + 流式输出</strong>（OpenAI Audio SSE）：传 <code>audio</code>（一个完整的 <code>AudioInput</code>，如文件路径或编码字节），引擎一次收完后流式返回结果。</li>
+<li><code>audio_format</code> 与 <code>audio</code> <strong>互斥</strong>；同时传 MUST 报错。<strong>两者皆缺是合法的</strong>：引擎可在适配器内部自管 wire 格式（如固定协议格式的引擎），此时 <code>start_transcription()</code> 不带任何参数即开启增量会话——标准层只在两者<strong>同时出现</strong>时报错。<strong>无参调用的能力门控</strong>：无参开启的是增量（自管 wire 格式）会话，语义上即 §3.2 的 <code>streaming_input</code> 能力，故标准层 MUST 对无参调用施加与 <code>audio_format</code> 路径<strong>相同</strong>的 <code>streaming_input</code> 门控——仅声明 <code>streaming_output</code> 的引擎即使实现了流式钩子，无参调用也 MUST fail-closed 抛 <code>UnsupportedFeatureError</code>（缺失即不支持，<a href="#能力系统-capabilities--normative">§能力系统 R1</a>），而非交回一个无法喂入的增量会话（实现：<code>EngineBase.start_transcription</code>）。</li>
+<li><strong>v1 增量 wire 输入仅支持单声道（mono-only）</strong>：<code>audio_format.channels</code> MUST = <code>1</code>。与批量 <code>transcribe</code> 路径不同，标准层<strong>不处理</strong>增量 wire 帧（它们被直接转发给流式引擎），因此<strong>无法</strong>像批量那样对多声道做降混；声明 <code>channels != 1</code> 的会话 MUST 在建立时 fail-closed 报错（实现：<code>EngineBase.ensure_stream_format_supported</code>）。如需多声道，调用方 MUST 自行在客户端降混到 mono 再喂入。多声道 wire 输入是未来能力（与 §AI R7 的"标准层流式重采样"同属 deferred 路径）。</li>
+</ul>
+<h3 id="32">3.2 两个正交能力轴</h3>
+<p>流式能力由两个<strong>互相独立</strong>的布尔 capability 描述：</p>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>含义</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>streaming_input</code></td>
+<td>引擎能否在说话的同时<strong>逐块接收</strong>音频、并据此影响转写</td>
+<td>ElevenLabs realtime ✓、Qwen3 vLLM ✓、OpenAI Audio API ✗</td>
+</tr>
+<tr>
+<td><code>streaming_output</code></td>
+<td>引擎能否在<strong>全部输入到达之前</strong>就开始返回结果（partial 或 final）</td>
+<td>上述三个都 ✓</td>
+</tr>
+</tbody>
+</table>
+<p><strong>注意一个容易搞混的点</strong>：OpenAI Audio API 的 <code>stream=true</code> 需要先上传完整文件（<code>streaming_input=false</code>），但它<strong>会</strong>在转写完成前就开始返回 delta 事件（<code>streaming_output=true</code>）。</p>
+<p>另一个重要的子能力：<strong><code>emits_partials</code></strong>——引擎是否会发出 <code>partial</code> 事件。<code>streaming_output=true</code> 且 <code>emits_partials=false</code> 的引擎只在每段结束时发一个 <code>final</code>，不发中间结果。这覆盖了"流式 VAD 切段 + 离线识别每段"的模式（如 FireRedASR2S + SenseVoice）。</p>
+<h3 id="33_1">3.3 全双工与喂入方式</h3>
+<p>会话是<strong>全双工</strong>的——喂入音频和接收结果可以<strong>同时进行、互不阻塞</strong>：</p>
+<pre><code class="language-python">async with engine.start_transcription(audio_format=mic_format) as session:
+    # 方式 A：托管喂入——session 自己管喂入的生命周期和异常
+    session.feed(microphone_source)
+
+    # 然后独立地接收事件
+    async for event in session:
+        if event.type == &quot;partial&quot;:
+            show_live(event.segment_id, event.text)
+        elif event.type == &quot;final&quot;:
+            commit_segment(event.segment_id, event.text)
+</code></pre>
+<p>也可以手动喂入（<code>send_audio(chunk)</code> / <code>end_audio()</code>），但<strong>二者不可混用</strong>：</p>
+<ul>
+<li>使用 <code>session.feed(source)</code> 后，任何手动调用 <code>send_audio</code> 或 <code>end_audio</code> MUST 引发 <code>InvalidSessionUseError</code>。（<code>feed</code> 在 source 耗尽时自动调 <code>end_audio</code>。）</li>
+<li>使用手动方式后，<code>feed</code> 同样 MUST 引发 <code>InvalidSessionUseError</code>。</li>
+<li><code>feed()</code> 重复调用 MUST 引发 <code>InvalidSessionUseError</code>（一个会话至多拥有一个托管源）。</li>
+</ul>
+<p><strong>异常类型语义</strong>：上述混用 / 重复 feed 都是对<strong>仍然存活</strong>的会话的用法错误，故抛 <code>InvalidSessionUseError</code>（<code>StandardASRError</code> + <code>ValueError</code> 混入，与 <code>ConfigError</code> 同型），<strong>而非</strong> <code>StreamClosedError</code>——后者专指真正的生命周期关闭（<code>send_audio</code> 在 <code>end_audio()</code> 之后、或终态事件之后，见 §6.1）。调用者据此可区分「我的代码用错了会话」与「会话已结束」。</p>
+<p><strong><code>feed()</code> 的输入类型</strong>：<code>feed</code> 接受<strong>字节块的可迭代对象</strong>（<code>Iterable[bytes]</code> 或 <code>AsyncIterable[bytes]</code>）或单个 <code>bytes</code> / <code>bytearray</code> 块。</p>
+<ul>
+<li><strong>拒绝 <code>str</code></strong>：<code>str</code> 满足 <code>Iterable[str]</code>，把<strong>文件路径</strong>误传给 <code>feed</code> 是高概率笔误；标准 MUST 在调用点抛 <code>TypeError</code>（而非逐字符消费或在适配器深处化为费解的 <code>engine_error</code>），提示「整段文件走 <code>start_transcription(audio=...)</code>（§3.1），增量输入是裸 PCM 字节块」。</li>
+<li><strong>接受 <code>AsyncIterable</code>（非仅 <code>AsyncIterator</code>）</strong>：只实现 <code>__aiter__</code> 的自定义异步音频源（最 Pythonic 的形态）MUST 被接受并经 <code>aiter()</code> 归一为异步迭代器消费，而非落入同步分支以 <code>input_source_error</code> 失败。</li>
+</ul>
+<p>标准优先使用 <strong>async</strong>；sync 版由标准统一封装（§6.5），ASR 引擎开发者<strong>只需实现 async 版</strong>。</p>
+<h3 id="34-segment_id">3.4 <code>segment_id</code> 的生成规则</h3>
+<ul>
+<li>引擎的原始协议如果自带 id（如 AWS <code>ResultId</code>、OpenAI diarized 的 <code>segment_id</code>），适配器 MUST 使用它。</li>
+<li>如果引擎不提供 id（如 OpenAI 非 diarized 的 SSE 只有一个连续文本流），适配器 MUST 按确定性规则合成（如 <code>"seg-0"</code>、<code>"seg-1"</code>…），保证<strong>同一引擎的不同运行、给同样音频，产生相同的 id 序列</strong>。</li>
+<li><strong>段之间独立</strong>：一个新的 <code>segment_id</code> 可以在前一个段的 <code>final</code> 或 <code>closed</code> <strong>之后</strong>开始发 <code>partial</code>——这是云 WebSocket 引擎的标准模式（interim→commit→新段）。</li>
+</ul>
+<hr />
+<h2 id="4_4">4. 事件模型</h2>
+<h3 id="41">4.1 事件类型</h3>
+<p>每个事件是一个 <code>TranscriptionEvent</code>，包含以下字段：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>type</code></td>
+<td><code>"partial" \| "final" \| "supersede" \| "progress" \| "done" \| "error"</code></td>
+<td>事件类型</td>
+</tr>
+<tr>
+<td><code>segment_id</code></td>
+<td><code>str \| None</code></td>
+<td>所属段的稳定 id（<code>done</code> 和部分 <code>error</code>/<code>progress</code> 可为 <code>None</code>）</td>
+</tr>
+<tr>
+<td><code>text</code></td>
+<td><code>str \| None</code></td>
+<td>该段的当前完整文本（<code>partial</code>/<code>final</code> 必有）</td>
+</tr>
+<tr>
+<td><code>stable_until</code></td>
+<td><code>int \| None</code></td>
+<td>已冻结的 codepoint 数量（<code>text[:stable_until]</code> = 冻结前缀；见 §4.2）</td>
+</tr>
+<tr>
+<td><code>words</code></td>
+<td><code>list[Word] \| None</code></td>
+<td>词级细节（可选，与 <a href="#结果模型-transcription-result--normative">§结果模型</a> 共享同一 <code>Word</code> 定义）</td>
+</tr>
+<tr>
+<td><code>start</code> / <code>end</code></td>
+<td><code>float \| None</code></td>
+<td>段的起止时间（秒，原点 = 会话第一个音频采样）</td>
+</tr>
+<tr>
+<td><code>audio_processed_until</code></td>
+<td><code>float \| None</code></td>
+<td>引擎已处理到的音频时间点（§4.4）</td>
+</tr>
+<tr>
+<td><code>old_ids</code> / <code>new_ids</code></td>
+<td><code>list[str]</code></td>
+<td>仅 <code>supersede</code> 事件使用（§5）</td>
+</tr>
+<tr>
+<td><code>detected_language</code></td>
+<td><code>str \| None</code></td>
+<td>引擎检测到的语言（BCP-47，非 <code>auto</code>；与结果模型同规则校验）。是 §6.3 重连连续性承诺的载体——重连前后 MUST 保持一致</td>
+</tr>
+<tr>
+<td><code>code</code> / <code>recoverable</code> / <code>retriable_after</code></td>
+<td></td>
+<td>仅 <code>error</code> 事件使用（§7.2）</td>
+</tr>
+<tr>
+<td><code>reconnect</code> / <code>gap_start</code> / <code>gap_end</code></td>
+<td></td>
+<td>仅 <code>progress</code> 的重连通知使用（§7.3）</td>
+</tr>
+<tr>
+<td><code>extra</code></td>
+<td><code>dict[str, Any]</code></td>
+<td>引擎特定/实验数据槽位（默认 <code>{}</code>）。语义与 <a href="#结果模型-transcription-result--normative">结果模型</a> 的 <code>extra</code> 一致：<strong>引擎特定、不可移植</strong>，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>extra</code> 的 wire 转发/剥离规则</strong>（两层同构，G.5.2）：</p>
+<ul>
+<li><strong>非 <code>error</code> 事件</strong>：<code>extra</code> MUST 原样透传上 wire——<code>extra</code> 是引擎扩展槽位（与 <code>Segment</code>/<code>Word</code> 的 <code>extra</code> 惯例一致），其他语言的客户端按本表即可解释收到的键。</li>
+<li><strong><code>error</code> 事件</strong>：server MUST 在出栈前清空 <code>extra</code>（置为 <code>{}</code>）后再发给客户端。标准层把人类可读的诊断字符串存于 <code>extra["detail"]</code>（<code>engine_error</code> catch-all 下即 <code>str(exc)</code>，可能含文件路径 / 上游 URL / 凭证片段），故不得转发给（未认证的）客户端；安全的结构化字段（<code>code</code> / <code>recoverable</code> / <code>retriable_after</code> / <code>segment_id</code> 及 gap/reconnect 字段）保留。被剥离的 detail 由 server 记入操作日志（详见 <a href="server.html">server.md §4.2</a>）。</li>
+</ul>
+<p>每种事件的含义：</p>
+<ul>
+<li><strong><code>partial</code></strong>：引擎对该段的<strong>当前最佳猜测</strong>。<code>text</code> = 该段的完整当前文本（不是增量/delta——追加式引擎如 OpenAI 由适配器在内部累积 delta，对外总是发完整文本）。下一个 partial 会覆盖上一个。</li>
+<li><strong><code>final</code></strong>：该段的转写<strong>不再因新音频而改变</strong>。它可能仍被 <code>supersede</code>（两遍重打分场景）或被 <code>closed</code> 事件更新（后处理标点/ITN 修正）。</li>
+<li><strong><code>supersede</code></strong>：用一组新段替换一组旧段。详见 §5。</li>
+<li><strong><code>progress</code></strong>：时间推进 / 心跳 / 重连通知，不改变任何段的文本。</li>
+<li><strong><code>done</code></strong>：整个会话结束，不再有任何事件。</li>
+<li><strong><code>error</code></strong>：出错。</li>
+</ul>
+<h3 id="42-stable_until">4.2 稳定前缀（<code>stable_until</code>）</h3>
+<p>这是流式模型最核心的概念之一，但<strong>简单应用可以完全忽略它</strong>。</p>
+<p><strong>直觉</strong>：引擎边听边写时，<strong>前面的字越来越确定，最后面几个字还不稳定</strong>。<code>stable_until</code> 就是标明"前面多少个字已经冻结、不会再变"的那条线。</p>
+<p><strong>精确定义</strong>：<code>stable_until</code> 是一个非负整数，表示 <code>text</code> 中前多少个 <strong>codepoint</strong> 已经被冻结。Python 中 <code>text[:stable_until]</code> 即冻结前缀——codepoint 是 Python 字符串的原生索引单位，直接可用、零依赖。</p>
+<p><strong>组合字符不变量</strong>：<code>stable_until</code> <strong>MUST NOT</strong> 切开 Unicode combining character sequence——即 <code>text[stable_until]</code>（如果存在）的 <code>unicodedata.combining()</code> MUST 为 0。这保证切点不会落在印度系 matra、阿拉伯语变音符等组合标记的中间，<strong>用 stdlib <code>unicodedata</code> 即可验证，零第三方依赖</strong>。标准 SHOULD 提供 <code>validate_stable_until(text, stable_until) -&gt; bool</code> helper，合规测试 MUST 校验此不变量。</p>
+<blockquote>
+<p>实际上，适配器从引擎拿到的稳定边界通常是 word/token 级的，映射到 <code>text</code> 中的位置天然满足此不变量，不需要额外处理。</p>
+</blockquote>
+<p>适配器 SHOULD 进一步使 <code>stable_until</code> 落在<strong>字素簇 (grapheme cluster) 边界</strong>上（覆盖 emoji ZWJ 等 combining 以外的多 codepoint 序列），但这是 SHOULD 级建议，不强制。完整 UAX#29 字素簇支持留作 v2 如有需求时的 additive 扩展。</p>
+<p><strong>规则</strong>：
+- <code>stable_until</code> 在同一段内 <strong>MUST 只增不减</strong>（冻结的前缀永不回退）。
+  - <strong><code>closed</code> 终态修正的豁免（见 §5.3 / §5.4）</strong>：此不可变规则约束的是<strong>进行中的识别</strong>——只要识别仍在继续，已冻结前缀 MUST NOT 被后续 <code>partial</code>/<code>final</code>/<code>supersede</code> 改写（实现：标准层 <code>_LifecycleGuard</code> 抑制改写并发 <code>frozen_prefix_rewritten</code> diagnostic）。<strong>唯一例外</strong>是段进入终态时的 <code>closed</code> 事件：它 MAY 对已冻结文本做一次后处理改写（补标点 / ITN / 大小写），这不是"识别回退"而是终态定稿（§5.3、§5.4）。应用收到 <code>closed</code> 时 MUST 用新文本<strong>替换</strong>显示，而非追加。<strong>该豁免显式覆盖单调钳制本身</strong>：后处理改写可能<strong>缩短</strong>文本（ITN "twenty twenty" → "2020"），<code>closed</code> 事件的 <code>stable_until</code> 因此 MAY 小于此前的冻结前沿；标准层 MUST NOT 把它向上钳回（那会产生 <code>stable_until &gt; len(text)</code> 的非法线值），只 MAY 修复结构边界（<code>0 ≤ stable_until ≤ len(text)</code>、不切组合字符）。合规套件 MUST NOT 因合法的 <code>closed</code> 收缩判错。
+- 适配器 MUST <strong>保守地</strong>设 <code>stable_until</code>——宁可偏小（少冻结几个字），不可偏大（声称冻结了实际可能再变的字）。
+- 引擎没有 <code>right_context</code>（前瞻窗口）或时间戳信息时（如 Qwen3-ASR streaming），MUST 报 <code>stable_until=0</code>——表示没有冻结任何字。相应地，<code>word_stability</code> capability 应声明为 <code>false</code>。
+- <strong>简单应用</strong>：可以无视 <code>stable_until</code>，只用 <code>partial</code> 显示、<code>final</code> 提交。
+- <strong>语音助手</strong>：读 <code>text[:stable_until]</code> 作为"可安全行动的前缀"。</p>
+<h3 id="43-replace">4.3 累积/replace 归一化</h3>
+<p>所有 <code>partial</code> 和 <code>final</code> 事件的 <code>text</code> 字段 MUST 是<strong>该段的完整当前文本</strong>（累积/replace 语义），而不是 delta/增量。</p>
+<p>这是一条<strong>对适配器的硬性要求</strong>。有些引擎（如 OpenAI Audio SSE）原始协议发的是追加式的 text delta——适配器 MUST 在内部累积这些 delta，然后对外发累积后的完整文本。原因：所有引擎都可以从完整文本无损地推出 delta（做差即可），但反过来——从 delta 推出完整文本——在有些引擎（那些会回退/修改旧文本的引擎）上做不到。选择更通用的表示，确保应用代码在所有引擎上都能一致工作。</p>
+<h3 id="44">4.4 音频时间游标与心跳</h3>
+<p>每个事件可以携带 <code>audio_processed_until</code>（浮点秒数），表示引擎<strong>已经处理到</strong>的音频时间点。</p>
+<ul>
+<li>原点 = 本次会话的<strong>第一个音频采样</strong>的时刻（音频时间 t=0），与 <a href="#结果模型-transcription-result--normative">§结果模型</a> 中 <code>Segment.start/end</code> 的原点相同。</li>
+<li>MUST <strong>单调递增</strong>（不回退）；跨重连窗口期保持旧值（见 §7.3）。</li>
+<li><strong><code>progress</code> 事件</strong>可以只携带 <code>audio_processed_until</code> 而不改变任何段的文本——用于心跳、表示"引擎在等更多证据"（DSM 架构的 padding token 场景）、或通知重连。</li>
+<li><strong>心跳是 MAY，不是义务</strong>。标准层的活性兜底不依赖心跳——<code>done_timeout</code> 由「事件<strong>或</strong>音频消费」共同重置（§6.1），纯静音期的会话存活不需要适配器做任何事。业界（Deepgram / AWS / Google 等）一致将流活性锚定在<strong>音频流</strong>而非转写事件流上，没有任何原生协议或官方 SDK 要求接收侧心跳节拍（docs/research/5）。</li>
+<li>在两种情形下适配器 <strong>SHOULD</strong> 发 <code>progress</code>：</li>
+<li>原生协议在接收侧本来就有活动信号（Deepgram 的空 Results、Azure 的 NoMatch、Speechmatics 的 ack 等）时，SHOULD 将其镜像为携带真实游标的 <code>progress</code>——免费的活性信息不应被适配器吞掉；</li>
+<li>适配器处于<strong>长时间无事件的真实工作期</strong>——整段输入会话的长静默计算（无增量消费信号可作锚点，见 §6.1）、feed 暂停期间适配器主动向引擎发原生 keepalive、重连尝试耗时较长（§6.3）——时，SHOULD 周期性发 <code>progress</code> 反映该真实活动。</li>
+<li><code>progress</code> 心跳 MUST NOT 携带捏造的 <code>audio_processed_until</code>（引擎并未实际处理到的时间点）；没有可靠游标就不携带该字段。标准层 MUST NOT 替引擎合成心跳——事件流上的每个事件都来自适配器对引擎真实行为的翻译，这是协议诚实性的底线。</li>
+</ul>
+<hr />
+<h2 id="5_3">5. 段生命周期</h2>
+<h3 id="51">5.1 状态机</h3>
+<p>每个 <code>segment_id</code> 有一个生命周期，按以下规则转移：</p>
+<table>
+<thead>
+<tr>
+<th>当前状态</th>
+<th>合法事件</th>
+<th>转移到</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>open</code>（刚出现的新段）</td>
+<td><code>partial</code>(同 id)</td>
+<td><code>open</code>（停留）</td>
+</tr>
+<tr>
+<td><code>open</code></td>
+<td><code>final</code>(同 id)</td>
+<td><code>final</code></td>
+</tr>
+<tr>
+<td><code>open</code></td>
+<td><code>closed</code>(同 id，<code>finality=closed</code>)</td>
+<td><code>closed</code>（无需先经过普通 <code>final</code>——一步定稿合法）</td>
+</tr>
+<tr>
+<td><code>open</code></td>
+<td><code>supersede</code>(该 id 在 <code>old_ids</code> 中)</td>
+<td><code>superseded</code></td>
+</tr>
+<tr>
+<td><code>final</code></td>
+<td><code>supersede</code>(该 id 在 <code>old_ids</code> 中)</td>
+<td><code>superseded</code></td>
+</tr>
+<tr>
+<td><code>final</code></td>
+<td><code>closed</code>(同 id，<code>finality=closed</code>)</td>
+<td><code>closed</code></td>
+</tr>
+<tr>
+<td><code>closed</code></td>
+<td>—（终态）</td>
+<td><code>closed</code></td>
+</tr>
+<tr>
+<td><code>superseded</code></td>
+<td>—（终态）</td>
+<td><code>superseded</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>不合法的转移</strong>（MUST NOT 发生，适配器 MUST 抑制）：
+- 同一 id 的 <code>partial</code> 在 <code>final</code> 之后。
+- 同一 id 的 <code>partial</code>/<code>final</code> 在 <code>closed</code> 之后。
+- <code>closed</code> 段出现在任何 <code>supersede</code> 的 <code>old_ids</code> 中。</p>
+<h3 id="52-supersede">5.2 <code>supersede</code>（段替换）</h3>
+<p>两遍重打分引擎（如 WeNet U2++）的第二遍可能改变段的文本甚至段的边界（合并两段、拆分一段）。<code>supersede</code> 就是为此设计的：</p>
+<pre><code>supersede(old_ids=[&quot;seg-3&quot;,&quot;seg-4&quot;], new_ids=[&quot;seg-5&quot;])
+</code></pre>
+<p>意思是"原来的 seg-3 和 seg-4 作废，用新的 seg-5 替代"。之后 seg-5 会像正常段一样收到 <code>partial</code> → <code>final</code>。</p>
+<p><strong>核心 reduce（每个 compliant 应用 MUST 实现）</strong>：</p>
+<pre><code class="language-python">if event.type == &quot;partial&quot;:
+    segments[event.segment_id] = event.text       # 显示
+elif event.type == &quot;final&quot;:
+    segments[event.segment_id] = event.text       # 提交/替换
+elif event.type == &quot;supersede&quot;:
+    for old_id in event.old_ids:
+        del segments[old_id]                       # 删除旧段
+    # new_ids 的内容会随后通过 partial/final 事件到达
+</code></pre>
+<p><strong><code>supersede</code> 是核心事件（非可选）</strong>——即使 <code>re_segments</code> capability 为 <code>false</code>（引擎承诺不发 supersede），应用代码也 MUST 包含上面的 reduce 逻辑。这样无论切换到任何引擎都安全。</p>
+<p><strong>规则与不变量</strong>：
+- <code>old_ids</code> 与 <code>new_ids</code> <strong>MUST 无交集</strong>——一个被替换的 id 不会被复用；id 一旦出现在 <code>old_ids</code> 中即退休。
+- <strong>顺序语义</strong>：<code>old_ids</code> 与 <code>new_ids</code> 都 MUST 按<strong>阅读（时间）顺序</strong>排列——这是下面"冻结前缀保留"规则做拼接（concatenation）的前提。
+- <code>new_ids</code> 中的段可能先以 <code>partial</code> 到达（不一定立刻是 <code>final</code>）——应用的 reduce 应在 <code>new_ids</code> 的第一个事件到达时就开始渲染新段文本。
+- <strong>排序</strong>：<code>supersede</code> 事件 MUST 在其 <code>new_ids</code> 的任何 <code>partial</code>/<code>final</code> 之前投递；<code>old_ids</code> 中的 id 必须在之前已被<strong>宣告</strong>过——「宣告」= 收到过至少一个 <code>partial</code> / <code>final</code>，<strong>或</strong>作为更早一次 <code>supersede</code> 的 <code>new_ids</code> 被引入（链式 supersede <code>A→B</code>、<code>B→C</code> 中，<code>B</code> 即使从未收到 partial/final 也算已宣告）。
+- <strong>冻结前缀保留（拼接覆盖规则）</strong>：<code>supersede</code> 操作 MUST 保留已冻结的文本。设 <strong>F_old</strong> = 被替换的旧段（按 <code>old_ids</code> 顺序）各自冻结前缀 <code>text[:stable_until]</code> 的拼接；<strong>F_new</strong> = 新段（按 <code>new_ids</code> 顺序）各自当前冻结前缀的拼接（随新段后续 <code>partial</code>/<code>final</code> 不断冻结更多文本而增长）。<strong>不变量</strong>：F_old 与 F_new MUST 在其公共前缀上一致——任何一方都 MUST NOT 改写另一方。换言之，<strong>用户已经看到并"确信不变"的文字，在段被替换后仍然不变</strong>。
+  - 这条规则<strong>统一覆盖</strong> 1→1、多→1（合并）、1→多（拆分）、多→多 各种基数；1→1 只是 n=m=1 的退化情形，无需特殊处理。（例：旧段冻结前缀是"你好世界"，无论新分段是单个 seg("你好世界", <code>stable_until</code>≥4) 还是拆成 seg("你好", su≥2)+seg("世界…", su≥2)，拼接后都必须以"你好世界"开头。）
+  - <strong>方向不对称</strong>：<strong>改写/分歧方向</strong> MUST <strong>及早（eagerly）</strong>检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。「拒绝」作用于<strong>整个触发事件</strong>（含其未冻结尾部）而非仅冻结部分——只伤害不合规适配器，且保证被拒事件不会以半改写状态泄出。而"新分段冻结的文本严格少于 F_old"是<strong>保守安全方向</strong>（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。该"至多一条软诊断"在实现中是：会话到达终态（或合规重放结束）时，若某个 supersede 的 F_new 仍严格短于 F_old，标准层发一条 <strong><code>info</code> 级 <code>supersede_obligation_unfulfilled</code></strong> diagnostic（点名受影响的 <code>new_ids</code>），表示未重新冻结的尾巴被从 lineage 中丢弃——它<strong>不是 error、不拒绝</strong>任何事件，supersede 依旧成立（实现：<code>TranscriptionSession.finalize</code>）。
+- <code>re_segments</code> capability：<code>false</code> 表示引擎承诺不发 <code>supersede</code>（finals 只增不改）；<code>true</code> 表示可能发。
+- <strong>lineage 是 set-to-set（v1 已知限制）</strong>：<code>old_ids</code>/<code>new_ids</code> 表达 re-segmentation 的<strong>基数</strong>（哪些退休、哪些出现），但<strong>不</strong>承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；冻结前缀保留（上）按<strong>拼接</strong>的 F_old/F_new 校验而非逐对。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。</p>
+<h3 id="53">5.3 两级终态</h3>
+<ul>
+<li><strong><code>final</code></strong>：该段的文本<strong>不再因新音频而改变</strong>——但仍可能被 <code>supersede</code>（两遍重打分）或被 <code>closed</code> 事件原位修正（后处理标点/ITN/大小写修正）。</li>
+<li><strong><code>closed</code></strong>：该段<strong>彻底不可变</strong>——连后处理修正都不会再有。<code>closed</code> 段 MUST NOT 出现在任何后续 <code>supersede</code> 的 <code>old_ids</code> 中。</li>
+</ul>
+<p>引擎通过 <code>finality_level</code> capability 声明它能保证到哪一级。<strong>默认保守</strong>：若引擎无法确认 <code>final</code> 后是否还会有后处理修正（如 ElevenLabs 的 committed 段是否会被重格式化目前未明确），MUST 声明 <code>final</code>、MUST NOT 声明 <code>closed</code>。</p>
+<p><code>closed</code> 事件的格式：对同一 <code>segment_id</code> 再发一次 <code>final</code>，携带 <code>finality="closed"</code> 标记（文本可能因后处理而有变化——例如补了标点）。此后该 id 进入终态。</p>
+<h3 id="54-closed-re_segmentsfalse">5.4 <code>closed</code> 与 <code>re_segments=false</code> 的交互</h3>
+<p>当引擎声明 <code>re_segments=false</code>（不发 <code>supersede</code>，finals 只增不改）时，<code>closed</code> 事件仍然可能<strong>原位修改文本</strong>（例如加标点），这不算"重分段"——段的 id 和边界不变，只是内容被后处理修正。应用在收到 <code>closed</code> 事件时应当用新文本<strong>替换</strong>（非追加）已显示的内容。</p>
+<hr />
+<h2 id="6_4">6. 生命周期与健壮性</h2>
+<h3 id="61">6.1 方法调用规则</h3>
+<table>
+<thead>
+<tr>
+<th>调用</th>
+<th>条件</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>send_audio(chunk)</code> 在 <code>end_audio()</code> 之后</td>
+<td>—</td>
+<td>MUST raise <code>StreamClosedError</code>（生命周期关闭）</td>
+</tr>
+<tr>
+<td><code>send_audio(chunk)</code> 在终态事件之后</td>
+<td>—</td>
+<td>MUST raise <code>StreamClosedError</code>（生命周期关闭）</td>
+</tr>
+<tr>
+<td><code>send_audio</code> / <code>end_audio</code> 在 <code>feed()</code> 之后</td>
+<td>feed 模式已声明</td>
+<td>MUST raise <code>InvalidSessionUseError</code>（混用）</td>
+</tr>
+<tr>
+<td><code>feed()</code> 在手动输入之后</td>
+<td>手动模式已声明</td>
+<td>MUST raise <code>InvalidSessionUseError</code>（混用）</td>
+</tr>
+<tr>
+<td><code>feed()</code> 重复调用</td>
+<td>—</td>
+<td>MUST raise <code>InvalidSessionUseError</code>（至多一个托管源）</td>
+</tr>
+<tr>
+<td><code>feed(str)</code></td>
+<td>—</td>
+<td>MUST raise <code>TypeError</code>（见 §3.3：文件路径请用 <code>start_transcription(audio=...)</code>）</td>
+</tr>
+<tr>
+<td><code>end_audio()</code> 重复调用</td>
+<td>手动模式</td>
+<td>幂等（不报错，不重发）</td>
+</tr>
+<tr>
+<td><code>end_audio()</code> 重复调用</td>
+<td><code>feed()</code> 模式</td>
+<td>MUST raise <code>InvalidSessionUseError</code>（<code>feed</code> 自己管 <code>end_audio</code>，手动调是混用）</td>
+</tr>
+<tr>
+<td>第二次迭代会话（再次 <code>__aiter__</code> / 并发 <code>async for</code>）</td>
+<td>—</td>
+<td>MUST raise <code>InvalidSessionUseError</code>（单消费者契约，见下）</td>
+</tr>
+<tr>
+<td><code>done</code> 不到达</td>
+<td>管线不活动超过 <code>done_timeout</code></td>
+<td>MUST 发 <code>error(code="done_timeout")</code>（活性兜底，定义见下）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>单消费者契约（single-consumer）</strong>。一个会话有<strong>唯一的事件流、唯一的消费者</strong>：事件存活于一个共享的有界缓冲区，第二个并发迭代器会与第一个<strong>竞争</strong>取事件，把事件流静默地拆分到两者之间（各自只见到任意子集，谁的 <code>result</code> 都不再等于完整事件流，破坏 stream == result 不变量），并重置按迭代计时的 deadline 锚点。这两者都是对仍然存活会话的用法错误，故第二次 <code>__aiter__</code> MUST <strong>大声报错</strong>（<code>InvalidSessionUseError</code>，与混用 / 重复 feed 同类，而非 <code>StreamClosedError</code>）而非交回一个竞争迭代器。sync 桥（<code>SyncSession</code>）内部只取一次迭代器，天然单消费者，不受影响。</p>
+<p><strong>活性与终止保证（liveness）</strong>。会话有三道相互独立、各管一事的 deadline。设计原则：<strong>默认配置 MUST NOT 误杀合法的静音直播会话</strong>（用户停顿 30 秒、会议冷场几分钟期间，VAD 型引擎在接收侧通常什么都不发——这是合法行为，不是故障），同时<strong>挂死的管线 MUST 在有限时间内合成终态</strong>（迭代器不会在应用无能为力的情况下永挂）。</p>
+<ul>
+<li><strong><code>done_timeout</code>（默认 300s）——管线不活动兜底。</strong> 计时锚点是<strong>最近一次管线活动</strong> = max(最近收到的任意事件, 适配器最近一次经 <code>audio_chunks</code> 消费喂入的音频块)。超过 <code>done_timeout</code> 无任何活动 → 标准层合成 <code>error(code="done_timeout")</code> 终态。三个推论：</li>
+<li><strong>静音存活</strong>：直播会话中应用持续喂入（静音也是音频；业界引擎本就要求持续送音频否则服务端先断——Deepgram 10s / AWS 15s，docs/research/5），适配器持续消费即持续重置锚点——引擎接收侧静默任意久都不会被误杀，且无需适配器做任何事。</li>
+<li><strong><code>done</code> 必达</strong>：<code>end_audio()</code> 之后无音频可消费，锚点冻结，本 deadline 退化为对引擎「冲刷并送达 <code>done</code>」窗口的硬界限——这是该 deadline 名字的由来。</li>
+<li><strong>整段输入会话</strong>（<code>audio=...</code>）没有增量消费信号，锚点只有事件；长静默计算的适配器因此 SHOULD 周期性发 <code>progress</code>（§4.4）。</li>
+<li>应用 MAY 经 <code>deadlines</code> 显式设为 <code>None</code> 关闭（显式 opt-out）；默认 MUST 为有限值。本 deadline 是<strong>防挂死兜底，不是引擎活性检测</strong>——传输层失败的及时上报是适配器义务（见下），不靠这里。</li>
+<li><strong><code>max_idle</code>（默认禁用）——内容停滞检测，opt-in。</strong> 超过该时长没有<strong>内容事件</strong>（<code>partial</code> / <code>final</code> / <code>supersede</code>；心跳与音频消费<strong>不</strong>重置）→ 合成 <code>error(code="stream_stalled")</code>。静音是直播会话的正常状态，故 MUST NOT 默认启用；适用于「持续有语音」可被预期的场景，或检测「持续消费音频却永不产出内容」的病态引擎。</li>
+<li><strong><code>max_session_seconds</code>（默认禁用）——绝对墙钟上限，opt-in。</strong> 到达即合成 <code>error(code="session_timeout")</code>。计时原点 MUST 是<strong>会话建立时刻</strong>（<code>async with</code> 进入 / <code>__aenter__</code>），而非首次迭代（首个 <code>__anext__</code>）——会话建立到开始迭代之间的时间<strong>计入</strong>上限；中断迭代后重新迭代 MUST NOT 重置该原点（否则上限可被无意地无限续期，成本/资源控制承诺落空）。<strong>这是三道 deadline 中唯一的会话级（绝对）上限</strong>：<code>done_timeout</code> / <code>max_idle</code> 是活动相对的，按迭代重新计时是正确语义；<code>max_session_seconds</code> 则锚定会话本身（实现：<code>TranscriptionSession.__aenter__</code> 记录原点，<code>_iterate</code> 共享）。</li>
+</ul>
+<p><strong>适配器活性义务</strong>：传输层 / 引擎 SDK 报告的连接失败（断连、握手失败、原生超时、服务端关闭码）MUST 及时翻译为 <code>error</code> 事件投递进会话——可恢复的标 <code>recoverable=true</code>（配合 §6.3 重连），不可恢复的即终态；MUST NOT 静默吞掉。引擎活性检测的正确位置是传输层（WS ping/pong 等）+ 适配器的诚实上报，业界全部官方 SDK 均如此分层，无一在接收侧跑「无结果即判死」的定时器（docs/research/5）。原生协议有「无音频即断连」策略的引擎（Deepgram 10s、AWS 15s、ElevenLabs 等），适配器 SHOULD 负责原生 keepalive（或按该引擎惯例持续转发静音帧），使应用合法的喂入节奏不被引擎侧闲置策略误杀。</p>
+<h3 id="62">6.2 错误事件</h3>
+<p><code>error</code> 事件通过事件流投递（不是从 <code>send_audio</code> 抛出的异常）：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>code</code></td>
+<td><code>str</code></td>
+<td>错误码（标准码集 + 引擎可扩展）</td>
+</tr>
+<tr>
+<td><code>recoverable</code></td>
+<td><code>bool</code></td>
+<td><code>true</code> = 引擎可能恢复、会话可继续；<code>false</code> = 终态</td>
+</tr>
+<tr>
+<td><code>retriable_after</code></td>
+<td><code>float \| None</code></td>
+<td>若可重试，建议等待多少秒</td>
+</tr>
+</tbody>
+</table>
+<p><code>progress</code> 事件在任何非终态下合法——包括 <code>recoverable=true</code> 的错误之后（用于通知恢复进度）。</p>
+<p><strong>标准错误码集（标准层自身会合成的码，应用 SHOULD 识别）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>code</th>
+<th>含义</th>
+<th>recoverable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>done_timeout</code></td>
+<td>管线不活动（无事件且无音频消费）超过 <code>done_timeout</code>（默认 300s），标准层合成终态（§6.1 活性兜底）</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>stream_stalled</code></td>
+<td>超过 <code>max_idle</code> 未收到内容事件（心跳与音频消费不算；默认禁用，opt-in），标准层合成终态</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>session_timeout</code></td>
+<td>超过 <code>max_session_seconds</code> 绝对墙钟上限（默认禁用，opt-in），标准层合成终态</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>backpressure</code></td>
+<td>发送侧有界缓冲区溢出（消费太慢），标准层合成终态（§6.4）</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>input_source_error</code></td>
+<td><code>feed()</code> 的音频源自身抛错</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>engine_error</code></td>
+<td>适配器 <code>_produce</code> 逃逸的未分类异常</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>content_lost</code></td>
+<td>重连缝隙真实丢失音频的保真度警告（§6.3）；<strong>非终态</strong></td>
+<td><code>true</code></td>
+</tr>
+</tbody>
+</table>
+<p>引擎可扩展自有错误码；与标准码冲突的语义 MUST NOT 复用上表名字。</p>
+<h3 id="63">6.3 重连（透明、但诚实）</h3>
+<p>许多引擎有会话时间上限（Google STT ≈ 5 分钟、ElevenLabs 有 <code>session_time_limit_exceeded</code>）。标准层应<strong>在底层自动重连</strong>，让应用无需关心这些限制。但重连<strong>不保证无损</strong>——标准的承诺是<strong>「会话存活」而非「应用完全感知不到」</strong>。</p>
+<p>具体规则：</p>
+<ul>
+<li><strong><code>segment_id</code>、时间戳、检测到的语言</strong> 在重连前后 MUST 保持连续。</li>
+<li>跨 lossy 缝隙 MUST 发一条 <code>progress</code> 事件，携带 <code>reconnect=true</code>、<code>gap_start</code>、<code>gap_end</code>。</li>
+<li>session 拥有一个<strong>有界的滚动音频缓冲区</strong>（用于重连后向引擎重喂最近音频）。</li>
+</ul>
+<p><strong>按音频源分类</strong>（live mic 不可回放）：</p>
+<table>
+<thead>
+<tr>
+<th>音频源类型</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>可回放</strong>（文件/数组/服务端有缓冲的引擎）</td>
+<td>重连后从缓冲区重喂，缝隙在内部弥合；对应用几乎透明。</td>
+</tr>
+<tr>
+<td><strong>不可回放</strong>（live mic 等实时源）</td>
+<td>重连期间到达的音频如果超出了缓冲区容量，<strong>会真丢</strong>。<strong>丢失由适配器判定</strong>——与 <code>segment_id</code>/时间戳/语言连续性同理（见上，皆为适配器责任），由适配器据其 gap 窗口与 replay 覆盖情况决定本次重连是否真丢（实现：<code>note_reconnect(..., content_lost=True)</code>）。<strong>结构化事件由标准发出</strong>：当适配器判定真丢时，标准 MUST 在 <code>progress</code> 事件后<strong>紧跟一条</strong> <code>error(code="content_lost", recoverable=true)</code> 事件；这是非终态 fidelity warning：会话继续存活，gap 被诚实报告，后续事件继续流动直到正常 <code>done</code> 或真正的终态 <code>error</code>。不可回放源的缓冲区只覆盖"已捕获但尚未确认处理"的窗口。</td>
+</tr>
+</tbody>
+</table>
+<p><code>reconnect</code> capability：引擎声明 <code>seamless</code>（无损，仅 stateless / 服务端有状态引擎可声明）或 <code>lossy</code>（可能有缝隙，DSM 等有状态本地模型 MUST 声明 <code>lossy</code>）或 <code>unsupported</code>。</p>
+<h3 id="64">6.4 背压</h3>
+<p>当事件消费方处理速度慢于产生速度时：</p>
+<ul>
+<li><strong><code>partial</code> 事件</strong>：按 <code>segment_id</code> 合并——只保留该段最新的 partial（保留最大 <code>audio_processed_until</code>）。<strong>合并 MUST 被同 segment 的 <code>final</code>/<code>closed</code>/<code>supersede</code> 作废</strong>——如果 partial 尚未投递但该段已进入终态或被替换，该 partial MUST 丢弃（避免复活已替换的段）。</li>
+<li><strong><code>final</code>、<code>supersede</code>、<code>done</code>、<code>error</code> 事件</strong>：<strong>永不丢弃、永不重排</strong>。</li>
+<li>发送侧有界缓冲区，溢出发 <code>error</code>。</li>
+<li>sync 桥的事件队列（§6.5）也遵守同样的背压规则。</li>
+<li><strong>诊断通道同样有界。</strong> 标准层 <code>_LifecycleGuard</code> 的 lifecycle-suppression 诊断（抑制的非法转移、钳制的 <code>stable_until</code> / 音频游标）经 <code>session.diagnostics()</code> 暴露——一个每事件都触发钳制的轻微越界引擎（如游标持续抖动）在数小时直播会话中会无界累积诊断，这与会话其余资源（事件缓冲、音频队列、滚动音频缓冲区均有界）的哲学相悖。故诊断列表 MUST 有上限：达到上限后，标准层 MUST NOT 再保留逐条诊断，而是聚合为单条尾部 <code>diagnostics_truncated</code> 汇总（按 code 计数）——上限被命中这一事实 MUST 被诚实上报，绝不静默丢弃（实现：<code>_LifecycleGuard</code>，默认上限 <code>DEFAULT_MAX_GUARD_DIAGNOSTICS</code>）。</li>
+</ul>
+<h3 id="65-sync">6.5 sync 桥</h3>
+<p>标准统一提供 sync→async 桥（一个后台线程跑事件循环，session 拥有、在 <code>__exit__</code>/<code>close()</code> 拆除），ASR 引擎开发者<strong>只需实现 async 版</strong>。</p>
+<p><strong>适配器契约</strong>（MUST 遵守，否则 sync 桥会死锁或泄漏）：
+- 所有绑定到事件循环的资源（WebSocket 连接等）MUST 在 <code>__aenter__</code> 中创建。
+- MUST NOT 触碰当前线程的 ambient event loop（不调 <code>asyncio.get_event_loop()</code>）。
+- 生产/消费使用标准提供的线程安全原语。</p>
+<p>合规测试包含：从外部线程驱动 async adapter，验证不死锁、不泄漏。</p>
+<hr />
+<h2 id="7">7. 示例</h2>
+<h3 id="71">7.1 最简场景：显示实时字幕</h3>
+<pre><code class="language-python">async with engine.start_transcription(audio_format=mic_format) as session:
+    session.feed(microphone)
+
+    async for event in session:
+        if event.type == &quot;partial&quot;:
+            update_caption(event.segment_id, event.text)
+        elif event.type == &quot;final&quot;:
+            finalize_caption(event.segment_id, event.text)
+        elif event.type == &quot;supersede&quot;:
+            for old_id in event.old_ids:
+                remove_caption(old_id)
+</code></pre>
+<h3 id="72">7.2 语音助手：利用稳定前缀</h3>
+<pre><code class="language-python">async for event in session:
+    if event.type == &quot;partial&quot; and event.stable_until and event.stable_until &gt; 0:
+        frozen_prefix = grapheme_clusters(event.text)[:event.stable_until]
+        maybe_start_responding_to(frozen_prefix)
+</code></pre>
+<h3 id="73-openai-audio-sse">7.3 OpenAI Audio SSE（整段输入 + 流式输出）</h3>
+<pre><code class="language-python">async with engine.start_transcription(audio=AudioPath(&quot;meeting.mp3&quot;)) as session:
+    async for event in session:       # partial 事件在转写完成前就会到达
+        if event.type == &quot;partial&quot;:
+            show_progress(event.text)
+        elif event.type == &quot;final&quot;:
+            save_transcript(event.text)
+</code></pre>
+<hr />
+<h2 id="8">8. 附注与理由</h2>
+<ul>
+<li><strong>为什么 <code>supersede</code> 是核心事件而非可选？</strong> 如果 <code>supersede</code> 只是可选的高级功能、简单应用可以忽略它，那么当简单应用切换到一个会发 <code>supersede</code> 的引擎时，它的 reduce 就是错的（旧段没被删、新段凭空出现 → 文本重复/矛盾）。把 <code>supersede</code> 设为核心意味着每个应用的 reduce 都天然能处理段替换，无论引擎是否实际使用。代价 = 应用代码多 3 行（<code>del segments[old_id]</code>）；收益 = 切引擎永远安全。</li>
+<li><strong>为什么要用累积/replace 而不是 delta？</strong> delta 更小，但只有在引擎永不修改已发文本时才有效。很多引擎（Google/AWS/ElevenLabs/Qwen3/WeNet）会修改已发文本。选累积 = 适用于所有引擎；delta 的应用可以用两次累积文本做差得到。</li>
+<li><strong>为什么 <code>stable_until</code> 用 codepoint 而非字素簇？</strong> codepoint 是 Python 字符串的原生索引单位——<code>text[:stable_until]</code> 直接可用、零依赖。实际上适配器从引擎拿到的稳定边界是 word/token 级的,映射到 <code>text</code> 中的位置天然就是字素簇边界,不存在"切到组合字符中间"的现实场景。标准用 SHOULD 建议适配器落在字素簇边界,而非用 MUST 强制标准层维护 UAX#29 状态机——这与标准不做音频解码(交给 <code>[audio]</code>)、不做 URL fetch(交给引擎)是同一哲学:标准定义语义,不承担不必要的实现。</li>
+<li><strong>整段输入为何需要 <code>start_transcription</code> 的 <code>audio</code> 参数（验证 C-1）？</strong> OpenAI Audio SSE 需要一次上传完整文件然后流式收结果。如果只有 <code>audio_format</code> + <code>send_audio(chunk)</code>，应用就得把 mp3 文件假装成 PCM 帧来喂——但 mp3 不是 PCM（§AI.1 明确禁止混淆编码容器与裸 PCM 帧）。增加 <code>audio</code> 参数让整段输入走正确的 <code>AudioInput</code> 路径。</li>
+</ul>
+<hr />
+<h2 id="9-v1-capabilities">9. 能力清单（v1 流式 Capabilities）</h2>
+<p>以下 capability 节点住在 <code>capabilities.streaming.*</code>（参见 <a href="#能力系统-capabilities--normative">§能力系统</a>）：</p>
+<table>
+<thead>
+<tr>
+<th>Capability 路径</th>
+<th>节点类型</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>streaming_input</code></td>
+<td>flag <code>{supported}</code></td>
+<td>引擎全局；能否增量喂入</td>
+</tr>
+<tr>
+<td><code>streaming_output</code></td>
+<td>flag <code>{supported}</code></td>
+<td>引擎全局；能否增量返回结果</td>
+</tr>
+<tr>
+<td><code>streaming.emits_partials</code></td>
+<td>flag <code>{supported}</code></td>
+<td>是否发 partial 事件（false = 只发段末 final）</td>
+</tr>
+<tr>
+<td><code>streaming.re_segments</code></td>
+<td>flag <code>{supported}</code></td>
+<td>是否可能发 supersede</td>
+</tr>
+<tr>
+<td><code>streaming.word_stability</code></td>
+<td>flag <code>{supported}</code></td>
+<td>是否提供有意义的 <code>stable_until</code></td>
+</tr>
+<tr>
+<td><code>streaming.reconnect</code></td>
+<td>enum <code>{mode: seamless\|lossy\|unsupported}</code></td>
+<td>重连能力</td>
+</tr>
+<tr>
+<td><code>streaming.finality_level</code></td>
+<td>enum <code>{mode: final\|closed}</code></td>
+<td>能保证到哪级终态</td>
+</tr>
+<tr>
+<td><code>streaming.timestamps</code></td>
+<td>enum <code>{mode: native_frame_aligned\|post_align\|none}</code></td>
+<td>流式时间戳来源</td>
+</tr>
+<tr>
+<td><code>streaming.guidance.*</code></td>
+<td>同 §R.4</td>
+<td>流式引导（可与 batch 限额不同）</td>
+</tr>
+<tr>
+<td><code>streaming.language.*</code></td>
+<td>同 §LANG.3</td>
+<td>流式语言能力（可与 batch 不同）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-v1-ship-vs-defer">10. v1 ship vs defer</h2>
+<p><strong>v1 包含</strong>：<code>partial</code>/<code>final</code>/<code>supersede</code>/<code>progress</code>/<code>done</code>/<code>error</code> + 稳定 <code>segment_id</code> + 保守 <code>stable_until</code>(codepoints, SHOULD 字素簇边界) + <code>end_audio</code> + 两级终态标志 + 正交 input/output 能力 + <code>reconnect(lossy,gap)</code> + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。</p>
+<p><strong>defer（additive-later）</strong>：运行时 <code>target_latency</code> 调整（v1 仅构造期固定）；<code>update_guidance()</code> 中途改引导（v1 保留 <code>mutable_mid_stream</code> 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（v1 声明 lossy）；多通道流式展开。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tabs", "navigation.sections", "navigation.expand", "header.autohide", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../assets/external/unpkg.com/mermaid@11/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>

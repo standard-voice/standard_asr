@@ -1,0 +1,2365 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The open standard interface between applications and speech-recognition engines.">
+      
+      
+      
+      
+        <link rel="prev" href="specification.html">
+      
+      
+        <link rel="next" href="cli.html">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/branding/icon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Server API - Standard ASR</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+        <script src="../assets/external/unpkg.com/iframe-worker/shim.js"></script>
+      
+    
+    
+      
+        
+        
+        
+        <link rel="stylesheet" href="../assets/external/fonts.googleapis.com/css.fa05aeac.css">
+        <style>:root{--md-text-font:"Noto Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#server-specification-http-websocket-api" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../index.html" title="Standard ASR" class="md-header__button md-logo" aria-label="Standard ASR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Standard ASR
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Server API
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../index.html" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../quickstart.html" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../for_app_dev/discover_and_use.html" class="md-tabs__link">
+          
+  
+  
+  For App Developers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../for_asr_dev/adapting_engine.html" class="md-tabs__link">
+          
+  
+  
+  For Engine Authors
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/index.html" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="specification.html" class="md-tabs__link">
+          
+  
+  
+  Specification
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../mission.html" class="md-tabs__link">
+          
+  
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../index.html" title="Standard ASR" class="md-nav__button md-logo" aria-label="Standard ASR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Standard ASR
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../index.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For App Developers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    For App Developers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/discover_and_use.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discover & Use
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/streaming.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/errors.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors & Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For Engine Authors
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    For Engine Authors
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_asr_dev/adapting_engine.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapt an Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_asr_dev/plugin_entrypoints.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin Entrypoints
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/index.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/engine.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/compliance.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/streaming.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/results.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.results
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/capabilities.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/exceptions.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.exceptions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/wire.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.wire
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specification
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specification
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="specification.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="server.html" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-security-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Security &amp; Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-audio-is-not-pre-decoded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Audio is NOT pre-decoded
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Audio is NOT pre-decoded">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-runtime-params-portable-only-over-the-wire-d5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Runtime params: portable-only over the wire (D5)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-rest-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. REST Endpoints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. REST Endpoints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-get-v1health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 GET /v1/health
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-get-v1models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 GET /v1/models
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-post-v1transcribe-multipart-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 POST /v1/transcribe (multipart form)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-post-v1transcribejson-json-body" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 POST /v1/transcribe:json (JSON body)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-get-v1capabilitiesmodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 GET /v1/capabilities/{model}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#36-get-v1params-schemamodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 GET /v1/params-schema/{model}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#361-get-v1config-schemamodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6.1 GET /v1/config-schema/{model}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#37-error-http-status-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.7 Error → HTTP status mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-websocket-endpoint-v1streammodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. WebSocket Endpoint /v1/stream/{model}
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. WebSocket Endpoint /v1/stream/{model}">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-frame-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Frame protocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-two-distinct-error-shapes-both-possible" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Two distinct error shapes — both possible
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-scope-limit-v1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Scope limit (v1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-frame-session-byte-caps-dos-bound" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Frame / session byte caps (DoS bound)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="cli.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="download-policy.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Download Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mission.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mission
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../goals.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Goals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/standard-voice/standard_asr/blob/main/RELEASING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-security-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Security &amp; Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-audio-is-not-pre-decoded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Audio is NOT pre-decoded
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Audio is NOT pre-decoded">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-runtime-params-portable-only-over-the-wire-d5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Runtime params: portable-only over the wire (D5)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-rest-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. REST Endpoints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. REST Endpoints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-get-v1health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 GET /v1/health
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-get-v1models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 GET /v1/models
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-post-v1transcribe-multipart-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 POST /v1/transcribe (multipart form)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-post-v1transcribejson-json-body" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 POST /v1/transcribe:json (JSON body)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-get-v1capabilitiesmodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 GET /v1/capabilities/{model}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#36-get-v1params-schemamodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 GET /v1/params-schema/{model}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#361-get-v1config-schemamodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6.1 GET /v1/config-schema/{model}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#37-error-http-status-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.7 Error → HTTP status mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-websocket-endpoint-v1streammodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. WebSocket Endpoint /v1/stream/{model}
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. WebSocket Endpoint /v1/stream/{model}">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-frame-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Frame protocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-two-distinct-error-shapes-both-possible" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Two distinct error shapes — both possible
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-scope-limit-v1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Scope limit (v1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-frame-session-byte-caps-dos-bound" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Frame / session byte caps (DoS bound)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="server-specification-http-websocket-api">Server Specification (HTTP / WebSocket API)</h1>
+<p>Standard ASR ships an optional FastAPI server (<code>standard-asr[server]</code>) that
+exposes any discovered, compliant engine over HTTP, plus a WebSocket endpoint
+for incremental streaming. This document is the authoritative contract for that
+server; the implementation in <code>standard_asr.server</code> conforms to it (any
+divergence is a bug in the implementation, not the spec).</p>
+<p>Launch with <code>standard-asr serve</code> or <code>standard_asr.server.run(...)</code>.</p>
+<h2 id="1-security-limits">1. Security &amp; Limits</h2>
+<ul>
+<li><strong>No per-endpoint authentication.</strong> v1 targets localhost / trusted-LAN use.
+  Transcription is CPU/GPU-expensive and there is no quota or rate limiting.
+  Before exposing beyond localhost, operators <strong>MUST</strong> front the server with a
+  reverse proxy providing authentication and rate limiting.</li>
+<li>The capability and params-schema endpoints are deliberately readable without
+  auth (spec §3.1 / §C: declared metadata is discoverable without instantiation
+  or authentication).</li>
+<li><strong>Validation errors never echo the request input.</strong> Every REST <strong>422</strong> that
+  originates from a pydantic validation failure — the global
+  <code>RequestValidationError</code> handler <strong>and</strong> the standalone-<code>ValidationError</code> paths
+  (the <code>options</code> build, engine construction, and engine-side re-validation during
+  <code>transcribe</code>) — returns the <strong>same</strong> structured body and strips the offending
+  <code>input</code> value (which FastAPI / pydantic echo by default) and <strong>redacts
+  credential-looking fields</strong> (<code>api_key</code>, <code>token</code>, <code>secret</code>, <code>password</code>,
+  <code>authorization</code>, …). This prevents a mis-placed secret (e.g. an API key put in
+  the JSON body or <code>options</code>) from being reflected back into the client, an
+  intermediary proxy, or a copied bug report. The body is</li>
+</ul>
+<p><code>json
+  { "detail": [ { "type": "...", "loc": [ ... ], "msg": "..." }, ... ] }</code></p>
+<p>The safe structured fields (<code>type</code>, <code>loc</code>, <code>msg</code>) are preserved so the caller
+  can still fix the request (and branch on the machine-readable <code>type</code>, e.g.
+  <code>extra_forbidden</code> for a rejected <code>provider_params</code> key). A standalone error's
+  <code>loc</code> is anchored under the request field it came from (<code>["options", ...]</code> for
+  the wire options, <code>["config", ...]</code> for engine construction). Keeping <strong>one
+  body shape per validation 422</strong> means a cross-language client parses a single
+  structure rather than discriminating string-vs-list per code.</p>
+<blockquote>
+<p>A 422 that instead carries an engine-/standard-<strong>authored</strong> semantic message
+(<code>ConfigError</code> / <code>UnsupportedFeatureError</code> / <code>InvalidProviderParamError</code>
+during transcription — see §3.7) has no pydantic <code>loc</code>/<code>type</code> to expose and
+returns the string form <code>{ "detail": "&lt;authored message&gt;" }</code>. These messages
+are written for the caller (never a raw <code>input</code> echo). The two 422 forms are
+disjoint by cause: <strong>pydantic validation → list</strong>, <strong>authored semantic error
+→ string</strong>.
+- <strong>Request-body cap.</strong> <code>DEFAULT_MAX_BODY_BYTES</code> = <code>16 * 1024 * 1024</code> (16 MiB),
+  overridable per app via <code>create_app(max_body_bytes=...)</code>. Enforced by a
+  pure-ASGI middleware in two layers, <em>before</em> the body is parsed:
+  - <strong>Declared size (early).</strong> A non-integer <code>Content-Length</code> → <strong>400</strong>; a
+    <code>Content-Length</code> over the cap → <strong>413</strong>, before any body is read.
+  - <strong>Actual size (true cap).</strong> <code>Content-Length</code> is advisory — a chunked /
+    streamed request may omit or under-state it. The middleware therefore counts
+    body bytes off the ASGI receive channel and aborts with <strong>413</strong> the moment
+    the cumulative total exceeds the cap, so an oversize body is never fully
+    buffered or parsed downstream (no Content-Length-bypass gap).
+  - The body-size middleware covers the <strong>HTTP scope only</strong>; the WebSocket
+    surface (<code>/v1/stream</code>) is byte-bounded separately (see §4.4).
+- <strong>WebSocket frame / session caps.</strong> The streaming bridge bounds bytes directly:
+  - <code>DEFAULT_MAX_WS_FRAME_BYTES</code> (16 MiB) — maximum size of a single frame; it
+    applies to both binary <strong>audio</strong> frames and the JSON <strong>config/handshake</strong>
+    frame; overridable via <code>create_app(max_ws_frame_bytes=...)</code>.
+  - <code>DEFAULT_MAX_WS_SESSION_BYTES</code> (256 MiB) — cumulative cap on total audio
+    bytes ingested over one session; overridable via
+    <code>create_app(max_ws_session_bytes=...)</code>.
+  - Exceeding any of these closes the socket with a <code>payload_too_large</code> policy
+    error frame (see §4.4) and logs the violation.
+  - The WebSocket <strong>transport</strong> also imposes its own <code>ws_max_size</code> (uvicorn's
+    default is 16 MiB), so the effective per-frame bound is
+    <code>min(max_ws_frame_bytes, transport ws_max_size)</code>. <code>run()</code> passes
+    <code>ws_max_size=max_ws_frame_bytes</code> so the app cap and transport cap match;
+    behind another ASGI server the config-frame check still enforces the app cap.</p>
+</blockquote>
+<h2 id="2-audio-is-not-pre-decoded">2. Audio is NOT pre-decoded</h2>
+<p>The server <strong>does not decode audio</strong>. The upload is forwarded as an
+<code>AudioInput</code> (<code>AudioBytes</code> for multipart, <code>AudioBase64</code> for JSON) directly into
+the engine's own negotiation. The standard layer then decodes/resamples per the
+engine's <code>accepted_input</code>, so per-engine sample-rate requirements are honored
+and encoded-only / URL-only engines remain servable. The upload's true sample
+rate is never silently overridden.</p>
+<h3 id="21-runtime-params-portable-only-over-the-wire-d5">2.1 Runtime params: portable-only over the wire (D5)</h3>
+<p>Over the wire the server accepts <strong>only</strong> the portable standard <code>RuntimeParams</code>
+set, modeled by <code>WireRuntimeParams</code> (the portable fields, <code>extra="forbid"</code>). The
+portable set is exactly the fields in <a href="specification.html">specification.md §3.1</a>
+— <code>language</code>, <code>candidate_languages</code>, <code>word_timestamps</code>, <code>prompt</code>, <code>phrase_hints</code>,
+and the <code>on_unsupported</code> guidance-degradation policy field — so a cross-language
+client can express the opt-in <code>on_unsupported="degrade_to_prompt"</code> over the wire.
+The engine-specific <code>provider_params</code> escape hatch is <strong>discover-only, not
+sendable</strong>:</p>
+<ul>
+<li>It can be <strong>discovered</strong> — its JSON Schema is published at §3.6 for UI
+  generation and tooling.</li>
+<li>It <strong>cannot be sent.</strong> It is not constructible from untyped wire JSON without
+  the engine's params type, and accepting a raw object would let it reach the
+  engine untyped and unvalidated. A request whose <code>options</code> (REST) or config
+  <code>options</code> (WebSocket) include a <code>provider_params</code> key is therefore <strong>rejected
+  with a clear 422</strong> (REST) / <code>bad_request</code> (WS) rather than silently dropped or
+  mis-routed.</li>
+</ul>
+<blockquote>
+<p>The long-term JSON-Schema-over-wire path (validating <code>provider_params</code> against
+the discovered schema) is <strong>deferred</strong>; for v1 the escape hatch is in-process
+only (pass it to <code>transcribe(...)</code> / <code>start_transcription(...)</code> directly).</p>
+</blockquote>
+<h2 id="3-rest-endpoints">3. REST Endpoints</h2>
+<h3 id="31-get-v1health">3.1 <code>GET /v1/health</code></h3>
+<p>Returns <code>{"status": "ok"}</code>.</p>
+<h3 id="32-get-v1models">3.2 <code>GET /v1/models</code></h3>
+<p>Returns a list of <code>ModelInfo</code>:
+<code>{"key": "&lt;engine/model&gt;", "engine_id": "...", "model_name": "..."}</code>.</p>
+<h3 id="33-post-v1transcribe-multipart-form">3.3 <code>POST /v1/transcribe</code> (multipart form)</h3>
+<p>Transcribe an uploaded file.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model</code></td>
+<td>form string</td>
+<td>yes</td>
+<td>Model key in <code>engine/model</code> format.</td>
+</tr>
+<tr>
+<td><code>file</code></td>
+<td>file upload</td>
+<td>yes</td>
+<td>Encoded audio payload (forwarded as <code>AudioBytes</code>).</td>
+</tr>
+<tr>
+<td><code>options</code></td>
+<td>form string</td>
+<td>no</td>
+<td>JSON object mapping onto the portable <code>WireRuntimeParams</code> set (§2.1).</td>
+</tr>
+</tbody>
+</table>
+<p>Returns a <code>TranscribeResponse</code>:
+<code>{"model": "&lt;engine/model&gt;", "result": &lt;TranscriptionResult&gt;}</code>.</p>
+<p>Un-parseable <code>options</code> JSON (malformed syntax) → <strong>400</strong>. A <em>semantically</em>
+invalid <code>options</code> object — a bad value, an unknown key, or a non-portable
+<code>provider_params</code> key (§2.1) — → <strong>422</strong>, before transcription.</p>
+<h3 id="34-post-v1transcribejson-json-body">3.4 <code>POST /v1/transcribe:json</code> (JSON body)</h3>
+<p>Transcribe a base64 / data-URI payload.</p>
+<pre><code class="language-json">{
+  &quot;model&quot;: &quot;engine/model&quot;,
+  &quot;audio&quot;: &quot;&lt;base64 or data: URI&gt;&quot;,
+  &quot;options&quot;: { &quot;language&quot;: &quot;en&quot; }
+}
+</code></pre>
+<ul>
+<li><code>audio</code> is forwarded as <code>AudioBase64</code>; decode failures surface as
+  <code>AudioProcessingError</code> → <strong>400</strong> (see §3.7).</li>
+<li><code>options</code> may be <code>null</code>. It is validated against the portable
+  <code>WireRuntimeParams</code> set (§2.1); unknown keys and a non-portable
+  <code>provider_params</code> key are rejected (<code>extra="forbid"</code>).</li>
+<li>A semantically invalid <code>options</code> object → <strong>422</strong> before transcription.</li>
+</ul>
+<p>Returns a <code>TranscribeResponse</code> (same shape as §3.3).</p>
+<h3 id="35-get-v1capabilitiesmodel">3.5 <code>GET /v1/capabilities/{model}</code></h3>
+<p>Returns the engine's declared capability tree as <code>canonical_json()</code> — read from
+the engine <strong>class</strong> without instantiation. Every node carries a derived
+<code>supported</code> field. <strong>404</strong> if the model is unknown <strong>or unloadable</strong> (an
+installed-but-broken plugin maps to 404 like an unknown key; the bodies differ),
+or declares no capabilities.</p>
+<h3 id="36-get-v1params-schemamodel">3.6 <code>GET /v1/params-schema/{model}</code></h3>
+<p>Returns the JSON Schema of the engine's <code>provider_params</code> (read from the engine
+class, for discovery / UI generation), or <code>{}</code> if the engine declares none.
+<strong>404</strong> if the model is unknown. Note these params cannot currently be sent
+over the transcribe endpoints (§2).</p>
+<h3 id="361-get-v1config-schemamodel">3.6.1 <code>GET /v1/config-schema/{model}</code></h3>
+<p>Returns the JSON Schema of the engine's <strong>init config</strong> (read from the engine
+class's <code>config_type</code>, without instantiation), or <code>{}</code> if the engine declares
+no <code>config_type</code>. <strong>404</strong> if the model is unknown.</p>
+<p>This is the wire-side discovery path for settings UIs (G.3.1): a client can
+render an engine's configuration form <strong>before</strong> the engine is constructed —
+construction may require the very values (credentials, <code>default_language</code>)
+the form collects. Secret fields carry <code>format: password</code> / <code>writeOnly: true</code>
+markers, so schema-driven UIs render them safely. The schema describes field
+<em>shapes</em> only and never contains configured values, so — like capabilities and
+params-schema — it is deliberately readable without authentication. Note that
+the server itself does not accept engine construction over the wire in v1; the
+collected config is consumed by the operator-side process that constructs the
+engine (e.g. <code>registry.create(key, **values)</code>).</p>
+<blockquote>
+<p>The <code>{model}</code> path segment matches the full <code>engine/model</code> key (it may contain
+a slash).</p>
+</blockquote>
+<h3 id="37-error-http-status-mapping">3.7 Error → HTTP status mapping</h3>
+<p>The transcribe endpoints map errors from <strong>both</strong> engine construction
+(<code>model_registry.create</code>) and the <code>transcribe</code> call as follows:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unknown / unloadable model (<code>EntrypointValidationError</code> / <code>FactoryLoadError</code>)</td>
+<td><strong>404</strong></td>
+</tr>
+<tr>
+<td>Client config error during construction — bad config, missing credentials, or validation (<code>ConfigError</code>, <code>InvalidProviderParamError</code>, <code>ValidationError</code>)</td>
+<td><strong>422</strong></td>
+</tr>
+<tr>
+<td>Invalid provider param / unsupported standard feature / config error / validation error during transcription (<code>InvalidProviderParamError</code>, <code>UnsupportedFeatureError</code>, <code>ConfigError</code>, <code>ValidationError</code>)</td>
+<td><strong>422</strong></td>
+</tr>
+<tr>
+<td>Audio decode/processing failure (<code>AudioProcessingError</code>)</td>
+<td><strong>400</strong></td>
+</tr>
+<tr>
+<td>Un-parseable <code>options</code> JSON syntax (multipart, before transcription)</td>
+<td><strong>400</strong></td>
+</tr>
+<tr>
+<td>Semantically invalid <code>options</code> / non-portable <code>provider_params</code> (<code>WireRuntimeParams</code> build, before transcription)</td>
+<td><strong>422</strong></td>
+</tr>
+<tr>
+<td>Any other / unexpected error (construction or transcription)</td>
+<td><strong>500</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Engine construction errors are mapped the same way (<code>unknown model → 404</code>,
+client config/validation → 422, unexpected → 500); they do <strong>not</strong> escape as a
+non-spec 500.</p>
+<p><strong>422 body shape (§1).</strong> The 422 rows above split by cause into two disjoint
+body forms: a pydantic <code>ValidationError</code> (the <code>options</code> build, construction
+validation, engine-side re-validation) returns the <strong>structured list</strong>
+<code>{ "detail": [ { "type", "loc", "msg" }, ... ] }</code> (with the offending <code>input</code>
+stripped and credential fields redacted; <code>loc</code> anchored under <code>["options"]</code> /
+<code>["config"]</code>), while an authored semantic error (<code>ConfigError</code> /
+<code>UnsupportedFeatureError</code> / <code>InvalidProviderParamError</code>) returns the <strong>string</strong>
+form <code>{ "detail": "&lt;authored message&gt;" }</code>. The string-form messages are written
+for the caller and carry no <code>input</code> echo.</p>
+<p>The <strong>500</strong> response is non-leaking: it returns a stable generic message
+(<code>"Internal transcription error. See server logs for details."</code> for the
+transcribe path, <code>"Internal model construction error. ..."</code> for construction);
+the raw exception text is logged server-side only, never returned (avoids
+leaking internal paths or upstream/credential material).</p>
+<h2 id="4-websocket-endpoint-v1streammodel">4. WebSocket Endpoint <code>/v1/stream/{model}</code></h2>
+<p>Bridges a WebSocket to an engine streaming session (the incremental
+<code>audio_format</code> path). The <code>{model}</code> segment is the full <code>engine/model</code> key.</p>
+<h3 id="41-frame-protocol">4.1 Frame protocol</h3>
+<ol>
+<li><strong>Config frame (client → server).</strong> After the socket is accepted, the client
+   sends exactly one JSON <strong>text</strong> frame:
+   <code>json
+   {
+     "audio_format": { "encoding": "pcm_s16le", "sample_rate": 16000, "channels": 1 },
+     "options": { "language": "en" }
+   }</code></li>
+<li><code>audio_format.encoding</code> MUST be one of the engine's <code>wire_encodings</code>;
+     <code>sample_rate</code> is in Hz (&gt; 0); <code>channels</code> is optional and defaults to <code>1</code>.</li>
+<li><code>options</code> maps onto the portable <code>RuntimeParams</code> set, or may be <code>null</code>.</li>
+<li>
+<p>The config frame MUST be a <strong>text</strong> frame. A binary first frame is a
+     malformed handshake — <strong>binary</strong> frames are reserved for raw audio (§4.1.3),
+     so the first-frame type is the sole discriminator between config and audio —
+     and is rejected with a <code>bad_request</code> policy frame (§4.2), then the socket
+     closes. (A conformant server does <strong>not</strong> parse a binary first frame as
+     config; relying on that leniency breaks against strict implementations.)</p>
+</li>
+<li>
+<p><strong>Diagnostics frame (server → client).</strong> Immediately after the session
+   starts — <em>before</em> any audio is sent — the server forwards the standard-layer
+   diagnostics attached at session establishment (best-effort parameter degrade,
+   language resolution, audio conversion), so the client learns <strong>why</strong> a
+   parameter was dropped or changed (the REST path returns these on the result).
+   Sent as a single JSON <strong>text</strong> frame, and <strong>only when</strong> the session has
+   diagnostics:
+   <code>json
+   { "type": "diagnostics", "diagnostics": [ { "level": "...", "code": "...", "message": "...", "param": "...", "provided": ..., "effective": ... } ] }</code>
+   These messages are standard-layer-authored (not raw exception text), so they
+   are forwarded verbatim. A client with no degradations never receives this
+   frame.</p>
+</li>
+<li>
+<p><strong>Audio frames (client → server).</strong> Subsequent <strong>binary</strong> frames are raw PCM
+   chunks, fed to the session via <code>send_audio</code>. <strong>Any text frame</strong> OR a
+   disconnect signals end-of-audio (<code>end_audio</code>); after that, no further audio
+   is accepted.</p>
+</li>
+<li>
+<p><strong>Event frames (server → client).</strong> The server streams each
+   <code>TranscriptionEvent</code> back as a JSON text frame
+   (<code>event.model_dump(mode="json")</code>) until a terminal event, then closes the
+   socket. Event <code>type</code> is one of
+   <code>"partial" | "final" | "supersede" | "progress" | "done" | "error"</code>. A client
+   that disconnects mid-stream simply ends the session (remaining events are
+   dropped).</p>
+</li>
+</ol>
+<h3 id="42-two-distinct-error-shapes-both-possible">4.2 Two distinct error shapes — both possible</h3>
+<p>Client authors MUST handle <strong>both</strong>:</p>
+<ul>
+<li><strong>Pre-bridge error</strong> (before streaming starts: bad config frame, unknown
+  model, a client config error during engine construction, an unsupported
+  feature, or an internal construction fault). Sent as a single frame, then the
+  socket closes:
+  <code>json
+  { "type": "error", "code": "bad_request" | "unknown_model" | "unsupported" | "internal_error", "message": "..." }</code></li>
+<li><code>bad_request</code>: malformed config frame / invalid <code>audio_format</code> / invalid
+    <code>options</code>, <strong>or</strong> a client config error surfaced during engine construction
+    (<code>ConfigError</code> / <code>InvalidProviderParamError</code> / <code>ValidationError</code> — bad
+    config, missing credentials; mirrors the REST 422 mapping, §3.7).</li>
+<li><code>unknown_model</code>: model key does not resolve (<code>EntrypointValidationError</code> / <code>FactoryLoadError</code>).</li>
+<li><code>unsupported</code>: engine cannot start a streaming session for this request
+    (<code>UnsupportedFeatureError</code> / <code>ValueError</code>).</li>
+<li>
+<p><code>internal_error</code>: an unexpected fault during engine construction. The
+    <code>message</code> is a stable generic string (the raw cause is logged server-side
+    only, never sent — mirrors the REST scrubbed-500 contract, §3.7).</p>
+</li>
+<li>
+<p><strong>In-stream error</strong> (a <code>TranscriptionEvent</code> with <code>type == "error"</code>, produced by
+  the engine once streaming has begun). This shape is <strong>different</strong>: it has
+  <code>code</code>, <code>recoverable</code>, and <code>retriable_after</code> — and <strong>no</strong> <code>message</code> field:
+  <code>json
+  { "type": "error", "code": "session_timeout", "recoverable": false, "retriable_after": null, ... }</code>
+  (It carries the full <code>TranscriptionEvent</code> field set; other fields are <code>null</code>
+  or defaults.)</p>
+</li>
+</ul>
+<blockquote>
+<p><strong>Non-leak (mirrors the REST 500 contract, §3.7).</strong> For <code>error</code> events the
+server <strong>drops the <code>extra</code> payload</strong> before sending (it is emptied to <code>{}</code>).
+The streaming layer stores a human-readable message under <code>extra["detail"]</code>
+— for the <code>engine_error</code> catch-all this is the raw <code>str(exc)</code>, which may
+contain filesystem paths, upstream URLs, or credential fragments — so it is
+never forwarded to the (unauthenticated) client. The safe structured fields
+(<code>code</code>, <code>recoverable</code>, <code>retriable_after</code>, <code>segment_id</code>, and the
+gap/reconnect fields) are preserved. The dropped detail is logged
+server-side for operators.</p>
+<p>Non-<code>error</code> events keep their <code>extra</code> payload (it is forwarded verbatim):
+<code>extra</code> is the engine-specific, non-portable event slot defined in the
+in-process protocol (<code>specification.md</code> §4.1). Only <code>error</code> events scrub it.</p>
+</blockquote>
+<h3 id="43-scope-limit-v1">4.3 Scope limit (v1)</h3>
+<p>The WebSocket surface supports <strong>only</strong> the incremental <code>audio_format</code> path
+(declare format, push raw PCM frames, receive live events). The
+<strong>whole-input + streaming-output</strong> path
+(<code>start_transcription(audio=...)</code>, OpenAI SSE style, spec §7.3) is <strong>NOT</strong>
+exposed over WebSocket in v1. For those engines, use the batch REST endpoints
+(<code>POST /v1/transcribe</code> or <code>POST /v1/transcribe:json</code>).</p>
+<h3 id="44-frame-session-byte-caps-dos-bound">4.4 Frame / session byte caps (DoS bound)</h3>
+<p>The HTTP body-size guard (§1) does not cover the WebSocket scope, so the stream
+bridge enforces its own per-frame and per-session byte caps (§1, configurable
+via <code>create_app</code>):</p>
+<ul>
+<li>The <strong>config/handshake frame</strong> exceeding <code>max_ws_frame_bytes</code> (checked before
+  it is parsed, so it is bounded by the app cap and not only the transport
+  <code>ws_max_size</code>), <strong>or</strong></li>
+<li>a single binary <strong>audio</strong> frame exceeding <code>max_ws_frame_bytes</code>, <strong>or</strong></li>
+<li>a cumulative session total exceeding <code>max_ws_session_bytes</code>,</li>
+</ul>
+<p>is rejected: a single policy frame is sent and the socket closes (the violation
+is also logged server-side; for audio caps the input is ended first):</p>
+<pre><code class="language-json">{ &quot;type&quot;: &quot;error&quot;, &quot;code&quot;: &quot;payload_too_large&quot;, &quot;message&quot;: &quot;...&quot; }
+</code></pre>
+<p>This is distinct from the §4.2 in-stream <code>error</code> event (an engine-produced
+<code>TranscriptionEvent</code>); the policy frame is emitted by the <strong>server</strong>, not the
+engine, and carries a human-readable <code>message</code> (the cap that was exceeded; it
+contains no internal/engine detail). The effective per-frame bound is
+<code>min(max_ws_frame_bytes, transport ws_max_size)</code>; <code>run()</code> wires
+<code>ws_max_size=max_ws_frame_bytes</code> so they coincide (§1).</p>
+<p>A failure on the audio-input pump (e.g. a client protocol violation such as
+sending audio after the session ended) is likewise never swallowed silently: it
+is logged server-side and surfaced as a single generic, <strong>non-leaking</strong> frame
+before teardown:</p>
+<pre><code class="language-json">{ &quot;type&quot;: &quot;error&quot;, &quot;code&quot;: &quot;stream_input_error&quot;, &quot;message&quot;: &quot;Audio input failed. See server logs for details.&quot; }
+</code></pre>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tabs", "navigation.sections", "navigation.expand", "header.autohide", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../assets/external/unpkg.com/mermaid@11/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>
