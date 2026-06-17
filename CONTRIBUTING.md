@@ -10,12 +10,6 @@ groups:
 uv sync --all-groups --all-extras
 ```
 
-To also pull in the cookbook example packages:
-
-```sh
-uv sync --all-packages --all-groups --all-extras
-```
-
 ## Git hooks (prek)
 
 We use [**prek**](https://github.com/j178/prek) — a fast, drop-in-compatible

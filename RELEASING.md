@@ -30,11 +30,10 @@ triggered by a GitHub Release; manual dispatch publishes only to TestPyPI.
 
 ### What Publishes
 
-This repo publishes exactly one distribution: **`standard-asr`**. The cookbook
-packages (`std-dummy-asr`, `std-faster-whisper`) are examples and are not
-published from this workflow. When an engine adapter becomes a real plugin, it
-gets its own repository, PyPI project, trusted publisher, and release cadence.
-That keeps engine dependencies and licenses isolated from the core package.
+This repo publishes exactly one distribution: **`standard-asr`**. Engine plugins
+live in their own repositories (e.g. `std-faster-whisper`, `std-mlx-audio`),
+each with its own PyPI project, trusted publisher, and release cadence. That
+keeps engine dependencies and licenses isolated from the core package.
 
 ### Toolchain Choices
 
@@ -312,9 +311,8 @@ published GitHub Release or PyPI upload yet. For the first release:
 
 ## Future Plugin Releases
 
-When a cookbook adapter graduates into an official engine plugin, do not add it
-to this release workflow. Create a separate plugin repository and copy this
-pattern:
+When adding a new engine plugin, do not add it to this release workflow. Create
+a separate plugin repository and copy this pattern:
 
 - Independent PyPI project and trusted publishers.
 - Independent `release.yml`, changelog, and SemVer line.

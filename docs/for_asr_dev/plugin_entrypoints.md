@@ -14,7 +14,7 @@
 - `engine_id` should match your distribution name after [PEP 503](https://peps.python.org/pep-0503/) normalization.
 - `model_name` identifies a preset within that engine. Use an empty string for a default model *only when truly necessary*.
 - Entry point value: a callable (function or class) that returns a `StandardASR` implementation.
-- You can test locally with the bundled **std-dummy-asr** plugin (zero extra deps).
+- You can test locally with any installed plugin (e.g. [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)).
 
 ## Naming Rules
 
@@ -169,7 +169,7 @@ Install a plugin (e.g.
 run the checks end‑to‑end:
 
 ```bash
-pip install std-faster-whisper
+pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
 standard-asr list
 standard-asr compliance entrypoints
 ```
