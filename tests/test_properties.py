@@ -279,7 +279,7 @@ def test_detectable_rejects_invalid_bcp47() -> None:
 # --- Class-level declaration defaults ---
 #
 # Plugins declare properties as a subclass with class-level defaults (the
-# documented pattern in adapting_engine.md and both cookbook plugins). pydantic
+# documented pattern in adapting_engine.md). pydantic
 # only runs field validators on defaults with validate_default=True; these
 # tests pin that the declaration path cannot bypass validation.
 

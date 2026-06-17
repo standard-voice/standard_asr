@@ -1,8 +1,6 @@
 name: Release
 
-# Publish standard-asr (the core package ONLY) to PyPI via OIDC Trusted
-# Publishing. The cookbook plugins (std-dummy-asr, std-faster-whisper) are
-# examples and are not published from this workflow.
+# Publish standard-asr to PyPI via OIDC Trusted Publishing.
 #
 # Production path: publish a GitHub Release whose tag is vX.Y.Z and matches
 # project.version in pyproject.toml. The workflow refuses to publish unless that

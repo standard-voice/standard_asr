@@ -219,7 +219,7 @@ class BaseProperties(BaseModel):
         extra="forbid",
         str_strip_whitespace=True,
         # Plugins declare properties as a subclass with class-level defaults (the
-        # documented pattern in adapting_engine.md and both cookbook plugins).
+        # documented pattern in adapting_engine.md).
         # pydantic skips field validators on defaults unless this is set, which
         # would let every declaration-time check below be bypassed on that most
         # common path -- illegal engine_id, negative sample rates, or

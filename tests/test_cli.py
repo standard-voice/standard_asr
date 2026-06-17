@@ -258,6 +258,38 @@ class _UngatedStreamEngine(_GatingStreamEngine):
         return _GatingSession()
 
 
+class _BatchConfig(BaseConfig[Literal["batch"]]):
+    engine: Literal["batch"] = "batch"
+
+
+class _BatchOnlyProps(BaseProperties):
+    engine_id: str = "batch"
+    model_name: str = "only"
+    protocol_version: str = "0.2.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
+    selectable_languages: list[str] = []
+
+
+class _BatchOnlyEngine(EngineBase):
+    """Batch-only compliant engine (no streaming capabilities)."""
+
+    properties: ClassVar[BaseProperties] = _BatchOnlyProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _BatchConfig
+
+    def __init__(self) -> None:
+        self.config = _BatchConfig(engine="batch")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+
+def _batch_only_factory() -> _BatchOnlyEngine:  # pyright: ignore[reportUnusedFunction]
+    return _BatchOnlyEngine()
+
+
 def _gating_stream_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
     return _GatingStreamEngine()
 
@@ -1038,24 +1070,15 @@ def test_cli_models_prepare_engine_base_default_is_noop(
     # EngineBase now provides a default no-op prepare; an engine
     # that did NOT override it must be reported as "nothing to warm up", not a
     # misleading "prepare complete".
-    import numpy as np
-
-    pytest.importorskip("std_dummy_asr")
-    from std_dummy_asr.engine import DummyASR
+    engine = _GatingStreamEngine()
 
     registry = _demo_registry()
 
-    def _create(*_: object) -> DummyASR:
-        return DummyASR()
-
-    def _discover_models(**_: object) -> ModelRegistry:
-        return registry
+    def _create(*_: object) -> _GatingStreamEngine:
+        return engine
 
     monkeypatch.setattr(registry, "create", _create)
-    monkeypatch.setattr(cli, "discover_models", _discover_models)
-    # Guard against a real transcribe: DummyASR.prepare must be the inherited
-    # no-op, so transcribe is never invoked here.
-    _ = np  # imported to assert the dependency is present in the test env
+    _patch_discover(monkeypatch, registry)
 
     exit_code = cli.main(["prepare", "alpha/first"])
     output = capsys.readouterr().out
@@ -1299,13 +1322,12 @@ def test_cli_no_debug_no_traceback_for_named_branch(
 
 
 def _compliant_dummy_registry() -> ModelRegistry:
-    pytest.importorskip("std_dummy_asr")
-    # The cookbook dummy is a fully-compliant EngineBase engine (passes
+    # _GatingStreamEngine is a fully-compliant EngineBase subclass (passes
     # check_entrypoints), unlike the minimal structural _dummy_factory.
     eps = [
         EntryPoint(
-            name="dummy/echo",
-            value="std_dummy_asr.entrypoint:create_echo",
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
             group="standard_asr.models",
         )
     ]
@@ -1320,12 +1342,34 @@ def test_cli_compliance_run_aggregates_and_passes(
     registry = _compliant_dummy_registry()
     _patch_discover(monkeypatch, registry)
 
-    exit_code = cli.main(["compliance", "run", "dummy/echo"])
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
     assert "Entry point compliance checks passed" in output
     assert "event-sequence" in output
+    assert "Compliance run passed" in output
+
+
+def test_cli_compliance_run_batch_only_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A batch-only engine (no streaming capabilities) skips the streaming
+    # compliance checks entirely — exercises the non-streaming branch.
+    eps = [
+        EntryPoint(
+            name="batch/only",
+            value="tests.test_cli:_batch_only_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["compliance", "run", "batch/only"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
     assert "Compliance run passed" in output
 
 
@@ -1388,7 +1432,7 @@ def test_cli_compliance_run_skips_engine_needing_args(
     _patch_discover(monkeypatch, registry)
     monkeypatch.setattr(cli, "_spec_is_zero_arg", _spec_is_zero_arg)
 
-    exit_code = cli.main(["compliance", "run", "dummy/echo"])
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
     output = capsys.readouterr().out
 
     # The streaming-check skip is reported; entry points still validated.
@@ -1520,7 +1564,7 @@ def test_cli_compliance_run_quiet_suppresses_warnings(
         registry=registry,
         issues=[
             ComplianceIssue(
-                level="warning", code="demo_warning", message="a warning", model="dummy/echo"
+                level="warning", code="demo_warning", message="a warning", model="stream/ok"
             )
         ],
     )
@@ -1564,7 +1608,7 @@ def test_cli_compliance_run_construction_error_is_reported(
     _patch_discover(monkeypatch, registry)
     monkeypatch.setattr(registry, "create", _boom)
 
-    exit_code = cli.main(["compliance", "run", "dummy/echo"])
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
     output = capsys.readouterr().out
 
     assert exit_code == 1
@@ -1581,16 +1625,16 @@ def test_scope_entrypoints_report_keeps_named_global_and_collision() -> None:
     report = ComplianceReport(
         registry=None,
         issues=[
-            ComplianceIssue(level="error", code="a", message="m", model="dummy/echo"),
+            ComplianceIssue(level="error", code="a", message="m", model="stream/ok"),
             ComplianceIssue(level="error", code="b", message="m", model="alpha/first"),
             ComplianceIssue(level="error", code="c", message="m", model=None),
             ComplianceIssue(level="error", code="engine_id_collision", message="m", model="zeta"),
         ],
     )
     scoped = cli._scope_entrypoints_report(  # pyright: ignore[reportPrivateUsage]
-        report, registry, {"dummy/echo"}
+        report, registry, {"stream/ok"}
     )
-    assert {issue.model for issue in scoped.issues} == {"dummy/echo", None, "zeta"}
+    assert {issue.model for issue in scoped.issues} == {"stream/ok", None, "zeta"}
 
 
 def test_cli_compliance_run_named_model_ignores_unrelated_plugin_failure(
@@ -1614,7 +1658,7 @@ def test_cli_compliance_run_named_model_ignores_unrelated_plugin_failure(
     )
     _patch_check_entrypoints(monkeypatch, crafted)
 
-    exit_code = cli.main(["compliance", "run", "dummy/echo"])
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
@@ -1644,7 +1688,7 @@ def test_cli_compliance_run_named_model_still_reports_global_collision(
     )
     _patch_check_entrypoints(monkeypatch, crafted)
 
-    exit_code = cli.main(["compliance", "run", "dummy/echo"])
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
     output = capsys.readouterr().out
 
     assert exit_code == 1

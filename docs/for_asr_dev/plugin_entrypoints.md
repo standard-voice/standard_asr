@@ -14,7 +14,7 @@
 - `engine_id` should match your distribution name after [PEP 503](https://peps.python.org/pep-0503/) normalization.
 - `model_name` identifies a preset within that engine. Use an empty string for a default model *only when truly necessary*.
 - Entry point value: a callable (function or class) that returns a `StandardASR` implementation.
-- You can test locally with the bundled **std-dummy-asr** plugin (zero extra deps).
+- You can test locally with any installed plugin (e.g. [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)).
 
 ## Naming Rules
 
@@ -162,20 +162,17 @@ $ standard-asr compliance run faster-whisper/large-v3
 [OK] Compliance run passed.
 ```
 
-### Local testing in the uv workspace
+### Local testing with a plugin
 
-Install the demo plugin and run the checks end‑to‑end:
+Install a plugin (e.g.
+[std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)) and
+run the checks end‑to‑end:
 
 ```bash
-uv run uv pip install -e cookbook/std_dummy_asr
-uv run standard-asr list
-uv run standard-asr compliance entrypoints
-uv run python cookbook/sample_client.py
+pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
+standard-asr list
+standard-asr compliance entrypoints
 ```
-
-The sample client selects the demo model (``dummy/echo``) explicitly and emits a
-synthetic transcript so you can see the full discovery → instantiation → usage
-cycle without heavy dependencies.
 
 Flags of interest:
 
