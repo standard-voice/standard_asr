@@ -21,10 +21,11 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 </div>
 
 > [!WARNING]
-> **Standard ASR is pre-release and a work in progress** — breaking changes may land at any
-> time. For production use, wait for the `v1.0.0` release, where we stabilize the public API
-> and enforce a migration policy for breaking changes. We strictly follow semantic versioning.
-> Try it out and tell us what you think — let's shape the future of ASR tooling together.
+> **Alpha — the core protocol works, but major pieces are still missing.** The standard
+> interface is functional and validated by real engine plugins, but features like
+> diarization, hardware metadata, and model cards are not yet part of the protocol.
+> Developer documentation and tooling are also incomplete. Breaking changes will happen.
+> For production use, wait for a stable release. We follow semantic versioning.
 
 ![Standard ASR concept](https://raw.githubusercontent.com/standard-voice/standard_asr/main/docs/assets/concept.jpg)
 
@@ -311,11 +312,17 @@ standard-asr compliance entrypoints
 
 ## Project status & design
 
-Pre-release, under active redesign with standard-library rigor: a normative, RFC-style
-specification (`docs/spec/`), Pydantic v2 models, `pyright --strict`, 100% test coverage,
-and CI across numpy 1.x/2.x and Python 3.10–3.14. The protocol's design decisions are
-grounded in an in-repo survey of 30+ real ASR engines and APIs (`docs/research/`). The
-authoritative material lives in-repo:
+**Alpha.** The core protocol — engine interface, audio negotiation, capability discovery,
+streaming events, plugin system — is shipped and validated by four engine plugins. The
+toolchain (CLI, FastAPI server, compliance suite) works. What's missing: features like
+diarization, hardware metadata, and model cards are not yet part of the protocol.
+Developer documentation, a richer CLI, and a plugin starter template are also not done yet.
+See the open issues for what's planned.
+
+Built with a normative, RFC-style specification (`docs/spec/`),
+Pydantic v2 models, `pyright --strict`, 100% test coverage, and CI across numpy 1.x/2.x
+and Python 3.10–3.14. Design decisions are grounded in an in-repo survey of 30+ real ASR
+engines and APIs (`docs/research/`). The authoritative material lives in-repo:
 
 - `docs/spec/` — the protocol specification.
 - `docs/research/` — the engine surveys the design is tested against.
