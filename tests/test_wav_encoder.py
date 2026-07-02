@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the in-memory WAV encoder (spec AI R4)."""
+"""Tests for the in-memory WAV encoder."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import wave
 import numpy as np
 import pytest
 
-from standard_asr.exceptions import AudioProcessingError
-from standard_asr.utils.save_utils import encode_array_to_wav_bytes
+from standard_asr.audio.wav import encode_array_to_wav_bytes
+from standard_asr.contract.exceptions import AudioProcessingError
 
 
 def test_encode_mono_roundtrip() -> None:
@@ -55,7 +55,7 @@ def test_encode_rejects_3d() -> None:
 
 
 def test_encode_writes_little_endian_pcm() -> None:
-    # WAV 16-bit PCM is canonically little-endian (spec R4). The encoded
+    # WAV 16-bit PCM is canonically little-endian. The encoded
     # frame bytes must be LE regardless of host byte order. A sample of +1.0
     # maps to 32767 == 0x7FFF, which is bytes (0xFF, 0x7F) in little-endian.
     audio = np.array([1.0], dtype=np.float32)

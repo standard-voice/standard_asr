@@ -10,7 +10,7 @@ from typing import NamedTuple
 
 import pytest
 
-from standard_asr import doctor
+from standard_asr.toolchain import doctor
 
 
 class _VersionInfo(NamedTuple):
@@ -431,7 +431,7 @@ def test_single_plugin_internally_unsatisfiable_is_conflict(
 def test_canonical_dual_line_resolves_to_numpy2_on_py313(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The canonical interpreter-conditional dual-line form (DEP.1) must resolve
+    """The canonical interpreter-conditional dual-line form must resolve
     to the line whose marker holds on the running interpreter -- on 3.13 that is
     ``>=2.1``, so no bogus 'no numpy<2 wheel' conflict fires."""
     _patch_eps(

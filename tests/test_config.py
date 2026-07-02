@@ -10,7 +10,8 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, SecretStr
 
-from standard_asr.asr_config import (
+from standard_asr.contract.exceptions import ConfigError
+from standard_asr.runtime.config import (
     SECRET_MASK,
     BaseConfig,
     CredentialsConfigMixin,
@@ -19,7 +20,6 @@ from standard_asr.asr_config import (
     env_var_name,
     secret_field,
 )
-from standard_asr.exceptions import ConfigError
 
 
 class _CloudConfig(CredentialsConfigMixin, LanguageConfigMixin, BaseConfig[Literal["acme"]]):
@@ -67,7 +67,7 @@ def test_secret_field_marks_schema() -> None:
 
 def test_secret_marked_non_secretstr_field_rejected_at_definition() -> None:
     # A secret-marked field annotated as plain str leaks plaintext everywhere;
-    # the framework MUST fail loud at class-definition time (IC.3).
+    # the framework MUST fail loud at class-definition time.
     with pytest.raises(TypeError, match="marked secret"):
 
         class _BadCfg(BaseConfig[Literal["bad"]]):  # pyright: ignore[reportUnusedClass]
@@ -111,7 +111,7 @@ def test_secret_marked_scalar_annotations_still_pass_definition() -> None:
 
 
 def test_secret_marked_field_in_nested_submodel_rejected_at_definition() -> None:
-    # A secret marker on a NESTED submodel field (IC.8 encourages
+    # A secret marker on a NESTED submodel field (the standard encourages
     # per-model-family submodels) bypassed both definition-time guards -- the
     # SecretStr enforcement and public_dump's by-name masking only walk a
     # BaseConfig's OWN fields -- so the plaintext leaked through public_dump /
@@ -177,7 +177,7 @@ def test_forward_ref_submodel_in_container_rejected_fail_closed() -> None:
 
 
 def test_nested_submodel_without_secret_marker_allowed() -> None:
-    # IC.8 nested submodels are fully supported as long as they carry no secret
+    # Nested submodels are fully supported as long as they carry no secret
     # marker; the guard must not flag an ordinary (non-credential) submodel.
     class _ModelOpts(BaseModel):
         beam_size: int = 5
@@ -470,8 +470,8 @@ def test_from_env_omitted_key_still_falls_back_to_env() -> None:
 def test_env_fallback_covers_engine_declared_field() -> None:
     # minor: env fallback covers the FULL config surface, not just the
     # standard mixin fields -- an engine-declared field (e.g. beam_size) gets a
-    # STANDARD_ASR_<ENGINE>_<FIELD> entry too (intentional DX, now documented in
-    # IC.4 and the _ENV_EXCLUDED_FIELDS comment).
+    # STANDARD_ASR_<ENGINE>_<FIELD> entry too (intentional DX, documented on
+    # the _ENV_EXCLUDED_FIELDS comment).
     class _EngineCfg(BaseConfig[Literal["eng"]]):
         engine: Literal["eng"] = "eng"
         beam_size: int = 1
@@ -518,7 +518,7 @@ def test_from_env_does_not_downgrade_strict_policy() -> None:
 
 
 def test_from_env_loads_aliased_credential(monkeypatch: pytest.MonkeyPatch) -> None:
-    # IC.4: a credential declaring a provider-native alias (e.g. ElevenLabs
+    # A credential declaring a provider-native alias (e.g. ElevenLabs
     # `xi-api-key`) must still load from its STANDARD_ASR_<ENGINE>_<FIELD> env var
     # (keyed by attribute name), even under extra="forbid".
     from pydantic import Field

@@ -80,7 +80,7 @@ class MyEngine(EngineBase):
   gated-and-passed request is the cardinal sin (a silent wrong result).
 - Engine-specific knobs → a `ProviderParams` subclass set as
   `provider_params_type`. Wrong-engine params raise `InvalidProviderParamError`.
-- Resolve the language with `standard_asr.language.effective_language(...)`.
+- Resolve the language with `standard_asr.contract.language.effective_language(...)`.
 - **`word_timestamps.granularities` declares what you can honestly *deliver*, not
   which native API switch exists.** Declare every granularity your engine can
   serve — including ones that come for free. If your model emits per-segment

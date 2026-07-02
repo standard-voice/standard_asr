@@ -18,15 +18,19 @@ import pytest
 from standard_asr import (
     RuntimeParams,
     TranscriptionResult,
-    cli,
 )
-from standard_asr.capabilities import (
+from standard_asr.compliance import ComplianceIssue, ComplianceReport
+from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
     FlagCap,
     StreamingCapabilities,
 )
-from standard_asr.compliance import ComplianceIssue, ComplianceReport
-from standard_asr.discovery import ModelRegistry, discover_models
+from standard_asr.contract.exceptions import (
+    AudioProcessingError,
+    ConfigError,
+    EntrypointValidationError,
+    TranscriptionError,
+)
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -35,13 +39,9 @@ from standard_asr.engine import (
     PreparedAudio,
     SampleRateRange,
 )
-from standard_asr.exceptions import (
-    AudioProcessingError,
-    ConfigError,
-    EntrypointValidationError,
-    TranscriptionError,
-)
-from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.plugins.discovery import ModelRegistry, discover_models
+from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.toolchain import cli
 
 
 def _demo_registry() -> ModelRegistry:
@@ -124,7 +124,7 @@ def test_cli_models_show(
     assert exit_code == 0
     assert "Engine ID" in output
     assert "alpha/first" in output
-    # §264: models show MUST surface DeclaredCapabilities (no instantiation).
+    # models show MUST surface DeclaredCapabilities (no instantiation).
     assert "Capabilities:" in output
     assert "runtime_override" in output
 
@@ -324,7 +324,7 @@ def test_cli_models_show_no_capabilities(
 
 def test_cli_doctor(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # The doctor command prints the report and returns 0 with no conflicts.
-    from standard_asr import doctor as doctor_module
+    from standard_asr.toolchain import doctor as doctor_module
 
     def _entry_points(*, group: str) -> list[object]:
         return []
@@ -343,7 +343,7 @@ def test_cli_doctor_conflict_returns_1(
     # A numpy 1.x vs 2.x conflict makes the doctor command exit non-zero.
     from dataclasses import dataclass
 
-    from standard_asr import doctor as doctor_module
+    from standard_asr.toolchain import doctor as doctor_module
 
     @dataclass
     class _Dist:
@@ -375,7 +375,7 @@ def test_cli_doctor_packaging_unavailable_with_plugins_exits_1(
     # clean" is operationally a failure -> exit 1.
     from dataclasses import dataclass
 
-    from standard_asr import doctor as doctor_module
+    from standard_asr.toolchain import doctor as doctor_module
 
     @dataclass
     class _Dist:
@@ -404,7 +404,7 @@ def test_cli_doctor_packaging_unavailable_no_plugins_exits_0(
 ) -> None:
     # With no plugins there is nothing to analyze: `packaging` absence stays a
     # non-issue and the clean exit 0 is preserved.
-    from standard_asr import doctor as doctor_module
+    from standard_asr.toolchain import doctor as doctor_module
 
     def _entry_points(*, group: str) -> list[object]:
         return []
@@ -504,7 +504,7 @@ def test_cli_transcribe_options_portable_keys(
 def test_cli_transcribe_options_provider_params_rejected(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Mirrors the server's untyped-wire rule (D5): provider_params cannot be
+    # Mirrors the server's untyped-wire rule: provider_params cannot be
     # validated from untyped JSON, so the CLI rejects the key itself loudly as
     # a usage / validation error (exit 2) instead of passing it to the engine.
     # An empty object is the regression case: the old RuntimeParams path
@@ -710,7 +710,7 @@ def test_cli_compliance_entrypoints_quiet(
 
 
 def test_cli_serve_uses_server_module(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = types.ModuleType("standard_asr.server")
+    module = types.ModuleType("standard_asr.toolchain.server")
     called: dict[str, object] = {}
 
     def _run(**kwargs: object) -> None:
@@ -718,7 +718,7 @@ def test_cli_serve_uses_server_module(monkeypatch: pytest.MonkeyPatch) -> None:
 
     setattr(module, "run", _run)
 
-    monkeypatch.setitem(__import__("sys").modules, "standard_asr.server", module)
+    monkeypatch.setitem(__import__("sys").modules, "standard_asr.toolchain.server", module)
 
     exit_code = cli.main(["serve", "--host", "0.0.0.0", "--port", "9001"])
 
@@ -731,15 +731,15 @@ def test_cli_serve_missing_server_dependency(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Simulate the server module failing to import (deterministic, no import
-    # warnings): a None entry in sys.modules makes `from .server import run`
+    # warnings): a None entry in sys.modules makes `from standard_asr.toolchain.server import run`
     # raise ImportError, exercising the missing-server-deps branch.
-    monkeypatch.setitem(sys.modules, "standard_asr.server", None)
+    monkeypatch.setitem(sys.modules, "standard_asr.toolchain.server", None)
 
     exit_code = cli.main(["serve"])
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    # Errors go to stderr (cli.md §2), never stdout.
+    # Errors go to stderr, never stdout.
     assert "dependencies are missing" in captured.err
     assert captured.out == ""
 
@@ -747,19 +747,19 @@ def test_cli_serve_missing_server_dependency(
 def test_cli_serve_importerror_from_run(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    module = types.ModuleType("standard_asr.server")
+    module = types.ModuleType("standard_asr.toolchain.server")
 
     def _run(**_: object) -> None:
         raise ImportError("boom")
 
     setattr(module, "run", _run)
-    monkeypatch.setitem(__import__("sys").modules, "standard_asr.server", module)
+    monkeypatch.setitem(__import__("sys").modules, "standard_asr.toolchain.server", module)
 
     exit_code = cli.main(["serve"])
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    # Errors go to stderr (cli.md §2), never stdout.
+    # Errors go to stderr, never stdout.
     assert "boom" in captured.err
     assert captured.out == ""
 
@@ -815,7 +815,7 @@ def test_cli_models_prepare_calls_prepare(
 
 
 def test_parse_options() -> None:
-    from standard_asr.runtime_params import RuntimeParams
+    from standard_asr.contract.params import RuntimeParams
 
     params = cli._parse_options('{"language": "en"}')  # pyright: ignore[reportPrivateUsage]
     assert isinstance(params, RuntimeParams)
@@ -824,7 +824,7 @@ def test_parse_options() -> None:
     with pytest.raises(ValueError):
         cli._parse_options("[1, 2, 3]")  # pyright: ignore[reportPrivateUsage]
 
-    # The non-portable provider_params key is rejected outright (D5): even an
+    # The non-portable provider_params key is rejected outright: even an
     # empty object -- which the old RuntimeParams path silently accepted as a
     # bare ProviderParams() -- must fail through WireRuntimeParams.
     with pytest.raises(ValueError, match="provider_params"):
@@ -1037,7 +1037,7 @@ def test_cli_models_prepare_rejects_non_callable_hook(
 def test_cli_models_prepare_rejects_required_args_hook(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # The IC.11 warm-up hook MUST be invocable with no arguments. A prepare()
+    # The warm-up hook MUST be invocable with no arguments. A prepare()
     # that requires a parameter can never be driven by the CLI -- reject it with a
     # structured error rather than letting the call blow up with a bare TypeError
     # (mirrors the compliance suite's 'prepare_hook_requires_args').
@@ -1144,7 +1144,7 @@ def test_cli_transcribe_text_mode_renders_diagnostics_to_stderr(
 ) -> None:
     # A lossy step's diagnostic must not vanish on the default text
     # surface -- it goes to stderr, stdout stays the bare transcript.
-    from standard_asr.results import Diagnostic, TranscriptionResult
+    from standard_asr.contract.results import Diagnostic, TranscriptionResult
 
     result = TranscriptionResult(
         text="hello world",
@@ -1182,7 +1182,7 @@ def test_cli_transcribe_json_mode_keeps_diagnostics_off_stderr(
 ) -> None:
     # --json already carries diagnostics on the result; the text-mode
     # stderr rendering must NOT also fire (no double reporting).
-    from standard_asr.results import Diagnostic, TranscriptionResult
+    from standard_asr.contract.results import Diagnostic, TranscriptionResult
 
     result = TranscriptionResult(
         text="hi",
@@ -1466,7 +1466,7 @@ def test_cli_compliance_run_executes_swap_safety_check(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Integration: `compliance run` MUST exercise
-    # the provider_params swap-safety dimension (Runtime R3 / spec §5.4) for
+    # the provider_params swap-safety dimension for
     # every constructed engine, not just streaming ones -- it previously wired in
     # only entrypoints + streaming gating, silently omitting an unconditional
     # MUST. Spy the check to prove it runs for the constructed engine.
@@ -1598,7 +1598,7 @@ def test_cli_compliance_run_construction_error_is_reported(
 ) -> None:
     # A zero-arg engine whose construction raises a client-side config error is
     # reported for that model rather than aborting the whole run.
-    from standard_asr.exceptions import ConfigError
+    from standard_asr.contract.exceptions import ConfigError
 
     registry = _compliant_dummy_registry()
 
@@ -1617,7 +1617,7 @@ def test_cli_compliance_run_construction_error_is_reported(
 
 def test_scope_entrypoints_report_keeps_named_global_and_collision() -> None:
     # Scoping an entry-point report to a named subset keeps (a) the named
-    # models, (b) registry-global invariants (model is None), and (c) IC.2 engine_id
+    # models, (b) registry-global invariants (model is None), and (c) engine_id
     # collisions (shadowed_engine_ids); it drops an unrelated co-installed plugin's
     # per-engine issue so it cannot fail a named run.
     base = _compliant_dummy_registry()
@@ -1669,7 +1669,7 @@ def test_cli_compliance_run_named_model_ignores_unrelated_plugin_failure(
 def test_cli_compliance_run_named_model_still_reports_global_collision(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # guard: scoping MUST NOT silence a registry-global invariant. An IC.2
+    # guard: scoping MUST NOT silence a registry-global invariant. An
     # engine_id collision is keyed by a bare engine_id in shadowed_engine_ids and is
     # kept even for a named run (a naive `model in named` filter would drop it).
     base = _compliant_dummy_registry()
@@ -1745,7 +1745,7 @@ def test_spec_is_zero_arg_handles_unloadable_factory(
 ) -> None:
     # _spec_is_zero_arg returns False when the factory cannot be loaded or its
     # signature cannot be read, never raising.
-    from standard_asr.exceptions import FactoryLoadError
+    from standard_asr.contract.exceptions import FactoryLoadError
 
     class _Spec:
         def load_factory(self) -> object:

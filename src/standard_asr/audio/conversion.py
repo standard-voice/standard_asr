@@ -3,12 +3,11 @@
 
 """Execute audio conversion plans into engine-ready prepared audio.
 
-The engine base layer negotiates a :class:`~standard_asr.audio_negotiation.ConversionPlan`
+The engine base layer negotiates a :class:`~standard_asr.audio.negotiation.ConversionPlan`
 and then asks this module to *execute* it -- decoding, encoding, reading,
 base64-decoding and resampling as required -- producing a :class:`PreparedAudio`
 in exactly one of the engine's accepted shapes, plus a list of
-:class:`~standard_asr.results.Diagnostic` describing any lossy or assumed steps
-(spec, section "Audio Input & Sample Rate", rules R3/R4/R6/R7/R8).
+:class:`~standard_asr.contract.results.Diagnostic` describing any lossy or assumed steps.
 """
 
 from __future__ import annotations
@@ -20,12 +19,7 @@ from typing import TypeVar
 import numpy as np
 from numpy.typing import NDArray
 
-from .asr_properties import (
-    AcceptedSampleRates,
-    nearest_accepted_sample_rate,
-    sample_rate_accepted,
-)
-from .audio_input import (
+from standard_asr.audio.input import (
     AudioArray,
     AudioBase64,
     AudioBytes,
@@ -35,19 +29,24 @@ from .audio_input import (
     AudioUrl,
     InputKind,
 )
-from .audio_negotiation import ConversionOp, ConversionPlan, validate_fetchable_url
-from .exceptions import AudioProcessingError
-from .resampling import resample_with_backend
-from .results import Diagnostic
-from .utils.audio_loader import (
+from standard_asr.audio.loader import (
     _base64_payload,  # pyright: ignore[reportPrivateUsage]
     _decode_base64_payload,  # pyright: ignore[reportPrivateUsage]
     _estimate_payload_decoded_size,  # pyright: ignore[reportPrivateUsage]
     decode_audio,
 )
-from .utils.save_utils import encode_array_to_wav_bytes
+from standard_asr.audio.negotiation import ConversionOp, ConversionPlan, validate_fetchable_url
+from standard_asr.audio.resampling import resample_with_backend
+from standard_asr.audio.wav import encode_array_to_wav_bytes
+from standard_asr.contract.exceptions import AudioProcessingError
+from standard_asr.contract.properties import (
+    AcceptedSampleRates,
+    nearest_accepted_sample_rate,
+    sample_rate_accepted,
+)
+from standard_asr.contract.results import Diagnostic
 
-#: Canonical fallback sample rate when a bare array omits its rate (spec R6).
+#: Canonical fallback sample rate when a bare array omits its rate.
 ASSUMED_SAMPLE_RATE = 16000
 
 
@@ -72,7 +71,7 @@ def _narrow(provided: AudioInput, expected: type[_T]) -> _T:
     op implies. A bare ``assert`` would be stripped under ``python -O``, so a
     mismatched ``plan``/``provided`` pair (direct misuse, not the standard
     pipeline) would degrade to an ``AttributeError`` or a wrong-shape delivery
-    instead of a structured, contracted error (spec: error paths explicit). This
+    instead of a structured, contracted error (error paths must be explicit). This
     raises :class:`AudioProcessingError` unconditionally on a mismatch.
 
     Args:
@@ -130,14 +129,14 @@ def _target_array_sample_rate(
     required_input_sample_rate: int | None,
     source_sample_rate: int | None = None,
 ) -> int:
-    """Choose a target sample rate for array delivery (spec R7.2).
+    """Choose a target sample rate for array delivery.
 
-    Selection policy (first match wins), per the normative spec R7.2 order:
+    Selection policy (first match wins), in this normative order:
 
     1. ``required_input_sample_rate`` if the engine accepts it (a hard wire
        requirement is authoritative).
     2. ``native_sample_rate`` if accepted (the model's own rate is ideal).
-    3. **Defensive fallback only** -- per spec R7.2 this branch is unreachable
+    3. **Defensive fallback only** -- this branch is unreachable
        through the standard engine pipeline, where ``BaseProperties`` enforces
        that ``required_input_sample_rate`` and ``native_sample_rate`` are both in
        the engine's ``accepted_sample_rates`` (the two reachability invariants,
@@ -146,7 +145,7 @@ def _target_array_sample_rate(
        ``execute_plan`` directly with declarations that violate the invariants.
        It then picks an **explicit nearest-reachable** rate relative to the
        source: for a discrete list, the accepted rate closest in absolute
-       distance to ``source_sample_rate``, preferring -- to honour R7's
+       distance to ``source_sample_rate``, preferring -- to honour the
        anti-upsampling spirit -- a rate that does **not** upsample (``<= source``)
        over one that does when both are equally near (deterministic and
        order-independent; the old ``accepted[0]`` could silently upsample, e.g.
@@ -201,16 +200,16 @@ def execute_plan(
         provided: The application-provided audio input.
         plan: The negotiated conversion plan.
         accepted_sample_rates: Engine accepted sample rates (a list, a
-            :class:`~standard_asr.asr_properties.SampleRateRange`, or ``"any"``).
+            :class:`~standard_asr.contract.properties.SampleRateRange`, or ``"any"``).
         native_sample_rate: The model's native sample rate.
         required_input_sample_rate: A hard-required rate, if any.
         max_file_size: Engine max payload size; prechecked on every encoded
-            payload and used to bound the decode buffer (spec R4/R9).
+            payload and used to bound the decode buffer.
         max_audio_duration: Engine max accepted duration in seconds, if any.
             Enforced on the decoded array (where duration is measurable);
             encoded passthrough relies on ``max_file_size`` instead.
         strict: Whether to raise (vs assume + diagnostic) on a missing rate.
-        allow_private_addresses: Opt-in to relax the R5 SSRF check that rejects
+        allow_private_addresses: Opt-in to relax the SSRF check that rejects
             URLs resolving to private/loopback/link-local addresses. HTTPS is
             still required.
 
@@ -220,7 +219,7 @@ def execute_plan(
     Raises:
         AudioProcessingError: On a missing sample rate in strict mode, an
             oversize encode/payload, or a decode failure.
-        UnsafeAudioUrlError: When a ``FETCHABLE_URL`` target fails the R5 SSRF
+        UnsafeAudioUrlError: When a ``FETCHABLE_URL`` target fails the SSRF
             policy (not HTTPS, or a private/reserved address).
     """
     diags: list[Diagnostic] = []
@@ -229,7 +228,7 @@ def execute_plan(
 
     if target is InputKind.FETCHABLE_URL:
         url = _narrow(provided, AudioUrl)
-        # R5.1: validate HTTPS + non-private address before forwarding the
+        # Validate HTTPS + non-private address before forwarding the
         # literal URL to the engine. The standard never fetches it (v1).
         validate_fetchable_url(url.value, allow_private_addresses=allow_private_addresses)
         return PreparedAudio(kind=target, url=url.value, diagnostics=diags)
@@ -295,17 +294,17 @@ def _prepare_encoded(
         provided: The provided audio input.
         plan: The conversion plan (target is file/bytes).
         accepted_sample_rates: Engine accepted sample rates (a list, a
-            :class:`~standard_asr.asr_properties.SampleRateRange`, or ``"any"``).
+            :class:`~standard_asr.contract.properties.SampleRateRange`, or ``"any"``).
             The array-to-WAV (``ENCODE_WAV``) path resamples to an accepted rate
             before encoding, so an encoded-input engine never receives off-rate
-            WAV content (spec R7).
+            WAV content.
         native_sample_rate: The model's native sample rate.
         required_input_sample_rate: A hard-required rate, if any.
         max_file_size: Engine max payload size for the WAV-encode precheck.
         max_audio_duration: Engine max accepted duration in seconds, enforced on
             the ``ENCODE_WAV`` array (where duration is measurable).
         strict: Whether to raise (vs assume + diagnostic) when a bare array has
-            no sample rate before encoding it to WAV (spec R6).
+            no sample rate before encoding it to WAV.
         diags: Diagnostics accumulator.
 
     Returns:
@@ -320,7 +319,7 @@ def _prepare_encoded(
         # rather than silently deliver an ENCODED_FILE.
         if plan.target_kind is InputKind.ENCODED_FILE:
             file_src = _narrow(provided, AudioPath)
-            # File path passthrough: prefer stat() over reading the file (spec R9).
+            # File path passthrough: prefer stat() over reading the file.
             _check_file_size(Path(file_src.value), max_file_size)
             return PreparedAudio(kind=InputKind.ENCODED_FILE, path=str(file_src.value))
         provided_bytes = _narrow(provided, AudioBytes)
@@ -332,7 +331,7 @@ def _prepare_encoded(
         )
     if ConversionOp.READ_FILE in ops:
         path = Path(_narrow(provided, AudioPath).value)
-        # Precheck via stat() before reading the whole file into memory (spec R9).
+        # Precheck via stat() before reading the whole file into memory.
         _check_file_size(path, max_file_size)
         return PreparedAudio(
             kind=InputKind.ENCODED_BYTES,
@@ -341,7 +340,7 @@ def _prepare_encoded(
         )
     if ConversionOp.ENCODE_WAV in ops:
         array_in = _narrow(provided, AudioArray)
-        # R6/R7: resolve a missing rate (strict raises, best_effort assumes +
+        # Resolve a missing rate (strict raises, best_effort assumes +
         # diagnoses) and resample the array to an accepted rate BEFORE encoding,
         # so an encoded-input engine that declares a restricted
         # accepted_sample_rates never receives off-rate WAV content. The bare
@@ -381,7 +380,7 @@ def _prepare_encoded(
             # but that mutation MUST be visible to the caller -- the array-delivery
             # path emits the same ``non_finite_audio`` diagnostic, so encode-path
             # engines are not silently denied a signal the array path surfaces
-            # (spec R3 / explicit > implicit).
+            # (explicit over implicit).
             diags.append(
                 Diagnostic(
                     level="warning",
@@ -401,13 +400,14 @@ def _prepare_encoded(
 
 
 def _decode_base64_bounded(value: str, max_file_size: int | None) -> bytes:
-    """Size-gate (pre-decode, spec R9) and decode a base64 payload in one step.
+    """Size-gate (pre-decode) and decode a base64 payload in one step.
 
     The conversion layer's single base64 entry point, shared by the
     encoded-delivery and decode-to-array paths: the gate and the decode travel
     together, so a future third base64-accepting path cannot take the decode
-    without the gate (re-opening R9). The decoded size is estimated from the
-    payload length alone and checked BEFORE the decode allocates it; the
+    without the gate (which would re-open the decompression-bomb risk). The
+    decoded size is estimated from the payload length alone and checked BEFORE
+    the decode allocates it; the
     estimate never exceeds the true decoded size, so an under-limit payload is
     never falsely rejected, and the exact post-decode check stays
     authoritative. The ``data:``-URI payload is extracted ONCE and shared by
@@ -466,7 +466,7 @@ def _diagnose_non_finite(array: NDArray[np.float32], diags: list[Diagnostic]) ->
 def _check_duration(
     array: NDArray[np.float32], sample_rate: int, max_audio_duration: float | None
 ) -> None:
-    """Enforce an engine's ``max_audio_duration`` on a decoded array (spec R10).
+    """Enforce an engine's ``max_audio_duration`` on a decoded array.
 
     Enforced here, where the sample count and rate are both known, so a declared
     duration limit is an actual contract rather than advisory metadata. Encoded
@@ -493,7 +493,7 @@ def _check_duration(
 
 
 def _check_payload_size(num_bytes: int, max_file_size: int | None) -> None:
-    """Enforce an engine's ``max_file_size`` on an encoded payload (spec R4).
+    """Enforce an engine's ``max_file_size`` on an encoded payload.
 
     Args:
         num_bytes: Size of the encoded payload in bytes.
@@ -511,7 +511,7 @@ def _check_payload_size(num_bytes: int, max_file_size: int | None) -> None:
 
 
 def _check_file_size(path: Path, max_file_size: int | None) -> None:
-    """Enforce ``max_file_size`` against a file's size via ``stat`` (spec R9).
+    """Enforce ``max_file_size`` against a file's size via ``stat``.
 
     Args:
         path: The local file path.
@@ -567,14 +567,14 @@ def _prepare_array(
     """Produce a waveform array from the provided input.
 
     The decode path returns the source's **native** sample rate -- it does NOT
-    resample. The single authoritative R7 resampling decision is made later by
+    resample. The single authoritative resampling decision is made later by
     :func:`_apply_sample_rate`, so 8 kHz telephony and 24 kHz realtime inputs are
-    not silently forced through 16 kHz (spec R7).
+    not silently forced through 16 kHz.
 
     Args:
         provided: The provided audio input.
         ops: The plan operations.
-        max_file_size: Engine payload limit, used to bound the decode buffer (R9).
+        max_file_size: Engine payload limit, used to bound the decode buffer.
         diags: Diagnostics accumulator.
 
     Returns:
@@ -583,14 +583,14 @@ def _prepare_array(
     """
     if ConversionOp.PASSTHROUGH in ops:
         array_src = _narrow(provided, AudioArray)
-        # np.asarray (not astype(copy=False)) per DEP.2.
+        # Use np.asarray, not astype(copy=False), for consistent numpy 1.x/2.x behavior.
         return np.asarray(array_src.samples, dtype=np.float32), array_src.sample_rate
 
     # Decode path: AudioPath / AudioBytes / AudioBase64 -> array.
     if isinstance(provided, AudioPath):
         # Hand a Path (never a str) to decode_audio so it takes the path-only
         # branch: no data:-URI content sniffing and no leading/trailing strip()
-        # of the path (spec R1 -- discrimination MUST NOT sniff string content,
+        # of the path (discrimination MUST NOT sniff string content,
         # and a bare path is ALWAYS a local file). Passing str() would route an
         # AudioPath("data:audio/wav;base64,...") into base64 decoding (a silent
         # wrong result that fails loudly on an encoded-bytes engine instead) and
@@ -600,13 +600,13 @@ def _prepare_array(
     elif isinstance(provided, AudioBytes):
         source = provided.data
     elif isinstance(provided, AudioBase64):
-        # Same gate-and-decode as the encoded path (R9): the decoded size is
+        # Same gate-and-decode as the encoded path: the decoded size is
         # estimated and checked BEFORE the decode allocates it.
         source = _decode_base64_bounded(provided.value, max_file_size)
     else:  # pragma: no cover - matrix guarantees the above
         raise AudioProcessingError("Cannot decode this input to an array.")
 
-    # Decode at the NATIVE rate; the sample-rate stage owns any resampling (R7).
+    # Decode at the NATIVE rate; the sample-rate stage owns any resampling.
     array, native_sr = decode_audio(source, target_channels=1, max_bytes=max_file_size)
     diags.append(
         Diagnostic(
@@ -629,7 +629,7 @@ def _apply_sample_rate(
     strict: bool,
     diags: list[Diagnostic],
 ) -> tuple[NDArray[np.float32], int]:
-    """Apply the sample-rate rules (R6--R8) to an array payload.
+    """Apply the sample-rate resolution and resampling rules to an array payload.
 
     Args:
         array: The waveform array.
@@ -656,7 +656,7 @@ def _apply_sample_rate(
         diags.append(_assumed_sample_rate_diag())
 
     if required_input_sample_rate is not None and sample_rate != required_input_sample_rate:
-        # A hard-required rate is authoritative for the batch path (spec R7.1):
+        # A hard-required rate is authoritative for the batch path:
         # always resample to it, even when accepted_sample_rates is "any" or
         # already contains the source rate. An engine that hard-requires a wire
         # rate must receive exactly it.
@@ -681,7 +681,7 @@ def _apply_sample_rate(
             f"Cannot resample the audio to {target} Hz: {exc} Provide a non-empty waveform."
         ) from exc
     if backend == "fallback":
-        # Design decision D3 / spec R8: when the low-quality built-in fallback
+        # When the low-quality built-in fallback
         # resampler runs (because the [audio] extra is absent), the quality
         # degradation MUST be visible at WARNING level with an install hint --
         # consumers that filter diagnostics by ``level >= warning`` (a reasonable
@@ -711,8 +711,8 @@ def _apply_sample_rate(
                 message=f"Resampled {sample_rate} Hz -> {target} Hz (scipy resample_poly).",
                 param="audio",
                 # The rate transition lives in ``provided`` and the structured
-                # ``effective`` carries the *backend* identifier, so the spec R8
-                # contract reads as ``resampled_with=<scipy|fallback>`` without any
+                # ``effective`` carries the *backend* identifier, so the
+                # diagnostic reads as ``resampled_with=<scipy|fallback>`` without any
                 # English prose parsing -- a cross-language/REST client can detect
                 # the low-quality numpy fallback from the structured field alone.
                 provided=f"{sample_rate}->{target}",

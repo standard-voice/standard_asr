@@ -14,13 +14,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from standard_asr.asr_properties import SampleRateRange
-from standard_asr.audio_conversion import (
+from standard_asr.audio.conversion import (
     PreparedAudio,
     _target_array_sample_rate,  # pyright: ignore[reportPrivateUsage]
     execute_plan,
 )
-from standard_asr.audio_input import (
+from standard_asr.audio.input import (
     AudioArray,
     AudioBase64,
     AudioBytes,
@@ -29,8 +28,9 @@ from standard_asr.audio_input import (
     AudioUrl,
     InputKind,
 )
-from standard_asr.audio_negotiation import ConversionOp, ConversionPlan, negotiate
-from standard_asr.exceptions import AudioProcessingError
+from standard_asr.audio.negotiation import ConversionOp, ConversionPlan, negotiate
+from standard_asr.contract.exceptions import AudioProcessingError
+from standard_asr.contract.properties import SampleRateRange
 
 
 def _scipy_usable() -> bool:
@@ -91,7 +91,7 @@ def test_array_encode_to_wav() -> None:
 
 def test_array_encode_to_wav_resamples_to_accepted_rate() -> None:
     # An array at a non-accepted rate must be resampled BEFORE WAV-encoding
-    # for an encoded-input engine, never forwarded off-rate (spec R7). A 48 kHz
+    # for an encoded-input engine, never forwarded off-rate. A 48 kHz
     # array to an engine that accepts only 16 kHz encoded WAV must yield 16 kHz.
     prepared = _exec(
         AudioArray(np.zeros(48000, dtype=np.float32), 48000),
@@ -191,7 +191,7 @@ def test_base64_invalid_raises() -> None:
         _exec(AudioBase64("!!!notb64!!!"), {InputKind.ENCODED_BYTES})
 
 
-# --- R9: oversize base64 is rejected BEFORE the decode allocates it ---
+# --- oversize base64 is rejected BEFORE the decode allocates it ---
 
 
 def _forbid_b64_decode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,7 +200,7 @@ def _forbid_b64_decode(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(_payload: str) -> bytes:
         raise AssertionError("the base64 decode must not run for an oversize payload")
 
-    monkeypatch.setattr("standard_asr.audio_conversion._decode_base64_payload", _boom)
+    monkeypatch.setattr("standard_asr.audio.conversion._decode_base64_payload", _boom)
 
 
 def test_base64_oversize_rejected_before_decode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,7 +258,7 @@ def test_decode_path_to_array(tmp_path: Path) -> None:
 
 
 def test_audio_path_to_array_rejects_data_uri_no_sniff() -> None:
-    # (spec R1): an AudioPath whose value happens to look like a
+    # An AudioPath whose value happens to look like a
     # base64 data: URI MUST be treated as a (missing) local file path and fail
     # loudly -- NOT silently base64-decoded into an array (the cross-engine
     # silent-wrong-result reproduced in the verdict). The actionable error points
@@ -282,7 +282,7 @@ def test_audio_path_to_array_rejects_real_sized_data_uri() -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="NTFS ignores trailing spaces in filenames")
 def test_audio_path_to_array_does_not_strip_path(tmp_path: Path) -> None:
-    # (spec R1): the decode path MUST NOT strip an AudioPath. A real
+    # The decode path MUST NOT strip an AudioPath. A real
     # file at "x.wav " (trailing space) must not be silently loaded from the
     # different file "x.wav" -- stripping is the data:-URI sibling silent-wrong
     # bug. Engines that strip would deliver another file's audio with no
@@ -297,7 +297,7 @@ def test_audio_path_to_array_does_not_strip_path(tmp_path: Path) -> None:
 
 
 def test_array_encode_wav_strict_raises_when_rate_missing() -> None:
-    # R6: a bare AudioArray (no sample_rate) headed for a WAV-encode MUST raise
+    # A bare AudioArray (no sample_rate) headed for a WAV-encode MUST raise
     # in strict mode rather than silently fabricating a rate -- the same
     # contract the array-target path enforces.
     with pytest.raises(AudioProcessingError, match="no sample rate"):
@@ -321,7 +321,7 @@ def test_array_encode_wav_best_effort_assumes_rate_when_missing() -> None:
 
 def test_array_exceeding_max_duration_raises() -> None:
     # max_audio_duration is enforced on the decoded array: 2 s of 16 kHz audio
-    # against a 1 s limit must raise (R10 -- a declared limit is a contract).
+    # against a 1 s limit must raise (a declared limit is a contract).
     with pytest.raises(AudioProcessingError, match="max_audio_duration"):
         _exec(
             AudioArray(np.zeros(32_000, dtype=np.float32), 16_000),
@@ -431,7 +431,7 @@ def test_array_resampled_to_accepted_rate() -> None:
 
 
 def test_array_required_rate_overrides_any() -> None:
-    # D7: required_input_sample_rate is authoritative even when
+    # required_input_sample_rate is authoritative even when
     # accepted_sample_rates is "any" -- the "any" short-circuit must not return
     # the source unchanged and ignore the hard requirement.
     prepared = _exec(
@@ -448,7 +448,7 @@ def test_array_required_rate_overrides_any() -> None:
 
 
 def test_array_required_rate_overrides_in_accepted_source() -> None:
-    # spec R7.1: required_input_sample_rate wins even when the source
+    # required_input_sample_rate wins even when the source
     # rate is itself in accepted_sample_rates -- a hard wire requirement means
     # exactly that rate. This is the now-normative "input in accepted but !=
     # required MUST resample to required" case (the spec-lag the finding flagged).
@@ -621,11 +621,11 @@ def test_target_sample_rate_picks_nearest_no_upsample() -> None:
 
 
 def test_target_sample_rate_range_clamps_source_into_bounds() -> None:
-    # For a SampleRateRange, native-in-range is preferred (R7: the
+    # For a SampleRateRange, native-in-range is preferred (the
     # model's own rate is ideal); only when native is NOT in range does the target
     # become the source clamped into [min, max].
     rng = SampleRateRange(min=8000, max=48000)
-    # Native (16000) IS in range -> native wins over an in-range source (R7).
+    # Native (16000) IS in range -> native wins over an in-range source.
     assert _target_array_sample_rate(rng, 16000, None, source_sample_rate=22050) == 16000
     assert _target_array_sample_rate(rng, 16000, None, source_sample_rate=4000) == 16000
     # Native NOT in range -> clamp the source into [min, max].
@@ -661,7 +661,7 @@ def test_array_in_range_rate_passes_through_unresampled() -> None:
 def test_array_out_of_range_rate_resampled_to_native_when_in_range() -> None:
     # A source rate ABOVE the range is resampled (not passed through to
     # fail vendor-side). The target is the engine's native rate when it is itself
-    # in range (R7: native is ideal) -- here 16000.
+    # in range (native is ideal) -- here 16000.
     prepared = _exec(
         AudioArray(np.zeros(96000, dtype=np.float32), 96000),
         {InputKind.ARRAY},
@@ -723,7 +723,7 @@ def test_resample_diagnostic_names_backend() -> None:
 def test_resample_diagnostic_backend_in_structured_field() -> None:
     # A (cross-language/REST) client must be able to tell scipy from the
     # low-quality numpy fallback WITHOUT parsing English prose. The backend is
-    # carried in the structured ``effective`` field so the spec R8 contract reads
+    # carried in the structured ``effective`` field so the diagnostic reads
     # as resampled_with=<scipy|fallback>; the rate transition lives in ``provided``.
     if not _scipy_usable():
         pytest.skip("scipy.signal not usable in this environment")
@@ -745,7 +745,7 @@ def test_resample_diagnostic_backend_field_is_fallback_without_scipy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # When scipy is unavailable, the structured field MUST equal
-    # ``fallback`` (spec R8's machine-readable resampled_with=fallback contract).
+    # ``fallback`` (the machine-readable resampled_with=fallback contract).
     # Break only the in-method ``scipy.signal`` import, mirroring the resampling
     # test, to avoid the numpy-reload artifact of purging scipy from sys.modules.
     import builtins
@@ -767,7 +767,7 @@ def test_resample_diagnostic_backend_field_is_fallback_without_scipy(
     diag = next(d for d in prepared.diagnostics if d.code == "resampled_with")
     assert diag.effective == "fallback"
     assert diag.provided == "48000->16000"
-    # design decision D3: the low-quality fallback resampler MUST
+    # The low-quality fallback resampler MUST
     # surface at WARNING level with an install hint (a level-filtering consumer
     # would otherwise miss the quality degradation), mirroring the loader path.
     assert diag.level == "warning"

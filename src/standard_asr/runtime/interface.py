@@ -27,28 +27,33 @@ from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast, runtime_checkable
 
-from .asr_config import BaseConfig
-from .asr_properties import BaseProperties, sample_rate_accepted
-from .audio_conversion import PreparedAudio, execute_plan
-from .audio_format import AudioFormat
-from .audio_input import AudioInput, AudioInputLike, coerce_audio_input
-from .audio_negotiation import negotiate_or_raise
-from .capabilities import DeclaredCapabilities
-from .exceptions import ConfigError, UnsupportedFeatureError
-from .language import AUTO, effective_candidate_languages, effective_language, normalize_bcp47
-from .param_gating import Mode, gate_params
-from .results import (
+from standard_asr.audio.conversion import PreparedAudio, execute_plan
+from standard_asr.audio.format import AudioFormat
+from standard_asr.audio.input import AudioInput, AudioInputLike, coerce_audio_input
+from standard_asr.audio.negotiation import negotiate_or_raise
+from standard_asr.audio.wire import CANONICAL_WIRE_ENCODING
+from standard_asr.contract.capabilities import DeclaredCapabilities
+from standard_asr.contract.exceptions import ConfigError, UnsupportedFeatureError
+from standard_asr.contract.language import (
+    AUTO,
+    effective_candidate_languages,
+    effective_language,
+    normalize_bcp47,
+)
+from standard_asr.contract.params import ProviderParams, RuntimeParams
+from standard_asr.contract.properties import BaseProperties, sample_rate_accepted
+from standard_asr.contract.results import (
     ChannelResult,
     Diagnostic,
     Segment,
     TranscriptionResult,
     synthesize_segment_speaker,
 )
-from .runtime_params import ProviderParams, RuntimeParams
-from .wire import CANONICAL_WIRE_ENCODING
+from standard_asr.runtime.config import BaseConfig
+from standard_asr.runtime.gating import Mode, gate_params
 
 if TYPE_CHECKING:
-    from .streaming import StreamDeadlines, TranscriptionSession
+    from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionSession
 
 
 @runtime_checkable
@@ -60,7 +65,7 @@ class StandardASR(Protocol):
     engine exposes -- batch (:meth:`transcribe` / :meth:`transcribe_async`) and
     the streaming entry point (:meth:`start_transcription`). ``start_transcription``
     is always present; streaming support itself is optional, so a batch-only
-    engine raises :class:`~standard_asr.exceptions.UnsupportedFeatureError` from
+    engine raises :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` from
     it. Because the surface is complete, callers (e.g. the server) can type an
     engine as ``StandardASR`` and call the streaming entry point without a cast.
     """
@@ -83,9 +88,9 @@ class StandardASR(Protocol):
             The transcription result.
 
         Raises:
-            ConfigError: On an invalid language configuration (spec LANG R1).
+            ConfigError: On an invalid language configuration.
             IncompatibleAudioInputError: If no conversion path exists.
-            UnsafeAudioUrlError: If an ``AudioUrl`` fails the R5 SSRF policy.
+            UnsafeAudioUrlError: If an ``AudioUrl`` fails the SSRF policy.
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure in the conversion pipeline.
             UnsupportedFeatureError: In strict mode, on an unsupported parameter
@@ -93,8 +98,8 @@ class StandardASR(Protocol):
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
             ValueError: On an invalid candidate-language list (always for a
                 malformed/``auto`` candidate; strict-only for non-detectable /
-                over-``max``; spec LANG R3).
-            TranscriptionError: On an engine-execution failure (spec Runtime R7).
+                over-``max``).
+            TranscriptionError: On an engine-execution failure.
         """
         ...
 
@@ -128,7 +133,7 @@ class StandardASR(Protocol):
 
         Always present on a compliant engine, but streaming itself is optional:
         a batch-only engine raises
-        :class:`~standard_asr.exceptions.UnsupportedFeatureError` here. Callers
+        :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` here. Callers
         that need streaming should gate on
         ``supports("streaming_input")`` / ``supports("streaming_output")`` (or be
         ready to handle the unsupported-streaming error).
@@ -146,13 +151,13 @@ class StandardASR(Protocol):
 
         Raises:
             ValueError: If both ``audio_format`` and ``audio`` are provided.
-            ConfigError: On an invalid language configuration (spec LANG R1).
+            ConfigError: On an invalid language configuration.
             UnsupportedFeatureError: When streaming (or the requested streaming
                 input/output axis) is unsupported, when the wire format is
                 unreachable, or, in strict mode, on an unsupported parameter.
             IncompatibleAudioInputError: If no conversion path exists for a
                 whole-input streaming ``audio`` value.
-            UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the R5 SSRF
+            UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the SSRF
                 policy.
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
@@ -199,7 +204,7 @@ def _selectable_match(tag: str, selectable: AbstractSet[str]) -> str | None:
     """Return the selectable tag matching ``tag`` via RFC 4647 lookup, or ``None``.
 
     Implements the "Lookup" fallback of RFC 4647 §3.4 (normative for the runtime
-    ``language`` axis, spec LANG R4): ``tag`` matches if its canonical form -- or
+    ``language`` axis): ``tag`` matches if its canonical form -- or
     any prefix obtained by progressively dropping trailing subtags -- is in the
     (canonical) selectable set. This lets an engine declare a primary language
     subtag (``en``) and still accept a region/script refinement of it (``en-US``,
@@ -238,8 +243,8 @@ def _synthesize_segment_list(
 ) -> tuple[list[Segment] | None, bool]:
     """Fill missing segment speakers from word speakers in one segment list.
 
-    Applies THE pinned TR.5 rule
-    (:func:`~standard_asr.results.synthesize_segment_speaker`) to every segment
+    Applies the pinned segment-speaker synthesis rule
+    (:func:`~standard_asr.contract.results.synthesize_segment_speaker`) to every segment
     whose ``speaker`` is ``None`` while its ``words`` carry speakers. Segments
     are frozen models, so a changed segment is rebuilt via ``model_copy``
     (which skips validators -- safe, because the synthesized label is one of
@@ -269,13 +274,13 @@ def _synthesize_segment_list(
 
 
 def _synthesize_result_speakers(result: TranscriptionResult) -> TranscriptionResult:
-    """Synthesize missing segment speakers across a whole batch result (TR.5).
+    """Synthesize missing segment speakers across a whole batch result.
 
     Runs over the top-level ``segments`` AND every ``channels[i].segments``:
-    TR.4 promises the two views agree, so synthesizing only the top level
-    would silently desync them. Runs regardless of whether diarization was
-    requested -- an always-on engine's unrequested-but-legal word speakers
-    (TR.5 named exemption) benefit identically. When nothing changes the
+    the result contract promises the two views agree, so synthesizing only the
+    top level would silently desync them. Runs regardless of whether diarization
+    was requested -- an always-on engine's unrequested-but-legal word speakers
+    (a named exemption) benefit identically. When nothing changes the
     input is returned unchanged (identity fast path: no churn, and untouched
     results keep object equality for callers).
 
@@ -315,7 +320,7 @@ class EngineBase(ABC):
 
     Subclasses MUST set :attr:`properties` and :attr:`declared_capabilities` as
     class attributes, assign :attr:`config` in ``__init__`` (which MUST stay
-    pure -- no filesystem, GPU, or network access; spec IC.9), and implement
+    pure -- no filesystem, GPU, or network access), and implement
     :meth:`_transcribe`. Streaming engines additionally override
     :meth:`_start_transcription` (the streaming template hook); the public
     :meth:`start_transcription` runs the standard gating pipeline for them.
@@ -327,8 +332,8 @@ class EngineBase(ABC):
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
     #: The engine's init-config model type, or ``None`` when not declared.
     #: Declaring it makes the config JSON Schema (including the secret-field
-    #: markers from :func:`~standard_asr.asr_config.secret_field`) readable
-    #: *without instantiation* (spec §3.1 / G.3.1) -- the discovery path for
+    #: markers from :func:`~standard_asr.runtime.config.secret_field`) readable
+    #: *without instantiation* -- the discovery path for
     #: settings UIs. Without it, an app cannot render a config form for a
     #: credentialed engine, because constructing the engine requires the very
     #: credentials the form is meant to collect. Engines SHOULD declare it;
@@ -354,7 +359,7 @@ class EngineBase(ABC):
         contract: the engine-naming :class:`ConfigError` (HTTP 422 through the
         server) on every path -- previously the detectable set was
         canonicalized per request inside
-        :func:`~standard_asr.language.effective_candidate_languages`, where an
+        :func:`~standard_asr.contract.language.effective_candidate_languages`, where an
         empty class-default tag surfaced as an uncontracted bare
         ``ValueError`` (an opaque HTTP 500) instead.
 
@@ -414,9 +419,9 @@ class EngineBase(ABC):
     def prepare(self) -> None:
         """Warm up the engine (download / load weights) without transcribing.
 
-        The optional, **synchronous, idempotent** pre-warm hook (spec IC.11),
+        The optional, **synchronous, idempotent** pre-warm hook,
         invoked by ``standard-asr prepare`` and by production / CI
-        pre-warming (download-policy §4) to move the IC.9 lazy side effects
+        pre-warming to move the lazy side effects
         (weight download / model load) off the first transcription to one
         billing-free, transcription-free call. The base implementation is a
         no-op: an engine with nothing to warm up inherits it unchanged and the
@@ -425,8 +430,8 @@ class EngineBase(ABC):
         Engines that load weights MUST override this to materialize them (e.g.
         call ``_ensure_model_loaded``), and that path MUST honour the same
         download gate as transcription: check
-        :func:`~standard_asr.runtime.allow_downloads` and raise
-        :class:`~standard_asr.exceptions.DiscoveryError` when downloads are
+        :func:`~standard_asr.runtime.downloads.allow_downloads` and raise
+        :class:`~standard_asr.contract.exceptions.DiscoveryError` when downloads are
         disabled and weights are missing. An override MUST remain a zero-argument
         synchronous method -- never an ``async def`` (a coroutine function would
         be called but never awaited, silently reporting a false success); the
@@ -452,10 +457,10 @@ class EngineBase(ABC):
 
     @property
     def _allow_private_urls(self) -> bool:
-        """Whether the R5 SSRF policy is relaxed for private-address ``AudioUrl``.
+        """Whether the SSRF policy is relaxed for private-address ``AudioUrl``.
 
-        Sourced from the engine's init config (``BaseConfig.allow_private_urls``;
-        spec R5). It is an init-level deployment switch -- a trust decision about
+        Sourced from the engine's init config (``BaseConfig.allow_private_urls``).
+        It is an init-level deployment switch -- a trust decision about
         the deployment's network, not a per-request parameter -- so it lives on
         the config, never on ``RuntimeParams``, and (like ``strict``) is excluded
         from environment fallback so the environment cannot silently relax the
@@ -477,13 +482,13 @@ class EngineBase(ABC):
         config -> gate parameters (provider_params + capability gating, which
         needs no audio) -> resolve & validate the effective language axis ->
         coerce -> negotiate -> convert/resample -> call the engine ->
-        synthesize missing segment speakers from word speakers (the TR.5
-        pinned rule) -> attach diagnostics.
+        synthesize missing segment speakers from word speakers (the pinned
+        synthesis rule) -> attach diagnostics.
 
         Parameter validation runs *before* the (potentially expensive) audio
         decode/resample so a swapped-engine ``provider_params`` bug or an
-        unsupported parameter is rejected before any audio is touched (spec
-        Runtime R3: "fail fast on provider_params first").
+        unsupported parameter is rejected before any audio is touched (fail fast
+        on provider_params first).
 
         Args:
             audio: The audio to transcribe.
@@ -499,7 +504,7 @@ class EngineBase(ABC):
                 ``selectable_languages``; or if a declared selectable/detectable
                 tag is itself malformed (an engine-declaration bug).
             IncompatibleAudioInputError: If no conversion path exists.
-            UnsafeAudioUrlError: If an ``AudioUrl`` fails the R5 SSRF policy
+            UnsafeAudioUrlError: If an ``AudioUrl`` fails the SSRF policy
                 (non-HTTPS, or a private/loopback/link-local target).
             AudioProcessingError: On an audio failure surfaced by the conversion
                 pipeline -- a decode failure, an over-``max_file_size`` payload,
@@ -509,11 +514,11 @@ class EngineBase(ABC):
             InvalidProviderParamError: On wrong provider params.
             ValueError: On an invalid candidate-language list -- a malformed
                 candidate tag or one containing ``auto`` raises **always**
-                (independent of strict/best_effort, spec LANG R3); a
+                (independent of strict/best_effort); a
                 non-detectable or over-``max`` candidate raises only in strict
                 mode.
             TranscriptionError: On an engine-execution failure inside
-                :meth:`_transcribe` (spec Runtime R7).
+                :meth:`_transcribe`.
         """
         request = params or RuntimeParams()
         # Fail fast: validate config + params (no audio needed) before decode.
@@ -531,7 +536,7 @@ class EngineBase(ABC):
         # Audio decode/resample only after parameters are known-good.
         prepared = self._prepare_audio(audio)
         result = self._transcribe(prepared, gated)
-        # Standard-layer diarization synthesis (spec TR.5): the streaming
+        # Standard-layer diarization synthesis: the streaming
         # reducer applies the same shared rule, so batch and streaming yield
         # the same Segment.speaker for the same engine output.
         result = _synthesize_result_speakers(result)
@@ -547,7 +552,7 @@ class EngineBase(ABC):
         """Decode, negotiate, and resample an audio input (shared pipeline).
 
         The single owner of the audio-conversion arguments threaded into
-        :func:`~standard_asr.audio_conversion.execute_plan`, shared by
+        :func:`~standard_asr.audio.conversion.execute_plan`, shared by
         :meth:`transcribe` and the whole-input :meth:`start_transcription` path so
         both honor identical negotiation against the engine's declared audio
         properties. A new conversion parameter is then wired in exactly one place
@@ -578,11 +583,12 @@ class EngineBase(ABC):
         )
 
     def _validate_language_config(self) -> None:
-        """Enforce the ``default_language`` totality invariant (IC.6 / LANG R1).
+        """Enforce the ``default_language`` totality invariant.
 
         When the engine exposes a language axis, ``default_language`` MUST be set
-        and MUST be a member of ``selectable_languages``; otherwise R2 step 2
-        (fall back to ``default_language``) would yield an undefined result. This
+        and MUST be a member of ``selectable_languages``; otherwise the
+        fall-back-to-``default_language`` resolution step would yield an
+        undefined result. This
         runs in the standard layer so a forgetful adapter fails loudly instead of
         silently transcribing in the wrong language.
 
@@ -599,12 +605,13 @@ class EngineBase(ABC):
             raise ConfigError(
                 f"Engine {self.properties.engine_id!r} exposes a language axis "
                 "(selectable_languages is non-empty) so its config MUST set "
-                "default_language (spec IC.6 / LANG R1)."
+                "default_language."
             )
         # Canonicalize BOTH sides: BCP-47 membership is case-insensitive, and
         # either default_language or the declared sets may be a non-canonical
         # class-level default, so a raw "en-us" must still match a canonical
-        # "en-US" instead of spuriously failing LANG R1 and blocking the engine.
+        # "en-US" instead of spuriously failing the totality check and blocking
+        # the engine.
         # Canonicalization raises ValueError on an empty/whitespace tag; this
         # method promises ConfigError, so wrap it naming the malformed value (a
         # language tag is not a secret -- echoing it is safe and actionable).
@@ -613,20 +620,20 @@ class EngineBase(ABC):
         except ValueError as exc:
             raise ConfigError(
                 f"default_language {default!r} is malformed for engine "
-                f"{self.properties.engine_id!r}: {exc} (spec LANG R1)."
+                f"{self.properties.engine_id!r}: {exc}."
             ) from exc
         selectable, _ = self._canonical_language_sets()
         if canonical_default not in selectable:
             raise ConfigError(
                 f"default_language {default!r} is not in selectable_languages "
                 f"{self.properties.selectable_languages!r} "
-                f"(engine {self.properties.engine_id!r}, spec LANG R1)."
+                f"(engine {self.properties.engine_id!r})."
             )
 
     def _resolve_language_axis(
         self, params: RuntimeParams, mode: Mode, *, requested_language: str | None = None
     ) -> tuple[RuntimeParams, list[Diagnostic]]:
-        """Resolve and validate the effective language axis (LANG R2/R3).
+        """Resolve and validate the effective language axis.
 
         Runs standard resolution so the engine receives the same effective
         ``language`` and ``candidate_languages`` values that the standard layer
@@ -704,14 +711,15 @@ class EngineBase(ABC):
             )
         # Both declared sets come canonical (and ConfigError-checked) from the
         # shared per-engine canonicalization, so a canonical eff_lang matches
-        # case-insensitively. Membership uses RFC 4647 lookup (spec LANG R4) so a
+        # case-insensitively. Membership uses RFC 4647 lookup so a
         # region/script refinement of a selectable primary subtag (e.g. "en-US"
         # against "en") is accepted and handed to the engine to reduce -- engines
         # need not enumerate variants.
         selectable, detectable = self._canonical_language_sets()
         # eff_lang is non-None here: this method only runs when has_language_axis
-        # is True, and effective_language then returns default_language (R1
-        # guarantees it is set, enforced by _validate_language_config above), or
+        # is True, and effective_language then returns default_language (the
+        # totality invariant guarantees it is set, enforced by
+        # _validate_language_config above), or
         # the request override -- both non-None. `auto` has no subtags, so
         # _selectable_match treats it as an exact membership test (matched ==
         # "auto" when selectable, else None), preserving the prior
@@ -747,8 +755,8 @@ class EngineBase(ABC):
             )
             eff_lang = default_language
         elif matched != eff_lang:
-            # Accepted as an RFC 4647 refinement of a selectable primary subtag
-            # (spec LANG R4): the engine receives the full requested tag and
+            # Accepted as an RFC 4647 refinement of a selectable primary subtag:
+            # the engine receives the full requested tag and
             # reduces it internally. Surface an informational diagnostic so the
             # caller can see the tag was matched by reduction rather than exact
             # membership (no value is changed).
@@ -840,9 +848,8 @@ class EngineBase(ABC):
                 network call, or SDK error). Implementations MUST wrap the native
                 exception as ``raise TranscriptionError(...) from exc`` so an
                 application can catch one portable type across every engine
-                instead of each engine's native exception (spec Runtime R7). This
-                is the batch counterpart of the streaming ``engine_error`` event
-                (spec ST §6.2).
+                instead of each engine's native exception. This
+                is the batch counterpart of the streaming ``engine_error`` event.
         """
         raise NotImplementedError  # pragma: no cover
 
@@ -850,7 +857,7 @@ class EngineBase(ABC):
     def ensure_stream_inputs_exclusive(
         audio_format: AudioFormat | None, audio: AudioInputLike | None
     ) -> None:
-        """Enforce the ``audio_format`` / ``audio`` mutual-exclusion (ST §3.1).
+        """Enforce the ``audio_format`` / ``audio`` mutual-exclusion.
 
         ``audio_format`` (incremental PCM feeding) and ``audio`` (whole-input
         streaming output) are mutually exclusive; passing both MUST raise. This
@@ -869,7 +876,7 @@ class EngineBase(ABC):
             raise ValueError(
                 "start_transcription: 'audio_format' (incremental feeding) and "
                 "'audio' (whole-input streaming) are mutually exclusive; pass "
-                "exactly one (spec Streaming §3.1)."
+                "exactly one."
             )
 
     def ensure_stream_format_supported(self, audio_format: AudioFormat) -> None:
@@ -884,15 +891,15 @@ class EngineBase(ABC):
         Wire **encoding**: when the engine declares ``wire_encodings``, an
         encoding not among them is rejected up front rather than misframed as PCM
         and silently mistranscribed. When ``wire_encodings`` is ``None``
-        ("unconstrained", spec §AI) the encoding cannot be validated and the
+        ("unconstrained") the encoding cannot be validated and the
         check is skipped -- the engine is then trusted to accept any encoding
         (typically a self-managed-wire-format adapter). The compliance suite
         emits a warning for a ``streaming_input`` engine that leaves
         ``wire_encodings`` unset, since that skip is where a forgotten
         declaration would let a non-PCM frame be misframed.
 
-        Wire **sample rate**: spec R7's v1 implementation note is explicit that
-        v1 does **NOT** resample streaming bare frames in the standard layer
+        Wire **sample rate**: the standard's v1 implementation note is explicit
+        that v1 does **NOT** resample streaming bare frames in the standard layer
         (unlike the batch ``transcribe`` path, which resamples). Therefore, until
         standard-layer streaming resampling lands, a wire ``sample_rate`` that the
         engine does not accept MUST be rejected here rather than forwarded as
@@ -974,12 +981,12 @@ class EngineBase(ABC):
         application-chosen format -- the CLI sync-bridge runner and the streaming
         gating probe both rely on it. They previously derived one independently and
         disagreed (which sample-rate source to use, and what to do with no declared
-        ``wire_encodings``); this unifies them (AW-2). The format is built from the
+        ``wire_encodings``); this unifies them. The format is built from the
         engine's own Properties so :meth:`ensure_stream_format_supported` accepts
         it (the compliance suite asserts that round-trip):
 
         * ``sample_rate`` = ``required_input_sample_rate`` when the engine
-          hard-requires one, else ``native_sample_rate`` (the R7 reachability
+          hard-requires one, else ``native_sample_rate`` (the reachability
           invariant guarantees the native rate is accepted).
         * ``encoding`` = the first declared ``wire_encodings`` entry, else the
           canonical ``pcm_s16le`` (used only when ``wire_encodings`` is
@@ -1037,10 +1044,10 @@ class EngineBase(ABC):
         standard audio pipeline, and attaches the resulting diagnostics to the
         session.
 
-        Because gating now runs here, spec Runtime R3 ``provider_params``
+        Because gating now runs here, ``provider_params``
         swap-safety is enforced on the streaming path too: a swapped-engine
         ``provider_params`` type-mismatch always raises
-        :class:`~standard_asr.exceptions.InvalidProviderParamError` (no longer
+        :class:`~standard_asr.contract.exceptions.InvalidProviderParamError` (no longer
         undefined behaviour), and an unsupported standard parameter is rejected
         (strict) or dropped + diagnosed (best_effort) exactly as for batch.
 
@@ -1052,8 +1059,8 @@ class EngineBase(ABC):
         not support streaming" rather than a confusing parameter error -- while
         still running the input mutual-exclusion guard first, exactly as before.
 
-        Spec Runtime R5 (streaming param freeze): the already-gated, frozen
-        :class:`~standard_asr.runtime_params.RuntimeParams` is handed to the hook
+        Streaming param freeze: the already-gated, frozen
+        :class:`~standard_asr.contract.params.RuntimeParams` is handed to the hook
         as ``gated_params``; the engine uses that for the whole session and MUST
         NOT re-accept raw params mid-stream.
 
@@ -1062,7 +1069,7 @@ class EngineBase(ABC):
             params: Per-request runtime parameters.
             audio: A complete audio input for whole-input streaming output.
             deadlines: Application overrides for the session's termination
-                deadlines (spec ST.6.1). Applied by this template *after* the
+                deadlines. Applied by this template *after* the
                 engine hook constructed the session, so explicitly-set fields
                 always win over the adapter's construction-time choices --
                 precedence: application explicit > adapter choice > standard
@@ -1075,7 +1082,7 @@ class EngineBase(ABC):
             ValueError: If both ``audio_format`` and ``audio`` are provided, or
                 on an invalid candidate-language list (always for a
                 malformed/``auto`` candidate; strict-only for non-detectable /
-                over-``max``; spec LANG R3).
+                over-``max``).
             ConfigError: If the engine exposes a language axis but its
                 ``default_language`` is unset, malformed, or not in
                 ``selectable_languages``.
@@ -1085,7 +1092,7 @@ class EngineBase(ABC):
                 parameter.
             IncompatibleAudioInputError: If no conversion path exists for a
                 whole-input streaming ``audio`` value.
-            UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the R5 SSRF
+            UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the SSRF
                 policy.
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
@@ -1125,12 +1132,12 @@ class EngineBase(ABC):
                 hint="Use an engine that declares 'streaming_input' or 'streaming_output'.",
             )
         # A bare call (neither audio_format nor audio) opens an INCREMENTAL session
-        # for an engine that self-manages its wire format (spec ST §3.1), which is
+        # for an engine that self-manages its wire format, which is
         # the streaming-input axis. Gate it on the same 'streaming_input' capability
         # as the audio_format path; otherwise a streaming_output-only engine that
         # implements the hook would hand back an incremental session it cannot feed
         # (audio_format=None, prepared_audio=None) -- undefined behaviour instead of
-        # the fail-closed UnsupportedFeatureError (R1). Placed AFTER the hook-override
+        # the fail-closed UnsupportedFeatureError. Placed AFTER the hook-override
         # defense so a batch-only engine still reports the clearer "does not support
         # streaming" rather than this capability-specific message.
         if (
@@ -1173,7 +1180,7 @@ class EngineBase(ABC):
         # Friend API: validate the reserved-attribute guard now, before the base
         # seeds diagnostics / applies deadline overrides below -- so the check sees
         # the pristine post-__init__ snapshot and a subclass that clobbered base
-        # state (e.g. its own self._buffer) fails loudly here (SF-1), not as a
+        # state (e.g. its own self._buffer) fails loudly here, not as a
         # cryptic crash deep in the producer.
         session._ensure_reserved_attrs_checked()  # pyright: ignore[reportPrivateUsage]
         # Friend API: the base engine seeds the session's standard-layer
@@ -1199,7 +1206,7 @@ class EngineBase(ABC):
         """Construct the engine's streaming session (override point).
 
         Streaming engines override this to build and return their
-        :class:`~standard_asr.streaming.TranscriptionSession`. It is invoked by
+        :class:`~standard_asr.runtime.streaming.TranscriptionSession`. It is invoked by
         the :meth:`start_transcription` template *after* the standard streaming
         pipeline (input exclusion, language config, wire-format validation,
         parameter gating, language resolution) has run, so the engine receives
@@ -1209,8 +1216,8 @@ class EngineBase(ABC):
         default, which raises so a stray streaming call fails loudly.
 
         Args:
-            gated_params: The gated, frozen runtime parameters (spec R5: these
-                are frozen for the whole session).
+            gated_params: The gated, frozen runtime parameters (frozen for the
+                whole session).
             audio_format: Wire format for incremental PCM frames, if any.
             prepared_audio: Already-negotiated/resampled audio with conversion
                 diagnostics for whole-input streaming, or ``None`` for the

@@ -5,7 +5,7 @@
 
 These cover the single owner that the server (HTTP/WS) and the CLI ``--options``
 parser both delegate to, so the "validation errors never echo the request input"
-rule (spec server.md §1) cannot drift between transports.
+rule cannot drift between transports.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
-from standard_asr.error_redaction import (
+from standard_asr.runtime.redaction import (
     config_error_from_validation,
     loc_is_credential,
     loc_to_list,

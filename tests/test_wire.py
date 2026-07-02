@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the canonical wire codec (spec "Audio Input & Sample Rate" R4).
+"""Tests for the canonical wire codec.
 
-These cover the public ``standard_asr.wire`` surface: the canonical encoding
+These cover the public ``standard_asr.audio.wire`` surface: the canonical encoding
 identifier and the ``float32`` <-> ``pcm_s16le`` codec pair that every streaming
 engine and the WAV reader now share, so the spec-pinned quantization is defined
 and verified exactly once.
@@ -14,8 +14,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from standard_asr.exceptions import AudioProcessingError
-from standard_asr.wire import CANONICAL_WIRE_ENCODING, pcm16_decode, pcm16_encode
+from standard_asr.audio.wire import CANONICAL_WIRE_ENCODING, pcm16_decode, pcm16_encode
+from standard_asr.contract.exceptions import AudioProcessingError
 
 
 def test_canonical_encoding_value() -> None:

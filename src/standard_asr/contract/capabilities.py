@@ -36,8 +36,8 @@ WordTimestampGranularityName = Literal["word", "segment", "char"]
 #: Mode values that count as "not supported" for enum/mode archetype nodes.
 _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
 
-#: Reserved prefix for experimental extension capabilities (spec §C R4,
-#: ``x_<vendor>_<feature>``). An *extra* (non-field) key on a typed standard node
+#: Reserved prefix for experimental extension capabilities
+#: (``x_<vendor>_<feature>``). An *extra* (non-field) key on a typed standard node
 #: is a recognised capability only when it carries this prefix.
 _EXTENSION_PREFIX = "x_"
 
@@ -47,8 +47,8 @@ def _is_extension_key(key: object) -> bool:
 
     Typed capability containers parse with ``extra="allow"`` so an unknown key
     (a future standard field, or a typo) does not fail validation -- forward
-    compatibility (spec §C, "tolerate unknown keys"). But only the reserved
-    ``x_<vendor>_<feature>`` namespace (spec §C R4) is a real, queryable
+    compatibility ("tolerate unknown keys"). But only the reserved
+    ``x_<vendor>_<feature>`` namespace is a real, queryable
     capability. Every other unknown key MUST be fail-closed when probed via
     :meth:`DeclaredCapabilities.supports` / excluded from
     :meth:`DeclaredCapabilities.iter_supported_paths`, so a typo'd path segment
@@ -69,8 +69,8 @@ def granularity_offers_all(granularities: Sequence[str]) -> bool:
     """Return whether a declared ``granularities`` list means "unbounded (all)".
 
     An empty enumeration on a bounded node is the "engine did not enumerate" /
-    unbounded case, not "offers nothing" (spec §C 3.3, bounded archetype: an
-    empty enumeration list does not constrain). The **only** consumer is the
+    unbounded case, not "offers nothing" (on a bounded archetype an empty
+    enumeration list does not constrain). The **only** consumer is the
     capability-narrowing comparison :func:`_node_narrows` /
     :meth:`DeclaredCapabilities.covers`, and there only on the **raw dict /
     ``x_*`` path**: a typed :class:`WordTimestampsCap` cannot reach this case
@@ -472,14 +472,14 @@ class StreamingGuidanceCaps(GuidanceCaps):
     """Streaming guidance-family capabilities (adds mid-stream mutability).
 
     Identical to :class:`GuidanceCaps` plus ``mutable_mid_stream`` -- the
-    declaration site for spec §RT 3.3 / R5's "guidance may change mid-stream"
-    flag. It lives only on the *streaming* guidance family because mid-stream
+    declaration site for the "guidance may change mid-stream" flag. It lives
+    only on the *streaming* guidance family because mid-stream
     mutability is meaningless for batch (a single shot); batch guidance keeps the
     plain :class:`GuidanceCaps`.
 
     A supported ``mutable_mid_stream`` means the engine MAY accept updated guidance
     after ``start_transcription`` (otherwise ``RuntimeParams`` is frozen for the
-    whole session, R5). v1 reserves the flag as the standard query path
+    whole session). v1 reserves the flag as the standard query path
     (``supports("streaming.guidance.mutable_mid_stream")``) and does NOT promise an
     ``update_guidance()`` method; default ``supported=False`` coincides with the
     fail-closed "session-locked" semantics, so the compliance suite requires no
@@ -540,7 +540,7 @@ class StreamingCapabilities(_Container):
     # dict / model_validate / wire). Without that, a value supplied as a dict or a
     # plain GuidanceCaps would land the flag in ``model_extra``, vanishing from
     # supports()/covers() while still advertised by canonical_json() -- a two-layer
-    # desync (mission M.1.2) and a covers() declared=false -> effective=true
+    # desync and a covers() declared=false -> effective=true
     # widening bypass.
     guidance: GuidanceCaps = Field(default_factory=StreamingGuidanceCaps)
     emits_partials: FlagCap = Field(default_factory=FlagCap)
@@ -562,7 +562,7 @@ class StreamingCapabilities(_Container):
         as a dict (the ``model_validate`` / cross-language / wire path) or as a
         plain :class:`GuidanceCaps` instance would be coerced to the base type and
         the flag would vanish from ``supports()`` / ``covers()`` while still being
-        advertised by ``canonical_json()`` -- a two-layer desync (mission M.1.2)
+        advertised by ``canonical_json()`` -- a two-layer desync
         and a ``covers()`` ``declared=false -> effective=true`` widening bypass.
 
         Args:
@@ -600,14 +600,14 @@ class DeclaredCapabilities(_Container):
             only be supported when a ``streaming`` domain is declared.
         self_resamples: Whether the engine resamples audio internally. This is
             one of the *behavioural* facts the spec declares in Capabilities
-            rather than Properties (spec §AI 3.2, §C R7) -- alongside the
-            per-mode ``diarization.always_on`` and the streaming behaviour flags;
-            unlike those it is engine-global (a static behaviour of the engine,
-            not per-mode), so it lives at the top level alongside
+            rather than Properties -- alongside the per-mode
+            ``diarization.always_on`` and the streaming behaviour flags; unlike
+            those it is engine-global (a static behaviour of the engine, not
+            per-mode), so it lives at the top level alongside
             ``streaming_input`` / ``streaming_output``.
 
             It is **purely informational**: ``accepted_sample_rates`` remains
-            authoritative for every resampling decision (spec §AI R7), so this
+            authoritative for every resampling decision, so this
             flag has no decision power and does NOT change whether the standard
             resamples. It lets a client-side resampling engine (e.g.
             faster-whisper, which declares ``accepted_sample_rates="any"``)
@@ -715,7 +715,7 @@ class DeclaredCapabilities(_Container):
     def covers(self, other: DeclaredCapabilities) -> bool:
         """Return whether ``other`` is a valid narrowing of this tree.
 
-        Enforces the normative ``effective ⊆ declared`` invariant (spec §C):
+        Enforces the normative ``effective ⊆ declared`` invariant:
         the effective set may only *close* declared capabilities, never widen
         them. This checks two things:
 
@@ -758,8 +758,8 @@ class DeclaredCapabilities(_Container):
         from ``mode`` (a Python property, absent from ``model_dump``). This method
         injects the uniform boolean at every capability node and present
         container so a client never has to special-case archetypes or know the
-        ``"none"``/``"unsupported"`` sentinels (spec §C R6 -- "enum/mode nodes'
-        ``supported`` is server-injected"). The root object itself carries no
+        ``"none"``/``"unsupported"`` sentinels (enum/mode nodes'
+        ``supported`` is server-injected). The root object itself carries no
         ``supported`` key (it is the container of all modes, not a capability);
         an absent mode domain serializes as ``null`` (fail-closed).
 
@@ -799,7 +799,7 @@ def _get_child(node: object, part: str) -> object:
         if part in type(node).model_fields:
             return getattr(node, part)
         # An extra key on a typed node resolves only inside the ``x_*`` extension
-        # namespace (spec §C R4). A non-extension unknown segment (e.g. a typo of
+        # namespace. A non-extension unknown segment (e.g. a typo of
         # a real field) is fail-closed -- treated as absent -- so it never reads
         # as a supported capability. Keys *inside* a raw ``x_*`` subtree (the dict
         # branch below) are the vendor's own and are not filtered.
@@ -829,7 +829,7 @@ def _derive_supported(node: object) -> bool:
         return True
     if isinstance(node, BaseModel):
         # A non-capability BaseModel (a `constraints` submodel) is NOT a
-        # capability node (spec §C R6): `supports("<feature>.constraints")` must
+        # capability node: `supports("<feature>.constraints")` must
         # be fail-CLOSED, never report the feature as supported via its limits.
         return False
     if isinstance(node, dict):
@@ -840,14 +840,14 @@ def _derive_supported(node: object) -> bool:
         # a number) is a malformed declaration and is fail-closed to ``False`` --
         # never silently promoted to supported. An explicit `supported` is also
         # checked BEFORE `mode`: a `mode` sub-key on the same node MUST NOT raise
-        # an explicit ``supported: false`` back to true (spec §C R6, fail-closed).
+        # an explicit ``supported: false`` back to true (fail-closed).
         if "supported" in mapping:
             return mapping["supported"] is True
         if "mode" in mapping:
             mode = mapping["mode"]
             # A `mode` value MUST be a string archetype token. A non-string (bool,
             # number, None, ...) is a malformed declaration and is fail-CLOSED to
-            # ``False`` -- never silently promoted to supported (spec §C R1) --
+            # ``False`` -- never silently promoted to supported --
             # mirroring the strict-boolean reading of `supported` above. Without
             # the ``isinstance`` guard, ``True``/``1`` would pass ``not in`` (a
             # frozenset of strings) and be wrongly reported as supported.
@@ -861,10 +861,10 @@ def _derive_supported(node: object) -> bool:
         # is present). Previously this returned ``True`` ("present container
         # dict"), so `supports("batch.x_thing")` read ``True`` while
         # `canonical_json()` emitted no `supported` key for the same node -- the
-        # two layers disagreed (violating the two-layer isomorphism, mission
-        # M.1.2) and a flag-less malformed x_* node read as supported. A vendor
+        # two layers disagreed (violating the two-layer isomorphism) and a
+        # flag-less malformed x_* node read as supported. A vendor
         # that wants a queryable x_* node MUST mark it `supported`/`mode`
-        # explicitly (spec §C R4: x_* gating rules are the same as standard).
+        # explicitly (x_* gating rules are the same as standard).
         return False
     return False
 
@@ -903,7 +903,7 @@ def _to_canonical(node: object, *, inject_supported: bool) -> Any:
         }
         # A JSON-sourced x_* capability lands here as a raw dict (not a
         # typed _CapNode). Inject the derived `supported` so cross-language
-        # clients get the same uniform probe the typed path provides (spec §C R6).
+        # clients get the same uniform probe the typed path provides.
         # A dict is a capability node iff it carries `mode` or `supported`; a bare
         # `constraints` dict (e.g. {"max": 5}) has neither and is left untouched.
         if inject_supported and ("mode" in mapping or "supported" in mapping):
@@ -970,7 +970,7 @@ def _children(node: object) -> list[tuple[str, object]]:
             (name, getattr(node, name)) for name in type(node).model_fields
         ]
         extra: dict[str, Any] = node.model_extra or {}
-        # Only ``x_*`` extension extras are queryable capabilities (spec §C R4);
+        # Only ``x_*`` extension extras are queryable capabilities;
         # other unknown keys (forward-compat tolerated on parse, or a typo) MUST
         # NOT pollute the supported-path set used by the ``effective ⊆ declared``
         # comparison. Mirror the same gate as :func:`_get_child`.
@@ -986,8 +986,8 @@ def _children(node: object) -> list[tuple[str, object]]:
 #: upper-bound (``gt``-constrained ``int``) field across all ``*Constraints``
 #: submodels. A new ``max_*`` field that is added but not registered here would
 #: make :func:`_node_narrows` SILENTLY stop rejecting a widening of it -- a
-#: fail-open the compliance suite would then miss (spec §C R3 makes adding
-#: constraint fields the expected evolution path). The guard
+#: fail-open the compliance suite would then miss (adding new constraint fields
+#: is an expected evolution path). The guard
 #: ``test_max_constraint_fields_registry_covers_every_bounded_field`` walks the
 #: submodels and fails if any bounded field is unregistered (or stale).
 _MAX_CONSTRAINT_FIELDS = frozenset(
@@ -1088,8 +1088,8 @@ def _node_narrows(declared: object, effective: object) -> bool:
         # set was bounded. The only typed node whose `constraints` may be None is
         # CandidateLanguagesCap (None == no max); raw x_*/dict nodes may likewise
         # omit the key. For both, a declared finite upper bound that vanishes is a
-        # widening and MUST be rejected, otherwise `effective ⊆ declared` (spec §C
-        # term "effective ⊆ declared") is bypassable through compliance (which
+        # widening and MUST be rejected, otherwise `effective ⊆ declared` is
+        # bypassable through compliance (which
         # enforces the invariant via covers()). A declared constraints submodel
         # that carries no finite bound (e.g. an all-None PromptConstraints) is
         # genuinely unbounded, so losing it widens nothing -- fall through to True.

@@ -30,8 +30,7 @@ from standard_asr import (
     RuntimeParams,
     TranscriptionResult,
 )
-from standard_asr import server as server_module
-from standard_asr.capabilities import (
+from standard_asr.contract.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
     DiarizationCap,
@@ -39,7 +38,7 @@ from standard_asr.capabilities import (
     LanguageCaps,
     StreamingCapabilities,
 )
-from standard_asr.discovery import ModelRegistry, discover_models
+from standard_asr.contract.params import ProviderParams
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -48,8 +47,9 @@ from standard_asr.engine import (
     PreparedAudio,
     SampleRateRange,
 )
-from standard_asr.runtime_params import ProviderParams
-from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.plugins.discovery import ModelRegistry, discover_models
+from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.toolchain import server as server_module
 
 
 class _DummyConfig(BaseConfig[str]):
@@ -108,7 +108,7 @@ def _fail_factory() -> _FailASR:  # pyright: ignore[reportUnusedFunction]
 
 class _ClientErrorASR(_DummyASR):
     def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
-        from standard_asr.exceptions import UnsupportedFeatureError
+        from standard_asr.contract.exceptions import UnsupportedFeatureError
 
         raise UnsupportedFeatureError("word_timestamps not supported")
 
@@ -152,7 +152,7 @@ class _ConfigErrorOnConstructASR(_DummyASR):
     """Construction raises a client-config error (e.g. missing credential)."""
 
     def __init__(self) -> None:
-        from standard_asr.exceptions import ConfigError
+        from standard_asr.contract.exceptions import ConfigError
 
         raise ConfigError("missing API key for /secret/internal/path")
 
@@ -234,7 +234,7 @@ class _Array8kProperties(BaseProperties):
 
 class _RecordingArray8kASR(EngineBase):
     """8 kHz-native engine: an 8 kHz upload must reach it at 8 kHz, never
-    silently up-sampled to 16 kHz (spec R7)."""
+    silently up-sampled to 16 kHz."""
 
     properties: ClassVar[BaseProperties] = _Array8kProperties()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _REC_CAPS
@@ -264,7 +264,7 @@ class _EncodedProperties(BaseProperties):
 
 
 class _RecordingEncodedASR(EngineBase):
-    """Encoded-only engine: must be servable at all (mission G.2.2) and must
+    """Encoded-only engine: must be servable at all and must
     receive the original encoded bytes byte-for-byte (passthrough)."""
 
     properties: ClassVar[BaseProperties] = _EncodedProperties()
@@ -378,7 +378,7 @@ def test_create_app_endpoints() -> None:
 def test_server_array_engine_keeps_native_rate_through_negotiation() -> None:
     # An 8 kHz upload to an 8 kHz-native engine must arrive as an ARRAY at
     # 8000 Hz -- proving the server routes through negotiation and never forces
-    # the old unconditional 16 kHz resample (spec R7).
+    # the old unconditional 16 kHz resample.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -394,7 +394,7 @@ def test_server_array_engine_keeps_native_rate_through_negotiation() -> None:
 
 
 def test_server_encoded_engine_receives_original_bytes_multipart() -> None:
-    # An encoded-only engine must be servable (mission G.2.2) and receive the
+    # An encoded-only engine must be servable and receive the
     # uploaded bytes verbatim (passthrough, no lossy decode/re-encode).
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -784,7 +784,7 @@ def test_create_app_rejects_nonpositive_max_body() -> None:
 
 class _AudioErrorASR(_DummyASR):
     def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
-        from standard_asr.exceptions import AudioProcessingError
+        from standard_asr.contract.exceptions import AudioProcessingError
 
         raise AudioProcessingError("bad audio frames")
 
@@ -836,7 +836,7 @@ def test_transcribe_json_with_options_builds_params() -> None:
 
 def test_transcribe_options_accept_diarization_marker() -> None:
     # {"diarization": {}} on the wire reaches the engine as the empty frozen
-    # marker (spec §RT 3.4 three-way mapping: {} -> DiarizationRequest()).
+    # marker (the three-way mapping: {} -> DiarizationRequest()).
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -1019,7 +1019,7 @@ def test_transcribe_file_options_validation_error_is_sanitized() -> None:
 
 
 def test_transcribe_json_rejects_provider_params_over_wire() -> None:
-    # D5: provider_params is discover-only, never sendable. A request whose
+    # provider_params is discover-only, never sendable. A request whose
     # options carry it must be rejected with a clear 422 (not silently dropped
     # or mis-routed into the internal model).
     pytest.importorskip("fastapi")
@@ -1672,7 +1672,7 @@ def test_ws_stream_no_diagnostics_frame_when_none() -> None:
 
 
 class _StreamDiagSession(_StreamEchoSession):
-    """Emits a final per chunk AND a mid-stream diagnostic via emit_diagnostic (SF-2)."""
+    """Emits a final per chunk AND a mid-stream diagnostic via emit_diagnostic."""
 
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
         index = 0
@@ -1703,7 +1703,7 @@ def _stream_diag_factory() -> _StreamDiagEngine:  # pyright: ignore[reportUnused
 
 
 def test_ws_stream_forwards_mid_stream_diagnostics() -> None:
-    # A diagnostic emitted by _produce mid-stream (emit_diagnostic, SF-2) reaches
+    # A diagnostic emitted by _produce mid-stream (emit_diagnostic) reaches
     # the client as a `diagnostics` frame -- not only the establishment-time set.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -1783,7 +1783,8 @@ def test_ws_stream_non_streaming_engine_reports_unsupported() -> None:
 class _StreamLangAxisProperties(_StreamProperties):
     # A language axis is present (selectable_languages non-empty) but the engine's
     # _DummyConfig sets no default_language, so _validate_language_config raises
-    # ConfigError at SESSION ESTABLISHMENT (not construction) -- LANG R1 totality.
+    # ConfigError at SESSION ESTABLISHMENT (not construction) -- language-config
+    # validation is total.
     selectable_languages: list[str] = ["en"]
 
 
@@ -1819,7 +1820,7 @@ def test_ws_stream_establishment_config_error_reports_bad_request() -> None:
     # missing default_language for a language-axis engine) is client-fixable and
     # MUST map to bad_request, not the misleading "unsupported" -- even though
     # ConfigError subclasses ValueError, so its clause must precede the ValueError
-    # clause (server.md §4.2).
+    # clause.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -1835,7 +1836,7 @@ def test_ws_stream_establishment_config_error_reports_bad_request() -> None:
 def test_ws_stream_establishment_unexpected_error_reports_internal_no_leak() -> None:
     # An unexpected fault in the engine's _start_transcription hook must not crash
     # the route or leak internal detail: a single generic internal_error frame is
-    # sent instead (server.md §3.7).
+    # sent instead.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -1918,7 +1919,7 @@ def test_ws_stream_error_event_does_not_leak_detail(
 ) -> None:
     # An engine that raises mid-stream surfaces an `error` event. Its raw
     # exception text MUST stay server-side (logged), never reach the client --
-    # matching the REST 500 non-leak contract (server.md §3.7 / §4.2).
+    # matching the REST 500 non-leak contract.
     import logging
 
     pytest.importorskip("fastapi")
@@ -1926,7 +1927,7 @@ def test_ws_stream_error_event_does_not_leak_detail(
 
     app = server_module.create_app(registry=_registry_for("_stream_error_factory"))
     client = TestClient(app)
-    with caplog.at_level(logging.ERROR, logger="standard_asr.server"):
+    with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
         with client.websocket_connect("/v1/stream/dummy/echo") as ws:
             ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
             ws.send_bytes(b"abc")
@@ -2029,13 +2030,13 @@ def test_ws_stream_oversize_config_frame_rejected() -> None:
 
 
 def test_ws_stream_config_frame_as_bytes_is_rejected() -> None:
-    # The config/handshake frame MUST be a JSON *text* frame
-    # (server.md §4.1.1); §4.1.3 reserves *binary* frames for raw audio. A binary
+    # The config/handshake frame MUST be a JSON *text* frame;
+    # *binary* frames are reserved for raw audio. A binary
     # first frame is a malformed handshake and is rejected with a `bad_request`
     # policy frame (not parsed as config). Accepting it would bake an undefined
     # leniency into the reference implementation that strict third-party servers
     # would not share -- a cross-implementation hazard for the versioned wire
-    # protocol (G.5.1).
+    # protocol.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -2094,7 +2095,7 @@ def test_bridge_stream_pump_failure_is_logged_and_signalled(
     import logging
 
     pytest.importorskip("fastapi")
-    from standard_asr.exceptions import StreamClosedError
+    from standard_asr.contract.exceptions import StreamClosedError
 
     class _FakeWS:
         def __init__(self) -> None:
@@ -2138,7 +2139,7 @@ def test_bridge_stream_pump_failure_is_logged_and_signalled(
             return _gen()
 
     websocket = _FakeWS()
-    with caplog.at_level(logging.ERROR, logger="standard_asr.server"):
+    with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
         asyncio.run(
             server_module._bridge_stream(  # pyright: ignore[reportPrivateUsage]
                 websocket,  # pyright: ignore[reportArgumentType]
@@ -2260,7 +2261,7 @@ def test_bridge_stream_unexpected_send_failure_is_logged(
             return _gen()
 
     websocket = _FakeWS()
-    with caplog.at_level(logging.ERROR, logger="standard_asr.server"):
+    with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
         asyncio.run(
             server_module._bridge_stream(  # pyright: ignore[reportPrivateUsage]
                 websocket,  # pyright: ignore[reportArgumentType]

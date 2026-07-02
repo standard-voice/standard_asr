@@ -6,7 +6,7 @@
 When an application opens a streaming session that feeds raw PCM frames
 incrementally (``start_transcription(audio_format=...)``), it declares the wire
 format once via :class:`AudioFormat`. The format is locked for the lifetime of
-the session. This is distinct from the batch :data:`~standard_asr.audio_input.AudioInput`
+the session. This is distinct from the batch :data:`~standard_asr.audio.input.AudioInput`
 union: streaming feeds bare PCM frames whose encoding/sample-rate/channels are
 not self-describing, so they MUST be declared up front.
 """
@@ -48,7 +48,7 @@ class AudioFormat(BaseModel):
 
         ``BaseProperties.wire_encodings`` stores its allowlist stripped and
         lowercased, and
-        :meth:`~standard_asr.asr_interface.EngineBase.ensure_stream_format_supported`
+        :meth:`~standard_asr.runtime.interface.EngineBase.ensure_stream_format_supported`
         checks the request encoding against that normalized list. Normalizing the
         request encoding the same way here keeps the match case-insensitive: an
         engine declaring ``"pcm_s16le"`` MUST accept a session opened with

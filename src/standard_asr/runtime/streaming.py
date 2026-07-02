@@ -14,7 +14,7 @@ This module defines the streaming event model and session machinery:
   ``unicodedata`` only.
 * :func:`reduce_event` / :class:`StreamReducer` -- the canonical application-side
   reduce (including the core ``supersede`` handling) and reduction of a session
-  to a :class:`~standard_asr.results.TranscriptionResult`.
+  to a :class:`~standard_asr.contract.results.TranscriptionResult`.
 * :class:`TranscriptionSession` -- an async-first, full-duplex session base.
   Authors implement the async ``_open`` / ``_produce`` / ``_close`` hooks; the
   base provides ``feed`` vs manual ``send_audio`` / ``end_audio`` single
@@ -41,8 +41,8 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .exceptions import InvalidSessionUseError, StreamClosedError
-from .results import (
+from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
+from standard_asr.contract.results import (
     Diagnostic,
     Segment,
     TranscriptionResult,
@@ -63,7 +63,7 @@ EventType = Literal["partial", "final", "supersede", "progress", "done", "error"
 #: adapter keeps consuming audio (industry anchors stream liveness to audio
 #: flow, not result flow -- see docs/research/5). After ``end_audio()`` there is
 #: nothing left to consume, so this bounds the engine's flush-and-``done``
-#: window (spec ST.6.1: ``done`` MUST arrive, bounded by a timeout).
+#: window (``done`` MUST arrive, bounded by a timeout).
 DEFAULT_DONE_TIMEOUT: float | None = 300.0
 
 #: Default seconds without a *content* event (``partial`` / ``final`` /
@@ -83,7 +83,7 @@ DEFAULT_MAX_IDLE: float | None = None
 DEFAULT_MAX_SESSION_SECONDS: float | None = None
 
 #: Default capacity (number of non-coalesced events) of the send-side event
-#: buffer before overflow (spec ST.6.4: bounded send-side buffer, overflow emits
+#: buffer before overflow (the send-side buffer is bounded; overflow emits
 #: an error). Coalesced partials do not count against this bound.
 DEFAULT_EVENT_BUFFER_CAPACITY = 1024
 
@@ -92,7 +92,7 @@ DEFAULT_EVENT_BUFFER_CAPACITY = 1024
 DEFAULT_AUDIO_QUEUE_MAXSIZE = 256
 
 #: Default capacity (number of chunks) of the bounded rolling audio buffer used
-#: to replay recent audio after an internal reconnect (spec ST.6.3 / D10.7).
+#: to replay recent audio after an internal reconnect.
 DEFAULT_AUDIO_HISTORY_MAXLEN = 256
 
 #: Upper bound on the number of lifecycle-suppression diagnostics a single
@@ -101,7 +101,7 @@ DEFAULT_AUDIO_HISTORY_MAXLEN = 256
 #: diagnostic channel is bounded so a misbehaving-but-usable engine that trips a
 #: clamp on (nearly) every event -- e.g. a perpetually jittering audio cursor --
 #: cannot grow the list without limit over a multi-hour live session and slowly
-#: exhaust memory (spec ST.6.4 bounded-buffer philosophy). On overflow the guard
+#: exhaust memory (every session buffer is bounded). On overflow the guard
 #: stops retaining individual entries and instead keeps a single aggregated
 #: ``diagnostics_truncated`` summary (per-code counts) as the final entry, so the
 #: overflow is reported honestly rather than silently dropped.
@@ -166,7 +166,7 @@ def validate_stable_until(text: str, stable_until: int) -> bool:
 
     ``stable_until`` is a codepoint count; ``text[:stable_until]`` is the frozen
     prefix. It MUST NOT split a Unicode combining sequence -- i.e. the codepoint
-    at the cut (if any) must not be a combining mark (spec ST.4.2). Validated
+    at the cut (if any) must not be a combining mark. Validated
     with stdlib ``unicodedata`` only.
 
     Args:
@@ -193,12 +193,12 @@ class TranscriptionEvent(BaseModel):
         stable_until: Frozen-prefix length in codepoints (monotonic per segment).
         finality: For ``final`` events, ``"final"`` or ``"closed"``.
         words: Optional word-level detail (shares the batch ``Word`` model).
-        speaker: Segment-level speaker label (spec ST.4.1), with the same
+        speaker: Segment-level speaker label, with the same
             inheritance rule as ``Segment.speaker`` (a non-``None``
             ``words[i].speaker`` overrides it at word level) and the same
-            label-validity rule (spec TR.5). A frozen segment's accepted
-            speaker is protected across events by the lifecycle guard
-            (spec ST.4.2), not at construction.
+            label-validity rule. A frozen segment's accepted
+            speaker is protected across events by the lifecycle guard,
+            not at construction.
         start: Segment start time in seconds (origin = first session sample).
         end: Segment end time in seconds.
         audio_processed_until: Monotonic audio-time cursor in seconds.
@@ -216,7 +216,7 @@ class TranscriptionEvent(BaseModel):
     # allow_inf_nan=False matches Word/Segment: a NaN/Inf time is rejected at
     # construction, so a malformed adapter timestamp fails loudly on the event
     # rather than silently flowing over the wire or deferring the crash to result
-    # reduction (a silent wrong timestamp is the cardinal sin; spec TR.2).
+    # reduction (a silent wrong timestamp is the cardinal sin).
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     type: EventType
@@ -226,7 +226,7 @@ class TranscriptionEvent(BaseModel):
     finality: Literal["final", "closed"] = "final"
     words: list[Word] | None = None
     speaker: str | None = None
-    # Time-frame fields share Word/Segment's TR.2 invariant: non-negative finite
+    # Time-frame fields share Word/Segment's invariant: non-negative finite
     # seconds (origin = first session sample). ``ge=0`` rejects a negative time
     # here instead of letting it pass event validation only to crash later when
     # StreamReducer builds a Segment from it.
@@ -313,9 +313,9 @@ class TranscriptionEvent(BaseModel):
     def _check_speaker(cls, value: str | None) -> str | None:
         """Reject a malformed speaker label at construction (fail-fast).
 
-        Delegates to :func:`~standard_asr.results.validate_speaker_label` --
+        Delegates to :func:`~standard_asr.contract.results.validate_speaker_label` --
         the shared rule for every ``speaker`` field, so batch and streaming
-        accept exactly the same labels (spec TR.5 / ST.4.1). Validation is
+        accept exactly the same labels. Validation is
         symmetric on purpose: a malformed ``event.speaker=""`` must fail on
         the event itself, not defer the crash to the reducer's ``Segment(...)``
         construction (or flow silently over the WS wire to a client that never
@@ -335,14 +335,14 @@ class TranscriptionEvent(BaseModel):
     @field_validator("detected_language")
     @classmethod
     def _check_detected_language(cls, value: str | None) -> str | None:
-        """Validate and canonicalize ``detected_language`` (mirrors spec TR.1).
+        """Validate and canonicalize ``detected_language``.
 
         Delegates to the shared
-        :func:`~standard_asr.language.validate_detected_language` -- the same
+        :func:`~standard_asr.contract.language.validate_detected_language` -- the same
         rule as ``TranscriptionResult.detected_language``, because the event
-        field is the §6.3 reconnect-continuity mechanism and the two sides MUST
+        field is the reconnect-continuity mechanism and the two sides MUST
         accept exactly the same tags. The import is deferred because
-        :mod:`standard_asr.language` imports from :mod:`standard_asr.results`.
+        :mod:`standard_asr.contract.language` imports from :mod:`standard_asr.contract.results`.
 
         Args:
             value: The candidate detected-language tag, or ``None``.
@@ -354,13 +354,13 @@ class TranscriptionEvent(BaseModel):
             ValueError: If ``value`` is the reserved ``auto`` token or is not a
                 well-formed BCP-47 tag.
         """
-        from .language import validate_detected_language
+        from standard_asr.contract.language import validate_detected_language
 
         return validate_detected_language(value)
 
     @model_validator(mode="after")
     def _check_invariants(self) -> TranscriptionEvent:
-        """Reject structurally illegal events at construction (spec ST.5).
+        """Reject structurally illegal events at construction.
 
         A content event with no segment it can address, an error with no code, or
         a supersede whose retired/replacement ids overlap (or that retires
@@ -384,9 +384,9 @@ class TranscriptionEvent(BaseModel):
                 # Structural bound only: ``text[:stable_until]`` must be a real
                 # prefix, or every consumer (UI, wire client) receives an
                 # unsatisfiable frozen-prefix claim. The *combining-character*
-                # boundary rule stays at the guard/compliance layer (spec ST.4.2
-                # keeps it a sequence-level concern with clamp-and-diagnose
-                # semantics, not a construction error).
+                # boundary rule stays at the guard/compliance layer, which keeps
+                # it a sequence-level concern with clamp-and-diagnose semantics,
+                # not a construction error.
                 raise ValueError(
                     f"stable_until {su} is out of range for text of length "
                     f"{len(self.text)} (text[:stable_until] must be a real prefix)."
@@ -397,17 +397,17 @@ class TranscriptionEvent(BaseModel):
             if len(set(self.old_ids)) != len(self.old_ids):
                 raise ValueError(
                     "supersede old_ids MUST NOT repeat a segment id "
-                    "(an id retires the moment it appears in old_ids; spec §ST 5.2)."
+                    "(an id retires the moment it appears in old_ids)."
                 )
             if len(set(self.new_ids)) != len(self.new_ids):
-                # Lineage is set-to-set (spec §ST 5.2): new_ids is semantically a
+                # Lineage is set-to-set: new_ids is semantically a
                 # set, so a repeat is malformed. Left unrejected it would also
                 # collapse the guard's cross-speaker pigeonhole count (two slots
                 # that are really one segment) and double-count that segment's
                 # frozen prefix in the F_new join.
                 raise ValueError(
                     "supersede new_ids MUST NOT repeat a segment id "
-                    "(each replacement segment is introduced once; spec §ST 5.2)."
+                    "(each replacement segment is introduced once)."
                 )
             if set(self.old_ids) & set(self.new_ids):
                 raise ValueError("supersede old_ids and new_ids MUST be disjoint.")
@@ -467,8 +467,8 @@ class TranscriptionEvent(BaseModel):
         cannot tell which specific old segment a given new segment descends
         from. This is a documented v1 limitation; the spec does not
         require a pairwise mapping, and the frozen-prefix-preservation invariant
-        (§ST 5.2) is enforced over the concatenated prefixes, not per pair.
-        Per-pair edit-ops/diffs are the deferred §10 direction (additive later).
+        is enforced over the concatenated prefixes, not per pair. Per-pair
+        edit-ops/diffs are a possible future direction (additive later).
 
         Args:
             old_ids: The retired segment ids, in reading (time) order.
@@ -486,12 +486,12 @@ class TranscriptionEvent(BaseModel):
         if len(set(old_ids)) != len(old_ids):
             raise ValueError(
                 "supersede old_ids MUST NOT repeat a segment id "
-                "(an id retires the moment it appears in old_ids; spec §ST 5.2)."
+                "(an id retires the moment it appears in old_ids)."
             )
         if len(set(new_ids)) != len(new_ids):
             raise ValueError(
                 "supersede new_ids MUST NOT repeat a segment id "
-                "(each replacement segment is introduced once; spec §ST 5.2)."
+                "(each replacement segment is introduced once)."
             )
         if set(old_ids) & set(new_ids):
             raise ValueError("supersede old_ids and new_ids MUST be disjoint.")
@@ -540,7 +540,7 @@ def reduce_event(segments: dict[str, str], event: TranscriptionEvent) -> None:
     """Apply the canonical streaming reduce to a ``{segment_id: text}`` map.
 
     This is the core reduce every compliant application implements, including
-    ``supersede`` handling (spec ST.5.2). Non-text events are ignored.
+    ``supersede`` handling. Non-text events are ignored.
 
     Args:
         segments: The mutable segment-text map to update in place.
@@ -589,7 +589,7 @@ class StreamReducer:
             # engine genuinely had none, and remember that fact so result()
             # never sorts on a fabricated value.
             # Speaker: the event-level label is authoritative; when it is None
-            # but the words carry speakers, THE pinned TR.5 synthesis rule runs
+            # but the words carry speakers, THE pinned segment-speaker synthesis rule runs
             # HERE because the reducer bypasses EngineBase.transcribe's batch
             # post-processing -- a naive ``speaker=event.speaker`` would leave
             # the authoritative segment speaker None over non-None word
@@ -628,7 +628,7 @@ class StreamReducer:
         segments = [self._segments[sid] for sid in order]
         # Strip each segment and drop empties so a segment carrying edge
         # whitespace (or an empty committed segment) does not inject a double
-        # space / stray separator into the reduced transcript (AW-3). Segments are
+        # space / stray separator into the reduced transcript. Segments are
         # space-joined as the v1 default; a no-space-language (CJK) separator is a
         # separate spec question, not silently changed here.
         text = " ".join(part for part in (segment.text.strip() for segment in segments) if part)
@@ -643,7 +643,7 @@ class EventBufferOverflow(Exception):
     """Internal signal: the bounded send-side event buffer overflowed.
 
     Never propagates to applications; the producer converts it into a terminal
-    ``error(code="backpressure")`` event (spec ST.6.4).
+    ``error(code="backpressure")`` event.
     """
 
 
@@ -659,17 +659,17 @@ _INPUT_SOURCE_FAILURE = _InputSourceFailure()
 
 
 class _CoalescingBuffer:
-    """An async event buffer with partial coalescing (spec ST.6.4 backpressure).
+    """An async event buffer with partial coalescing (backpressure handling).
 
     Pending ``partial`` events are merged per ``segment_id`` (latest wins); a
     same-segment ``final`` / ``closed`` / ``supersede`` invalidates and DROPS the
-    pending partial so a replaced/finalized segment can never revive (spec
-    ST.6.4: "a merge MUST be invalidated by the same segment's final/closed/supersede
-    ... that partial MUST be dropped"). ``final`` / ``supersede`` / ``done`` / ``error`` are never
+    pending partial so a replaced/finalized segment can never revive (a merge
+    MUST be invalidated by the same segment's final/closed/supersede, and that
+    partial MUST be dropped). ``final`` / ``supersede`` / ``done`` / ``error`` are never
     dropped or reordered. When a coalesce replaces a pending partial, the
     replaced partial's non-``None`` ``speaker`` / ``detected_language`` are
     carried forward into the survivor when the survivor left them ``None``
-    (spec ST.6.4 semantic carry-forward).
+    (semantic carry-forward).
 
     The buffer is **bounded**: at most ``capacity`` non-coalesced events may be
     pending. Coalesced partials reuse their existing slot and never grow the
@@ -677,7 +677,7 @@ class _CoalescingBuffer:
     ``capacity`` and raise :class:`EventBufferOverflow`, which the producer turns
     into a terminal ``backpressure`` error. ``final`` / ``supersede`` (like
     ``done`` / ``error`` via :meth:`put_forced`) bypass the bound and are
-    appended drop-proof: they MUST never be dropped (spec ST.6.4) and are
+    appended drop-proof: they MUST never be dropped and are
     bounded per segment, so only distinct-segment *partials* trigger
     backpressure.
     """
@@ -702,7 +702,7 @@ class _CoalescingBuffer:
         """Add an event, coalescing superseded partials.
 
         ``final`` / ``supersede`` / ``error`` / ``done`` are appended drop-proof
-        (bypassing the bound, spec ST.6.4), so only a NEW partial slot for a
+        (bypassing the bound), so only a NEW partial slot for a
         not-yet-pending segment or a ``progress`` event can overflow.
 
         Args:
@@ -717,8 +717,8 @@ class _CoalescingBuffer:
             slot = self._partial_slot.get(event.segment_id)
             if slot is not None and slot.alive:
                 # Coalesce in place: latest partial wins, no growth -- but
-                # carry forward the replaced partial's semantic fields first
-                # (spec ST.6.4). A blind whole-event replace silently dropped a
+                # carry forward the replaced partial's semantic fields first.
+                # A blind whole-event replace silently dropped a
                 # coalesced-away partial's ``speaker`` (and, the same latent
                 # bug, ``detected_language``) whenever the engine did not
                 # repeat the value on every partial: the only event that ever
@@ -726,11 +726,11 @@ class _CoalescingBuffer:
                 # value always wins (no resurrection of an old value). Over the
                 # frozen region the guard already suppresses X->None before it
                 # reaches this buffer, so a None survivor here only ever
-                # originates from the UNFROZEN region, where ST.4.2 permits
+                # originates from the UNFROZEN region, where the protocol permits
                 # deliberate withdrawal; re-presenting the donor's speaker there
-                # is safe because unfrozen partial speakers are non-actionable
-                # (ST.7.2), and if the segment later freezes the guard locks
-                # that last-accepted non-None speaker (ST.4.2), matching the
+                # is safe because unfrozen partial speakers are non-actionable,
+                # and if the segment later freezes the guard locks
+                # that last-accepted non-None speaker, matching the
                 # carried value. The scope is inherently one segment_id
                 # (coalescing is per segment).
                 # model_copy skips validators -- fine, both carried values were
@@ -764,7 +764,7 @@ class _CoalescingBuffer:
                 if stale is not None and stale.alive:
                     stale.alive = False
                     self._live_count -= 1
-            # final / supersede MUST never be dropped (spec ST.6.4): append
+            # final / supersede MUST never be dropped: append
             # drop-proof, bypassing the capacity bound. Only a NEW partial slot
             # (which GROWS the buffer for a not-yet-pending segment) may overflow
             # -- finals/supersedes are bounded per segment (each invalidates its
@@ -778,7 +778,7 @@ class _CoalescingBuffer:
             return
 
         if event.type in ("error", "done"):
-            # error MUST never be dropped either (spec ST.6.4 does not
+            # error MUST never be dropped either (the never-drop rule does not
             # distinguish recoverable from terminal). Terminal error/done
             # normally arrive via put_forced; this branch covers
             # adapter-yielded recoverable errors, which previously fell into
@@ -800,8 +800,8 @@ class _CoalescingBuffer:
     def put_forced(self, event: TranscriptionEvent) -> None:
         """Append a terminal event bypassing the capacity bound.
 
-        Terminal events (``done`` / ``error``) MUST never be dropped (spec
-        ST.6.4), even when the buffer overflowed because the consumer was slow.
+        Terminal events (``done`` / ``error``) MUST never be dropped, even when
+        the buffer overflowed because the consumer was slow.
         They are few (the producer stops after one) so bypassing the bound is
         safe, and -- crucially -- they go into the *same* buffer the iterator is
         already awaiting, so the terminal event is delivered promptly.
@@ -899,7 +899,7 @@ class _SupersedeObligation:
     """A pending frozen-prefix-preservation obligation for one supersede group.
 
     A ``supersede`` MUST preserve the concatenated frozen text of the retired
-    segments across the replacement (spec ST.5.2). This records, for one
+    segments across the replacement. This records, for one
     ``new_ids`` group, the concatenated frozen prefix of the retired old
     segments (``f_old``, in ``old_ids`` order) and the running concatenated
     frozen prefix of the new segments (in ``new_ids`` order), so the guard can
@@ -948,18 +948,18 @@ class _SupersedeObligation:
 
 
 class _LifecycleGuard:
-    """Enforces segment lifecycle + ``stable_until`` invariants (spec ST.5.1).
+    """Enforces segment lifecycle + ``stable_until`` invariants.
 
     Defense in depth: the spec assigns suppression of illegal transitions to the
     adapter (MUST), but a wrong transcript is the cardinal sin, so the base
     independently guards. By default illegal events are SUPPRESSED and a
     structured :class:`Diagnostic` is recorded; in ``strict`` mode the guard
     raises instead. A ``stable_until`` decrease is CLAMPED to its prior value
-    (it MUST only increase, spec ST.4.2) with a diagnostic. Diarization gets
+    (it MUST only increase) with a diagnostic. Diarization gets
     the same defense: a frozen segment's accepted speaker MUST NOT change or
-    be retracted (spec ST.4.2, ``frozen_speaker_rewritten``), and a supersede
+    be retracted (``frozen_speaker_rewritten``), and a supersede
     MUST NOT merge segments carrying distinct speakers into fewer segments
-    (spec ST.5.2, ``supersede_cross_speaker_merge``) -- both suppress the
+    (``supersede_cross_speaker_merge``) -- both suppress the
     whole event.
 
     States per segment id: ``open`` -> ``final`` -> ``closed`` (terminal), or
@@ -981,7 +981,7 @@ class _LifecycleGuard:
                 suppressing it.
             max_diagnostics: Upper bound on retained diagnostics before the
                 guard switches to an aggregated overflow summary (the bounded
-                diagnostic channel; spec ST.6.4). MUST be > 0.
+                diagnostic channel). MUST be > 0.
 
         Raises:
             ValueError: If ``max_diagnostics`` is not positive.
@@ -995,14 +995,14 @@ class _LifecycleGuard:
         self._frozen_text: dict[str, str] = {}
         #: Last ACCEPTED non-None segment-level speaker per segment id. One
         #: ledger deliberately feeds BOTH diarization guards (they were adopted
-        #: as a package): the frozen-speaker rule (spec ST.4.2) and the
-        #: cross-speaker supersede pigeonhole check (spec ST.5.2). Written only
+        #: as a package): the frozen-speaker rule and the
+        #: cross-speaker supersede pigeonhole check. Written only
         #: at the accepted-commit point of :meth:`admit`, so a rejected event
         #: can never poison it.
         self._last_speaker: dict[str, str] = {}
         self._audio_cursor: float = 0.0
         #: Maps each ``new_id`` of an active supersede group to its shared
-        #: frozen-prefix-preservation obligation (spec ST.5.2).
+        #: frozen-prefix-preservation obligation.
         self._supersede_obligations: dict[str, _SupersedeObligation] = {}
         #: Set once :meth:`finalize` has run, so the end-of-session obligation
         #: sweep is emitted at most once per guard.
@@ -1020,7 +1020,7 @@ class _LifecycleGuard:
         reached the guard stops retaining individual entries and instead keeps a
         single aggregated :attr:`OVERFLOW_CODE` summary as the final list entry,
         tallying how many diagnostics of each code overflowed -- so a
-        misbehaving engine cannot grow the list without limit (spec ST.6.4) yet
+        misbehaving engine cannot grow the list without limit yet
         the overflow is still reported honestly (never silently dropped).
 
         Args:
@@ -1068,11 +1068,11 @@ class _LifecycleGuard:
         self._record(Diagnostic(level="warning", code=code, message=message))
 
     def record_diagnostic(self, diagnostic: Diagnostic) -> None:
-        """Record an author-emitted diagnostic into the bounded channel (SF-2).
+        """Record an author-emitted diagnostic into the bounded channel.
 
         The public entry point for :meth:`TranscriptionSession.emit_diagnostic`: a
         producer's mid-stream diagnostic flows through the same bounded,
-        overflow-capped channel (spec ST.6.4) the guard uses for its own
+        overflow-capped channel the guard uses for its own
         suppression diagnostics, so the streaming layer has the diagnostics channel
         the batch path has via ``result.diagnostics`` -- rather than authors having
         no sanctioned way to surface a non-fatal note from ``_produce``.
@@ -1100,7 +1100,7 @@ class _LifecycleGuard:
                     self._reject(
                         "supersede_unknown_old_id",
                         f"supersede old_ids contains never-announced segment "
-                        f"{old!r}; suppressed (spec ST.5.2: old_ids MUST have "
+                        f"{old!r}; suppressed (old_ids MUST have "
                         "received at least one partial/final).",
                     )
                     return None
@@ -1110,18 +1110,18 @@ class _LifecycleGuard:
                     self._reject(
                         "lifecycle_closed_superseded",
                         f"supersede old_ids contains closed segment {old!r}; "
-                        "suppressed (spec ST.5.3: closed MUST NOT be superseded).",
+                        "suppressed (closed MUST NOT be superseded).",
                     )
                     return None
                 if old_state == "superseded":
-                    # superseded is a terminal state (spec ST.5.1): an id retires
+                    # superseded is a terminal state: an id retires
                     # the moment it appears in old_ids. Without this check a
                     # second retirement would copy the retired segment's frozen
                     # text into a SECOND independent replacement lineage.
                     self._reject(
                         "lifecycle_retired_resuperseded",
                         f"supersede old_ids contains already-superseded segment "
-                        f"{old!r}; suppressed (spec ST.5.1/ST.5.2: superseded is "
+                        f"{old!r}; suppressed (superseded is "
                         "terminal -- an id MUST NOT be retired twice).",
                     )
                     return None
@@ -1131,13 +1131,13 @@ class _LifecycleGuard:
                         "supersede_reintroduces_segment",
                         f"supersede new_ids contains already-known segment "
                         f"{new!r} (state {self._state[new]!r}); suppressed. "
-                        "Either the id is being reused (spec ST.5.2: a new_id "
+                        "Either the id is being reused (a new_id "
                         "MUST be fresh) or this supersede was delivered out of "
-                        "order (spec ST.5.2: a supersede MUST precede any "
+                        "order (a supersede MUST precede any "
                         "partial/final of its new_ids).",
                     )
                     return None
-            # Cross-speaker merge ban (spec ST.5.2): the retired segments'
+            # Cross-speaker merge ban: the retired segments'
             # last-known non-None speakers, taken from the same ledger the
             # frozen-speaker rule maintains. When fewer replacement segments
             # arrive than there are distinct retired speakers, a cross-speaker
@@ -1168,7 +1168,7 @@ class _LifecycleGuard:
                     # duplication remains visible in the diagnostic.
                     f"with only {len(set(event.new_ids))} distinct segment(s) "
                     f"{event.new_ids!r}; "
-                    "suppressed (spec ST.5.2: segments carrying different speakers "
+                    "suppressed (segments carrying different speakers "
                     "MUST NOT be merged into a single segment). Side effect of "
                     "suppression: the retired segments stay alive downstream while "
                     "the replacement arrives as fresh segments, so reduced text may "
@@ -1177,7 +1177,7 @@ class _LifecycleGuard:
                 return None
             # Concatenate the retired segments' frozen prefixes, in old_ids
             # (reading) order: this is the text the user already saw frozen and
-            # which the replacement MUST preserve (spec ST.5.2).
+            # which the replacement MUST preserve.
             f_old = "".join(self._frozen_text.get(old, "") for old in event.old_ids)
             if not event.new_ids and f_old:
                 # Pure deletion (empty new_ids) cannot preserve any frozen text;
@@ -1185,7 +1185,7 @@ class _LifecycleGuard:
                 self._reject(
                     "supersede_deletes_frozen_text",
                     "supersede with empty new_ids would delete the frozen prefix "
-                    f"of {event.old_ids!r}; suppressed (spec ST.5.2: frozen text "
+                    f"of {event.old_ids!r}; suppressed (frozen text "
                     "MUST be preserved -- pure deletion is allowed only for "
                     "segments with no frozen prefix).",
                 )
@@ -1211,24 +1211,23 @@ class _LifecycleGuard:
                 self._reject(
                     "lifecycle_after_terminal",
                     f"{event.type} for segment {sid!r} after it became {state}; "
-                    "suppressed (spec ST.5.1 illegal transition).",
+                    "suppressed (illegal transition).",
                 )
                 return None
             if event.type == "partial" and state == "final":
                 self._reject(
                     "lifecycle_partial_after_final",
-                    f"partial for segment {sid!r} after final; suppressed "
-                    "(spec ST.5.1 illegal transition).",
+                    f"partial for segment {sid!r} after final; suppressed (illegal transition).",
                 )
                 return None
             if event.type == "final" and state == "final" and event.finality != "closed":
                 # From state final the only legal transitions are supersede or a
                 # closed event; a plain final re-freezing/rewriting the segment
-                # is illegal (spec ST.5.1).
+                # is illegal.
                 self._reject(
                     "lifecycle_final_after_final",
                     f"non-closed final for segment {sid!r} already in state final; "
-                    "suppressed (spec ST.5.1: from final only supersede or a "
+                    "suppressed (from final only supersede or a "
                     "closed event is legal).",
                 )
                 return None
@@ -1238,11 +1237,11 @@ class _LifecycleGuard:
                 self._reject(
                     "frozen_prefix_rewritten",
                     f"segment {sid!r} rewrote its already-frozen prefix "
-                    "(text[:stable_until] changed); suppressed (spec ST.4.2: the "
+                    "(text[:stable_until] changed); suppressed (the "
                     "frozen prefix is immutable).",
                 )
                 return None
-            # Frozen-speaker rule (spec ST.4.2): once a frozen prefix was
+            # Frozen-speaker rule: once a frozen prefix was
             # established by a PRIOR event AND a non-None speaker has been
             # accepted for the segment, the last accepted speaker is locked --
             # changing it (X->Y) or retracting it (X->None) is suppressed.
@@ -1265,7 +1264,7 @@ class _LifecycleGuard:
                     "frozen_speaker_rewritten",
                     f"segment {sid!r} has a frozen prefix and an accepted speaker "
                     f"{self._last_speaker[sid]!r}, but this {event.type} {change}; "
-                    "suppressed (spec ST.4.2: a frozen segment's speaker is locked "
+                    "suppressed (a frozen segment's speaker is locked "
                     "-- only None->X after freezing and the closed terminal "
                     "correction are legal).",
                 )
@@ -1326,7 +1325,7 @@ class _LifecycleGuard:
                         f"retired frozen text {f_old!r} it MUST preserve; the freeze "
                         f"on segment {sid!r} (the latest in the group to freeze) "
                         "completed the contiguous run that exposed the divergence. "
-                        "Suppressed (spec ST.5.2: supersede MUST preserve frozen "
+                        "Suppressed (supersede MUST preserve frozen "
                         "text).",
                     )
                     return None
@@ -1352,11 +1351,11 @@ class _LifecycleGuard:
     def _clamp_stable_until(
         self, event: TranscriptionEvent, sid: str, *, allow_decrease: bool = False
     ) -> TranscriptionEvent:
-        """Clamp a decreasing or invalid ``stable_until`` (spec ST.4.2).
+        """Clamp a decreasing or invalid ``stable_until``.
 
         With ``allow_decrease`` (the terminal ``closed`` event), a *smaller*
         ``stable_until`` is spec-legal: the post-processing rewrite (ITN /
-        punctuation / casing, spec ST.5.3) may shorten the text -- e.g.
+        punctuation / casing) may shorten the text -- e.g.
         "twenty twenty" -> "2020" -- so the monotonic-increase rule MUST NOT
         clamp it back up above the new text. Only the structural bounds
         (``0 <= stable_until <= len(text)``, non-combining cut) are repaired,
@@ -1383,10 +1382,7 @@ class _LifecycleGuard:
         reason = ""
         if su < prior and not allow_decrease:
             clamped = prior
-            reason = (
-                f"stable_until decreased {su} -> clamped to {prior} "
-                "(spec ST.4.2: MUST only increase)"
-            )
+            reason = f"stable_until decreased {su} -> clamped to {prior} (MUST only increase)"
         if not validate_stable_until(text, clamped):
             # Fall back to the largest valid boundary <= clamped without moving
             # below the previously-published frozen frontier (for a closed
@@ -1412,7 +1408,7 @@ class _LifecycleGuard:
 
         The frozen prefix (``text[:stable_until]`` at the last accepted frontier)
         is immutable: an engine may extend the text but MUST NOT alter what it
-        has already frozen (spec ST.4.2). Returns ``False`` for the first event
+        has already frozen. Returns ``False`` for the first event
         of a segment or when nothing is frozen yet.
 
         Args:
@@ -1433,8 +1429,8 @@ class _LifecycleGuard:
         When ``sid`` is one of the ``new_ids`` of an active supersede group, the
         concatenated frozen prefix of the new segments (``F_new``, in ``new_ids``
         order) MUST agree with the retired segments' concatenated frozen prefix
-        (``F_old``) on their common prefix -- neither may rewrite the other
-        (spec ST.5.2). Only the *contradiction* (divergence on the common
+        (``F_old``) on their common prefix -- neither may rewrite the other.
+        Only the *contradiction* (divergence on the common
         prefix) is checked, and eagerly: it is the cardinal-sin direction. The
         opposite case (``F_new`` still strictly shorter than ``F_old``) is the
         safe, conservative direction (the new segmentation has simply not yet
@@ -1458,7 +1454,7 @@ class _LifecycleGuard:
     def finalize(self) -> list[Diagnostic]:
         """Sweep for supersede obligations left unfulfilled at session end.
 
-        The supersede frozen-prefix rule is asymmetric (spec ST.5.2): the
+        The supersede frozen-prefix rule is asymmetric: the
         *contradiction* direction is rejected eagerly in :meth:`admit`, but the
         *conservative* direction -- the replacement's concatenated frozen prefix
         ``F_new`` remaining strictly SHORTER than the retired ``F_old`` -- is
@@ -1499,7 +1495,7 @@ class _LifecycleGuard:
                             f"supersede replacement {obligation.new_ids!r} ended with its "
                             f"concatenated frozen prefix shorter than the retired frozen text "
                             f"({obligation.f_new()!r} vs {obligation.f_old!r}); the unre-frozen "
-                            "tail was dropped from the lineage (spec ST.5.2: permitted, "
+                            "tail was dropped from the lineage (permitted, "
                             "reported as a soft diagnostic)."
                         ),
                     )
@@ -1511,7 +1507,7 @@ class _LifecycleGuard:
     def _clamp_audio_cursor(
         self, event: TranscriptionEvent
     ) -> tuple[TranscriptionEvent, float | None]:
-        """Clamp a decreasing ``audio_processed_until`` cursor (spec ST.4.1).
+        """Clamp a decreasing ``audio_processed_until`` cursor.
 
         The audio-time cursor is monotonic across the whole session (it never
         moves backwards), independent of segment. A decrease is clamped to the
@@ -1539,7 +1535,7 @@ class _LifecycleGuard:
             self._reject(
                 "audio_cursor_decreased",
                 f"audio_processed_until decreased {cursor} -> clamped to "
-                f"{self._audio_cursor} (spec ST.4.1: the cursor is monotonic).",
+                f"{self._audio_cursor} (the cursor is monotonic).",
             )
             return (
                 event.model_copy(update={"audio_processed_until": self._audio_cursor}),
@@ -1563,7 +1559,7 @@ class _LifecycleGuard:
 #: scaffolding, ...). A subclass that rebinds any of these clobbers base state and
 #: would otherwise crash deep in the producer with a cryptic error far from the
 #: cause; the reserved-attribute guard (snapshotted in ``__init__``, validated in
-#: ``__aenter__``) turns that into a loud, named error at session open (SF-1). Kept
+#: ``__aenter__``) turns that into a loud, named error at session open. Kept
 #: in sync with ``__init__`` by ``test_reserved_session_attrs_matches_base_init``.
 _RESERVED_SESSION_ATTRS: frozenset[str] = frozenset(
     {
@@ -1601,7 +1597,7 @@ class TranscriptionSession(ABC):
     bounded backpressure, lifecycle enforcement, a bounded rolling audio buffer
     + reconnect scaffolding, termination deadlines, and result reduction.
 
-    Reconnect contract (spec ST.6.3 / D10.7) -- base vs adapter:
+    Reconnect contract -- base vs adapter:
 
     * The **base** owns a bounded rolling audio buffer (the most recent fed
       chunks) and exposes :meth:`replay_buffer`, the source ``replayable``
@@ -1616,7 +1612,7 @@ class TranscriptionSession(ABC):
       restarts from zero after a reconnect) -- it MUST mint fresh labels
       (``speaker_2``, ``speaker_3``, ...) and emit a ``speaker_labels_reset``
       fidelity warning, because over-counting speakers is the safe direction
-      while silently merging two people under one label is not (spec ST.6.3).
+      while silently merging two people under one label is not.
       The base then emits the
       ``progress(reconnect=True, gap_start, gap_end)`` event and,
       iff the adapter passed ``content_lost=True`` (its own determination that
@@ -1662,7 +1658,7 @@ class TranscriptionSession(ABC):
             strict_lifecycle: If ``True``, raise on illegal lifecycle
                 transitions instead of suppressing + diagnosing them.
             max_guard_diagnostics: Cap on the bounded lifecycle-suppression
-                diagnostics channel (spec ST.6.4); further diagnostics are
+                diagnostics channel; further diagnostics are
                 aggregated into a single overflow summary rather than growing
                 without bound. Exposed alongside the other bounds so a session
                 can size it; defaults to ``DEFAULT_MAX_GUARD_DIAGNOSTICS``.
@@ -1712,7 +1708,7 @@ class TranscriptionSession(ABC):
         self._feed_task: asyncio.Task[None] | None = None
         self._producer_task: asyncio.Task[None] | None = None
         self._reducer = StreamReducer()
-        # Reconnect scaffolding (spec ST.6.3 / D10.7).
+        # Reconnect scaffolding.
         self._audio_history: deque[bytes] = deque(maxlen=audio_history_maxlen)
         self._replayable = False
         # The FULL fed source, retained only for a truly replayable (list/tuple)
@@ -1721,12 +1717,12 @@ class TranscriptionSession(ABC):
         self._replay_source: tuple[bytes, ...] | None = None
         self._pending_reconnects: list[TranscriptionEvent] = []
         self._monotonic = time.monotonic
-        #: Liveness anchor (spec ST.6.1): advanced on every audio chunk the
+        #: Liveness anchor: advanced on every audio chunk the
         #: adapter consumes via :meth:`audio_chunks`, so ``done_timeout``
         #: measures pipeline inactivity rather than mere event silence.
         self._last_audio_activity: float = self._monotonic()
-        #: Absolute wall-clock origin for ``max_session_seconds`` (spec ST.6.1:
-        #: an *absolute session* cap, not a per-iteration one). Anchored at
+        #: Absolute wall-clock origin for ``max_session_seconds`` (an
+        #: *absolute session* cap, not a per-iteration one). Anchored at
         #: session establishment (:meth:`__aenter__`) -- NOT at the first
         #: :meth:`__anext__` -- so the time between ``__aenter__`` and the first
         #: iteration counts, and a re-entered iterator cannot reset the cap and
@@ -1742,7 +1738,7 @@ class TranscriptionSession(ABC):
         # session is handed to the application, so they surface through the
         # session's existing ``diagnostics()`` channel.
         self._initial_diagnostics: list[Diagnostic] = []
-        # Reserved-attribute guard (SF-1): snapshot the base-owned objects now, so
+        # Reserved-attribute guard: snapshot the base-owned objects now, so
         # the guard can fail loudly if a subclass rebinds one of these reserved
         # private names (almost always by accident -- e.g. using ``self._buffer``
         # for its own state) and silently clobbers base machinery. References (not
@@ -1769,14 +1765,14 @@ class TranscriptionSession(ABC):
         subclass clobber before any legitimate base rebind muddies the comparison.
 
         Raises:
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         if not self.__reserved_checked:
             self._check_reserved_attrs()
             self.__reserved_checked = True
 
     def _replace_reserved_attr(self, name: str, value: object) -> None:
-        """Rebind a reserved base attribute, keeping the SF-1 guard snapshot in sync.
+        """Rebind a reserved base attribute, keeping the reserved-attribute guard snapshot in sync.
 
         The reserved-attribute guard treats any post-``__init__`` rebind of a
         reserved name as a subclass clobber. This is the one supported way to
@@ -1801,7 +1797,7 @@ class TranscriptionSession(ABC):
         self.__reserved_attrs[name] = value
 
     def _check_reserved_attrs(self) -> None:
-        """Fail loudly if a subclass rebound a reserved base attribute (SF-1).
+        """Fail loudly if a subclass rebound a reserved base attribute.
 
         Compares the current reserved attributes against the snapshot taken in
         ``__init__``. A subclass that assigns one of :data:`_RESERVED_SESSION_ATTRS`
@@ -1843,7 +1839,7 @@ class TranscriptionSession(ABC):
             deadlines: The validated override model.
 
         Raises:
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         self._ensure_reserved_attrs_checked()
         if "done_timeout" in deadlines.model_fields_set:
@@ -1878,8 +1874,8 @@ class TranscriptionSession(ABC):
         Each yielded chunk is also retained in the bounded rolling audio buffer
         for possible replay after a reconnect.
 
-        Consuming from this iterator is the session's liveness anchor (spec
-        ST.6.1): every dequeue resets the ``done_timeout`` backstop, so an
+        Consuming from this iterator is the session's liveness anchor: every
+        dequeue resets the ``done_timeout`` backstop, so an
         engine that legitimately emits no events during user silence stays
         alive for as long as the adapter keeps reading audio here.
 
@@ -1921,11 +1917,11 @@ class TranscriptionSession(ABC):
         this from your :meth:`_produce` to report a non-fatal note -- a best-effort
         degradation, an assumed parameter, a lossy fallback -- through the session's
         own :meth:`diagnostics` channel, so a WS client (mid-stream ``diagnostics``
-        frame) or a sync caller (``diagnostics()``) sees WHY (SF-2; spec G.5.2). For
+        frame) or a sync caller (``diagnostics()``) sees WHY. For
         a *fatal* condition, emit an ``error`` event instead -- this is for
         non-fatal notes that must not end the stream.
 
-        Recorded through the same **bounded** channel (spec ST.6.4) as the guard's
+        Recorded through the same **bounded** channel as the guard's
         own diagnostics: past the cap entries aggregate into the overflow summary
         rather than growing without bound, so a chatty producer cannot exhaust
         memory.
@@ -2000,8 +1996,8 @@ class TranscriptionSession(ABC):
         """Record that an internal reconnect bridged a gap (adapter-driven).
 
         The base ALWAYS emits a ``progress(reconnect=True, gap_start, gap_end)``
-        event in order with produced events, followed -- IMMEDIATELY (spec
-        ST.6.3) -- by a trailing ``error(code="content_lost", recoverable=True,
+        event in order with produced events, followed -- IMMEDIATELY -- by a
+        trailing ``error(code="content_lost", recoverable=True,
         gap_start, gap_end)`` IFF the adapter passes ``content_lost=True``.
 
         The events are flushed **promptly**, the moment this is called, through
@@ -2011,7 +2007,7 @@ class TranscriptionSession(ABC):
         it re-establishes the connection without yielding another event; deferring
         the flush to the next produced event would leave the consumer staring at a
         timeout/silence during a slow reconnect -- the opposite of "transparent
-        but honest" (spec ST.6.3). :meth:`note_reconnect` runs in the
+        but honest". :meth:`note_reconnect` runs in the
         producer-task coroutine on the session loop, so a synchronous flush is
         correct and ordered (the events land after already-emitted events and
         before any subsequent one). The :meth:`_run_producer` / ``finally`` drains
@@ -2029,14 +2025,14 @@ class TranscriptionSession(ABC):
         adapter's responsibility (the base never rewrites them). For speaker
         labels the adapter MUST NOT reuse a pre-reconnect label without identity
         evidence; the safe default is to mint fresh labels and emit a
-        ``speaker_labels_reset`` fidelity warning (spec ST.6.3).
+        ``speaker_labels_reset`` fidelity warning.
 
         Args:
             gap_start: Start time (seconds) of the lossy gap, if known.
             gap_end: End time (seconds) of the lossy gap, if known.
             content_lost: ``True`` if the reconnect could not cover the gap and
                 unreplayable audio was permanently lost; queues a non-terminal
-                ``content_lost`` fidelity warning after the progress (spec ST.6.3).
+                ``content_lost`` fidelity warning after the progress.
         """
         self._pending_reconnects.append(
             TranscriptionEvent.progress(reconnect=True, gap_start=gap_start, gap_end=gap_end)
@@ -2053,7 +2049,7 @@ class TranscriptionSession(ABC):
         # Flush promptly (drop-proof, in order) so the notification reaches the
         # consumer even if the adapter now blocks on a slow reconnect without
         # yielding another event. The progress + content_lost pair is drained
-        # together, preserving their required adjacency (spec ST.6.3).
+        # together, preserving their required adjacency.
         self._drain_pending_reconnects()
 
     # ----- input ownership ------------------------------------------------- #
@@ -2066,7 +2062,7 @@ class TranscriptionSession(ABC):
         Raises:
             InvalidSessionUseError: If the other mode was already claimed.
                 Mixing input modes is a usage error against a still-live
-                session, NOT a lifecycle close (spec ST.3.3).
+                session, NOT a lifecycle close.
         """
         if self._mode is None:
             self._mode = mode
@@ -2098,11 +2094,11 @@ class TranscriptionSession(ABC):
                 at a time (or fail deep inside an adapter as a confusing
                 ``engine_error``); passing a **file path** here is a common
                 slip. A whole audio file goes to ``start_transcription(audio=...)``
-                (spec ST.3.1), and incremental input is raw PCM byte chunks.
+                and incremental input is raw PCM byte chunks.
             InvalidSessionUseError: If manual input was already used (mixing) or
                 ``feed`` was already called once -- a usage error against a
                 still-live session, NOT a lifecycle close.
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         self._ensure_reserved_attrs_checked()
         # Reject str up front: it is Iterable[str] and would otherwise fall into
@@ -2203,13 +2199,13 @@ class TranscriptionSession(ABC):
                 session already delivered a terminal event -- a genuine
                 lifecycle close: the audio queue has no consumer anymore, so
                 raising beats blocking forever on a dead queue.
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         self._ensure_reserved_attrs_checked()
         # Claim manual ownership FIRST so mixing with an active feed always
         # raises the deterministic mixing error -- otherwise the feed task
         # setting _ended on exhaustion would race the _ended check below and
-        # sometimes surface the "after end_audio" message instead (spec ST.3.3).
+        # sometimes surface the "after end_audio" message instead.
         self._claim_mode("manual")
         if self._ended:
             raise StreamClosedError("Cannot send_audio after end_audio().")
@@ -2224,12 +2220,12 @@ class TranscriptionSession(ABC):
         """Mark the end of manual audio input (idempotent in manual mode).
 
         Claims manual ownership if this is the first input call, so a later
-        ``feed`` is correctly rejected as mixing (spec ST.3.3).
+        ``feed`` is correctly rejected as mixing.
 
         Raises:
             InvalidSessionUseError: If ``feed`` was used (mixing input modes is
                 a usage error against a still-live session).
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         self._ensure_reserved_attrs_checked()
         self._claim_mode("manual")
@@ -2248,13 +2244,13 @@ class TranscriptionSession(ABC):
         Anchors the ``max_session_seconds`` wall-clock origin here, at session
         establishment, so the absolute cap measures from when the session
         opened -- not from the first :meth:`__anext__` -- and a re-entered
-        iterator cannot reset it (spec ST.6.1).
+        iterator cannot reset it.
 
         Returns:
             The session.
 
         Raises:
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         self._ensure_reserved_attrs_checked()
         self._session_started_at = self._monotonic()
@@ -2281,9 +2277,9 @@ class TranscriptionSession(ABC):
         Reconnect events are appended drop-proof (bypassing the capacity bound,
         like ``final`` / terminal events) so a ``progress(reconnect=True)`` can
         neither be dropped nor split from its immediately-following
-        ``content_lost`` error under backpressure (spec ST.6.3 requires the
-        ``content_lost`` to IMMEDIATELY follow the ``progress``; spec ST.6.4
-        forbids dropping ``error``). They are few and bounded per reconnect, so
+        ``content_lost`` error under backpressure (the protocol requires the
+        ``content_lost`` to IMMEDIATELY follow the ``progress`` and forbids
+        dropping ``error``). They are few and bounded per reconnect, so
         bypassing the bound is safe.
         """
         if not self._pending_reconnects:
@@ -2305,7 +2301,7 @@ class TranscriptionSession(ABC):
         terminal append (so a queued ``progress`` + ``content_lost`` precedes,
         and is delivered ahead of, the terminal) and once more in the ``finally``
         as a guard, so no exit path -- normal, early-terminal, exception, or
-        overflow -- can lose them (spec ST.6.3 / ST.6.4).
+        overflow -- can lose them.
         """
         try:
             async for event in self._produce():
@@ -2324,7 +2320,7 @@ class TranscriptionSession(ABC):
             # Session ended cleanly: the funnel sweeps for supersede obligations
             # whose replacement never re-froze all the retired frozen text. Any
             # such lineage loss is permitted but MUST be reported honestly as a
-            # soft diagnostic (spec ST.5.2); it surfaces through diagnostics().
+            # soft diagnostic; it surfaces through diagnostics().
             # done MUST never be dropped: bypass the bound so it always lands.
             self._buffer.put_forced(self._terminate(TranscriptionEvent.done()))
         except asyncio.CancelledError:  # pragma: no cover - teardown path
@@ -2345,7 +2341,7 @@ class TranscriptionSession(ABC):
             # Guard: any path that skipped the drains above (e.g. an early
             # terminal return while reconnects were still queued) still flushes
             # them before the buffer closes -- queued reconnect events MUST never
-            # be silently lost (spec ST.6.4).
+            # be silently lost.
             self._drain_pending_reconnects()
             self._buffer.close()
 
@@ -2354,7 +2350,7 @@ class TranscriptionSession(ABC):
 
         Used when the normal bounded buffer cannot accept more events (overflow)
         or the producer crashed: ``final`` / ``done`` / ``error`` MUST never be
-        silently lost (spec ST.6.4), so the terminal error bypasses the capacity
+        silently lost, so the terminal error bypasses the capacity
         check and lands in the same buffer the iterator is already awaiting.
 
         Args:
@@ -2379,8 +2375,7 @@ class TranscriptionSession(ABC):
         arbitrary subset, so neither's ``result`` would match the stream --
         breaking the stream == result invariant). Re-iterating would also reset
         the per-iteration deadline anchors. Both are programming errors, so the
-        second call fails loudly instead of returning a competing iterator
-        (spec ST.6.1).
+        second call fails loudly instead of returning a competing iterator.
 
         Returns:
             The session's event async iterator.
@@ -2389,7 +2384,7 @@ class TranscriptionSession(ABC):
             InvalidSessionUseError: If the session is already being iterated --
                 a usage error against a still-live session, not a lifecycle
                 close.
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         self._ensure_reserved_attrs_checked()
         if self._iterating:
@@ -2404,7 +2399,7 @@ class TranscriptionSession(ABC):
     async def _iterate(self) -> AsyncIterator[TranscriptionEvent]:
         """Yield events with hang-backstop, idle, and wall-clock termination.
 
-        Three independent deadlines (spec ST.6.1):
+        Three independent deadlines:
 
         * ``done_timeout`` -- pipeline-inactivity backstop. Anchored to the
           most recent *activity* = max(last event, last audio chunk consumed
@@ -2434,7 +2429,7 @@ class TranscriptionSession(ABC):
         last_content = start
         # Absolute wall-clock origin for ``max_session_seconds``: anchored at
         # session establishment (:meth:`__aenter__`), NOT here, so the cap is a
-        # true *session* cap (spec ST.6.1) -- the ``__aenter__``-to-first-event
+        # true *session* cap -- the ``__aenter__``-to-first-event
         # gap counts, and a re-entered iterator cannot reset and renew it.
         # ``__aiter__`` enforces single iteration, so ``_session_started_at`` is
         # set on every reachable path; the ``or start`` is a defensive fallback
@@ -2581,7 +2576,7 @@ class TranscriptionSession(ABC):
     def _attach_initial_diagnostics(self, diagnostics: list[Diagnostic]) -> None:
         """Record standard-layer diagnostics produced before the session ran.
 
-        Called once by the base :meth:`~standard_asr.asr_interface.EngineBase.\
+        Called once by the base :meth:`~standard_asr.runtime.interface.EngineBase.\
 start_transcription` template with the parameter-gating and language-axis
         diagnostics, so they surface through :meth:`diagnostics` alongside the
         runtime's lifecycle-suppression diagnostics.
@@ -2593,7 +2588,7 @@ start_transcription` template with the parameter-gating and language-axis
             None.
 
         Raises:
-            TypeError: If a subclass rebound a reserved base attribute (SF-1).
+            TypeError: If a subclass rebound a reserved base attribute.
         """
         self._ensure_reserved_attrs_checked()
         self._initial_diagnostics = list(diagnostics)
@@ -2601,7 +2596,7 @@ start_transcription` template with the parameter-gating and language-axis
     def diagnostics(self) -> list[Diagnostic]:
         """Return the diagnostics accumulated for this session so far.
 
-        The lifecycle-suppression channel is **bounded** (spec ST.6.4): a
+        The lifecycle-suppression channel is **bounded**: a
         misbehaving engine that trips a clamp on (nearly) every event cannot
         grow this list without limit over a long session. Once
         :data:`DEFAULT_MAX_GUARD_DIAGNOSTICS` entries accumulate, further
@@ -2663,12 +2658,12 @@ class SyncSession:
 
     Runs a single background event loop in a dedicated thread (owned by this
     object and torn down on close), so applications can drive an async adapter
-    synchronously and authors only ever write async code (spec ST.6.5).
+    synchronously and authors only ever write async code.
 
     Lifecycle submits (``__enter__`` / input calls / ``__exit__``) carry a
     timeout: a hanging adapter ``_open`` / ``_close`` can never deadlock the
     calling thread, and the background loop + thread are always torn down even on
-    timeout (spec ST.6.5: from an external thread, no deadlock, no leak).
+    timeout (from an external thread, no deadlock, no leak).
     """
 
     def __init__(
@@ -2785,7 +2780,7 @@ class SyncSession:
             self._shutdown()
             raise TimeoutError(
                 f"SyncSession lifecycle call timed out after {timeout}s; "
-                "the async adapter hung (spec ST.6.5 no-hang contract)."
+                "the async adapter hung (no-hang contract)."
             ) from exc
 
     def __enter__(self) -> SyncSession:
@@ -2795,7 +2790,7 @@ class SyncSession:
         receives ``__exit__``, so a failed enter MUST tear down the owned loop +
         thread started in ``__init__`` itself -- otherwise an adapter whose
         ``_open`` raises (bad credentials, unreachable host) would leak the
-        bridge's background thread (spec ST.6.5: no leak). The timeout path is
+        bridge's background thread (no leak). The timeout path is
         already torn down inside :meth:`_submit`; the ``entered`` guard also
         covers a non-timeout raise (``_open`` raising a regular exception).
 
@@ -2866,9 +2861,9 @@ class SyncSession:
 
         A dead thread is NOT the only way the bridge stops making progress: an
         adapter that calls blocking (non-async) code mid-session freezes the
-        loop while its thread stays alive, and the in-loop deadlines (spec
-        ST.6.1) cannot fire on a frozen loop. The pump must detect that
-        out-of-band or the sync caller hangs forever (spec ST.6.5 no-hang
+        loop while its thread stays alive, and the in-loop deadlines
+        cannot fire on a frozen loop. The pump must detect that
+        out-of-band or the sync caller hangs forever (the no-hang
         contract). The probe is a threadsafe no-op callback: an idle (merely
         quiet) loop runs it immediately; a frozen loop never does.
 
@@ -2889,7 +2884,7 @@ class SyncSession:
         legitimately go arbitrarily long between events (user silence), so the
         pump must never manufacture a timeout for it -- a stuck pipeline
         already surfaces as a terminal event from the async side's own
-        deadlines (spec ST.6.1). The pump waits in short slices purely to
+        deadlines. The pump waits in short slices purely to
         detect the two failures those in-loop deadlines cannot report: the
         owned event-loop thread dying, and the loop being frozen by an
         adapter running blocking (non-async) code. Brief blocking stalls are
@@ -2969,8 +2964,8 @@ class SyncSession:
         :meth:`result`) so a synchronously-driven session exposes the same
         parameter-gating / language-resolution / lifecycle-suppression
         diagnostics as the async one. Without this the sync bridge would silently
-        drop a first-class, compliance-checked part of the session surface (spec
-        ST.6.5: the sync bridge is a faithful mirror of the async session).
+        drop a first-class, compliance-checked part of the session surface (the
+        sync bridge is a faithful mirror of the async session).
 
         Returns:
             The accumulated diagnostics.
@@ -2981,8 +2976,8 @@ class SyncSession:
         """Whether the owned background event-loop thread is still running.
 
         The bridge starts a dedicated event-loop thread in ``__init__`` and MUST
-        tear it down on close (``__exit__``) or on a failed ``__enter__`` (spec
-        ST.6.5: from an external thread, no leak). After a clean lifecycle this
+        tear it down on close (``__exit__``) or on a failed ``__enter__`` (from
+        an external thread, no leak). After a clean lifecycle this
         returns ``False``; a ``True`` here once the session is closed is a leaked
         loop thread. Exposed so the sync-bridge compliance check can assert on
         *this* bridge's own thread rather than diffing the whole process thread

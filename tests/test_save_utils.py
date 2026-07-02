@@ -13,8 +13,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from standard_asr.exceptions import AudioProcessingError
-from standard_asr.utils.save_utils import encode_array_to_wav_bytes, save_wav
+from standard_asr.audio.wav import encode_array_to_wav_bytes, save_wav
+from standard_asr.contract.exceptions import AudioProcessingError
 
 
 def test_save_wav_writes_multichannel(tmp_path: Path) -> None:

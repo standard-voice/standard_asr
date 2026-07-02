@@ -10,7 +10,7 @@ rolled out across the core *and* every plugin at once.
 Builds on and must stay consistent with:
 - [`lazy-load.md`](lazy-load.md) — `STANDARD_ASR_ALLOW_DOWNLOAD`, lazy weight loading.
 - `docs/spec/download-policy.md` — IC.9 download-root precedence, `prepare()` (IC.11).
-- `standard_asr.runtime` — `resolve_cache_dir()`, `ensure_cache_dir()`,
+- `standard_asr.runtime.downloads` — `resolve_cache_dir()`, `ensure_cache_dir()`,
   `resolve_download_root()`, `allow_downloads()`.
 
 ---

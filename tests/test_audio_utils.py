@@ -14,13 +14,13 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from standard_asr.exceptions import AudioProcessingError, FFmpegNotFoundError
-from standard_asr.utils.audio_loader import (
+from standard_asr.audio.loader import (
     _load_with_ffmpeg,  # pyright: ignore[reportPrivateUsage]
     load_audio,
     normalize_audio,
 )
-from standard_asr.utils.save_utils import save_wav
+from standard_asr.audio.wav import save_wav
+from standard_asr.contract.exceptions import AudioProcessingError, FFmpegNotFoundError
 
 
 def create_sine_wave(

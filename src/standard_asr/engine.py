@@ -19,7 +19,7 @@ an *engine* author implements and declares against:
   :data:`AUTO`, :func:`resolve_download_root`);
 - the result and streaming types an engine constructs and emits.
 
-Exceptions an engine raises live in :mod:`standard_asr.exceptions` (and are also
+Exceptions an engine raises live in :mod:`standard_asr.contract.exceptions` (and are also
 re-exported at the package top level). Compliance helpers for testing your plugin
 live in :mod:`standard_asr.compliance`.
 
@@ -37,21 +37,10 @@ Example:
 
 from __future__ import annotations
 
-from .asr_config import (
-    BaseConfig,
-    CredentialsConfigMixin,
-    DeviceConfigMixin,
-    DownloadConfigMixin,
-    LanguageConfigMixin,
-    env_var_name,
-    secret_field,
-)
-from .asr_interface import EngineBase, StandardASR
-from .asr_properties import BaseProperties, SampleRateRange
-from .audio_conversion import PreparedAudio
-from .audio_format import AudioFormat
-from .audio_input import InputKind
-from .capabilities import (
+from standard_asr.audio.conversion import PreparedAudio
+from standard_asr.audio.format import AudioFormat
+from standard_asr.audio.input import InputKind
+from standard_asr.contract.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
     CandidateLanguagesConstraints,
@@ -74,18 +63,40 @@ from .capabilities import (
     WordTimestampsCap,
     granularity_offers_all,
 )
-from .language import AUTO, effective_candidate_languages, effective_language, normalize_bcp47
-from .param_gating import Mode
-from .results import ChannelResult, Diagnostic, Segment, TranscriptionResult, Word
-from .runtime import allow_downloads, resolve_download_root
-from .runtime_params import (
+from standard_asr.contract.language import (
+    AUTO,
+    effective_candidate_languages,
+    effective_language,
+    normalize_bcp47,
+)
+from standard_asr.contract.params import (
     DIARIZE,
     DiarizationRequest,
     ProviderParams,
     RuntimeParams,
     WordTimestampGranularity,
 )
-from .streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.contract.properties import BaseProperties, SampleRateRange
+from standard_asr.contract.results import (
+    ChannelResult,
+    Diagnostic,
+    Segment,
+    TranscriptionResult,
+    Word,
+)
+from standard_asr.runtime.config import (
+    BaseConfig,
+    CredentialsConfigMixin,
+    DeviceConfigMixin,
+    DownloadConfigMixin,
+    LanguageConfigMixin,
+    env_var_name,
+    secret_field,
+)
+from standard_asr.runtime.downloads import allow_downloads, resolve_download_root
+from standard_asr.runtime.gating import Mode
+from standard_asr.runtime.interface import EngineBase, StandardASR
+from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 
 __all__ = [
     "AUTO",

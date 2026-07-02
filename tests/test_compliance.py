@@ -16,21 +16,8 @@ import pytest
 
 from standard_asr import TranscriptionResult
 from standard_asr import compliance as compliance_module
-from standard_asr.audio_format import AudioFormat
-from standard_asr.audio_input import InputKind
-from standard_asr.capabilities import (
-    BatchCapabilities,
-    DeclaredCapabilities,
-    DiarizationCap,
-    FlagCap,
-    GuidanceCaps,
-    LanguageCaps,
-    PromptCap,
-    PromptConstraints,
-    StreamingCapabilities,
-    StreamTimestampsCap,
-    WordTimestampsCap,
-)
+from standard_asr.audio.format import AudioFormat
+from standard_asr.audio.input import InputKind
 from standard_asr.compliance import (
     ComplianceIssue,
     ComplianceReport,
@@ -43,7 +30,29 @@ from standard_asr.compliance import (
     check_sync_bridge,
     check_transcription_result,
 )
-from standard_asr.discovery import ModelRegistry, discover_models
+from standard_asr.contract.capabilities import (
+    BatchCapabilities,
+    DeclaredCapabilities,
+    DiarizationCap,
+    FlagCap,
+    GuidanceCaps,
+    LanguageCaps,
+    PromptCap,
+    PromptConstraints,
+    StreamingCapabilities,
+    StreamTimestampsCap,
+    WordTimestampsCap,
+)
+from standard_asr.contract.exceptions import (
+    ConfigError,
+    InvalidProviderParamError,
+    UnsupportedFeatureError,
+)
+from standard_asr.contract.params import (
+    ProviderParams,
+    RuntimeParams,
+)
+from standard_asr.contract.results import ChannelResult, Diagnostic, Segment, Word
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -51,17 +60,8 @@ from standard_asr.engine import (
     PreparedAudio,
     SampleRateRange,
 )
-from standard_asr.exceptions import (
-    ConfigError,
-    InvalidProviderParamError,
-    UnsupportedFeatureError,
-)
-from standard_asr.results import ChannelResult, Diagnostic, Segment, Word
-from standard_asr.runtime_params import (
-    ProviderParams,
-    RuntimeParams,
-)
-from standard_asr.streaming import SyncSession, TranscriptionEvent, TranscriptionSession
+from standard_asr.plugins.discovery import ModelRegistry, discover_models
+from standard_asr.runtime.streaming import SyncSession, TranscriptionEvent, TranscriptionSession
 
 
 # --------------------------------------------------------------------------- #
@@ -70,7 +70,7 @@ from standard_asr.streaming import SyncSession, TranscriptionEvent, Transcriptio
 class _Config(BaseConfig[Literal["dummy"]]):
     engine: Literal["dummy"] = "dummy"
     # The fixture properties expose a language axis (selectable_languages is
-    # non-empty), so a compliant config MUST provide default_language (IC.6).
+    # non-empty), so a compliant config MUST provide default_language.
     default_language: str | None = "en"
 
 
@@ -148,7 +148,7 @@ def widened_factory() -> _WidenedASR:  # pyright: ignore[reportUnusedFunction]
 
 
 class _OpenParams(ProviderParams):
-    model_config = {"extra": "allow"}  # not a closed type (violates R1)
+    model_config = {"extra": "allow"}  # not a closed type
 
 
 class _OpenParamsASR(_GoodASR):
@@ -161,7 +161,7 @@ def open_params_factory() -> _OpenParamsASR:  # pyright: ignore[reportUnusedFunc
 
 class _BareBaseParamsASR(_GoodASR):
     # provider_params_type is the bare ProviderParams base: no fields, admits any
-    # params, so swap-safety is zeroed. The compliance suite must flag it (spec 3.2).
+    # params, so swap-safety is zeroed. The compliance suite must flag it.
     provider_params_type: ClassVar[type[ProviderParams] | None] = ProviderParams
 
 
@@ -253,7 +253,7 @@ def mismatched_config_type_factory() -> (  # pyright: ignore[reportUnusedFunctio
 
 
 class _AxisNoDefaultEngine(EngineBase):
-    """EngineBase engine with a language axis but no default_language (IC.6 bug)."""
+    """EngineBase engine with a language axis but no default_language (a config bug)."""
 
     properties: ClassVar[BaseProperties] = _Props()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
@@ -270,7 +270,7 @@ def axis_no_default_factory() -> _AxisNoDefaultEngine:  # pyright: ignore[report
 
 
 class _StructuralAxisNoDefaultASR(_GoodASR):
-    """Structural (non-EngineBase) engine with the same IC.6 violation."""
+    """Structural (non-EngineBase) engine with the same language-config violation."""
 
     def __init__(self) -> None:
         self.config = _ConfigNoLang(engine="dummy")
@@ -404,8 +404,8 @@ def test_check_entrypoints_provider_params_not_subclass_errors() -> None:
 
 
 def test_check_entrypoints_bare_base_provider_params_errors() -> None:
-    # RR-011 / spec 3.2: declaring the bare ProviderParams base (no fields, admits
-    # any params) zeroes swap-safety. The compliance suite must flag it as an error.
+    # Declaring the bare ProviderParams base (no fields, admits any params) zeroes
+    # swap-safety. The compliance suite must flag it as an error.
     report = check_entrypoints(registry=_registry("bare_base_params_factory"))
     assert report.passed is False
     assert any(i.code == "provider_params_type_is_bare_base" for i in report.issues)
@@ -454,7 +454,7 @@ def test_check_entrypoints_language_axis_without_default_enginebase_errors() -> 
 
 
 def test_check_entrypoints_language_axis_without_default_structural_errors() -> None:
-    # Structural (non-EngineBase) engines get the IC.6 presence check.
+    # Structural (non-EngineBase) engines get the default-language presence check.
     report = check_entrypoints(registry=_registry("structural_axis_no_default_factory"))
     assert report.passed is False
     assert any("default_language" in i.message for i in report.issues)
@@ -481,7 +481,7 @@ def test_check_entrypoints_no_instantiate_skips_invocation() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Required-surface checks (D9): the full StandardASR method surface, conditional
+# Required-surface checks: the full StandardASR method surface, conditional
 # on the declared streaming axis, plus the identity match.
 # --------------------------------------------------------------------------- #
 class _NoAsyncASR(_GoodASR):
@@ -593,7 +593,7 @@ _STREAMING_NO_AXIS_CAPS = DeclaredCapabilities(streaming=StreamingCapabilities()
 
 
 class _StreamingNoAxisASR(_GoodASR):
-    """Populates the streaming domain but neither axis flag (uncallable; CC-1)."""
+    """Populates the streaming domain but neither axis flag (uncallable)."""
 
     declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_NO_AXIS_CAPS
     effective_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_NO_AXIS_CAPS
@@ -680,7 +680,7 @@ def test_check_entrypoints_batch_only_no_wire_encodings_no_warning() -> None:
 
 
 def test_check_entrypoints_streaming_domain_without_axis_is_error() -> None:
-    # CC-1: a streaming capabilities domain with neither streaming_input nor
+    # A streaming capabilities domain with neither streaming_input nor
     # streaming_output is an uncallable engine -- every start_transcription fails
     # closed -- so it is a compliance ERROR, not a soft nudge (unlike wire_encodings,
     # there is no legitimate engine in this state).
@@ -692,7 +692,7 @@ def test_check_entrypoints_streaming_domain_without_axis_is_error() -> None:
 
 
 def test_check_entrypoints_streaming_with_axis_no_cc1_error() -> None:
-    # A streaming engine that declares an axis (input here) MUST NOT trip CC-1.
+    # A streaming engine that declares an axis (input here) MUST NOT be flagged.
     report = check_entrypoints(registry=_registry("streaming_input_with_wire_factory"))
     assert not any(i.code == "streaming_domain_without_axis" for i in report.issues), [
         i.message for i in report.issues
@@ -700,7 +700,7 @@ def test_check_entrypoints_streaming_with_axis_no_cc1_error() -> None:
 
 
 def test_check_entrypoints_batch_only_no_cc1_error() -> None:
-    # A batch-only engine (no streaming domain) MUST NOT trip CC-1.
+    # A batch-only engine (no streaming domain) MUST NOT be flagged.
     report = check_entrypoints(registry=_registry("good_factory"))
     assert not any(i.code == "streaming_domain_without_axis" for i in report.issues)
 
@@ -764,7 +764,7 @@ def test_sync_bridge_factory_raising_reports_error() -> None:
 
 
 def test_sync_bridge_ignores_benign_daemon_thread() -> None:
-    # CC-2 regression: a compliant adapter may pull in a dependency that spawns a
+    # Regression: a compliant adapter may pull in a dependency that spawns a
     # benign background daemon thread (e.g. tqdm's monitor, a thread-pool worker)
     # that is still alive when the bridge closes. The leak check MUST assert on the
     # bridge's OWN loop thread, not a process-wide thread diff -- otherwise such a
@@ -844,7 +844,7 @@ def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -
 
 
 # --------------------------------------------------------------------------- #
-# check_recommended_wire_format (AW-2 self-consistency)
+# check_recommended_wire_format (self-consistency)
 # --------------------------------------------------------------------------- #
 def test_recommended_wire_format_self_consistent_passes() -> None:
     # A well-formed streaming engine's recommended format is accepted by its own
@@ -866,9 +866,9 @@ def test_recommended_wire_format_none_is_not_a_violation() -> None:
 
 
 def test_recommended_wire_format_self_inconsistent_is_flagged() -> None:
-    # An engine whose recommended rate is not among its own accepted rates (an
-    # R7-violating declaration) is caught: the recommended format must be one the
-    # engine itself accepts.
+    # An engine whose recommended rate is not among its own accepted rates (a
+    # self-inconsistent declaration) is caught: the recommended format must be one
+    # the engine itself accepts.
     class _InconsistentEngine(_GatingStreamEngine):
         properties: ClassVar[BaseProperties] = _StreamProps.model_construct(
             native_sample_rate=16000, accepted_sample_rates=[8000], required_input_sample_rate=None
@@ -1022,7 +1022,7 @@ def test_check_event_sequence_flags_non_closed_frozen_prefix_rewrite() -> None:
 
 
 def test_check_event_sequence_flags_supersede_frozen_prefix_rewrite() -> None:
-    # A supersede that rewrites the retired segment's frozen prefix (spec ST.5.2)
+    # A supersede that rewrites the retired segment's frozen prefix
     # MUST be reported -- the cardinal sin.
     events = [
         TranscriptionEvent.final("a", "你好世界", stable_until=4),
@@ -1137,7 +1137,7 @@ def test_check_event_sequence_flags_empty_new_ids_deleting_frozen() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# check_event_sequence capability cross-check (SF-4)
+# check_event_sequence capability cross-check
 # --------------------------------------------------------------------------- #
 # Streaming caps with the timestamp/stability sub-caps left at their (unsupported)
 # defaults -- the "no-timestamp streaming" profile.
@@ -1444,7 +1444,7 @@ def test_check_transcription_result_registry_is_none() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# assert_prefix_invariant (SF-3 -- assert the invariant, not partial counts)
+# assert_prefix_invariant (assert the invariant, not partial counts)
 # --------------------------------------------------------------------------- #
 def test_assert_prefix_invariant_accepts_consistent_partials() -> None:
     # Monotonic, never-rewritten prefixes pass -- regardless of how many partials
@@ -1982,13 +1982,13 @@ def test_event_sequence_soft_obligation_code_is_namespaced() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# IC.2 engine-identity collisions (shadowed engine_id) and invalid
+# Engine-identity collisions (shadowed engine_id) and invalid
 # entry points are REPORTED as issues, never silently passed (default run) and
 # never as a raised exception (strict run).
 # --------------------------------------------------------------------------- #
 def test_check_entrypoints_reports_shadowed_engine_id() -> None:
     # Two distributions (dist-less, distinct targets) claim engine_id 'dummy':
-    # config.engine routing is ambiguous (IC.2). A default compliance run MUST
+    # config.engine routing is ambiguous. A default compliance run MUST
     # fail on it, not pass with a mere discovery log line.
     eps = [
         EntryPoint(
@@ -2076,7 +2076,7 @@ def test_check_entrypoints_strict_invalid_name_still_checks_valid_engines() -> N
 # per-engine crash containment (a broken property does not abort the run).
 # --------------------------------------------------------------------------- #
 class _CredentialedASR(_GoodASR):
-    """Zero-arg factory that raises ConfigError when a credential is absent (IC.4)."""
+    """Zero-arg factory that raises ConfigError when a credential is absent."""
 
 
 def credentialed_factory() -> _CredentialedASR:  # pyright: ignore[reportUnusedFunction]
@@ -2084,7 +2084,7 @@ def credentialed_factory() -> _CredentialedASR:  # pyright: ignore[reportUnusedF
 
 
 def test_check_entrypoints_missing_credential_is_warning_not_error() -> None:
-    # IC.4: a credentialed engine's factory MUST raise when the credential is
+    # A credentialed engine's factory MUST raise when the credential is
     # absent (explicit > env > raise). On a clean CI that is the CORRECT behavior,
     # so it MUST be a warning skip, not a compliance error -- otherwise the verdict
     # depends on the runtime's credential state, not the plugin.
@@ -2232,7 +2232,7 @@ def test_gating_strict_flags_streaming_declared_but_hook_not_implemented() -> No
 
 # --------------------------------------------------------------------------- #
 # A streaming_input engine that legitimately FAIL-LOUDS on a missing
-# audio_format (spec AI R6) is NOT misjudged -- the probe synthesizes a legal
+# audio_format is NOT misjudged -- the probe synthesizes a legal
 # wire format from the engine's Properties.
 # --------------------------------------------------------------------------- #
 class _FailLoudOnMissingFormatEngine(_GatingStreamEngine):
@@ -2251,9 +2251,9 @@ class _FailLoudOnMissingFormatEngine(_GatingStreamEngine):
         prepared_audio: PreparedAudio | None = None,
     ) -> TranscriptionSession:
         if audio_format is None:
-            # spec AI R6: bare-PCM streaming locks the sample rate at session
-            # establishment, so a non-self-managing engine fail-louds here.
-            raise ValueError("audio_format is required for this engine (spec AI R6).")
+            # Bare-PCM streaming locks the sample rate at session establishment,
+            # so a non-self-managing engine fail-louds here.
+            raise ValueError("audio_format is required for this engine.")
         return _GatingSession()
 
 
@@ -2448,7 +2448,7 @@ def test_safe_engine_id_handles_missing_properties() -> None:
 # Provider_params swap-safety probe (always-raise, both policies).
 # --------------------------------------------------------------------------- #
 class _SwapSafeEngine(EngineBase):
-    """Relies on the base template, which enforces R3 provider_params swap-safety."""
+    """Relies on the base template, which enforces provider_params swap-safety."""
 
     properties: ClassVar[BaseProperties] = _StreamProps()
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
@@ -2468,7 +2468,7 @@ def test_provider_params_swap_safety_strict_passes() -> None:
 
 
 def test_provider_params_swap_safety_best_effort_passes() -> None:
-    # R3: the rejection is ALWAYS raised, independent of strict/best_effort.
+    # The rejection is ALWAYS raised, independent of strict/best_effort.
     report = check_provider_params_swap_safety(_SwapSafeEngine(strict=False))
     assert report.passed is True, [i.message for i in report.issues]
 
@@ -2477,7 +2477,7 @@ class _SwapUnsafeEngine(_SwapSafeEngine):
     """Bypasses the template's transcribe and forgets the provider_params check."""
 
     def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:
-        # Silently accepts ANY provider_params -- the swap bug R3 makes loud.
+        # Silently accepts ANY provider_params -- the swap bug swap-safety makes loud.
         return TranscriptionResult(text="ok")
 
 
@@ -2512,7 +2512,7 @@ def test_provider_params_swap_probe_raises_invalid_for_engine_without_params() -
 def test_provider_params_swap_safety_unverifiable_when_language_config_invalid() -> None:
     # Validate_language_config runs BEFORE the provider_params gate, so an
     # engine with a language axis but no default_language raises ConfigError before
-    # R3 can be exercised. That must be reported as unverifiable -- NOT mislabeled
+    # swap-safety can be exercised. That must be reported as unverifiable -- NOT mislabeled
     # as a swap miss (provider_params_swap_not_enforced).
     report = check_provider_params_swap_safety(_AxisNoDefaultEngine())
     assert report.passed is False
@@ -2576,7 +2576,7 @@ def test_sync_bridge_timeout_message_disambiguates_slow_vs_deadlock() -> None:
 
 
 # _check_prepare_hook: the optional prepare warm-up hook MUST be
-# a synchronous, zero-argument method when present (spec IC.11).
+# a synchronous, zero-argument method when present.
 # --------------------------------------------------------------------------- #
 class _AsyncPrepareASR(_GoodASR):
     """Declares an async prepare -- a silent-false-success risk."""
@@ -2641,7 +2641,7 @@ def test_check_entrypoints_good_prepare_passes() -> None:
 
 def test_check_entrypoints_no_prepare_hook_is_fine() -> None:
     # The common case: a structural engine that declares no prepare() hook is
-    # not flagged (the hook is optional, spec IC.11).
+    # not flagged (the hook is optional).
     report = check_entrypoints(registry=_registry("good_factory"))
     assert not any("prepare()" in i.message for i in report.issues), [
         i.message for i in report.issues

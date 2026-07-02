@@ -11,8 +11,7 @@ from collections.abc import Callable
 import pytest
 from pydantic import ValidationError
 
-from standard_asr.renderers import to_srt, to_vtt
-from standard_asr.results import (
+from standard_asr.contract.results import (
     ChannelResult,
     Diagnostic,
     Segment,
@@ -20,6 +19,7 @@ from standard_asr.results import (
     Word,
     synthesize_segment_speaker,
 )
+from standard_asr.renderers import to_srt, to_vtt
 
 
 def test_minimal_result() -> None:
@@ -52,7 +52,7 @@ def test_result_rejects_malformed_detected_language() -> None:
 
 
 def test_result_rejects_auto_as_detected_language() -> None:
-    # 'auto' is the detect-me directive, never a detection *result* (spec TR.1).
+    # 'auto' is the detect-me directive, never a detection *result*.
     with pytest.raises(ValueError):
         TranscriptionResult(text="x", detected_language="auto")
     with pytest.raises(ValueError):
@@ -81,7 +81,7 @@ def test_probability_bounds() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Timestamp invariants (spec TR.1/TR.2): non-negative, finite, ordered floats.
+# Timestamp invariants: non-negative, finite, ordered floats.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("model", [Word, Segment])
 def test_time_rejects_negative_start(model: type[Word | Segment]) -> None:
@@ -139,7 +139,7 @@ def test_channels_field() -> None:
 
 
 def test_channel_segments_require_top_level_segments() -> None:
-    # Spec TR.4: ignoring `channels` must be lossless. A channel entry carrying
+    # Ignoring `channels` must be lossless. A channel entry carrying
     # segments while the top level has none would make channel-agnostic
     # consumers (e.g. the renderers) silently drop all per-channel timing, so
     # the shape is rejected at construction.
@@ -149,14 +149,14 @@ def test_channel_segments_require_top_level_segments() -> None:
 
 
 def test_channel_words_require_top_level_words() -> None:
-    # Same TR.4 derivability invariant for the flattened word-level view.
+    # Same derivability invariant for the flattened word-level view.
     chan = ChannelResult(channel=0, text="hi", words=[Word(start=0.0, end=0.5, text="hi")])
     with pytest.raises(ValueError, match="time-merged union"):
         TranscriptionResult(text="hi", channels=[chan])
 
 
 def test_channels_with_top_level_segments_and_words_construct() -> None:
-    # The TR.4-conformant shape (top level = time-merge of all channels) is
+    # The conformant shape (top level = time-merge of all channels) is
     # accepted; per-channel detail with a populated top level is the contract.
     word = Word(start=0.0, end=0.5, text="hi")
     seg = Segment(start=0.0, end=1.0, text="hi")
@@ -168,7 +168,7 @@ def test_channels_with_top_level_segments_and_words_construct() -> None:
 
 
 def test_duplicate_channel_index_rejected() -> None:
-    # TR.4 defines `channels` as one ChannelResult per channel, so a
+    # The standard defines `channels` as one ChannelResult per channel, so a
     # duplicate index is a semantically illegal shape -- a consumer keying a dict
     # by channel index would silently drop one entry. The model refuses it.
     with pytest.raises(ValueError, match="duplicate entries for channel index 0"):
@@ -195,7 +195,7 @@ def test_distinct_channel_indices_accepted() -> None:
 
 
 def test_out_of_order_segments_accepted_at_construction() -> None:
-    # The TR.2 (start, channel, speaker) ordering is an ENGINE obligation, NOT
+    # The (start, channel, speaker) ordering is an ENGINE obligation, NOT
     # a construct-time invariant -- and the compliance suite does not check it
     # either. The streaming reducer legitimately keeps arrival order for
     # timestamp-less engines and sorts only by start, so a strict ordering
@@ -260,7 +260,7 @@ def test_to_srt_empty_text_no_duration() -> None:
 
 def test_empty_segments_list_yields_no_cues() -> None:
     # segments=[] means segmentation ran and found nothing (e.g. silence). Per
-    # the §TR.1 null rule this must NOT fabricate a full-span cue from text.
+    # the null rule this must NOT fabricate a full-span cue from text.
     result = TranscriptionResult(text="some text", segments=[], duration=5.0)
     assert to_srt(result) == ""
     assert to_vtt(result) == "WEBVTT\n"
@@ -427,7 +427,7 @@ def test_lone_cr_normalized_cannot_forge_cue(
 
 
 # --------------------------------------------------------------------------- #
-# Renderer ordering: cues sorted by (start, channel, speaker) per spec TR.2.
+# Renderer ordering: cues sorted by (start, channel, speaker).
 # --------------------------------------------------------------------------- #
 def test_srt_sorts_out_of_order_segments() -> None:
     segs = [
@@ -471,7 +471,7 @@ def test_srt_sorts_none_channel_before_real_channel() -> None:
 
 
 def test_renderer_rejects_negative_preroll_time() -> None:
-    # The data model now forbids negative times (spec TR.2), so a "pre-roll"
+    # The data model now forbids negative times, so a "pre-roll"
     # segment can never reach the renderer: it is rejected at construction. This
     # is why the renderer no longer needs to clamp negative timestamps.
     with pytest.raises(ValueError):
@@ -479,7 +479,7 @@ def test_renderer_rejects_negative_preroll_time() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Speaker labels (spec TR.5): shared construct-time validation + THE pinned
+# Speaker labels: shared construct-time validation + THE pinned
 # segment-speaker synthesis rule.
 # --------------------------------------------------------------------------- #
 def _with_speaker(model: type[Word | Segment], speaker: str | None) -> Word | Segment:
@@ -560,8 +560,8 @@ def test_synthesize_speaker_no_votes_returns_none() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Speaker rendering (spec TR.6 include_speakers): SRT "[label]: " prefix, VTT
-# <v label> voice span, opt-in default, label sanitization, TR.2 sort tie-break.
+# Speaker rendering (include_speakers): SRT "[label]: " prefix, VTT
+# <v label> voice span, opt-in default, label sanitization, sort tie-break.
 # --------------------------------------------------------------------------- #
 def _speaker_result(*speakers: str | None) -> TranscriptionResult:
     segs = [
@@ -649,7 +649,7 @@ def test_srt_empty_text_with_speaker_still_skipped() -> None:
 
 
 def test_cues_sort_speaker_tie_break() -> None:
-    # TR.2: (start, channel, speaker) -- speaker is the FINAL tie-break; None
+    # Ordering: (start, channel, speaker) -- speaker is the FINAL tie-break; None
     # sorts before any real label.
     segs = [
         Segment(start=0.0, end=1.0, text="from B", channel=0, speaker="B"),

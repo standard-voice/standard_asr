@@ -14,16 +14,19 @@ from pydantic import ConfigDict
 
 import standard_asr.compliance as compliance
 from standard_asr import TranscriptionResult
-from standard_asr.asr_interface import StandardASR
-from standard_asr.audio_input import InputKind
-from standard_asr.capabilities import (
+from standard_asr.audio.input import InputKind
+from standard_asr.compliance import check_entrypoints
+from standard_asr.contract.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
     FlagCap,
     LanguageCaps,
 )
-from standard_asr.compliance import check_entrypoints
-from standard_asr.discovery import (
+from standard_asr.contract.exceptions import EntrypointValidationError, FactoryLoadError
+from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
+from standard_asr.contract.params import ProviderParams
+from standard_asr.engine import BaseConfig, BaseProperties, SampleRateRange
+from standard_asr.plugins.discovery import (
     ENTRYPOINT_GROUP,
     ModelRegistry,
     ModelSpec,
@@ -31,19 +34,15 @@ from standard_asr.discovery import (
     discover_models,
     parse_entrypoint_name,
     pep503_normalize,
-    validate_engine_id,
-    validate_model_name,
 )
-from standard_asr.engine import BaseConfig, BaseProperties, SampleRateRange
-from standard_asr.exceptions import EntrypointValidationError, FactoryLoadError
-from standard_asr.runtime_params import ProviderParams
-from standard_asr.streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.runtime.interface import StandardASR
+from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 
 
 class _DummyConfig(BaseConfig[Literal["dummy"]]):
     engine: Literal["dummy"] = "dummy"
     # _DummyProperties exposes a language axis, so a compliant config provides
-    # default_language (IC.6) -- keeps these fixtures clean under the
+    # default_language -- keeps these fixtures clean under the
     # check_entrypoints language-axis check.
     default_language: str | None = "en"
 
@@ -165,7 +164,7 @@ def _bad_param_annotation_factory(  # pyright: ignore[reportUnusedFunction]
 
 
 class _OpenParams(ProviderParams):
-    model_config = ConfigDict(extra="allow")  # violates §R.4 R1 (must be closed)
+    model_config = ConfigDict(extra="allow")  # violates the closed-params rule
 
 
 class _OpenParamsASR(_DummyASR):
@@ -356,7 +355,7 @@ def test_discover_models_supports_multiple_entries() -> None:
 def test_discover_models_duplicate_strategy_replace() -> None:
     # ``replace`` is the same provider overriding its own registration, so both
     # entry points carry the SAME distribution identity -- otherwise this would
-    # (correctly) be an IC.2 cross-distribution collision. Distinct targets let
+    # (correctly) be a cross-distribution engine-identity collision. Distinct targets let
     # us assert the latter factory wins.
     ep_a = EntryPoint(
         name="alpha/only",
@@ -467,7 +466,7 @@ def test_validate_engine_id_accepts_non_canonical() -> None:
 
 
 def test_parse_entrypoint_name_canonicalizes_engine_id() -> None:
-    # IC.2: the routing identity is the PEP 503 canonical form, not the verbatim
+    # The routing identity is the PEP 503 canonical form, not the verbatim
     # declared segment (runs of [-_.] collapse to a single '-').
     engine_id, model_name = parse_entrypoint_name("my_engine/large.v3")
     assert engine_id == "my-engine"
@@ -497,7 +496,7 @@ def test_discover_canonicalizes_engine_id_and_logs(
 
 
 def test_by_engine_normalizes_non_canonical_argument() -> None:
-    # IC.2 consistency: keys_by_engine() must PEP 503-normalize its argument the same
+    # Engine-identity consistency: keys_by_engine() must PEP 503-normalize its argument the same
     # way spec()/create() do, so a non-canonical query form (e.g. "my_engine")
     # resolves to the same engine -- not an empty list while spec()/create()
     # still resolve it.
@@ -596,7 +595,7 @@ def test_gather_entry_points_default(monkeypatch: pytest.MonkeyPatch) -> None:
         assert group == ENTRYPOINT_GROUP
         return EntryPoints(eps)
 
-    monkeypatch.setattr("standard_asr.discovery.entry_points", _entry_points)
+    monkeypatch.setattr("standard_asr.plugins.discovery.entry_points", _entry_points)
 
     gathered = _gather_entry_points()
 
@@ -624,7 +623,7 @@ def test_discover_models_skips_wrong_group() -> None:
 def test_discover_models_warn_keep_first() -> None:
     # Same provider registering the key twice (shared distribution identity), so
     # the duplicate is resolved by ``warn_keep_first`` rather than flagged as an
-    # IC.2 cross-distribution collision. Distinct targets prove the first is kept.
+    # cross-distribution engine-identity collision. Distinct targets prove the first is kept.
     ep_a = EntryPoint(
         name="alpha/dup",
         value="tests.test_discovery:_dummy_factory",
@@ -834,7 +833,7 @@ def test_engine_class_rejects_protocol_entrypoint_directly() -> None:
     eps = [
         EntryPoint(
             name="alpha/first",
-            value="standard_asr.asr_interface:StandardASR",
+            value="standard_asr.runtime.interface:StandardASR",
             group="standard_asr.models",
         )
     ]
@@ -1055,7 +1054,7 @@ def test_engine_class_ignores_unresolvable_param_annotation() -> None:
     assert cls is _DummyASR
 
 
-# ----- IC.2: engine-identity collision detection -------------------------- #
+# ----- engine-identity collision detection -------------------------------- #
 
 
 def test_discover_detects_engine_id_collision_across_dists(
@@ -1083,9 +1082,9 @@ def test_same_model_name_across_dists_is_shadowed(
 ) -> None:
     # Regression guard: two DISTINCT distributions providing the SAME model key
     # (``whisper/large-v3``) are the most common engine-identity collision. The
-    # ``on_conflict`` drop must not erase one provider before IC.2 counts it, or
-    # the collision would silently survive (re-opening the mis-routing IC.2 guards
-    # against).
+    # ``on_conflict`` drop must not erase one provider before the collision is
+    # counted, or the collision would silently survive (re-opening the mis-routing
+    # the engine-identity guards protect against).
     ep_a = _ep_with_dist("whisper/large-v3", "dist-one")
     ep_b = _ep_with_dist("whisper/large-v3", "dist-two")
 

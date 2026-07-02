@@ -13,33 +13,43 @@ from typing import Callable, Iterable, Literal, Sequence
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .asr_config import BaseConfig
-from .asr_interface import EngineBase
-from .asr_properties import BaseProperties
-from .audio_format import AudioFormat
-from .capabilities import (
+from standard_asr.audio.format import AudioFormat
+from standard_asr.contract.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
     PromptCap,
     StreamingCapabilities,
     WordTimestampsCap,
 )
-from .discovery import FactoryLoadError, ModelRegistry, ModelSpec, discover_models
-from .exceptions import (
+from standard_asr.contract.exceptions import (
     ConfigError,
     EntrypointValidationError,
     InvalidProviderParamError,
     UnsupportedFeatureError,
 )
-from .param_gating import (
+from standard_asr.contract.params import (
+    DIARIZE,
+    ProviderParams,
+    RuntimeParams,
+    WordTimestampGranularity,
+)
+from standard_asr.contract.properties import BaseProperties
+from standard_asr.contract.results import Segment, TranscriptionResult, Word
+from standard_asr.plugins.discovery import (
+    FactoryLoadError,
+    ModelRegistry,
+    ModelSpec,
+    discover_models,
+)
+from standard_asr.runtime.config import BaseConfig
+from standard_asr.runtime.gating import (
     DIAG_PROMPT_TRUNCATED,
     DIAG_UNSUPPORTED_GRANULARITY_IGNORED,
     DIAG_UNSUPPORTED_PARAMETER_IGNORED,
     _count_tokens,  # pyright: ignore[reportPrivateUsage]
 )
-from .results import Segment, TranscriptionResult, Word
-from .runtime_params import DIARIZE, ProviderParams, RuntimeParams, WordTimestampGranularity
-from .streaming import (
+from standard_asr.runtime.interface import EngineBase
+from standard_asr.runtime.streaming import (
     SyncSession,
     TranscriptionEvent,
     TranscriptionSession,
@@ -99,9 +109,9 @@ def _pick_sub_constraint_probe(engine: EngineBase) -> tuple[str, RuntimeParams, 
 
     Used when the engine supports every probe in :data:`_GATING_PROBES` at the
     feature level: gating MUST also enforce a supported feature's declared
-    *sub-constraints* (spec Runtime R2 -- a prompt over the declared
-    ``max_tokens`` budget, a word-timestamp granularity not in the declared
-    ``granularities``), so the check falls back to violating one of those. The
+    *sub-constraints* (a prompt over the declared ``max_tokens`` budget, a
+    word-timestamp granularity not in the declared ``granularities``), so the
+    check falls back to violating one of those. The
     best_effort contract differs per constraint (an over-budget prompt is
     truncated with ``prompt_truncated``; an unoffered granularity is dropped
     with ``unsupported_granularity_ignored``), so each probe carries the
@@ -163,7 +173,7 @@ def _is_closed_model(model: type[BaseModel]) -> bool:
 class ComplianceIssue:
     """Single compliance issue detected during validation.
 
-    Mirrors the runtime :class:`~standard_asr.results.Diagnostic` shape: every
+    Mirrors the runtime :class:`~standard_asr.contract.results.Diagnostic` shape: every
     issue carries a stable, machine-readable :attr:`code` so a CI pipeline can
     assert against (or whitelist) a specific category without string-matching the
     human-readable :attr:`message` -- the message is for humans and MAY be
@@ -278,12 +288,12 @@ def check_entrypoints(
     ones -- never as raised exceptions -- so a single command yields one report
     even when discovery itself found problems:
 
-    * **IC.2 engine-identity collisions** (an ``engine_id`` provided by more than
+    * **Engine-identity collisions** (an ``engine_id`` provided by more than
       one distribution, making ``config.engine`` routing ambiguous) are reported
       as **errors** here. The discovery layer only *marks* them
       (``registry.shadowed_engine_ids``); the compliance suite is the fail-loud
-      layer spec IC.2 mandates, so a collision is a compliance failure even on a
-      default (non-strict) run rather than a log line.
+      layer the standard mandates for them, so a collision is a compliance
+      failure even on a default (non-strict) run rather than a log line.
     * **Invalid entry-point names** surface as an error too. When
       ``strict_discovery`` is ``True``, ``discover_models`` would normally *raise*
       on them; this function catches that and converts it into an error issue (so
@@ -296,7 +306,7 @@ def check_entrypoints(
             reported from ``registry.shadowed_engine_ids``).
         strict_discovery: Treat invalid entry-point names as a hard discovery
             error (reported as an error issue here, never raised). Default
-            ``False``. IC.2 collisions are reported as errors regardless.
+            ``False``. Engine-identity collisions are reported as errors regardless.
         instantiate: If ``True``, instantiate zero-arg factories and verify metadata.
 
     Returns:
@@ -312,11 +322,11 @@ def check_entrypoints(
         try:
             registry = discover_models(strict=strict_discovery)
         except EntrypointValidationError as exc:
-            # strict discovery raises on invalid entry-point names (and IC.2
-            # collisions). A compliance check MUST always return a report, so
-            # convert the failure to an error issue and re-discover leniently to
-            # still check the valid engines. IC.2 collisions are additionally
-            # reported per-engine_id below from ``shadowed_engine_ids``.
+            # strict discovery raises on invalid entry-point names (and
+            # engine-identity collisions). A compliance check MUST always return
+            # a report, so convert the failure to an error issue and re-discover
+            # leniently to still check the valid engines. Identity collisions are
+            # additionally reported per-engine_id below from ``shadowed_engine_ids``.
             issues.append(
                 ComplianceIssue(
                     level="error",
@@ -327,7 +337,7 @@ def check_entrypoints(
             )
             registry = discover_models(strict=False)
 
-    # §R.4 R1: RuntimeParams MUST be a closed type. This is a global invariant of
+    # RuntimeParams MUST be a closed type. This is a global invariant of
     # the standard, not per-engine, so it MUST be verified even in a bare
     # environment with no plugins installed -- it runs *before* the empty-registry
     # early return so the global invariant is never silently unchecked.
@@ -341,7 +351,7 @@ def check_entrypoints(
             )
         )
 
-    # IC.2: an engine_id contributed by more than one distribution makes
+    # An engine_id contributed by more than one distribution makes
     # config.engine routing depend on install order. The discovery layer only
     # marks these (consumers may surface or reject); the compliance suite is the
     # fail-loud layer, so each collision is an error -- reported even on a default
@@ -353,7 +363,7 @@ def check_entrypoints(
                 code="engine_id_collision",
                 message=(
                     f"engine_id {engine_id!r} is provided by more than one "
-                    "distribution (IC.2 identity collision); config.engine routing "
+                    "distribution (an identity collision); config.engine routing "
                     "is ambiguous. Install only one provider for this engine_id, or "
                     "have the authors choose distinct engine_ids."
                 ),
@@ -444,7 +454,7 @@ def _check_engine_unguarded(
         )
         return
 
-    # §3.1 / §C: declared metadata MUST be readable from the class without
+    # Declared metadata MUST be readable from the class without
     # instantiation. Resolve the class and read its ClassVars directly.
     _check_class_level_metadata(spec, name, issues)
 
@@ -467,7 +477,7 @@ def _check_engine_unguarded(
     try:
         instance = factory()
     except (ConfigError, ValidationError) as exc:
-        # IC.4: a credentialed engine's zero-arg factory raises when the required
+        # A credentialed engine's zero-arg factory raises when the required
         # credential is absent (explicit config > env > raise). On a clean CI with
         # no env vars set this is the *correct* behavior, so it MUST NOT be a
         # compliance error -- otherwise the verdict would depend on the runtime's
@@ -692,13 +702,13 @@ def _check_language_axis_config(
     """Verify a language-axis engine is constructed with a usable default language.
 
     An engine whose properties expose a language axis but whose config lacks a
-    valid ``default_language`` passes construction (IC.9 keeps ``__init__``
+    valid ``default_language`` passes construction (the standard keeps ``__init__``
     pure) and then raises ``ConfigError`` on the **user's first transcribe** --
     the worst place for an engine-author bug to surface. Catch it at compliance
     time instead. For :class:`EngineBase` engines this reuses the exact runtime
     validation (presence, selectable-membership, canonicalization), so the
     compliance verdict cannot drift from runtime behavior; for structural
-    engines it falls back to the presence check (spec IC.6 / LANG R1).
+    engines it falls back to the presence check.
 
     Args:
         instance: The instantiated engine to inspect.
@@ -733,7 +743,7 @@ def _check_language_axis_config(
                 message=(
                     "Engine exposes a language axis (selectable_languages is non-empty) "
                     "but its config does not set default_language; every transcribe "
-                    "will raise ConfigError (spec IC.6 / LANG R1)."
+                    "will raise ConfigError."
                 ),
                 model=name,
             )
@@ -741,7 +751,7 @@ def _check_language_axis_config(
 
 
 #: Public callables every compliant engine MUST expose unconditionally
-#: (StandardASR protocol, spec §3.1). ``start_transcription`` is required only
+#: (StandardASR protocol). ``start_transcription`` is required only
 #: when the engine declares a streaming axis -- handled separately below.
 _ALWAYS_REQUIRED_METHODS: tuple[str, ...] = ("transcribe", "transcribe_async", "supports")
 
@@ -751,21 +761,21 @@ def _check_required_surface(
     name: str,
     issues: list[ComplianceIssue],
 ) -> None:
-    """Verify the engine exposes the full required public surface (D9).
+    """Verify the engine exposes the full required public surface.
 
     Every engine MUST expose the unconditional batch/query surface
     (:meth:`transcribe`, :meth:`transcribe_async`, :meth:`supports`); a missing
     member is a compliance **error**, not a silent accept. ``start_transcription``
     is required **only** when the engine declares a streaming axis
     (``streaming_input`` or ``streaming_output``) -- a batch-only engine
-    legitimately omits it (spec §3.2). The ``properties``/``declared_capabilities``
+    legitimately omits it. The ``properties``/``declared_capabilities``
     attributes are verified by the caller's type checks; this helper covers the
     callable methods and the conditional streaming entry point.
 
     For an :class:`EngineBase` engine the streaming requirement uses the same
-    :meth:`~standard_asr.asr_interface.EngineBase._overrides_streaming` predicate
+    :meth:`~standard_asr.runtime.interface.EngineBase._overrides_streaming` predicate
     the runtime template uses to decide whether streaming is *actually*
-    implemented (G.2.1 "compliance shares the runtime's validation logic"): the
+    implemented (so compliance shares the runtime's validation logic): the
     base class always supplies a ``start_transcription`` template, so a mere
     ``callable(...)`` check would certify an engine that declares streaming yet
     never overrides the hook -- a capability lie the runtime rejects with
@@ -813,8 +823,8 @@ def _check_required_surface(
                         "Instance declares a streaming axis (streaming_input / "
                         "streaming_output) but does not implement the streaming hook "
                         "(_start_transcription); start_transcription would raise "
-                        "UnsupportedFeatureError at runtime (spec §3.1 / C R1 "
-                        "fail-closed: a declared capability is a promise)."
+                        "UnsupportedFeatureError at runtime (fail-closed: a declared "
+                        "capability is a promise)."
                     ),
                     model=name,
                 )
@@ -828,7 +838,7 @@ def _check_required_surface(
                 message=(
                     "Instance declares a streaming axis (streaming_input / "
                     "streaming_output) but is missing a callable "
-                    "'start_transcription' method (spec §3.1)."
+                    "'start_transcription' method (required by the StandardASR protocol)."
                 ),
                 model=name,
             )
@@ -838,7 +848,7 @@ def _check_required_surface(
 def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
     """Return whether a ``prepare()`` warm-up hook needs caller-supplied arguments.
 
-    A spec IC.11 warm-up hook MUST be invocable with no arguments. A parameter
+    A warm-up hook MUST be invocable with no arguments. A parameter
     makes the hook non-conforming only when it is *required*: it has no default
     and is positional-or-keyword, positional-only, or keyword-only. ``*args`` and
     ``**kwargs`` impose no required argument, and a bound method's ``self`` is
@@ -846,8 +856,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
 
     This is the single definition of the zero-argument half of the contract,
     shared by :func:`_check_prepare_hook` and the ``standard-asr prepare``
-    CLI command so the compliance verdict and the runtime behaviour cannot drift
-    (goal G.2.1).
+    CLI command so the compliance verdict and the runtime behaviour cannot drift.
 
     Args:
         prepare: An engine's ``prepare`` attribute, already confirmed callable.
@@ -877,11 +886,11 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
 
 
 def _check_prepare_hook(instance: object, name: str, issues: list[ComplianceIssue]) -> None:
-    """Verify the optional ``prepare()`` warm-up hook honours its contract (IC.11).
+    """Verify the optional ``prepare()`` warm-up hook honours its contract.
 
     ``prepare()`` is optional, but when present (overridden past the
-    :class:`~standard_asr.asr_interface.EngineBase` no-op) it MUST be a
-    **synchronous, zero-argument** method (spec IC.11). A coroutine ``prepare``
+    :class:`~standard_asr.runtime.interface.EngineBase` no-op) it MUST be a
+    **synchronous, zero-argument** method. A coroutine ``prepare``
     is the dangerous case: ``standard-asr prepare`` would call it, get an
     un-awaited coroutine, and report a false "prepare complete" without ever
     warming up -- a silent success the suite must catch. A ``prepare`` that
@@ -906,8 +915,8 @@ def _check_prepare_hook(instance: object, name: str, issues: list[ComplianceIssu
                 code="prepare_hook_is_coroutine",
                 message=(
                     "prepare() is a coroutine function; the warm-up hook MUST be a "
-                    "synchronous zero-argument method (spec IC.11) -- an async "
-                    "prepare() would be reported complete without ever warming up."
+                    "synchronous zero-argument method -- an async prepare() would be "
+                    "reported complete without ever warming up."
                 ),
                 model=name,
             )
@@ -920,7 +929,7 @@ def _check_prepare_hook(instance: object, name: str, issues: list[ComplianceIssu
                 code="prepare_hook_requires_args",
                 message=(
                     "prepare() requires arguments; the warm-up hook MUST be callable "
-                    "with no arguments (spec IC.11)."
+                    "with no arguments."
                 ),
                 model=name,
             )
@@ -936,15 +945,15 @@ def _check_streaming_wire_encodings_declared(
     """Nudge a ``streaming_input`` engine to declare ``wire_encodings``.
 
     ``wire_encodings`` is the fail-closed allowlist that
-    :meth:`~standard_asr.asr_interface.EngineBase.ensure_stream_format_supported`
+    :meth:`~standard_asr.runtime.interface.EngineBase.ensure_stream_format_supported`
     matches a declared ``audio_format`` against; when it is ``None`` the encoding
-    check is skipped (``None`` means "unconstrained", spec §AI), so an engine that
+    check is skipped (``None`` means "unconstrained"), so an engine that
     actually frames PCM but forgets to declare it would read a ``mulaw``
     ``audio_format`` session's frames as PCM -- a silent mistranscription (the
     cardinal sin). An engine that declares ``streaming_input`` can be opened with
     an explicit ``audio_format``, so the omission is reported here as a **warning**
     (a DX nudge, like the missing ``config_type`` one) rather than an error: a
-    bare-call engine that self-manages its wire format (spec ST §3.1) legitimately
+    bare-call engine that self-manages its wire format legitimately
     leaves it unconstrained, and only ever opens ``audio_format``-less sessions, so
     a hard error would be wrong. This is the compensating compliance signal the
     fail-open ``None`` default lacks at runtime.
@@ -970,7 +979,7 @@ def _check_streaming_wire_encodings_declared(
                     "cannot be validated and a non-PCM (e.g. mulaw) frame would be "
                     "read as PCM -- a silent mistranscription. Declare wire_encodings "
                     "(e.g. ['pcm_s16le']) unless the adapter self-manages its wire "
-                    "format via bare start_transcription() (spec §AI wire_encodings)."
+                    "format via bare start_transcription()."
                 ),
                 model=name,
             )
@@ -993,9 +1002,9 @@ def _check_streaming_axis_declared(
     ``start_transcription`` call rejects: shipped, discoverable as "streaming", and
     uncallable. The inverse mistake (a flag without the domain) is already a
     construction-time ``ValueError``
-    (:meth:`~standard_asr.capabilities.DeclaredCapabilities.\
+    (:meth:`~standard_asr.contract.capabilities.DeclaredCapabilities.\
 _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on the
-    silent side (CC-1).
+    silent side.
 
     Unlike the ``wire_encodings`` nudge -- which a self-managing-wire adapter may
     legitimately trip, so it is a *warning* -- there is NO legitimate engine with a
@@ -1033,14 +1042,14 @@ _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on th
 
 
 def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[ComplianceIssue]) -> None:
-    """Verify class-level metadata is readable without instantiation (§3.1/§C).
+    """Verify class-level metadata is readable without instantiation.
 
     Reads ``declared_capabilities`` and ``provider_params_type`` from the engine
     *class* (never the instance) and validates that, when present, the
-    provider-params type is a closed :class:`ProviderParams` subclass (§R.4 R1).
+    provider-params type is a closed :class:`ProviderParams` subclass.
 
     Args:
-        spec: The :class:`~standard_asr.discovery.ModelSpec`.
+        spec: The :class:`~standard_asr.plugins.discovery.ModelSpec`.
         name: The model key (for issue attribution).
         issues: The mutable list of issues to append to.
     """
@@ -1092,7 +1101,7 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
     config_type = inspect.getattr_static(engine_class, "config_type", None)
     if config_type is None:
         # DX nudge, not an error: without a class-level ``config_type`` a
-        # settings UI cannot discover the engine's config schema (G.3.1) --
+        # settings UI cannot discover the engine's config schema --
         # constructing a credentialed engine to read ``type(engine.config)``
         # requires the very values the UI is meant to collect.
         issues.append(
@@ -1156,8 +1165,8 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
                 code="provider_params_type_is_bare_base",
                 message=(
                     "provider_params_type is the bare ProviderParams base, which has "
-                    "no fields and admits any params -- this zeroes swap-safety (spec "
-                    "§3.2). Publish a distinct terminal ProviderParams subclass as the "
+                    "no fields and admits any params -- this zeroes swap-safety. "
+                    "Publish a distinct terminal ProviderParams subclass as the "
                     "engine's provider_params type."
                 ),
                 model=name,
@@ -1175,7 +1184,7 @@ def _cross_check_event_capabilities(
     The "no-timestamp streaming" profile couples a declared streaming capability
     with the event field it gates; an engine that declares the capability
     unsupported yet emits the field anyway is a capability⇄stream desync the
-    structural invariants cannot see (SF-4). The stream MUST NOT *exceed* what the
+    structural invariants cannot see. The stream MUST NOT *exceed* what the
     capabilities promise:
 
     * ``word_stability`` unsupported ⇒ no event may carry a meaningful
@@ -1288,7 +1297,7 @@ def check_event_sequence(
     (``partial``/``final`` after a segment is finalized/superseded; a non-closed
     ``final`` after ``final``; superseding a ``closed`` segment), a non-monotonic
     ``stable_until`` or ``audio_processed_until``, a rewritten frozen prefix, the
-    full ``supersede`` invariants of spec ST.5.2 -- frozen-prefix preservation
+    full ``supersede`` invariants -- frozen-prefix preservation
     across a replacement (the concatenated frozen text of ``old_ids`` MUST be
     preserved by ``new_ids``), ``old_ids`` that were never announced, a
     ``new_id`` that reintroduces an already-known segment, and an empty
@@ -1299,7 +1308,7 @@ def check_event_sequence(
 
     The per-segment lifecycle / frozen-prefix / supersede checks are obtained by
     replaying the events through the same
-    :class:`~standard_asr.streaming._LifecycleGuard` the runtime uses, so the
+    :class:`~standard_asr.runtime.streaming._LifecycleGuard` the runtime uses, so the
     compliance verdict cannot drift from the runtime's enforcement. Events after
     the session-terminal are flagged and **not** replayed (they do not exist in a
     well-formed stream, so they MUST NOT mutate segment state).
@@ -1311,7 +1320,7 @@ def check_event_sequence(
             violation, because a real session always emits at least a terminal
             event.
         capabilities: When provided, additionally cross-check each event against
-            the engine's declared streaming capabilities (SF-4): a stream MUST NOT
+            the engine's declared streaming capabilities: a stream MUST NOT
             *exceed* what it declares -- e.g. emit a non-zero ``stable_until`` while
             ``word_stability`` is unsupported, an ``audio_processed_until`` cursor
             while ``timestamps`` mode is ``none``, ``words`` while
@@ -1328,7 +1337,7 @@ def check_event_sequence(
     issues: list[ComplianceIssue] = []
     saw_any = False
     saw_terminal = False
-    # The streaming sub-domain to cross-check events against (SF-4); ``None`` when
+    # The streaming sub-domain to cross-check events against; ``None`` when
     # no capabilities were supplied or the tree declares no streaming domain.
     streaming_caps = capabilities.streaming if capabilities is not None else None
     for event in events:
@@ -1343,8 +1352,8 @@ def check_event_sequence(
                     code="event_after_terminal",
                     message=(
                         f"event {event.type!r} emitted after the session-terminal event "
-                        "(spec ST.6.1: a terminal done / non-recoverable error MUST be "
-                        "the last event)."
+                        "(a terminal done / non-recoverable error MUST be the last "
+                        "event)."
                     ),
                     model=None,
                 )
@@ -1371,7 +1380,7 @@ def check_event_sequence(
         )
     # Sweep for supersede frozen-prefix obligations the replacement never fully
     # re-froze before the sequence ended. This is the permitted (conservative)
-    # direction of spec ST.5.2, so it is a soft WARNING -- it does NOT fail the
+    # direction of the supersede rule, so it is a soft WARNING -- it does NOT fail the
     # report -- consistent with how the runtime surfaces it via diagnostics().
     # Harvested AFTER the error loop above so it is not mis-promoted to error.
     for obligation in guard.finalize():
@@ -1404,7 +1413,7 @@ def check_event_sequence(
                 code="missing_terminal_event",
                 message=(
                     "event stream ended without a terminal (done / non-recoverable "
-                    "error) event (spec ST.6.1: the stream MUST terminate)."
+                    "error) event (the stream MUST terminate)."
                 ),
                 model=None,
             )
@@ -1424,7 +1433,7 @@ def assert_prefix_invariant(events: Iterable[TranscriptionEvent]) -> None:
     """Assert a recorded stream's partials honour the frozen-prefix invariant.
 
     Test helper for engine authors. Partials are **lossy under backpressure**: the
-    base coalesces pending partials when the consumer is slow (spec ST.6.4), so the
+    base coalesces pending partials when the consumer is slow, so the
     partial *count* is non-deterministic -- the same engine may surface five
     partials or none purely by consumer timing. Asserting a count is therefore
     flaky; assert the **invariant** instead. This checks only the prefix invariant
@@ -1432,7 +1441,7 @@ def assert_prefix_invariant(events: Iterable[TranscriptionEvent]) -> None:
     ``stable_until`` never regresses -- across however many partials survived
     coalescing, and (unlike :func:`check_event_sequence`) does NOT require a
     terminal event, so it also applies to a mid-stream slice. It replays events
-    through the same runtime :class:`~standard_asr.streaming._LifecycleGuard` the
+    through the same runtime :class:`~standard_asr.runtime.streaming._LifecycleGuard` the
     runtime uses, so the assertion cannot drift from enforcement.
 
     Args:
@@ -1461,9 +1470,9 @@ def _carries_speaker_labels(
     """Return whether any segment or word in one result view carries a speaker.
 
     One "view" is a ``(segments, words)`` pair -- either the top level of a
-    :class:`~standard_asr.results.TranscriptionResult` or a single
+    :class:`~standard_asr.contract.results.TranscriptionResult` or a single
     ``channels[i]`` entry; :func:`_cross_check_result_capabilities` walks every
-    view because TR.5's within-result consistency spans them all (a label
+    view because within-result consistency spans them all (a label
     hidden under ``channels`` alone is still diarization output).
 
     Args:
@@ -1590,16 +1599,16 @@ def _synthesize_probe_audio_format(engine: EngineBase) -> AudioFormat:
     """Build a *legal* wire :class:`AudioFormat` for a ``streaming_input`` probe.
 
     The streaming gating probe must hand the engine's
-    :meth:`~standard_asr.asr_interface.EngineBase._start_transcription` hook a
+    :meth:`~standard_asr.runtime.interface.EngineBase._start_transcription` hook a
     valid session context: an engine that does not self-manage its wire format
     (an incremental ElevenLabs-style adapter) legitimately fail-louds when opened
-    with ``audio_format=None`` (spec §AI R6 -- bare-PCM streaming locks the
-    sample rate at session establishment). Probing it with no ``audio_format``
+    with ``audio_format=None`` (bare-PCM streaming locks the sample rate at
+    session establishment). Probing it with no ``audio_format``
     would make that *correct* fail-loud read as a compliance error. So the probe
     uses the engine's own
-    :meth:`~standard_asr.asr_interface.EngineBase.recommended_wire_format` -- the
-    single source of truth (AW-2) -- which yields a format the engine's own
-    :meth:`~standard_asr.asr_interface.EngineBase.ensure_stream_format_supported`
+    :meth:`~standard_asr.runtime.interface.EngineBase.recommended_wire_format` -- the
+    single source of truth -- which yields a format the engine's own
+    :meth:`~standard_asr.runtime.interface.EngineBase.ensure_stream_format_supported`
     accepts.
 
     Args:
@@ -1624,7 +1633,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
 
     Closes the streaming-gating bypass gap as a *compliance* failure rather
     than a silent one: the base
-    :meth:`~standard_asr.asr_interface.EngineBase.start_transcription`
+    :meth:`~standard_asr.runtime.interface.EngineBase.start_transcription`
     template runs ``gate_params(mode="streaming")`` for every engine, so a
     "forgot to gate" engine (one that bypassed the template) must show up here.
 
@@ -1634,7 +1643,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
     **not** support in ``streaming`` mode and asserts the standard contract:
 
     * **strict** policy -- the call MUST raise
-      :class:`~standard_asr.exceptions.UnsupportedFeatureError` whose ``param``
+      :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` whose ``param``
       identifies the gated field;
     * **best_effort** policy -- the call MUST succeed, drop (or degrade) the
       parameter, and surface the probe's expected diagnostic (e.g.
@@ -1650,7 +1659,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
     **Legal session context.** A ``streaming_input`` engine is probed with a
     synthesized, *valid* wire :class:`AudioFormat` (see
     :func:`_synthesize_probe_audio_format`), so an engine that legitimately
-    fail-louds on a missing ``audio_format`` (spec §AI R6) is not misjudged as
+    fail-louds on a missing ``audio_format`` is not misjudged as
     non-compliant for obeying the standard. A ``streaming_output``-only engine is
     probed with a one-sample silent ``audio`` input, but **only under the strict
     policy**: strict gating raises *before* the audio is decoded or the model is
@@ -1799,7 +1808,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
                     message=(
                         f"best_effort engine raised UnsupportedFeatureError for an "
                         f"unsupported streaming parameter {field_name!r}; it MUST drop "
-                        "it and emit a diagnostic instead (spec Runtime R2)."
+                        "it and emit a diagnostic instead."
                     ),
                     model=model,
                 )
@@ -1842,7 +1851,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
                 message=(
                     f"start_transcription raised {exc!r} while probing streaming "
                     f"parameter {field_name!r}; the only contractual exception for a "
-                    "gated parameter is UnsupportedFeatureError (spec Runtime R2)."
+                    "gated parameter is UnsupportedFeatureError."
                 ),
                 model=model,
             )
@@ -1854,7 +1863,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
     # __aenter__/_open), and the best_effort verdict below needs only
     # session.diagnostics() -- a pure read of construction-time diagnostics.
     # Entering the session to "close" it would instead OPEN a billable wire
-    # handshake the probe never incurred (spec §6.5; cf. the
+    # handshake the probe never incurred (cf. the
     # gating_probe_skipped_billable sibling). Tearing down a genuinely opened
     # session is check_sync_bridge's job, not this probe's, so there is no teardown.
     if strict:
@@ -1865,7 +1874,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
                 message=(
                     f"strict engine accepted streaming parameter {field_name!r} "
                     "violating its declared capabilities without raising; it MUST "
-                    "raise UnsupportedFeatureError (spec Runtime R2 gating gap)."
+                    "raise UnsupportedFeatureError (this is the streaming gating gap)."
                 ),
                 model=model,
             )
@@ -1886,8 +1895,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
                 message=(
                     f"session.diagnostics() raised {exc!r} while checking for the "
                     f"expected {expected_code!r} diagnostic on best_effort streaming "
-                    f"parameter {field_name!r}; diagnostics() must not raise (spec "
-                    "Runtime R2)."
+                    f"parameter {field_name!r}; diagnostics() must not raise."
                 ),
                 model=model,
             )
@@ -1902,7 +1910,7 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
                 message=(
                     f"best_effort engine silently swallowed streaming parameter "
                     f"{field_name!r}: no {expected_code!r} diagnostic surfaced via "
-                    "session.diagnostics() (spec Runtime R2)."
+                    "session.diagnostics()."
                 ),
                 model=model,
             )
@@ -1924,12 +1932,12 @@ class _ForeignProviderParams(ProviderParams):
 
 
 def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
-    """Assert an engine always rejects another engine's ``provider_params`` (R3).
+    """Assert an engine always rejects another engine's ``provider_params``.
 
-    Spec Runtime R3 makes ``provider_params`` swap-safety an unconditional MUST:
+    The standard makes ``provider_params`` swap-safety an unconditional MUST:
     a wrong-typed ``provider_params`` (the classic "switched engines, forgot to
     change the params model" bug) MUST raise
-    :class:`~standard_asr.exceptions.InvalidProviderParamError` **independent of
+    :class:`~standard_asr.contract.exceptions.InvalidProviderParamError` **independent of
     strict / best_effort** -- it is a code bug, not a capability negotiation, so
     it is never silently dropped. The :class:`EngineBase` template enforces this
     in ``gate_params`` *before* any audio is decoded or the model is touched, so
@@ -1937,7 +1945,8 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
     probe closes -- the same "bypassed the template must show up here" reasoning
     behind :func:`check_streaming_param_gating`.
 
-    The probe calls the engine's public :meth:`~standard_asr.asr_interface.EngineBase.transcribe`
+    The probe calls the engine's public
+    :meth:`~standard_asr.runtime.interface.EngineBase.transcribe`
     with a foreign :class:`ProviderParams` subclass private to this module (so it
     can never be the engine's own declared type) and a one-sample silent input.
     Because provider-params validation precedes audio decoding and inference, the
@@ -1970,7 +1979,7 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
         # template validates the language config (_validate_language_config) ahead
         # of gate_params, and that method promises ConfigError (it even wraps a
         # malformed-tag ValueError into ConfigError), so a broken language axis
-        # surfaces here as ConfigError. R3 swap-safety was therefore never
+        # surfaces here as ConfigError. Swap-safety was therefore never
         # exercised -- this is unverifiable, not a swap miss; attribute it to the
         # real defect rather than mislabel a language_config_invalid engine as
         # swap-unsafe. (A bare ValueError is NOT caught here: a swap rejection
@@ -1982,7 +1991,7 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
                 code="provider_params_swap_unverifiable",
                 message=(
                     f"transcribe raised {exc!r} before the provider_params gate, so "
-                    "Runtime R3 swap-safety could not be exercised; resolve the "
+                    "swap-safety could not be exercised; resolve the "
                     "engine's language_config_invalid defect first."
                 ),
                 model=model,
@@ -1990,7 +1999,7 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
         )
         return ComplianceReport(registry=None, issues=issues)
     except Exception as exc:  # noqa: BLE001
-        # Any other exception means the engine did NOT enforce R3 swap-safety on
+        # Any other exception means the engine did NOT enforce swap-safety on
         # the provider-params-first path (it failed later, for a different reason,
         # or crashed). Report it; never re-raise (this function promises
         # ``Raises: None``).
@@ -2000,7 +2009,7 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
                 code="provider_params_swap_not_enforced",
                 message=(
                     f"transcribe raised {exc!r} for a foreign provider_params type "
-                    "instead of InvalidProviderParamError; spec Runtime R3 requires "
+                    "instead of InvalidProviderParamError; the standard requires "
                     "provider_params swap-safety to raise InvalidProviderParamError "
                     "ALWAYS (independent of strict/best_effort), validated before "
                     "audio decoding."
@@ -2011,14 +2020,14 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
         return ComplianceReport(registry=None, issues=issues)
 
     # No exception at all: the engine silently accepted another engine's params --
-    # exactly the swap bug R3 exists to make loud.
+    # exactly the swap bug this check exists to make loud.
     issues.append(
         ComplianceIssue(
             level="error",
             code="provider_params_swap_accepted",
             message=(
                 "transcribe accepted a foreign provider_params type without raising; "
-                "spec Runtime R3 requires it to raise InvalidProviderParamError "
+                "the standard requires it to raise InvalidProviderParamError "
                 "(swap-safety), independent of strict/best_effort."
             ),
             model=model,
@@ -2030,12 +2039,12 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
 def check_recommended_wire_format(engine: EngineBase) -> ComplianceReport:
     """Assert an engine's recommended wire format is one it would itself accept.
 
-    :meth:`~standard_asr.asr_interface.EngineBase.recommended_wire_format` is the
+    :meth:`~standard_asr.runtime.interface.EngineBase.recommended_wire_format` is the
     single source of truth for the minimal wire :class:`AudioFormat` the standard
     layer opens a ``streaming_input`` session with when the application chose none
-    -- the CLI sync-bridge runner and the streaming gating probe both rely on it
-    (AW-2). A self-inconsistent engine, whose recommended format its own
-    :meth:`~standard_asr.asr_interface.EngineBase.ensure_stream_format_supported`
+    -- the CLI sync-bridge runner and the streaming gating probe both rely on it.
+    A self-inconsistent engine, whose recommended format its own
+    :meth:`~standard_asr.runtime.interface.EngineBase.ensure_stream_format_supported`
     rejects, would make those paths fail-loud on a format the standard layer
     chose rather than the application -- a silent-looking compliance trap. This
     closes that loop: when a format is recommended it MUST pass the engine's own
@@ -2090,7 +2099,7 @@ def check_sync_bridge(
 ) -> ComplianceReport:
     """Drive an async adapter's :class:`SyncSession` from an external thread.
 
-    Implements the spec ST.6.5 mandate: a sync-bridge no-deadlock / no-leak
+    Implements the standard's sync-bridge mandate: a no-deadlock / no-leak
     test. A fresh session is created and driven synchronously from a *different*
     thread than the one that built it, feeding no audio and immediately ending
     input. The test asserts the session terminates (emits a terminal event and
@@ -2135,7 +2144,7 @@ def check_sync_bridge(
             # asserts on this thread specifically. A compliant adapter may pull in a
             # dependency that spawns a benign daemon thread (e.g. tqdm's monitor, a
             # thread-pool worker) during the session; a process-wide thread diff
-            # would mis-report that as a sync_bridge_thread_leak (CC-2).
+            # would mis-report that as a sync_bridge_thread_leak.
             outcome["loop_alive"] = sync.is_loop_alive() if sync is not None else False
 
     # daemon=True: this thread only *observes* the bridge; the leak check below is
@@ -2156,7 +2165,7 @@ def check_sync_bridge(
                     f"SyncSession did not terminate within {timeout}s -- this may be a "
                     "deadlock OR an adapter whose _open/_close legitimately takes "
                     f"longer than {timeout}s. Re-run with a larger timeout to "
-                    "disambiguate. If it is a deadlock, check the §6.5 adapter "
+                    "disambiguate. If it is a deadlock, check the sync-bridge adapter "
                     "contract: bind loop resources in __aenter__, never touch the "
                     "ambient event loop."
                 ),
@@ -2192,7 +2201,7 @@ def check_sync_bridge(
     # failed __enter__) MUST tear down. Assert on the bridge's OWN thread (recorded
     # in _drive via is_loop_alive), not a process-wide thread diff -- a compliant
     # adapter may spawn a benign daemon thread during the session, which a diff
-    # would mis-flag as a sync_bridge_thread_leak (CC-2).
+    # would mis-flag as a sync_bridge_thread_leak.
     if outcome.get("loop_alive"):
         issues.append(
             ComplianceIssue(

@@ -10,7 +10,7 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 
-from standard_asr.audio_input import (
+from standard_asr.audio.input import (
     AudioArray,
     AudioBase64,
     AudioBytes,
@@ -19,7 +19,7 @@ from standard_asr.audio_input import (
     AudioUrl,
     InputKind,
 )
-from standard_asr.audio_negotiation import (
+from standard_asr.audio.negotiation import (
     ConversionOp,
     ConversionPlan,
     NoViablePath,
@@ -29,7 +29,7 @@ from standard_asr.audio_negotiation import (
     negotiate_or_raise,
     validate_fetchable_url,
 )
-from standard_asr.exceptions import IncompatibleAudioInputError
+from standard_asr.contract.exceptions import IncompatibleAudioInputError
 
 ARR = InputKind.ARRAY
 FILE = InputKind.ENCODED_FILE
@@ -135,7 +135,7 @@ def test_negotiate_or_raise_raises() -> None:
     assert "AudioArray" in str(exc.value)
 
 
-# --- File-only engine rejects in-memory payloads (R3/R4 correctness) ---
+# --- File-only engine rejects in-memory payloads (correctness) ---
 
 
 def test_bytes_to_file_only_engine_no_viable_path() -> None:
@@ -154,7 +154,7 @@ def test_base64_to_file_only_engine_no_viable_path() -> None:
 
 
 def test_array_to_file_only_engine_no_viable_path() -> None:
-    # The encoder produces in-memory bytes (BytesIO, R4); a file-only engine
+    # The encoder produces in-memory bytes (BytesIO); a file-only engine
     # cannot receive them.
     result = negotiate(_arr(), {FILE})
     assert isinstance(result, NoViablePath)
@@ -292,7 +292,7 @@ def test_storage_uri_negotiate_or_raise_includes_hint() -> None:
     assert "storage_uri" in str(exc.value)
 
 
-# --- R5 SSRF validation ---
+# --- SSRF validation ---
 
 
 def test_validate_url_rejects_non_https() -> None:

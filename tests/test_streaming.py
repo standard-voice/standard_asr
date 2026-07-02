@@ -14,10 +14,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from standard_asr import streaming as streaming_module
-from standard_asr.exceptions import InvalidSessionUseError, StreamClosedError
-from standard_asr.results import Word
-from standard_asr.streaming import (
+from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
+from standard_asr.contract.results import Word
+from standard_asr.runtime import streaming as streaming_module
+from standard_asr.runtime.streaming import (
     DEFAULT_DONE_TIMEOUT,
     EventBufferOverflow,
     StreamDeadlines,
@@ -86,7 +86,7 @@ def test_event_model_rejects_structurally_illegal_events() -> None:
 def test_event_model_rejects_invalid_time_fields() -> None:
     from pydantic import ValidationError
 
-    # Time-frame fields share Word/Segment's TR.2 invariant: non-negative, finite.
+    # Time-frame fields share Word/Segment's invariant: non-negative, finite.
     # A bad time is rejected AT THE EVENT, not deferred to result reduction (or
     # emitted silently over the wire on a partial/progress event).
     with pytest.raises(ValidationError):
@@ -125,8 +125,8 @@ def test_closed_finality() -> None:
 
 
 def test_event_speaker_field_and_validator() -> None:
-    # speaker is validated ON THE EVENT (shared rule with Segment/Word, spec
-    # TR.5 / ST.4.1): a malformed label must fail here, not defer the crash to
+    # speaker is validated ON THE EVENT (shared rule with Segment/Word): a
+    # malformed label must fail here, not defer the crash to
     # the reducer's Segment(...) or flow silently over the WS wire.
     assert TranscriptionEvent.partial("s0", "hi", speaker="A").speaker == "A"
     assert TranscriptionEvent.final("s0", "hi", speaker="speaker_1").speaker == "speaker_1"
@@ -178,7 +178,7 @@ def test_stream_reducer_supersede_removes() -> None:
 def test_stream_reducer_result_strips_edge_whitespace_and_drops_empty() -> None:
     # A segment carrying trailing/leading whitespace, and a whitespace-only
     # committed segment, must not inject a double space or a stray separator
-    # into the reduced transcript (AW-3).
+    # into the reduced transcript.
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "the quick ", start=0.0, end=1.0))
     reducer.add(TranscriptionEvent.final("s2", "  ", start=1.0, end=2.0))
@@ -203,7 +203,7 @@ def test_stream_reducer_propagates_event_speaker() -> None:
 
 
 def test_stream_reducer_synthesizes_speaker_from_words() -> None:
-    # event.speaker None + speaker-bearing words -> THE pinned TR.5 rule runs
+    # event.speaker None + speaker-bearing words -> THE pinned segment-speaker rule runs
     # in the reducer (it bypasses the batch post-processing): majority wins.
     reducer = StreamReducer()
     reducer.add(
@@ -218,7 +218,7 @@ def test_stream_reducer_synthesizes_speaker_from_words() -> None:
 
 def test_stream_reducer_event_speaker_wins_over_words() -> None:
     # The event-level (segment-level) speaker is authoritative; word speakers
-    # refine, they never overrule it (spec TR.5 inheritance direction).
+    # refine, they never overrule it (the inheritance direction).
     reducer = StreamReducer()
     reducer.add(
         TranscriptionEvent.final(
@@ -322,7 +322,7 @@ def test_attach_initial_diagnostics_surface_through_diagnostics() -> None:
     # The base start_transcription template attaches gating / language
     # diagnostics to the session; they MUST surface through diagnostics(),
     # ordered before the runtime's lifecycle-suppression diagnostics.
-    from standard_asr.results import Diagnostic
+    from standard_asr.contract.results import Diagnostic
 
     session = _EchoSession()
     assert session.diagnostics() == []
@@ -338,10 +338,10 @@ def test_attach_initial_diagnostics_surface_through_diagnostics() -> None:
 
 
 def test_emit_diagnostic_surfaces_in_session_diagnostics() -> None:
-    # emit_diagnostic gives _produce a streaming diagnostics channel (SF-2): the
+    # emit_diagnostic gives _produce a streaming diagnostics channel: the
     # note surfaces through diagnostics(), the streaming counterpart of batch's
     # result.diagnostics.
-    from standard_asr.results import Diagnostic
+    from standard_asr.contract.results import Diagnostic
 
     class _DiagSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
@@ -433,7 +433,7 @@ def test_session_feed_then_manual_raises() -> None:
 def test_session_feed_then_manual_raises_mixing_error_even_after_feed_done() -> None:
     # With feed active, send_audio MUST deterministically raise the feed/manual
     # mixing error -- not the "after end_audio" message -- regardless of whether
-    # the feed task has already exhausted and set _ended (spec ST.3.3).
+    # the feed task has already exhausted and set _ended.
     async def run() -> str:
         session = _EchoSession()
         session.feed([b"x"])
@@ -546,7 +546,7 @@ def test_invalid_session_use_error_taxonomy() -> None:
     # application can distinguish "I drove the session wrong" from "the session
     # ended" by exception type.
     from standard_asr import InvalidSessionUseError as ExportedInvalidSessionUse
-    from standard_asr.exceptions import StandardASRError
+    from standard_asr.contract.exceptions import StandardASRError
 
     assert ExportedInvalidSessionUse is InvalidSessionUseError
     assert issubclass(InvalidSessionUseError, StandardASRError)
@@ -714,7 +714,7 @@ def test_sync_bridge_forwards_diagnostics() -> None:
     # first-class, compliance-checked method), not just feed/result -- otherwise a
     # synchronously-driven session silently loses the parameter-gating / language
     # diagnostics the async session exposes.
-    from standard_asr.results import Diagnostic
+    from standard_asr.contract.results import Diagnostic
 
     session = _EchoSession()
     session._attach_initial_diagnostics(  # pyright: ignore[reportPrivateUsage]
@@ -809,11 +809,11 @@ def test_coalescing_partial_after_delivery_starts_fresh_slot() -> None:
 
 def test_coalescing_carries_forward_speaker() -> None:
     # A blind coalesce replace would silently drop the only event that ever
-    # carried the speaker (spec ST.6.4 semantic carry-forward). Both partials
-    # here are UNFROZEN (no stable_until), where ST.4.2 permits X->None, so the
+    # carried the speaker (semantic carry-forward). Both partials
+    # here are UNFROZEN (no stable_until), where the protocol permits X->None, so the
     # second event's None could in principle be a deliberate withdrawal -- yet
     # carry-forward still re-presents "A". That is deliberate and safe: unfrozen
-    # partial speakers are non-actionable (ST.7.2), so re-presenting a stale
+    # partial speakers are non-actionable, so re-presenting a stale
     # provisional speaker cannot drive a wrong irreversible action, and it keeps
     # the buffer self-consistent with the guard, which -- should s0 later freeze
     # -- locks the last-accepted non-None speaker, i.e. exactly this "A".
@@ -874,7 +874,7 @@ def test_coalescing_carry_forward_only_within_segment() -> None:
 # --------------------------------------------------------------------------- #
 def test_event_buffer_overflow_raises() -> None:
     # Only NEW distinct-segment partials grow the buffer and can overflow;
-    # final / supersede bypass the bound (drop-proof, spec ST.6.4).
+    # final / supersede bypass the bound (drop-proof).
     buf = _CoalescingBuffer(capacity=2)
     buf.put(TranscriptionEvent.partial("s0", "a"))
     buf.put(TranscriptionEvent.partial("s1", "b"))
@@ -907,7 +907,7 @@ def test_final_supersede_never_dropped_at_capacity() -> None:
         # A NEW distinct-segment partial would overflow ...
         with pytest.raises(EventBufferOverflow):
             buf.put(TranscriptionEvent.partial("s2", "c"))
-        # ... but final / supersede MUST bypass the bound (spec ST.6.4).
+        # ... but final / supersede MUST bypass the bound.
         buf.put(TranscriptionEvent.final("s3", "f"))
         buf.put(TranscriptionEvent.supersede(["s0"], ["s4"]))
         buf.close()
@@ -1052,12 +1052,12 @@ def test_sync_bridge_open_raise_tears_down_thread() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# SF-1 -- reserved private-attribute guard
+# Reserved private-attribute guard
 # --------------------------------------------------------------------------- #
 def test_reserved_session_attrs_matches_base_init() -> None:
     # Drift guard: _RESERVED_SESSION_ATTRS must list exactly the private attributes
     # the base __init__ creates -- otherwise a future base attribute silently falls
-    # outside the SF-1 guard. vars() after construction is the 21 reserved names
+    # outside the reserved-attribute guard. vars() after construction is the 21 reserved names
     # plus the name-mangled snapshot store (excluded).
     session = _EchoSession()
     present = {name for name in vars(session) if not name.startswith("_TranscriptionSession__")}
@@ -1322,7 +1322,7 @@ def test_lossy_reconnect_content_lost_is_non_terminal_and_stream_matches_result(
     # content_lost is non-terminal, so the session keeps emitting content after it.
     # The post-reconnect segment's partial ("wo") MAY be coalesced into its final
     # ("world") depending on how promptly the consumer drains -- a legitimate
-    # coalescing behavior (only reconnect events are drop-proof, spec ST.6.3/6.4;
+    # coalescing behavior (only reconnect events are drop-proof;
     # content partials are not) that varies with async scheduling across Python
     # versions. So assert the continuation via the drop-proof final, not the
     # transient partial.
@@ -1404,7 +1404,7 @@ def test_nonreplayable_source_replays_only_bounded_ring() -> None:
 def test_reconnect_pair_survives_full_buffer_and_stays_adjacent() -> None:
     # A pending progress + content_lost pair MUST survive (and stay adjacent)
     # even when the bounded buffer is already full: reconnect events bypass the
-    # capacity bound (spec ST.6.3 adjacency + ST.6.4 "error never dropped").
+    # capacity bound (reconnect adjacency + "error never dropped").
     async def run() -> list[TranscriptionEvent]:
         async def gen() -> AsyncIterator[bytes]:
             yield b"x"
@@ -1611,7 +1611,7 @@ def test_guard_clamp_decreased_then_invalid_boundary_keeps_prior_frontier() -> N
 
 def test_guard_clamps_decreasing_audio_cursor() -> None:
     # audio_processed_until is monotonic across the whole session; a decrease is
-    # clamped to the prior value with a diagnostic (spec ST.4.1).
+    # clamped to the prior value with a diagnostic.
     guard = _LifecycleGuard()
     e1 = guard.admit(TranscriptionEvent.progress(audio_processed_until=2.0))
     assert e1 is not None and e1.audio_processed_until == 2.0
@@ -1629,7 +1629,7 @@ def test_guard_raises_on_decreasing_audio_cursor_strict() -> None:
 
 def test_guard_suppresses_frozen_prefix_rewrite() -> None:
     # The frozen prefix (text[:stable_until]) is immutable: extending text is
-    # fine, but rewriting an already-frozen region is suppressed (spec ST.4.2).
+    # fine, but rewriting an already-frozen region is suppressed.
     guard = _LifecycleGuard()
     first = guard.admit(TranscriptionEvent.partial("s0", "the cat", stable_until=4))
     assert first is not None  # freezes "the "
@@ -1657,7 +1657,7 @@ def test_guard_supersede_new_ids_open_then_partial_allowed() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Supersede MUST preserve concatenated frozen text (spec ST.5.2)
+# Supersede MUST preserve concatenated frozen text
 # --------------------------------------------------------------------------- #
 def test_guard_supersede_2to1_merge_preserves_frozen_text() -> None:
     # Two retired segments froze "你好" and "世界"; the single replacement MUST
@@ -1764,7 +1764,7 @@ def test_guard_supersede_rewrite_frozen_prefix_suppressed() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Frozen-speaker guard (spec ST.4.2) + cross-speaker supersede (spec ST.5.2)
+# Frozen-speaker guard + cross-speaker supersede
 # --------------------------------------------------------------------------- #
 def test_guard_frozen_speaker_change_suppressed() -> None:
     # Once a frozen prefix exists and a speaker was accepted, X->Y is an
@@ -1864,7 +1864,7 @@ def test_guard_rejected_event_does_not_poison_speaker_ledger() -> None:
 def test_guard_supersede_cross_speaker_merge_suppressed() -> None:
     # Two retired segments with distinct last-known speakers merged into one
     # new id: pigeonhole forces a cross-speaker merge -> whole supersede
-    # suppressed (spec ST.5.2).
+    # suppressed.
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.partial("s1", "hello", speaker="A"))
     guard.admit(TranscriptionEvent.partial("s2", "world", speaker="B"))
@@ -2190,7 +2190,7 @@ def test_session_diagnostics_bounded_end_to_end() -> None:
     # decreasing audio cursor clamps on every event; session.diagnostics() stays
     # bounded and ends in the aggregated overflow summary (after the standard
     # layer's initial gating diagnostics, of which a scripted session has none).
-    from standard_asr.results import Diagnostic
+    from standard_asr.contract.results import Diagnostic
 
     async def run() -> list[Diagnostic]:
         events = [TranscriptionEvent.partial("s0", "x", audio_processed_until=100.0)]
@@ -2211,7 +2211,7 @@ def test_session_diagnostics_bounded_end_to_end() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Supersede ordering & disjointness invariants (spec ST.5.2)
+# Supersede ordering & disjointness invariants
 # --------------------------------------------------------------------------- #
 def test_supersede_disjoint_enforced_at_construction() -> None:
     # old_ids n new_ids = empty MUST hold; the event model refuses to build one.
@@ -2222,8 +2222,8 @@ def test_supersede_disjoint_enforced_at_construction() -> None:
 
 
 def test_supersede_duplicate_old_id_rejected_at_construction() -> None:
-    # A duplicate id within old_ids retires the same segment twice (spec
-    # §ST 5.2 retire-once) -- structurally malformed, like an old/new overlap. The
+    # A duplicate id within old_ids retires the same segment twice
+    # (retire-once) -- structurally malformed, like an old/new overlap. The
     # event model refuses to build one via both the classmethod and raw constructor,
     # so it can never reach the guard's frozen-text join (where it would double the
     # frozen prefix and silently drop a legitimate later final).
@@ -2235,7 +2235,7 @@ def test_supersede_duplicate_old_id_rejected_at_construction() -> None:
 
 def test_supersede_duplicate_new_id_rejected_at_construction() -> None:
     # A duplicate id within new_ids introduces the same replacement segment
-    # twice -- malformed under set-to-set lineage (spec §ST 5.2: new_ids is
+    # twice -- malformed under set-to-set lineage (new_ids is
     # semantically a set). Left constructible it would inflate the raw new_ids
     # length, evading the guard's cross-speaker pigeonhole count, and
     # double-count that segment's frozen prefix in the F_new join.
@@ -2276,7 +2276,7 @@ def test_guard_supersede_reintroduces_known_new_id_strict_raises() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Illegal final-after-final (spec ST.5.1)
+# Illegal final-after-final
 # --------------------------------------------------------------------------- #
 def test_guard_suppresses_final_after_final() -> None:
     guard = _LifecycleGuard()
@@ -2295,7 +2295,7 @@ def test_guard_final_after_final_strict_raises() -> None:
 
 def test_guard_closed_after_final_is_legal() -> None:
     # A closed event (finality="closed") after a plain final is the legal
-    # in-place post-processing correction (spec ST.5.1/5.4).
+    # in-place post-processing correction.
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("s0", "hello"))
     closed = guard.admit(TranscriptionEvent.closed("s0", "Hello."))
@@ -2429,7 +2429,7 @@ def test_error_event_unset_recoverable_defaults_to_terminal() -> None:
 
 
 def test_event_detected_language_is_validated_and_canonicalized() -> None:
-    # The event field is the reconnect-continuity mechanism (spec ST.6.3) and
+    # The event field is the reconnect-continuity mechanism and
     # must hold a concrete BCP-47 tag, like the result model.
     event = TranscriptionEvent.partial("s", "hola", detected_language="ES-es")
     assert event.detected_language == "es-ES"
@@ -2530,7 +2530,7 @@ def test_guard_suppresses_closed_after_superseded_segment() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Supersede with empty new_ids (pure deletion) (spec ST.5.2)
+# Supersede with empty new_ids (pure deletion)
 # --------------------------------------------------------------------------- #
 def test_guard_supersede_empty_new_ids_deleting_frozen_suppressed() -> None:
     guard = _LifecycleGuard()
@@ -2678,7 +2678,7 @@ def test_max_session_seconds_anchored_at_session_start_not_iteration() -> None:
                 return 2.0
 
         # White-box: inject a deterministic clock through the guard-aware setter so
-        # the SF-1 reserved-attribute guard tracks it instead of flagging a clobber.
+        # the reserved-attribute guard tracks it instead of flagging a clobber.
         session._replace_reserved_attr("_monotonic", _clock)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         session.feed([])
         return await asyncio.wait_for(_collect(session), timeout=5.0)
@@ -2805,7 +2805,7 @@ def test_done_timeout_still_fires_on_total_silence() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Liveness: done_timeout is a pipeline-inactivity backstop (spec ST.6.1)
+# Liveness: done_timeout is a pipeline-inactivity backstop
 # --------------------------------------------------------------------------- #
 def test_silent_engine_survives_while_audio_is_consumed() -> None:
     # The scenario: a cloud-WS-style engine emits NOTHING while the
@@ -2845,7 +2845,7 @@ def test_silent_engine_survives_while_audio_is_consumed() -> None:
 def test_done_timeout_fires_after_end_of_input_when_done_never_arrives() -> None:
     # After end-of-input there is nothing left to consume: the liveness anchor
     # freezes and done_timeout bounds the engine's flush-and-done window -- the
-    # original "done MUST arrive, bounded by a timeout" promise (spec ST.6.1).
+    # original "done MUST arrive, bounded by a timeout" promise.
     class _ConsumeThenHangSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             async for _chunk in self.audio_chunks():
@@ -3365,7 +3365,7 @@ def test_feed_source_drains_without_blocking_after_terminal() -> None:
 # Ultra review fixes: regressions
 # --------------------------------------------------------------------------- #
 def test_supersede_of_superseded_segment_is_rejected() -> None:
-    # Superseded is a terminal state (spec ST.5.1) -- an id retires
+    # Superseded is a terminal state -- an id retires
     # the moment it appears in old_ids and MUST NOT be retired a second time
     # (a double retirement would copy the frozen text into two lineages).
     guard = _LifecycleGuard()
@@ -3408,7 +3408,7 @@ def test_admitted_event_still_advances_audio_cursor() -> None:
 
 
 def test_recoverable_error_never_dropped_at_capacity() -> None:
-    # Spec ST.6.4 "never drop" does not distinguish recoverable from
+    # The "never drop" rule does not distinguish recoverable from
     # terminal errors. At capacity an adapter-yielded recoverable error must
     # bypass the bound, not be replaced by a backpressure overflow error.
     async def run() -> list[TranscriptionEvent]:
@@ -3463,7 +3463,7 @@ def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -
     # (non-async) code mid-session freezes the bridge loop while its thread
     # stays ALIVE; the in-loop deadlines cannot fire on a frozen loop, so the
     # pump's responsiveness probe is the only thing standing between the sync
-    # caller and an infinite hang (spec ST.6.5 no-hang contract). Brief stalls
+    # caller and an infinite hang (the no-hang contract). Brief stalls
     # are tolerated (consecutive-probe threshold); a persistent freeze must
     # tear down and raise.
     monkeypatch.setattr(streaming_module, "_SYNC_PUMP_POLL_SECONDS", 0.05)

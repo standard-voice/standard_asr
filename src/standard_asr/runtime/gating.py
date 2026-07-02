@@ -3,19 +3,19 @@
 
 """Capability gating for runtime parameters (spec, section "Runtime Parameters").
 
-Given a request's :class:`~standard_asr.runtime_params.RuntimeParams` and the
+Given a request's :class:`~standard_asr.contract.params.RuntimeParams` and the
 engine's effective capabilities, this module enforces the standard's gating
 rules:
 
 * ``provider_params`` are validated first and errors **always raise**
-  :class:`~standard_asr.exceptions.InvalidProviderParamError`, independent of the
-  strict / best_effort policy (R3).
+  :class:`~standard_asr.contract.exceptions.InvalidProviderParamError`, independent of the
+  strict / best_effort policy.
 * Each portable standard-set parameter is checked against its capability path;
   unsupported parameters raise
-  :class:`~standard_asr.exceptions.UnsupportedFeatureError` in strict mode, or
-  are dropped with a diagnostic in best_effort mode (R2).
+  :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` in strict mode, or
+  are dropped with a diagnostic in best_effort mode.
 * The ``guidance`` family supports opt-in one-way degradation of
-  ``phrase_hints`` to ``prompt`` (R4).
+  ``phrase_hints`` to ``prompt``.
 """
 
 from __future__ import annotations
@@ -23,19 +23,19 @@ from __future__ import annotations
 import unicodedata
 from typing import Literal, cast
 
-from .capabilities import (
+from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
     PhraseHintsCap,
     PromptCap,
     WordTimestampsCap,
 )
-from .exceptions import InvalidProviderParamError, UnsupportedFeatureError
-from .results import Diagnostic
-from .runtime_params import DiarizationRequest, ProviderParams, RuntimeParams
+from standard_asr.contract.exceptions import InvalidProviderParamError, UnsupportedFeatureError
+from standard_asr.contract.params import DiarizationRequest, ProviderParams, RuntimeParams
+from standard_asr.contract.results import Diagnostic
 
 Mode = Literal["batch", "streaming"]
 
-#: Diagnostic codes the gating layer emits (spec Runtime R2). These strings are
+#: Diagnostic codes the gating layer emits. These strings are
 #: part of the standard's contract -- applications match on them and the
 #: compliance suite (:mod:`standard_asr.compliance`) asserts engines surface
 #: them -- so they live here, in the module that emits them, as the single
@@ -48,11 +48,11 @@ DIAG_PROMPT_TRUNCATED = "prompt_truncated"
 #: Portable standard-set fields and their capability dot-path suffixes.
 #:
 #: ``candidate_languages`` is deliberately absent: the language axis is owned
-#: solely by :func:`standard_asr.language.effective_candidate_languages` per
-#: spec §Language R3. R3 step 2 requires that an unsupported ``candidate_languages``
-#: resolve to ``None`` + a single diagnostic and **never raise** (even in strict),
-#: which contradicts this table's strict-raises gating. Gating it here too would
-#: also double-diagnose in best_effort. So it has exactly one owner (language.py).
+#: solely by :func:`standard_asr.contract.language.effective_candidate_languages`.
+#: An unsupported ``candidate_languages`` must resolve to ``None`` + a single
+#: diagnostic and **never raise** (even in strict), which contradicts this
+#: table's strict-raises gating. Gating it here too would also double-diagnose in
+#: best_effort. So it has exactly one owner (language.py).
 #:
 #: ``prompt`` is deliberately LAST -- after ``phrase_hints`` -- so the opt-in
 #: phrase_hints -> prompt degradation composes the final prompt BEFORE the
@@ -61,7 +61,8 @@ DIAG_PROMPT_TRUNCATED = "prompt_truncated"
 #: ever be produced per request (no retroactive deletion of an earlier one).
 #:
 #: ``diarization`` is order-independent (it interacts with no other channel);
-#: it sits after ``word_timestamps`` to mirror the spec's §RT 3.1 table order.
+#: it sits after ``word_timestamps`` to mirror the specification's parameter
+#: table order.
 #: Its gate is feature-level only -- the marker has no fields, so there is no
 #: sub-gating helper (see the empty-marker assert below).
 _GATED_PARAMS: tuple[tuple[str, str], ...] = (
@@ -81,15 +82,15 @@ _GATED_PARAMS: tuple[tuple[str, str], ...] = (
 #: compliance suite.
 _UNGATED_PORTABLE_FIELDS: frozenset[str] = frozenset(
     {
-        # Owned solely by language.effective_candidate_languages (spec Language
-        # R3): its unsupported path resolves to None + one diagnostic and never
-        # raises, which is incompatible with this table's strict-raises gating.
+        # Owned solely by language.effective_candidate_languages: its unsupported
+        # path resolves to None + one diagnostic and never raises, which is
+        # incompatible with this table's strict-raises gating.
         "candidate_languages",
-        # A policy directive (spec §3.1), not a capability-gated channel: it
+        # A policy directive, not a capability-gated channel: it
         # controls WHETHER an unsupported guidance channel degrades, it is not
         # itself negotiated against a capability.
         "on_unsupported",
-        # The typed escape hatch (spec §3.2): validated for swap-safety by
+        # The typed escape hatch: validated for swap-safety by
         # _check_provider_params (always-raise), never capability-gated.
         "provider_params",
     }
@@ -122,7 +123,7 @@ assert not DiarizationRequest.model_fields, (
     "DiarizationConstraints) before shipping."
 )
 
-#: List-typed channels whose empty-list value (``[]``) is the spec §R.3.3
+#: List-typed channels whose empty-list value (``[]``) is the standard's
 #: "requested-but-empty" sentinel: an explicit "nothing to honor". It is NOT a
 #: real request, so it is never gated, degraded, or reported as unsupported.
 #: ``candidate_languages`` is no longer gated here (owned by language.py), but its
@@ -135,7 +136,7 @@ def _is_unset(field_name: str, value: object) -> bool:
 
     ``None`` is always "not requested". For the list channels in
     :data:`_EMPTY_IS_NOOP_FIELDS`, an empty list ``[]`` is the spec's explicit
-    "requested-but-empty" sentinel (§R.3.3 null-semantics) -- there is nothing
+    "requested-but-empty" sentinel (the standard's null-semantics) -- there is nothing
     to honor, so gating skips it exactly like ``None`` (no gate, no degrade, no
     unsupported diagnostic).
 
@@ -324,7 +325,7 @@ def _gate_granularity(
 #: under-estimates the token count (the spec's Qwen3 CJK prompt example collapses
 #: to ~1 whitespace token).
 #:
-#: The spec §3.3 ``prompt.max_tokens`` guarantee is normative ("never under-counts
+#: The ``prompt.max_tokens`` guarantee is normative ("never under-counts
 #: relative to whitespace + no-space-script tokenization", naming CJK / kana /
 #: Hangul / Thai). That lower bound is defined per **Unicode Script property**, so
 #: this table MUST cover *every* block whose script is one of those -- a missing
@@ -429,7 +430,7 @@ def _count_tokens(text: str) -> int:
     Heuristic long-token splitting is deliberately NOT applied (it would risk
     over-truncating valid prompts), so engine authors should declare
     ``max_tokens`` with headroom below the provider's hard limit; see
-    :attr:`~standard_asr.capabilities.PromptConstraints.max_tokens`.
+    :attr:`~standard_asr.contract.capabilities.PromptConstraints.max_tokens`.
 
     Args:
         text: The prompt text.
@@ -522,8 +523,8 @@ def _enforce_prompt_limit(
     """Enforce the declared ``prompt.max_tokens`` limit on a supported prompt.
 
     A supported ``prompt`` MUST still respect the engine's declared token budget
-    (spec §Runtime 3.3 / R4 -- guidance is best-effort but MUST NOT silently
-    exceed a declared bound). The budget is measured with the script-aware
+    (guidance is best-effort but MUST NOT silently exceed a declared bound). The
+    budget is measured with the script-aware
     :func:`_count_tokens` (an approximation, not the engine's exact tokenizer;
     see its docstring for the guarantee scope) so a long no-space / CJK prompt
     cannot slip past a limit it actually blows. In best_effort mode an
@@ -613,8 +614,8 @@ def _enforce_phrase_hints_limits(
     """Enforce declared ``phrase_hints`` limits on a supported hints list.
 
     A supported ``phrase_hints`` MUST respect the engine's declared limits
-    (``max_terms`` / ``max_chars_per_term`` / ``max_words_per_term``; spec
-    §Runtime 3.3 / R4). In best_effort mode an over-limit list is truncated (too
+    (``max_terms`` / ``max_chars_per_term`` / ``max_words_per_term``). In
+    best_effort mode an over-limit list is truncated (too
     many terms are dropped from the tail; over-long terms are shortened) with a
     single diagnostic; in strict mode any violation raises. Absent (``None``)
     limits are unbounded.
@@ -682,7 +683,7 @@ def _check_provider_params(
     """Validate provider params type (swap-safe), always raising on mismatch.
 
     The type match is **exact** (``type(provided) is expected``), not
-    ``isinstance``: swap safety (spec §3.2 / §5.4) is an unconditional promise,
+    ``isinstance``: swap safety is an unconditional promise,
     and ``isinstance`` would silently honor a *subclass* of the expected type.
     That is a real hole, not a hypothetical -- a vendor's engine family
     naturally models its params with inheritance (``EngineBParams(EngineAParams)``),
@@ -692,7 +693,7 @@ def _check_provider_params(
     params type; inheritance is not a channel for declaring cross-engine
     compatibility. A bare :class:`ProviderParams` base instance can never match a
     concrete subclass here either (it is also rejected at construction, see
-    :class:`~standard_asr.runtime_params.RuntimeParams`).
+    :class:`~standard_asr.contract.params.RuntimeParams`).
 
     Args:
         provided: The request's provider params, if any.
@@ -739,8 +740,8 @@ def _try_degrade_to_prompt(
     the later prompt gate reads the running (already-budgeted) composition and
     emits nothing. The synthesized prompt MUST itself respect the prompt
     channel's declared ``max_tokens`` budget -- degradation must never
-    silently emit a prompt the engine cannot accept (spec §Runtime R4: never
-    silently degrade). When the combined prompt would exceed the budget: in
+    silently emit a prompt the engine cannot accept (never silently degrade).
+    When the combined prompt would exceed the budget: in
     best_effort it is truncated to ``max_tokens`` tokens with the request's
     single ``prompt_truncated`` diagnostic; in strict mode it raises, so the
     caller never applies a lossy degrade silently.
@@ -837,7 +838,7 @@ def _try_degrade_to_prompt(
         # ``guidance_degraded_to_prompt`` here would mislead the caller into
         # thinking the hints were honored when they were silently cut. Emit a
         # distinct, explicit signal instead (the loss is honest, not a generic
-        # prompt_truncated; spec §Runtime R4: never silently degrade).
+        # prompt_truncated; never silently degrade).
         frame_start = len(existing) + 1 if existing else 0
         content_start = frame_start + len(_PHRASE_HINTS_FRAME_PREFIX)
         surviving_hint_content = combined[content_start:]

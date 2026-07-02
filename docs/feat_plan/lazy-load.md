@@ -33,7 +33,7 @@ specification. Keep code and docs aligned when changes land.
 - Unset → **suggested default**: allowed in local/dev; set to `"0"` in API
   servers or CI where surprise downloads are undesirable.
 
-Recommended lookup helper (implemented in `standard_asr.runtime.allow_downloads`):
+Recommended lookup helper (implemented in `standard_asr.runtime.downloads.allow_downloads`):
 
 ```python
 import os
@@ -64,7 +64,7 @@ actionable exception when downloads are disallowed.
 ### Example Pattern (pseudo‑code)
 
 ```python
-from standard_asr.runtime import allow_downloads  # proposed helper
+from standard_asr.runtime.downloads import allow_downloads  # proposed helper
 
 class FasterWhisperASR(StandardASR):
     def __init__(self, config: FasterWhisperConfig) -> None:

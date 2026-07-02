@@ -9,7 +9,7 @@ import unicodedata
 
 import pytest
 
-from standard_asr.capabilities import (
+from standard_asr.contract.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
     CandidateLanguagesConstraints,
@@ -25,8 +25,16 @@ from standard_asr.capabilities import (
     StreamingCapabilities,
     WordTimestampsCap,
 )
-from standard_asr.exceptions import InvalidProviderParamError, UnsupportedFeatureError
-from standard_asr.param_gating import (
+from standard_asr.contract.exceptions import InvalidProviderParamError, UnsupportedFeatureError
+from standard_asr.contract.params import (
+    DIARIZE,
+    DiarizationRequest,
+    ProviderParams,
+    RuntimeParams,
+    WordTimestampGranularity,
+)
+from standard_asr.contract.results import Diagnostic
+from standard_asr.runtime.gating import (
     _count_tokens,  # pyright: ignore[reportPrivateUsage]
     _enforce_phrase_hints_limits,  # pyright: ignore[reportPrivateUsage]
     _enforce_prompt_limit,  # pyright: ignore[reportPrivateUsage]
@@ -35,14 +43,6 @@ from standard_asr.param_gating import (
     _truncate_to_token_budget,  # pyright: ignore[reportPrivateUsage]
     _try_degrade_to_prompt,  # pyright: ignore[reportPrivateUsage]
     gate_params,
-)
-from standard_asr.results import Diagnostic
-from standard_asr.runtime_params import (
-    DIARIZE,
-    DiarizationRequest,
-    ProviderParams,
-    RuntimeParams,
-    WordTimestampGranularity,
 )
 
 
@@ -256,7 +256,7 @@ def test_gated_params_drift_guard_covers_every_portable_field() -> None:
     # neither would reach the engine ungated and be silently ignored when
     # unsupported (the cardinal sin). This mirrors the import-time assertion in
     # param_gating and fails the moment the field set drifts.
-    from standard_asr.param_gating import (
+    from standard_asr.runtime.gating import (
         _GATED_PARAMS,  # pyright: ignore[reportPrivateUsage]
         _UNGATED_PORTABLE_FIELDS,  # pyright: ignore[reportPrivateUsage]
     )
@@ -290,8 +290,8 @@ def test_empty_phrase_hints_no_garbage_degrade() -> None:
 
 
 def test_candidate_languages_not_gated_here_when_unsupported() -> None:
-    # candidate_languages is owned solely by language.py (spec
-    # §Language R3), so gate_params must NOT touch it -- even an unsupported,
+    # candidate_languages is owned solely by language.py, so gate_params must
+    # NOT touch it -- even an unsupported,
     # non-empty request in strict mode passes through untouched (no raise, no
     # diagnostic). language.effective_candidate_languages resolves the axis to
     # None + a single diagnostic; that is asserted in test_language.py.
@@ -979,7 +979,7 @@ def test_candidate_languages_supported_passes_through_untouched() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Diarization gating (spec §RT 3.4): a feature-level gate on <mode>.diarization
+# Diarization gating: a feature-level gate on <mode>.diarization
 # -- the empty marker carries no fields, so there is no sub-gate.
 # --------------------------------------------------------------------------- #
 def _diar_caps(*, batch: bool, streaming: bool) -> DeclaredCapabilities:

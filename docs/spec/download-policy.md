@@ -7,7 +7,7 @@ and heavy startup costs. This is critical for server environments and CI.
 
 `STANDARD_ASR_ALLOW_DOWNLOAD` controls whether plugins are allowed to download
 model weights at runtime. The table below is the **contract**
-(`standard_asr.runtime.allow_downloads()` implements it):
+(`standard_asr.runtime.downloads.allow_downloads()` implements it):
 
 - `1`, `true`, `yes` → downloads allowed
 - `0`, `false`, `no` → downloads disabled
@@ -26,7 +26,7 @@ model weights at runtime. The table below is the **contract**
 ## 2. Expected Engine Behavior
 
 - **Constructor must be lazy**: do not download or load weights in `__init__`.
-- **Guard downloads**: check `standard_asr.runtime.allow_downloads()` before any
+- **Guard downloads**: check `standard_asr.runtime.downloads.allow_downloads()` before any
   download.
 - **Raise clear errors**: if downloads are disabled and weights are missing,
   raise `DiscoveryError` with a clear next action.
@@ -39,7 +39,7 @@ model weights at runtime. The table below is the **contract**
 
 ## 3. Cache Location
 
-Default cache directory is resolved by `standard_asr.runtime.resolve_cache_dir()`
+Default cache directory is resolved by `standard_asr.runtime.downloads.resolve_cache_dir()`
 in this order:
 
 1. `STANDARD_ASR_MODEL_DIR` if set (a whitespace-only value is treated as unset;
@@ -54,7 +54,7 @@ in this order:
    roaming `%APPDATA%` profile is **not** used — multi-gigabyte weights must not
    land in a profile that is synced across domain logins.
 
-Use `standard_asr.runtime.ensure_cache_dir()` to create it.
+Use `standard_asr.runtime.downloads.ensure_cache_dir()` to create it.
 
 ## 4. Operational Guidance
 

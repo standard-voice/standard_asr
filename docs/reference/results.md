@@ -1,5 +1,5 @@
-# standard_asr.results
+# standard_asr.contract.results
 
 The constant-shape transcription result and its components.
 
-::: standard_asr.results
+::: standard_asr.contract.results

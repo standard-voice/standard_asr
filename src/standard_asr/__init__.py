@@ -22,13 +22,12 @@ you reach for are never buried under names you don't:
   vocabulary).
 - :mod:`standard_asr.compliance` -- the compliance checks an engine author runs
   against their plugin.
-- granular modules (:mod:`standard_asr.wire`, :mod:`standard_asr.audio_negotiation`,
+- granular modules (:mod:`standard_asr.audio.wire`, :mod:`standard_asr.audio.negotiation`,
   ``...``) expose the framework internals for advanced use.
 """
 
-from .asr_interface import StandardASR
-from .audio_format import AudioFormat
-from .audio_input import (
+from standard_asr.audio.format import AudioFormat
+from standard_asr.audio.input import (
     AudioArray,
     AudioBase64,
     AudioBytes,
@@ -38,9 +37,8 @@ from .audio_input import (
     AudioStorageUri,
     AudioUrl,
 )
-from .audio_negotiation import UnsafeAudioUrlError
-from .discovery import ModelRegistry, ModelSpec, discover_models
-from .exceptions import (
+from standard_asr.audio.negotiation import UnsafeAudioUrlError
+from standard_asr.contract.exceptions import (
     AudioProcessingError,
     ConfigError,
     DiscoveryError,
@@ -57,10 +55,23 @@ from .exceptions import (
     TranscriptionError,
     UnsupportedFeatureError,
 )
-from .renderers import to_srt, to_vtt
-from .results import ChannelResult, Diagnostic, Segment, TranscriptionResult, Word
-from .runtime_params import DIARIZE, DiarizationRequest, RuntimeParams, WordTimestampGranularity
-from .streaming import (
+from standard_asr.contract.params import (
+    DIARIZE,
+    DiarizationRequest,
+    RuntimeParams,
+    WordTimestampGranularity,
+)
+from standard_asr.contract.results import (
+    ChannelResult,
+    Diagnostic,
+    Segment,
+    TranscriptionResult,
+    Word,
+)
+from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
+from standard_asr.renderers import to_srt, to_vtt
+from standard_asr.runtime.interface import StandardASR
+from standard_asr.runtime.streaming import (
     StreamDeadlines,
     SyncSession,
     TranscriptionEvent,

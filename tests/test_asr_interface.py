@@ -20,11 +20,10 @@ from standard_asr import (
     TranscriptionResult,
     Word,
 )
-from standard_asr.asr_config import LanguageConfigMixin
-from standard_asr.audio_format import AudioFormat
-from standard_asr.audio_input import AudioArray, AudioPath, AudioUrl, InputKind
-from standard_asr.audio_negotiation import UnsafeAudioUrlError
-from standard_asr.capabilities import (
+from standard_asr.audio.format import AudioFormat
+from standard_asr.audio.input import AudioArray, AudioPath, AudioUrl, InputKind
+from standard_asr.audio.negotiation import UnsafeAudioUrlError
+from standard_asr.contract.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
     CandidateLanguagesConstraints,
@@ -33,6 +32,15 @@ from standard_asr.capabilities import (
     LanguageCaps,
     StreamingCapabilities,
 )
+from standard_asr.contract.exceptions import (
+    AudioProcessingError,
+    IncompatibleAudioInputError,
+    InvalidProviderParamError,
+    TranscriptionError,
+    UnsupportedFeatureError,
+)
+from standard_asr.contract.language import AUTO, DIAG_CANDIDATE_LANGUAGES_IGNORED
+from standard_asr.contract.params import ProviderParams, WordTimestampGranularity
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -40,16 +48,8 @@ from standard_asr.engine import (
     PreparedAudio,
     SampleRateRange,
 )
-from standard_asr.exceptions import (
-    AudioProcessingError,
-    IncompatibleAudioInputError,
-    InvalidProviderParamError,
-    TranscriptionError,
-    UnsupportedFeatureError,
-)
-from standard_asr.language import AUTO, DIAG_CANDIDATE_LANGUAGES_IGNORED
-from standard_asr.runtime_params import ProviderParams, WordTimestampGranularity
-from standard_asr.streaming import StreamDeadlines, TranscriptionEvent, TranscriptionSession
+from standard_asr.runtime.config import LanguageConfigMixin
+from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionEvent, TranscriptionSession
 
 
 class _Config(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
@@ -153,7 +153,7 @@ def test_bare_tuple_coerced() -> None:
 
 
 def test_incompatible_input_raises() -> None:
-    from standard_asr.audio_input import AudioUrl
+    from standard_asr.audio.input import AudioUrl
 
     with pytest.raises(IncompatibleAudioInputError):
         _ArrayEngine().transcribe(AudioUrl("https://x/a.wav"))
@@ -183,7 +183,7 @@ class _UrlEngine(_ArrayEngine):
 
 
 def test_private_audio_url_rejected_by_default() -> None:
-    # The default config keeps the R5 SSRF rejection -- a private /
+    # The default config keeps the SSRF rejection -- a private /
     # loopback URL target is refused through the public transcribe path.
     with pytest.raises(UnsafeAudioUrlError) as exc_info:
         _UrlEngine().transcribe(AudioUrl("https://127.0.0.1/a.wav"))
@@ -193,7 +193,7 @@ def test_private_audio_url_rejected_by_default() -> None:
 
 
 def test_private_audio_url_allowed_by_config_opt_in() -> None:
-    # The spec R5 opt-in is now reachable through the public engine
+    # The private-URL opt-in is now reachable through the public engine
     # pipeline -- BaseConfig.allow_private_urls=True threads through
     # EngineBase._prepare_audio so a trusted internal HTTPS endpoint is forwarded.
     result = _UrlEngine(allow_private_urls=True).transcribe(AudioUrl("https://127.0.0.1/a.wav"))
@@ -270,11 +270,11 @@ def test_transcribe_async() -> None:
 
 
 def test_batch_engine_failure_wraps_as_transcription_error() -> None:
-    # The batch error contract (spec Runtime R7). An engine's native
+    # The batch error contract. An engine's native
     # execution failure inside _transcribe MUST surface as a portable
     # TranscriptionError importable from the package top level, preserving the
     # original exception as __cause__, so applications can catch one type across
-    # every engine. This mirrors the streaming engine_error event (spec ST 6.2).
+    # every engine. This mirrors the streaming engine_error event.
     import standard_asr
 
     assert standard_asr.TranscriptionError is TranscriptionError
@@ -346,7 +346,7 @@ class _DecodeTracker(_ArrayEngine):
 
 
 def test_provider_params_rejected_before_audio_decode() -> None:
-    from standard_asr.audio_input import AudioPath
+    from standard_asr.audio.input import AudioPath
 
     class _OtherParams(ProviderParams):
         x: int = 0
@@ -363,7 +363,7 @@ def test_provider_params_rejected_before_audio_decode() -> None:
 
 
 def test_unsupported_param_strict_rejected_before_audio_decode() -> None:
-    from standard_asr.audio_input import AudioPath
+    from standard_asr.audio.input import AudioPath
 
     _DecodeTracker.decoded = False
     with pytest.raises(UnsupportedFeatureError):
@@ -374,7 +374,7 @@ def test_unsupported_param_strict_rejected_before_audio_decode() -> None:
     assert _DecodeTracker.decoded is False
 
 
-# --- default_language enforcement (IC.6 / LANG R1) ---------------------------
+# --- default_language enforcement -------------------------------------------
 
 
 class _NoDefaultConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
@@ -388,7 +388,7 @@ class _NoDefaultEngine(_ArrayEngine):
 
 
 def test_language_axis_requires_default_language() -> None:
-    from standard_asr.exceptions import ConfigError
+    from standard_asr.contract.exceptions import ConfigError
 
     with pytest.raises(ConfigError, match="default_language"):
         _NoDefaultEngine().transcribe(_audio())
@@ -405,7 +405,7 @@ class _BadDefaultEngine(_ArrayEngine):
 
 
 def test_default_language_must_be_selectable() -> None:
-    from standard_asr.exceptions import ConfigError
+    from standard_asr.contract.exceptions import ConfigError
 
     with pytest.raises(ConfigError, match="selectable_languages"):
         _BadDefaultEngine().transcribe(_audio())
@@ -426,7 +426,7 @@ def test_malformed_default_language_raises_config_error() -> None:
     # An empty/whitespace default_language must surface as the
     # documented ConfigError naming the engine and the malformed value, not leak
     # the normalizer's bare ValueError.
-    from standard_asr.exceptions import ConfigError
+    from standard_asr.contract.exceptions import ConfigError
 
     with pytest.raises(ConfigError, match="malformed") as exc_info:
         _WhitespaceDefaultEngine().transcribe(_audio())
@@ -450,7 +450,7 @@ def test_malformed_declared_selectable_tag_raises_config_error() -> None:
     # A malformed declared selectable tag is an engine-author
     # bug; the membership canonicalization must report it as ConfigError naming
     # the offending declaration, not leak a bare ValueError.
-    from standard_asr.exceptions import ConfigError
+    from standard_asr.contract.exceptions import ConfigError
 
     with pytest.raises(ConfigError, match="selectable_languages") as exc_info:
         _WhitespaceSelectableEngine().transcribe(_audio())
@@ -473,7 +473,7 @@ def test_malformed_declared_detectable_tag_raises_config_error() -> None:
     # canonicalization inside effective_candidate_languages and surfaced the
     # normalizer's bare ValueError (an uncontracted HTTP 500 via the server)
     # with the engine-misdeclaration cause invisible.
-    from standard_asr.exceptions import ConfigError
+    from standard_asr.contract.exceptions import ConfigError
 
     with pytest.raises(ConfigError, match="detectable_languages") as exc_info:
         _WhitespaceDetectableEngine(strict=False).transcribe(
@@ -505,7 +505,7 @@ def test_non_canonical_default_language_is_canonicalized_not_rejected() -> None:
     # default_language ("en-us") declared against a canonical selectable set
     # (["en-US"]) -- both as class-level defaults, which pydantic does NOT run the
     # field validators on -- must be matched case-insensitively instead of
-    # spuriously failing the LANG R1 totality check and blocking the engine.
+    # spuriously failing the totality check and blocking the engine.
     engine = _NonCanonicalLangEngine()
     # No ConfigError is raised, and the engine receives the CANONICAL effective
     # language (echoed as detected_language), not the raw "en-us".
@@ -514,7 +514,7 @@ def test_non_canonical_default_language_is_canonicalized_not_rejected() -> None:
 
 
 def test_region_tagged_request_matches_selectable_primary_subtag() -> None:
-    # spec LANG R4: a region/script refinement ("en-US") of a
+    # A region/script refinement ("en-US") of a
     # selectable primary subtag ("en", in _ArrayProps.selectable_languages) is
     # accepted via RFC 4647 lookup, and the full tag is handed to the engine to
     # reduce -- so engines that declare only primary subtags need not enumerate
@@ -537,7 +537,7 @@ def test_exact_selectable_language_emits_no_refinement_diagnostic() -> None:
 
 
 def test_rfc4647_lookup_skips_singleton_subtag() -> None:
-    # spec LANG R4: RFC 4647 §3.4 drops a singleton (single-char)
+    # RFC 4647 §3.4 drops a singleton (single-char)
     # subtag together with the subtag before it, so "zh-x-foo" truncates straight
     # to "zh" (never the meaningless "zh-x"). An engine declaring "zh" accepts it.
     class _ZhProps(_ArrayProps):
@@ -563,7 +563,7 @@ def test_selectable_match_singleton_helper_reduces_to_primary() -> None:
     # Direct check of the RFC 4647 singleton rule in _selectable_match
     # -- "zh-x-foo" must match selectable {"zh"} (reducing past the "zh-x"
     # singleton step), while an unrelated primary ("fr") still does not match.
-    from standard_asr.asr_interface import (
+    from standard_asr.runtime.interface import (
         _selectable_match,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -748,7 +748,7 @@ class _NoCandEngine(_ArrayEngine):
 
 
 def test_unsupported_candidate_languages_strict_does_not_raise_single_diagnostic() -> None:
-    # §Language R3 step 3 -- when a candidate_languages list WAS provided but the
+    # When a candidate_languages list WAS provided but the
     # axis is unsupported, resolution yields None + exactly one diagnostic and
     # never raises, even in strict. The diagnostic carries the ignored list.
     result = _NoCandEngine(strict=True).transcribe(
@@ -877,7 +877,7 @@ def test_supported_override_does_not_emit_fallback_diagnostic() -> None:
 
 
 def test_start_transcription_rejects_both_inputs() -> None:
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -885,7 +885,7 @@ def test_start_transcription_rejects_both_inputs() -> None:
 
 
 def test_start_transcription_guard_helper_is_static() -> None:
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
     # One input only is fine (no raise from the guard itself).
@@ -903,7 +903,7 @@ class _WireEngine(_ArrayEngine):
 
 
 def test_ensure_stream_format_supported_rejects_unknown_encoding() -> None:
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     engine = _WireEngine()
     # A declared encoding at an accepted rate passes; an undeclared encoding is
@@ -922,7 +922,7 @@ def test_audio_format_encoding_is_normalized() -> None:
     # two normalize to the same form. A blank encoding is rejected.
     from pydantic import ValidationError
 
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     assert AudioFormat(encoding="PCM_S16LE", sample_rate=16000).encoding == "pcm_s16le"
     assert AudioFormat(encoding="  Mulaw  ", sample_rate=16000).encoding == "mulaw"
@@ -934,7 +934,7 @@ def test_ensure_stream_format_supported_matches_encoding_case_insensitively() ->
     # An engine declaring wire_encodings=['pcm_s16le'] (already lowercased) MUST
     # accept a session opened with a differently-cased AudioFormat encoding: the
     # request encoding is normalized to the same form, so it is not a mismatch.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     _WireEngine().ensure_stream_format_supported(
         AudioFormat(encoding="PCM_S16LE", sample_rate=16000)
@@ -945,7 +945,7 @@ def test_ensure_stream_format_supported_rejects_multichannel_wire() -> None:
     # v1 streaming wire is mono-only: the standard layer does not process
     # incremental wire frames, so it cannot downmix multi-channel frames the way
     # the batch path does. A stereo wire format is rejected at session start.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     engine = _WireEngine()
     engine.ensure_stream_format_supported(
@@ -963,7 +963,7 @@ def test_ensure_stream_format_supported_rejects_multichannel_wire() -> None:
 def test_ensure_stream_format_supported_skips_encoding_when_no_wire_encodings() -> None:
     # An engine that declares no wire_encodings cannot validate encoding; the
     # encoding check is a no-op. The sample-rate fail-closed still applies.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     _ArrayEngine().ensure_stream_format_supported(
         AudioFormat(encoding="anything", sample_rate=16000)
@@ -971,7 +971,7 @@ def test_ensure_stream_format_supported_skips_encoding_when_no_wire_encodings() 
 
 
 # --------------------------------------------------------------------------- #
-# AW-2 -- recommended_wire_format (single source of truth)
+# recommended_wire_format (single source of truth)
 # --------------------------------------------------------------------------- #
 def test_recommended_wire_format_uses_first_encoding_and_native_rate() -> None:
     fmt = _WireEngine().recommended_wire_format()
@@ -1024,7 +1024,7 @@ def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> Non
     # the engine does not accept must be rejected (fail-closed), not forwarded as
     # frames the engine never declared (silent mistranscription). _ArrayProps
     # accepts only [16000] and declares no required_input_sample_rate.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     engine = _ArrayEngine()
     with pytest.raises(UnsupportedFeatureError, match="wire sample_rate") as exc_info:
@@ -1038,7 +1038,7 @@ def test_ensure_stream_format_supported_range_admits_in_range_rate() -> None:
     # A streaming engine declaring accepted_sample_rates as a range
     # accepts any wire sample_rate inside [min, max] at session start, and rejects
     # one outside it (v1 does not resample streaming wire frames).
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     class _RangeProps(_ArrayProps):
         native_sample_rate: int = 16000
@@ -1063,7 +1063,7 @@ def test_ensure_stream_format_supported_range_admits_in_range_rate() -> None:
 def test_ensure_stream_format_supported_accepts_required_rate_not_in_list() -> None:
     # The wire sample_rate is accepted when it equals required_input_sample_rate
     # (the rate the engine's wire protocol hard-requires).
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     class _ReqProps(_ArrayProps):
         native_sample_rate: int = 24000
@@ -1080,7 +1080,7 @@ def test_ensure_stream_format_supported_accepts_required_rate_not_in_list() -> N
 
 def test_ensure_stream_format_supported_allows_any_rate_for_any_engine() -> None:
     # When accepted_sample_rates is "any", no wire-rate constraint applies.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     class _AnyRateProps(_ArrayProps):
         accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = "any"
@@ -1099,7 +1099,7 @@ def test_ensure_stream_format_supported_enforces_required_rate_under_any() -> No
     # concrete lists), so the session guard must still fail-closed on a wire
     # rate that differs from the hard-required one -- v1 does not resample
     # streaming wire frames.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     class _ReqAnyProps(_ArrayProps):
         accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = "any"
@@ -1118,13 +1118,13 @@ def test_ensure_stream_format_supported_enforces_required_rate_under_any() -> No
 
 
 def test_ensure_stream_format_supported_required_rate_beats_accepted_list() -> None:
-    # FV §7.1: required_input_sample_rate binds even when the wire rate IS in
+    # required_input_sample_rate binds even when the wire rate IS in
     # the concrete accepted_sample_rates list. accepted_sample_rates describes
     # the batch path (which resamples to the required rate before the engine);
     # v1 does not resample streaming wire frames, so a 16 kHz wire against a
     # 24 kHz-required engine would be interpreted as 24 kHz frames -- a silent
     # mistranscription. The deliberate semantics: hard-reject at establishment.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     class _ReqListProps(_ArrayProps):
         native_sample_rate: int = 24000
@@ -1187,7 +1187,7 @@ class _StreamEngine(_ArrayEngine):
         streaming_output=FlagCap(supported=True),
     )
 
-    #: Captures the params the base handed to the hook (R5 freeze assertions).
+    #: Captures the params the base handed to the hook (param-freeze assertions).
     received: ClassVar[RuntimeParams | None] = None
     #: Captures the prepared whole-input audio handed to the hook.
     received_prepared_audio: ClassVar[PreparedAudio | None] = None
@@ -1282,8 +1282,8 @@ def test_missing_streaming_output_capability_rejects_whole_input_session() -> No
 
 
 def test_start_transcription_is_keyword_only() -> None:
-    # Start_transcription is keyword-only (the spec §3.1 signature now
-    # carries the leading `*`), so the three same-typed optional params cannot be
+    # Start_transcription is keyword-only (the signature carries the leading
+    # `*`), so the three same-typed optional params cannot be
     # confused positionally. Passing audio_format positionally MUST raise TypeError.
     fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000)
     with pytest.raises(TypeError):
@@ -1307,7 +1307,7 @@ def test_bare_call_requires_streaming_input_capability() -> None:
     # A bare start_transcription opens an incremental (self-managed
     # wire) session == the streaming_input axis. An engine that implements the
     # hook but declares only streaming_output MUST fail-closed on the bare call
-    # (fail-closed, R1) instead of handing back an unfeedable session -- the hook
+    # (fail-closed) instead of handing back an unfeedable session -- the hook
     # MUST NOT be reached.
     _NoStreamingInputEngine.hook_called = False
 
@@ -1431,7 +1431,7 @@ def test_incremental_streaming_audio_format_hook_receives_no_prepared_audio() ->
 
 
 def test_streaming_provider_params_swap_raises() -> None:
-    # R3 swap-safety on the streaming path: a wrong provider_params type ALWAYS
+    # Swap-safety on the streaming path: a wrong provider_params type ALWAYS
     # raises, regardless of strict/best_effort, before any session is built.
     class _OtherParams(ProviderParams):
         x: int = 0
@@ -1458,14 +1458,14 @@ def test_streaming_unsupported_param_best_effort_drops_and_diagnoses() -> None:
         params=RuntimeParams(word_timestamps=WordTimestampGranularity.WORD)
     )
     assert any(d.code == "unsupported_parameter_ignored" for d in session.diagnostics())
-    # R5 freeze: the gated (frozen) params handed to the hook have the
+    # Param freeze: the gated (frozen) params handed to the hook have the
     # unsupported param dropped.
     assert _StreamEngine.received is not None
     assert _StreamEngine.received.word_timestamps is None
 
 
 def test_streaming_gated_params_flow_to_hook() -> None:
-    # A supported param flows through unchanged to the hook (R5 freeze).
+    # A supported param flows through unchanged to the hook (param freeze).
     _StreamEngine.received = None
     _StreamEngine().start_transcription(params=RuntimeParams(language="en"))
     assert _StreamEngine.received is not None
@@ -1474,7 +1474,7 @@ def test_streaming_gated_params_flow_to_hook() -> None:
 
 def test_start_transcription_applies_app_deadline_overrides() -> None:
     # The base template applies the application's deadline overrides AFTER the
-    # hook constructed the session (spec ST.6.1): explicitly-set fields win
+    # hook constructed the session: explicitly-set fields win
     # over the adapter's construction-time choices, unset fields keep them,
     # and omitting `deadlines` leaves the session untouched.
     class _DeadlineChoosingEngine(_StreamEngine):
@@ -1533,7 +1533,7 @@ def test_streaming_candidate_language_effective_params_flow_to_hook_and_diagnose
 
 def test_streaming_validates_wire_format() -> None:
     # The base template validates the wire format (fail-closed) before building.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     with pytest.raises(UnsupportedFeatureError, match="wire sample_rate"):
         _StreamEngine().start_transcription(
@@ -1568,7 +1568,7 @@ def test_non_streaming_engine_runs_exclusivity_guard_first() -> None:
     # Even for a non-streaming engine, the mutual-exclusion guard runs first
     # (preserving the prior behaviour): passing both inputs raises ValueError,
     # not the unsupported-streaming error.
-    from standard_asr.audio_format import AudioFormat
+    from standard_asr.audio.format import AudioFormat
 
     fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -1576,14 +1576,14 @@ def test_non_streaming_engine_runs_exclusivity_guard_first() -> None:
 
 
 def test_engine_base_default_prepare_is_noop() -> None:
-    # spec IC.11: EngineBase provides a default no-op prepare() so an engine with
+    # EngineBase provides a default no-op prepare() so an engine with
     # nothing to warm up inherits it; it accepts no arguments and returns None.
     engine = _ArrayEngine()
     assert engine.prepare() is None
 
 
 # --------------------------------------------------------------------------- #
-# Batch segment-speaker synthesis (spec TR.5 pinned rule)
+# Batch segment-speaker synthesis (the pinned synthesis rule)
 # --------------------------------------------------------------------------- #
 def _w(index: int, label: str | None) -> Word:
     """One word at index*0.1s carrying the given speaker label (None = no vote)."""
@@ -1601,7 +1601,7 @@ def _speaker_segment(labels: list[str | None], *, speaker: str | None = None) ->
 
 
 class _CannedResultEngine(_ArrayEngine):
-    """Array engine returning a canned result, for the TR.5 post-processing."""
+    """Array engine returning a canned result, for the synthesis post-processing."""
 
     def __init__(self, result: TranscriptionResult, *, strict: bool = True) -> None:
         super().__init__(strict=strict)
@@ -1628,8 +1628,8 @@ def test_transcribe_keeps_adapter_populated_speaker() -> None:
 
 
 def test_transcribe_synthesis_applies_to_channels() -> None:
-    # TR.4 promises the top-level and per-channel views agree; synthesizing
-    # only the top level would silently desync them.
+    # The result contract promises the top-level and per-channel views agree;
+    # synthesizing only the top level would silently desync them.
     canned = TranscriptionResult(
         text="w0 w1 w2",
         segments=[_speaker_segment(["B", "A", "A"])],
@@ -1657,7 +1657,7 @@ def test_transcribe_no_speaker_words_leaves_result_identical() -> None:
 
 def test_transcribe_synthesis_runs_without_diarization_request() -> None:
     # The synthesis runs regardless of the request (always-on engines emit
-    # unrequested-but-legal word speakers; TR.5 named exemption).
+    # unrequested-but-legal word speakers; a named exemption).
     canned = TranscriptionResult(text="w0", segments=[_speaker_segment(["A"])])
     result = _CannedResultEngine(canned).transcribe(_audio())  # params=None
     assert result.segments is not None
@@ -1665,7 +1665,7 @@ def test_transcribe_synthesis_runs_without_diarization_request() -> None:
 
 
 def test_synthesize_result_speakers_branch_matrix() -> None:
-    from standard_asr.asr_interface import (
+    from standard_asr.runtime.interface import (
         _synthesize_result_speakers,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -1691,7 +1691,7 @@ def test_synthesize_result_speakers_branch_matrix() -> None:
 
 
 def test_synthesize_result_speakers_channels_matrix() -> None:
-    from standard_asr.asr_interface import (
+    from standard_asr.runtime.interface import (
         _synthesize_result_speakers,  # pyright: ignore[reportPrivateUsage]
     )
 

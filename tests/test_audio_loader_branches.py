@@ -17,8 +17,8 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-import standard_asr.utils.audio_loader as audio_loader
-from standard_asr.exceptions import AudioProcessingError
+import standard_asr.audio.loader as audio_loader
+from standard_asr.contract.exceptions import AudioProcessingError
 
 
 def _ffmpeg_native_returning(array: NDArray[np.float32], rate: int) -> "object":
@@ -144,8 +144,8 @@ def test_normalize_audio_resample_fallback_without_scipy(
     monkeypatch.setattr(builtins, "__import__", _import)
     caplog.set_level("WARNING")
 
-    # Without scipy the built-in anti-aliasing fallback resampler is used
-    # (spec AI R8): never a hard failure.
+    # Without scipy the built-in anti-aliasing fallback resampler is used;
+    # never a hard failure (a missing extra is never fatal).
     out = audio_loader.normalize_audio(audio, 8000, 16000, 1)
 
     assert out.shape[0] == 16  # 8 samples at 8 kHz -> 16 at 16 kHz
@@ -420,7 +420,7 @@ def test_load_audio_from_path_soundfile_missing_scipy_fallback(
     monkeypatch.setattr(audio_loader, "_load_with_ffmpeg", _fake_load)
 
     # soundfile decodes; the built-in fallback resampler handles 8k -> 16k
-    # without scipy and without falling back to FFmpeg (spec AI R8).
+    # without scipy and without falling back to FFmpeg.
     out = audio_loader.load_audio_from_path("dummy.flac", target_sample_rate=16000)
 
     assert out.shape[0] == 8  # 4 samples at 8 kHz -> 8 at 16 kHz
@@ -579,7 +579,7 @@ def test_load_with_ffmpeg_empty_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_load_with_ffmpeg_rejects_oversized_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Spec R9: a crafted long-duration input could emit far more PCM than its
+    # A crafted long-duration input could emit far more PCM than its
     # encoded size implies. If ffmpeg's stdout exceeds the output ceiling, it is
     # rejected (defense in depth) rather than buffered into a multi-GB array.
     def _which(_: str) -> str:
@@ -872,7 +872,7 @@ def test_decode_audio_rejects_nonpositive_channels() -> None:
 
 
 def test_decode_audio_does_not_sniff_data_uri() -> None:
-    # Decode_audio never content-sniffs a bare str (spec R1 / §3.1).
+    # Decode_audio never content-sniffs a bare str.
     # A "data:...;base64,..." string is opened as a local file path (and fails
     # "not found"), NOT decoded as base64 -- so a malformed-base64 data: URI no
     # longer surfaces "Invalid base64 audio payload" from this entry point.
