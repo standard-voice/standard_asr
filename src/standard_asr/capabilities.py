@@ -302,14 +302,80 @@ class PhraseHintsCap(_FlagLikeNode):
 
 
 class DiarizationCap(_FlagLikeNode):
-    """Capability for speaker diarization (request path deferred in v1).
+    """Capability for speaker diarization (requested via ``RuntimeParams.diarization``).
+
+    ``always_on`` is a **behavioural fact**, in the same family as
+    ``self_resamples`` (and the streaming behaviour flags ``emits_partials`` /
+    ``re_segments`` / ``word_stability``): it describes what the engine *does*
+    -- its architecture cannot DISABLE diarization, so speaker labels may appear
+    even when diarization is not requested -- and grants nothing an application
+    could request.
+
+    It is nonetheless a **regular queryable flag node** (a :class:`FlagCap`),
+    uniform with ``self_resamples``: ``supports("<mode>.diarization.always_on")``
+    works, it appears in :meth:`~DeclaredCapabilities.iter_supported_paths` when
+    supported, :meth:`~DeclaredCapabilities.canonical_json` injects a uniform
+    ``supported`` boolean for it, and :meth:`~DeclaredCapabilities.covers` treats
+    a declared-unsupported -> effective-supported change as a rejected widening
+    (declaration drift) by plain set containment.
+
+    The one thing that distinguishes ``always_on`` from every other flag is a
+    **semantic inversion**: for every other flag ``True`` means "you MAY request
+    this", whereas for ``always_on`` ``True`` means "this is imposed on you" --
+    speaker labels may appear even when you did not ask for them (the documented
+    exemption to request-gated diarization). That inversion is documented prose,
+    not a difference in representation.
+
+    It is NOT placed inside ``constraints`` (constraints are machine-checkable
+    request limits, and ``always_on`` is a behavioural fact, not a limit). It is
+    reserved for architecturally non-disableable engines: an engine that CAN
+    disable diarization MUST disable it when diarization is not requested
+    (can-disable-must-disable), and MUST NOT declare ``always_on`` for adapter
+    convenience.
 
     Args:
         supported: Whether diarization is supported.
+        always_on: Whether diarization is architecturally non-disableable
+            (labels may appear unrequested). May only be supported when
+            ``supported`` is ``True``.
         constraints: Limits when supported.
     """
 
+    always_on: FlagCap = Field(
+        default_factory=FlagCap,
+        description=(
+            "Behavioural fact: whether diarization is architecturally "
+            "non-disableable. When supported, speaker labels may appear even "
+            "when diarization is not requested."
+        ),
+    )
     constraints: DiarizationConstraints = Field(default_factory=DiarizationConstraints)
+
+    # As a FlagCap child, ``always_on`` participates in covers() by standard set
+    # containment: a declared=false -> effective=true change is auto-rejected as
+    # a widening, so no special _node_narrows branch is needed.
+
+    @model_validator(mode="after")
+    def _always_on_requires_supported(self) -> DiarizationCap:
+        """Reject the contradictory ``always_on`` supported + ``supported=False`` shape.
+
+        An engine that cannot disable diarization necessarily supports it;
+        declaring the pair is a declaration bug, made unrepresentable here so
+        the two signals can never disagree.
+
+        Returns:
+            The validated capability.
+
+        Raises:
+            ValueError: If ``always_on`` is supported while ``supported`` is
+                ``False``.
+        """
+        if self.always_on.is_supported and not self.supported:
+            raise ValueError(
+                "DiarizationCap.always_on is declared supported while supported=False "
+                "(an engine that cannot disable diarization necessarily supports it)."
+            )
+        return self
 
 
 class ReconnectCap(_CapNode):
@@ -452,6 +518,7 @@ class StreamingCapabilities(_Container):
     Args:
         language: Language capabilities (MAY differ from batch).
         word_timestamps: Word-timestamp capability.
+        diarization: Diarization capability (MAY differ from batch).
         guidance: Guidance-family capabilities (MAY differ from batch); the
             streaming variant additionally exposes ``mutable_mid_stream``.
         emits_partials: Whether partial events are emitted.
@@ -464,6 +531,7 @@ class StreamingCapabilities(_Container):
 
     language: LanguageCaps = Field(default_factory=LanguageCaps)
     word_timestamps: WordTimestampsCap = Field(default_factory=WordTimestampsCap)
+    diarization: DiarizationCap = Field(default_factory=DiarizationCap)
     # Typed as the base GuidanceCaps so an engine that declares a plain
     # GuidanceCaps still validates (backward tolerance), but ``_coerce_streaming_
     # guidance`` below normalises every provided value to the StreamingGuidanceCaps
@@ -531,10 +599,12 @@ class DeclaredCapabilities(_Container):
         streaming_output: Whether the engine returns results incrementally. May
             only be supported when a ``streaming`` domain is declared.
         self_resamples: Whether the engine resamples audio internally. This is
-            the single *behavioural* capability the spec places in Capabilities
-            rather than Properties (spec §AI 3.2, §C R7); it is engine-global
-            (a static behaviour of the engine, not per-mode), so it lives at the
-            top level alongside ``streaming_input`` / ``streaming_output``.
+            one of the *behavioural* facts the spec declares in Capabilities
+            rather than Properties (spec §AI 3.2, §C R7) -- alongside the
+            per-mode ``diarization.always_on`` and the streaming behaviour flags;
+            unlike those it is engine-global (a static behaviour of the engine,
+            not per-mode), so it lives at the top level alongside
+            ``streaming_input`` / ``streaming_output``.
 
             It is **purely informational**: ``accepted_sample_rates`` remains
             authoritative for every resampling decision (spec §AI R7), so this

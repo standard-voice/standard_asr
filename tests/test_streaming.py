@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from standard_asr import streaming as streaming_module
 from standard_asr.exceptions import InvalidSessionUseError, StreamClosedError
+from standard_asr.results import Word
 from standard_asr.streaming import (
     DEFAULT_DONE_TIMEOUT,
     EventBufferOverflow,
@@ -123,6 +124,25 @@ def test_closed_finality() -> None:
     assert ev.finality == "closed"
 
 
+def test_event_speaker_field_and_validator() -> None:
+    # speaker is validated ON THE EVENT (shared rule with Segment/Word, spec
+    # TR.5 / ST.4.1): a malformed label must fail here, not defer the crash to
+    # the reducer's Segment(...) or flow silently over the WS wire.
+    assert TranscriptionEvent.partial("s0", "hi", speaker="A").speaker == "A"
+    assert TranscriptionEvent.final("s0", "hi", speaker="speaker_1").speaker == "speaker_1"
+    assert TranscriptionEvent.partial("s0", "hi").speaker is None  # default
+    for bad in ("", "  ", "A ", " A"):
+        with pytest.raises(ValidationError, match="speaker label"):
+            TranscriptionEvent.partial("s0", "hi", speaker=bad)
+
+
+def test_event_speaker_serializes_on_wire_dump() -> None:
+    # The server forwards event.model_dump(mode="json") over the WS wire; pin
+    # that speaker rides along.
+    ev = TranscriptionEvent.final("s0", "hi", speaker="A")
+    assert ev.model_dump(mode="json")["speaker"] == "A"
+
+
 # --------------------------------------------------------------------------- #
 # reduce
 # --------------------------------------------------------------------------- #
@@ -164,6 +184,61 @@ def test_stream_reducer_result_strips_edge_whitespace_and_drops_empty() -> None:
     reducer.add(TranscriptionEvent.final("s2", "  ", start=1.0, end=2.0))
     reducer.add(TranscriptionEvent.final("s3", " brown fox", start=2.0, end=3.0))
     assert reducer.result().text == "the quick brown fox"
+
+
+def _speaker_words(*labels: str | None) -> list[Word]:
+    """Build one word per label (0.1 s apart), speaker=None for None labels."""
+    return [
+        Word(start=i * 0.1, end=i * 0.1 + 0.1, text=f"w{i}", speaker=label)
+        for i, label in enumerate(labels)
+    ]
+
+
+def test_stream_reducer_propagates_event_speaker() -> None:
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "hello", start=0.0, end=1.0, speaker="A"))
+    result = reducer.result()
+    assert result.segments is not None
+    assert result.segments[0].speaker == "A"
+
+
+def test_stream_reducer_synthesizes_speaker_from_words() -> None:
+    # event.speaker None + speaker-bearing words -> THE pinned TR.5 rule runs
+    # in the reducer (it bypasses the batch post-processing): majority wins.
+    reducer = StreamReducer()
+    reducer.add(
+        TranscriptionEvent.final(
+            "s1", "a b c", start=0.0, end=1.0, words=_speaker_words("A", "A", "B")
+        )
+    )
+    result = reducer.result()
+    assert result.segments is not None
+    assert result.segments[0].speaker == "A"
+
+
+def test_stream_reducer_event_speaker_wins_over_words() -> None:
+    # The event-level (segment-level) speaker is authoritative; word speakers
+    # refine, they never overrule it (spec TR.5 inheritance direction).
+    reducer = StreamReducer()
+    reducer.add(
+        TranscriptionEvent.final(
+            "s1", "a b", start=0.0, end=1.0, speaker="B", words=_speaker_words("A", "A")
+        )
+    )
+    result = reducer.result()
+    assert result.segments is not None
+    assert result.segments[0].speaker == "B"
+
+
+def test_stream_reducer_no_speakers_stays_none() -> None:
+    reducer = StreamReducer()
+    reducer.add(
+        TranscriptionEvent.final("s1", "a b", start=0.0, end=1.0, words=_speaker_words(None, None))
+    )
+    reducer.add(TranscriptionEvent.final("s2", "c", start=1.0, end=2.0))
+    result = reducer.result()
+    assert result.segments is not None
+    assert [segment.speaker for segment in result.segments] == [None, None]
 
 
 # --------------------------------------------------------------------------- #
@@ -730,6 +805,68 @@ def test_coalescing_partial_after_delivery_starts_fresh_slot() -> None:
 
     texts = asyncio.run(run())
     assert texts == ["a", "final"]
+
+
+def test_coalescing_carries_forward_speaker() -> None:
+    # A blind coalesce replace would silently drop the only event that ever
+    # carried the speaker (spec ST.6.4 semantic carry-forward). Both partials
+    # here are UNFROZEN (no stable_until), where ST.4.2 permits X->None, so the
+    # second event's None could in principle be a deliberate withdrawal -- yet
+    # carry-forward still re-presents "A". That is deliberate and safe: unfrozen
+    # partial speakers are non-actionable (ST.7.2), so re-presenting a stale
+    # provisional speaker cannot drive a wrong irreversible action, and it keeps
+    # the buffer self-consistent with the guard, which -- should s0 later freeze
+    # -- locks the last-accepted non-None speaker, i.e. exactly this "A".
+    async def run() -> list[TranscriptionEvent]:
+        buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s0", "hel", speaker="A"))
+        buf.put(TranscriptionEvent.partial("s0", "hello"))  # speaker not restated
+        buf.close()
+        return await _drain_buffer(buf)
+
+    events = asyncio.run(run())
+    assert [(e.text, e.speaker) for e in events] == [("hello", "A")]
+
+
+def test_coalescing_newer_speaker_wins() -> None:
+    # The newer non-None value always wins; carry-forward never resurrects an
+    # old value over a restated one.
+    async def run() -> list[TranscriptionEvent]:
+        buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s0", "hel", speaker="A"))
+        buf.put(TranscriptionEvent.partial("s0", "hello", speaker="B"))
+        buf.close()
+        return await _drain_buffer(buf)
+
+    events = asyncio.run(run())
+    assert [(e.text, e.speaker) for e in events] == [("hello", "B")]
+
+
+def test_coalescing_carries_forward_detected_language() -> None:
+    # detected_language had the same latent blind-replace bug; same fix.
+    async def run() -> list[TranscriptionEvent]:
+        buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s0", "hel", detected_language="en"))
+        buf.put(TranscriptionEvent.partial("s0", "hello"))
+        buf.close()
+        return await _drain_buffer(buf)
+
+    events = asyncio.run(run())
+    assert [(e.text, e.detected_language) for e in events] == [("hello", "en")]
+
+
+def test_coalescing_carry_forward_only_within_segment() -> None:
+    # Carry-forward scope is one segment_id (falls out of the per-segment slot
+    # keying): another segment's partial never inherits s0's speaker.
+    async def run() -> list[TranscriptionEvent]:
+        buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s0", "hel", speaker="A"))
+        buf.put(TranscriptionEvent.partial("s1", "wor"))
+        buf.close()
+        return await _drain_buffer(buf)
+
+    events = asyncio.run(run())
+    assert [(e.segment_id, e.speaker) for e in events] == [("s0", "A"), ("s1", None)]
 
 
 # --------------------------------------------------------------------------- #
@@ -1626,6 +1763,181 @@ def test_guard_supersede_rewrite_frozen_prefix_suppressed() -> None:
     assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
 
 
+# --------------------------------------------------------------------------- #
+# Frozen-speaker guard (spec ST.4.2) + cross-speaker supersede (spec ST.5.2)
+# --------------------------------------------------------------------------- #
+def test_guard_frozen_speaker_change_suppressed() -> None:
+    # Once a frozen prefix exists and a speaker was accepted, X->Y is an
+    # illegal rewrite: the whole event is suppressed (never clamped -- a clamp
+    # would keep presenting stale attribution).
+    guard = _LifecycleGuard()
+    first = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
+    assert first is not None
+    rejected = guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="B"))
+    assert rejected is None
+    assert any(d.code == "frozen_speaker_rewritten" for d in guard.diagnostics)
+
+
+def test_guard_frozen_speaker_retraction_suppressed() -> None:
+    # X->None over the frozen region is a retraction-by-rewrite: also illegal.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
+    rejected = guard.admit(TranscriptionEvent.final("s0", "hello!", stable_until=3))
+    assert rejected is None
+    diag = next(d for d in guard.diagnostics if d.code == "frozen_speaker_rewritten")
+    assert "X->None" in diag.message
+
+
+def test_guard_speaker_none_to_x_after_freeze_allowed() -> None:
+    # None->X after freezing is the recommended delay-speaker-to-final adapter
+    # strategy and MUST be admitted.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3))
+    accepted = guard.admit(TranscriptionEvent.final("s0", "hello!", stable_until=3, speaker="A"))
+    assert accepted is not None and accepted.speaker == "A"
+    assert not guard.diagnostics
+
+
+def test_guard_speaker_floats_before_freeze() -> None:
+    # Pins the PRIOR-frontier semantics: while nothing is frozen the speaker
+    # floats freely (A->B admitted); a same-event freeze+speaker-set is legal
+    # (the frontier read predates the event's own freeze); only afterwards is
+    # the last accepted speaker locked.
+    guard = _LifecycleGuard()
+    assert guard.admit(TranscriptionEvent.partial("s0", "he", speaker="A")) is not None
+    assert guard.admit(TranscriptionEvent.partial("s0", "hel", speaker="B")) is not None
+    frozen = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="B"))
+    assert frozen is not None
+    assert not guard.diagnostics
+    rejected = guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="A"))
+    assert rejected is None
+    assert any(d.code == "frozen_speaker_rewritten" for d in guard.diagnostics)
+
+
+def test_guard_closed_final_exempt_from_frozen_speaker() -> None:
+    # closed is the terminal post-processing correction: it may legally settle
+    # a different speaker, exactly like it may rewrite frozen text.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
+    accepted = guard.admit(TranscriptionEvent.closed("s0", "Hello.", speaker="B"))
+    assert accepted is not None and accepted.speaker == "B"
+    assert not guard.diagnostics
+
+
+def test_guard_frozen_speaker_strict_raises() -> None:
+    guard = _LifecycleGuard(strict=True)
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
+    with pytest.raises(ValueError, match="speaker is locked"):
+        guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="B"))
+
+
+def test_guard_rejected_event_does_not_poison_speaker_ledger() -> None:
+    # The ledger commit sits AFTER every reject path: a supersede-obligation-
+    # rejected event carrying a speaker must not register it, and follow-up
+    # events are judged against the ledger as it stood before the rejection.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
+    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
+    accepted = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2, speaker="B"))
+    assert accepted is not None
+    # c freezes text diverging from F_old while carrying speaker "C": the
+    # event is rejected on the supersede obligation -- AFTER the point where a
+    # naive implementation would have recorded the speaker.
+    rejected = guard.admit(TranscriptionEvent.partial("c", "再见", stable_until=2, speaker="C"))
+    assert rejected is None
+    assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
+    ledger = guard._last_speaker  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert "c" not in ledger and ledger["b"] == "B"
+    # Follow-up: c may still take ANY first speaker (the rejected "C" never
+    # locked in) ...
+    ok = guard.admit(TranscriptionEvent.partial("c", "世界呀", stable_until=2, speaker="D"))
+    assert ok is not None and ok.speaker == "D"
+    # ... and is thereafter judged against the ACCEPTED "D", not the
+    # rejected "C".
+    rejected_again = guard.admit(
+        TranscriptionEvent.partial("c", "世界呀!", stable_until=2, speaker="C")
+    )
+    assert rejected_again is None
+    assert any(d.code == "frozen_speaker_rewritten" for d in guard.diagnostics)
+
+
+def test_guard_supersede_cross_speaker_merge_suppressed() -> None:
+    # Two retired segments with distinct last-known speakers merged into one
+    # new id: pigeonhole forces a cross-speaker merge -> whole supersede
+    # suppressed (spec ST.5.2).
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s1", "hello", speaker="A"))
+    guard.admit(TranscriptionEvent.partial("s2", "world", speaker="B"))
+    rejected = guard.admit(TranscriptionEvent.supersede(["s1", "s2"], ["s3"]))
+    assert rejected is None
+    assert any(d.code == "supersede_cross_speaker_merge" for d in guard.diagnostics)
+    # Documented suppression side effect: the old segments stay alive (the
+    # supersede never took effect), so a later partial on an old id is still
+    # admitted -- reduced text may be duplicated once s3 arrives fresh.
+    follow_up = guard.admit(TranscriptionEvent.partial("s1", "hello there", speaker="A"))
+    assert follow_up is not None
+    state = guard._state  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert "s3" not in state
+
+
+def test_guard_supersede_same_speaker_merge_allowed() -> None:
+    # A single distinct speaker cannot be cross-merged: admitted.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s1", "hello", speaker="A"))
+    guard.admit(TranscriptionEvent.partial("s2", "world", speaker="A"))
+    accepted = guard.admit(TranscriptionEvent.supersede(["s1", "s2"], ["s3"]))
+    assert accepted is not None
+    assert not guard.diagnostics
+
+
+def test_guard_supersede_split_with_distinct_speakers_allowed() -> None:
+    # As many new ids as distinct retired speakers: no pigeonhole violation
+    # (a speaker-preserving re-segmentation is representable), admitted.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s1", "hello", speaker="A"))
+    guard.admit(TranscriptionEvent.partial("s2", "world", speaker="B"))
+    accepted = guard.admit(TranscriptionEvent.supersede(["s1", "s2"], ["s3", "s4"]))
+    assert accepted is not None
+    assert not guard.diagnostics
+
+
+def test_guard_supersede_duplicate_new_ids_evasion_still_suppressed() -> None:
+    # The model validator rejects duplicate new_ids at construction, but the
+    # guard independently defends against events materialized through
+    # validator-bypassing paths (model_construct/model_copy): counting the RAW
+    # new_ids length would read ["s3", "s3"] as two replacement slots and admit
+    # the exact many->1 cross-speaker merge the pigeonhole exists to suppress.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s1", "hello", speaker="A"))
+    guard.admit(TranscriptionEvent.partial("s2", "world", speaker="B"))
+    forged = TranscriptionEvent.model_construct(
+        type="supersede", old_ids=["s1", "s2"], new_ids=["s3", "s3"]
+    )
+    assert guard.admit(forged) is None
+    diag = next(d for d in guard.diagnostics if d.code == "supersede_cross_speaker_merge")
+    # The message must report the DISTINCT replacement count (1) the pigeonhole
+    # actually compared, not the raw forged length (2): "2 segment(s)" against
+    # 2 distinct speakers would contradict the very rule the diagnostic cites
+    # and read like a guard misfire.
+    assert "only 1 distinct segment(s)" in diag.message
+    assert "['s3', 's3']" in diag.message  # raw list keeps the forgery visible
+    state = guard._state  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert "s3" not in state
+
+
+def test_guard_supersede_unknown_speakers_allowed() -> None:
+    # Segments that never carried a speaker do not count as distinct: a merge
+    # of unlabelled segments (or one labelled + one unlabelled) is admitted.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s1", "hello"))
+    guard.admit(TranscriptionEvent.partial("s2", "world"))
+    assert guard.admit(TranscriptionEvent.supersede(["s1", "s2"], ["s3"])) is not None
+    guard.admit(TranscriptionEvent.partial("s4", "one", speaker="A"))
+    guard.admit(TranscriptionEvent.partial("s5", "two"))
+    assert guard.admit(TranscriptionEvent.supersede(["s4", "s5"], ["s6"])) is not None
+    assert not guard.diagnostics
+
+
 def test_session_supersede_rewrite_suppression_accepts_corrected_final_result() -> None:
     async def run() -> tuple[str, list[str], list[TranscriptionEvent]]:
         session = _ScriptedSession(
@@ -1919,6 +2231,18 @@ def test_supersede_duplicate_old_id_rejected_at_construction() -> None:
         TranscriptionEvent.supersede(["a", "a"], ["b"])
     with pytest.raises(ValueError, match="MUST NOT repeat a segment id"):
         TranscriptionEvent(type="supersede", old_ids=["a", "a"], new_ids=["b"])
+
+
+def test_supersede_duplicate_new_id_rejected_at_construction() -> None:
+    # A duplicate id within new_ids introduces the same replacement segment
+    # twice -- malformed under set-to-set lineage (spec §ST 5.2: new_ids is
+    # semantically a set). Left constructible it would inflate the raw new_ids
+    # length, evading the guard's cross-speaker pigeonhole count, and
+    # double-count that segment's frozen prefix in the F_new join.
+    with pytest.raises(ValueError, match="new_ids MUST NOT repeat a segment id"):
+        TranscriptionEvent.supersede(["a"], ["b", "b"])
+    with pytest.raises(ValueError, match="new_ids MUST NOT repeat a segment id"):
+        TranscriptionEvent(type="supersede", old_ids=["a"], new_ids=["b", "b"])
 
 
 def test_guard_supersede_unknown_old_id_suppressed() -> None:

@@ -206,7 +206,7 @@ Our own compliance suite imports this helper to keep the ecosystem predictable. 
 ### The full compliance surface
 
 `check_entrypoints()` covers entry-point metadata and class-level declarations.
-The standard defines **six** compliance dimensions; the remaining checks are
+The standard defines **seven** compliance dimensions; the remaining checks are
 also importable from `standard_asr.compliance`:
 
 | Check | What it asserts | How to run |
@@ -217,14 +217,17 @@ also importable from `standard_asr.compliance`:
 | `check_recommended_wire_format(engine)` | A streaming engine's `recommended_wire_format()` is internally consistent with its declared sample rate / wire encoding | `standard-asr compliance run` (per zero-arg streaming engine) |
 | `check_sync_bridge(session_factory)` | The async→sync bridge terminates without deadlock or a leaked thread | `standard-asr compliance run --include-bridge` (opens a session) |
 | `check_event_sequence(events)` | A recorded streaming event stream obeys the segment/event-order contract | library API only — drive it from your own tests with recorded events |
+| `check_transcription_result(result, capabilities=...)` | A recorded batch result carries no speaker labels beyond the declared `batch.diarization` capability (code `result_exceeds_diarization`) | library API only — drive it from your own tests with a recorded result |
 
 `standard-asr compliance run` orchestrates every check except
-`check_event_sequence` for you: `check_provider_params_swap_safety` for each
-zero-arg engine, then `check_streaming_param_gating` and
-`check_recommended_wire_format` for each streaming engine (both no-billing
-probes), plus `check_sync_bridge` when opted in via `--include-bridge` (it opens
-a session). `check_event_sequence` needs an author-recorded event stream the CLI
-cannot synthesize, so wire it into your test suite:
+`check_event_sequence` and `check_transcription_result` for you:
+`check_provider_params_swap_safety` for each zero-arg engine, then
+`check_streaming_param_gating` and `check_recommended_wire_format` for each
+streaming engine (both no-billing probes), plus `check_sync_bridge` when opted
+in via `--include-bridge` (it opens a session). `check_event_sequence` needs an
+author-recorded event stream — and `check_transcription_result` an
+author-recorded batch result — that the CLI cannot synthesize, so wire them
+into your test suite:
 
 ```python
 import pytest
@@ -236,6 +239,7 @@ from standard_asr.compliance import (
     check_recommended_wire_format,
     check_streaming_param_gating,
     check_sync_bridge,
+    check_transcription_result,
 )
 from my_engine import create_engine  # your zero-arg factory
 
@@ -271,6 +275,13 @@ def test_event_sequence_contract() -> None:
     events = [...]  # a recorded list[TranscriptionEvent] from a real session
     report = check_event_sequence(events)
     assert report.passed, [i.message for i in report.issues]
+
+
+def test_batch_result_within_capabilities() -> None:
+    engine = create_engine()
+    result = ...  # a recorded TranscriptionResult from a real transcribe() call
+    report = check_transcription_result(result, capabilities=engine.declared_capabilities)
+    assert report.passed, [i.message for i in report.issues]
 ```
 
 ## Checklist for Plugin Authors
@@ -279,8 +290,9 @@ def test_event_sequence_contract() -> None:
 - [ ] List every shipped preset as `<engine_id>/<model_name>`.
 - [ ] Provide a default model only when backwards compatibility demands it.
 - [ ] Ensure factories accept keyword arguments for configurable options.
-- [ ] Run `standard-asr compliance run` before publishing (and, for a streaming
-      engine, cover `check_event_sequence` in your tests — see *The full
-      compliance surface* above).
+- [ ] Run `standard-asr compliance run` before publishing (and cover the
+      recorded-data checks in your tests: `check_event_sequence` for a
+      streaming engine, `check_transcription_result` for a batch engine — see
+      *The full compliance surface* above).
 
 Following this guide gives downstream users a consistent discovery experience and keeps the Standard ASR catalog healthy.

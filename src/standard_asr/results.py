@@ -18,7 +18,7 @@ Null rules (disambiguation):
 
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import Any, Literal, Sequence, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -46,6 +46,48 @@ class Diagnostic(BaseModel):
     param: str | None = Field(default=None, description="Parameter concerned, if any.")
     provided: Any | None = Field(default=None, description="Value provided, if any.")
     effective: Any | None = Field(default=None, description="Value applied, if any.")
+
+
+def validate_speaker_label(value: str | None) -> str | None:
+    """Validate a speaker label at construction (shared by every ``speaker`` field).
+
+    One rule for :class:`Segment`, :class:`Word`, and
+    :class:`~standard_asr.streaming.TranscriptionEvent` (spec TR.5): a label
+    must be non-empty, not whitespace-only, and carry no leading/trailing
+    whitespace. ``""`` would be an undefined third state between ``None``
+    (no attribution) and a real label; edge whitespace (``"A "`` vs ``"A"``)
+    silently breaks within-result label consistency -- two strings = two
+    speakers -- so both are **rejected, never normalized** (normalizing would
+    hide an adapter bug behind a silently rewritten value; the same stance as
+    ``phrase_hints``). ``None`` (no attribution) passes through.
+
+    Args:
+        value: The candidate speaker label, or ``None``.
+
+    Returns:
+        The validated value unchanged.
+
+    Raises:
+        ValueError: If ``value`` is empty, whitespace-only, or has leading or
+            trailing whitespace.
+    """
+    if value is None:
+        return value
+    # The raw value is NOT echoed in the message: a speaker label can carry a
+    # personal name and this error surfaces verbatim through server 422 bodies
+    # and logs (the same redaction stance as the language-tag validator).
+    if not value.strip():
+        raise ValueError(
+            "speaker label must not be empty or whitespace-only (use None for "
+            "'no speaker attribution')."
+        )
+    if value != value.strip():
+        raise ValueError(
+            "speaker label must not have leading or trailing whitespace (two "
+            "labels differing only in edge whitespace would read as two "
+            "different speakers)."
+        )
+    return value
 
 
 class Word(BaseModel):
@@ -91,9 +133,31 @@ class Word(BaseModel):
     logprob: float | None = Field(
         default=None, description="Log-probability (separate from probability)."
     )
-    speaker: str | None = Field(default=None, description="Optional speaker label.")
+    speaker: str | None = Field(
+        default=None, description="Optional speaker label (non-empty, no edge whitespace)."
+    )
     channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
     extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
+
+    @field_validator("speaker")
+    @classmethod
+    def _check_speaker(cls, value: str | None) -> str | None:
+        """Reject a malformed speaker label at construction (fail-fast).
+
+        Delegates to :func:`validate_speaker_label` -- the shared rule for
+        every ``speaker`` field, so batch and streaming accept exactly the
+        same labels.
+
+        Args:
+            value: The candidate speaker label, or ``None``.
+
+        Returns:
+            The validated value unchanged.
+
+        Raises:
+            ValueError: If the label is empty, whitespace-only, or padded.
+        """
+        return validate_speaker_label(value)
 
     @model_validator(mode="after")
     def _check_span(self) -> Word:
@@ -124,7 +188,10 @@ class Segment(BaseModel):
         sample (``t=0``), ``end >= start`` (zero-duration allowed), and NaN / Inf
         rejected (spec TR.2). Within one channel segments are time-ordered; the
         top-level :class:`TranscriptionResult.segments` are sorted by
-        ``(start, channel)`` (cross-channel spans may overlap).
+        ``(start, channel, speaker)`` (cross-channel spans may overlap).
+        ``speaker`` is the final tie-break for equal-``(start, channel)``
+        overlapping segments (the single-channel multi-speaker case); ``None``
+        sorts before any real label.
 
     Args:
         start: Segment start time in seconds (origin = first submitted sample;
@@ -156,7 +223,10 @@ class Segment(BaseModel):
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this segment."
     )
-    speaker: str | None = Field(default=None, description="Optional speaker label.")
+    speaker: str | None = Field(
+        default=None,
+        description="Optional speaker label (non-empty, no edge whitespace).",
+    )
     channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
     avg_logprob: float | None = Field(default=None, description="Optional average log-probability.")
     no_speech_prob: float | None = Field(
@@ -167,6 +237,28 @@ class Segment(BaseModel):
         default=None, description="Optional compression-ratio metric."
     )
     extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
+
+    @field_validator("speaker")
+    @classmethod
+    def _check_speaker(cls, value: str | None) -> str | None:
+        """Reject a malformed speaker label at construction (fail-fast).
+
+        Delegates to :func:`validate_speaker_label` -- the shared rule for
+        every ``speaker`` field. ``Segment.speaker`` is the authoritative
+        diarization shape (spec TR.5), so a malformed label here is the most
+        damaging: it would flow into renderers and reducers as a phantom
+        speaker.
+
+        Args:
+            value: The candidate speaker label, or ``None``.
+
+        Returns:
+            The validated value unchanged.
+
+        Raises:
+            ValueError: If the label is empty, whitespace-only, or padded.
+        """
+        return validate_speaker_label(value)
 
     @model_validator(mode="after")
     def _check_span(self) -> Segment:
@@ -186,6 +278,48 @@ class Segment(BaseModel):
         if self.end < self.start:
             raise ValueError(f"Segment end ({self.end}) must be >= start ({self.start}).")
         return self
+
+
+def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
+    """Derive a segment-level speaker label from its words (spec TR.5 pinned rule).
+
+    THE single synthesis rule of the standard layer, used when an engine
+    populates ``Word.speaker`` but leaves the authoritative ``Segment.speaker``
+    ``None``:
+
+    * **Majority by word count** -- the label carried by the most words wins.
+    * **Tie** -> the speaker of the earliest (lowest-index) word among the
+      tied labels.
+    * Words with ``speaker=None`` do **not** vote.
+    * No speaker-bearing words (or ``words`` ``None``/empty) -> ``None``.
+
+    This function is deliberately the ONLY implementation -- both the batch
+    post-processing (``EngineBase.transcribe``) and the streaming reducer
+    (:class:`~standard_asr.streaming.StreamReducer`) call it, never a private
+    copy. Portability demands it: the same engine and audio MUST yield the same
+    ``Segment.speaker`` whether the app took the batch or the streaming path;
+    two drifting copies of the rule would silently break that promise.
+
+    Args:
+        words: The segment's word-level details, or ``None``.
+
+    Returns:
+        The synthesized speaker label, or ``None`` when no word carries one.
+    """
+    if not words:
+        return None
+    counts: dict[str, int] = {}
+    first_index: dict[str, int] = {}
+    for index, word in enumerate(words):
+        if word.speaker is None:
+            continue
+        counts[word.speaker] = counts.get(word.speaker, 0) + 1
+        first_index.setdefault(word.speaker, index)
+    if not counts:
+        return None
+    # Highest count wins; on a count tie the LOWER first_index (earlier word)
+    # wins, hence the negated index in the key.
+    return max(counts, key=lambda label: (counts[label], -first_index[label]))
 
 
 class ChannelResult(BaseModel):
@@ -231,11 +365,13 @@ class TranscriptionResult(BaseModel):
         language_confidence: Detection confidence in ``[0, 1]``.
         duration: Audio duration in seconds, if known (non-negative, finite).
         segments: Segments across all channels, if available. Per spec TR.2 they
-            SHOULD be sorted by ``(start, channel)`` (monotonic within a
-            channel); this ordering is an **engine obligation** the compliance
-            suite verifies, not a construct-time invariant (the streaming
+            SHOULD be sorted by ``(start, channel, speaker)`` (monotonic within
+            a channel; ``speaker`` is the final tie-break, ``None`` sorting
+            first); this ordering is an **engine obligation**, neither enforced
+            at construction nor checked by the compliance suite (the streaming
             reducer legitimately keeps arrival order for timestamp-less engines).
-            The SRT/VTT renderers re-sort defensively.
+            The SRT/VTT renderers' defensive re-sort is the only standard-layer
+            safety net.
         words: Flattened word-level details, if available.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (TR.4: one entry per channel),
@@ -335,14 +471,15 @@ class TranscriptionResult(BaseModel):
            detail. That shape is an engine bug, so the model refuses it.
 
         The complementary TR.2 ordering invariant (top-level ``segments`` sorted
-        by ``(start, channel)``, monotonic within a channel) is intentionally
-        *not* enforced here: the streaming reducer
+        by ``(start, channel, speaker)``, monotonic within a channel) is
+        intentionally *not* enforced here: the streaming reducer
         (:class:`~standard_asr.streaming.StreamReducer`) legitimately preserves
         arrival order for timestamp-less engines and sorts only by ``start``
-        (no channel tie-break), so a strict ``(start, channel)`` construct-time
-        check would reject valid reduced results. Ordering is an engine
-        obligation the compliance suite verifies; the renderers defensively
-        re-sort at their boundary.
+        (no channel/speaker tie-break), so a strict ``(start, channel,
+        speaker)`` construct-time check would reject valid reduced results. For
+        the same reason the compliance suite does not check ordering either;
+        ordering is an engine obligation, and the renderers' defensive re-sort
+        at their boundary is the only standard-layer safety net.
 
         Returns:
             The validated result.
@@ -383,4 +520,6 @@ __all__ = [
     "Segment",
     "TranscriptionResult",
     "Word",
+    "synthesize_segment_speaker",
+    "validate_speaker_label",
 ]

@@ -345,7 +345,7 @@ capabilities:
     guidance:
       prompt:               { supported, constraints: { max_tokens? } }
       phrase_hints:         { supported, constraints: { max_terms, max_chars_per_term, max_words_per_term } }
-    diarization:            { supported, constraints: { max_speakers? } }   # v1 多为 false
+    diarization:            { supported, always_on: { supported }, constraints: { max_speakers? } }
 
   # ── streaming mode ──
   streaming:
@@ -355,6 +355,7 @@ capabilities:
       prompt:               { supported, constraints: { max_tokens? } }
       phrase_hints:         { supported, constraints: { max_terms, max_chars_per_term, max_words_per_term } }
       mutable_mid_stream:   { supported }        # 中途可变 guidance（§RT 3.3；流式专有；默认 false=会话锁定）
+    diarization:            { supported, always_on: { supported }, constraints: { max_speakers? } }
     emits_partials:         { supported }
     re_segments:            { supported }        # 是否可能发 supersede 事件
     word_stability:         { supported }        # 是否提供有意义的 stable_until
@@ -365,10 +366,16 @@ capabilities:
   # ── 引擎全局正交能力 ──
   streaming_input:          { supported }
   streaming_output:         { supported }
-  self_resamples:           { supported }   # 唯一行为性能力（§AI 3.2）；仅信息性，R7 仍以 accepted_sample_rates 为权威
+  self_resamples:           { supported }   # 行为性能力之一（§AI 3.2）；仅信息性，R7 仍以 accepted_sample_rates 为权威
 ```
 
 同一功能（如 `language`、`guidance`）在 `batch` 和 `streaming` 下**分别声明**——同一引擎在不同模式下的能力可以不同。
+
+**`diarization.always_on`（行为性 flag 节点，normative）。** `always_on` 是 `DiarizationCap` 上的一个**行为性 flag 节点**（`FlagCap`），与 `self_resamples`（以及流式行为性 flag `emits_partials`/`re_segments`/`word_stability`）同族——它描述引擎**做什么**（架构上不可关闭 diarization，未请求时也可能出现 speaker 标签），不授予应用可请求的任何东西。它**不进** `constraints`（§3.3：`constraints` 专用于机器可校验的限额，而 `always_on` 是行为事实）。
+
+但它是一个**普通的可查询 flag 节点**，与 `self_resamples` 一致：`supports("<mode>.diarization.always_on")` 是有效查询路径；声明 supported 时它出现在 `iter_supported_paths()` 中；canonical JSON 统一为它注入 `supported` 布尔值；`covers()` 通过标准集合包含把「declared 未声明 → effective 声明」的变化当作漂移（declaration drift）拒绝。矛盾态 `supported=false ∧ always_on 声明 supported` 仍**不可表示**（构造期 validator 拒绝）。
+
+唯一使 `always_on` 区别于其他 flag 的是**语义反转**：对其他 flag，`true` 表示「你 MAY 请求这个」；对 `always_on`，`true` 表示「这被强加给你」——未请求 speaker 标签也可能出现（对请求门控 diarization 的具名豁免）。这个反转是文字说明，不是表示层的差异。其填充豁免见 [§结果模型 TR.5](#结果模型-transcription-result--normative) 的具名豁免；架构上不可关闭的 joint 模型（如 joint ASR+diarization 解码器，speaker token 与文本 token 交织在同一输出序列）适用。**能关就必须关（normative）**：能够关闭 diarization 的引擎（原生 skip/disable 开关）MUST 在未请求时关闭；`always_on` 保留给架构上不可关的模型，MUST NOT 为省适配器工夫而声明（不可运行时验证，属声明诚实性义务，与 TR.3 的粒度声明诚实同类）。
 
 ### 3.3 节点原型
 
@@ -472,6 +479,7 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 | `language` | `str \| None` | `None` | `<mode>.language.runtime_override` | 本次语言（BCP-47 / `"auto"`），覆盖 `default_language`。解析见 [§语言选择 R2](#语言选择-language-selection--normative)。 |
 | `candidate_languages` | `list[str] \| None` | `None` | `<mode>.language.candidate_languages` | 候选语言列表（仅 `auto` 下有意义）。解析见 [§语言选择 R3](#语言选择-language-selection--normative)。 |
 | `word_timestamps` | `WordTimestampGranularity \| None` | `None` | `<mode>.word_timestamps` | 词级时间戳。**枚举**（`word \| segment \| char`），非 bool。 |
+| `diarization` | `DiarizationRequest \| None` | `None` | `<mode>.diarization` | 说话人分离（"谁说了什么"）。**presence = enable**：`DiarizationRequest` 是 v1 的**空 frozen marker**（`extra="forbid"`、无字段）；便利常量 `DIARIZE = DiarizationRequest()`。语义与 wire 映射见 §3.4；结果语义见 [§结果模型 TR.5](#结果模型-transcription-result--normative)。 |
 | `prompt` | `str \| None` | `None` | `<mode>.guidance.prompt` | 自由文本软提示（§3.3）。 |
 | `phrase_hints` | `list[str] \| None` | `None` | `<mode>.guidance.phrase_hints` | 词条 boost 集（§3.3）。 |
 | `on_unsupported` | `Literal["fail", "degrade_to_prompt"]` | `"fail"` | （无——策略指令） | `guidance` 降级策略（§3.3 opt-in 降级）。**无 capability 路径**：它是控制*遇到不支持的 guidance channel 时是否降级*的策略字段，不被能力门控。`"fail"` = **不降级**（按 strict/best_effort 走标准门控：strict 抛错、best_effort 丢弃+diagnostic）——它**不**强制本次请求整体失败，最终行为由全局 strict/best_effort 决定；`"degrade_to_prompt"` = 单向降级 rich→prompt。它是 `RuntimeParams` 顶层字段且**随 wire 可移植集传输**（`WireRuntimeParams`）。 |
@@ -518,6 +526,23 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 **扩展**：新 channel = additive-minor；`x_<vendor>_<channel>` 实验 + 提升去前缀（RFC 6648）；无 per-channel version；channel 名不复用。
 
 **流式**：guidance MAY 进 `capabilities.streaming.guidance.*`；中途可变性由 flag 节点 `capabilities.streaming.guidance.mutable_mid_stream`（`{ supported }`，§C 3.3）声明，经 `engine.supports("streaming.guidance.mutable_mid_stream")` 查询。该 flag **流式专有**（batch guidance 无此节点，单 shot 谈不上中途可变）。默认 `supported=false`=会话锁定（与 fail-closed 一致）；v1 **保留**该声明位但不承诺 `update_guidance()` 方法——合规套件不要求任何运行时行为，`covers()` 的集合包含自动拒绝 `declared=false→effective=true` 放宽。
+
+### 3.4 `diarization` 说话人分离请求（空 enable marker）
+
+`diarization: DiarizationRequest | None` 是可移植标准集字段，**presence = enable**：任何 `DiarizationRequest` 实例 = 请求说话人分离；`None` = 未请求。
+
+- **v1 空 frozen marker（normative）**：`DiarizationRequest` 是 `frozen=True`、`extra="forbid"` 的**无字段**模型——它的存在本身即请求。`num_speakers`（说话人数提示）与归属粒度声明**有意 defer**：hint 语义在引擎间不统一（exact / max / hint），且其能力宣告不可验证；将来以 additive 字段毕业进该模型（现有 `DiarizationRequest()` 与 wire `{}` 不受影响）。过渡期各引擎的 count hint 走 `provider_params`。便利常量 **`DIARIZE = DiarizationRequest()`**（平行于语言的保留字 `auto`），常见写法 `RuntimeParams(diarization=DIARIZE)`。
+- **无 `[]`-analogue（与 `phrase_hints` 的三态不同）**：`None` = 未请求；任何实例（wire 上 `{}`）= 请求；**不存在**「请求但空」态。
+- **门控**：feature 级，能力路径 `<mode>.diarization`（marker 无字段，故无子门控）。不支持时按 R2 走标准 strict/best_effort：strict 抛 `UnsupportedFeatureError`；best_effort 丢弃（置 `None`）+ `unsupported_parameter_ignored` diagnostic。**`on_unsupported` 不适用**：它只治理 `guidance` 家族的降级路径；diarization 没有降级目标（支持或不支持，无 rich→prompt 类比）。
+- **三路 wire 映射（normative）**。`WireRuntimeParams` 随可移植集携带该字段：
+
+| Wire JSON | Python 值 | 含义 |
+|---|---|---|
+| `"diarization": {}` | `DiarizationRequest()` | 请求说话人分离 |
+| `"diarization": null` | `None` | 未请求 |
+| 键缺席 | `None`（字段默认） | 未请求 |
+
+对象内的未知键（如 `{"diarization": {"unknown": true}}`）→ 校验错误（`extra="forbid"`；server 映射 422）——marker 毕业出新字段前，wire 不接受任何内部键。WS 开启（config/handshake 帧，形如 server 规范 §4.1.1 的扁平首帧——无 `type`/`start` 信封，marker 位于 `options` 下）：`{"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": {"diarization": {}}}`；事件随 [§流式协议 4.1](#流式协议-streaming--normative) 携带 `speaker`：`{"type": "final", "segment_id": "seg-3", "text": "I agree.", "speaker": "speaker_1", "start": 12.4, "end": 13.8}`。
 
 ## 4. 行为（规范）
 
@@ -635,8 +660,8 @@ Segment: start:float  end:float  text:str
 Word:    start:float  end:float  text:str
          probability:float|None  speaker:str|None  channel:int|None  extra:dict
 ```
-- **时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）**，与 §ST 同一原点。**每通道内**跨段单调；多通道时不同通道的段 `[start, end]` **允许重叠**（双声道同时说话），顶层 segments 按 `start` 稳定排序、`start` 相同时按 `channel` 排。适配器把 ms / protobuf-duration / ticks 转入。
-  > **排序是引擎义务，非构造期强制（明示，与 TR.4 不对称）**：该 `(start, channel)` 排序与每通道单调性是**引擎/适配器的义务**，由合规套件校验（§G.2.1 合规与运行时共用校验逻辑），但**不**在 `TranscriptionResult` 构造期强制——`StreamReducer` 对无时间戳引擎合法地保留到达顺序、且仅按 `start` 排（无 channel tie-break），严格的 `(start, channel)` 构造校验会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是**不可表示的歧义形状**（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界防御性重排。
+- **时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）**，与 §ST 同一原点。**每通道内**跨段单调；多通道时不同通道的段 `[start, end]` **允许重叠**（双声道同时说话），顶层 segments 按 `start` 稳定排序、`start` 相同时按 `channel` 排、仍相同时按 `speaker` 排（**最终 tie-break**；`None` 排在真实标签之前——单通道多说话人重叠段因此有确定顺序）。适配器把 ms / protobuf-duration / ticks 转入。
+  > **排序是引擎义务，非构造期强制、合规套件亦不校验（明示，与 TR.4 不对称）**：该 `(start, channel, speaker)` 排序与每通道单调性是**引擎/适配器的义务**——既**不**在 `TranscriptionResult` 构造期强制，合规套件也**不**校验：`StreamReducer` 对无时间戳引擎合法地保留到达顺序、且仅按 `start` 排（无 channel tie-break），严格的 `(start, channel, speaker)` 校验（无论在构造期还是套件对 `session.result()` 输出）都会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是**不可表示的歧义形状**（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界以同一 `(start, channel, speaker)` 键防御性重排——这是标准层唯一的安全网。
 - `probability ∈ [0,1]`；若引擎给 logprob，**另立字段**，不与 probability 混。
 - **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_until` 等）加在**事件包装层**，不污染共享子模型。
 - **`session.result() -> TranscriptionResult`**：流式会话可归约为最终结果（反映 `final`；late `closed` 重格式化可更新它）。
@@ -644,7 +669,7 @@ Word:    start:float  end:float  text:str
 ## TR.3 时间戳粒度
 `word_timestamps` 枚举 `word|segment|char`；char 级 reserve（additive）。
 
-**声明语义（normative）**：`capabilities.<mode>.word_timestamps.granularities` 声明的是引擎**能诚实交付**哪些粒度的时间戳，**不是**上游 API 是否有同名开关。引擎 MUST 声明它能服务的**每一个**粒度——包括零成本恒真的那些。多数模型每次转写都恒带 per-segment `start`/`end`：此种引擎 MUST 声明 `segment`，即便上游没有独立的 "segment 模式" 参数；否则标准层会把最便宜、恒可满足的 `segment` 请求当作"不支持"硬拒（strict）或丢弃（best_effort），制造**假不兼容**。声明后映射 MUST 按粒度精确：仅 `word` 触发词级（forced-alignment）计算，`segment` 请求 MUST NOT 回填未请求的词级数据（`words=None`=未请求，§TR.1 null 规则）。
+**声明语义（normative）**：`capabilities.<mode>.word_timestamps.granularities` 声明的是引擎**能诚实交付**哪些粒度的时间戳，**不是**上游 API 是否有同名开关。引擎 MUST 声明它能服务的**每一个**粒度——包括零成本恒真的那些。多数模型每次转写都恒带 per-segment `start`/`end`：此种引擎 MUST 声明 `segment`，即便上游没有独立的 "segment 模式" 参数；否则标准层会把最便宜、恒可满足的 `segment` 请求当作"不支持"硬拒（strict）或丢弃（best_effort），制造**假不兼容**。声明后映射 MUST 按粒度精确：仅 `word` 触发词级（forced-alignment）计算，`segment` 请求 MUST NOT 回填未请求的词级数据（`words=None`=未请求，§TR.1 null 规则）。（「不回填未请求数据」立场的唯一具名豁免是 always-on diarization，见 TR.5。）
 
 ## TR.4 多通道（恒定 shape，非顶层 `transcripts[]`）
 - 顶层 `text`/`segments`/`words` **始终是全通道、说话人/通道无关的完整转写**——多通道时是**按时间合并所有通道**（不是 channel-0-only；使「无视 channels」安全无损）。
@@ -654,8 +679,19 @@ Word:    start:float  end:float  text:str
   - `channels` 中任一通道携带 `segments`/`words` 而顶层对应字段为 `None` ——否则"无视 channels 安全无损"的承诺被静默打破（渲染器会把仅 channels 的结果坍缩成单条无时间 cue）。
   - `channels` 中 `channel` 索引**重复**——TR.4 语义是「每通道一条」，重复使顶层合并歧义、且按 channel 建字典的消费方静默丢一半数据。
 
-## TR.5 说话人（v1 reserve shape，feature 延后）
-diarization 特性 v1 多不支持，但 **shape 现在就预留**（additive-safe）：`Segment.speaker`（**权威**）+ `Word.speaker`；**不**加顶层 `speakers[]` roster（YAGNI，需要时 additive）。
+## TR.5 说话人（Speaker Diarization）
+说话人分离（"谁说了什么"）经 [§Runtime 参数 3.4](#runtime-参数-runtime-parameters--normative) 的 `diarization` marker 请求，能力声明于 `capabilities.<mode>.diarization`（[§能力系统 3.2](#能力系统-capabilities--normative)）。结果语义（normative）：
+
+- **`Segment.speaker`（权威）+ `Word.speaker`（可选细化）。继承规则**：`Word.speaker` 为 `None` 时继承所在段的 `Segment.speaker`；非 `None` 时在词级**覆盖**段级值（混合说话人段的词级细化）。**不**加顶层 `speakers[]` roster（YAGNI，需要时 additive）。
+- **`None` 语义（TR.1 重申）**：diarization **激活**时 `speaker=None` = "引擎无法判定该段/词的说话人"（显式的「不知道」）；未请求时 = 不适用。应用判「引擎是否支持/做了 diarization」MUST 看 capability，MUST NOT 看字段 null（TR.1 null 规则；always-on 豁免见下，使字段 null 判定更加不可靠）。
+- **段级 speaker 合成（标准层，单一钉死规则）**：当 `Segment.speaker is None` 而其 `words` 携带非 `None` speaker 时，标准层合成段级 speaker。规则**唯一且钉死**：**按词数多数决；平手取并列 speaker 中最早出现（最低下标）的词的 speaker；`speaker=None` 的词不投票；无携带 speaker 的词则保持 `None`**。该合成以同一实现跑在两条路径上：batch 在 `EngineBase.transcribe` 的结果后处理（作用于顶层 `segments[]` **与**每个 `channels[i].segments`——TR.4 两视图必须一致），streaming 在标准归约器（`session.result()`）。适配器 MAY 自行预填 `Segment.speaker`（原生段级引擎如此）；标准层仅在段级为 `None` 时合成，且不论 diarization 是否被请求（always-on 数据同样受益）。钉死单一规则的理由：同一引擎+同一音频 MUST 经任何路径/实现得到相同的 `Segment.speaker`——两条相近规则（majority vs first）会静默分叉，破坏本特性存在的可移植性。
+- **标签有效性（构造期强制）**：`speaker` 标签 MUST 非空、非纯空白、且无首尾空白——`Segment` / `Word` / `TranscriptionEvent` 构造期拒绝（`""` 是既非 `None` 又非真实标签的第三种未定义状态；`"A "` 与 `"A"` 是两个不同字串 = 两个不同说话人，一个适配器 off-by-one 即静默打破一致性；**拒绝而非归一化**，与 `phrase_hints` 词条的 fail-loud 立场同款）。`None` 合法。标准**不**规定标签格式（`"speaker_0"`、`"A"`、known-speaker 场景的真实姓名皆可）。
+- **result 内一致性（适配器义务）**：同一结果内同一字串 = 同一说话人、不同说话人 = 不同字串。一致性范围横跨**所有**标签载体——顶层 `segments[]`、`words[]`、以及 `channels[]` 子结果：逐通道独立 diarize 的引擎（两个通道都把各自第一个说话人标 `"0"`）MUST 由适配器在组装前重标进同一个 result 级命名空间，否则同一字串静默指代两个人。非空性之外的一致性无法构造期强制，合规套件亦**不**校验——套件只提供下方「合规范围」条的负向 presence 交叉检查（`stream_exceeds_diarization` / `result_exceeds_diarization`：只比对「是否携带 speaker」与声明能力，**绝不**比对标签字串一致性）；一致性在无多说话人 fixtures 时不可验证，标准层不假装强制。与 TR.2 排序（同为引擎义务、构造期不强制、套件不校验，但渲染器在自身边界防御性重排兜底）不同，此项是**纯适配器义务**——连渲染器都不代为修复，没有任何标准层安全网。
+- 标签跨会话**不**稳定、**不**关联身份、**不**跨引擎可比。
+- **always-on 引擎的具名豁免（normative）**：声明 `always_on` 为 supported 的引擎 MAY 在 diarization **未被请求**时填充 `speaker`，这**不是**违规——它是对「未请求的数据 MUST NOT 回填」立场（TR.3 对 word timestamps 的禁令）的**有意、具名**豁免：架构上不可关闭的 joint 模型无法不产出 speaker，强制剥离 = 主动丢弃高价值数据 + 在静默方向（漏剥没人知道）留 bug 窗口。此类引擎 MAY 额外发一条 `info` diagnostic（`code="unrequested_speaker_labels"`）。想要无 speaker 标签的应用（隐私场景）在 always-on 引擎上无标准关闭手段，自行在客户端剥除。可关闭的引擎不享受此豁免（能关 MUST 关，[§能力系统 3.2](#能力系统-capabilities--normative)）。
+- **channel vs speaker 正交**：`channel` 是**物理来源**（哪个麦克风/线路），`speaker` 是**逻辑身份**（谁在说话）；两者 MAY 同时存在。引擎特有的 diarization×多通道互斥是**请求时适配器门控**（strict 抛 `UnsupportedFeatureError`；best_effort 丢弃 diarization + diagnostic），**不是** `effective_capabilities` 收窄——effective 能力是实例级/配置期收窄，通道数是随音频到达的请求级属性，实例级机制表达不了「这条请求是立体声，所以 diarization 不可用」。
+- **与 `word_timestamps` 的交互**：diarization 被请求时，`Segment.speaker` MUST 在可判定处填充（它是权威形状）；`Word.speaker` 仅当 `words` 本身被请求/填充时才可能出现（TR.3：`words=None`=未请求）。
+- **合规范围（诚实声明）**：diarization 的**正向**行为（标签质量、真实归属、hint 是否被用）在没有多说话人 fixtures 时不可验证；合规套件只强制**负向**交叉检查——声明不支持却发出 speaker（streaming：`stream_exceeds_diarization`；batch：`result_exceeds_diarization`，扫 `segments[]`/`words[]`/`channels[]` 全部载体）。
 
 ## TR.6 SRT/VTT 等格式（核心渲染，非返回类型）
 - 禁 `response_format`→字符串。核心库提供 **`to_srt(result) -> str` / `to_vtt(result) -> str`**（基于恒定 `segments`），每个 compliant 引擎一键可得（**强于现状**：现状只有部分引擎给）。
@@ -664,6 +700,11 @@ diarization 特性 v1 多不支持，但 **shape 现在就预留**（additive-sa
   - **WebVTT 实体转义**：`to_vtt` MUST 按 W3C WebVTT cue-text 文法转义 `&`→`&amp;`、`<`→`&lt;`、`>`→`&gt;`（先 `&` 后 `<`/`>`，避免二次转义）。裸 `<` 会开启 cue-span tag、被浏览器 tokenizer 消费至下一个 `>`，使尖括号内文本（如引擎泄漏的 `<unk>`/`<|...|>` token、口述数学）在字幕中**静默消失**——正中「静默错误结果是头号大罪」。转义 `>` 同时使 payload 中的 `-->` 不再可能被读作 cue timing。
   - **SRT 不转义**：SRT 无字符引用机制，`to_srt` MUST NOT 套用实体转义（否则把字面 `&amp;`/`&lt;` 显示给用户）；`&` 与尖括号原样透传，下游若需中和标签应在渲染前对转写文本处理。
 - **`segments` 缺失时的回退（normative，消除跨实现未定义行为）**：基于 §TR.1 null 规则——`segments is None`（未请求/不适用）且 `text` 非空 → 合成一条覆盖全文的 cue：`[0, duration]`，`duration` 未知（如归约流）时用固定 `[0, 3s]`（播放器静默丢零时长 cue，故回退 cue MUST 非零时长）。`segments == []`（请求但空，如静音）→ 零 cue，绝不杜撰。其他语言 SDK MUST 采用同一回退以保「同结果同渲染」。
+- **说话人渲染（opt-in，normative）**：`to_srt` / `to_vtt` 提供 keyword-only 参数 `include_speakers: bool = False`。默认 `False` 的理由是**文本纯净**（渲染器是结果的投影而非结果本身，调用方仍持有完整数据，`False` 不构成静默丢失；SRT 没有标准 speaker 语法，前缀会改变 cue 文本自身、污染下游文本处理）——**不是**向后兼容。`True` 时对 `speaker` 非 `None` 的段：
+  - **SRT**：cue 文本加前缀 `[<label>]: `。
+  - **VTT**：把**整个**（可能多行的）已消毒 cue 正文包进 `<v <label>>` voice tag——per W3C WebVTT，无闭合标签的 `<v>` span 合法地延伸到 cue payload 结尾，故整体包裹对多行 cue 无歧义。
+  - **注入顺序（normative）**：speaker 标记 MUST 在上文 cue 文本消毒（行终止符归一/实体转义）**之后**注入，否则 voice tag 自身会被转义。**标签自身 MUST 针对其注入上下文消毒**：内部换行折叠为空格（模型验证器拒绝首尾空白但**不**拒绝内部换行——标签不得伪造 cue 结构）；VTT 的 voice-tag annotation 上下文额外转义 `&`→`&amp;`、`<`→`&lt;`、`>`→`&gt;`（先 `&`；裸 `>` 会提前终止 tag，字符引用在 annotation 中合法）。
+  - `speaker` 为 `None` 的段不加前缀/tag；空文本段即便带 speaker 仍被跳过（无 payload 即无 cue）。
 - provider 渲染的高保真格式仅作 **`result.extra["provider_formats"]["srt"]`** 透传，显式非可移植、非推荐路径。
 - 据此 `response_format`/`additional_formats` 退出可移植 runtime 集（渲染是事后，非参数）。
 
@@ -907,6 +948,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 | `text` | `str \| None` | 该段的当前完整文本（`partial`/`final` 必有） |
 | `stable_until` | `int \| None` | 已冻结的 codepoint 数量（`text[:stable_until]` = 冻结前缀；见 §4.2） |
 | `words` | `list[Word] \| None` | 词级细节（可选，与 [§结果模型](#结果模型-transcription-result--normative) 共享同一 `Word` 定义） |
+| `speaker` | `str \| None` | 段级说话人标签。继承规则与 `Segment.speaker` 相同（TR.5）：`event.words[i].speaker` 非 `None` 时在词级覆盖；标签有效性规则同 TR.5（构造期拒绝空/纯空白/带首尾空白）。冻结区域保护见 §4.2 |
 | `start` / `end` | `float \| None` | 段的起止时间（秒，原点 = 会话第一个音频采样）|
 | `audio_processed_until` | `float \| None` | 引擎已处理到的音频时间点（§4.4） |
 | `old_ids` / `new_ids` | `list[str]` | 仅 `supersede` 事件使用（§5） |
@@ -950,6 +992,14 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 - 引擎没有 `right_context`（前瞻窗口）或时间戳信息时（如 Qwen3-ASR streaming），MUST 报 `stable_until=0`——表示没有冻结任何字。相应地，`word_stability` capability 应声明为 `false`。
 - **简单应用**：可以无视 `stable_until`，只用 `partial` 显示、`final` 提交。
 - **语音助手**：读 `text[:stable_until]` 作为"可安全行动的前缀"。
+
+**冻结区域的 speaker 保护（normative）**：冻结保证延伸到**段级** `event.speaker`（词级 speaker 的冻结追踪 v1 明确不做，留作适配器义务）。规则：
+
+- 一旦某段在**先前事件**中确立了冻结前缀（`stable_until > 0`）**且**该段已被接受过非 `None` 的 speaker，其**最后被接受的**非 `None` speaker 即被锁定：后续 `partial` / `final` MUST NOT 改变它（X→Y）也 MUST NOT 撤回它（X→None——撤回即改写：应用已依冻结前缀行动）。
+- **`None→X` 合法**（冻结后首次赋 speaker）——这正是推荐的适配器策略「**延迟 speaker 到 final**」：引擎聚类未稳定时 partial 报 `speaker=None`，稳定后（通常 `final`）再给。聚类会漂移的引擎（流式重分配 speaker 的云引擎）SHOULD 采用此策略而非盲转发。
+- **`closed` 终态豁免**（与文字的 `closed` 后处理豁免对称——终态定稿不是识别回退）。
+- 违规时标准层 MUST **抑制整个事件**并发 `frozen_speaker_rewritten` diagnostic（`frozen_prefix_rewritten` 的镜像）——**绝不钳制**：钳制（保留事件、还原旧 speaker）会把过时的归属继续呈现给应用，正是另一个方向的静默错误结果。抑制的代价按事件类型分两档：抑制进行中的 `partial` 只是 ephemeral 损失（下一个 partial 会重新呈现该段）；但抑制违规的普通 `final` **不是**——标准归约器只提交 final（§TR.2：`session.result()` 反映 `final`），被抑制的 final 使该段**永远不提交**，其文本从 `session.result()` 中永久缺失（只留下 `frozen_speaker_rewritten` warning diagnostic）。要让 final 落地，适配器 MUST 走以下任一合规路径：(1) 在 final 上**复述已锁定的 speaker**；(2) 采用「延迟 speaker 到 final」策略（partial 报 `speaker=None`，final 上一次性给出——经 `None→X` 合法）；(3) 把修正后的 speaker 放到豁免的 `closed` 终态事件上定稿（`open→closed` 是 §5.1 合法的一步终态化，`closed` 不受本守卫约束，照常提交）。抑制只伤害不合规适配器：盲转发原生 partial speaker 重分配的适配器会连续掉 partial；若其 final 也携带改写后的 speaker，该段文本将整段丢失。
+- 未冻结区域（以及尚无冻结前缀的段）上，partial 的 speaker 保持**临时性**、可自由变化（§7.2 的路由警告）。
 
 ### 4.3 累积/replace 归一化
 
@@ -1020,13 +1070,14 @@ elif event.type == "supersede":
 **`supersede` 是核心事件（非可选）**——即使 `re_segments` capability 为 `false`（引擎承诺不发 supersede），应用代码也 MUST 包含上面的 reduce 逻辑。这样无论切换到任何引擎都安全。
 
 **规则与不变量**：
-- `old_ids` 与 `new_ids` **MUST 无交集**——一个被替换的 id 不会被复用；id 一旦出现在 `old_ids` 中即退休。
+- `old_ids` 与 `new_ids` **MUST 无交集**——一个被替换的 id 不会被复用；id 一旦出现在 `old_ids` 中即退休。两个列表各自内部也 **MUST NOT 重复** id——lineage 是 set-to-set（见下），`old_ids`/`new_ids` 本质是集合：`old_ids` 重复 = 同一段退休两次；`new_ids` 重复会使守卫的跨说话人鸽笼计数与冻结前缀拼接（F_new）把同一段计两次。三条皆**构造期拒绝**。
 - **顺序语义**：`old_ids` 与 `new_ids` 都 MUST 按**阅读（时间）顺序**排列——这是下面"冻结前缀保留"规则做拼接（concatenation）的前提。
 - `new_ids` 中的段可能先以 `partial` 到达（不一定立刻是 `final`）——应用的 reduce 应在 `new_ids` 的第一个事件到达时就开始渲染新段文本。
 - **排序**：`supersede` 事件 MUST 在其 `new_ids` 的任何 `partial`/`final` 之前投递；`old_ids` 中的 id 必须在之前已被**宣告**过——「宣告」= 收到过至少一个 `partial` / `final`，**或**作为更早一次 `supersede` 的 `new_ids` 被引入（链式 supersede `A→B`、`B→C` 中，`B` 即使从未收到 partial/final 也算已宣告）。
 - **冻结前缀保留（拼接覆盖规则）**：`supersede` 操作 MUST 保留已冻结的文本。设 **F_old** = 被替换的旧段（按 `old_ids` 顺序）各自冻结前缀 `text[:stable_until]` 的拼接；**F_new** = 新段（按 `new_ids` 顺序）各自当前冻结前缀的拼接（随新段后续 `partial`/`final` 不断冻结更多文本而增长）。**不变量**：F_old 与 F_new MUST 在其公共前缀上一致——任何一方都 MUST NOT 改写另一方。换言之，**用户已经看到并"确信不变"的文字，在段被替换后仍然不变**。
   - 这条规则**统一覆盖** 1→1、多→1（合并）、1→多（拆分）、多→多 各种基数；1→1 只是 n=m=1 的退化情形，无需特殊处理。（例：旧段冻结前缀是"你好世界"，无论新分段是单个 seg("你好世界", `stable_until`≥4) 还是拆成 seg("你好", su≥2)+seg("世界…", su≥2)，拼接后都必须以"你好世界"开头。）
   - **方向不对称**：**改写/分歧方向** MUST **及早（eagerly）**检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。「拒绝」作用于**整个触发事件**（含其未冻结尾部）而非仅冻结部分——只伤害不合规适配器，且保证被拒事件不会以半改写状态泄出。而"新分段冻结的文本严格少于 F_old"是**保守安全方向**（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。该"至多一条软诊断"在实现中是：会话到达终态（或合规重放结束）时，若某个 supersede 的 F_new 仍严格短于 F_old，标准层发一条 **`info` 级 `supersede_obligation_unfulfilled`** diagnostic（点名受影响的 `new_ids`），表示未重新冻结的尾巴被从 lineage 中丢弃——它**不是 error、不拒绝**任何事件，supersede 依旧成立（实现：`TranscriptionSession.finalize`）。
+- **跨说话人合并禁令（normative）**：引擎 MUST NOT 把携带**不同** speaker 的段 supersede 进单一新段——合并后的段只有一个 `speaker` 字段，无论选谁，另一人说的文字都被静默错误归属；set-to-set lineage（见下）原理上无法保留 per-speaker 归属。标准层的运行时守卫做**鸽笼式**最佳努力执行：当退休旧段（`old_ids`）各自**最后已知**的非 `None` speaker 互不相同（≥2 个不同标签），且 `new_ids` 非空而数量**少于**这些不同标签的数量（跨 speaker 合并不可避免；典型即多→1）时，MUST 抑制整个 `supersede` 事件并发 `supersede_cross_speaker_merge` diagnostic。set-to-set lineage 证明不了更细的映射，其余形态（如等基数换牌）仅由本条 MUST NOT 约束——守卫检不出（合规重放共用同一鸽笼守卫，同样检不出），是防线不是完备判定。**被抑制 supersede 的副作用（与上文「拒绝作用于整个触发事件」同一抑制语义，明示）**：旧段在应用/归约器中继续存活，而 `new_ids` 的段随后以全新段到达——归约结果出现**重复文本**。这是既有「只伤害不合规适配器」立场的延续；合法引擎（同 speaker 合并、保 speaker 拆分）不受影响。
 - `re_segments` capability：`false` 表示引擎承诺不发 `supersede`（finals 只增不改）；`true` 表示可能发。
 - **lineage 是 set-to-set（v1 已知限制）**：`old_ids`/`new_ids` 表达 re-segmentation 的**基数**（哪些退休、哪些出现），但**不**承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；冻结前缀保留（上）按**拼接**的 F_old/F_new 校验而非逐对。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。
 
@@ -1108,9 +1159,11 @@ elif event.type == "supersede":
 
 具体规则：
 
-- **`segment_id`、时间戳、检测到的语言** 在重连前后 MUST 保持连续。
+- **`segment_id`、时间戳、检测到的语言、speaker 标签语义** 在重连前后 MUST 保持连续（speaker 的「连续」含义见下方专条——它是映射连续性，不是标签集不变）。
 - 跨 lossy 缝隙 MUST 发一条 `progress` 事件，携带 `reconnect=true`、`gap_start`、`gap_end`。
 - session 拥有一个**有界的滚动音频缓冲区**（用于重连后向引擎重喂最近音频）。
+
+**speaker 标签连续性（normative，安全预设 = 铸新标签）**：对 speaker，「连续」意味着**标签→人的映射不被静默打破**（result 内一致性，TR.5），而非重连后标签集不变。盲聚类引擎重连后从零聚类，新旧 cluster 无法对应是**常态而非例外**（两边都没有身份信息）。故安全预设：重连后适配器 MUST NOT 在没有身份证据（如 enrolled voices / 说话人嵌入匹配）的情况下把重连前的标签复用给新 cluster；MUST 为重连后的 cluster **铸造新标签**（`speaker_2`、`speaker_3`…）并发一条 diagnostic（`code="speaker_labels_reset"`，与 `content_lost` 同类的保真度警告——诚实报告保真度损失，会话继续）。**过数说话人是安全方向；把不同的人静默合并到同一标签不是。** 有身份证据能证明同一人时，适配器 MAY 复用旧标签（此时无需该 diagnostic）。
 
 **按音频源分类**（live mic 不可回放）：
 
@@ -1125,7 +1178,7 @@ elif event.type == "supersede":
 
 当事件消费方处理速度慢于产生速度时：
 
-- **`partial` 事件**：按 `segment_id` 合并——只保留该段最新的 partial（保留最大 `audio_processed_until`）。**合并 MUST 被同 segment 的 `final`/`closed`/`supersede` 作废**——如果 partial 尚未投递但该段已进入终态或被替换，该 partial MUST 丢弃（避免复活已替换的段）。
+- **`partial` 事件**：按 `segment_id` 合并——只保留该段最新的 partial（保留最大 `audio_processed_until`）。**合并 MUST 被同 segment 的 `final`/`closed`/`supersede` 作废**——如果 partial 尚未投递但该段已进入终态或被替换，该 partial MUST 丢弃（避免复活已替换的段）。**语义字段 carry-forward（normative）**：合并替换时，若存活的较新 partial 的 `speaker` 或 `detected_language` 为 `None` 而被替换的 pending partial 携带非 `None` 值，标准层 MUST 把该值 carry-forward 进存活事件——盲整体替换会静默丢弃已交付的语义（引擎未在每个 partial 重申 speaker/语言时，被合并掉的那次赋值就消失了）。较新的**非 `None`** 值总是胜出（不复活旧值）；carry-forward 天然限于同一 `segment_id`（合并本就按段）。其安全性分两区域诚实论证：**冻结区域**——§4.2 禁止 X→None 撤回，且标准层 `_LifecycleGuard` 会在该转移到达合并缓冲之前就**抑制**它（发 `frozen_speaker_rewritten` diagnostic），故此处存活方的 `None` 只可能是「未重申」，不可能是「刻意撤回」；**未冻结区域**——§4.2 明确**允许** X→None（刻意撤回），故 carry-forward **可能**把一个已过时的临时 speaker 重新呈现出来。这仍然安全，不是因为撤回不可能，而是因为未冻结 partial 的 speaker 本就**不可据以行动**（§7.2：应用 MUST NOT 对无冻结保护的 partial speaker 采取行动）；且它自洽——若该段随后冻结，守卫会锁定其**最后被接受的**非 `None` speaker（§4.2），恰是被 carry-forward 的那个值。适配器最佳实践仍 SHOULD 在每个 partial 重复 speaker；carry-forward 是标准层兜底。
 - **`final`、`supersede`、`done`、`error` 事件**：**永不丢弃、永不重排**。
 - 发送侧有界缓冲区，溢出发 `error`。
 - sync 桥的事件队列（§6.5）也遵守同样的背压规则。
@@ -1171,6 +1224,8 @@ async for event in session:
         maybe_start_responding_to(frozen_prefix)
 ```
 
+> **speaker 路由警告（normative）**：partial 事件的 `speaker` 在段获得冻结保护之前是**临时的**（引擎聚类可能重排）。语音助手 MUST NOT 对无冻结保护的 partial speaker 采取不可逆行动（路由、鉴权决策）；可以安全作为路由键的是：受 §4.2 冻结区域 speaker 保护的段级 speaker（该段已有冻结前缀且已接受非 `None` speaker——此后除 `closed` 终态定稿外不可再变），以及 `final` / `closed` 事件的 speaker。
+
 ### 7.3 OpenAI Audio SSE（整段输入 + 流式输出）
 
 ```python
@@ -1204,6 +1259,7 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 | `streaming.emits_partials` | flag `{supported}` | 是否发 partial 事件（false = 只发段末 final） |
 | `streaming.re_segments` | flag `{supported}` | 是否可能发 supersede |
 | `streaming.word_stability` | flag `{supported}` | 是否提供有意义的 `stable_until` |
+| `streaming.diarization` | bounded `{supported, always_on: {supported}, constraints: {max_speakers?}}` | 流式说话人分离（与 batch 分别声明；`always_on` 语义见 [§能力系统 3.2](#能力系统-capabilities--normative)，结果/事件语义见 [§结果模型 TR.5](#结果模型-transcription-result--normative) 与 §4.1/§4.2） |
 | `streaming.reconnect` | enum `{mode: seamless\|lossy\|unsupported}` | 重连能力 |
 | `streaming.finality_level` | enum `{mode: final\|closed}` | 能保证到哪级终态 |
 | `streaming.timestamps` | enum `{mode: native_frame_aligned\|post_align\|none}` | 流式时间戳来源 |

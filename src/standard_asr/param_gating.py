@@ -31,7 +31,7 @@ from .capabilities import (
 )
 from .exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from .results import Diagnostic
-from .runtime_params import ProviderParams, RuntimeParams
+from .runtime_params import DiarizationRequest, ProviderParams, RuntimeParams
 
 Mode = Literal["batch", "streaming"]
 
@@ -59,9 +59,15 @@ DIAG_PROMPT_TRUNCATED = "prompt_truncated"
 #: prompt budget is enforced. The budget is then enforced exactly once, on the
 #: final composed value, and exactly one ``prompt_truncated`` diagnostic can
 #: ever be produced per request (no retroactive deletion of an earlier one).
+#:
+#: ``diarization`` is order-independent (it interacts with no other channel);
+#: it sits after ``word_timestamps`` to mirror the spec's §RT 3.1 table order.
+#: Its gate is feature-level only -- the marker has no fields, so there is no
+#: sub-gating helper (see the empty-marker assert below).
 _GATED_PARAMS: tuple[tuple[str, str], ...] = (
     ("language", "language.runtime_override"),
     ("word_timestamps", "word_timestamps"),
+    ("diarization", "diarization"),
     ("phrase_hints", "guidance.phrase_hints"),
     ("prompt", "guidance.prompt"),
 )
@@ -101,6 +107,19 @@ assert {field for field, _ in _GATED_PARAMS} | _UNGATED_PORTABLE_FIELDS == set(
     "be in _GATED_PARAMS or _UNGATED_PORTABLE_FIELDS (see the drift guard). "
     f"Gated={ {f for f, _ in _GATED_PARAMS} }, exempt={set(_UNGATED_PORTABLE_FIELDS)}, "
     f"fields={set(RuntimeParams.model_fields)}."
+)
+
+#: Empty-marker drift guard (import-time, mirrored by a drift test): the
+#: diarization gate above is FEATURE-level only, which is sound solely because
+#: the v1 :class:`DiarizationRequest` marker carries no fields. The moment a
+#: field graduates onto it (e.g. a deferred ``num_speakers`` hint), a
+#: feature-level pass would let that field reach an engine that cannot honor it
+#: -- silently ignored, the cardinal sin. This assert fails the import until the
+#: author writes the sub-gating (the ``max_speakers`` constraint check et al.).
+assert not DiarizationRequest.model_fields, (
+    "DiarizationRequest gained fields but the diarization gate is feature-level "
+    "only -- add sub-gating (e.g. the num_speakers graduation against "
+    "DiarizationConstraints) before shipping."
 )
 
 #: List-typed channels whose empty-list value (``[]``) is the spec §R.3.3

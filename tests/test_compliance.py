@@ -21,6 +21,7 @@ from standard_asr.audio_input import InputKind
 from standard_asr.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
+    DiarizationCap,
     FlagCap,
     GuidanceCaps,
     LanguageCaps,
@@ -32,6 +33,7 @@ from standard_asr.capabilities import (
 )
 from standard_asr.compliance import (
     ComplianceIssue,
+    ComplianceReport,
     assert_prefix_invariant,
     check_entrypoints,
     check_event_sequence,
@@ -39,6 +41,7 @@ from standard_asr.compliance import (
     check_recommended_wire_format,
     check_streaming_param_gating,
     check_sync_bridge,
+    check_transcription_result,
 )
 from standard_asr.discovery import ModelRegistry, discover_models
 from standard_asr.engine import (
@@ -53,7 +56,7 @@ from standard_asr.exceptions import (
     InvalidProviderParamError,
     UnsupportedFeatureError,
 )
-from standard_asr.results import Diagnostic, Word
+from standard_asr.results import ChannelResult, Diagnostic, Segment, Word
 from standard_asr.runtime_params import (
     ProviderParams,
     RuntimeParams,
@@ -1221,6 +1224,225 @@ def test_event_sequence_consistent_stream_passes_cross_check() -> None:
     ]
 
 
+# Word timestamps supported, diarization NOT: isolates the diarization
+# cross-check from stream_exceeds_word_timestamps on word-speaker events.
+_WORD_TS_ONLY_STREAMING_CAPS = DeclaredCapabilities(
+    streaming=StreamingCapabilities(
+        word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
+    ),
+    streaming_input=FlagCap(supported=True),
+)
+
+
+def test_event_sequence_flags_speaker_without_diarization() -> None:
+    events = [
+        TranscriptionEvent.final("s0", "hi", speaker="A"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=_NO_TS_STREAMING_CAPS)
+    assert report.passed is False
+    assert any(i.code == "stream_exceeds_diarization" for i in report.issues)
+
+
+def test_event_sequence_flags_word_speaker_without_diarization() -> None:
+    # The event-level speaker is None; a single word-level label is already
+    # diarization output. The leading None-speaker word must not mask it.
+    words = [
+        Word(start=0.0, end=0.2, text="hi"),
+        Word(start=0.2, end=0.5, text="there", speaker="A"),
+    ]
+    events = [
+        TranscriptionEvent.final("s0", "hi there", words=words),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=_WORD_TS_ONLY_STREAMING_CAPS)
+    assert report.passed is False
+    assert any(i.code == "stream_exceeds_diarization" for i in report.issues)
+    # words themselves are declared supported: only diarization is exceeded.
+    assert not any(i.code == "stream_exceeds_word_timestamps" for i in report.issues)
+
+
+def test_event_sequence_speakerless_words_pass_diarization_cross_check() -> None:
+    # Words without labels are word timestamps, not diarization output.
+    events = [
+        TranscriptionEvent.final("s0", "hi", words=[Word(start=0.0, end=0.5, text="hi")]),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=_WORD_TS_ONLY_STREAMING_CAPS)
+    assert not any(i.code == "stream_exceeds_diarization" for i in report.issues)
+
+
+def test_event_sequence_speaker_with_diarization_supported_passes() -> None:
+    caps = DeclaredCapabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+    )
+    events = [
+        TranscriptionEvent.final("s0", "hi", speaker="A"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=caps)
+    assert not any(i.code == "stream_exceeds_diarization" for i in report.issues)
+
+
+def test_event_sequence_always_on_speaker_never_flagged() -> None:
+    # always_on supported forces supported=True (model validator), so an
+    # always-on engine's unrequested labels can never trip the cross-check --
+    # there is no request context in a recorded stream to distinguish them by.
+    caps = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            diarization=DiarizationCap(supported=True, always_on=FlagCap(supported=True))
+        ),
+        streaming_input=FlagCap(supported=True),
+    )
+    events = [
+        TranscriptionEvent.final("s0", "hi", speaker="A"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=caps)
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_check_event_sequence_reports_frozen_speaker() -> None:
+    # The guard-backed replay surfaces the frozen-speaker suppression as a
+    # namespaced streaming_invariant issue with zero extra wiring.
+    events = [
+        TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"),
+        TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="B"),
+        TranscriptionEvent.final("s0", "hello!", speaker="A"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any(i.code == "streaming_invariant:frozen_speaker_rewritten" for i in report.issues)
+
+
+def test_check_event_sequence_reports_cross_speaker_supersede() -> None:
+    events = [
+        TranscriptionEvent.partial("s1", "hello", speaker="A"),
+        TranscriptionEvent.partial("s2", "world", speaker="B"),
+        TranscriptionEvent.supersede(["s1", "s2"], ["s3"]),
+        TranscriptionEvent.final("s1", "hello", speaker="A"),
+        TranscriptionEvent.final("s2", "world", speaker="B"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is False
+    assert any(i.code == "streaming_invariant:supersede_cross_speaker_merge" for i in report.issues)
+
+
+# --------------------------------------------------------------------------- #
+# check_transcription_result: the batch twin of the diarization cross-check.
+# --------------------------------------------------------------------------- #
+_DIAR_BATCH_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(diarization=DiarizationCap(supported=True))
+)
+_NO_DIAR_BATCH_CAPS = DeclaredCapabilities(batch=BatchCapabilities())
+
+
+def _flags_result_exceeds(report: ComplianceReport) -> bool:
+    return any(i.code == "result_exceeds_diarization" for i in report.issues)
+
+
+def test_check_transcription_result_flags_batch_speaker_when_unsupported() -> None:
+    result = TranscriptionResult(
+        text="hi", segments=[Segment(start=0.0, end=1.0, text="hi", speaker="A")]
+    )
+    report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
+    assert report.passed is False
+    assert _flags_result_exceeds(report)
+
+
+def test_check_transcription_result_flags_segment_word_speaker() -> None:
+    # The label hides on a segment's words while the segment itself is
+    # unattributed -- still diarization output.
+    words = [
+        Word(start=0.0, end=0.4, text="hi"),
+        Word(start=0.4, end=1.0, text="there", speaker="A"),
+    ]
+    result = TranscriptionResult(
+        text="hi there",
+        segments=[Segment(start=0.0, end=1.0, text="hi there", words=words)],
+    )
+    report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
+    assert _flags_result_exceeds(report)
+
+
+def test_check_transcription_result_flags_flattened_word_speaker() -> None:
+    result = TranscriptionResult(
+        text="hi", words=[Word(start=0.0, end=0.5, text="hi", speaker="B")]
+    )
+    report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
+    assert _flags_result_exceeds(report)
+
+
+def test_check_transcription_result_flags_channel_speaker() -> None:
+    # The label appears ONLY under channels[]; the per-view walk must see it.
+    result = TranscriptionResult(
+        text="hi",
+        segments=[Segment(start=0.0, end=1.0, text="hi")],
+        channels=[
+            ChannelResult(
+                channel=0,
+                text="hi",
+                segments=[Segment(start=0.0, end=1.0, text="hi", speaker="A")],
+            )
+        ],
+    )
+    report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
+    assert _flags_result_exceeds(report)
+
+
+def test_check_transcription_result_passes_when_supported() -> None:
+    result = TranscriptionResult(
+        text="hi", segments=[Segment(start=0.0, end=1.0, text="hi", speaker="A")]
+    )
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is True
+    assert report.issues == []
+
+
+def test_check_transcription_result_passes_when_no_speakers() -> None:
+    # A fully populated but speakerless result is consistent with an
+    # unsupported declaration (the check is one-directional).
+    result = TranscriptionResult(
+        text="hi",
+        segments=[
+            Segment(start=0.0, end=1.0, text="hi", words=[Word(start=0.0, end=0.5, text="hi")])
+        ],
+        words=[Word(start=0.0, end=0.5, text="hi")],
+        channels=[
+            ChannelResult(
+                channel=0,
+                text="hi",
+                segments=[Segment(start=0.0, end=1.0, text="hi")],
+                words=[Word(start=0.0, end=0.5, text="hi")],
+            )
+        ],
+    )
+    report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
+    assert report.passed is True
+    assert report.issues == []
+
+
+def test_check_transcription_result_flags_when_batch_domain_absent() -> None:
+    # No batch domain at all is fail-closed: no declaration is no support.
+    result = TranscriptionResult(
+        text="hi", segments=[Segment(start=0.0, end=1.0, text="hi", speaker="A")]
+    )
+    report = check_transcription_result(result, capabilities=DeclaredCapabilities())
+    assert _flags_result_exceeds(report)
+
+
+def test_check_transcription_result_registry_is_none() -> None:
+    # Behavioral checks never operate on a registry (mirrors the other checks).
+    report = check_transcription_result(
+        TranscriptionResult(text=""), capabilities=DeclaredCapabilities()
+    )
+    assert report.registry is None
+    assert report.passed is True
+
+
 # --------------------------------------------------------------------------- #
 # assert_prefix_invariant (SF-3 -- assert the invariant, not partial counts)
 # --------------------------------------------------------------------------- #
@@ -1339,9 +1561,10 @@ class _BatchOnlyEngine(EngineBase):
 class _AllSupportedStreamEngine(_GatingStreamEngine):
     """Supports every probed param with no violable sub-constraint -> nothing to gate.
 
-    Every granularity is offered and the prompt budget is unbounded, so neither
-    the feature-level probes nor the sub-constraint fallback can build a
-    violating request.
+    Every granularity is offered, the prompt budget is unbounded, and
+    diarization is supported (it is a feature-level probe with no
+    sub-constraint), so neither the feature-level probes nor the sub-constraint
+    fallback can build a violating request.
     """
 
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
@@ -1350,12 +1573,17 @@ class _AllSupportedStreamEngine(_GatingStreamEngine):
                 supported=True, granularities=["word", "segment", "char"]
             ),
             guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
+            diarization=DiarizationCap(supported=True),
         ),
         streaming_input=FlagCap(supported=True),
         streaming_output=FlagCap(supported=True),
     )
 
 
+# The sub-constraint fixtures below declare diarization supported for the same
+# reason they support every other probed feature: an unsupported diarization
+# would be selected as a FEATURE-level probe first and the sub-constraint
+# fallback these fixtures exist to exercise would never run.
 class _PromptConstrainedStreamEngine(_GatingStreamEngine):
     """Supports every probed feature; prompt carries a small ``max_tokens`` budget."""
 
@@ -1367,6 +1595,7 @@ class _PromptConstrainedStreamEngine(_GatingStreamEngine):
             guidance=GuidanceCaps(
                 prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=3))
             ),
+            diarization=DiarizationCap(supported=True),
         ),
         streaming_input=FlagCap(supported=True),
         streaming_output=FlagCap(supported=True),
@@ -1380,6 +1609,7 @@ class _GranularityLimitedStreamEngine(_GatingStreamEngine):
         streaming=StreamingCapabilities(
             word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
             guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
+            diarization=DiarizationCap(supported=True),
         ),
         streaming_input=FlagCap(supported=True),
         streaming_output=FlagCap(supported=True),
@@ -1564,6 +1794,70 @@ def test_pick_sub_constraint_probe_none_without_streaming_domain() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# The diarization gating probe (appended to _GATING_PROBES): an engine that
+# supports word_timestamps + prompt but NOT diarization is probed with
+# RuntimeParams(diarization=DIARIZE) at the feature level.
+# --------------------------------------------------------------------------- #
+class _DiarizationUnsupportedStreamEngine(_GatingStreamEngine):
+    """Supports the earlier probes; diarization stays fail-closed unsupported."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            word_timestamps=WordTimestampsCap(
+                supported=True, granularities=["word", "segment", "char"]
+            ),
+            guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
+        ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+
+class _UngatedDiarizationEngine(_DiarizationUnsupportedStreamEngine):
+    """Bypasses the template: accepts the diarization request without gating."""
+
+    def start_transcription(
+        self,
+        *,
+        audio_format: Any = None,
+        params: Any = None,
+        audio: Any = None,
+        deadlines: Any = None,
+    ) -> TranscriptionSession:
+        return _GatingSession()
+
+
+def test_gating_probe_covers_diarization_strict() -> None:
+    # The template engine gates the probed diarization request (clean pass).
+    report = check_streaming_param_gating(_DiarizationUnsupportedStreamEngine(strict=True))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_gating_probe_covers_diarization_best_effort() -> None:
+    report = check_streaming_param_gating(_DiarizationUnsupportedStreamEngine(strict=False))
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_gating_probe_diarization_ungated_strict_fails() -> None:
+    # The failure message names 'diarization', pinning that probe selection
+    # actually reached the appended diarization probe.
+    report = check_streaming_param_gating(_UngatedDiarizationEngine(strict=True))
+    assert report.passed is False
+    assert any(
+        "'diarization'" in i.message and "without raising" in i.message for i in report.issues
+    )
+
+
+def test_gating_probe_diarization_ungated_best_effort_fails() -> None:
+    report = check_streaming_param_gating(_UngatedDiarizationEngine(strict=False))
+    assert report.passed is False
+    assert any(
+        "'diarization'" in i.message and "'unsupported_parameter_ignored'" in i.message
+        for i in report.issues
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The sub-constraint probe is bounded against extreme declarations
 # --------------------------------------------------------------------------- #
 class _ExtremeBudgetEngine(_GatingStreamEngine):
@@ -1575,6 +1869,7 @@ class _ExtremeBudgetEngine(_GatingStreamEngine):
             guidance=GuidanceCaps(
                 prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=10**9))
             ),
+            diarization=DiarizationCap(supported=True),
         ),
         streaming_input=FlagCap(supported=True),
         streaming_output=FlagCap(supported=True),
@@ -1609,6 +1904,7 @@ def test_streaming_gating_extreme_max_tokens_without_other_probe_is_clean() -> N
                         supported=True, constraints=PromptConstraints(max_tokens=10**9)
                     )
                 ),
+                diarization=DiarizationCap(supported=True),
             ),
             streaming_input=FlagCap(supported=True),
             streaming_output=FlagCap(supported=True),

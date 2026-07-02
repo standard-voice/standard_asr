@@ -42,7 +42,14 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .exceptions import InvalidSessionUseError, StreamClosedError
-from .results import Diagnostic, Segment, TranscriptionResult, Word
+from .results import (
+    Diagnostic,
+    Segment,
+    TranscriptionResult,
+    Word,
+    synthesize_segment_speaker,
+    validate_speaker_label,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -186,6 +193,12 @@ class TranscriptionEvent(BaseModel):
         stable_until: Frozen-prefix length in codepoints (monotonic per segment).
         finality: For ``final`` events, ``"final"`` or ``"closed"``.
         words: Optional word-level detail (shares the batch ``Word`` model).
+        speaker: Segment-level speaker label (spec ST.4.1), with the same
+            inheritance rule as ``Segment.speaker`` (a non-``None``
+            ``words[i].speaker`` overrides it at word level) and the same
+            label-validity rule (spec TR.5). A frozen segment's accepted
+            speaker is protected across events by the lifecycle guard
+            (spec ST.4.2), not at construction.
         start: Segment start time in seconds (origin = first session sample).
         end: Segment end time in seconds.
         audio_processed_until: Monotonic audio-time cursor in seconds.
@@ -212,6 +225,7 @@ class TranscriptionEvent(BaseModel):
     stable_until: int | None = None
     finality: Literal["final", "closed"] = "final"
     words: list[Word] | None = None
+    speaker: str | None = None
     # Time-frame fields share Word/Segment's TR.2 invariant: non-negative finite
     # seconds (origin = first session sample). ``ge=0`` rejects a negative time
     # here instead of letting it pass event validation only to crash later when
@@ -294,6 +308,30 @@ class TranscriptionEvent(BaseModel):
             return updated
         return mapping
 
+    @field_validator("speaker")
+    @classmethod
+    def _check_speaker(cls, value: str | None) -> str | None:
+        """Reject a malformed speaker label at construction (fail-fast).
+
+        Delegates to :func:`~standard_asr.results.validate_speaker_label` --
+        the shared rule for every ``speaker`` field, so batch and streaming
+        accept exactly the same labels (spec TR.5 / ST.4.1). Validation is
+        symmetric on purpose: a malformed ``event.speaker=""`` must fail on
+        the event itself, not defer the crash to the reducer's ``Segment(...)``
+        construction (or flow silently over the WS wire to a client that never
+        runs the ``Segment`` validator).
+
+        Args:
+            value: The candidate speaker label, or ``None``.
+
+        Returns:
+            The validated value unchanged.
+
+        Raises:
+            ValueError: If the label is empty, whitespace-only, or padded.
+        """
+        return validate_speaker_label(value)
+
     @field_validator("detected_language")
     @classmethod
     def _check_detected_language(cls, value: str | None) -> str | None:
@@ -360,6 +398,16 @@ class TranscriptionEvent(BaseModel):
                 raise ValueError(
                     "supersede old_ids MUST NOT repeat a segment id "
                     "(an id retires the moment it appears in old_ids; spec §ST 5.2)."
+                )
+            if len(set(self.new_ids)) != len(self.new_ids):
+                # Lineage is set-to-set (spec §ST 5.2): new_ids is semantically a
+                # set, so a repeat is malformed. Left unrejected it would also
+                # collapse the guard's cross-speaker pigeonhole count (two slots
+                # that are really one segment) and double-count that segment's
+                # frozen prefix in the F_new join.
+                raise ValueError(
+                    "supersede new_ids MUST NOT repeat a segment id "
+                    "(each replacement segment is introduced once; spec §ST 5.2)."
                 )
             if set(self.old_ids) & set(self.new_ids):
                 raise ValueError("supersede old_ids and new_ids MUST be disjoint.")
@@ -432,13 +480,18 @@ class TranscriptionEvent(BaseModel):
             A ``supersede`` event.
 
         Raises:
-            ValueError: If ``old_ids`` and ``new_ids`` intersect, or if ``old_ids``
-                repeats a segment id.
+            ValueError: If ``old_ids`` and ``new_ids`` intersect, or if either
+                ``old_ids`` or ``new_ids`` repeats a segment id.
         """
         if len(set(old_ids)) != len(old_ids):
             raise ValueError(
                 "supersede old_ids MUST NOT repeat a segment id "
                 "(an id retires the moment it appears in old_ids; spec §ST 5.2)."
+            )
+        if len(set(new_ids)) != len(new_ids):
+            raise ValueError(
+                "supersede new_ids MUST NOT repeat a segment id "
+                "(each replacement segment is introduced once; spec §ST 5.2)."
             )
         if set(old_ids) & set(new_ids):
             raise ValueError("supersede old_ids and new_ids MUST be disjoint.")
@@ -535,11 +588,23 @@ class StreamReducer:
             # a sentinel-free Segment whose start/end are 0.0 only when the
             # engine genuinely had none, and remember that fact so result()
             # never sorts on a fabricated value.
+            # Speaker: the event-level label is authoritative; when it is None
+            # but the words carry speakers, THE pinned TR.5 synthesis rule runs
+            # HERE because the reducer bypasses EngineBase.transcribe's batch
+            # post-processing -- a naive ``speaker=event.speaker`` would leave
+            # the authoritative segment speaker None over non-None word
+            # speakers (inverting the inheritance rule) and silently diverge
+            # from what the same engine yields through the batch path.
             self._segments[event.segment_id] = Segment(
                 start=event.start if event.start is not None else 0.0,
                 end=event.end if event.end is not None else (event.start or 0.0),
                 text=event.text or "",
                 words=event.words,
+                speaker=(
+                    event.speaker
+                    if event.speaker is not None
+                    else synthesize_segment_speaker(event.words)
+                ),
             )
             self._has_timestamp[event.segment_id] = has_ts
         elif event.type == "supersede":
@@ -601,7 +666,10 @@ class _CoalescingBuffer:
     pending partial so a replaced/finalized segment can never revive (spec
     ST.6.4: "a merge MUST be invalidated by the same segment's final/closed/supersede
     ... that partial MUST be dropped"). ``final`` / ``supersede`` / ``done`` / ``error`` are never
-    dropped or reordered.
+    dropped or reordered. When a coalesce replaces a pending partial, the
+    replaced partial's non-``None`` ``speaker`` / ``detected_language`` are
+    carried forward into the survivor when the survivor left them ``None``
+    (spec ST.6.4 semantic carry-forward).
 
     The buffer is **bounded**: at most ``capacity`` non-coalesced events may be
     pending. Coalesced partials reuse their existing slot and never grow the
@@ -648,7 +716,32 @@ class _CoalescingBuffer:
         if event.type == "partial" and event.segment_id is not None:
             slot = self._partial_slot.get(event.segment_id)
             if slot is not None and slot.alive:
-                # Coalesce in place: latest partial wins, no growth.
+                # Coalesce in place: latest partial wins, no growth -- but
+                # carry forward the replaced partial's semantic fields first
+                # (spec ST.6.4). A blind whole-event replace silently dropped a
+                # coalesced-away partial's ``speaker`` (and, the same latent
+                # bug, ``detected_language``) whenever the engine did not
+                # repeat the value on every partial: the only event that ever
+                # carried it was the one being thrown away. The newer non-None
+                # value always wins (no resurrection of an old value). Over the
+                # frozen region the guard already suppresses X->None before it
+                # reaches this buffer, so a None survivor here only ever
+                # originates from the UNFROZEN region, where ST.4.2 permits
+                # deliberate withdrawal; re-presenting the donor's speaker there
+                # is safe because unfrozen partial speakers are non-actionable
+                # (ST.7.2), and if the segment later freezes the guard locks
+                # that last-accepted non-None speaker (ST.4.2), matching the
+                # carried value. The scope is inherently one segment_id
+                # (coalescing is per segment).
+                # model_copy skips validators -- fine, both carried values were
+                # validated when the donor event was constructed.
+                carried = {
+                    field: getattr(slot.event, field)
+                    for field in ("speaker", "detected_language")
+                    if getattr(event, field) is None and getattr(slot.event, field) is not None
+                }
+                if carried:
+                    event = event.model_copy(update=carried)
                 slot.event = event
                 self._event.set()
                 return
@@ -862,7 +955,12 @@ class _LifecycleGuard:
     independently guards. By default illegal events are SUPPRESSED and a
     structured :class:`Diagnostic` is recorded; in ``strict`` mode the guard
     raises instead. A ``stable_until`` decrease is CLAMPED to its prior value
-    (it MUST only increase, spec ST.4.2) with a diagnostic.
+    (it MUST only increase, spec ST.4.2) with a diagnostic. Diarization gets
+    the same defense: a frozen segment's accepted speaker MUST NOT change or
+    be retracted (spec ST.4.2, ``frozen_speaker_rewritten``), and a supersede
+    MUST NOT merge segments carrying distinct speakers into fewer segments
+    (spec ST.5.2, ``supersede_cross_speaker_merge``) -- both suppress the
+    whole event.
 
     States per segment id: ``open`` -> ``final`` -> ``closed`` (terminal), or
     ``superseded`` (terminal). ``new_ids`` from a supersede start ``open``.
@@ -895,6 +993,13 @@ class _LifecycleGuard:
         self._state: dict[str, str] = {}
         self._stable_until: dict[str, int] = {}
         self._frozen_text: dict[str, str] = {}
+        #: Last ACCEPTED non-None segment-level speaker per segment id. One
+        #: ledger deliberately feeds BOTH diarization guards (they were adopted
+        #: as a package): the frozen-speaker rule (spec ST.4.2) and the
+        #: cross-speaker supersede pigeonhole check (spec ST.5.2). Written only
+        #: at the accepted-commit point of :meth:`admit`, so a rejected event
+        #: can never poison it.
+        self._last_speaker: dict[str, str] = {}
         self._audio_cursor: float = 0.0
         #: Maps each ``new_id`` of an active supersede group to its shared
         #: frozen-prefix-preservation obligation (spec ST.5.2).
@@ -1032,6 +1137,44 @@ class _LifecycleGuard:
                         "partial/final of its new_ids).",
                     )
                     return None
+            # Cross-speaker merge ban (spec ST.5.2): the retired segments'
+            # last-known non-None speakers, taken from the same ledger the
+            # frozen-speaker rule maintains. When fewer replacement segments
+            # arrive than there are distinct retired speakers, a cross-speaker
+            # merge is unavoidable by pigeonhole (the canonical case is
+            # many->1) and someone's words would be silently mis-attributed --
+            # the merged segment has a single ``speaker`` field. Set-to-set
+            # lineage cannot prove anything finer (e.g. an equal-cardinality
+            # reshuffle), so this pigeonhole check is best-effort defense; the
+            # normative MUST NOT in the spec covers the rest. Runs before any
+            # state mutation of this branch, so no rollback is needed.
+            distinct_speakers = {
+                self._last_speaker[old] for old in event.old_ids if old in self._last_speaker
+            }
+            # Count DISTINCT replacement segments: new_ids is a set under the
+            # set-to-set lineage model, and the model validator rejects repeats
+            # at construction -- but the guard independently defends against
+            # events materialized through validator-bypassing paths
+            # (model_construct/model_copy), where a duplicated id would inflate
+            # the raw length and evade the pigeonhole.
+            if len(distinct_speakers) > 1 and 0 < len(set(event.new_ids)) < len(distinct_speakers):
+                self._reject(
+                    "supersede_cross_speaker_merge",
+                    f"supersede retires segments {event.old_ids!r} whose last-known "
+                    f"speakers are {sorted(distinct_speakers)!r} but replaces them "
+                    # Report the DISTINCT count the pigeonhole actually compared
+                    # (raw len would contradict the rule on forged duplicate
+                    # new_ids); the raw list stays printed so the forged
+                    # duplication remains visible in the diagnostic.
+                    f"with only {len(set(event.new_ids))} distinct segment(s) "
+                    f"{event.new_ids!r}; "
+                    "suppressed (spec ST.5.2: segments carrying different speakers "
+                    "MUST NOT be merged into a single segment). Side effect of "
+                    "suppression: the retired segments stay alive downstream while "
+                    "the replacement arrives as fresh segments, so reduced text may "
+                    "be duplicated -- this harms only non-compliant engines.",
+                )
+                return None
             # Concatenate the retired segments' frozen prefixes, in old_ids
             # (reading) order: this is the text the user already saw frozen and
             # which the replacement MUST preserve (spec ST.5.2).
@@ -1052,6 +1195,9 @@ class _LifecycleGuard:
             for new in event.new_ids:
                 self._state.setdefault(new, "open")
             if f_old:
+                # new_ids is duplicate-free by construction (model validator),
+                # so the obligation's F_new join never counts a replacement
+                # segment's frozen prefix twice.
                 obligation = _SupersedeObligation(f_old, list(event.new_ids))
                 for new in event.new_ids:
                     self._supersede_obligations[new] = obligation
@@ -1094,6 +1240,34 @@ class _LifecycleGuard:
                     f"segment {sid!r} rewrote its already-frozen prefix "
                     "(text[:stable_until] changed); suppressed (spec ST.4.2: the "
                     "frozen prefix is immutable).",
+                )
+                return None
+            # Frozen-speaker rule (spec ST.4.2): once a frozen prefix was
+            # established by a PRIOR event AND a non-None speaker has been
+            # accepted for the segment, the last accepted speaker is locked --
+            # changing it (X->Y) or retracting it (X->None) is suppressed.
+            # None->X after freezing stays legal (the recommended
+            # delay-speaker-to-final adapter strategy), and ``closed`` is the
+            # exempt terminal correction. Placement is load-bearing: this must
+            # read the frontier BEFORE _clamp_stable_until below records this
+            # event's own freeze, or a same-event freeze+speaker-set would
+            # falsely trip it. Suppress the WHOLE event, never clamp the
+            # speaker back: a clamp would keep presenting stale attribution --
+            # a silent wrong result in the other direction.
+            if (
+                not is_closed_final
+                and self._stable_until.get(sid, 0) > 0
+                and sid in self._last_speaker
+                and event.speaker != self._last_speaker[sid]
+            ):
+                change = "retracts it (X->None)" if event.speaker is None else "changes it (X->Y)"
+                self._reject(
+                    "frozen_speaker_rewritten",
+                    f"segment {sid!r} has a frozen prefix and an accepted speaker "
+                    f"{self._last_speaker[sid]!r}, but this {event.type} {change}; "
+                    "suppressed (spec ST.4.2: a frozen segment's speaker is locked "
+                    "-- only None->X after freezing and the closed terminal "
+                    "correction are legal).",
                 )
                 return None
             had_stable_until = sid in self._stable_until
@@ -1156,6 +1330,15 @@ class _LifecycleGuard:
                         "text).",
                     )
                     return None
+            if event.speaker is not None:
+                # Accepted-commit point: every reject path above has already
+                # returned, so a rejected event never poisons the ledger. This
+                # placement IS the rollback discipline -- cheaper than (and
+                # equivalent to) restoring the entry the way the supersede-
+                # obligation path above restores _stable_until/_frozen_text.
+                # Closed finals record too (harmless: terminal states reject
+                # all later events anyway).
+                self._last_speaker[sid] = event.speaker
             if event.type == "final":
                 self._state[sid] = "closed" if event.finality == "closed" else "final"
             else:
@@ -1426,8 +1609,16 @@ class TranscriptionSession(ABC):
       reconnect itself (it owns no network connection).
     * The **adapter** detects the disconnect, re-establishes the connection,
       replays :meth:`replay_buffer` audio, keeps ``segment_id`` / timestamps /
-      detected language continuous, then calls :meth:`note_reconnect`. The base
-      then emits the ``progress(reconnect=True, gap_start, gap_end)`` event and,
+      detected language / speaker-label mapping continuous, then calls
+      :meth:`note_reconnect`. For speaker labels the safe default is
+      mint-fresh: the adapter MUST NOT reuse a pre-reconnect label for a
+      post-reconnect cluster without identity evidence (blind clustering
+      restarts from zero after a reconnect) -- it MUST mint fresh labels
+      (``speaker_2``, ``speaker_3``, ...) and emit a ``speaker_labels_reset``
+      fidelity warning, because over-counting speakers is the safe direction
+      while silently merging two people under one label is not (spec ST.6.3).
+      The base then emits the
+      ``progress(reconnect=True, gap_start, gap_end)`` event and,
       iff the adapter passed ``content_lost=True`` (its own determination that
       the reconnect + replay could not cover the gap), a trailing
       ``error(code="content_lost", recoverable=True)`` fidelity warning.
@@ -1833,9 +2024,12 @@ class TranscriptionSession(ABC):
         reconnect + :meth:`replay_buffer` replay actually covered the gap -- sets
         ``content_lost=True`` only when audio the engine had not yet processed
         could not be replayed and is therefore truly lost. This mirrors the
-        existing contract where ``segment_id`` / timestamps / detected language
-        continuity across the reconnect is likewise the adapter's responsibility
-        (the base never rewrites them).
+        existing contract where ``segment_id`` / timestamps / detected language /
+        speaker-label mapping continuity across the reconnect is likewise the
+        adapter's responsibility (the base never rewrites them). For speaker
+        labels the adapter MUST NOT reuse a pre-reconnect label without identity
+        evidence; the safe default is to mint fresh labels and emit a
+        ``speaker_labels_reset`` fidelity warning (spec ST.6.3).
 
         Args:
             gap_start: Start time (seconds) of the lossy gap, if known.

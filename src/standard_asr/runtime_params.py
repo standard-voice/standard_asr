@@ -5,9 +5,9 @@
 
 :class:`RuntimeParams` is the **closed** container of per-request settings
 (spec, section "Runtime Parameters"). It carries the v1 portable standard set
-(``language``, ``candidate_languages``, ``word_timestamps``, and the
-``guidance`` family ``prompt`` / ``phrase_hints``) plus a single typed escape
-hatch, ``provider_params``, for engine-specific knobs. ASR authors MUST NOT add
+(``language``, ``candidate_languages``, ``word_timestamps``, ``diarization``,
+and the ``guidance`` family ``prompt`` / ``phrase_hints``) plus a single typed
+escape hatch, ``provider_params``, for engine-specific knobs. ASR authors MUST NOT add
 top-level fields (``extra="forbid"``); engine-specific knobs go through a
 :class:`ProviderParams` subclass.
 
@@ -21,7 +21,7 @@ and never silently degraded. Degradation to ``prompt`` is opt-in and one-way via
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal, get_args
+from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -85,6 +85,47 @@ class ProviderParams(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
 
 
+class DiarizationRequest(BaseModel):
+    """Request marker for speaker diarization ("who said what").
+
+    Presence enables diarization: ``RuntimeParams(diarization=DiarizationRequest())``
+    (or the :data:`DIARIZE` convenience constant) requests speaker labels;
+    ``diarization=None`` (the default) means not requested. There is **no**
+    ``[]``-analogue -- a "requested-but-empty" state is meaningless for an
+    on/off feature, so ``None`` vs an instance is the whole state space (spec
+    §RT 3.4). On the wire the marker maps three ways: ``"diarization": {}``
+    -> ``DiarizationRequest()``; ``"diarization": null`` -> ``None``; key
+    absent -> ``None``.
+
+    The model is a deliberately **empty** frozen marker in v1: tuning knobs
+    (``num_speakers`` / ``min``/``max`` hints, granularity selection) are
+    deferred because today's engine landscape cannot honor them portably --
+    they graduate additively onto this model once support is broad enough
+    (spec §RT 3.4; decision record D1/D8). ``extra="forbid"`` keeps that
+    evolution honest: an unknown key (e.g. a client guessing
+    ``num_speakers``) fails loudly (a 422 on the wire) instead of being
+    silently ignored. An import-time assert in
+    :mod:`standard_asr.param_gating` additionally forces sub-gating to be
+    written the moment a field is added here.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If an unknown field is supplied (``extra="forbid"``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+#: Convenience constant for enabling diarization:
+#: ``RuntimeParams(diarization=DIARIZE)``. Parallels :data:`~standard_asr.language.AUTO`
+#: for the ``language`` field -- the marker carries no state (frozen, no
+#: fields), so one shared instance reads better at call sites than an inline
+#: ``DiarizationRequest()``.
+DIARIZE: Final[DiarizationRequest] = DiarizationRequest()
+
+
 class RuntimeParams(BaseModel):
     """Closed per-request parameter container.
 
@@ -95,6 +136,8 @@ class RuntimeParams(BaseModel):
             mode. Gated by ``<mode>.language.candidate_languages``.
         word_timestamps: Requested word-timestamp granularity. Gated by
             ``<mode>.word_timestamps``.
+        diarization: Speaker-diarization request marker; presence = enable
+            (``None`` = not requested). Gated by ``<mode>.diarization``.
         prompt: Free-text guidance prompt. Gated by ``<mode>.guidance.prompt``.
         phrase_hints: Phrase-hint boost terms. Gated by
             ``<mode>.guidance.phrase_hints``.
@@ -120,6 +163,10 @@ class RuntimeParams(BaseModel):
     )
     word_timestamps: WordTimestampGranularity | None = Field(
         default=None, description="Requested word-timestamp granularity."
+    )
+    diarization: DiarizationRequest | None = Field(
+        default=None,
+        description="Speaker-diarization request marker (presence = enable).",
     )
     prompt: str | None = Field(default=None, description="Free-text guidance prompt.")
     phrase_hints: list[str] | None = Field(default=None, description="Phrase-hint boost terms.")
@@ -389,6 +436,9 @@ class WireRuntimeParams(BaseModel):
         language: See :class:`RuntimeParams`.
         candidate_languages: See :class:`RuntimeParams`.
         word_timestamps: See :class:`RuntimeParams`.
+        diarization: See :class:`RuntimeParams`. On the wire, ``{}`` maps to
+            :class:`DiarizationRequest` (enable), ``null`` / an absent key map
+            to ``None``, and unknown keys inside the object are rejected.
         prompt: See :class:`RuntimeParams`.
         phrase_hints: See :class:`RuntimeParams`.
         on_unsupported: See :class:`RuntimeParams`.
@@ -411,6 +461,10 @@ class WireRuntimeParams(BaseModel):
     )
     word_timestamps: WordTimestampGranularity | None = Field(
         default=None, description="Requested word-timestamp granularity."
+    )
+    diarization: DiarizationRequest | None = Field(
+        default=None,
+        description="Speaker-diarization request marker (presence = enable).",
     )
     prompt: str | None = Field(default=None, description="Free-text guidance prompt.")
     phrase_hints: list[str] | None = Field(default=None, description="Phrase-hint boost terms.")
@@ -504,6 +558,8 @@ assert set(WireRuntimeParams.model_fields) == (
 
 
 __all__ = [
+    "DIARIZE",
+    "DiarizationRequest",
     "ProviderParams",
     "RuntimeParams",
     "WireRuntimeParams",

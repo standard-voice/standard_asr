@@ -71,7 +71,13 @@ class MyEngine(EngineBase):
 
 - Portable standard set is gated for you against `declared_capabilities` before
   `_transcribe` is called: `language`, `candidate_languages`, `word_timestamps`,
-  `prompt`, `phrase_hints`. Map them onto your model's native arguments.
+  `diarization`, `prompt`, `phrase_hints`. Map them onto your model's native
+  arguments. `diarization` is presence = enable: map
+  `params.diarization is not None` onto your native enable switch (the v1
+  `DiarizationRequest` marker carries no fields). An engine declaring
+  `diarization.supported=True` MUST actually diarize when the request passes the
+  gate — the standard layer has no way to verify that, and silently ignoring a
+  gated-and-passed request is the cardinal sin (a silent wrong result).
 - Engine-specific knobs → a `ProviderParams` subclass set as
   `provider_params_type`. Wrong-engine params raise `InvalidProviderParamError`.
 - Resolve the language with `standard_asr.language.effective_language(...)`.
@@ -232,16 +238,38 @@ the session with `session.diagnostics()`):
 - `stable_until_clamped` — a decreasing or invalid `stable_until` was clamped.
 - `audio_cursor_decreased` — a decreasing `audio_processed_until` was clamped.
 - `frozen_prefix_rewritten` — an event rewriting a frozen prefix was suppressed.
+- `frozen_speaker_rewritten` — an event changing (X→Y) or retracting (X→None) a
+  frozen segment's already-accepted `speaker` was suppressed. First assignment
+  after freezing (None→X, the delay-to-final strategy) stays legal, and a
+  `closed` final is exempt (terminal correction).
 - `lifecycle_after_terminal` — a `partial`/`final` after the segment became
   `closed`/`superseded` was suppressed.
 - `lifecycle_partial_after_final` — a `partial` after the segment's `final` was
   suppressed.
+- `lifecycle_final_after_final` — a second `final` for an already-final segment
+  was suppressed.
 - `lifecycle_closed_superseded` — a `supersede` retiring a `closed` segment was
   suppressed.
+- `lifecycle_retired_resuperseded` — a `supersede` retiring an
+  already-superseded segment was suppressed (an id retires exactly once).
+- `supersede_unknown_old_id` — a `supersede` whose `old_ids` contain a
+  never-announced segment was suppressed.
+- `supersede_reintroduces_segment` — a `supersede` whose `new_ids` reuse an
+  already-known id was suppressed.
+- `supersede_cross_speaker_merge` — a `supersede` that would merge segments
+  carrying distinct non-null speakers into fewer segments was suppressed
+  (someone's words would be silently mis-attributed).
+- `supersede_deletes_frozen_text` — a pure-deletion `supersede` (empty
+  `new_ids`) that would destroy a frozen prefix was suppressed.
+- `frozen_prefix_rewritten_supersede` — a replacement group froze text that
+  diverges from the retired frozen text it MUST preserve; the exposing freeze
+  was suppressed.
+- `supersede_obligation_unfulfilled` — soft end-of-session note: a replacement
+  group ended with less frozen text than the retired segments it replaced.
 
 ### Declare what you emit (capability ⇄ stream consistency)
 
-Three streaming capabilities each gate one event field. Your declared
+Four streaming capabilities each gate one event field. Your declared
 `streaming` capabilities and the events you actually emit **must agree** — your
 stream may use *less* than you declare, but never *more*:
 
@@ -250,18 +278,20 @@ stream may use *less* than you declare, but never *more*:
 | a non-zero `stable_until`        | `streaming.word_stability = FlagCap(supported=True)` |
 | an `audio_processed_until` cursor | `streaming.timestamps.mode` ≠ `"none"`              |
 | per-word `words`                 | `streaming.word_timestamps = WordTimestampsCap(supported=True, …)` |
+| a segment- or word-level `speaker` | `streaming.diarization = DiarizationCap(supported=True)` — add `always_on=FlagCap(supported=True)` if your model is architecturally unable to disable it |
 
 The coherent **no-timestamp streaming profile** is the all-defaults combination:
-leave `word_stability`, `timestamps` (mode `"none"`), and `word_timestamps`
-unsupported, and emit none of those fields (use `stable_until=0`, omit
-`audio_processed_until` and `words`). A mismatch — e.g. declaring
-`word_stability` unsupported while emitting `stable_until>0` — is a
+leave `word_stability`, `timestamps` (mode `"none"`), `word_timestamps`, and
+`diarization` unsupported, and emit none of those fields (use `stable_until=0`,
+omit `audio_processed_until`, `words`, and `speaker`). A mismatch — e.g.
+declaring `word_stability` unsupported while emitting `stable_until>0` — is a
 capability⇄stream desync a client trusting your capabilities would mishandle.
 Record a real session and assert it with
 `check_event_sequence(events, capabilities=engine.declared_capabilities)`; the
 cross-check fails on any field your declaration does not back (codes
 `stream_exceeds_word_stability` / `stream_exceeds_timestamps` /
-`stream_exceeds_word_timestamps`). The standard layer does **not** clamp these at
+`stream_exceeds_word_timestamps` / `stream_exceeds_diarization`). The standard
+layer does **not** clamp these at
 runtime — clamping would hide the bug; the contract is yours to keep.
 
 ### Testing: assert invariants, not partial counts

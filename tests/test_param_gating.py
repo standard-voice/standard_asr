@@ -14,6 +14,7 @@ from standard_asr.capabilities import (
     CandidateLanguagesCap,
     CandidateLanguagesConstraints,
     DeclaredCapabilities,
+    DiarizationCap,
     FlagCap,
     GuidanceCaps,
     LanguageCaps,
@@ -37,6 +38,8 @@ from standard_asr.param_gating import (
 )
 from standard_asr.results import Diagnostic
 from standard_asr.runtime_params import (
+    DIARIZE,
+    DiarizationRequest,
     ProviderParams,
     RuntimeParams,
     WordTimestampGranularity,
@@ -973,3 +976,88 @@ def test_candidate_languages_supported_passes_through_untouched() -> None:
     gated, diags = gate_params(params, caps, "batch", strict=True)
     assert gated.candidate_languages == ["en", "ja"]
     assert diags == []
+
+
+# --------------------------------------------------------------------------- #
+# Diarization gating (spec §RT 3.4): a feature-level gate on <mode>.diarization
+# -- the empty marker carries no fields, so there is no sub-gate.
+# --------------------------------------------------------------------------- #
+def _diar_caps(*, batch: bool, streaming: bool) -> DeclaredCapabilities:
+    return DeclaredCapabilities(
+        batch=BatchCapabilities(diarization=DiarizationCap(supported=batch)),
+        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=streaming)),
+    )
+
+
+def test_diarization_supported_passes_through() -> None:
+    gated, diags = gate_params(
+        RuntimeParams(diarization=DIARIZE),
+        _diar_caps(batch=True, streaming=False),
+        "batch",
+        strict=True,
+    )
+    assert gated.diarization is DIARIZE
+    assert diags == []
+
+
+def test_diarization_unsupported_strict_raises() -> None:
+    with pytest.raises(UnsupportedFeatureError, match=r"batch\.diarization") as exc_info:
+        gate_params(
+            RuntimeParams(diarization=DIARIZE),
+            _diar_caps(batch=False, streaming=True),
+            "batch",
+            strict=True,
+        )
+    err = exc_info.value
+    assert err.param == "diarization"
+    assert err.mode == "batch"
+    assert err.hint is not None
+
+
+def test_diarization_unsupported_best_effort_drops_with_diagnostic() -> None:
+    gated, diags = gate_params(
+        RuntimeParams(diarization=DIARIZE),
+        _diar_caps(batch=False, streaming=True),
+        "batch",
+        strict=False,
+    )
+    assert gated.diarization is None
+    assert len(diags) == 1
+    diag = diags[0]
+    assert diag.code == "unsupported_parameter_ignored"
+    assert diag.param == "diarization"
+    assert diag.provided == DIARIZE
+    assert diag.effective is None
+    assert "batch.diarization" in diag.message
+
+
+def test_diarization_none_not_gated() -> None:
+    # None = not requested: even a fully unsupported engine sees no raise and
+    # no diagnostic (there is nothing to gate).
+    gated, diags = gate_params(
+        RuntimeParams(), _diar_caps(batch=False, streaming=False), "batch", strict=True
+    )
+    assert gated.diarization is None
+    assert diags == []
+
+
+def test_diarization_streaming_mode_gates_independently() -> None:
+    # The gate is per-mode: batch-supported does not leak into streaming.
+    caps = _diar_caps(batch=True, streaming=False)
+    params = RuntimeParams(diarization=DIARIZE)
+    gated, diags = gate_params(params, caps, "batch", strict=True)
+    assert gated.diarization is DIARIZE
+    assert diags == []
+    with pytest.raises(UnsupportedFeatureError, match=r"streaming\.diarization"):
+        gate_params(params, caps, "streaming", strict=True)
+    gated_s, diags_s = gate_params(params, caps, "streaming", strict=False)
+    assert gated_s.diarization is None
+    assert diags_s[0].code == "unsupported_parameter_ignored"
+
+
+def test_diarization_marker_has_no_fields_drift_guard() -> None:
+    # Mirror of the import-time assert in param_gating: the diarization gate is
+    # feature-level ONLY because the marker is empty. The moment a field
+    # graduates onto DiarizationRequest (e.g. num_speakers), sub-gating must be
+    # written -- this pin fails alongside the import-time assert until it is.
+    assert not DiarizationRequest.model_fields

@@ -20,6 +20,7 @@ from standard_asr.capabilities import (
     CandidateLanguagesCap,
     CandidateLanguagesConstraints,
     DeclaredCapabilities,
+    DiarizationCap,
     DiarizationConstraints,
     FlagCap,
     GuidanceCaps,
@@ -992,3 +993,139 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
         "_MODE_REDUCTIONS tokens drifted from the declared enum tokens: "
         f"only-in-map={map_tokens - all_tokens}, only-in-enums={all_tokens - map_tokens}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Diarization capability: streaming node + always_on behavioural flag.
+# --------------------------------------------------------------------------- #
+def test_streaming_diarization_defaults_fail_closed() -> None:
+    # StreamingCapabilities gains a diarization node with the same fail-closed
+    # default as batch: declaring a streaming domain does NOT imply diarization.
+    assert StreamingCapabilities().diarization.supported is False
+    caps = DeclaredCapabilities(streaming=StreamingCapabilities())
+    assert caps.supports("streaming.diarization") is False
+
+
+def test_streaming_diarization_supported_path_and_node_at() -> None:
+    caps = DeclaredCapabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    )
+    assert caps.supports("streaming.diarization") is True
+    node = caps.node_at("streaming.diarization")
+    assert isinstance(node, DiarizationCap)
+    assert node.always_on.is_supported is False
+
+
+def test_always_on_requires_supported() -> None:
+    # always_on supported + supported=False is self-contradictory (an engine
+    # that cannot disable diarization necessarily supports it) and is made
+    # unrepresentable by the model validator. The constructive shapes pass.
+    assert DiarizationCap(supported=True, always_on=FlagCap(supported=True)).always_on.is_supported
+    assert DiarizationCap(supported=True).always_on.is_supported is False
+    assert DiarizationCap().always_on.is_supported is False
+    with pytest.raises(ValueError, match="declared supported while supported=False"):
+        DiarizationCap(supported=False, always_on=FlagCap(supported=True))
+
+
+def test_always_on_is_a_queryable_flag_node() -> None:
+    # always_on is a behavioural fact in the same family as self_resamples, but
+    # it IS a regular queryable FlagCap node: supports() resolves it, it appears
+    # in iter_supported_paths() when supported, and canonical_json injects a
+    # uniform `supported` boolean. The semantic inversion (True = imposed, not
+    # requestable) is documented prose, not a representation difference.
+    supported = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            diarization=DiarizationCap(supported=True, always_on=FlagCap(supported=True))
+        )
+    )
+    assert supported.supports("streaming.diarization.always_on") is True
+    assert "streaming.diarization.always_on" in set(supported.iter_supported_paths())
+    node = supported.canonical_json()["streaming"]["diarization"]["always_on"]
+    assert node["supported"] is True
+
+    # Diarization supported but always_on defaulted: the path is fail-closed and
+    # absent from the supported-path set.
+    default_on = DeclaredCapabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    )
+    assert default_on.supports("streaming.diarization.always_on") is False
+    assert "streaming.diarization.always_on" not in set(default_on.iter_supported_paths())
+
+
+def test_always_on_covers_rejects_declaration_drift() -> None:
+    # With a FlagCap node, covers() rejects a declared-unsupported ->
+    # effective-supported widening (declaration drift) by plain set containment;
+    # identical trees cover each other.
+    declared = DeclaredCapabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    )
+    effective_on = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            diarization=DiarizationCap(supported=True, always_on=FlagCap(supported=True))
+        )
+    )
+    assert declared.covers(effective_on) is False
+    assert effective_on.covers(effective_on) is True
+
+
+def test_always_on_rejects_bare_bool() -> None:
+    # Wire shape is a nested node: {"supported": True, "always_on": {"supported":
+    # True}}. A bare bool `always_on: True` is no longer accepted -- it fails
+    # pydantic validation loudly (pre-release, no bool-coercion shim).
+    from pydantic import ValidationError
+
+    validated = DiarizationCap.model_validate({"supported": True, "always_on": {"supported": True}})
+    assert validated.always_on.is_supported is True
+    with pytest.raises(ValidationError):
+        DiarizationCap.model_validate({"supported": True, "always_on": True})
+
+
+def test_diarization_covers_narrowing() -> None:
+    # Set containment: declared supported=True covers an effective that dropped
+    # it; declared False never covers an effective True (a widening).
+    supported = DeclaredCapabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    )
+    unsupported = DeclaredCapabilities(streaming=StreamingCapabilities())
+    assert supported.covers(unsupported) is True
+    assert unsupported.covers(supported) is False
+    # max_speakers is a registered upper bound (_MAX_CONSTRAINT_FIELDS):
+    # declared 4 -> effective 8 is a constraint widening and is rejected.
+    declared = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            diarization=DiarizationCap(
+                supported=True, constraints=DiarizationConstraints(max_speakers=4)
+            )
+        )
+    )
+    wider = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            diarization=DiarizationCap(
+                supported=True, constraints=DiarizationConstraints(max_speakers=8)
+            )
+        )
+    )
+    assert declared.covers(wider) is False
+    assert wider.covers(declared) is True
+
+
+def test_diarization_survives_json_round_trip() -> None:
+    # Mission M.1.2 stance: the wire view (canonical_json -> model_validate)
+    # must preserve supported AND always_on, and remain queryable/typed.
+    declared = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            diarization=DiarizationCap(
+                supported=True,
+                always_on=FlagCap(supported=True),
+                constraints=DiarizationConstraints(max_speakers=6),
+            )
+        )
+    )
+    wire = declared.canonical_json()
+    restored = DeclaredCapabilities.model_validate(wire)
+    assert restored.supports("streaming.diarization") is True
+    node = restored.node_at("streaming.diarization")
+    assert isinstance(node, DiarizationCap)
+    assert node.always_on.is_supported is True
+    assert node.constraints.max_speakers == 6
+    assert restored.canonical_json() == wire

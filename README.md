@@ -23,7 +23,7 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 > [!WARNING]
 > **Alpha — the core protocol works, but major pieces are still missing.** The standard
 > interface is functional and validated by real engine plugins, but features like
-> diarization, hardware metadata, and model cards are not yet part of the protocol.
+> hardware metadata and model cards are not yet part of the protocol.
 > Developer documentation and tooling are also incomplete. Breaking changes will happen.
 > For production use, wait for a stable release. We follow semantic versioning.
 > See the [Roadmap](https://github.com/standard-voice/standard_asr/issues/27) for what's planned.
@@ -316,7 +316,7 @@ standard-asr compliance entrypoints
 **Alpha.** The core protocol — engine interface, audio negotiation, capability discovery,
 streaming events, plugin system — is shipped and validated by four engine plugins. The
 toolchain (CLI, FastAPI server, compliance suite) works. What's missing: features like
-diarization, hardware metadata, and model cards are not yet part of the protocol.
+hardware metadata and model cards are not yet part of the protocol.
 Developer documentation, a richer CLI, and a plugin starter template are also not done yet.
 See the open issues for what's planned.
 

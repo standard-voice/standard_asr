@@ -9,6 +9,7 @@ import math
 from collections.abc import Callable
 
 import pytest
+from pydantic import ValidationError
 
 from standard_asr.renderers import to_srt, to_vtt
 from standard_asr.results import (
@@ -17,6 +18,7 @@ from standard_asr.results import (
     Segment,
     TranscriptionResult,
     Word,
+    synthesize_segment_speaker,
 )
 
 
@@ -193,12 +195,13 @@ def test_distinct_channel_indices_accepted() -> None:
 
 
 def test_out_of_order_segments_accepted_at_construction() -> None:
-    # The TR.2 (start, channel) ordering is an ENGINE obligation
-    # (compliance-verified), NOT a construct-time invariant. The streaming
-    # reducer legitimately keeps arrival order for timestamp-less engines and
-    # sorts only by start, so a construct-time ordering validator would reject
-    # valid reduced results. This test locks the deliberate non-enforcement so a
-    # future change does not silently add a breaking validator (the renderers
+    # The TR.2 (start, channel, speaker) ordering is an ENGINE obligation, NOT
+    # a construct-time invariant -- and the compliance suite does not check it
+    # either. The streaming reducer legitimately keeps arrival order for
+    # timestamp-less engines and sorts only by start, so a strict ordering
+    # check (at construction or in the suite) would reject valid reduced
+    # results. This test locks the deliberate non-enforcement so a future
+    # change does not silently add a breaking validator (the renderers
     # re-sort defensively -- see test_srt_sorts_out_of_order_segments).
     out_of_order = [
         Segment(start=5.0, end=6.0, text="second"),
@@ -424,7 +427,7 @@ def test_lone_cr_normalized_cannot_forge_cue(
 
 
 # --------------------------------------------------------------------------- #
-# Renderer ordering: cues sorted by (start, channel) per spec TR.2.
+# Renderer ordering: cues sorted by (start, channel, speaker) per spec TR.2.
 # --------------------------------------------------------------------------- #
 def test_srt_sorts_out_of_order_segments() -> None:
     segs = [
@@ -473,3 +476,204 @@ def test_renderer_rejects_negative_preroll_time() -> None:
     # is why the renderer no longer needs to clamp negative timestamps.
     with pytest.raises(ValueError):
         Segment(start=-0.5, end=0.5, text="pre-roll")
+
+
+# --------------------------------------------------------------------------- #
+# Speaker labels (spec TR.5): shared construct-time validation + THE pinned
+# segment-speaker synthesis rule.
+# --------------------------------------------------------------------------- #
+def _with_speaker(model: type[Word | Segment], speaker: str | None) -> Word | Segment:
+    return model(start=0.0, end=1.0, text="x", speaker=speaker)
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_speaker_label_rejects_empty(model: type[Word | Segment]) -> None:
+    # "" would be an undefined third state between None and a real label.
+    with pytest.raises(ValueError, match="empty or whitespace-only"):
+        _with_speaker(model, "")
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+@pytest.mark.parametrize("label", ["   ", "\t", "\n"])
+def test_speaker_label_rejects_whitespace_only(model: type[Word | Segment], label: str) -> None:
+    with pytest.raises(ValueError, match="empty or whitespace-only"):
+        _with_speaker(model, label)
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+@pytest.mark.parametrize("label", ["A ", " A", " A ", "A\n"])
+def test_speaker_label_rejects_padded(model: type[Word | Segment], label: str) -> None:
+    # Edge whitespace silently breaks within-result label consistency: "A " and
+    # "A" read as two different speakers. Rejected -- never normalized (a
+    # silent rewrite would hide the adapter bug producing the padding).
+    with pytest.raises(ValueError, match="leading or trailing whitespace"):
+        _with_speaker(model, label)
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+@pytest.mark.parametrize("label", [None, "A", "Guest-1", "John Doe", "说话人一"])
+def test_speaker_label_valid_and_none(model: type[Word | Segment], label: str | None) -> None:
+    # None (no attribution) and real labels -- including interior spaces --
+    # construct unchanged.
+    assert _with_speaker(model, label).speaker == label
+
+
+@pytest.mark.parametrize("model", [Word, Segment])
+def test_speaker_label_error_never_echoes_raw_value(model: type[Word | Segment]) -> None:
+    # A speaker label can carry a personal name; the rejection message names
+    # the rule, never the value (echoed verbatim by server 422 bodies / logs --
+    # same redaction stance as the language-tag validator).
+    sentinel = "Very Secret Name"
+    with pytest.raises(ValidationError) as exc_info:
+        _with_speaker(model, f" {sentinel} ")
+    assert all(sentinel not in err["msg"] for err in exc_info.value.errors())
+
+
+def _w(text: str, speaker: str | None, start: float) -> Word:
+    return Word(start=start, end=start + 0.5, text=text, speaker=speaker)
+
+
+def test_synthesize_speaker_majority() -> None:
+    words = [_w("a", "A", 0.0), _w("b", "A", 0.5), _w("c", "B", 1.0)]
+    assert synthesize_segment_speaker(words) == "A"
+
+
+def test_synthesize_speaker_tie_earliest_word() -> None:
+    # Equal counts -> the speaker of the earliest (lowest-index) word wins.
+    assert synthesize_segment_speaker([_w("a", "A", 0.0), _w("b", "B", 0.5)]) == "A"
+    assert synthesize_segment_speaker([_w("a", "B", 0.0), _w("b", "A", 0.5)]) == "B"
+    # Count still beats earliest position: B first, but A carries more words.
+    words = [_w("a", "B", 0.0), _w("b", "A", 0.5), _w("c", "A", 1.0)]
+    assert synthesize_segment_speaker(words) == "A"
+
+
+def test_synthesize_speaker_none_words_do_not_vote() -> None:
+    # None-speaker words abstain: a None "majority" never beats one real label.
+    words = [_w("a", None, 0.0), _w("b", None, 0.5), _w("c", "B", 1.0)]
+    assert synthesize_segment_speaker(words) == "B"
+
+
+def test_synthesize_speaker_no_votes_returns_none() -> None:
+    assert synthesize_segment_speaker(None) is None
+    assert synthesize_segment_speaker([]) is None
+    assert synthesize_segment_speaker([_w("a", None, 0.0), _w("b", None, 0.5)]) is None
+
+
+# --------------------------------------------------------------------------- #
+# Speaker rendering (spec TR.6 include_speakers): SRT "[label]: " prefix, VTT
+# <v label> voice span, opt-in default, label sanitization, TR.2 sort tie-break.
+# --------------------------------------------------------------------------- #
+def _speaker_result(*speakers: str | None) -> TranscriptionResult:
+    segs = [
+        Segment(start=float(i), end=float(i) + 1.0, text=f"line {i}", speaker=speaker)
+        for i, speaker in enumerate(speakers)
+    ]
+    return TranscriptionResult(text=" ".join(s.text for s in segs), segments=segs)
+
+
+def test_srt_include_speakers_prefixes_label() -> None:
+    srt = to_srt(_speaker_result("Alice", "Bob"), include_speakers=True)
+    assert "1\n00:00:00,000 --> 00:00:01,000\n[Alice]: line 0" in srt
+    assert "2\n00:00:01,000 --> 00:00:02,000\n[Bob]: line 1" in srt
+
+
+def test_vtt_include_speakers_wraps_voice_tag() -> None:
+    vtt = to_vtt(_speaker_result("Alice", "Bob"), include_speakers=True)
+    assert "00:00:00.000 --> 00:00:01.000\n<v Alice>line 0" in vtt
+    assert "00:00:01.000 --> 00:00:02.000\n<v Bob>line 1" in vtt
+
+
+def test_renderers_default_omits_speakers() -> None:
+    # No flag -> byte-identical to the output for the same segments without
+    # speakers: rendering stays a pure projection of the transcript text.
+    labelled = _speaker_result("Alice", "Bob")
+    unlabelled = _speaker_result(None, None)
+    assert to_srt(labelled) == to_srt(unlabelled)
+    assert to_vtt(labelled) == to_vtt(unlabelled)
+
+
+def test_include_speakers_skips_none_speaker_segments() -> None:
+    # Mixed result: only the labelled cue changes; a None speaker renders the
+    # cue unchanged (no "[None]" fabrication).
+    srt = to_srt(_speaker_result("Alice", None), include_speakers=True)
+    assert "[Alice]: line 0" in srt
+    assert "\nline 1" in srt
+    assert "None" not in srt
+    vtt = to_vtt(_speaker_result("Alice", None), include_speakers=True)
+    assert "<v Alice>line 0" in vtt
+    # The unlabelled cue's payload starts directly after its timing line -- no
+    # voice tag was fabricated for it.
+    assert "\nline 1" in vtt
+
+
+def test_vtt_label_sanitized_for_voice_tag() -> None:
+    # A raw '>' in the label would terminate the <v> tag early; '&'/'<' begin
+    # markup. All three are escaped in the annotation, text untouched.
+    result = _speaker_result("A>B&C<D")
+    vtt = to_vtt(result, include_speakers=True)
+    assert "<v A&gt;B&amp;C&lt;D>line 0" in vtt
+
+
+def test_vtt_voice_tag_injected_after_text_sanitization() -> None:
+    # The payload is escaped by _sanitize_cue_text; the voice tag is injected
+    # AFTERWARDS so it is not itself escaped away.
+    seg = Segment(start=0.0, end=1.0, text="<unk> token", speaker="A")
+    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    assert "<v A>&lt;unk&gt; token" in vtt
+
+
+@pytest.mark.parametrize("label", ["A\nB", "A\r\nB", "A\rB"])
+def test_srt_label_newline_collapsed(label: str) -> None:
+    # Interior line terminators pass the model validator (only edge whitespace
+    # is construction-rejected) but must not forge cue structure: every
+    # terminator form collapses to a single space in the rendered label.
+    seg = Segment(start=0.0, end=1.0, text="hello", speaker=label)
+    srt = to_srt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    assert "[A B]: hello" in srt
+    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    assert "<v A B>hello" in vtt
+
+
+def test_srt_empty_text_with_speaker_still_skipped() -> None:
+    # A label never resurrects a payload-less cue: no payload -> no cue, so no
+    # index is consumed either.
+    segs = [
+        Segment(start=0.0, end=1.0, text="   ", speaker="Alice"),
+        Segment(start=1.0, end=2.0, text="real", speaker="Bob"),
+    ]
+    srt = to_srt(TranscriptionResult(text="x", segments=segs), include_speakers=True)
+    assert "Alice" not in srt
+    assert srt.startswith("1\n00:00:01,000")
+    vtt = to_vtt(TranscriptionResult(text="x", segments=segs), include_speakers=True)
+    assert "Alice" not in vtt
+
+
+def test_cues_sort_speaker_tie_break() -> None:
+    # TR.2: (start, channel, speaker) -- speaker is the FINAL tie-break; None
+    # sorts before any real label.
+    segs = [
+        Segment(start=0.0, end=1.0, text="from B", channel=0, speaker="B"),
+        Segment(start=0.0, end=1.0, text="from A", channel=0, speaker="A"),
+        Segment(start=0.0, end=1.0, text="no speaker", channel=0),
+    ]
+    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    assert srt.index("no speaker") < srt.index("from A") < srt.index("from B")
+
+
+def test_cues_sort_channel_still_beats_speaker() -> None:
+    # speaker is the LAST key: a lower channel wins regardless of labels.
+    segs = [
+        Segment(start=0.0, end=1.0, text="ch1 A", channel=1, speaker="A"),
+        Segment(start=0.0, end=1.0, text="ch0 B", channel=0, speaker="B"),
+    ]
+    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    assert srt.index("ch0 B") < srt.index("ch1 A")
+
+
+def test_vtt_multiline_cue_single_voice_tag_wraps_whole_body() -> None:
+    # An unclosed <v> span legally runs to the end of the cue payload, so ONE
+    # opening tag attributes the whole (multi-line) body.
+    seg = Segment(start=0.0, end=1.0, text="line one\nline two", speaker="A")
+    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    assert "<v A>line one\nline two" in vtt
+    assert vtt.count("<v A>") == 1
