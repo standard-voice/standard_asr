@@ -4,15 +4,14 @@
 """Audio input negotiation between application-provided and engine-accepted shapes.
 
 The standard layer negotiates a deterministic, lowest-cost conversion path
-between the :data:`~standard_asr.audio_input.AudioInput` variant an application
-provides and the set of :class:`~standard_asr.audio_input.InputKind` shapes an
+between the :data:`~standard_asr.audio.input.AudioInput` variant an application
+provides and the set of :class:`~standard_asr.audio.input.InputKind` shapes an
 engine accepts. When the provided shape is already accepted, the path is a
 zero-cost passthrough. When no path exists, negotiation reports a
 :class:`NoViablePath`; the engine layer turns that into an
-:class:`~standard_asr.exceptions.IncompatibleAudioInputError` at call time.
+:class:`~standard_asr.contract.exceptions.IncompatibleAudioInputError` at call time.
 
-This module implements the normative conversion matrix (spec, section
-"Audio Input & Sample Rate", rule R3). Sample-rate decisions (R6--R8) are
+This module implements the normative conversion matrix. Sample-rate decisions are
 layered on top by the engine base class and are not part of *kind* negotiation.
 """
 
@@ -24,7 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 from urllib.parse import urlsplit
 
-from .audio_input import (
+from standard_asr.audio.input import (
     AudioArray,
     AudioBase64,
     AudioBytes,
@@ -34,16 +33,16 @@ from .audio_input import (
     AudioUrl,
     InputKind,
 )
-from .exceptions import IncompatibleAudioInputError
+from standard_asr.contract.exceptions import IncompatibleAudioInputError
 
 
 class UnsafeAudioUrlError(IncompatibleAudioInputError):
-    """An ``AudioUrl`` failed the R5 security policy and MUST NOT be forwarded.
+    """An ``AudioUrl`` failed the SSRF security policy and MUST NOT be forwarded.
 
     Raised before a URL is handed to an engine when the URL is not HTTPS, or
     resolves (in whole or in part) to a private / loopback / link-local address
-    -- the classic SSRF target set (spec R5.1). Subclasses
-    :class:`~standard_asr.exceptions.IncompatibleAudioInputError` so existing
+    -- the classic SSRF target set. Subclasses
+    :class:`~standard_asr.contract.exceptions.IncompatibleAudioInputError` so existing
     audio-input error handling catches it, while remaining distinguishable.
 
     Args:
@@ -60,7 +59,7 @@ class UnsafeAudioUrlError(IncompatibleAudioInputError):
             hint=(
                 f"Refusing to forward {url!r}: {reason}. URLs MUST be HTTPS and "
                 "MUST NOT target private/loopback/link-local addresses (SSRF "
-                "defense, spec R5). To allow a trusted internal endpoint, set "
+                "defense). To allow a trusted internal endpoint, set "
                 "allow_private_urls=True in the engine's init config (HTTPS is "
                 "still required)."
             ),
@@ -70,10 +69,10 @@ class UnsafeAudioUrlError(IncompatibleAudioInputError):
 def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return whether an IP is in a private/loopback/link-local/reserved range.
 
-    Covers the SSRF target set from spec R5.1: RFC1918, 127/8, 169.254/16, ::1,
+    Covers the SSRF target set: RFC1918, 127/8, 169.254/16, ::1,
     fc00::/7 (and their relatives, plus reserved/unspecified) -- including
     IPv4-mapped IPv6 addresses, which are unwrapped first. As a hardening layer
-    beyond the R5.1 MUSTs, any address that is not globally routable is also
+    beyond those mandatory ranges, any address that is not globally routable is also
     rejected (``not is_global``), which covers e.g. CGNAT 100.64.0.0/10
     (RFC 6598) and the documentation/TEST-NET ranges.
 
@@ -88,7 +87,7 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     # ``is_global`` classification of a few exotic ranges shifted slightly across
     # Python 3.10-3.13 (e.g. 192.0.0.9/32 PCP anycast became global in 3.12's
     # IANA-registry alignment); the explicit predicates above it are the stable
-    # R5.1 floor, so version drift can only make the check stricter, never weaker.
+    # baseline, so version drift can only make the check stricter, never weaker.
     return (
         ip.is_private
         or ip.is_loopback
@@ -101,9 +100,9 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
 
 
 def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -> None:
-    """Validate an ``AudioUrl`` against the R5 SSRF policy before forwarding.
+    """Validate an ``AudioUrl`` against the SSRF policy before forwarding.
 
-    The standard never fetches the URL itself in v1 (spec R5); this only
+    The standard never fetches the URL itself in v1; this only
     validates the literal that will be passed to the engine. The check is:
     HTTPS-only, a parseable host, and -- unless opted out -- every address the
     host resolves to must be public.
@@ -115,7 +114,7 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     controls DNS can return a public address here and a private one to the
     engine (classic TOCTOU/DNS-rebinding). Pinning the validated address for the
     engine's subsequent fetch (DNS-pin) is a documented v1 limitation and a v2
-    requirement (spec R5). Strong SSRF defense for engine-fetched URLs requires
+    requirement. Strong SSRF defense for engine-fetched URLs requires
     the engine to honour a pinned address.
 
     Args:
@@ -146,7 +145,7 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     # Parse + validate the port BEFORE the allow_private_addresses opt-out and
     # before the IP-vs-name branch. The opt-in relaxes ONLY the private/loopback
     # address policy; a malformed port is a STRUCTURAL defect, not a private-
-    # address concern, so it MUST be rejected in both modes (spec R5: the opt-in
+    # address concern, so it MUST be rejected in both modes (the opt-in
     # exempts the private-IP rejection, not the HTTPS/structure checks; the
     # Raises contract lists malformed port unconditionally). ``parts.port`` is
     # lazy in urlsplit and raises a bare ValueError for a malformed port
@@ -218,7 +217,7 @@ class ConversionPlan:
     The plan describes *what* to do (``operations``) and the resulting shape
     (``target_kind``). Whether a step is lossy or needs the ``[audio]`` extra is
     not carried here: the lossy/decoded-rate diagnostics are emitted by the op
-    that performs the work in :mod:`standard_asr.audio_conversion`, the single
+    that performs the work in :mod:`standard_asr.audio.conversion`, the single
     source of truth (a duplicate flag on the plan only invited drift, since
     ``execute_plan`` never read it).
 
@@ -322,7 +321,7 @@ def negotiate(
     Raises:
         TypeError: If ``provided`` is not one of the six :data:`AudioInput`
             variants (e.g. an un-coerced bare ``str``). Call
-            :func:`~standard_asr.audio_input.coerce_audio_input` first.
+            :func:`~standard_asr.audio.input.coerce_audio_input` first.
     """
     accepted = frozenset(accepted)
     source = type(provided).__name__
@@ -405,10 +404,10 @@ def _negotiate_array(source: str, accepted: frozenset[InputKind]) -> ConversionP
     """
     if InputKind.ARRAY in accepted:
         return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.PASSTHROUGH,))
-    # The encoder writes to an in-memory BytesIO (R4: MUST NOT touch disk), so the
+    # The encoder writes to an in-memory BytesIO (MUST NOT touch disk), so the
     # encoded result is ENCODED_BYTES. A file-only engine cannot receive it, so
     # this path is viable only when ENCODED_BYTES is accepted (otherwise a
-    # wrong-shape silent result -- R3).
+    # wrong-shape silent result).
     if InputKind.ENCODED_BYTES in accepted:
         # Encode to WAV/16-bit PCM bytes (float32 -> int16 is lossy; the
         # ENCODE_WAV op emits the lossy diagnostic at execution time).
@@ -421,7 +420,7 @@ def _negotiate_array(source: str, accepted: frozenset[InputKind]) -> ConversionP
             "encodes arrays to in-memory bytes and will not write a temp file. "
             "Use an engine that accepts arrays or encoded_bytes.",
         )
-    # No local kind is accepted: AudioPath would be a dead end too (R3).
+    # No local kind is accepted: AudioPath would be a dead end too.
     return NoViablePath(source, accepted, _remote_only_hint(accepted))
 
 
@@ -458,8 +457,8 @@ def _negotiate_bytes(source: str, accepted: frozenset[InputKind]) -> ConversionP
     """
     # In-memory bytes can only be delivered as ENCODED_BYTES. A file-only engine
     # (accepts ENCODED_FILE but not ENCODED_BYTES) cannot consume bytes: the
-    # standard MUST NOT write a temp file (R4/D1, BytesIO-only), so producing an
-    # ENCODED_BYTES payload would be a silent wrong-shape result (R3). Require
+    # standard MUST NOT write a temp file (BytesIO-only), so producing an
+    # ENCODED_BYTES payload would be a silent wrong-shape result. Require
     # ENCODED_BYTES to be accepted before passing through.
     if InputKind.ENCODED_BYTES in accepted:
         return ConversionPlan(source, InputKind.ENCODED_BYTES, (ConversionOp.PASSTHROUGH,))
@@ -506,7 +505,7 @@ def _bytes_only_file_hint(accepted: frozenset[InputKind]) -> str:
             "bytes; the standard will not write a temporary file (SSRF/TOCTOU "
             "safety). Pass the audio as AudioPath to a real local file."
         )
-    # Only remote kinds remain; AudioPath would be an equally dead end (R3).
+    # Only remote kinds remain; AudioPath would be an equally dead end.
     return _remote_only_hint(accepted)
 
 
@@ -515,7 +514,7 @@ def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPla
 
     In v1 the standard never fetches URLs (SSRF risk); a URL is only viable if
     the engine fetches it server-side. Negotiation is a pure, I/O-free structural
-    match; the R5 SSRF *security* validation (HTTPS + non-private-address, which
+    match; the SSRF *security* validation (HTTPS + non-private-address, which
     needs DNS resolution) runs at execution time via
     :func:`validate_fetchable_url` before the URL is forwarded.
 
@@ -536,7 +535,7 @@ def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPla
             "them either. Provide a local file via AudioPath.",
         )
     # A storage-only engine cannot fetch an HTTPS URL either, so suggesting
-    # AudioPath would be a dead end (R3); point at the remote shape it accepts.
+    # AudioPath would be a dead end; point at the remote shape it accepts.
     return NoViablePath(source, accepted, _remote_only_hint(accepted))
 
 
@@ -549,7 +548,7 @@ def _negotiate_storage_uri(
     engine that authenticates it with its own cloud-SDK credentials, so it is
     viable solely as a zero-conversion passthrough to a ``storage_uri`` engine.
     The standard is not an upload-broker and cannot fetch from cloud storage
-    without engine credentials, so every other accepted shape FAILs (R3): there
+    without engine credentials, so every other accepted shape FAILs: there
     is no way to turn a credentialed storage URI into an array, encoded bytes, a
     local file, or a public fetchable URL.
 

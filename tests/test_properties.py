@@ -10,13 +10,13 @@ from typing import Any, Literal
 import pytest
 from pydantic import ValidationError
 
-from standard_asr.asr_properties import (
+from standard_asr.audio.input import InputKind
+from standard_asr.contract.properties import (
     BaseProperties,
     SampleRateRange,
     nearest_accepted_sample_rate,
     sample_rate_accepted,
 )
-from standard_asr.audio_input import InputKind
 
 
 def _base_kwargs() -> dict[str, Any]:
@@ -213,7 +213,7 @@ def test_model_id() -> None:
 
 
 def test_description_is_optional_display_field() -> None:
-    # description is a defined, optional, display-only field (spec §AI 3.2).
+    # description is a defined, optional, display-only field.
     assert BaseProperties(**_base_kwargs()).description is None
     props = BaseProperties(**_base_kwargs(), description="A demo engine")
     assert props.description == "A demo engine"
@@ -221,7 +221,7 @@ def test_description_is_optional_display_field() -> None:
 
 def test_no_free_form_extra_metadata_pocket() -> None:
     # The free-form `extra: dict[str, Any]` metadata pocket was removed
-    # (it duplicated the blanket metadata §C deliberately dropped and formed an
+    # (it duplicated the blanket metadata the standard deliberately dropped and formed an
     # unschema'd parallel declaration channel). The model is extra="forbid", so an
     # unknown key -- whether spelled `extra` or anything else -- is rejected, not
     # silently absorbed. (Use model_validate with a dict so the now-removed key is

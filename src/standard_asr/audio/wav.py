@@ -7,8 +7,7 @@ Two helpers live here:
 
 * :func:`encode_array_to_wav_bytes` -- encode a waveform to an in-memory WAV
   byte buffer in canonical form (16-bit PCM LE, **mono**), used by the audio
-  negotiation layer when an array must be delivered to a file/bytes-only engine
-  (spec, section "Audio Input & Sample Rate", rule R4).
+  negotiation layer when an array must be delivered to a file/bytes-only engine.
 * :func:`save_wav` -- write a waveform to a WAV file on disk, preserving the
   channel count.
 """
@@ -24,8 +23,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from ..exceptions import AudioProcessingError
-from ..wire import require_float_waveform, to_int16_pcm
+from standard_asr.audio.wire import require_float_waveform, to_int16_pcm
+from standard_asr.contract.exceptions import AudioProcessingError
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ class WavEncodeResult:
             sanitized to ``0``/``+-1`` during the float->int16 cast. ``0`` when
             the input was already all-finite. Lets the conversion layer emit a
             ``non_finite_audio`` diagnostic so the sanitize is visible to the
-            caller, matching the array-delivery path (spec R3).
+            caller, matching the array-delivery path.
     """
 
     data: bytes
@@ -101,7 +100,7 @@ def encode_array_to_wav_bytes(
     # Serialize explicitly little-endian: WAV defines 16-bit PCM as LE, but
     # ``tobytes()`` uses the array's NATIVE byte order. On a big-endian host that
     # would silently emit byte-swapped samples under an LE-declaring header
-    # (spec R4: canonical = WAV/16-bit PCM LE). ``<i2`` pins the contract.
+    # (the canonical form is WAV/16-bit PCM LE). ``<i2`` pins the contract.
     frames = pcm.astype("<i2").tobytes()
 
     buffer = io.BytesIO()
@@ -165,7 +164,7 @@ def save_wav(
         raise AudioProcessingError("Audio must be 1D (mono) or 2D (multi-channel).")
 
     # Pin little-endian (``<i2``) for canonical WAV PCM regardless of host byte
-    # order (spec R4); ``tobytes()`` would otherwise use native order.
+    # order; ``tobytes()`` would otherwise use native order.
     pcm, _sanitized = to_int16_pcm(array)
     audio_integer = pcm.astype("<i2")
 

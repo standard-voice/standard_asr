@@ -4,8 +4,8 @@
 """Security and native-decode tests for the audio loader.
 
 Covers the bare-str-never-URL / LFI defense (ffmpeg ``-protocol_whitelist`` and
-local-file validation), the decompression-bomb size guard (spec R9), and the
-native-rate :func:`decode_audio` primitive (spec R7).
+local-file validation), the decompression-bomb size guard, and the
+native-rate :func:`decode_audio` primitive.
 """
 
 from __future__ import annotations
@@ -19,9 +19,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from standard_asr.exceptions import AudioProcessingError, FFmpegNotFoundError
-from standard_asr.utils import audio_loader
-from standard_asr.utils.audio_loader import (
+from standard_asr.audio import loader as audio_loader
+from standard_asr.audio.loader import (
     _validate_local_source_path,  # pyright: ignore[reportPrivateUsage]
     decode_audio,
     decode_audio_from_data_uri,
@@ -29,6 +28,7 @@ from standard_asr.utils.audio_loader import (
     load_audio_from_bytes,
     load_audio_from_path,
 )
+from standard_asr.contract.exceptions import AudioProcessingError, FFmpegNotFoundError
 
 
 def _wav_bytes(samples: int = 100, rate: int = 16000) -> bytes:
@@ -105,7 +105,7 @@ def test_decode_audio_rejects_url_string() -> None:
         decode_audio("https://evil.example.com/a.wav")
 
 
-# --- R9: decompression-bomb / size guard ---
+# --- decompression-bomb / size guard ---
 
 
 def test_decode_audio_size_guard_bytes() -> None:
@@ -159,7 +159,7 @@ def test_decode_audio_wraps_stat_toctou_oserror(
         decode_audio(str(f), max_bytes=10_000)
 
 
-# --- R9: stdlib WAV header-declared nframes allocation guard ---
+# --- stdlib WAV header-declared nframes allocation guard ---
 
 
 def test_load_audio_from_path_rejects_inflated_wav_nframes(tmp_path: Path) -> None:
@@ -370,7 +370,7 @@ def test_load_audio_capped_stream_reads_to_eof_despite_short_reads() -> None:
 
 
 def test_load_audio_capped_short_read_stream_still_enforces_cap() -> None:
-    # The loop preserves the spec R9 memory ceiling -- a short-reading
+    # The loop preserves the memory ceiling -- a short-reading
     # stream that exceeds the cap is still rejected (it never holds more than
     # max_bytes + 1 bytes before aborting).
     data = _wav_bytes(samples=5000)
@@ -391,8 +391,8 @@ def test_decode_audio_preserves_native_rate(rate: int) -> None:
 
 def test_decode_audio_never_sniffs_data_uri_as_base64() -> None:
     # Decode_audio is the engine-input boundary; a bare str is ALWAYS
-    # a local file path and MUST NOT be content-sniffed as a data: URI (spec R1 /
-    # §3.1). A string literally named like a data: URI is therefore opened as a
+    # a local file path and MUST NOT be content-sniffed as a data: URI. A string
+    # literally named like a data: URI is therefore opened as a
     # (non-existent) file and fails "not found", NOT decoded as inline base64.
     # This is the security boundary the conversion layer relies on: an AudioPath
     # whose value happens to read "data:..." must not be decoded as base64.
@@ -447,7 +447,7 @@ def test_decode_audio_from_data_uri_bare_base64() -> None:
 
 
 def test_decode_audio_from_data_uri_rejects_oversize() -> None:
-    # The gate-and-decode size cap (spec R9) is enforced on the explicit entry
+    # The gate-and-decode size cap is enforced on the explicit entry
     # point: an under-cap estimate never falsely rejects, an over-cap payload is
     # refused before allocation.
     import base64 as _b64

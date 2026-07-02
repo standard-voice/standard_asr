@@ -10,9 +10,8 @@ body, the server's ``options`` field, or the CLI's ``--options`` JSON), that
 value would be reflected back into whatever surface renders the error -- a
 client response, an intermediary proxy, CI logs, or a copy-pasted bug report.
 That is a credential leak, and the project forbids it on **every** transport
-(spec ``server.md`` §1: "validation errors never echo the request input";
-``runtime_params.py`` keeps the raw tag out of the language-validator message
-for the same reason).
+(validation errors never echo the request input; ``runtime_params.py`` keeps the
+raw tag out of the language-validator message for the same reason).
 
 This module is the single owner of that scrubbing rule so the server (HTTP/WS)
 and the CLI cannot drift on it. It depends only on ``pydantic`` (no FastAPI), so
@@ -26,7 +25,7 @@ from typing import Any, Sequence, cast
 
 from pydantic import ValidationError
 
-from .exceptions import ConfigError
+from standard_asr.contract.exceptions import ConfigError
 
 #: Substring tokens that mark a field name as credential-like. A field whose
 #: name contains any of these (case-insensitive) has its value redacted from

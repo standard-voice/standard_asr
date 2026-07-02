@@ -41,7 +41,7 @@ def test_exceptions_are_fully_re_exported_at_top_level() -> None:
     # level -- and be the very object the submodule defines (a true re-export,
     # not a shadowing redefinition). This set-subset assertion fails the moment a
     # future exception is added to the submodule but forgotten at the top level.
-    exceptions = importlib.import_module("standard_asr.exceptions")
+    exceptions = importlib.import_module("standard_asr.contract.exceptions")
     assert set(exceptions.__all__) <= set(standard_asr.__all__)
     for name in exceptions.__all__:
         assert getattr(standard_asr, name) is getattr(exceptions, name), name
@@ -53,7 +53,7 @@ def test_capability_vocabulary_is_on_the_engine_facade() -> None:
     # the capabilities submodule advertises MUST be re-exported from the facade
     # (a true re-export). A future capability type added to capabilities.__all__
     # but forgotten on the facade fails this immediately.
-    caps_module = importlib.import_module("standard_asr.capabilities")
+    caps_module = importlib.import_module("standard_asr.contract.capabilities")
     assert set(caps_module.__all__) <= set(engine_facade.__all__)
     for name in caps_module.__all__:
         assert getattr(engine_facade, name) is getattr(caps_module, name), name
@@ -155,7 +155,7 @@ def test_diarize_constant_identity_across_surfaces() -> None:
     # DIARIZE is one shared, stateless marker instance: every surface MUST
     # re-export the same object (a per-surface copy would still compare equal,
     # but identity is the cheap pin that these are true re-exports).
-    runtime_params = importlib.import_module("standard_asr.runtime_params")
+    runtime_params = importlib.import_module("standard_asr.contract.params")
     assert standard_asr.DIARIZE is engine_facade.DIARIZE
     assert standard_asr.DIARIZE is runtime_params.DIARIZE
     assert standard_asr.DiarizationRequest is runtime_params.DiarizationRequest

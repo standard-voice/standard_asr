@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from standard_asr.audio_input import (
+from standard_asr.audio.input import (
     AudioArray,
     AudioBytes,
     AudioPath,
@@ -130,8 +130,8 @@ def test_array_rejects_non_positive_sample_rate(bad_rate: int) -> None:
 
 
 def test_array_accepts_none_sample_rate() -> None:
-    # None (rate unknown) stays valid -- it is resolved by the R6
-    # strict/best_effort policy downstream, not rejected at construction.
+    # None (rate unknown) stays valid -- it is resolved by the
+    # strict/best_effort sample-rate policy downstream, not rejected at construction.
     assert AudioArray(np.zeros(8, dtype=np.float32), None).sample_rate is None
 
 

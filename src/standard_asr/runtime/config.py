@@ -10,17 +10,17 @@ mixins below) plus engine-declared fields.
 
 Key normative behaviours implemented here:
 
-* **Credential safety (IC.3):** credential fields MUST use ``SecretStr`` and be
+* **Credential safety:** credential fields MUST use ``SecretStr`` and be
   marked secret; :meth:`BaseConfig.public_dump` returns a sanitized dump for
   ``/v1/models``, persistence, and telemetry. Plaintext is materialized only
   on demand via ``SecretStr.get_secret_value()``.
-* **Env fallback (IC.4):** ``STANDARD_ASR_<NORMENGINE>__<NORMFIELD>`` (double
+* **Env fallback:** ``STANDARD_ASR_<NORMENGINE>__<NORMFIELD>`` (double
   underscore boundary) with normalization and collision detection; composite
   fields are JSON-decoded; priority is explicit > env > error.
-* **Applicability (IC.5):** a standard field is applicable iff it appears in the
+* **Applicability:** a standard field is applicable iff it appears in the
   model -- engines compose the mixins they need so auto-UI renders the right
   form without per-field hiding.
-* **Lazy purity (IC.9):** ``__init__`` capturing config MUST be pure (no FS,
+* **Lazy purity:** ``__init__`` capturing config MUST be pure (no FS,
   GPU, or network); materialization happens later under ``allow_downloads()``.
 """
 
@@ -56,8 +56,8 @@ from pydantic import (
     model_validator,
 )
 
-from .error_redaction import config_error_from_validation
-from .exceptions import ConfigError
+from standard_asr.contract.exceptions import ConfigError
+from standard_asr.runtime.redaction import config_error_from_validation
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +208,7 @@ def _secret_marked_field_path(
     """Return the dotted path to the first secret-marked field in ``model``, recursively.
 
     Searches ``model``'s own fields and every nested ``BaseModel`` reachable
-    through their annotations. The IC.3 secret pipeline (the SecretStr-enforcing
+    through their annotations. The secret pipeline (the SecretStr-enforcing
     class hook, the whitespace-preserving validator, and the masking dump) only
     operates on a :class:`BaseConfig`'s *own* scalar fields, so a secret marker
     on a nested submodel field is silently unprotected -- its plaintext leaks
@@ -248,8 +248,8 @@ def _annotation_needs_json_env(annotation: Any) -> bool:
     """Return whether an env value for this annotation must be JSON-decoded first.
 
     A standard field may be a composite type -- ``LanguageConfigMixin``'s
-    ``default_candidate_languages: list[str] | None`` is a spec-named Init Config
-    field (spec 3.1) -- but an environment variable is always a bare string, and
+    ``default_candidate_languages: list[str] | None`` is a spec-named init-config
+    field -- but an environment variable is always a bare string, and
     pydantic will not coerce ``"en,ja"`` (or even ``'["en","ja"]'``) into a
     ``list[str]``. Without this, a composite standard field is unreachable
     through its own env convention (``list_type`` ``ValidationError``). For such
@@ -319,7 +319,7 @@ def env_var_name(engine_id: str, field_name: str) -> str:
     a pathological ``engine_id`` ending in a separator combined with a
     ``field_name`` starting with one is out of that space. Same-class collisions
     (two fields of one config normalizing alike) are still caught by
-    :meth:`BaseConfig.env_overrides` (spec IC.4).
+    :meth:`BaseConfig.env_overrides`.
 
     Args:
         engine_id: The engine identifier.
@@ -351,7 +351,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         frozen=True,
         extra="forbid",
         str_strip_whitespace=True,
-        # Accept fields by their attribute name as well as their alias (IC.4):
+        # Accept fields by their attribute name as well as their alias:
         # env fallback keys by attribute name (e.g. ``api_key``), but a credential
         # may declare a provider-native alias (e.g. ElevenLabs ``xi-api-key``).
         # Without this, loading such a field from env trips ``extra="forbid"``.
@@ -374,17 +374,17 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
     allow_private_urls: bool = Field(
         default=False,
         description=(
-            "Opt-in to relax the R5 SSRF policy so an AudioUrl may target a "
+            "Opt-in to relax the SSRF policy so an AudioUrl may target a "
             "private/loopback/link-local address (HTTPS is still required). "
             "False by default; set True only for a trusted internal endpoint."
         ),
     )
 
-    #: Base fields that MUST NOT be sourced from the environment (IC.4). Env
+    #: Base fields that MUST NOT be sourced from the environment. Env
     #: fallback covers **every other field** -- the standard config fields
     #: (credentials, endpoint routing, device, language, download root) AND any
     #: engine-declared field (e.g. ``beam_size``, ``model_path``), each gaining a
-    #: ``STANDARD_ASR_<ENGINE>__<FIELD>`` entry (spec IC.4): env coverage of the
+    #: ``STANDARD_ASR_<ENGINE>__<FIELD>`` entry: env coverage of the
     #: full config surface is intentional DX, not just the mixin fields. Excluded
     #: are only the three fields where an env override would be a silent
     #: security/correctness downgrade: the ``engine`` identity (entrypoint-
@@ -397,7 +397,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
-        """Enforce that secret-marked fields use a masking secret annotation (IC.3).
+        """Enforce that secret-marked fields use a masking secret annotation.
 
         Two definition-time guards, so a credential leak can never reach runtime:
 
@@ -408,8 +408,8 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
            ``list[SecretStr]``) is equally rejected: the masking/whitespace-
            preserving paths handle only scalar secrets, so it would be
            half-protected.
-        2. A secret marker on a field of a **nested submodel** (IC.8 encourages
-           per-model-family submodels) is rejected outright. The IC.3 secret
+        2. A secret marker on a field of a **nested submodel** (the standard
+           encourages per-model-family submodels) is rejected outright. The secret
            pipeline -- the enforcement here, the whitespace-preserving validator,
            and ``public_dump``'s masking -- only operates on a ``BaseConfig``'s
            *own* scalar fields, so a secret nested one level down is silently
@@ -435,8 +435,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                     f"annotation {field.annotation!r} is not a scalar "
                     f"SecretStr/SecretBytes (optionally unioned with None). Containers "
                     f"of secrets (e.g. list[SecretStr]) are not masked by the secret "
-                    f"pipeline; model multiple credentials as separate scalar fields "
-                    f"(spec IC.3)."
+                    f"pipeline; model multiple credentials as separate scalar fields."
                 )
             # Guard 2a: fail closed on an annotation pydantic could not resolve at
             # hook time (a define-after submodel left as a bare ForwardRef). Guard 2b
@@ -448,7 +447,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                     f"annotation {field.annotation!r}, so the nested-secret guard "
                     f"cannot verify no credential is buried in it. Define the submodel "
                     f"BEFORE this config (or import it) so it resolves, and keep "
-                    f"credentials as top-level scalar SecretStr fields (spec IC.3)."
+                    f"credentials as top-level scalar SecretStr fields."
                 )
             # Guard 2b: reject a secret marker buried in a nested submodel. It is
             # not threaded through this hook (nested models are not BaseConfig
@@ -460,10 +459,10 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                     raise TypeError(
                         f"{cls.__name__}.{name} reaches a nested submodel whose field "
                         f"{nested.__name__}.{leak_path} is marked secret (secret_field). "
-                        f"The IC.3 secret pipeline masks only a BaseConfig's own scalar "
+                        f"The secret pipeline masks only a BaseConfig's own scalar "
                         f"fields, so a secret nested in a submodel leaks plaintext through "
                         f"public_dump / repr / model_dump. Promote the credential to a "
-                        f"top-level scalar SecretStr field on {cls.__name__} (spec IC.3)."
+                        f"top-level scalar SecretStr field on {cls.__name__}."
                     )
 
     @model_validator(mode="before")
@@ -510,7 +509,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         return mapping
 
     def public_dump(self) -> dict[str, Any]:
-        """Return a serialization with secrets masked (IC.3, the default path).
+        """Return a serialization with secrets masked (the default path).
 
         This is the **masked** half of the secret-serialization contract and is
         the serialization to use for ``/v1/models``, persistence, and telemetry.
@@ -531,7 +530,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         return dumped
 
     def reveal_dump(self) -> dict[str, Any]:
-        """Return a serialization with secrets materialized as plaintext (IC.3).
+        """Return a serialization with secrets materialized as plaintext.
 
         This is the **reveal** half of the secret-serialization contract: the
         explicit, named counterpart to :meth:`public_dump`. Use it **only** for
@@ -561,7 +560,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         environ: Mapping[str, str] | None = None,
         **explicit: Any,
     ) -> _ConfigT:
-        """Construct a config, filling unset fields from the environment (IC.4).
+        """Construct a config, filling unset fields from the environment.
 
         Applies the normative priority **explicit > env > (required-missing
         error)**: each field whose name is **not a key** in ``explicit`` is
@@ -579,7 +578,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         not "explicit-non-None wins"). A wrapper that forwards optional kwargs
         with ``None`` defaults therefore disables the env fallback for those
         fields; drop ``None`` keys before calling (``{k: v for k, v in kwargs
-        if v is not None}``) if env fallback should apply (spec IC.4).
+        if v is not None}``) if env fallback should apply.
 
         The ``engine`` discriminator is never read from the environment; it is
         the entrypoint-derived identity and defaults on each engine's subclass.
@@ -685,7 +684,7 @@ class LanguageConfigMixin(BaseModel):
 
     Args:
         default_language: Default language (BCP-47 or ``"auto"``). Required when
-            the engine exposes a language axis (spec IC.6 / LANG R1).
+            the engine exposes a language axis.
         default_candidate_languages: Default candidate languages.
     """
 

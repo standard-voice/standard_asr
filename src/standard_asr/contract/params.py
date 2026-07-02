@@ -25,8 +25,8 @@ from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .capabilities import WordTimestampGranularityName
-from .language import AUTO, is_valid_bcp47, normalize_bcp47
+from standard_asr.contract.capabilities import WordTimestampGranularityName
+from standard_asr.contract.language import AUTO, is_valid_bcp47, normalize_bcp47
 
 
 class WordTimestampGranularity(str, Enum):
@@ -34,7 +34,7 @@ class WordTimestampGranularity(str, Enum):
 
     The member *values* are the single source of truth shared with the
     declaration-side capability vocabulary
-    :data:`~standard_asr.capabilities.WordTimestampGranularityName` (a
+    :data:`~standard_asr.contract.capabilities.WordTimestampGranularityName` (a
     ``Literal``). A module-level assertion (below) and a drift test bind the
     two sets so an additive change to one cannot silently desync the other.
 
@@ -66,13 +66,13 @@ class ProviderParams(BaseModel):
     Engines publish a subclass (e.g. ``OpenAIParams``) and declare it as their
     expected ``provider_params`` type. Passing one engine's params model to a
     different engine is a validation error (swap-safe), raised as
-    :class:`~standard_asr.exceptions.InvalidProviderParamError` by the engine
+    :class:`~standard_asr.contract.exceptions.InvalidProviderParamError` by the engine
     layer regardless of the strict / best_effort policy.
 
     The swap-safety match is **exact** (``type(provided) is <EngineParams>``),
     not ``isinstance``: every engine MUST publish a distinct *terminal* params
     type, because honoring a subclass would let one engine silently accept
-    another's params and drop the extra knobs (spec §3.2). Inheritance is
+    another's params and drop the extra knobs. Inheritance is
     therefore not a way to declare cross-engine compatibility. This bare base is
     never a valid concrete params model -- declaring it as an engine's
     ``provider_params`` type, or passing a bare instance, is rejected (the latter
@@ -92,20 +92,20 @@ class DiarizationRequest(BaseModel):
     (or the :data:`DIARIZE` convenience constant) requests speaker labels;
     ``diarization=None`` (the default) means not requested. There is **no**
     ``[]``-analogue -- a "requested-but-empty" state is meaningless for an
-    on/off feature, so ``None`` vs an instance is the whole state space (spec
-    §RT 3.4). On the wire the marker maps three ways: ``"diarization": {}``
+    on/off feature, so ``None`` vs an instance is the whole state space. On the
+    wire the marker maps three ways: ``"diarization": {}``
     -> ``DiarizationRequest()``; ``"diarization": null`` -> ``None``; key
     absent -> ``None``.
 
     The model is a deliberately **empty** frozen marker in v1: tuning knobs
     (``num_speakers`` / ``min``/``max`` hints, granularity selection) are
     deferred because today's engine landscape cannot honor them portably --
-    they graduate additively onto this model once support is broad enough
-    (spec §RT 3.4; decision record D1/D8). ``extra="forbid"`` keeps that
+    they graduate additively onto this model once support is broad enough.
+    ``extra="forbid"`` keeps that
     evolution honest: an unknown key (e.g. a client guessing
     ``num_speakers``) fails loudly (a 422 on the wire) instead of being
     silently ignored. An import-time assert in
-    :mod:`standard_asr.param_gating` additionally forces sub-gating to be
+    :mod:`standard_asr.runtime.gating` additionally forces sub-gating to be
     written the moment a field is added here.
 
     Returns:
@@ -119,7 +119,7 @@ class DiarizationRequest(BaseModel):
 
 
 #: Convenience constant for enabling diarization:
-#: ``RuntimeParams(diarization=DIARIZE)``. Parallels :data:`~standard_asr.language.AUTO`
+#: ``RuntimeParams(diarization=DIARIZE)``. Parallels :data:`~standard_asr.contract.language.AUTO`
 #: for the ``language`` field -- the marker carries no state (frozen, no
 #: fields), so one shared instance reads better at call sites than an inline
 #: ``DiarizationRequest()``.
@@ -191,7 +191,7 @@ class RuntimeParams(BaseModel):
         """Reject a malformed language tag at construction (fail-fast).
 
         A malformed tag is an invalid *value*, not an unsupported feature, so --
-        like ``provider_params`` errors (spec Runtime R3) -- it always raises,
+        like ``provider_params`` errors -- it always raises,
         independent of the strict / best_effort policy. This keeps a common
         mistake (passing ``"english"`` instead of ``"en"``) from silently
         reaching the engine. ``"auto"`` (auto-detect) and ``None`` are permitted;
@@ -218,7 +218,8 @@ class RuntimeParams(BaseModel):
         candidate the same always-raise well-formedness contract the scalar
         ``language`` field already has, so a code bug (a native name, ``"auto"``
         in the candidate list) fails loudly at construction instead of lying
-        dormant until the engine/mode happens to reach Language R3 step 4.
+        dormant until the engine/mode happens to reach candidate-language
+        resolution in auto mode.
 
         Args:
             value: The provided candidate-language list, ``[]``, or ``None``.
@@ -309,8 +310,8 @@ def _validate_language_tag(value: str | None) -> str | None:
     if not is_valid_bcp47(value):
         # The raw value MUST NOT be embedded in the message: this error is
         # surfaced verbatim by every transport (CLI, logs, the server's
-        # unauthenticated 422 body -- spec server.md "validation errors never
-        # echo the request input"), and a mis-pasted secret sent as `language`
+        # unauthenticated 422 body, where validation errors never echo the
+        # request input), and a mis-pasted secret sent as `language`
         # would otherwise be reflected back.
         raise ValueError(
             "language tag is not a well-formed BCP-47 language tag "
@@ -325,16 +326,17 @@ def _validate_candidate_language_list(value: list[str] | None) -> list[str] | No
     Mirrors the scalar ``language`` validator's fail-fast contract for each list
     item: a malformed BCP-47 tag or the reserved ``"auto"`` token is an invalid
     *value* (a caller code bug), so it ALWAYS raises here -- independent of the
-    strict / best_effort policy (spec Language R3: such values "MUST ALWAYS raise
-    ValueError"). Without this, a malformed candidate slipped silently past
-    construction and -- because Language R3 step 2 short-circuits an *unsupported*
-    candidate axis to ``None`` + a diagnostic BEFORE step 4's per-item check --
-    could lie dormant until the caller later switched to ``language="auto"`` on a
+    strict / best_effort policy (a malformed value MUST always raise, never be
+    dropped). Without this, a malformed candidate slipped silently past
+    construction and -- because candidate resolution short-circuits an
+    *unsupported* candidate axis to ``None`` + a diagnostic BEFORE the per-item
+    well-formedness check -- could lie dormant until the caller later switched to
+    ``language="auto"`` on a
     supporting engine, defeating fail-fast.
 
     Only well-formedness and the ``"auto"`` ban are enforced here (the same two
     checks that already always-raise inside
-    :func:`~standard_asr.language.effective_candidate_languages`). Membership
+    :func:`~standard_asr.contract.language.effective_candidate_languages`). Membership
     against an engine's ``detectable_languages`` and the ``max`` limit remain
     owned by ``language.py`` (they need engine capabilities, unavailable at
     construction). ``None`` and the empty list ``[]`` (the requested-but-empty
@@ -383,7 +385,7 @@ def _validate_phrase_hints_list(value: list[str] | None) -> list[str] | None:
     whether any term *survived* truncation with ``term in surviving_frame``, and
     ``"" in anything`` is always ``True`` -- so a single ``""`` term would make
     the standard layer falsely report a successful degrade even when every real
-    term was truncated away (spec Runtime R4: never silently degrade). The
+    term was truncated away (never silently degrade). The
     per-term character/word limits could also shrink a term to ``""`` and hand a
     blank string to the engine (undefined input). Refusing blank terms here, at
     construction, removes the whole class loudly.

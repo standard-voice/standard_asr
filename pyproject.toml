@@ -41,15 +41,15 @@ classifiers = [
 ]
 dependencies = [
     # Direct dependencies declare a meaningful, verified lower bound and NO
-    # speculative upper cap (dependency policy D4). Interpreter-conditional numpy
-    # floor (spec DEP.1): numpy 1.x has no cp313 wheel, so 3.13+ needs numpy 2.x.
+    # speculative upper cap. Interpreter-conditional numpy floor: numpy 1.x has
+    # no cp313 wheel, so 3.13+ needs numpy 2.x.
     "numpy>=1.26; python_version < '3.13'",
     "numpy>=2.1; python_version >= '3.13'",
     "pydantic>=2.5",
 ]
 
 [project.scripts]
-standard-asr = "standard_asr.cli:main"
+standard-asr = "standard_asr.toolchain.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/standard-voice/standard_asr"
@@ -100,8 +100,8 @@ server = ["fastapi>=0.118", "python-multipart>=0.0.9", "uvicorn>=0.30", "websock
 [build-system]
 # Cap the build backend: uv_build can introduce breaking sdist/wheel format
 # changes between minors (uv's own build warns without this bound). This governs
-# the BUILD tool, not a runtime dependency, so D4's "no caps on deps" does not
-# apply. Bump deliberately alongside the [tool.uv] required-version.
+# the BUILD tool, not a runtime dependency, so the "no caps on deps" policy does
+# not apply. Bump deliberately alongside the [tool.uv] required-version.
 requires = ["uv-build>=0.11.21,<0.12"]
 build-backend = "uv_build"
 
@@ -173,5 +173,5 @@ line-length = 100
 
 [tool.ruff.lint]
 # NPY201 flags numpy 2.0 removed/renamed APIs so the core stays compatible with
-# both numpy 1.x and 2.x (spec DEP.2). E/F/I/W are baseline lint + import order.
+# both numpy 1.x and 2.x. E/F/I/W are baseline lint + import order.
 select = ["E", "F", "I", "W", "NPY201"]

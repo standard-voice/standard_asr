@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection
 
-from .results import Diagnostic
+from standard_asr.contract.results import Diagnostic
 
 #: Reserved token meaning "let the engine auto-detect the language".
 #: This is NOT a BCP-47 tag; it is a Standard ASR reserved word.
@@ -141,7 +141,7 @@ def is_valid_bcp47(tag: str) -> bool:
 
 
 def validate_detected_language(value: str | None) -> str | None:
-    """Validate and canonicalize a ``detected_language`` value (spec TR.1).
+    """Validate and canonicalize a ``detected_language`` value.
 
     ``detected_language`` is the language an engine *resolved to*, so it must
     be a concrete, well-formed BCP-47 tag -- never the reserved ``auto``
@@ -149,7 +149,7 @@ def validate_detected_language(value: str | None) -> str | None:
     name like ``"English"``. The single shared implementation behind the
     ``TranscriptionResult.detected_language`` and
     ``TranscriptionEvent.detected_language`` field validators: the event field
-    is the spec §6.3 reconnect-continuity mechanism (it feeds the next
+    is the reconnect-continuity mechanism (it feeds the next
     session's ``language``), so the two sides MUST accept exactly the same
     tags or continuity breaks.
 
@@ -185,7 +185,7 @@ def effective_language(
     has_language_axis: bool,
     runtime_override_supported: bool,
 ) -> str | None:
-    """Resolve the language in effect for a request (spec LANG R2).
+    """Resolve the language in effect for a request.
 
     Args:
         request_language: The per-request language, if any.
@@ -214,7 +214,7 @@ def effective_candidate_languages(
     max_count: int | None,
     strict: bool,
 ) -> tuple[list[str] | None, list[Diagnostic]]:
-    """Resolve the candidate languages in effect for a request (spec LANG R3).
+    """Resolve the candidate languages in effect for a request.
 
     Args:
         effective_lang: The resolved effective language.
@@ -249,7 +249,7 @@ def effective_candidate_languages(
         return None, diagnostics
 
     # Select the effective list (request overrides default) BEFORE the
-    # supported check. R3 step 2's "candidate languages ignored" diagnostic
+    # supported check. The "candidate languages ignored" diagnostic
     # asserts that something *was* ignored, so it MUST NOT fire when nothing was
     # provided: with no list there is nothing to ignore, and emitting a warning
     # anyway injects a false diagnostic into the most common path (an
@@ -277,7 +277,7 @@ def effective_candidate_languages(
         )
         return None, diagnostics
 
-    # R3 step 4 ordering: dedup-preserving-order FIRST, then validate each
+    # Ordering: dedup-preserving-order FIRST, then validate each
     # surviving entry. Deduplicating before membership ensures a repeated
     # non-detectable candidate is reported (or dropped) exactly once.
     deduped: list[str] = []
@@ -300,8 +300,8 @@ def effective_candidate_languages(
         norm = normalize_bcp47(tag)
         # 'auto' is a directive, not a candidate; its presence is a caller bug,
         # so it ALWAYS raises -- independent of strict/best_effort -- mirroring
-        # the provider_params "always-raise on a code bug" policy (R3 step 4 /
-        # language design note: candidate_languages MUST NOT contain 'auto').
+        # the provider_params "always-raise on a code bug" policy
+        # (candidate_languages MUST NOT contain 'auto').
         # Compare AFTER normalization so 'AUTO'/'Auto'/'auto' are all rejected
         # with this explicit reason, not misreported as "not detectable".
         if norm == AUTO:

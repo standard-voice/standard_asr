@@ -11,8 +11,7 @@ The discriminated union has six variants -- :class:`AudioPath`,
 :class:`AudioBytes`, :class:`AudioArray`, :class:`AudioUrl`,
 :class:`AudioBase64` and :class:`AudioStorageUri`. Discrimination is based on
 the *explicit type tag*, never
-on sniffing the content of a string (see the normative spec, section
-"Audio Input & Sample Rate", rule R1). A bare ``str`` is **always** treated as a
+on sniffing the content of a string. A bare ``str`` is **always** treated as a
 local file path; a URL or base64 payload MUST be wrapped explicitly in
 :class:`AudioUrl` / :class:`AudioBase64`. This removes all ambiguity and is a
 deliberate security boundary against SSRF via attacker-controlled strings.
@@ -91,7 +90,7 @@ class AudioArray:
 
     Unlike the other variants, an array does not self-describe its sample rate.
     When ``sample_rate`` is ``None`` the global strict / best_effort policy
-    decides whether to raise or assume the canonical 16 kHz (see spec R6).
+    decides whether to raise or assume the canonical 16 kHz.
 
     ``eq`` is disabled because NumPy arrays do not support scalar equality;
     instances therefore compare by identity.
@@ -123,7 +122,7 @@ class AudioArray:
         construction makes the application bug (a unit/shape mix-up) loud and
         engine-independent, matching ``AudioFormat.sample_rate``'s ``gt=0`` and
         the dtype check above. ``None`` (rate unknown) stays valid: it is
-        resolved by the R6 strict/best_effort policy downstream. The number of
+        resolved by the strict/best_effort sample-rate policy downstream. The number of
         samples is **not** constrained here -- an empty array can be a legitimate
         passthrough boundary input, so emptiness is handled (where it actually
         matters) at resample time, not rejected at construction.
@@ -156,8 +155,8 @@ class AudioUrl:
     The semantics are "the server can fetch this". Security constraints
     (HTTPS-only, private/loopback/link-local-address rejection) are enforced
     before the URL is forwarded to an engine, by
-    :func:`standard_asr.audio_negotiation.validate_fetchable_url` at plan
-    execution (spec R5). In v1 the standard never fetches the URL itself.
+    :func:`standard_asr.audio.negotiation.validate_fetchable_url` at plan
+    execution. In v1 the standard never fetches the URL itself.
 
     Args:
         value: The remote URL.
@@ -258,7 +257,7 @@ AudioInputLike = Union[
 def coerce_audio_input(value: AudioInputLike) -> AudioInput:
     """Coerce a bare Python value into an explicit :data:`AudioInput` variant.
 
-    The coercion is a *closed* convenience mapping (spec, section AI section 3.1):
+    The coercion is a *closed* convenience mapping:
 
     =========================  ==========================================
     Bare type                  Coerced to

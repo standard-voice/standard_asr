@@ -4,11 +4,11 @@
 """Canonical streaming wire encoding and PCM codec.
 
 This module is the **single source of truth** for the ``float32`` <-> 16-bit PCM
-conversion the streaming wire protocol is pinned to (spec "Audio Input & Sample
-Rate", rule R4). The conversion is byte-pinned so that every language's wire
-implementation produces identical PCM and a cross-language conformance test sees
-no ``+-1`` LSB noise; defining it once here (rather than letting each engine
-re-derive it) is what keeps the Python and wire layers isomorphic (goal G.5.2).
+conversion the streaming wire protocol is pinned to. The conversion is byte-pinned
+so that every language's wire implementation produces identical PCM and a
+cross-language conformance test sees no ``+-1`` LSB noise; defining it once here
+(rather than letting each engine re-derive it) is what keeps the Python and wire
+layers isomorphic across languages.
 
 Public surface:
 
@@ -36,7 +36,7 @@ from typing import Final
 import numpy as np
 from numpy.typing import NDArray
 
-from .exceptions import AudioProcessingError
+from standard_asr.contract.exceptions import AudioProcessingError
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +90,9 @@ def to_int16_pcm(audio: NDArray[np.floating]) -> tuple[NDArray[np.int16], int]:
     silent-wrong-result. This mirrors the decode paths, which already sanitize.
     The count of replaced samples is returned so the caller can emit a
     ``non_finite_audio`` diagnostic (the sanitize is correct and necessary, but
-    the *fact* that it happened MUST be visible to the caller -- spec R3 /
-    explicit > implicit). Clipping then happens *before* the cast (NumPy 1.x/2.x
-    defensive; see the dependencies spec section DEP.2), and quantization uses
+    the *fact* that it happened MUST be visible to the caller -- explicit over
+    implicit). Clipping then happens *before* the cast (NumPy 1.x/2.x
+    defensive), and quantization uses
     round-half (``np.rint``) rather than truncation so the canonical encoder's
     quantization error stays bounded by 0.5 LSB instead of 1 LSB.
 
@@ -114,7 +114,7 @@ def to_int16_pcm(audio: NDArray[np.floating]) -> tuple[NDArray[np.int16], int]:
 def pcm16_encode(samples: NDArray[np.floating]) -> bytes:
     """Encode a float waveform in ``[-1, 1]`` to canonical ``pcm_s16le`` bytes.
 
-    The canonical streaming wire encoding (spec R4): clip to ``[-1, 1]``,
+    The canonical streaming wire encoding: clip to ``[-1, 1]``,
     quantize with round-half (``x 32767``), serialize **little-endian**. Non-finite
     samples are sanitized (NaN->0, +-Inf->+-full-scale) so the cast never emits
     garbage. An empty array encodes to ``b""``. Use this in a streaming engine
@@ -135,7 +135,7 @@ def pcm16_encode(samples: NDArray[np.floating]) -> bytes:
     pcm, _sanitized = to_int16_pcm(array)
     # Pin little-endian (`<i2`) regardless of host byte order; `tobytes()` would
     # otherwise use native order and a big-endian host would emit byte-swapped
-    # samples under a pcm_s16le label (spec R4).
+    # samples under a pcm_s16le label.
     return pcm.astype("<i2").tobytes()
 
 

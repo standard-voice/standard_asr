@@ -52,7 +52,7 @@ def validate_speaker_label(value: str | None) -> str | None:
     """Validate a speaker label at construction (shared by every ``speaker`` field).
 
     One rule for :class:`Segment`, :class:`Word`, and
-    :class:`~standard_asr.streaming.TranscriptionEvent` (spec TR.5): a label
+    :class:`~standard_asr.runtime.streaming.TranscriptionEvent`: a label
     must be non-empty, not whitespace-only, and carry no leading/trailing
     whitespace. ``""`` would be an undefined third state between ``None``
     (no attribution) and a real label; edge whitespace (``"A "`` vs ``"A"``)
@@ -95,8 +95,8 @@ class Word(BaseModel):
 
     Note:
         Time is measured in float seconds with the origin at the first submitted
-        sample (audio time ``t=0``), the same origin as the streaming cursor
-        (spec TR.2 / ST). ``start`` / ``end`` are therefore non-negative finite
+        sample (audio time ``t=0``), the same origin as the streaming cursor.
+        ``start`` / ``end`` are therefore non-negative finite
         floats and ``end >= start`` (a zero-duration span is allowed). NaN / Inf
         are rejected (``allow_inf_nan=False``). Adapters convert ms /
         protobuf-duration / ticks into this frame; a negative or inverted span is
@@ -164,7 +164,7 @@ class Word(BaseModel):
         """Reject an inverted span (``end < start``) at construction.
 
         ``ge=0`` and ``allow_inf_nan=False`` already constrain each bound to a
-        non-negative finite value; this enforces the remaining TR.2 invariant
+        non-negative finite value; this enforces the remaining invariant
         that a span never runs backwards. Equal bounds (zero duration) are
         allowed.
 
@@ -186,7 +186,7 @@ class Segment(BaseModel):
         ``start`` / ``end`` follow the same time frame as :class:`Word`:
         non-negative finite float seconds with origin at the first submitted
         sample (``t=0``), ``end >= start`` (zero-duration allowed), and NaN / Inf
-        rejected (spec TR.2). Within one channel segments are time-ordered; the
+        rejected. Within one channel segments are time-ordered; the
         top-level :class:`TranscriptionResult.segments` are sorted by
         ``(start, channel, speaker)`` (cross-channel spans may overlap).
         ``speaker`` is the final tie-break for equal-``(start, channel)``
@@ -245,7 +245,7 @@ class Segment(BaseModel):
 
         Delegates to :func:`validate_speaker_label` -- the shared rule for
         every ``speaker`` field. ``Segment.speaker`` is the authoritative
-        diarization shape (spec TR.5), so a malformed label here is the most
+        diarization shape, so a malformed label here is the most
         damaging: it would flow into renderers and reducers as a phantom
         speaker.
 
@@ -265,7 +265,7 @@ class Segment(BaseModel):
         """Reject an inverted span (``end < start``) at construction.
 
         ``ge=0`` and ``allow_inf_nan=False`` already constrain each bound to a
-        non-negative finite value; this enforces the remaining TR.2 invariant
+        non-negative finite value; this enforces the remaining invariant
         that a span never runs backwards. Equal bounds (zero duration) are
         allowed.
 
@@ -281,7 +281,7 @@ class Segment(BaseModel):
 
 
 def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
-    """Derive a segment-level speaker label from its words (spec TR.5 pinned rule).
+    """Derive a segment-level speaker label from its words (the pinned synthesis rule).
 
     THE single synthesis rule of the standard layer, used when an engine
     populates ``Word.speaker`` but leaves the authoritative ``Segment.speaker``
@@ -295,7 +295,7 @@ def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
 
     This function is deliberately the ONLY implementation -- both the batch
     post-processing (``EngineBase.transcribe``) and the streaming reducer
-    (:class:`~standard_asr.streaming.StreamReducer`) call it, never a private
+    (:class:`~standard_asr.runtime.streaming.StreamReducer`) call it, never a private
     copy. Portability demands it: the same engine and audio MUST yield the same
     ``Segment.speaker`` whether the app took the batch or the streaming path;
     two drifting copies of the rule would silently break that promise.
@@ -364,7 +364,7 @@ class TranscriptionResult(BaseModel):
             ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
         duration: Audio duration in seconds, if known (non-negative, finite).
-        segments: Segments across all channels, if available. Per spec TR.2 they
+        segments: Segments across all channels, if available. They
             SHOULD be sorted by ``(start, channel, speaker)`` (monotonic within
             a channel; ``speaker`` is the final tie-break, ``None`` sorting
             first); this ordering is an **engine obligation**, neither enforced
@@ -374,7 +374,7 @@ class TranscriptionResult(BaseModel):
             safety net.
         words: Flattened word-level details, if available.
         channels: Per-channel results when channel separation was performed. Each
-            ``channel`` index MUST be unique (TR.4: one entry per channel),
+            ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
         diagnostics: Conversion / best_effort / degradation diagnostics.
         metadata: Standardized engine-agnostic metadata.
@@ -423,14 +423,14 @@ class TranscriptionResult(BaseModel):
     @field_validator("detected_language")
     @classmethod
     def _check_detected_language(cls, value: str | None) -> str | None:
-        """Validate and canonicalize ``detected_language`` (spec TR.1).
+        """Validate and canonicalize ``detected_language``.
 
         Delegates to the shared
-        :func:`~standard_asr.language.validate_detected_language` -- the same
+        :func:`~standard_asr.contract.language.validate_detected_language` -- the same
         rule as ``TranscriptionEvent.detected_language``, because the event
-        field feeds the next session's ``language`` (§6.3 reconnect
+        field feeds the next session's ``language`` (reconnect
         continuity) and the two sides MUST accept exactly the same tags. The
-        import is deferred because :mod:`standard_asr.language` imports from
+        import is deferred because :mod:`standard_asr.contract.language` imports from
         this module.
 
         Args:
@@ -443,25 +443,25 @@ class TranscriptionResult(BaseModel):
             ValueError: If ``value`` is the reserved ``"auto"`` token or is not a
                 well-formed BCP-47 tag.
         """
-        from .language import validate_detected_language
+        from standard_asr.contract.language import validate_detected_language
 
         return validate_detected_language(value)
 
     @model_validator(mode="after")
     def _check_top_level_derivable_from_channels(self) -> TranscriptionResult:
-        """Reject channel shapes the spec forbids (TR.4): duplicates and lossy top level.
+        """Reject channel shapes the spec forbids: duplicates and lossy top level.
 
-        Two construct-time TR.4 invariants over ``channels`` (cheap to check in
+        Two construct-time invariants over ``channels`` (cheap to check in
         the single pass that already walks the list):
 
-        1. **Unique channel index.** TR.4 defines ``channels`` as one
+        1. **Unique channel index.** The standard defines ``channels`` as one
            ``ChannelResult`` *per channel*, so two entries with the same
            ``channel`` index is a semantically illegal shape (which channel's
            ``text`` wins? how does the "top level derivable from channels"
            invariant resolve the ambiguity?). A consumer keying a dict by
            ``channel`` index would silently lose one entry, so the model refuses
            to represent the duplicate.
-        2. **Top level derivable from channels.** TR.4 promises that ignoring
+        2. **Top level derivable from channels.** The standard promises that ignoring
            ``channels`` is always safe and lossless: when ``channels`` is
            present, the top-level fields are the time-merge of all channels. A
            result whose channel entries carry ``segments`` / ``words`` while the
@@ -470,10 +470,10 @@ class TranscriptionResult(BaseModel):
            constant top-level ``segments``) would silently lose all per-channel
            detail. That shape is an engine bug, so the model refuses it.
 
-        The complementary TR.2 ordering invariant (top-level ``segments`` sorted
+        The complementary ordering invariant (top-level ``segments`` sorted
         by ``(start, channel, speaker)``, monotonic within a channel) is
         intentionally *not* enforced here: the streaming reducer
-        (:class:`~standard_asr.streaming.StreamReducer`) legitimately preserves
+        (:class:`~standard_asr.runtime.streaming.StreamReducer`) legitimately preserves
         arrival order for timestamp-less engines and sorts only by ``start``
         (no channel/speaker tie-break), so a strict ``(start, channel,
         speaker)`` construct-time check would reject valid reduced results. For
@@ -495,7 +495,7 @@ class TranscriptionResult(BaseModel):
                 if entry.channel in seen:
                     raise ValueError(
                         f"channels contains duplicate entries for channel index "
-                        f"{entry.channel}; spec TR.4 defines channels as one ChannelResult "
+                        f"{entry.channel}; the standard defines channels as one ChannelResult "
                         f"per channel, so each channel index MUST be unique (a duplicate "
                         f"makes the top-level merge ambiguous and silently drops data for "
                         f"consumers keyed by channel)."
@@ -507,7 +507,7 @@ class TranscriptionResult(BaseModel):
                 ):
                     raise ValueError(
                         f"channels entries carry {name} but the top-level {name} is None; "
-                        f"spec TR.4 requires the top level to be derivable from channels "
+                        f"the standard requires the top level to be derivable from channels "
                         f"(ignoring channels must be lossless). Populate the top-level "
                         f"{name} with the time-merged union of all channels' {name}."
                     )

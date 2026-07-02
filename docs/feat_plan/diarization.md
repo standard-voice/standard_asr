@@ -16,12 +16,12 @@ Builds on and must stay consistent with:
 - `docs/spec/specification.md` — §Capabilities (DiarizationCap), §Runtime
   Parameters (RuntimeParams), §Transcription Result (TR.5 speaker reserve),
   §Streaming (TranscriptionEvent).
-- `src/standard_asr/capabilities.py` — `DiarizationCap`,
+- `src/standard_asr/contract/capabilities.py` — `DiarizationCap`,
   `DiarizationConstraints`, `BatchCapabilities.diarization`.
-- `src/standard_asr/results.py` — `Segment.speaker`, `Word.speaker`.
-- `src/standard_asr/runtime_params.py` — `RuntimeParams` (closed, no
+- `src/standard_asr/contract/results.py` — `Segment.speaker`, `Word.speaker`.
+- `src/standard_asr/contract/params.py` — `RuntimeParams` (closed, no
   diarization field yet).
-- `src/standard_asr/streaming.py` — `TranscriptionEvent` (no speaker field),
+- `src/standard_asr/runtime/streaming.py` — `TranscriptionEvent` (no speaker field),
   `StreamReducer` (does not propagate speaker).
 
 ---
@@ -343,7 +343,7 @@ No new streaming-specific diarization capabilities needed:
 > bad data. `""` is a third, undefined state (neither `None` "not determined"
 > nor a real label) and breaks the design's own "labels consistent" requirement
 > and any `"" ∈ label` check. `phrase_hints` already has exactly this validator
-> (`runtime_params.py:330-364`) for the identical reason. **Add a
+> (`contract/params.py:330-364`) for the identical reason. **Add a
 > `field_validator` rejecting empty, whitespace-only, AND whitespace-padded
 > `speaker`** (R4-F tightening: `"A "` and `"A"` are two different strings =
 > two different speakers under the consistency rule, so one adapter
@@ -389,7 +389,7 @@ to the Round-2 formulation:
    layer. The streaming side already lives in the reducer (D4); the batch
    side belongs in the `EngineBase.transcribe` template's result
    post-processing (the template already wraps `_transcribe` and attaches
-   diagnostics — `asr_interface.py:388`), same philosophy as the renderers'
+   diagnostics — `runtime/interface.py:388`), same philosophy as the renderers'
    defensive re-sort: implemented once, consistent everywhere, zero
    per-adapter cost. Adapters MAY pre-populate `Segment.speaker` themselves
    (native segment-level engines do); the standard layer synthesizes only
@@ -606,17 +606,17 @@ context (the `<v>` tag's annotation text has its own constraints per W3C spec
 
 | Change | File(s) | Complexity |
 |---|---|---|
-| `DiarizationRequest` model + `DIARIZE` constant | `runtime_params.py` | Low |
-| `diarization` on `RuntimeParams` + `WireRuntimeParams` | `runtime_params.py` | Low (drift guard; MUST update both in same commit) |
-| `accepts_speaker_count_hint: bool` on `DiarizationConstraints` | `capabilities.py` | Low (bool on constraints + `_node_narrows` bool branch) |
-| `diarization` on `StreamingCapabilities` | `capabilities.py` | Low |
-| `speaker` on `TranscriptionEvent` | `streaming.py` | Low |
-| `StreamReducer` speaker propagation (line ~538) | `streaming.py` | Low |
-| Gating entry + `_gate_diarization()` (novel `model_copy` pattern) | `param_gating.py` | Moderate |
+| `DiarizationRequest` model + `DIARIZE` constant | `contract/params.py` | Low |
+| `diarization` on `RuntimeParams` + `WireRuntimeParams` | `contract/params.py` | Low (drift guard; MUST update both in same commit) |
+| `accepts_speaker_count_hint: bool` on `DiarizationConstraints` | `contract/capabilities.py` | Low (bool on constraints + `_node_narrows` bool branch) |
+| `diarization` on `StreamingCapabilities` | `contract/capabilities.py` | Low |
+| `speaker` on `TranscriptionEvent` | `runtime/streaming.py` | Low |
+| `StreamReducer` speaker propagation (line ~538) | `runtime/streaming.py` | Low |
+| Gating entry + `_gate_diarization()` (novel `model_copy` pattern) | `runtime/gating.py` | Moderate |
 | `include_speakers` on renderers + sanitization ordering | `renderers.py` | Moderate |
-| Wire model update | `wire.py` (if separate) or `server.py` | Low |
+| Wire model update | `audio/wire.py` (if separate) or `toolchain/server.py` | Low |
 | `__init__.py` re-exports | `__init__.py` | Trivial |
-| Batch segment-speaker synthesis (pinned rule, R4-D) | `asr_interface.py` (`EngineBase.transcribe` post-processing) | Low–Moderate |
+| Batch segment-speaker synthesis (pinned rule, R4-D) | `runtime/interface.py` (`EngineBase.transcribe` post-processing) | Low–Moderate |
 | Tests | `tests/test_*.py` | Moderate–High |
 | Spec update (§Capabilities tree + §Runtime Params + TR.5 + §Streaming + TR.1/TR.3 always-on exemption) | `docs/spec/specification.md` | High (normative text) |
 | Compliance tests (incl. batch-only vs streaming-only diarization; batch + streaming `*_exceeds_diarization` cross-checks) | `compliance.py` | Moderate |
@@ -632,7 +632,7 @@ context (the `<v>` tag's annotation text has its own constraints per W3C spec
    `diarization` to `StreamingCapabilities`, add `speaker` to
    `TranscriptionEvent`. **Simultaneously** update `RuntimeParams` +
    `WireRuntimeParams` (same commit — drift guard enforces).
-3. **Gating** — `_gate_diarization()` in `param_gating.py`. Uses
+3. **Gating** — `_gate_diarization()` in `runtime/gating.py`. Uses
    `node_at("<mode>.diarization").constraints.accepts_speaker_count_hint` for hint acceptance (the `_gate_granularity` pattern). Uses
    `DiarizationRequest.model_copy(update={"num_speakers": None})` for sub-
    object mutation. Add `DiarizationRequest` field drift guard. Position in
@@ -889,7 +889,7 @@ incorporated into this document and `diarization-decisions.md`.
 **R4-A — Decision-1 wire blind spot (analysis gap).** Deferring
 `num_speakers` to `provider_params` removes it from the wire entirely:
 `WireRuntimeParams` rejects `provider_params` by design (discover-only,
-`runtime_params.py:369-404`), so HTTP/WS cross-language clients have NO
+`contract/params.py:369-404`), so HTTP/WS cross-language clients have NO
 count-hint channel until graduation. This is a systemic property of
 `provider_params`, not diarization-specific, but under G.5 ("wire contract
 as first-class spec") it MUST be a recorded cost of the defer option, and

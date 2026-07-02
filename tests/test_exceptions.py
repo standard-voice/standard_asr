@@ -12,7 +12,7 @@ attribute values were otherwise unasserted).
 
 from __future__ import annotations
 
-from standard_asr.exceptions import (
+from standard_asr.contract.exceptions import (
     ConfigError,
     InvalidProviderParamError,
     StandardASRError,

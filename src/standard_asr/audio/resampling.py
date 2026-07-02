@@ -4,9 +4,9 @@
 """Anti-aliasing sample-rate conversion.
 
 The standard never hard-fails on a sample-rate mismatch: it always has a
-numpy-only, anti-aliasing fallback resampler (spec, section "Audio Input &
-Sample Rate", rule R8). The fallback is a clean-room Fourier-domain resampler
-(no vendored SoX/soxr), which is inherently band-limited and so anti-aliasing --
+numpy-only, anti-aliasing fallback resampler. The fallback is a clean-room
+Fourier-domain resampler (no vendored SoX/soxr), which is inherently
+band-limited and so anti-aliasing --
 never naive linear interpolation or decimation. When the optional ``[audio]``
 extra provides a higher-quality resampler, engines/the loader may use it on the
 hot path instead; the fallback exists so a missing extra is never fatal.
@@ -14,7 +14,7 @@ hot path instead; the fallback exists so a missing extra is never fatal.
 Algorithm note: :func:`_resample_fourier` re-derives the standard band-limited
 Fourier-resampling algorithm (the same approach ``scipy.signal.resample`` uses).
 The algorithm is not copyrightable; this is an independent implementation and no
-SoX/soxr/libsamplerate code is vendored (spec R8, design decision D3). It matches
+SoX/soxr/libsamplerate code is vendored. It matches
 ``scipy.signal.resample`` to floating-point precision for both even- and
 odd-length transforms.
 """
@@ -41,7 +41,7 @@ def resample_with_backend(
     importable; otherwise the built-in numpy anti-aliasing Fourier fallback is
     used. The chosen backend is returned so callers can emit a truthful
     ``resampled_with`` diagnostic (only label it ``fallback`` when the fallback
-    actually ran -- spec R8).
+    actually ran).
 
     Args:
         audio: Float waveform array (1D or 2D along axis 0).
@@ -70,7 +70,7 @@ def resample_with_backend(
         # ImportError when [audio] is absent; other import-time errors (e.g. a
         # broken/partially-initialized scipy build) are also non-fatal here -- a
         # crashing optional dependency MUST degrade to the built-in fallback, not
-        # propagate (battery-included DX, spec R8).
+        # propagate (battery-included DX).
         return resample(array, orig_sr, target_sample_rate), "fallback"
 
     g = gcd(orig_sr, target_sample_rate)

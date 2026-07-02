@@ -12,8 +12,8 @@ import typing
 import pytest
 from pydantic import BaseModel
 
-from standard_asr import capabilities as cap_module
-from standard_asr.capabilities import (
+from standard_asr.contract import capabilities as cap_module
+from standard_asr.contract.capabilities import (
     _MAX_CONSTRAINT_FIELDS,  # pyright: ignore[reportPrivateUsage]
     _MODE_REDUCTIONS,  # pyright: ignore[reportPrivateUsage]
     BatchCapabilities,
@@ -525,7 +525,7 @@ def test_dict_node_supported_is_strict_boolean() -> None:
 
 def test_dict_node_mode_does_not_override_explicit_supported_false() -> None:
     # An explicit `supported: false` is authoritative: a `mode` sub-key on the
-    # same node MUST NOT raise it back to true (fail-closed, spec §C R6). A node
+    # same node MUST NOT raise it back to true (fail-closed). A node
     # carrying only `mode` (no `supported`) still derives from the mode.
     caps = _x_caps(
         {
@@ -546,7 +546,7 @@ def test_dict_node_mode_is_strict_string() -> None:
     # non-string (bool, number, None) is a malformed declaration and is
     # fail-CLOSED to False, never silently promoted to supported. Without the type
     # guard, `True`/`1` would pass the `not in {off-modes}` frozenset check (the
-    # off-modes are strings) and be wrongly reported as supported (spec §C R1).
+    # off-modes are strings) and be wrongly reported as supported.
     caps = _x_caps(
         {
             "x_mode_true": {"mode": True},
@@ -646,7 +646,7 @@ def test_traversal_helpers_handle_non_container_nodes() -> None:
 def test_canonical_json_injects_derived_supported() -> None:
     import json
 
-    from standard_asr.capabilities import FinalityCap
+    from standard_asr.contract.capabilities import FinalityCap
 
     caps = DeclaredCapabilities(
         batch=BatchCapabilities(),
@@ -675,7 +675,7 @@ def test_canonical_json_injects_derived_supported() -> None:
 
 
 def test_canonical_json_preserves_unknown_extra_keys() -> None:
-    # Containers tolerate unknown keys (R6 forward-compat); canonical JSON passes
+    # Containers tolerate unknown keys (forward-compat); canonical JSON passes
     # them through, including nested dict values, without injecting supported.
     caps = DeclaredCapabilities.model_validate(
         {"batch": {"x_vendor": {"flavor": "fast"}, "streaming_input": True}}
@@ -738,7 +738,7 @@ def test_bare_x_star_dict_is_fail_closed_and_two_layer_consistent() -> None:
 
 def test_self_resamples_is_declarable_engine_global_flag() -> None:
     # `self_resamples` is the one behavioural capability the spec places
-    # in Capabilities (spec §AI 3.2, §C R7). It is engine-global, queried via
+    # in Capabilities. It is engine-global, queried via
     # `supports("self_resamples")` like streaming_input/streaming_output, and is
     # informational only -- it does not change any resampling decision.
     declared = DeclaredCapabilities(self_resamples=FlagCap(supported=True))
@@ -752,7 +752,7 @@ def test_self_resamples_is_declarable_engine_global_flag() -> None:
 
 
 def test_mutable_mid_stream_is_a_queryable_streaming_guidance_flag() -> None:
-    # Spec §RT 3.3's `mutable_mid_stream` declaration site is a FlagCap
+    # The `mutable_mid_stream` declaration site is a FlagCap
     # node on the STREAMING guidance family, queryable via supports(). Default is
     # fail-closed (session-locked); an engine may declare it true.
     default = DeclaredCapabilities(streaming=StreamingCapabilities())
@@ -815,7 +815,7 @@ def test_streaming_capabilities_accepts_plain_guidance_caps() -> None:
 
 
 def test_mutable_mid_stream_survives_json_round_trip() -> None:
-    # mission M.1.2: a mutable_mid_stream declared true must survive
+    # Two-layer isomorphism: a mutable_mid_stream declared true must survive
     # the wire round-trip (canonical_json -> model_validate) and remain queryable.
     # Pre-fix the dict path coerced guidance to the base type, so the flag landed
     # in model_extra and supports() reported False while the wire said True.
@@ -919,8 +919,8 @@ def test_max_constraint_fields_registry_covers_every_bounded_field() -> None:
     # upper-bound invariant by iterating the hand-maintained _MAX_CONSTRAINT_FIELDS
     # frozenset. If a future constraints submodel adds a new max_* upper bound but
     # forgets to register it, covers() would SILENTLY stop rejecting a widening of
-    # that field (a fail-open the compliance suite then misses, spec §C R3 makes
-    # adding constraint fields the expected evolution path). Walk every
+    # that field (a fail-open the compliance suite then misses; adding new
+    # constraint fields is an expected evolution path). Walk every
     # *Constraints submodel and assert each upper-bound int field is registered.
     unregistered: list[str] = []
     for name, obj in vars(cap_module).items():
@@ -1110,7 +1110,7 @@ def test_diarization_covers_narrowing() -> None:
 
 
 def test_diarization_survives_json_round_trip() -> None:
-    # Mission M.1.2 stance: the wire view (canonical_json -> model_validate)
+    # Two-layer isomorphism stance: the wire view (canonical_json -> model_validate)
     # must preserve supported AND always_on, and remain queryable/typed.
     declared = DeclaredCapabilities(
         streaming=StreamingCapabilities(

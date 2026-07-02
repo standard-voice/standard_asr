@@ -30,8 +30,8 @@ Key points and contract:
 - Output shape is `(n_samples,)` for mono, `(n_samples, n_channels)` for multi.
 - Resampling prefers ``scipy.signal.resample_poly`` when scipy is installed
   (the ``[audio]`` extra); when it is missing, it degrades to the built-in
-  numpy-only anti-aliasing Fourier resampler (a missing extra is never fatal,
-  spec AI R8) -- it does NOT fall back to FFmpeg for resampling.
+  numpy-only anti-aliasing Fourier resampler (a missing extra is never fatal)
+  -- it does NOT fall back to FFmpeg for resampling.
 - Channel handling:
   - Downmix to mono uses arithmetic mean.
   - Upmix replicates channels (e.g., 1 -> 2).
@@ -46,7 +46,7 @@ Dependencies and fallbacks:
 
 Decoding and resampling are independent fallbacks. A missing `scipy` only
 affects resampling quality -- the built-in numpy anti-aliasing fallback keeps
-resampling working (spec AI R8), so the loader never falls back to FFmpeg merely
+resampling working, so the loader never falls back to FFmpeg merely
 because `scipy` is absent. FFmpeg is reached only when neither stdlib `wave` nor
 `soundfile` can decode the container.
 
@@ -67,16 +67,16 @@ from typing import Any, BinaryIO, Literal, TypeGuard, cast, overload
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
-from ..exceptions import (
+from standard_asr.audio.wire import pcm16_decode
+from standard_asr.contract.exceptions import (
     AudioProcessingError,
     FFmpegNotFoundError,
 )
-from ..wire import pcm16_decode
 
 logger = logging.getLogger(__name__)
 
 #: Hard ceiling (bytes) on a single buffered payload when no engine limit is
-#: supplied (spec R9). 2 GiB comfortably covers multi-hour PCM while bounding
+#: supplied. 2 GiB comfortably covers multi-hour PCM while bounding
 #: memory. Serves two distinct bounds: the default cap on a buffered **encoded**
 #: input (see :func:`_enforce_decode_size`), and the dedicated **decoded-output**
 #: ceiling applied by every decode backend (the stdlib WAV header guard, the
@@ -158,8 +158,8 @@ def _base64_payload(value: str) -> str:
 
     Shared by :func:`decode_base64_audio` and the same-named gate-and-decode
     helper ``_decode_base64_bounded`` in both this module and the conversion
-    layer (they bind different size contracts -- R9 decode cap vs R4 engine
-    ``max_file_size`` -- but parse a ``data:`` URI identically) so every entry
+    layer (they bind different size contracts -- the decode-size cap vs the
+    engine ``max_file_size`` -- but parse a ``data:`` URI identically) so every entry
     point applies exactly the same ``data:``-URI parse rules (single source of
     truth).
 
@@ -209,7 +209,7 @@ def _estimate_payload_decoded_size(payload: str) -> int:
 
 
 def _decode_base64_bounded(value: str, max_bytes: int | None) -> bytes:
-    """Size-gate (pre-decode, spec R9) and decode a base64 payload in one step.
+    """Size-gate (pre-decode) and decode a base64 payload in one step.
 
     The gate and the decode travel together so a base64-accepting loader path
     cannot take the decode without the gate: the decoded size is estimated
@@ -240,8 +240,8 @@ def _decode_base64_bounded(value: str, max_bytes: int | None) -> bytes:
 def _validate_local_source_path(path: str) -> str:
     """Validate and absolutize a local file path before handing it to ffmpeg.
 
-    This is the file-input half of the bare-str-never-URL defense (design
-    decision D1): ffmpeg must only ever open a real local file, never a network
+    This is the file-input half of the bare-str-never-URL defense: ffmpeg must
+    only ever open a real local file, never a network
     URL (``http://``, ``tcp://``), a protocol-chaining input (``concat:``,
     ``data:``) or an option-injection string (a leading ``-``).
 
@@ -264,7 +264,7 @@ def _validate_local_source_path(path: str) -> str:
     try:
         is_file = resolved.is_file()
     except OSError as exc:
-        # A bare str is always a local path (never sniffed -- spec R1), so a
+        # A bare str is always a local path (never sniffed), so a
         # long ``data:``/base64 string reaches here and ``is_file()`` raises
         # ENAMETOOLONG (or another path OSError). Re-raise as the module's
         # contract error so it does not escape decode_audio()/execute_plan()'s
@@ -299,7 +299,7 @@ def _enforce_path_decode_size(path: str, max_bytes: int | None) -> None:
         max_bytes: The encoded-size cap, or ``None`` for unbounded.
 
     Raises:
-        AudioProcessingError: If the file exceeds ``max_bytes`` (spec R9) or
+        AudioProcessingError: If the file exceeds ``max_bytes`` or
             became unreadable between validation and ``stat``.
     """
     try:
@@ -312,7 +312,7 @@ def _enforce_path_decode_size(path: str, max_bytes: int | None) -> None:
 
 
 def _enforce_decode_size(num_bytes: int, max_bytes: int | None) -> None:
-    """Raise if a buffered **encoded** payload exceeds the size cap (spec R9).
+    """Raise if a buffered **encoded** payload exceeds the size cap.
 
     Honesty note: this bounds only the size of the ENCODED input (a file's
     ``st_size`` or ``len(bytes)``) before it is buffered. It does NOT bound the
@@ -344,7 +344,7 @@ def _enforce_decode_size(num_bytes: int, max_bytes: int | None) -> None:
 
 
 class _WavAllocationGuardError(AudioProcessingError):
-    """A WAV header declared a frame count that would over-allocate (spec R9).
+    """A WAV header declared a frame count that would over-allocate.
 
     A dedicated subclass so the stdlib WAV decode paths can re-raise it past
     their broad ``except AudioProcessingError`` fallback: a header-declared
@@ -355,7 +355,7 @@ class _WavAllocationGuardError(AudioProcessingError):
 
 
 class _DecodedOutputCeilingError(AudioProcessingError):
-    """A decoded waveform exceeded the module's decoded-output ceiling (spec R9).
+    """A decoded waveform exceeded the module's decoded-output ceiling.
 
     A dedicated subclass so the soundfile decode paths can re-raise it past
     their broad ``except Exception`` fallback: a decoded output past the ceiling
@@ -393,7 +393,7 @@ def _read_with_soundfile(source: str | io.BytesIO) -> tuple[NDArray[np.float32],
     try:
         import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
 
-        # Bound the allocation BEFORE it happens (spec R9): soundfile.read()
+        # Bound the allocation BEFORE it happens: soundfile.read()
         # pre-allocates np.empty(header_frames x channels) off the file *header*,
         # so a header that declares a very long duration would drive a multi-GB
         # allocation before the post-decode ceiling below could ever run. Probe
@@ -421,7 +421,7 @@ def _read_with_soundfile(source: str | io.BytesIO) -> tuple[NDArray[np.float32],
 
 
 def _enforce_soundfile_info_ceiling(sf: Any, source: str | io.BytesIO) -> None:
-    """Reject a soundfile input whose header declares an over-ceiling decode (R9).
+    """Reject a soundfile input whose header declares an over-ceiling decode.
 
     Reads only the container header via ``soundfile.info`` (no sample decode) and
     rejects before :func:`soundfile.read` pre-allocates its output array, so a
@@ -466,7 +466,7 @@ def _enforce_soundfile_info_ceiling(sf: Any, source: str | io.BytesIO) -> None:
 
 
 def _enforce_decoded_output_ceiling(audio: NDArray[Any]) -> None:
-    """Reject a decoded waveform larger than the decoded-output ceiling (R9).
+    """Reject a decoded waveform larger than the decoded-output ceiling.
 
     The encoded-size cap (``max_bytes``) cannot bound the decoded array -- a
     compressed codec can expand far past it. The FFmpeg path bounds its decoded
@@ -491,7 +491,7 @@ def _enforce_decoded_output_ceiling(audio: NDArray[Any]) -> None:
 
 
 def _guard_wav_nframes(wf: wave.Wave_read, max_bytes: int | None) -> None:
-    """Reject a WAV whose header-declared frame count would over-allocate (R9).
+    """Reject a WAV whose header-declared frame count would over-allocate.
 
     ``wave.readframes(getnframes())`` derives its read size from the WAV
     *header's* frame count, which an attacker controls independently of the file
@@ -538,7 +538,7 @@ def _read_wav_stdlib(path: str, max_bytes: int | None) -> tuple[NDArray[np.float
         path: A local file path. A non-``.wav`` path returns ``None`` immediately.
         max_bytes: The caller's encoded-size cap, threaded to
             :func:`_guard_wav_nframes` to bound the header-declared frame
-            allocation (spec R9). ``None`` uses the module's default ceiling.
+            allocation. ``None`` uses the module's default ceiling.
 
     Returns:
         The decoded ``(float32 waveform, native sample rate)`` pair, or ``None``
@@ -561,11 +561,11 @@ def _read_wav_stdlib(path: str, max_bytes: int | None) -> tuple[NDArray[np.float
                 raise AudioProcessingError(
                     f"Unsupported WAV sample width via stdlib: {sampwidth * 8} bits"
                 )
-            # Spec R9: getnframes() is a header-declared count an attacker
+            # getnframes() is a header-declared count an attacker
             # controls; bound the read it drives before allocating from it.
             _guard_wav_nframes(wf, max_bytes)
             frames = wf.readframes(wf.getnframes())
-            # 16-bit PCM uses the canonical wire codec (spec R4) so the WAV reader
+            # 16-bit PCM uses the canonical wire codec so the WAV reader
             # and the streaming wire path share ONE float<->pcm16 definition (the
             # deliberate 32767/32768 round-trip asymmetry lives only in wire.py).
             # 8-bit unsigned PCM has no wire codec, so it is decoded inline; uint8
@@ -600,7 +600,7 @@ def _read_stream_capped(stream: BinaryIO, max_bytes: int | None) -> bytes:
     Unlike a bare ``stream.read()`` (which buffers the WHOLE stream before any
     size is observed), this reads at most ``max_bytes + 1`` bytes so an untrusted
     stream cannot force an unbounded allocation: if the stream yields more than
-    ``max_bytes`` the read is aborted and an error raised (spec R9). When
+    ``max_bytes`` the read is aborted and an error raised. When
     ``max_bytes`` is ``None`` the cap is disabled and the whole stream is read.
 
     The capped read **loops** to EOF rather than issuing a single
@@ -686,8 +686,8 @@ def ensure_datatype(audio: NDArray[Any], data_type: DTypeLike = np.float32) -> N
         >>> audio = ensure_datatype(raw_audio, "float64")  # -> float64
     """
     # Compute the target dtype for runtime comparison; helps static checkers.
-    # Use np.asarray (not astype(copy=False)) per spec DEP.2 / D4: copy=False is
-    # banned because its no-copy guarantee differs subtly across numpy 1.x/2.x.
+    # Use np.asarray (not astype(copy=False)): copy=False is banned because its
+    # no-copy guarantee differs subtly across numpy 1.x/2.x.
     target_dtype: np.dtype[np.generic] = np.dtype(data_type)
     if audio.dtype != target_dtype:
         audio = np.asarray(audio, dtype=target_dtype)
@@ -782,7 +782,7 @@ def normalize_audio(
         **Resampling:** Uses ``scipy.signal.resample_poly`` for high-quality
         conversion when ``scipy`` is installed (the ``[audio]`` extra), and
         degrades to the built-in numpy-only anti-aliasing Fourier resampler
-        otherwise (a missing extra is never fatal, spec AI R8).
+        otherwise (a missing extra is never fatal).
 
         **Channel conversion:**
 
@@ -816,10 +816,10 @@ def normalize_audio(
     #    resampler (the [audio] extra) and degrades to the core numpy-only
     #    anti-aliasing Fourier resampler, treating ANY scipy import-time failure
     #    (not just a plain ImportError -- e.g. a broken/partial build) as a
-    #    non-fatal fall to the built-in (spec AI R8). Warn only when the fallback
+    #    non-fatal fall to the built-in. Warn only when the fallback
     #    actually ran.
     if original_sr != target_sample_rate:
-        from ..resampling import resample_with_backend as _resample_with_backend
+        from standard_asr.audio.resampling import resample_with_backend as _resample_with_backend
 
         processed_audio, _backend = _resample_with_backend(
             processed_audio, original_sr, target_sample_rate
@@ -869,8 +869,8 @@ def normalize_audio(
         )
         processed_audio = np.nan_to_num(processed_audio, nan=0.0, posinf=1.0, neginf=-1.0)
 
-    # Clip to contract range, then cast. Clip BEFORE cast (DEP.2 defensive
-    # ordering) and use np.asarray instead of astype(copy=False) (DEP.2 ban).
+    # Clip to contract range, then cast. Clip BEFORE cast, and use np.asarray
+    # instead of astype(copy=False), for consistent numpy 1.x/2.x behavior.
     processed_audio = np.asarray(np.clip(processed_audio, -1.0, 1.0), dtype=np.float32)
     # Respect contract: mono->1D, multi->2D even if n_samples==1
     if int(processed_audio.shape[1]) == 1:
@@ -897,7 +897,7 @@ def load_audio(
     auto-detects a base64 ``data:`` URI.
 
     This is **not** the engine input boundary. When transcribing, pass an
-    :data:`~standard_asr.audio_input.AudioInput` to ``transcribe`` and let the
+    :data:`~standard_asr.audio.input.AudioInput` to ``transcribe`` and let the
     standard negotiation layer decode/convert per the engine's ``accepted_input``
     -- there a bare ``str`` is **always** a file path and is never sniffed (a
     security boundary against SSRF / data-URI confusion). This helper's
@@ -916,7 +916,7 @@ def load_audio(
         target_channels: Output channels. ``1`` = mono (default), ``2`` = stereo,
             ``None`` = preserve.
         max_bytes: Max ENCODED input size, threaded to the underlying loaders and
-            defaulting to the 2 GiB ceiling (spec R9). It bounds the encoded
+            defaulting to the 2 GiB ceiling. It bounds the encoded
             payload only -- a file via ``stat``, ``bytes`` via length, and a
             ``BinaryIO`` stream via a capped read that aborts past the limit
             instead of buffering the whole stream. The decoded array is bounded
@@ -966,7 +966,7 @@ def load_audio(
 
         # First check: if it has explicit base64 data URI prefix, treat as base64
         if s.lower().startswith("data:") and ";base64," in s:
-            # Gate-and-decode (R9): the decoded size is estimated from the
+            # Gate-and-decode: the decoded size is estimated from the
             # payload length and checked BEFORE the decode allocates it.
             source_bytes = _decode_base64_bounded(s, max_bytes)
             return load_audio_from_bytes(
@@ -999,7 +999,7 @@ def load_audio(
         return load_audio_from_bytes(data, target_sample_rate, target_channels, max_bytes=max_bytes)
 
     # File-like object that returns bytes. Read it with a running cap so an
-    # untrusted stream cannot blow up memory before max_bytes is observed (R9).
+    # untrusted stream cannot blow up memory before max_bytes is observed.
     if _is_binary_io(source):
         data = _read_stream_capped(source, max_bytes)
         return load_audio_from_bytes(data, target_sample_rate, target_channels, max_bytes=max_bytes)
@@ -1051,8 +1051,8 @@ def load_audio_from_path(
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
     This is a convenience loader, **not** the engine input boundary. The
-    ``max_bytes`` cap bounds only the on-disk ENCODED file size via ``stat``
-    (spec R9); the decoded array is bounded separately by the module's fixed
+    ``max_bytes`` cap bounds only the on-disk ENCODED file size via ``stat``;
+    the decoded array is bounded separately by the module's fixed
     decoded-output ceiling on every decode backend. Callers handling untrusted
     input SHOULD set ``max_bytes`` (or ``None`` to disable the default 2 GiB
     encoded cap).
@@ -1107,7 +1107,7 @@ def load_audio_from_path(
                 f"Audio path is not a regular file: {path!r}. Pass a real local file "
                 "(FIFOs, devices, and directories are not supported)."
             )
-        # Precheck the encoded file size via stat() before any read/decode (spec R9),
+        # Precheck the encoded file size via stat() before any read/decode,
         # only when the file exists so a missing path still surfaces "not found".
         if expanded.is_file():
             _enforce_decode_size(expanded.stat().st_size, max_bytes)
@@ -1131,7 +1131,7 @@ def load_audio_from_path(
     if decoded is not None:
         audio, orig_sr = decoded
         # normalize_audio never raises ImportError: a missing scipy degrades to
-        # the built-in anti-aliasing fallback resampler internally (spec AI R8).
+        # the built-in anti-aliasing fallback resampler internally.
         return normalize_audio(audio, orig_sr, target_sample_rate, target_channels)
 
     # Layer 3: Final fallback to FFmpeg
@@ -1152,7 +1152,7 @@ def load_audio_from_bytes(
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
     This is a convenience loader, **not** the engine input boundary. The
-    ``max_bytes`` cap bounds only the ENCODED ``data`` length (spec R9); the
+    ``max_bytes`` cap bounds only the ENCODED ``data`` length; the
     decoded array (which a compressed codec can expand far past it) is bounded
     separately by the module's fixed decoded-output ceiling on every decode
     backend. Callers handling untrusted input SHOULD set ``max_bytes`` (or
@@ -1188,7 +1188,7 @@ def load_audio_from_bytes(
     if decoded is not None:
         audio, orig_sr = decoded
         # normalize_audio never raises ImportError: a missing scipy degrades to
-        # the built-in anti-aliasing fallback resampler internally (spec AI R8).
+        # the built-in anti-aliasing fallback resampler internally.
         return normalize_audio(audio, orig_sr, target_sample_rate, target_channels)
 
     # Layer 3: Final fallback to FFmpeg
@@ -1205,13 +1205,13 @@ def decode_audio(
 
     Unlike :func:`load_audio`, this primitive does **not** resample: it returns
     the decoded waveform together with the source's original sample rate, so the
-    caller can make the single authoritative resampling decision (spec R7). This
+    caller can make the single authoritative resampling decision. This
     is what the conversion layer needs to honour 8 kHz telephony and 24 kHz
-    realtime engines without a spurious round-trip through 16 kHz (spec R7, the
-    "MUST NOT upsample native-rate input" clause).
+    realtime engines without a spurious round-trip through 16 kHz (the standard
+    must not upsample native-rate input).
 
     This is the engine-input decode boundary. A bare ``str`` is **always** a
-    local file path and is **never** content-sniffed (spec R1 / §3.1: a bare
+    local file path and is **never** content-sniffed (a bare
     ``str`` coerces to ``AudioPath``; the discriminant is the explicit type tag,
     never string content). A string that happens to look like a ``data:`` URI is
     therefore opened as a file (and fails "not found"), **not** decoded as
@@ -1225,7 +1225,7 @@ def decode_audio(
             :func:`decode_audio_from_data_uri` for base64/``data:`` payloads.
         target_channels: Output channels. ``1`` = mono (default), ``None`` =
             preserve the source channel layout.
-        max_bytes: Cap on the buffered ENCODED payload size (spec R9). ``None``
+        max_bytes: Cap on the buffered ENCODED payload size. ``None``
             (the default) means **truly unbounded** -- this primitive is driven
             by the conversion layer, which threads the engine's declared limit
             through verbatim (an engine with no limit -> ``None`` -> no cap).
@@ -1246,7 +1246,7 @@ def decode_audio(
 
     if isinstance(source, str):
         # A bare str is ALWAYS a local file path -- never content-sniffed for a
-        # data: URI (spec R1 / §3.1). Sniffing here would let a pathological
+        # data: URI. Sniffing here would let a pathological
         # filename literally named "data:audio/...;base64,..." be decoded as
         # inline base64 instead of opened as a file, silently overriding the
         # explicit AudioPath type tag the conversion layer relies on. No
@@ -1258,7 +1258,7 @@ def decode_audio(
 
     if isinstance(source, pathlib.Path):
         # Strict path-only entry: no sniff, no strip -- a bare path is ALWAYS a
-        # local file (spec R1). A path shaped like a data: URI is rejected here.
+        # local file. A path shaped like a data: URI is rejected here.
         path = _validate_local_source_path(str(source))
         _enforce_path_decode_size(path, max_bytes)
         return _decode_path_native(path, target_channels, max_bytes)
@@ -1281,7 +1281,7 @@ def decode_audio_from_data_uri(
     """Decode a base64 ``data:`` URI (or bare base64) to a native-rate waveform.
 
     The **explicit** base64/``data:`` decode entry point. :func:`decode_audio`
-    deliberately never content-sniffs a bare ``str`` (spec R1 / §3.1: a bare
+    deliberately never content-sniffs a bare ``str`` (a bare
     ``str`` is always a local file path), so a caller that genuinely holds a
     base64 payload routes it here -- the decision to treat the string as base64
     is made by the call site's choice of function, not by inspecting the string's
@@ -1292,7 +1292,7 @@ def decode_audio_from_data_uri(
             base64 string. A ``data:`` URI MUST carry the ``;base64,`` marker.
         target_channels: Output channels. ``1`` = mono (default), ``None`` =
             preserve the source channel layout.
-        max_bytes: Cap on the decoded ENCODED payload size (spec R9). ``None``
+        max_bytes: Cap on the decoded ENCODED payload size. ``None``
             (the default) means **truly unbounded**; callers handling untrusted
             input SHOULD pass a positive cap.
 
@@ -1311,7 +1311,7 @@ def decode_audio_from_data_uri(
         raise TypeError(f"decode_audio_from_data_uri requires a str, got {type(value)}")
     if target_channels is not None and target_channels <= 0:
         raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
-    # Gate-and-decode (R9): the decoded size is estimated from the payload length
+    # Gate-and-decode: the decoded size is estimated from the payload length
     # and checked BEFORE the decode allocates it (the exact length is re-checked
     # inside _decode_base64_bounded).
     decoded = _decode_base64_bounded(value, max_bytes)
@@ -1327,7 +1327,7 @@ def _decode_path_native(
         path: A validated absolute local file path.
         target_channels: Output channels, or ``None`` to preserve.
         max_bytes: The caller's encoded-size cap, threaded through to bound the
-            stdlib WAV path's header-declared frame allocation (spec R9). ``None``
+            stdlib WAV path's header-declared frame allocation. ``None``
             falls back to the module's default ceiling as the sanity bound.
 
     Returns:
@@ -1412,7 +1412,7 @@ def _load_with_ffmpeg(
 ) -> NDArray[np.float32]:
     """Decode audio via FFmpeg subprocess (internal fallback).
 
-    Output-size bound (spec R9): the encoded-input cap does NOT bound the decoded
+    Output-size bound: the encoded-input cap does NOT bound the decoded
     PCM (output size is ``duration x sample_rate x channels x 4``), so a crafted
     long-duration input could otherwise force a multi-GB allocation. This bounds
     the decoded output two ways: ffmpeg is given ``-fs <max_output_bytes>`` so it
@@ -1438,7 +1438,7 @@ def _load_with_ffmpeg(
         AudioProcessingError: Decoding failed, timeout, empty output, or decoded
             output exceeding ``max_output_bytes``.
     """
-    # Security (D1 / spec R5 rationale): a string source is a *local file* and
+    # Security: a string source is a *local file* and
     # nothing else. Validate + absolutize it up front (before probing), and
     # constrain ffmpeg/ffprobe to the file/pipe protocols so they can never be
     # coerced into fetching http(s)://, tcp://, concat:, data:, etc. via a
@@ -1504,7 +1504,7 @@ def _load_with_ffmpeg(
     if max_output_bytes is not None:
         # Make ffmpeg self-limit its output so capture_output cannot buffer past
         # the ceiling: ``-fs`` stops writing once the byte limit is reached
-        # (spec R9). ffmpeg flushes whole 4096-byte blocks, so with ``-fs`` set
+        # ffmpeg flushes whole 4096-byte blocks, so with ``-fs`` set
         # to the ceiling itself a stream truncated at a block-aligned ceiling
         # (the 2 GiB default is one) would land EXACTLY on the limit and be
         # indistinguishable from a legal maximal output -- a silently truncated
@@ -1524,7 +1524,7 @@ def _load_with_ffmpeg(
         if not proc.stdout:
             raise AudioProcessingError("FFmpeg produced no audio data.")
         # Defense in depth: reject decoded output past the ceiling even if an
-        # ffmpeg build ignored ``-fs`` (spec R9). Bounds the np.frombuffer copy.
+        # ffmpeg build ignored ``-fs``. Bounds the np.frombuffer copy.
         if max_output_bytes is not None and len(proc.stdout) > max_output_bytes:
             raise AudioProcessingError(
                 f"FFmpeg decoded output exceeds the {max_output_bytes}-byte ceiling. "
@@ -1590,8 +1590,8 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
     """Query a single integer ``stream=<entry>`` value via ffprobe (guarded).
 
     Like the ffmpeg decode path, this constrains ffprobe to the ``file,pipe``
-    protocols, so a crafted path can never trigger a network fetch (D1 / spec R5
-    rationale). String sources are forwarded verbatim; callers that accept
+    protocols, so a crafted path can never trigger a network fetch. String
+    sources are forwarded verbatim; callers that accept
     untrusted paths MUST validate them first via :func:`_validate_local_source_path`.
 
     Args:

@@ -5,18 +5,18 @@
 
 Enumerates installed Standard ASR plugins, reads each plugin distribution's
 declared ``numpy`` requirement, and reports conflicts that cannot coexist in a
-single process -- most importantly the numpy 1.x-vs-2.x split (spec DEP.5). It
+single process -- most importantly the numpy 1.x-vs-2.x split. It
 never resolves or installs anything; it only diagnoses and suggests remediation
 (out-of-process isolation when a conflict is real).
 
-Scope (v1, spec DEP.5): doctor diagnoses ``numpy`` ONLY. numpy is the single
-shared native dependency the standard itself has (DEP.1), and its 1.x-vs-2.x
-break is a clean C-ABI split whose conflict is fully encoded in version
-specifiers -- so a version-range intersection decides it. Other shared native
-libraries (torch CUDA build variants; onnxruntime vs onnxruntime-gpu package
-identity) have fundamentally different conflict models that version
-intersection cannot decide, so they are explicitly known-uncovered in v1;
-their hard conflicts fall under the general DEP.4 process-isolation guidance.
+Scope (v1): doctor diagnoses ``numpy`` ONLY. numpy is the single shared native
+dependency the standard itself has, and its 1.x-vs-2.x break is a clean C-ABI
+split whose conflict is fully encoded in version specifiers -- so a version-range
+intersection decides it. Other shared native libraries (torch CUDA build
+variants; onnxruntime vs onnxruntime-gpu package identity) have fundamentally
+different conflict models that version intersection cannot decide, so they are
+explicitly known-uncovered in v1; their hard conflicts fall under the general
+out-of-process isolation guidance.
 See the per-library seam in :func:`_numpy_spec_for` for the rationale.
 """
 
@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING
 
-from .discovery import ENTRYPOINT_GROUP
+from standard_asr.plugins.discovery import ENTRYPOINT_GROUP
 
 if TYPE_CHECKING:
     from packaging.specifiers import SpecifierSet
@@ -151,9 +151,9 @@ class DoctorReport:
 def packaging_available() -> bool:
     """Return whether the optional ``packaging`` library is importable.
 
-    ``packaging`` is NOT a core dependency (core = pydantic + numpy only, spec
-    DEP.1); doctor uses it for precise specifier analysis when present and
-    degrades gracefully otherwise.
+    ``packaging`` is NOT a core dependency (core = pydantic + numpy only);
+    doctor uses it for precise specifier analysis when present and degrades
+    gracefully otherwise.
 
     Returns:
         ``True`` if ``packaging`` can be imported.
@@ -338,19 +338,20 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
     """Extract the *effective* numpy specifier for the running interpreter.
 
     Per-library seam: numpy is the only shared native dependency Standard ASR can
-    diagnose precisely (spec DEP.5). Its 1.x-vs-2.x split is a clean
+    diagnose precisely. Its 1.x-vs-2.x split is a clean
     C-ABI break with a clean version-range signature, so a Requires-Dist version
     specifier fully determines compatibility. torch (CUDA build variants),
     onnxruntime vs onnxruntime-gpu (package-identity conflicts) and similar do
     NOT encode their conflict in version specifiers, so this seam intentionally
     matches ``numpy`` only -- generalizing the version-intersection to them would
-    be confidently wrong. See DEP.4 for the general isolation guidance.
+    be confidently wrong. Those fall under the general out-of-process isolation
+    guidance instead.
 
     Each ``Requires-Dist`` line is parsed with :class:`packaging.requirements.
     Requirement`, which evaluates PEP 508 environment markers and accepts the
     legacy parenthesized form (``numpy (>=1.26)``). Only numpy lines whose marker
     holds on the running interpreter (or is absent) contribute, so the canonical
-    interpreter-conditional dual-line declaration (spec DEP.1) resolves to the
+    interpreter-conditional dual-line declaration resolves to the
     one line that actually applies here. Multiple applicable lines are
     intersected. When ``packaging`` is absent doctor degrades to a display-only
     regex extraction (no marker evaluation, no conflict classification).
@@ -376,7 +377,7 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
     # platform.python_version()). This keeps marker resolution consistent with the
     # python_version doctor reports and makes it overridable -- e.g. a test that
     # simulates another interpreter by patching sys.version_info, or any caller
-    # that wants the canonical interpreter-conditional dual line (DEP.1) resolved
+    # that wants the canonical interpreter-conditional dual line resolved
     # for a specific Python.
     py = f"{sys.version_info.major}.{sys.version_info.minor}"
     marker_env = {

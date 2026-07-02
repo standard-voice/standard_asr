@@ -15,9 +15,8 @@ from typing import IO, Any, Callable, Iterable, cast
 
 from pydantic import ValidationError
 
-from .asr_interface import EngineBase
-from .audio_format import AudioFormat
-from .compliance import (
+from standard_asr.audio.format import AudioFormat
+from standard_asr.compliance import (
     ComplianceIssue,
     ComplianceReport,
     check_entrypoints,
@@ -27,9 +26,7 @@ from .compliance import (
     check_sync_bridge,
     prepare_requires_arguments,
 )
-from .discovery import ModelRegistry, ModelSpec, discover_models
-from .error_redaction import sanitized_validation_message
-from .exceptions import (
+from standard_asr.contract.exceptions import (
     AudioProcessingError,
     ConfigError,
     DiscoveryError,
@@ -37,9 +34,12 @@ from .exceptions import (
     FactoryLoadError,
     TranscriptionError,
 )
-from .results import Diagnostic
-from .runtime import ensure_cache_dir, resolve_cache_dir
-from .runtime_params import RuntimeParams, WireRuntimeParams
+from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
+from standard_asr.contract.results import Diagnostic
+from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
+from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
+from standard_asr.runtime.interface import EngineBase
+from standard_asr.runtime.redaction import sanitized_validation_message
 
 #: ASCII status markers. The CLI prints transcripts and decorative status lines
 #: to stdout/stderr; on Windows a redirected stream defaults to the ANSI code
@@ -313,7 +313,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     Raises:
         None.
     """
-    from .doctor import diagnose, format_report
+    from standard_asr.toolchain.doctor import diagnose, format_report
 
     report = diagnose()
     print(format_report(report))
@@ -331,7 +331,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
     Raises:
         EntrypointValidationError: In ``--strict`` mode, when discovery finds an
-            invalid entry point or an IC.2 engine-identity collision.
+            invalid entry point or an engine-identity collision.
     """
     registry = discover_models(strict=args.strict, on_conflict=args.on_conflict)
     names = registry.names()
@@ -378,12 +378,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _print_declared_capabilities(spec: Any) -> None:
     """Print an engine's DeclaredCapabilities without instantiating it.
 
-    Spec §264 lists ``standard-asr show`` as a consumer of
-    DeclaredCapabilities. The capabilities are read from the engine *class*
-    (ClassVar), so no engine is constructed and no credentials are resolved.
+    ``standard-asr show`` is a consumer of DeclaredCapabilities. The
+    capabilities are read from the engine *class* (ClassVar), so no engine is
+    constructed and no credentials are resolved.
 
     Args:
-        spec: The model :class:`~standard_asr.discovery.ModelSpec`.
+        spec: The model :class:`~standard_asr.plugins.discovery.ModelSpec`.
 
     Returns:
         None.
@@ -404,7 +404,7 @@ def _print_declared_capabilities(spec: Any) -> None:
     # `GET /v1/.../capabilities`), so a `show` output can be compared
     # field-for-field with the wire view: every node carries the derived
     # `supported` boolean and the reader never has to know the "none"/"unsupported"
-    # sentinels (spec §C R6; G.5.2 two-layer isomorphism).
+    # sentinels.
     canonical_json = getattr(caps, "canonical_json", None)
     if not callable(canonical_json):
         # `declared_capabilities` is not a DeclaredCapabilities model (e.g. an
@@ -468,21 +468,21 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
     prepare = getattr(asr, "prepare", None)
     if prepare is None or _is_base_prepare(asr):
         # No warm-up hook: either a structural engine that declares none, or an
-        # EngineBase subclass that inherited the base no-op (spec IC.11). There is
+        # EngineBase subclass that inherited the base no-op. There is
         # nothing to warm up or download. Never fire a real transcribe as a
         # stand-in -- for cloud/commercial engines that would be a billable
         # request with side effects (lazy / no-surprise).
         print(f"{_INFO} Engine declares no prepare() step; nothing to warm up.")
         return 0
     if inspect.iscoroutinefunction(prepare):
-        # The spec defines prepare() as a *synchronous* zero-argument hook (spec
-        # §IC.11). An `async def prepare` returns an un-awaited coroutine that
+        # The spec defines prepare() as a *synchronous* zero-argument hook. An
+        # `async def prepare` returns an un-awaited coroutine that
         # `callable()` would accept and silently report as "complete" without ever
         # warming up -- a silent false success. Fail loudly instead.
         raise ConfigError(
             f"engine {args.name!r} declares prepare() as a coroutine function; "
             "the prepare() warm-up hook MUST be a synchronous zero-argument "
-            "method (spec Init Config IC.11)."
+            "method."
         )
     if not callable(prepare):
         # A non-callable `prepare` attribute is a declaration bug: it can never be
@@ -491,10 +491,10 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
         raise ConfigError(
             f"engine {args.name!r} exposes a non-callable 'prepare' attribute; "
             "the prepare() warm-up hook MUST be a synchronous zero-argument "
-            "method (spec Init Config IC.11)."
+            "method."
         )
     if prepare_requires_arguments(prepare):
-        # The hook is sync and callable, but the IC.11 contract also requires it
+        # The hook is sync and callable, but the contract also requires it
         # to be invocable with no arguments. A prepare() that demands parameters
         # can never be driven by the toolchain; reject it with the same structured
         # error its coroutine/non-callable siblings raise rather than letting the
@@ -503,7 +503,7 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
         raise ConfigError(
             f"engine {args.name!r} declares prepare() with required parameters; "
             "the prepare() warm-up hook MUST be a synchronous zero-argument "
-            "method (spec Init Config IC.11)."
+            "method."
         )
     prepare()
     print(f"{_OK} Model prepare complete.")
@@ -513,8 +513,8 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
 def _is_base_prepare(asr: Any) -> bool:
     """Return whether ``asr.prepare`` is the inherited EngineBase no-op.
 
-    :class:`~standard_asr.asr_interface.EngineBase` provides a default no-op
-    :meth:`~standard_asr.asr_interface.EngineBase.prepare` (spec IC.11), so every
+    :class:`~standard_asr.runtime.interface.EngineBase` provides a default no-op
+    :meth:`~standard_asr.runtime.interface.EngineBase.prepare`, so every
     EngineBase engine has a callable ``prepare``. An engine that did not override
     it has nothing to warm up; distinguishing the inherited no-op from a real
     override lets the CLI report "nothing to warm up" instead of a misleading
@@ -588,13 +588,13 @@ def _scope_entrypoints_report(
 ) -> ComplianceReport:
     """Scope an entry-point report's per-engine issues to a named model subset.
 
-    ``check_entrypoints`` loops the whole discovered registry (its IC.2 /
-    RuntimeParams-closedness invariants are registry-global by design), so when the
-    user asks for a named subset an unrelated co-installed plugin's per-engine
+    ``check_entrypoints`` loops the whole discovered registry (its engine-identity
+    and RuntimeParams-closedness invariants are registry-global by design), so when
+    the user asks for a named subset an unrelated co-installed plugin's per-engine
     failure would otherwise count toward -- and fail -- the named run. Keep an issue
     iff it is a registry-global invariant (``model is None`` -- e.g. RuntimeParams
-    closedness, no-entry-points), names a requested model, or reports an IC.2
-    engine_id collision (``shadowed_engine_ids``; §IC.2 mandates these surface on
+    closedness, no-entry-points), names a requested model, or reports an
+    engine_id collision (``shadowed_engine_ids``; these must surface on
     every run, keyed by a bare engine_id). Registry-global invariants are never
     dropped.
 
@@ -622,10 +622,10 @@ def _scope_entrypoints_report(
 def _cmd_compliance_run(args: argparse.Namespace) -> int:
     """Handle ``compliance run`` command (the full one-command suite).
 
-    Delivers G.2.1's "one command validates compliance" promise beyond the entry
+    Delivers the "one command validates compliance" promise beyond the entry
     point checks: it runs ``check_entrypoints`` and then, for every selected
     model that constructs without arguments, the provider_params swap-safety
-    check (Runtime R3 / §5.4) and -- for an engine that declares a streaming axis
+    check and -- for an engine that declares a streaming axis
     -- the streaming parameter-gating check. The sync-bridge check
     opens a real streaming session, so it is **opt-in** (``--include-bridge``) --
     for a cloud engine that is a billable connection. The event-sequence check
@@ -645,7 +645,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
 
     Raises:
         EntrypointValidationError: In ``--strict`` mode, when discovery finds an
-            invalid entry point or an IC.2 engine-identity collision.
+            invalid entry point or an engine-identity collision.
     """
     registry = discover_models(strict=args.strict)
 
@@ -654,7 +654,8 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
     if args.names:
         # Scope the entry-point report's per-engine issues to the named subset so an
         # unrelated co-installed plugin's failure does not fail your named run; the
-        # registry-global invariants (IC.2 collisions, RuntimeParams closedness) stay.
+        # registry-global invariants (engine-identity collisions, RuntimeParams
+        # closedness) stay.
         entrypoints = _scope_entrypoints_report(entrypoints, registry, set(args.names))
     reports: list[ComplianceReport] = [entrypoints]
     if entrypoints.passed:
@@ -692,8 +693,8 @@ def _run_instance_checks(
 
     Constructs the engine without arguments; an engine that needs configuration
     is skipped (reported, not failed). For every constructed engine it runs
-    ``check_provider_params_swap_safety`` (spec Runtime R3 / §5.4 -- an
-    unconditional MUST for any engine, streaming or not). For a streaming engine
+    ``check_provider_params_swap_safety`` (an unconditional MUST for any engine,
+    streaming or not). For a streaming engine
     it additionally runs ``check_streaming_param_gating`` and, when
     ``include_bridge`` is set, ``check_sync_bridge``.
 
@@ -731,7 +732,7 @@ def _run_instance_checks(
             )
         ]
 
-    # provider_params swap safety (Runtime R3 / spec §5.4) is an unconditional
+    # provider_params swap safety is an unconditional
     # MUST for any engine that exposes a provider_params_type, streaming or not,
     # so it runs for every constructed engine. The check itself is a no-op (an
     # immediate pass) for an engine that declares no provider_params_type. Like
@@ -742,7 +743,7 @@ def _run_instance_checks(
 
     if _engine_supports(engine, "streaming_input") or _engine_supports(engine, "streaming_output"):
         reports.append(check_streaming_param_gating(cast(EngineBase, engine)))
-        # Self-consistency of the recommended wire format (AW-2): cheap, and passes
+        # Self-consistency of the recommended wire format: cheap, and passes
         # trivially for an output-only engine, so it runs for any streaming engine.
         reports.append(check_recommended_wire_format(cast(EngineBase, engine)))
         if include_bridge:
@@ -788,8 +789,8 @@ def _streaming_audio_format(engine: EngineBase) -> AudioFormat | None:
     """Return the engine's recommended minimal streaming wire :class:`AudioFormat`.
 
     Thin CLI-side delegate to
-    :meth:`~standard_asr.asr_interface.EngineBase.recommended_wire_format`, the
-    single source of truth (AW-2), so the sync-bridge runner cannot drift from the
+    :meth:`~standard_asr.runtime.interface.EngineBase.recommended_wire_format`, the
+    single source of truth, so the sync-bridge runner cannot drift from the
     compliance gating probe on the format a streaming engine is opened with.
 
     Args:
@@ -1008,13 +1009,13 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
 def _render_diagnostics(diagnostics: Iterable[Diagnostic]) -> None:
     """Render transcription diagnostics to stderr (text mode).
 
-    The runtime attaches a structured :class:`~standard_asr.results.Diagnostic`
+    The runtime attaches a structured :class:`~standard_asr.contract.results.Diagnostic`
     for every lossy step (an ad-hoc resample, a bare-array sample-rate
     assumption, a guidance degrade, ...). The default text output prints only the
     transcript, so without this the provenance warnings vanish on the surface
     end users reach most -- a silent degrade, which the project forbids.
     They go to **stderr** so stdout stays a clean, pipeable
-    transcript, mirroring the "errors to stderr" convention (cli.md §2). The
+    transcript, mirroring the "errors to stderr" convention. The
     ``--json`` view already carries them on the result.
 
     Args:
@@ -1043,7 +1044,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         None.
     """
     try:
-        from .server import run
+        from standard_asr.toolchain.server import run
     except ImportError:
         _print_error(
             "FastAPI server dependencies are missing. Install with: "
@@ -1062,7 +1063,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _parse_options(raw: str | None) -> RuntimeParams | None:
     """Parse a JSON options string into :class:`RuntimeParams`.
 
-    Mirrors the server's untyped-wire rule (D5): validation goes through
+    Mirrors the server's untyped-wire rule: validation goes through
     :class:`WireRuntimeParams`, the portable-only wire view, so an options
     object that includes the engine-specific ``provider_params`` escape hatch
     is rejected with a clear validation error -- it is not constructible from
@@ -1075,7 +1076,7 @@ def _parse_options(raw: str | None) -> RuntimeParams | None:
     ``{"api_key": "sk-..."}``, rejected by ``extra="forbid"``) would otherwise be
     reflected to stderr and bleed into CI logs / bug reports. It is re-raised as
     a ``ValueError`` carrying the shared sanitized message (the same scrub the
-    server applies to its 422 body, spec server.md §1) so the field name and
+    server applies to its 422 body) so the field name and
     validator message are kept but the value is dropped.
 
     Args:
@@ -1103,7 +1104,7 @@ def _parse_options(raw: str | None) -> RuntimeParams | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point used by ``python -m standard_asr.cli`` or console script.
+    """Entry point used by ``python -m standard_asr.toolchain.cli`` or console script.
 
     Args:
         argv: Optional list of CLI arguments.
@@ -1167,7 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
 def _debug_traceback(args: argparse.Namespace) -> None:
     """Emit a stack trace to stderr when ``--debug`` is set.
 
-    cli.md describes ``--debug`` as emitting "stack traces for unexpected
+    ``--debug`` is documented as emitting "stack traces for unexpected
     errors", but the trace was previously printed only in the final
     ``except Exception`` branch, so an error caught by a named branch (e.g. an
     engine-internal failure surfacing as a ``ValueError`` from ``_transcribe``)

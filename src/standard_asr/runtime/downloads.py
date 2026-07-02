@@ -4,9 +4,8 @@
 """Runtime helpers for Standard ASR engines.
 
 Download-policy and cache-directory resolution helpers used by engines during
-lazy model loading (spec, section "Init Config", rule IC.9). Audio input
-validation now lives in the negotiation layer
-(:mod:`standard_asr.audio_negotiation`), not here.
+lazy model loading. Audio input validation now lives in the negotiation layer
+(:mod:`standard_asr.audio.negotiation`), not here.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# The download-policy.md §1 contract: the literal values that enable / disable
+# The download-policy contract: the literal values that enable / disable
 # downloads. Anything else (including an empty string) is an unrecognized value
 # and falls back to disabled (fail-safe) with a one-line diagnostic.
 _DOWNLOAD_ENABLE_VALUES = frozenset({"1", "true", "yes"})
@@ -27,9 +26,9 @@ _DOWNLOAD_DISABLE_VALUES = frozenset({"0", "false", "no"})
 def _env_override(env_var: str) -> str:
     """Read an environment path override, treating whitespace-only as unset.
 
-    The single reading of the "is the override set" rule shared by the IC.9
-    consumers (:func:`resolve_cache_dir` and :func:`resolve_download_root`),
-    so the two can never drift on it.
+    The single reading of the "is the override set" rule shared by the
+    lazy-loading consumers (:func:`resolve_cache_dir` and
+    :func:`resolve_download_root`), so the two can never drift on it.
 
     Args:
         env_var: The environment variable name.
@@ -43,7 +42,7 @@ def _env_override(env_var: str) -> str:
 def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
     """Return whether model downloads are allowed at runtime.
 
-    Implements the ``download-policy.md`` §1 contract: ``1``/``true``/``yes``
+    Implements the download-policy contract: ``1``/``true``/``yes``
     enable downloads, ``0``/``false``/``no`` disable them, an **unset** variable
     defaults to enabled, and **any other value** (including an empty string,
     e.g. a ``VAR=`` line in docker-compose, or a typo like ``on``) disables them
@@ -85,7 +84,7 @@ def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
 def resolve_cache_dir(
     env_var: str = "STANDARD_ASR_MODEL_DIR", *, os_name: str | None = None
 ) -> Path:
-    """Resolve the Standard ASR model cache directory (download-policy.md §3).
+    """Resolve the Standard ASR model cache directory.
 
     The ``env_var`` override is read first. A whitespace-only value is treated
     as unset (falls through to the platform default), and a relative value
@@ -145,7 +144,7 @@ def resolve_cache_dir(
 def resolve_download_root(
     explicit: Path | None = None, *, has_library_default: bool = False
 ) -> Path | None:
-    """Resolve an engine's model download root per the spec IC.9 precedence.
+    """Resolve an engine's model download root per the standard precedence.
 
     Implements the normative four-level chain engines MUST follow when picking
     where model artifacts land: **explicit** config (the engine's

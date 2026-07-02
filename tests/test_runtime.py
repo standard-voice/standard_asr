@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from standard_asr.runtime import (
+from standard_asr.runtime.downloads import (
     allow_downloads,
     ensure_cache_dir,
     resolve_cache_dir,
@@ -164,7 +164,7 @@ def test_cache_dir_relative_env_resolves_against_cwd(
 
 
 # --------------------------------------------------------------------------- #
-# resolve_download_root: the four-level spec IC.9 precedence chain.
+# resolve_download_root: the four-level model-download precedence chain.
 # --------------------------------------------------------------------------- #
 def test_download_root_explicit_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("STANDARD_ASR_MODEL_DIR", str(tmp_path / "env"))

@@ -5,7 +5,7 @@
 
 import pytest
 
-from standard_asr.language import (
+from standard_asr.contract.language import (
     AUTO,
     DIAG_CANDIDATE_LANGUAGE_DROPPED,
     DIAG_CANDIDATE_LANGUAGES_IGNORED,
@@ -107,9 +107,9 @@ def test_effective_candidates_not_auto() -> None:
 def test_effective_candidates_unsupported_diagnostic() -> None:
     # A candidate list WAS provided but the engine/mode does not support
     # candidate languages: the ignored diagnostic is legitimate here and MUST
-    # carry the ignored list as `provided` and `effective=None` (spec LANG R3
-    # step 3 / §3: diagnostic includes which param, the reason, and the
-    # effective value). Independent of strict -- this carve-out never raises.
+    # carry the ignored list as `provided` and `effective=None` (the diagnostic
+    # names which param, the reason, and the effective value). Independent of
+    # strict -- this carve-out never raises.
     result, diags = effective_candidate_languages(
         AUTO,
         ["ja"],

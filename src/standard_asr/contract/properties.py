@@ -6,9 +6,9 @@
 ``Properties`` carries an engine's *static identity* -- values that do not
 change with feature flags or runtime mode: its id, the audio shapes it accepts,
 its sample-rate boundaries, and the language axis it exposes. Behavioural
-support lives in :mod:`standard_asr.capabilities`, not here (spec, section
-"Capabilities", rule R7: limits that only make sense when a feature is supported
-belong on that feature's capability node).
+support lives in :mod:`standard_asr.contract.capabilities`, not here (limits that
+only make sense when a feature is supported belong on that feature's capability
+node).
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ from typing import Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .audio_input import InputKind
-from .discovery import validate_engine_id, validate_model_name
-from .exceptions import EntrypointValidationError
-from .language import AUTO, is_valid_bcp47, normalize_bcp47
+from standard_asr.audio.input import InputKind
+from standard_asr.contract.exceptions import EntrypointValidationError
+from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
+from standard_asr.contract.language import AUTO, is_valid_bcp47, normalize_bcp47
 
 
 class SampleRateRange(BaseModel):
@@ -82,7 +82,7 @@ def sample_rate_accepted(accepted: AcceptedSampleRates, rate: int) -> bool:
     """Return whether ``rate`` is accepted by an ``accepted_sample_rates`` value.
 
     The single membership predicate for all three variants, so every
-    call site (R7 reachability checks, batch resampling decision, streaming
+    call site (reachability checks, batch resampling decision, streaming
     session validation) agrees on what "accepted" means.
 
     Args:
@@ -104,7 +104,7 @@ def nearest_accepted_sample_rate(accepted: AcceptedSampleRates, source: int) -> 
     """Return the accepted rate closest to ``source`` (resample target choice).
 
     Only meaningful when ``source`` is NOT already accepted (the caller checks
-    that first). For a list, the nearest member preferring not to upsample (R7's
+    that first). For a list, the nearest member preferring not to upsample (the
     anti-upsampling spirit). For a range, ``source`` clamped into ``[min, max]``
     -- the closest reachable in-range rate, which never upsamples when ``source``
     is above the range. ``"any"`` accepts everything, so it can never reach here
@@ -125,7 +125,7 @@ def nearest_accepted_sample_rate(accepted: AcceptedSampleRates, source: int) -> 
         # Clamp into the range: the nearest reachable in-range point.
         return min(accepted.max, max(accepted.min, source))
     if isinstance(accepted, list):
-        # Nearest member, preferring a non-upsampling rate on ties (R7).
+        # Nearest member, preferring a non-upsampling rate on ties.
         return min(accepted, key=lambda rate: (abs(rate - source), rate > source))
     raise ValueError("nearest_accepted_sample_rate is undefined for 'any'.")
 
@@ -139,8 +139,8 @@ def _normalize_language_list(value: list[str], *, field: str, allow_auto: bool) 
     ``"AUTO"`` would pass the literal pre-normalization guard, be canonicalized to
     ``"auto"`` by :func:`normalize_bcp47` (``"AUTO"`` validates as a 4-letter
     primary subtag), and land in the list despite the reserved-token ban
-    (spec §LANG term ``auto``: it MUST NOT appear in a candidate list,
-    and ``detectable_languages`` is the candidate-validation source). For the same
+    (``auto`` MUST NOT appear in a candidate list, and ``detectable_languages``
+    is the candidate-validation source). For the same
     reason duplicates are detected on the *canonical* form so case-only variants
     (``"en-US"`` / ``"EN-US"``) are caught; a duplicate is a declaration error and
     is rejected (mirroring ``wire_encodings``), naming the colliding original
@@ -205,7 +205,8 @@ class BaseProperties(BaseModel):
         description: Optional human-readable, display-only description. MUST NOT
             carry machine-readable negotiation/gating data -- that belongs in
             Capabilities (the free-form ``extra`` metadata pocket was
-            removed; it duplicated the blanket metadata §C deliberately dropped).
+            removed; it duplicated the blanket metadata the standard deliberately
+            dropped).
 
     Returns:
         None.
@@ -237,7 +238,7 @@ class BaseProperties(BaseModel):
         ..., description="Standard ASR protocol version supported by the engine."
     )
 
-    # Audio I/O boundaries (spec AI section 3.2).
+    # Audio I/O boundaries.
     accepted_input: set[InputKind] = Field(..., description="Audio shapes the engine accepts.")
     native_sample_rate: int = Field(..., gt=0, description="The model's native sample rate in Hz.")
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = Field(
@@ -260,7 +261,7 @@ class BaseProperties(BaseModel):
         default=None, description="Wire encodings supported for streaming, if any."
     )
 
-    # Language identity (spec LANG section 3).
+    # Language identity.
     selectable_languages: list[str] = Field(
         default_factory=list,
         description="Languages the application may select (BCP-47 plus 'auto').",
@@ -342,7 +343,7 @@ class BaseProperties(BaseModel):
         """Validate and normalize the streaming wire-encoding allowlist.
 
         ``wire_encodings`` is the fail-closed gate that
-        :meth:`~standard_asr.asr_interface.EngineBase.ensure_stream_format_supported`
+        :meth:`~standard_asr.runtime.interface.EngineBase.ensure_stream_format_supported`
         checks at session establishment. ``None`` means "unconstrained"; a
         concrete list MUST therefore be usable:
 
@@ -432,10 +433,10 @@ class BaseProperties(BaseModel):
 
     @model_validator(mode="after")
     def _validate_required_rate_reachable(self) -> BaseProperties:
-        """Require ``required_input_sample_rate`` to be an accepted rate (R7).
+        """Require ``required_input_sample_rate`` to be an accepted rate.
 
         The standard resamples wire/array input to ``required_input_sample_rate``
-        when set (spec example E: ``required=24000``, ``accepted=[24000]``). If a
+        when set (e.g. ``required=24000`` with ``accepted=[24000]``). If a
         concrete ``accepted_sample_rates`` (a list OR a range) does not admit the
         required rate, the engine's own contract is contradictory (the resample
         target is unreachable), so this fails loudly at declaration time rather
@@ -454,19 +455,19 @@ class BaseProperties(BaseModel):
         if req is not None and rates != "any" and not sample_rate_accepted(rates, req):
             raise ValueError(
                 f"required_input_sample_rate={req} must be accepted by accepted_sample_rates "
-                f"{rates!r} (the standard resamples to the required rate; spec R7)."
+                f"{rates!r} (the standard resamples to the required rate)."
             )
         return self
 
     @model_validator(mode="after")
     def _validate_native_rate_reachable(self) -> BaseProperties:
-        """Require ``native_sample_rate`` to be an accepted rate (R7).
+        """Require ``native_sample_rate`` to be an accepted rate.
 
         An engine whose ``native_sample_rate`` is not admitted by a concrete
         ``accepted_sample_rates`` (list or range) is self-contradictory: an 8 kHz
         telephony model that declares ``native_sample_rate=8000`` but excludes
         8000 from ``accepted_sample_rates`` would have its own native input
-        silently upsampled (e.g. to 16 kHz), degrading quality. Per spec R7 an
+        silently upsampled (e.g. to 16 kHz), degrading quality. An
         8 kHz model is a distinct native model, not a low-rate variant. Mirror the
         ``required_input_sample_rate`` reachability invariant and fail loudly at
         declaration time. ``"any"`` accepts every rate and so skips the check.
@@ -485,7 +486,7 @@ class BaseProperties(BaseModel):
                 f"native_sample_rate={native} must be accepted by accepted_sample_rates "
                 f"{rates!r} (otherwise the engine's own native-rate input would be "
                 "silently resampled; an 8 kHz telephony model is a distinct native "
-                "model, not a low-rate variant; spec R7)."
+                "model, not a low-rate variant)."
             )
         return self
 
@@ -552,7 +553,7 @@ class BaseProperties(BaseModel):
         """Whether the engine accepts any input sample rate.
 
         Renamed from ``self_describes_sample_rate``: that name
-        clashed with the spec §AI 3.1 sense of "self-describing sample rate" --
+        clashed with the audio-carrier sense of "self-describing sample rate" --
         a property of the *audio carrier* (a file/stream header that states its
         own rate), an unrelated concept. This predicate is purely about the
         engine's declared I/O boundary: ``accepted_sample_rates == "any"``.

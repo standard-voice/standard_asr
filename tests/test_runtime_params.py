@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from standard_asr.runtime_params import (
+from standard_asr.contract.params import (
     DIARIZE,
     DiarizationRequest,
     ProviderParams,
@@ -52,7 +52,7 @@ def test_granularity_vocabulary_single_source_of_truth() -> None:
     # declaration. This drift test fails the moment the two sets diverge.
     from typing import get_args
 
-    from standard_asr.capabilities import WordTimestampGranularityName
+    from standard_asr.contract.capabilities import WordTimestampGranularityName
 
     enum_values = {g.value for g in WordTimestampGranularity}
     literal_values = set(get_args(WordTimestampGranularityName))
@@ -121,8 +121,8 @@ def test_candidate_languages_rejects_malformed_items(
 ) -> None:
     # A malformed candidate is an invalid value (a code bug), rejected at
     # construction regardless of strict/best_effort -- not left dormant until a
-    # later auto-mode request on a supporting engine (Language R3 step 2 would
-    # otherwise short-circuit it away before step 4's per-item check).
+    # later auto-mode request on a supporting engine (candidate resolution would
+    # otherwise short-circuit it away before the per-item well-formedness check).
     with pytest.raises(ValidationError, match="well-formed BCP-47"):
         model(candidate_languages=value)
 
@@ -218,8 +218,8 @@ def test_language_error_never_echoes_raw_value(
     model: type[RuntimeParams | WireRuntimeParams],
 ) -> None:
     # The malformed-tag message must not embed the submitted value: it is
-    # surfaced verbatim by the server's unauthenticated 422 body (spec server.md
-    # "validation errors never echo the request input"), CLI output, and logs,
+    # surfaced verbatim by the server's unauthenticated 422 body (validation
+    # errors never echo the request input), CLI output, and logs,
     # so a mis-pasted secret sent as `language` would otherwise be reflected.
     sentinel = "my secret passphrase here"
     with pytest.raises(ValidationError) as exc_info:
@@ -285,7 +285,7 @@ def test_wire_params_is_frozen_and_forbids_extra() -> None:
         wire.language = "fr"  # type: ignore[misc]
 
 
-# --- Diarization request marker (spec §RT 3.4) ---------------------------------
+# --- Diarization request marker -----------------------------------------------
 
 
 def test_diarization_request_is_empty_frozen_marker() -> None:
@@ -322,7 +322,7 @@ def test_diarization_default_none_on_both_models(
 def test_diarization_wire_three_way_mapping(
     model: type[RuntimeParams | WireRuntimeParams],
 ) -> None:
-    # The spec §RT 3.4 wire mapping: {} -> enable marker; null -> not requested;
+    # The wire mapping: {} -> enable marker; null -> not requested;
     # absent key -> not requested. There is NO requested-but-empty third state
     # (no []-analogue for an on/off feature).
     assert model.model_validate({"diarization": {}}).diarization == DiarizationRequest()

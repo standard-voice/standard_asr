@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from standard_asr.resampling import resample, resample_with_backend
+from standard_asr.audio.resampling import resample, resample_with_backend
 
 
 def _require_scipy_signal() -> Any:
@@ -178,7 +178,7 @@ def test_resample_clamps_zero_output_length_to_one() -> None:
 def test_backend_falls_back_when_scipy_import_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # A broken / absent scipy must degrade to the built-in resampler (spec R8),
+    # A broken / absent scipy must degrade to the built-in resampler,
     # never propagate. We fail ONLY the in-method ``scipy.signal`` import and
     # restore immediately, avoiding the numpy-reload artifact that purging scipy
     # from sys.modules would cause.

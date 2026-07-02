@@ -3,13 +3,13 @@
 
 """Subtitle renderers for transcription results (SRT / VTT).
 
-The core library renders the constant :class:`~standard_asr.results.TranscriptionResult`
+The core library renders the constant :class:`~standard_asr.contract.results.TranscriptionResult`
 into SRT and VTT, so every compliant engine gets subtitle output for free
-(spec, section "Transcription Result", rule TR.6). This replaces the old
+(spec, section "Transcription Result"). This replaces the old
 ``response_format`` knob: rendering is a post-hoc transformation, not a request
 parameter. Provider-rendered high-fidelity formats remain available only via
 ``result.extra["provider_formats"]``. Speaker labels are rendered only on
-explicit opt-in (``include_speakers=True``, spec TR.6): SRT prefixes the cue
+explicit opt-in (``include_speakers=True``): SRT prefixes the cue
 text with ``[<label>]: ``, WebVTT wraps the cue body in a ``<v <label>>`` span.
 """
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from .results import Segment, TranscriptionResult
+from standard_asr.contract.results import Segment, TranscriptionResult
 
 #: Matches runs of two-or-more newlines (optionally with intervening blank
 #: whitespace), i.e. the blank-line cue separator. Transcript text containing
@@ -82,7 +82,7 @@ def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
 def _sanitize_speaker_label(label: str, *, escape_markup: bool) -> str:
     """Sanitize a speaker label for interpolation into a cue block.
 
-    The model validators (:func:`~standard_asr.results.validate_speaker_label`)
+    The model validators (:func:`~standard_asr.contract.results.validate_speaker_label`)
     reject empty, whitespace-only, and edge-whitespace labels, but NOT interior
     line terminators: ``"A\\nB"`` is a construction-valid label that, spliced
     verbatim into a cue, would introduce a line break -- and a line break in the
@@ -122,9 +122,9 @@ def _sanitize_speaker_label(label: str, *, escape_markup: bool) -> str:
 def _format_timestamp(seconds: float, *, millis_sep: str) -> str:
     """Format a time offset as ``HH:MM:SS<sep>mmm``.
 
-    The renderer trusts the validated data model: :class:`~standard_asr.results.Segment`
-    / :class:`~standard_asr.results.Word` guarantee a non-negative finite
-    ``start`` / ``end`` (spec TR.2), so no negative offset can reach here. The
+    The renderer trusts the validated data model: :class:`~standard_asr.contract.results.Segment`
+    / :class:`~standard_asr.contract.results.Word` guarantee a non-negative finite
+    ``start`` / ``end``, so no negative offset can reach here. The
     renderer therefore does NOT clamp negatives -- clamping would silently mask
     an upstream timestamp bug (a wrong result), and the model already rejects one
     loudly at construction.
@@ -146,13 +146,13 @@ def _format_timestamp(seconds: float, *, millis_sep: str) -> str:
 def _cues(result: TranscriptionResult) -> list[Segment]:
     """Return the segments to render, falling back to a single full-text cue.
 
-    The §TR.1 null rule distinguishes the two empty states: ``segments is None``
+    The null rule distinguishes the two empty states: ``segments is None``
     means segmentation was *not requested / not applicable*, whereas
     ``segments == []`` means it *was requested but is empty* (e.g. confirmed
     silence). Only the former may fall back to a synthetic whole-text cue; an
     explicit ``[]`` yields zero cues, never a fabricated full-span cue.
 
-    Segments are sorted by ``(start, channel, speaker)`` to enforce the §TR.2
+    Segments are sorted by ``(start, channel, speaker)`` to enforce the
     top-level ordering invariant at the rendering boundary, so out-of-order
     input still produces correctly ordered subtitles. ``channel`` may be
     ``None``; it sorts before any explicit channel index (which the data model
@@ -199,7 +199,7 @@ def to_srt(result: TranscriptionResult, *, include_speakers: bool = False) -> st
     consumer must neutralize tags, do so on the transcript text before
     rendering. (WebVTT, which mandates escaping, is handled by :func:`to_vtt`.)
 
-    Speaker rendering (spec TR.6): SRT has no speaker syntax, so opting in
+    Speaker rendering: SRT has no speaker syntax, so opting in
     mutates the cue text itself -- each labelled cue is prefixed with
     ``[<label>]: ``. The default is ``False`` on text-purity grounds (the
     renderer is a projection of the transcript; injecting labels uninvited
@@ -208,7 +208,7 @@ def to_srt(result: TranscriptionResult, *, include_speakers: bool = False) -> st
     unchanged; empty-text segments are skipped even when labelled (a label
     with no payload is not a cue).
 
-    Segment fallback (spec TR.6): when ``result.segments is None`` (segmentation
+    Segment fallback: when ``result.segments is None`` (segmentation
     not requested/applicable) but ``result.text`` is non-empty, a single cue
     spanning the whole text is synthesized -- ``[0, duration]``, or ``[0, 3 s]``
     when ``duration`` is unknown (players silently drop zero-duration cues).
@@ -258,14 +258,14 @@ def to_vtt(result: TranscriptionResult, *, include_speakers: bool = False) -> st
     structure is also protected (line terminators normalized, blank-line runs
     collapsed, ``-->`` neutralized by the ``>`` escape).
 
-    Speaker rendering (spec TR.6): opting in wraps the whole cue body of each
+    Speaker rendering: opting in wraps the whole cue body of each
     labelled cue in WebVTT's native voice span, ``<v <label>>``. The default is
     ``False`` on text-purity grounds (the renderer is a projection of the
     transcript), not for backward compatibility. Cues whose ``speaker`` is
     ``None`` are rendered unchanged; empty-text segments are skipped even when
     labelled.
 
-    Segment fallback (spec TR.6): when ``result.segments is None`` (segmentation
+    Segment fallback: when ``result.segments is None`` (segmentation
     not requested/applicable) but ``result.text`` is non-empty, a single cue
     spanning the whole text is synthesized -- ``[0, duration]``, or ``[0, 3 s]``
     when ``duration`` is unknown (players silently drop zero-duration cues).

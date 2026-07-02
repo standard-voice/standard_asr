@@ -96,7 +96,7 @@ threshold / roles / model_id 等引擎特有旋鈕——多一個 `num_speakers`
 
 **Wire 層代價（Round 4 / R4-A 補記）：** `provider_params` 在 wire 層是
 discover-only——`WireRuntimeParams` 以 `extra="forbid"` 拒絕它
-（`runtime_params.py:369-404`，設計如此，非疏漏）。defer 之後，
+（`contract/params.py:369-404`，設計如此，非疏漏）。defer 之後，
 HTTP/WS 的跨語言客戶端**完全沒有** count hint 通道，直到 `num_speakers`
 畢業。這是 defer 的最大隱性代價（G.5「wire 是一等公民」之下必須記錄）；
 它是 `provider_params` 的系統性性質而非 diarization 特有，但**畢業的

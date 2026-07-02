@@ -77,14 +77,14 @@ class ConfigError(StructuredError, ValueError):
 class TranscriptionError(StructuredError):
     """Raised when an engine fails during batch transcription (the cardinal sin guard).
 
-    This is the **portable batch error contract** (spec Runtime R7): when an
+    This is the **portable batch error contract**: when an
     engine's model inference, network call, or SDK fails inside ``_transcribe``,
     the failure MUST surface as a ``TranscriptionError`` (with the original
     exception preserved as ``__cause__`` via ``raise ... from``) so an
     application can catch one type across every engine instead of each engine's
     native exception (``RuntimeError``, an SDK error, ``requests.HTTPError`` ...).
     It is the batch counterpart of the streaming ``error`` event's
-    ``engine_error`` code (spec ST §6.2). It denotes an engine/runtime fault, not
+    ``engine_error`` code. It denotes an engine/runtime fault, not
     a caller mistake (those raise :class:`ConfigError` /
     :class:`UnsupportedFeatureError` / :class:`InvalidProviderParamError` /
     :class:`AudioProcessingError`), so the server maps it to a generic 5xx.
@@ -188,7 +188,7 @@ class InvalidProviderParamError(StructuredError, ValueError):
 class StreamClosedError(StandardASRError):
     """Raised when audio is delivered to a streaming session that is closed.
 
-    Strictly a **lifecycle-close** breach (spec ST §6.1): the input side is over,
+    Strictly a **lifecycle-close** breach: the input side is over,
     so the audio can no longer be consumed. Covers ``send_audio`` after
     ``end_audio()`` and ``send_audio`` after the session already delivered a
     terminal event (the audio queue has no consumer anymore). It does NOT cover
@@ -205,8 +205,8 @@ class InvalidSessionUseError(StandardASRError, ValueError):
     """Raised when a streaming session is driven incorrectly while still live.
 
     A caller-side **programming error** against an open session -- distinct from
-    :class:`StreamClosedError` (the stream genuinely ended). It covers the spec
-    ST §3.3 / §6.1 usage breaches that are NOT lifecycle-close:
+    :class:`StreamClosedError` (the stream genuinely ended). It covers the
+    still-live-session usage breaches that are NOT lifecycle-close:
 
     * mixing managed ``feed()`` with manual ``send_audio`` / ``end_audio`` (only
       one input mode may own a session);
