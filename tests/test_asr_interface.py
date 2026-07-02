@@ -13,9 +13,12 @@ import numpy as np
 import pytest
 
 from standard_asr import (
+    ChannelResult,
     RuntimeParams,
+    Segment,
     StandardASR,
     TranscriptionResult,
+    Word,
 )
 from standard_asr.asr_config import LanguageConfigMixin
 from standard_asr.audio_format import AudioFormat
@@ -1577,3 +1580,141 @@ def test_engine_base_default_prepare_is_noop() -> None:
     # nothing to warm up inherits it; it accepts no arguments and returns None.
     engine = _ArrayEngine()
     assert engine.prepare() is None
+
+
+# --------------------------------------------------------------------------- #
+# Batch segment-speaker synthesis (spec TR.5 pinned rule)
+# --------------------------------------------------------------------------- #
+def _w(index: int, label: str | None) -> Word:
+    """One word at index*0.1s carrying the given speaker label (None = no vote)."""
+    return Word(start=index * 0.1, end=index * 0.1 + 0.1, text=f"w{index}", speaker=label)
+
+
+def _speaker_segment(labels: list[str | None], *, speaker: str | None = None) -> Segment:
+    return Segment(
+        start=0.0,
+        end=1.0,
+        text=" ".join(f"w{i}" for i in range(len(labels))),
+        words=[_w(i, label) for i, label in enumerate(labels)],
+        speaker=speaker,
+    )
+
+
+class _CannedResultEngine(_ArrayEngine):
+    """Array engine returning a canned result, for the TR.5 post-processing."""
+
+    def __init__(self, result: TranscriptionResult, *, strict: bool = True) -> None:
+        super().__init__(strict=strict)
+        self._result = result
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return self._result
+
+
+def test_transcribe_synthesizes_segment_speaker_from_words() -> None:
+    canned = TranscriptionResult(text="w0 w1 w2", segments=[_speaker_segment(["A", "A", "B"])])
+    result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
+    assert result.segments is not None
+    assert result.segments[0].speaker == "A"  # majority by word count
+
+
+def test_transcribe_keeps_adapter_populated_speaker() -> None:
+    # A pre-populated (adapter-native) Segment.speaker is authoritative: the
+    # standard layer synthesizes ONLY when it is None, even when words disagree.
+    canned = TranscriptionResult(text="w0 w1", segments=[_speaker_segment(["A", "A"], speaker="B")])
+    result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
+    assert result.segments is not None
+    assert result.segments[0].speaker == "B"
+
+
+def test_transcribe_synthesis_applies_to_channels() -> None:
+    # TR.4 promises the top-level and per-channel views agree; synthesizing
+    # only the top level would silently desync them.
+    canned = TranscriptionResult(
+        text="w0 w1 w2",
+        segments=[_speaker_segment(["B", "A", "A"])],
+        channels=[
+            ChannelResult(channel=0, text="w0 w1 w2", segments=[_speaker_segment(["B", "A", "A"])])
+        ],
+    )
+    result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
+    assert result.segments is not None and result.channels is not None
+    assert result.segments[0].speaker == "A"
+    channel_segments = result.channels[0].segments
+    assert channel_segments is not None
+    assert channel_segments[0].speaker == "A"  # both views synthesized, and agree
+
+
+def test_transcribe_no_speaker_words_leaves_result_identical() -> None:
+    # Identity fast path: nothing derivable -> the segments list object is
+    # passed through untouched (transcribe only rebuilds for diagnostics).
+    canned = TranscriptionResult(text="w0 w1", segments=[_speaker_segment([None, None])])
+    result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
+    assert result.segments is canned.segments
+    assert result.segments is not None
+    assert result.segments[0].speaker is None
+
+
+def test_transcribe_synthesis_runs_without_diarization_request() -> None:
+    # The synthesis runs regardless of the request (always-on engines emit
+    # unrequested-but-legal word speakers; TR.5 named exemption).
+    canned = TranscriptionResult(text="w0", segments=[_speaker_segment(["A"])])
+    result = _CannedResultEngine(canned).transcribe(_audio())  # params=None
+    assert result.segments is not None
+    assert result.segments[0].speaker == "A"
+
+
+def test_synthesize_result_speakers_branch_matrix() -> None:
+    from standard_asr.asr_interface import (
+        _synthesize_result_speakers,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # No segments, no channels: identity.
+    bare = TranscriptionResult(text="x")
+    assert _synthesize_result_speakers(bare) is bare
+    # Segment with speaker=None and words=None: nothing to vote, identity.
+    no_words = TranscriptionResult(text="x", segments=[Segment(start=0.0, end=1.0, text="x")])
+    assert _synthesize_result_speakers(no_words) is no_words
+    # All words speaker=None: synthesis yields None -> identity (never writes
+    # a None back, never rebuilds).
+    no_votes = TranscriptionResult(text="w0", segments=[_speaker_segment([None])])
+    assert _synthesize_result_speakers(no_votes) is no_votes
+    # Mixed list: only the derivable segment is rebuilt; untouched segments
+    # keep object identity inside the new list.
+    unchanged_segment = _speaker_segment(["A"], speaker="A")
+    mixed = TranscriptionResult(text="w0 w0", segments=[unchanged_segment, _speaker_segment(["B"])])
+    synthesized = _synthesize_result_speakers(mixed)
+    assert synthesized is not mixed
+    assert synthesized.segments is not None
+    assert synthesized.segments[0] is unchanged_segment
+    assert synthesized.segments[1].speaker == "B"
+
+
+def test_synthesize_result_speakers_channels_matrix() -> None:
+    from standard_asr.asr_interface import (
+        _synthesize_result_speakers,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # Channel entry without segments is reused; a derivable entry is rebuilt;
+    # the top level (already speakered) stays identical.
+    top = [_speaker_segment(["A"], speaker="A"), _speaker_segment(["B"], speaker="B")]
+    no_segments_entry = ChannelResult(channel=0, text="w0")
+    result = TranscriptionResult(
+        text="w0 w0",
+        segments=top,
+        channels=[
+            no_segments_entry,
+            ChannelResult(channel=1, text="w0", segments=[_speaker_segment(["B"])]),
+        ],
+    )
+    synthesized = _synthesize_result_speakers(result)
+    assert synthesized is not result
+    assert synthesized.segments is result.segments  # top level untouched
+    assert synthesized.channels is not None
+    assert synthesized.channels[0] is no_segments_entry  # reused, not rebuilt
+    channel_segments = synthesized.channels[1].segments
+    assert channel_segments is not None
+    assert channel_segments[0].speaker == "B"
+    # All-unchanged channels: identity fast path even with channels present.
+    settled = _synthesize_result_speakers(synthesized)
+    assert settled is synthesized

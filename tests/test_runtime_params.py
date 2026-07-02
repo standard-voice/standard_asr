@@ -9,6 +9,8 @@ import pytest
 from pydantic import ValidationError
 
 from standard_asr.runtime_params import (
+    DIARIZE,
+    DiarizationRequest,
     ProviderParams,
     RuntimeParams,
     WireRuntimeParams,
@@ -25,6 +27,7 @@ def test_defaults_are_none() -> None:
     assert params.language is None
     assert params.candidate_languages is None
     assert params.word_timestamps is None
+    assert params.diarization is None
     assert params.prompt is None
     assert params.phrase_hints is None
     assert params.on_unsupported == "fail"
@@ -280,3 +283,67 @@ def test_wire_params_is_frozen_and_forbids_extra() -> None:
     wire = WireRuntimeParams(language="en")
     with pytest.raises(ValidationError):
         wire.language = "fr"  # type: ignore[misc]
+
+
+# --- Diarization request marker (spec §RT 3.4) ---------------------------------
+
+
+def test_diarization_request_is_empty_frozen_marker() -> None:
+    # The v1 marker deliberately carries NO fields: presence = enable is the
+    # whole state space, and the param_gating import-time assert relies on the
+    # empty field set to keep the diarization gate feature-level only.
+    assert DiarizationRequest.model_fields == {}
+    marker = DiarizationRequest()
+    # Frozen: even a never-declared attribute cannot be attached.
+    with pytest.raises(ValidationError):
+        marker.num_speakers = 3  # type: ignore[attr-defined]
+    # extra="forbid": a guessed future knob (num_speakers graduates additively
+    # once portable) fails loudly instead of being silently ignored.
+    with pytest.raises(ValidationError):
+        DiarizationRequest(num_speakers=3)  # type: ignore[call-arg]
+
+
+def test_diarize_constant_is_bare_request() -> None:
+    # DIARIZE parallels AUTO for language: one shared, stateless instance.
+    assert isinstance(DIARIZE, DiarizationRequest)
+    assert DIARIZE == DiarizationRequest()
+    params = RuntimeParams(diarization=DIARIZE)
+    assert params.diarization is DIARIZE
+
+
+@pytest.mark.parametrize("model", [RuntimeParams, WireRuntimeParams])
+def test_diarization_default_none_on_both_models(
+    model: type[RuntimeParams | WireRuntimeParams],
+) -> None:
+    assert model().diarization is None
+
+
+@pytest.mark.parametrize("model", [RuntimeParams, WireRuntimeParams])
+def test_diarization_wire_three_way_mapping(
+    model: type[RuntimeParams | WireRuntimeParams],
+) -> None:
+    # The spec §RT 3.4 wire mapping: {} -> enable marker; null -> not requested;
+    # absent key -> not requested. There is NO requested-but-empty third state
+    # (no []-analogue for an on/off feature).
+    assert model.model_validate({"diarization": {}}).diarization == DiarizationRequest()
+    assert model.model_validate({"diarization": None}).diarization is None
+    assert model.model_validate({}).diarization is None
+
+
+@pytest.mark.parametrize("model", [RuntimeParams, WireRuntimeParams])
+def test_diarization_wire_rejects_unknown_keys(
+    model: type[RuntimeParams | WireRuntimeParams],
+) -> None:
+    # Unknown keys inside the marker are rejected (extra="forbid"), which the
+    # server surfaces as a 422 -- never silently dropped.
+    with pytest.raises(ValidationError) as exc_info:
+        model.model_validate({"diarization": {"num_speakers": 2}})
+    assert any(err["loc"][0] == "diarization" for err in exc_info.value.errors())
+
+
+def test_diarization_is_part_of_wire_portable_set() -> None:
+    # Diarization is a portable standard-set field, so a cross-language wire
+    # client can request it; the round trip re-validates {} into the marker.
+    assert "diarization" in WireRuntimeParams.model_fields
+    wire = WireRuntimeParams.model_validate({"diarization": {}})
+    assert wire.to_runtime_params().diarization == DiarizationRequest()

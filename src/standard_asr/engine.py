@@ -78,7 +78,13 @@ from .language import AUTO, effective_candidate_languages, effective_language, n
 from .param_gating import Mode
 from .results import ChannelResult, Diagnostic, Segment, TranscriptionResult, Word
 from .runtime import allow_downloads, resolve_download_root
-from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
+from .runtime_params import (
+    DIARIZE,
+    DiarizationRequest,
+    ProviderParams,
+    RuntimeParams,
+    WordTimestampGranularity,
+)
 from .streaming import TranscriptionEvent, TranscriptionSession
 
 __all__ = [
@@ -91,11 +97,13 @@ __all__ = [
     "CandidateLanguagesConstraints",
     "ChannelResult",
     "CredentialsConfigMixin",
+    "DIARIZE",
     "DeclaredCapabilities",
     "DeviceConfigMixin",
     "Diagnostic",
     "DiarizationCap",
     "DiarizationConstraints",
+    "DiarizationRequest",
     "DownloadConfigMixin",
     "EngineBase",
     "FinalityCap",

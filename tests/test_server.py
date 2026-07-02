@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 from standard_asr import (
+    DiarizationRequest,
     RuntimeParams,
     TranscriptionResult,
 )
@@ -33,6 +34,7 @@ from standard_asr import server as server_module
 from standard_asr.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
+    DiarizationCap,
     FlagCap,
     LanguageCaps,
     StreamingCapabilities,
@@ -279,6 +281,18 @@ class _RecordingEncodedASR(EngineBase):
 
 def _recording_encoded_factory() -> _RecordingEncodedASR:  # pyright: ignore[reportUnusedFunction]
     return _RecordingEncodedASR()
+
+
+class _RecordingOptionsASR(_DummyASR):
+    """Records the params object the server built from the wire ``options``."""
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        _RECORDED["options"] = options
+        return TranscriptionResult(text="dummy")
+
+
+def _recording_options_factory() -> _RecordingOptionsASR:  # pyright: ignore[reportUnusedFunction]
+    return _RecordingOptionsASR()
 
 
 def _registry():
@@ -818,6 +832,45 @@ def test_transcribe_json_with_options_builds_params() -> None:
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 200
+
+
+def test_transcribe_options_accept_diarization_marker() -> None:
+    # {"diarization": {}} on the wire reaches the engine as the empty frozen
+    # marker (spec §RT 3.4 three-way mapping: {} -> DiarizationRequest()).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _RECORDED.clear()
+    app = server_module.create_app(registry=_registry_for("_recording_options_factory"))
+    client = TestClient(app)
+    payload: dict[str, Any] = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(b"fake").decode(),
+        "options": {"diarization": {}},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    options = _RECORDED["options"]
+    assert isinstance(options, RuntimeParams)
+    assert options.diarization == DiarizationRequest()
+
+
+def test_transcribe_options_diarization_unknown_key_maps_to_422() -> None:
+    # The marker is a closed type (extra="forbid"): an unknown nested key --
+    # e.g. a not-yet-graduated num_speakers -- is rejected, never silently
+    # dropped (it would otherwise read as a satisfied request).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_recording_options_factory"))
+    client = TestClient(app)
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(b"fake").decode(),
+        "options": {"diarization": {"num_speakers": 2}},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 422
 
 
 def test_transcribe_json_with_bad_options_maps_to_422() -> None:
@@ -1472,6 +1525,41 @@ def _stream_best_effort_factory() -> (  # pyright: ignore[reportUnusedFunction]
     return _StreamBestEffortEngine()
 
 
+class _SpeakerStreamSession(TranscriptionSession):
+    """Emits one speaker-labelled final per fed chunk."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        index = 0
+        async for chunk in self.audio_chunks():
+            yield TranscriptionEvent.final(
+                f"seg-{index}", chunk.decode("utf-8", "replace"), speaker="A"
+            )
+            index += 1
+
+
+class _SpeakerStreamEngine(_StreamEchoEngine):
+    """Streaming engine that declares diarization and labels its finals."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return _SpeakerStreamSession()
+
+
+def _speaker_stream_factory() -> _SpeakerStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    return _SpeakerStreamEngine()
+
+
 def test_ws_stream_happy_path() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -1493,6 +1581,36 @@ def test_ws_stream_happy_path() -> None:
                 break
     finals = {e["text"] for e in events if e["type"] == "final"}
     assert finals == {"abc", "de"}
+
+
+def test_ws_event_carries_speaker() -> None:
+    # End-to-end diarization wire pin: {"diarization": {}} in the WS start
+    # options passes gating (declared supported) and the event's speaker rides
+    # the JSON payload; the constant event shape serializes speaker=null on
+    # unlabelled events (here: done).
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_speaker_stream_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {
+                "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                "options": {"diarization": {}},
+            }
+        )
+        ws.send_bytes(b"abc")
+        ws.send_text("end")
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "done":
+                break
+    finals = [e for e in events if e["type"] == "final"]
+    assert finals and finals[0]["speaker"] == "A"
+    assert events[-1]["type"] == "done" and events[-1]["speaker"] is None
 
 
 def test_ws_stream_forwards_degrade_diagnostics() -> None:

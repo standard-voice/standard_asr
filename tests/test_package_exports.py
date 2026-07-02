@@ -124,7 +124,12 @@ _DELIBERATE_DUAL_EXPORTS: frozenset[str] = frozenset(
     {
         "AudioFormat",
         "ChannelResult",
+        # DIARIZE / DiarizationRequest: an application constructs the request
+        # marker; an engine author receives it (and tests gating against it) --
+        # the WordTimestampGranularity precedent.
+        "DIARIZE",
         "Diagnostic",
+        "DiarizationRequest",
         "RuntimeParams",
         "Segment",
         "StandardASR",
@@ -144,3 +149,14 @@ def test_top_level_and_engine_facade_overlap_is_only_the_deliberate_duals() -> N
     # mis-placed) and the two surfaces are silently re-flattening.
     overlap = set(standard_asr.__all__) & set(engine_facade.__all__)
     assert overlap == set(_DELIBERATE_DUAL_EXPORTS)
+
+
+def test_diarize_constant_identity_across_surfaces() -> None:
+    # DIARIZE is one shared, stateless marker instance: every surface MUST
+    # re-export the same object (a per-surface copy would still compare equal,
+    # but identity is the cheap pin that these are true re-exports).
+    runtime_params = importlib.import_module("standard_asr.runtime_params")
+    assert standard_asr.DIARIZE is engine_facade.DIARIZE
+    assert standard_asr.DIARIZE is runtime_params.DIARIZE
+    assert standard_asr.DiarizationRequest is runtime_params.DiarizationRequest
+    assert engine_facade.DiarizationRequest is runtime_params.DiarizationRequest

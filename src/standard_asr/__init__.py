@@ -59,7 +59,7 @@ from .exceptions import (
 )
 from .renderers import to_srt, to_vtt
 from .results import ChannelResult, Diagnostic, Segment, TranscriptionResult, Word
-from .runtime_params import RuntimeParams, WordTimestampGranularity
+from .runtime_params import DIARIZE, DiarizationRequest, RuntimeParams, WordTimestampGranularity
 from .streaming import (
     StreamDeadlines,
     SyncSession,
@@ -80,7 +80,9 @@ __all__ = [
     "AudioUrl",
     "ChannelResult",
     "ConfigError",
+    "DIARIZE",
     "Diagnostic",
+    "DiarizationRequest",
     "DiscoveryError",
     "EntrypointValidationError",
     "FFmpegNotFoundError",

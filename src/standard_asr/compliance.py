@@ -8,7 +8,7 @@ from __future__ import annotations
 import inspect
 import threading
 from dataclasses import dataclass
-from typing import Callable, Iterable, Literal
+from typing import Callable, Iterable, Literal, Sequence
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -17,7 +17,13 @@ from .asr_config import BaseConfig
 from .asr_interface import EngineBase
 from .asr_properties import BaseProperties
 from .audio_format import AudioFormat
-from .capabilities import DeclaredCapabilities, PromptCap, StreamingCapabilities, WordTimestampsCap
+from .capabilities import (
+    BatchCapabilities,
+    DeclaredCapabilities,
+    PromptCap,
+    StreamingCapabilities,
+    WordTimestampsCap,
+)
 from .discovery import FactoryLoadError, ModelRegistry, ModelSpec, discover_models
 from .exceptions import (
     ConfigError,
@@ -31,7 +37,8 @@ from .param_gating import (
     DIAG_UNSUPPORTED_PARAMETER_IGNORED,
     _count_tokens,  # pyright: ignore[reportPrivateUsage]
 )
-from .runtime_params import ProviderParams, RuntimeParams, WordTimestampGranularity
+from .results import Segment, TranscriptionResult, Word
+from .runtime_params import DIARIZE, ProviderParams, RuntimeParams, WordTimestampGranularity
 from .streaming import (
     SyncSession,
     TranscriptionEvent,
@@ -49,6 +56,7 @@ __all__ = [
     "check_recommended_wire_format",
     "check_streaming_param_gating",
     "check_sync_bridge",
+    "check_transcription_result",
 ]
 
 #: Candidate (param-field, params-builder, capability-suffix) probes for an
@@ -67,6 +75,11 @@ _GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
         "prompt",
         lambda: RuntimeParams(prompt="the quick brown fox"),
         "streaming.guidance.prompt",
+    ),
+    (
+        "diarization",
+        lambda: RuntimeParams(diarization=DIARIZE),
+        "streaming.diarization",
     ),
 )
 
@@ -1173,6 +1186,12 @@ def _cross_check_event_capabilities(
       declared it does not emit.
     * ``word_timestamps`` unsupported ⇒ no event may carry ``words``: per-word
       timings are word timestamps the engine declared it does not produce.
+    * ``diarization`` unsupported ⇒ no event may carry a speaker label (its own
+      ``speaker`` or any ``words[i].speaker``): attribution is diarization
+      output the engine declared it does not produce. This negative check is
+      the only diarization coverage the suite can offer -- *positive*
+      diarization behaviour (correct labels) is unverifiable without
+      multi-speaker fixtures, and the standard probes feed silence.
 
     The reverse -- declaring a capability a given recorded stream simply never
     exercises -- is not a violation, so each check is one-directional.
@@ -1229,6 +1248,23 @@ def _cross_check_event_capabilities(
                 model=None,
             )
         )
+    if (
+        event.speaker is not None or any(word.speaker is not None for word in event.words or [])
+    ) and not streaming.diarization.is_supported:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="stream_exceeds_diarization",
+                message=(
+                    "event emits a speaker label but the engine declares "
+                    "streaming.diarization unsupported -- the declared capabilities and "
+                    "the emitted stream disagree. Declare diarization supported "
+                    "(always_on if architecturally non-disableable), or do not emit "
+                    "speaker labels."
+                ),
+                model=None,
+            )
+        )
 
 
 def check_event_sequence(
@@ -1278,8 +1314,9 @@ def check_event_sequence(
             the engine's declared streaming capabilities (SF-4): a stream MUST NOT
             *exceed* what it declares -- e.g. emit a non-zero ``stable_until`` while
             ``word_stability`` is unsupported, an ``audio_processed_until`` cursor
-            while ``timestamps`` mode is ``none``, or ``words`` while
-            ``word_timestamps`` is unsupported. Pass
+            while ``timestamps`` mode is ``none``, ``words`` while
+            ``word_timestamps`` is unsupported, or a speaker label (event- or
+            word-level) while ``diarization`` is unsupported. Pass
             ``engine.declared_capabilities`` to catch a declaration that disagrees
             with the engine's actual output. ``None`` skips the cross-check.
 
@@ -1416,6 +1453,115 @@ def assert_prefix_invariant(events: Iterable[TranscriptionEvent]) -> None:
             "monotonic, never-rewritten prefixes; assert this, not partial counts): "
             f"{detail}"
         )
+
+
+def _carries_speaker_labels(
+    segments: Sequence[Segment] | None, words: Sequence[Word] | None
+) -> bool:
+    """Return whether any segment or word in one result view carries a speaker.
+
+    One "view" is a ``(segments, words)`` pair -- either the top level of a
+    :class:`~standard_asr.results.TranscriptionResult` or a single
+    ``channels[i]`` entry; :func:`_cross_check_result_capabilities` walks every
+    view because TR.5's within-result consistency spans them all (a label
+    hidden under ``channels`` alone is still diarization output).
+
+    Args:
+        segments: The view's segments, or ``None``.
+        words: The view's flattened words, or ``None``.
+
+    Returns:
+        ``True`` when any ``Segment.speaker``, ``Segment.words[i].speaker``, or
+        flattened ``Word.speaker`` is non-``None``.
+    """
+    for segment in segments or []:
+        if segment.speaker is not None:
+            return True
+        if any(word.speaker is not None for word in segment.words or []):
+            return True
+    return any(word.speaker is not None for word in words or [])
+
+
+def _cross_check_result_capabilities(
+    result: TranscriptionResult,
+    batch: BatchCapabilities | None,
+    issues: list[ComplianceIssue],
+) -> None:
+    """Cross-check a batch result's speaker labels against the declared capabilities.
+
+    The batch twin of the streaming ``stream_exceeds_diarization`` check in
+    :func:`_cross_check_event_capabilities`: a result MUST NOT carry speaker
+    labels (anywhere -- top-level ``segments[]`` / ``words[]`` or any
+    ``channels[i]`` view) when ``batch.diarization`` is declared unsupported. A
+    missing ``batch`` domain is the same verdict (fail-closed: no declaration
+    is no support). One-directional like its streaming sibling: a supporting
+    engine whose recorded result happens to carry no labels is not a violation.
+
+    Args:
+        result: The recorded result to check.
+        batch: The engine's declared batch capabilities, or ``None``.
+        issues: The mutable list of issues to append to.
+    """
+    if batch is not None and batch.diarization.is_supported:
+        return
+    if _carries_speaker_labels(result.segments, result.words) or any(
+        _carries_speaker_labels(channel.segments, channel.words)
+        for channel in result.channels or []
+    ):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="result_exceeds_diarization",
+                message=(
+                    "result carries speaker labels but the engine declares "
+                    "batch.diarization unsupported -- the declared capabilities and "
+                    "the produced result disagree. Declare diarization supported "
+                    "(always_on if architecturally non-disableable), or do not emit "
+                    "speaker labels."
+                ),
+                model=None,
+            )
+        )
+
+
+def check_transcription_result(
+    result: TranscriptionResult,
+    *,
+    capabilities: DeclaredCapabilities,
+) -> ComplianceReport:
+    """Cross-check a *recorded* batch result against the declared capabilities.
+
+    Behavioral check for batch adapters that is **pure**, mirroring
+    :func:`check_event_sequence`: it inspects a result the author already
+    produced -- it never instantiates or calls an engine (invoking a cloud
+    engine from a compliance run would be a billable side effect). Currently it
+    verifies the diarization couple: a result carrying speaker labels anywhere
+    (top-level ``segments[]`` / ``words[]``, a segment's ``words``, or any
+    ``channels[i]`` view) while ``batch.diarization`` is unsupported (or the
+    ``batch`` domain is absent -- fail-closed) is a capability⇄result desync,
+    reported as an error with code ``result_exceeds_diarization``.
+
+    **Honest scoping note:** this is the only diarization coverage the suite
+    can offer. *Positive* diarization behaviour -- labels present when
+    requested, correctly attributed, consistent across views -- is unverifiable
+    without multi-speaker audio fixtures, and the standard probes feed silence.
+    The check is therefore an opportunistic *negative* cross-check an author
+    runs over their own recorded results; an ``always_on`` engine necessarily
+    declares ``supported=True`` (the model validator forbids the contradictory
+    pair) and is never flagged here.
+
+    Args:
+        result: The recorded result to validate.
+        capabilities: The engine's declared capabilities (pass
+            ``engine.declared_capabilities``).
+
+    Returns:
+        A :class:`ComplianceReport`; ``passed`` is ``True`` when the result does
+        not exceed the declared capabilities.
+    """
+    issues: list[ComplianceIssue] = []
+    _cross_check_result_capabilities(result, capabilities.batch, issues)
+    return ComplianceReport(registry=None, issues=issues)
 
 
 def _safe_engine_id(engine: object) -> str | None:

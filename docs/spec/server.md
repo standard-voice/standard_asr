@@ -88,9 +88,13 @@ rate is never silently overridden.
 Over the wire the server accepts **only** the portable standard `RuntimeParams`
 set, modeled by `WireRuntimeParams` (the portable fields, `extra="forbid"`). The
 portable set is exactly the fields in [specification.md §3.1](specification.md)
-— `language`, `candidate_languages`, `word_timestamps`, `prompt`, `phrase_hints`,
-and the `on_unsupported` guidance-degradation policy field — so a cross-language
-client can express the opt-in `on_unsupported="degrade_to_prompt"` over the wire.
+— `language`, `candidate_languages`, `word_timestamps`, `diarization`, `prompt`,
+`phrase_hints`, and the `on_unsupported` guidance-degradation policy field — so a
+cross-language client can express the opt-in `on_unsupported="degrade_to_prompt"`
+over the wire. `diarization` follows the three-way wire mapping of
+specification.md §RT 3.4: `{"diarization": {}}` requests diarization, `null` or
+an absent key means not requested, and any nested key inside the marker object
+is rejected with a 422 (REST) / `bad_request` (WS).
 The engine-specific `provider_params` escape hatch is **discover-only, not
 sendable**:
 

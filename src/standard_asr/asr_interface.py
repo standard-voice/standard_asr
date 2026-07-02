@@ -37,7 +37,13 @@ from .capabilities import DeclaredCapabilities
 from .exceptions import ConfigError, UnsupportedFeatureError
 from .language import AUTO, effective_candidate_languages, effective_language, normalize_bcp47
 from .param_gating import Mode, gate_params
-from .results import Diagnostic, TranscriptionResult
+from .results import (
+    ChannelResult,
+    Diagnostic,
+    Segment,
+    TranscriptionResult,
+    synthesize_segment_speaker,
+)
 from .runtime_params import ProviderParams, RuntimeParams
 from .wire import CANONICAL_WIRE_ENCODING
 
@@ -227,6 +233,83 @@ def _selectable_match(tag: str, selectable: AbstractSet[str]) -> str | None:
     return None
 
 
+def _synthesize_segment_list(
+    segments: list[Segment] | None,
+) -> tuple[list[Segment] | None, bool]:
+    """Fill missing segment speakers from word speakers in one segment list.
+
+    Applies THE pinned TR.5 rule
+    (:func:`~standard_asr.results.synthesize_segment_speaker`) to every segment
+    whose ``speaker`` is ``None`` while its ``words`` carry speakers. Segments
+    are frozen models, so a changed segment is rebuilt via ``model_copy``
+    (which skips validators -- safe, because the synthesized label is one of
+    the already-validated ``Word.speaker`` values); unchanged segments are
+    reused as-is so an untouched list keeps object identity for its members.
+
+    Args:
+        segments: The segment list, or ``None``.
+
+    Returns:
+        A ``(segments, changed)`` pair: the original list object when nothing
+        changed, otherwise a new list with the synthesized segments swapped in.
+    """
+    if segments is None:
+        return None, False
+    changed = False
+    out: list[Segment] = []
+    for segment in segments:
+        if segment.speaker is None and segment.words:
+            label = synthesize_segment_speaker(segment.words)
+            if label is not None:
+                out.append(segment.model_copy(update={"speaker": label}))
+                changed = True
+                continue
+        out.append(segment)
+    return (out, True) if changed else (segments, False)
+
+
+def _synthesize_result_speakers(result: TranscriptionResult) -> TranscriptionResult:
+    """Synthesize missing segment speakers across a whole batch result (TR.5).
+
+    Runs over the top-level ``segments`` AND every ``channels[i].segments``:
+    TR.4 promises the two views agree, so synthesizing only the top level
+    would silently desync them. Runs regardless of whether diarization was
+    requested -- an always-on engine's unrequested-but-legal word speakers
+    (TR.5 named exemption) benefit identically. When nothing changes the
+    input is returned unchanged (identity fast path: no churn, and untouched
+    results keep object equality for callers).
+
+    Args:
+        result: The engine's raw transcription result.
+
+    Returns:
+        The result with segment speakers synthesized where derivable, or
+        ``result`` itself when no segment needed one.
+    """
+    segments, segments_changed = _synthesize_segment_list(result.segments)
+    channels: list[ChannelResult] | None = result.channels
+    channels_changed = False
+    if channels is not None:
+        rebuilt: list[ChannelResult] = []
+        for entry in channels:
+            entry_segments, entry_changed = _synthesize_segment_list(entry.segments)
+            if entry_changed:
+                rebuilt.append(entry.model_copy(update={"segments": entry_segments}))
+                channels_changed = True
+            else:
+                rebuilt.append(entry)
+        if channels_changed:
+            channels = rebuilt
+    if not segments_changed and not channels_changed:
+        return result
+    update: dict[str, object] = {}
+    if segments_changed:
+        update["segments"] = segments
+    if channels_changed:
+        update["channels"] = channels
+    return result.model_copy(update=update)
+
+
 class EngineBase(ABC):
     """Abstract base implementing the standard transcribe pipeline.
 
@@ -393,8 +476,9 @@ class EngineBase(ABC):
         Runs the standard pipeline, *fail-fast first*: validate the language
         config -> gate parameters (provider_params + capability gating, which
         needs no audio) -> resolve & validate the effective language axis ->
-        coerce -> negotiate -> convert/resample -> call the engine -> attach
-        diagnostics.
+        coerce -> negotiate -> convert/resample -> call the engine ->
+        synthesize missing segment speakers from word speakers (the TR.5
+        pinned rule) -> attach diagnostics.
 
         Parameter validation runs *before* the (potentially expensive) audio
         decode/resample so a swapped-engine ``provider_params`` bug or an
@@ -447,6 +531,10 @@ class EngineBase(ABC):
         # Audio decode/resample only after parameters are known-good.
         prepared = self._prepare_audio(audio)
         result = self._transcribe(prepared, gated)
+        # Standard-layer diarization synthesis (spec TR.5): the streaming
+        # reducer applies the same shared rule, so batch and streaming yield
+        # the same Segment.speaker for the same engine output.
+        result = _synthesize_result_speakers(result)
         merged = [
             *gate_diags,
             *lang_diags,
