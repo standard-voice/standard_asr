@@ -223,13 +223,10 @@ class _BodySizeLimitMiddleware:
 class ModelInfo(BaseModel):
     """Serializable model info for API responses.
 
-    Args:
+    Attributes:
         key: Full model key in ``engine/model`` format.
         engine_id: Engine identifier.
         model_name: Model preset name.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If validation fails.
@@ -248,13 +245,10 @@ class ModelInfo(BaseModel):
 class TranscribeJsonRequest(BaseModel):
     """JSON payload for transcription requests.
 
-    Args:
+    Attributes:
         model: Model key in ``engine/model`` format.
         audio: Base64 data URI or raw base64 audio payload.
         options: Optional transcription options as JSON object.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If validation fails.
@@ -272,12 +266,9 @@ class TranscribeJsonRequest(BaseModel):
 class TranscribeResponse(BaseModel):
     """Standard transcription response.
 
-    Args:
+    Attributes:
         model: Model key that handled the request.
         result: Standard ASR transcription result.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If validation fails.

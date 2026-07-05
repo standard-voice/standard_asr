@@ -334,14 +334,11 @@ def env_var_name(engine_id: str, field_name: str) -> str:
 class BaseConfig(BaseModel, Generic[EngineNameT]):
     """Base class for ASR engine init configuration models.
 
-    Args:
+    Attributes:
         engine: Discriminator equal to the entrypoint-derived ``engine_id``.
         strict: Global policy for unsupported standard parameters. ``True``
             raises ``UnsupportedFeatureError``; ``False`` is best_effort
             (ignore + diagnostic).
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If validation fails.
@@ -672,7 +669,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
 class DeviceConfigMixin(BaseModel):
     """Applicability mixin: compute-device selection.
 
-    Args:
+    Attributes:
         device: Compute device (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
     """
 
@@ -682,7 +679,7 @@ class DeviceConfigMixin(BaseModel):
 class LanguageConfigMixin(BaseModel):
     """Applicability mixin: default language selection.
 
-    Args:
+    Attributes:
         default_language: Default language (BCP-47 or ``"auto"``). Required when
             the engine exposes a language axis.
         default_candidate_languages: Default candidate languages.
@@ -699,7 +696,7 @@ class LanguageConfigMixin(BaseModel):
 class DownloadConfigMixin(BaseModel):
     """Applicability mixin: model download / cache location.
 
-    Args:
+    Attributes:
         download_root: Root directory for model artifacts. Priority: explicit >
             ``STANDARD_ASR_MODEL_DIR`` > library default > ``~/.cache``.
     """
@@ -715,7 +712,7 @@ class CredentialsConfigMixin(BaseModel):
     Credentials (``api_key``) are secret; endpoint routing fields
     (``base_url`` / ``region`` / ``org_id``) are not secret and may be logged.
 
-    Args:
+    Attributes:
         api_key: Secret API key / token.
         base_url: Non-secret API base URL.
         region: Non-secret service region.

@@ -108,9 +108,6 @@ class DiarizationRequest(BaseModel):
     :mod:`standard_asr.runtime.gating` additionally forces sub-gating to be
     written the moment a field is added here.
 
-    Returns:
-        None.
-
     Raises:
         ValueError: If an unknown field is supplied (``extra="forbid"``).
     """
@@ -129,7 +126,7 @@ DIARIZE: Final[DiarizationRequest] = DiarizationRequest()
 class RuntimeParams(BaseModel):
     """Closed per-request parameter container.
 
-    Args:
+    Attributes:
         language: Per-request language (BCP-47 or ``"auto"``) overriding the
             engine default. Gated by ``<mode>.language.runtime_override``.
         candidate_languages: Candidate languages, meaningful only in ``auto``
@@ -145,9 +142,6 @@ class RuntimeParams(BaseModel):
             the fail-closed contract; ``"degrade_to_prompt"`` opts into the
             one-way rich->prompt fallback (a diagnostic is emitted on degrade).
         provider_params: Engine-specific typed knobs, or ``None``.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If field validation fails.
@@ -434,7 +428,7 @@ class WireRuntimeParams(BaseModel):
     ``RuntimeParams`` minus ``provider_params`` so an additive change to the
     portable set cannot silently desync the wire view.
 
-    Args:
+    Attributes:
         language: See :class:`RuntimeParams`.
         candidate_languages: See :class:`RuntimeParams`.
         word_timestamps: See :class:`RuntimeParams`.
@@ -444,9 +438,6 @@ class WireRuntimeParams(BaseModel):
         prompt: See :class:`RuntimeParams`.
         phrase_hints: See :class:`RuntimeParams`.
         on_unsupported: See :class:`RuntimeParams`.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If field validation fails, or a non-portable key (e.g.

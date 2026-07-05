@@ -146,7 +146,7 @@ def _mode_supported(mode: str) -> bool:
 class CandidateLanguagesConstraints(BaseModel):
     """Constraints for the candidate-languages capability.
 
-    Args:
+    Attributes:
         max: Maximum number of candidate languages accepted.
     """
 
@@ -157,7 +157,7 @@ class CandidateLanguagesConstraints(BaseModel):
 class PromptConstraints(BaseModel):
     """Constraints for the prompt guidance channel.
 
-    Args:
+    Attributes:
         max_tokens: Optional maximum prompt length in tokens. The standard layer
             has no engine tokenizer, so it enforces this bound against a
             **conservative, script-aware approximation** -- whitespace-delimited
@@ -187,7 +187,7 @@ class PromptConstraints(BaseModel):
 class PhraseHintsConstraints(BaseModel):
     """Constraints for the phrase-hints guidance channel.
 
-    Args:
+    Attributes:
         max_terms: Optional maximum number of phrase-hint terms.
         max_chars_per_term: Optional maximum characters per term.
         max_words_per_term: Optional maximum words per term.
@@ -206,7 +206,7 @@ class PhraseHintsConstraints(BaseModel):
 class DiarizationConstraints(BaseModel):
     """Constraints for the diarization capability.
 
-    Args:
+    Attributes:
         max_speakers: Optional maximum number of speakers.
     """
 
@@ -224,7 +224,7 @@ class FlagCap(_FlagLikeNode):
 class CandidateLanguagesCap(_FlagLikeNode):
     """Bounded capability for candidate languages.
 
-    Args:
+    Attributes:
         supported: Whether candidate languages are supported.
         constraints: Limits (e.g. ``max``) when supported.
     """
@@ -243,7 +243,7 @@ class WordTimestampsCap(_FlagLikeNode):
     unenumerated" state unrepresentable, so gating always validates against a
     real set. When ``supported=False`` the list stays empty (irrelevant).
 
-    Args:
+    Attributes:
         supported: Whether word timestamps are supported.
         granularities: Supported granularities (``word``/``segment``/``char``);
             MUST be non-empty when ``supported`` is ``True``.
@@ -282,7 +282,7 @@ class WordTimestampsCap(_FlagLikeNode):
 class PromptCap(_FlagLikeNode):
     """Guidance channel: free-text prompt.
 
-    Args:
+    Attributes:
         supported: Whether prompt guidance is supported.
         constraints: Limits when supported.
     """
@@ -293,7 +293,7 @@ class PromptCap(_FlagLikeNode):
 class PhraseHintsCap(_FlagLikeNode):
     """Guidance channel: phrase-hint term boosting.
 
-    Args:
+    Attributes:
         supported: Whether phrase hints are supported.
         constraints: Limits when supported.
     """
@@ -333,7 +333,7 @@ class DiarizationCap(_FlagLikeNode):
     (can-disable-must-disable), and MUST NOT declare ``always_on`` for adapter
     convenience.
 
-    Args:
+    Attributes:
         supported: Whether diarization is supported.
         always_on: Whether diarization is architecturally non-disableable
             (labels may appear unrequested). May only be supported when
@@ -381,7 +381,7 @@ class DiarizationCap(_FlagLikeNode):
 class ReconnectCap(_CapNode):
     """Streaming reconnect capability.
 
-    Args:
+    Attributes:
         mode: ``seamless`` / ``lossy`` / ``unsupported``.
     """
 
@@ -400,7 +400,7 @@ class ReconnectCap(_CapNode):
 class FinalityCap(_CapNode):
     """Streaming finality level the engine can guarantee.
 
-    Args:
+    Attributes:
         mode: ``final`` (may still be revised by post-processing) or ``closed``.
     """
 
@@ -419,7 +419,7 @@ class FinalityCap(_CapNode):
 class StreamTimestampsCap(_CapNode):
     """Source of streaming timestamps.
 
-    Args:
+    Attributes:
         mode: ``native_frame_aligned`` / ``post_align`` / ``none``.
     """
 
@@ -447,7 +447,7 @@ class _Container(BaseModel):
 class LanguageCaps(_Container):
     """Language capabilities for one mode.
 
-    Args:
+    Attributes:
         runtime_override: Whether per-request language override is allowed.
         candidate_languages: Candidate-language support and limits.
     """
@@ -459,7 +459,7 @@ class LanguageCaps(_Container):
 class GuidanceCaps(_Container):
     """Guidance-family capabilities for one mode.
 
-    Args:
+    Attributes:
         prompt: Free-text prompt channel.
         phrase_hints: Phrase-hint channel.
     """
@@ -487,7 +487,7 @@ class StreamingGuidanceCaps(GuidanceCaps):
     derives a uniform ``supported`` and ``covers()`` set-containment auto-rejects a
     ``declared=false -> effective=true`` widening.
 
-    Args:
+    Attributes:
         prompt: Free-text prompt channel.
         phrase_hints: Phrase-hint channel.
         mutable_mid_stream: Whether guidance may be updated mid-session.
@@ -499,7 +499,7 @@ class StreamingGuidanceCaps(GuidanceCaps):
 class BatchCapabilities(_Container):
     """Capability tree for the ``batch`` mode domain.
 
-    Args:
+    Attributes:
         language: Language capabilities.
         word_timestamps: Word-timestamp capability.
         guidance: Guidance-family capabilities.
@@ -515,7 +515,7 @@ class BatchCapabilities(_Container):
 class StreamingCapabilities(_Container):
     """Capability tree for the ``streaming`` mode domain.
 
-    Args:
+    Attributes:
         language: Language capabilities (MAY differ from batch).
         word_timestamps: Word-timestamp capability.
         diarization: Diarization capability (MAY differ from batch).
@@ -591,7 +591,7 @@ class DeclaredCapabilities(_Container):
     Mode domains are optional: omitting a domain means the mode is not supported
     (fail-closed). Engine-global orthogonal flags live at the top level.
 
-    Args:
+    Attributes:
         batch: Batch-mode capabilities, or ``None`` if batch is unsupported.
         streaming: Streaming-mode capabilities, or ``None`` if unsupported.
         streaming_input: Whether the engine accepts incremental audio. May only

@@ -19,14 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class AudioFormat(BaseModel):
     """Declared wire format for raw PCM frames fed to a streaming session.
 
-    Args:
+    Attributes:
         encoding: Wire encoding of the PCM frames (e.g. ``"pcm_s16le"``,
             ``"mulaw"``). MUST be one of the engine's ``wire_encodings``.
         sample_rate: Sample rate of the frames in Hz.
         channels: Number of interleaved channels. Defaults to ``1`` (mono).
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If validation fails.
