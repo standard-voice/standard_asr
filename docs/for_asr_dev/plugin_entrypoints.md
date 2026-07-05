@@ -138,30 +138,105 @@ These are validated by `standard-asr compliance entrypoints`.
 
 ## CLI Support
 
-Install your plugin in the same environment and use the new CLI:
+Install your plugin in the same environment and use the new CLI. The
+transcript below was captured live against
+[std-faster-whisper](https://github.com/standard-voice/std-faster-whisper);
+nested JSON blocks are abridged with `...` — run the commands yourself for
+the full output (exact values depend on the plugin version):
 
 ```bash
 $ standard-asr list
 Discovered models:
- - faster-whisper/large-v3         engine=faster-whisper  model=large-v3
+ - faster-whisper/base             engine=faster-whisper  model=base
  - faster-whisper/distil-large-v3  engine=faster-whisper  model=distil-large-v3
- - faster-whisper/turbo            engine=faster-whisper  model=large-v3-turbo
+ - faster-whisper/large-v3         engine=faster-whisper  model=large-v3
+ - faster-whisper/large-v3-turbo   engine=faster-whisper  model=large-v3-turbo
+ - faster-whisper/medium           engine=faster-whisper  model=medium
+ - faster-whisper/small            engine=faster-whisper  model=small
+ - faster-whisper/tiny             engine=faster-whisper  model=tiny
 
 $ standard-asr show faster-whisper/large-v3
 Model: faster-whisper/large-v3
   Engine ID   : faster-whisper
   Model name  : large-v3
   Module      : std_faster_whisper.entrypoint
-  Attribute   : create
-  Value       : std_faster_whisper.entrypoint:create
+  Attribute   : create_large_v3
+  Value       : std_faster_whisper.entrypoint:create_large_v3
+  Capabilities:
+    {
+      "batch": {
+        "diarization": { ... },
+        "guidance": {
+          "phrase_hints": {
+            "constraints": {
+              "max_chars_per_term": 40,
+              "max_terms": 50,
+              "max_words_per_term": null
+            },
+            "supported": true
+          },
+          "prompt": { ... },
+          "supported": true
+        },
+        "language": { ... },
+        "supported": true,
+        "word_timestamps": {
+          "granularities": [
+            "word",
+            "segment"
+          ],
+          "supported": true
+        }
+      },
+      "self_resamples": {
+        "supported": false
+      },
+      "streaming": { ... },
+      "streaming_input": {
+        "supported": true
+      },
+      "streaming_output": {
+        "supported": true
+      }
+    }
+  Config schema:
+    {
+      "additionalProperties": false,
+      "description": "Init configuration for the faster-whisper engine. ...",
+      "properties": {
+        "compute_type": { ... },
+        "default_language": { ... },
+        "device": { ... },
+        "hf_token": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hugging Face access token for gated/private model repos (secret).",
+          "format": "password",
+          "secret": true,
+          "title": "Hf Token",
+          "writeOnly": true
+        },
+        ...
+      },
+      "title": "FasterWhisperConfig",
+      "type": "object"
+    }
 
 $ standard-asr compliance entrypoints
 [OK] Entry point compliance checks passed.
 
 $ standard-asr compliance run faster-whisper/large-v3
 [OK] Entry point compliance checks passed.
-[INFO] Streaming event-sequence is not run here; cover it with
-       standard_asr.compliance.check_event_sequence in your tests.
+[INFO] Two checks are not run here (each needs recorded data the CLI cannot synthesize): check_event_sequence for a streaming engine's event stream, and check_transcription_result for a batch result. Cover them with standard_asr.compliance in your tests (see docs/for_asr_dev/plugin_entrypoints.md).
 [OK] Compliance run passed.
 ```
 
@@ -205,7 +280,7 @@ if not report.passed:
     raise SystemExit(1)
 ```
 
-Our own compliance suite imports this helper to keep the ecosystem predictable. As the metadata contract expands (capabilities, supported locales, etc.) the checker will grow to verify those fields while keeping the API stable for you.
+Our own compliance suite imports this helper to keep the ecosystem predictable. The checker already verifies capability declarations alongside entry-point metadata (see the full surface below), and grows additively as the metadata contract expands (supported locales, etc.) while keeping the API stable for you.
 
 ### The full compliance surface
 

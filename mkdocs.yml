@@ -52,6 +52,12 @@ plugins:
             docstring_section_style: spacy
             show_if_no_docstring: false
 
+markdown_extensions:
+  # `attr_list` lets a heading carry an explicit `{#id}`, so the CJK+English
+  # spec headings keep stable anchors instead of the slug the default slugify
+  # derives by dropping their CJK part.
+  - attr_list
+
 extra_css:
   - stylesheets/extra.css
 
@@ -83,11 +89,11 @@ nav:
       - standard_asr: reference/index.md
       - standard_asr.engine: reference/engine.md
       - standard_asr.compliance: reference/compliance.md
-      - standard_asr.streaming: reference/streaming.md
-      - standard_asr.results: reference/results.md
-      - standard_asr.capabilities: reference/capabilities.md
-      - standard_asr.exceptions: reference/exceptions.md
-      - standard_asr.wire: reference/wire.md
+      - standard_asr.runtime.streaming: reference/streaming.md
+      - standard_asr.contract.results: reference/results.md
+      - standard_asr.contract.capabilities: reference/capabilities.md
+      - standard_asr.contract.exceptions: reference/exceptions.md
+      - standard_asr.audio.wire: reference/wire.md
   - Specification:
       - Protocol: spec/specification.md
       - Server API: spec/server.md

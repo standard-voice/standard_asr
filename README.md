@@ -161,6 +161,7 @@ Engines differ — that's the point. Instead of guessing, ask:
 
 ```python
 engine.supports("batch.word_timestamps")          # True / False, fail-closed
+engine.supports("batch.diarization")              # speaker labels ("who said what")?
 engine.supports("streaming.guidance.phrase_hints")
 engine.supports("streaming_input")                # can it consume live audio?
 

@@ -70,14 +70,20 @@ await session.end_audio()         # signal end-of-input
 Every streaming session emits a sequence of `TranscriptionEvent` objects. The
 `type` field tells you what happened:
 
-| Type | Meaning | `text` | `segment_id` |
-| ---- | ------- | ------ | ------------- |
-| `partial` | Interim text that **may change** with the next event on this segment. | Current best guess. | The segment this partial belongs to. |
-| `final` | This segment's text is **settled** -- it will not change. | Final text. | The segment that is now final. |
-| `supersede` | The engine re-segmented: one or more previously-emitted segments are **replaced**. The replacement events follow immediately. | `None` | `None` (check `old_ids`). |
-| `progress` | A progress heartbeat (e.g. audio position). No transcript content. | `None` | `None` |
-| `done` | The session is complete. No more events will follow. | `None` | `None` |
-| `error` | An engine error mid-stream. Machine-readable code in `event.code`; human detail in `event.extra["detail"]`; `event.recoverable` says whether the session may continue. | `None` | `None` |
+| Type | Meaning | `text` | `segment_id` | `speaker` |
+| ---- | ------- | ------ | ------------- | --------- |
+| `partial` | Interim text that **may change** with the next event on this segment. | Current best guess. | The segment this partial belongs to. | Segment speaker label when diarized, else `None`. |
+| `final` | This segment's text is **settled** -- it will not change. | Final text. | The segment that is now final. | Segment speaker label when diarized, else `None`. |
+| `supersede` | The engine re-segmented: one or more previously-emitted segments are **replaced**. The replacement events follow immediately. | `None` | `None` (check `old_ids`). | `None` |
+| `progress` | A progress heartbeat (e.g. audio position). No transcript content. | `None` | `None`, or the segment it reports on. | `None` |
+| `done` | The session is complete. No more events will follow. | `None` | `None` | `None` |
+| `error` | An engine error mid-stream. Machine-readable code in `event.code`; human detail in `event.extra["detail"]`; `event.recoverable` says whether the session may continue. | `None` | `None`, or the segment the error concerns. | `None` |
+
+Request diarization when opening the session (`RuntimeParams(diarization=DIARIZE)`,
+gated by `streaming.diarization`); `event.speaker` then carries the segment-level
+speaker label on `partial` / `final` events. It stays `None` when diarization was
+not requested or is unsupported — except on engines whose diarization is
+`always_on`, which may emit speaker labels unrequested.
 
 ## The core reduce
 
