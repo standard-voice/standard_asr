@@ -96,5 +96,5 @@ nav:
   - Project:
       - Mission: mission.md
       - Goals: goals.md
-      - Roadmap: roadmap.md
+      - Roadmap: https://github.com/standard-voice/standard_asr/issues/27
       - Releasing: https://github.com/standard-voice/standard_asr/blob/main/RELEASING.md
