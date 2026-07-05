@@ -45,8 +45,8 @@ updates:
   # The sanctioned exception is Dependabot *security* updates (a separate channel,
   # enabled in repo settings): they still run. For an uncapped lower-bound dep the
   # fix lands via the lock and downstream resolves to the patched version
-  # automatically; a capped dep (the uv-build build-backend cap, or the tool.uv
-  # `starlette<1.0` constraint) is bumped deliberately by hand.
+  # automatically; a capped dep (e.g. the uv-build build-backend cap) is bumped
+  # deliberately by hand.
   #
   # NOTE on grouping: `groups.*.dependency-type` (development/production) is NOT
   # supported for the uv ecosystem (dependabot/dependabot-core#13202 — uv
