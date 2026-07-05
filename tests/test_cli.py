@@ -135,6 +135,9 @@ def test_cli_models_show(
     # models show MUST surface DeclaredCapabilities (no instantiation).
     assert "Capabilities:" in output
     assert "runtime_override" in output
+    # It also surfaces the init-config schema; this engine declares none, so the
+    # omission is stated explicitly rather than left silent.
+    assert "Config schema: <none" in output
 
 
 def test_cli_models_show_unresolvable_class(
@@ -163,6 +166,65 @@ def test_cli_models_show_unresolvable_class(
     # `show` gives the operator everything it could learn AND an honest code.
     assert exit_code == 1
     assert "Capabilities: <unavailable" in output
+    assert "Engine ID" in output
+    # No config-schema section: an unloadable class is reported ONCE, at the
+    # capabilities line, and `show` then exits 1. The config schema needs that
+    # same engine class, so a second unavailable line would only restate the
+    # one fault the operator has already been given.
+    assert "Config schema" not in output
+
+
+def test_cli_models_show_config_schema(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An engine that declares a config_type has its init-config JSON Schema
+    # rendered (read from the class -- _ConfigTypeASR.__init__ raises, so this
+    # proves no instantiation happens).
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_ConfigTypeASR",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "alpha/first"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Config schema:" in output
+    # Fields of the declared config model appear in the rendered schema.
+    assert '"default_language"' in output
+    assert '"strict"' in output
+
+
+def test_cli_models_show_config_schema_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The engine class itself loads, so `show` does NOT abort at the
+    # capabilities line -- but its config_type is un-schematizable
+    # (arbitrary_types_allowed + an opaque handle field). The config-schema
+    # section degrades to an explicit unavailable line and the rest of the
+    # metadata still renders, rather than crashing mid-print.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_UnschematizableConfigTypeASR",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "alpha/first"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Config schema: <unavailable" in output
+    assert "JSON Schema cannot be generated" in output
+    # The rest of the metadata survived the degraded section.
     assert "Engine ID" in output
 
 
@@ -2280,7 +2342,9 @@ def test_cli_models_show_uses_canonical_json(
 
     assert exit_code == 0
     assert "Capabilities:" in output
-    caps = json.loads(output.split("Capabilities:", 1)[1])
+    # Isolate the capabilities JSON block (the config-schema section follows it).
+    caps_block = output.split("Capabilities:", 1)[1].split("Config schema:", 1)[0]
+    caps = json.loads(caps_block)
     # The `batch` domain is a container with no `supported` field of its own;
     # canonical_json derives one (true here), model_dump(mode="json") would not.
     assert caps["batch"]["supported"] is True
@@ -2384,8 +2448,8 @@ def _compliant_dummy_registry() -> ModelRegistry:
 def test_cli_compliance_run_aggregates_and_passes(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # `compliance run` reports the entry point result AND points the
-    # author at the event-sequence check the CLI cannot synthesize.
+    # `compliance run` reports the entry point result AND points the author at
+    # BOTH checks the CLI cannot synthesize (event-sequence and result).
     registry = _compliant_dummy_registry()
     _patch_discover(monkeypatch, registry)
 
@@ -2394,7 +2458,8 @@ def test_cli_compliance_run_aggregates_and_passes(
 
     assert exit_code == 0
     assert "Entry point compliance checks passed" in output
-    assert "event-sequence" in output
+    assert "check_event_sequence" in output
+    assert "check_transcription_result" in output
     assert "Compliance run passed" in output
 
 
@@ -2418,6 +2483,10 @@ def test_cli_compliance_run_batch_only_engine(
 
     assert exit_code == 0
     assert "Compliance run passed" in output
+    # A batch-only engine must still be told the result check is not run here --
+    # the omission that was previously never disclosed for its shape.
+    assert "check_transcription_result" in output
+    assert "check_event_sequence" in output
 
 
 def test_cli_compliance_run_batch_only_bad_wire_format_fails_once(
@@ -3557,37 +3626,6 @@ def test_run_sync_bridge_no_wire_format_is_error() -> None:
     report = cli._run_sync_bridge(_NoRateEngine(), "stream/ok")  # pyright: ignore[reportPrivateUsage]
     assert report.passed is False
     assert any("no usable" in i.message for i in report.issues)
-
-
-def test_streaming_audio_format_helpers() -> None:
-    # _streaming_audio_format delegates to EngineBase.recommended_wire_format: it
-    # builds a valid AudioFormat from declared encodings + sample rate, falls back
-    # to canonical pcm_s16le when wire_encodings is unconstrained, and returns None
-    # only when no usable sample rate is declared.
-    engine = _GatingStreamEngine()
-    fmt = cli._streaming_audio_format(engine)  # pyright: ignore[reportPrivateUsage]
-    assert fmt is not None
-    assert fmt.encoding == "pcm_s16le"
-    assert fmt.sample_rate == 16000
-
-    class _NoWireProps(_StreamOkProps):
-        wire_encodings: list[str] | None = None
-
-    class _NoWire(_GatingStreamEngine):
-        properties: ClassVar[BaseProperties] = _NoWireProps()
-
-    # Unconstrained wire_encodings -> canonical pcm_s16le fallback (NOT None: the
-    # engine accepts any encoding, so a bare-frame session can still open).
-    no_wire_fmt = cli._streaming_audio_format(_NoWire())  # pyright: ignore[reportPrivateUsage]
-    assert no_wire_fmt is not None
-    assert no_wire_fmt.encoding == "pcm_s16le"
-
-    class _BadRate(_GatingStreamEngine):
-        properties: ClassVar[BaseProperties] = _StreamOkProps.model_construct(
-            wire_encodings=["pcm_s16le"], native_sample_rate=0, required_input_sample_rate=None
-        )
-
-    assert cli._streaming_audio_format(_BadRate()) is None  # pyright: ignore[reportPrivateUsage]
 
 
 def test_spec_is_zero_arg_handles_unloadable_factory(

@@ -17,16 +17,35 @@ Flags:
   (default: `warn_keep_first`).
 
 ### `standard-asr show <engine/model>`
-Show metadata about a specific model entry point. If the model is registered but
-its plugin cannot be imported, `show` prints everything it could read plus a
-sanitized `Capabilities: <unavailable: ...>` line and exits **1** (the
-installation is broken; the caller's key was fine, so it is neither 0 nor 2). The declared capabilities are
-rendered as **canonical JSON** — the same serialization the REST
-`GET /v1/.../capabilities` endpoint returns, with a derived `supported` boolean
-at every node — so CLI and wire output can be compared field-for-field (spec §C
-R6; the two layers share one capability model). If an engine mis-declares its
-`declared_capabilities` (e.g. as a raw dict), the capabilities line reports the
-problem and the rest of the metadata still renders.
+Show metadata about a specific model entry point. The output has three sections:
+identity (engine/model, module, attribute, entry-point value), the declared
+**capabilities**, and the init-**config schema**.
+
+If the model is registered but its plugin cannot be imported, `show` prints
+everything it could read plus a sanitized `Capabilities: <unavailable: ...>` line
+and exits **1** (the installation is broken; the caller's key was fine, so it is
+neither 0 nor 2).
+
+The declared capabilities are rendered as **canonical JSON** — the same
+serialization the REST `GET /v1/.../capabilities` endpoint returns, with a
+derived `supported` boolean at every node — so CLI and wire output can be
+compared field-for-field (spec §C R6; the two layers share one capability model).
+If an engine mis-declares its `declared_capabilities` (e.g. as a raw dict), the
+capabilities line reports the problem and the rest of the metadata still renders.
+
+The config schema is the JSON Schema of the engine's class-level `config_type` —
+the same schema the REST `GET /v1/config-schema/...` endpoint returns — read from
+the engine **class** without constructing it, so an author (or a settings UI) can
+see the init fields (`device`, `compute_type`, credentials) before an engine that
+needs those very values is built. An engine that declares no `config_type` prints
+an explicit *no init config* line rather than nothing, so an omission is never
+mistaken for an empty schema. If the engine class loads but its `config_type` is
+invalid — not a `BaseConfig` subclass, or un-renderable as JSON Schema — the
+config-schema line reports it *unavailable* (as the capabilities line does) and
+the rest of the metadata still renders. An engine class that cannot be loaded at
+all is reported once, at the capabilities line, and `show` exits **1** before the
+config-schema section: the schema needs that same class, so a second unavailable
+line would only restate the fault already given.
 
 Flags:
 - `--strict-discovery`: fail on invalid plugin entry points during discovery.
@@ -55,6 +74,26 @@ or env var the invoker controls can fix a declaration (it would otherwise be
 called but never awaited and falsely reported complete). The attribute LOOKUP
 is engine code too: `prepare` may be a property, so a descriptor that raises is
 classified at the same seam as the call itself.
+
+Engine **init-config** flags (also on `transcribe`):
+- `--config JSON`: the engine's init configuration as a JSON object, e.g.
+  `--config '{"device": "cpu"}'`. This is the same configuration otherwise
+  supplied via `STANDARD_ASR_<ENGINE>__<FIELD>` env vars, now discoverable from
+  `--help`. Run `standard-asr show <engine/model>` to see the config schema.
+- `--set KEY=VALUE` (repeatable): set one init-config field, e.g.
+  `--set device=cpu --set compute_type=int8`.
+- **Precedence / merge:** `--config` supplies the base object; each `--set` then
+  overrides or adds a field, so `--set` **wins** over `--config` for the same key.
+  `--set` values are strings — the engine's pydantic config coerces them (`"5"` →
+  `5`). Scalars behave exactly like the env-var path; composite fields do
+  **not**: the env-var path JSON-decodes a composite value (e.g.
+  `'["en","zh"]'` for a `list[str]` field) before validation, while `--set`
+  passes the raw string through, so a composite `--set` value fails validation
+  loudly — use `--config` for composite fields. For secrets (`api_key`, tokens) prefer the
+  `STANDARD_ASR_<ENGINE>__<FIELD>` env vars — command-line values are visible in
+  shell history. These flags carry **init config** (how the engine is
+  constructed), distinct from `--options` on `transcribe` (per-request runtime
+  params).
 
 ### `standard-asr compliance entrypoints`
 Validate entry points and factories: entry-point metadata, class-level
@@ -138,10 +177,13 @@ Flags:
   the verdict too. The flag's value is granted to each check phase
   (establishment, then the bridged drive) independently.
 
-The streaming **event-sequence** check needs an author-recorded event stream the
-CLI cannot synthesize; it remains a library API
-(`standard_asr.compliance.check_event_sequence`) and `compliance run` prints a
-note naming it, so a green run is never mistaken for full coverage.
+Two checks stay library-only because each needs author-recorded data the CLI
+cannot synthesize: the streaming **event-sequence** check
+(`standard_asr.compliance.check_event_sequence`, a recorded event stream) and the
+**transcription-result** check (`standard_asr.compliance.check_transcription_result`,
+a recorded batch result). `compliance run` prints a note naming **both** —
+whatever the engine's shape, so a batch-only engine is told about the result
+check too — so a green run is never mistaken for full coverage.
 
 ### `standard-asr transcribe <engine/model> <audio>`
 Flags:
@@ -157,7 +199,15 @@ JSON object mapping onto the portable standard set (`WireRuntimeParams`, e.g.
 not constructible from untyped JSON and is rejected as a validation error. A
 validation error **never echoes the submitted value** (a mis-pasted secret is
 not reflected back; credential-named fields are redacted) — the same scrub the
-server applies to its 422 body. In the default text mode the transcript is
+server applies to its 422 body.
+
+`--config JSON` and `--set KEY=VALUE` supply the engine's **init config** (how
+the engine is constructed — `device`, `compute_type`, credentials), with the same
+precedence and coercion as on `prepare` above (`--set` overrides `--config`;
+`--set` values are strings the config coerces). They are distinct from
+`--options`, which carries per-request runtime params.
+
+In the default text mode the transcript is
 printed to stdout and any `TranscriptionResult.diagnostics` (lossy-conversion /
 degradation provenance) are rendered to **stderr**, so stdout stays a clean,
 pipeable transcript while a degrade is never silent. `--json` prints the full

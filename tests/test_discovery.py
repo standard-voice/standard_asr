@@ -193,6 +193,26 @@ class _GarbageConfigTypeASR(_DummyASR):  # pyright: ignore[reportUnusedClass]
     config_type: ClassVar[Any] = _NotAnEngine
 
 
+class _OpaqueHandle:
+    """Stand-in for a client/model handle: not JSON-Schema representable."""
+
+
+class _UnschematizableConfig(BaseConfig[Literal["dummy"]]):
+    """Legitimate BaseConfig subclass whose JSON Schema cannot be generated."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    engine: Literal["dummy"] = "dummy"
+    default_language: str | None = "en"
+    handle: _OpaqueHandle | None = None
+
+
+class _UnschematizableConfigTypeASR(_DummyASR):  # pyright: ignore[reportUnusedClass]
+    """config_type is a valid BaseConfig, but schema generation fails."""
+
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _UnschematizableConfig
+
+
 def _open_params_factory() -> _OpenParamsASR:  # pyright: ignore[reportUnusedFunction]
     return _OpenParamsASR()
 
@@ -969,6 +989,24 @@ def test_config_schema_rejects_non_baseconfig_config_type() -> None:
     ]
     registry = discover_models(eps=eps, strict=True)
     with pytest.raises(FactoryLoadError, match="not a BaseConfig subclass"):
+        registry.config_schema("alpha/first")
+
+
+def test_config_schema_surfaces_unschematizable_config_type() -> None:
+    # A legitimate BaseConfig subclass can still be un-schematizable
+    # (arbitrary_types_allowed + an opaque handle field). pydantic's
+    # PydanticInvalidForJsonSchema must surface as FactoryLoadError so both
+    # schema consumers (`show` and GET /v1/config-schema/...) degrade loudly
+    # instead of crashing with a raw pydantic error.
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_UnschematizableConfigTypeASR",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(FactoryLoadError, match="JSON Schema cannot be generated"):
         registry.config_schema("alpha/first")
 
 

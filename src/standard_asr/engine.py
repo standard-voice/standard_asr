@@ -15,7 +15,10 @@ an *engine* author implements and declares against:
 - the typed config surface (:class:`BaseConfig`, the applicability mixins,
   :func:`secret_field`);
 - static metadata (:class:`BaseProperties`, :class:`SampleRateRange`,
-  :class:`InputKind`);
+  :class:`InputKind`), and the :func:`sample_rate_accepted` /
+  :func:`nearest_accepted_sample_rate` helpers an engine reuses so its
+  ``accepted_sample_rates`` membership and resample-target choices match the
+  standard's;
 - the full capability vocabulary (:class:`DeclaredCapabilities` and every
   ``*Cap`` / ``*Constraints`` node);
 - language resolution and download-policy helpers (:func:`effective_language`,
@@ -81,7 +84,12 @@ from standard_asr.contract.params import (
     RuntimeParams,
     WordTimestampGranularity,
 )
-from standard_asr.contract.properties import BaseProperties, SampleRateRange
+from standard_asr.contract.properties import (
+    BaseProperties,
+    SampleRateRange,
+    nearest_accepted_sample_rate,
+    sample_rate_accepted,
+)
 from standard_asr.contract.results import (
     ChannelResult,
     Diagnostic,
@@ -157,8 +165,10 @@ __all__ = [
     "ensure_wire_format_supported",
     "env_var_name",
     "granularity_offers_all",
+    "nearest_accepted_sample_rate",
     "normalize_bcp47",
     "resolve_download_root",
+    "sample_rate_accepted",
     "secret_field",
     "to_json_value",
 ]

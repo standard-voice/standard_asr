@@ -128,6 +128,21 @@ def test_mode_is_one_literal_with_one_home() -> None:
     assert granularity_offers_all([]) is True
 
 
+def test_sample_rate_helpers_are_on_the_engine_facade() -> None:
+    # The spec names sample_rate_accepted as THE membership implementation an
+    # engine author reuses (with nearest_accepted_sample_rate for the resample
+    # target), so both are re-exported from the engine facade -- and are the very
+    # objects the properties module defines (a true re-export, not a copy).
+    from standard_asr.engine import nearest_accepted_sample_rate, sample_rate_accepted
+
+    properties = importlib.import_module("standard_asr.contract.properties")
+    assert sample_rate_accepted is properties.sample_rate_accepted
+    assert nearest_accepted_sample_rate is properties.nearest_accepted_sample_rate
+    # They are the engine-author surface, not the application top level.
+    assert "sample_rate_accepted" not in standard_asr.__all__
+    assert "nearest_accepted_sample_rate" not in standard_asr.__all__
+
+
 #: Engine-author / framework-internal names the curation deliberately moved OFF
 #: the application-facing top level (to ``standard_asr.engine`` /
 #: ``standard_asr.compliance`` / their own modules). This regression guard fails
