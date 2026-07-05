@@ -1287,6 +1287,6 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 
 **v1 包含**：`partial`/`final`/`supersede`/`progress`/`done`/`error` + 稳定 `segment_id` + 保守 `stable_until`(codepoints, SHOULD 字素簇边界) + `end_audio` + 两级终态标志 + 正交 input/output 能力 + `reconnect(lossy,gap)` + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。
 
-**defer（additive-later）**：运行时 `target_latency` 调整（v1 仅构造期固定）；`update_guidance()` 中途改引导（v1 保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（v1 声明 lossy）；多通道流式展开。
+**defer（additive-later）**：运行时 `target_latency` 调整（v1 仅构造期固定；流式节奏与延迟调优已有已定案设计——见 `docs/feat_plan/streaming-cadence-and-tuning.md` D1–D7，实现落地时将其规范文本与 rationale 并入本 spec）；`update_guidance()` 中途改引导（v1 保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（v1 声明 lossy）；多通道流式展开。
 
 
