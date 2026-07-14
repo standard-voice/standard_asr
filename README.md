@@ -30,6 +30,16 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 
 ![Standard ASR concept](https://raw.githubusercontent.com/standard-voice/standard_asr/main/docs/assets/concept.jpg)
 
+**A preview of the current state.**
+[standard-asr-live](https://github.com/standard-voice/standard-asr-live) is an experimental
+terminal app written against Standard ASR alone — it never imports a concrete engine. In the
+clip below it starts out with nothing to transcribe with: no engines installed. One
+`pip install std-mlx-audio` later, the same command offers every model that plugin ships, and
+picking one streams live speech onto the screen. Nothing about the app changed — installing
+the engine _was_ the integration.
+
+https://github.com/user-attachments/assets/528f5545-4c79-4a5b-a7fd-562cbf833938
+
 ---
 
 ## The problem
