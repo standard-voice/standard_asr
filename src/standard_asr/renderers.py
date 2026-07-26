@@ -19,6 +19,7 @@ import re
 
 from standard_asr.contract.results import (
     DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER,
     Segment,
     TranscriptionResult,
 )
@@ -166,50 +167,90 @@ def _cues(result: TranscriptionResult) -> list[Segment]:
 
     A result carrying the reducer's
     :data:`~standard_asr.contract.results.DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE`
-    diagnostic declares that some retained segment's ``start``/``end`` are
-    ``0.0`` **placeholders** (the engine emitted no timestamps;
+    diagnostic declares that SOME segment spans are ``0.0`` **placeholders**
+    (the engine emitted no timestamps for them;
     :class:`~standard_asr.contract.results.Segment` requires finite times).
-    That DIAGNOSTIC -- never the span values -- is the signal this function
-    keys on: sniffing ``0.0`` spans cannot distinguish a placeholder from a
-    genuine zero-length segment at ``t=0`` (e.g. an event with ``start=0.0``
-    and no ``end``), and misreading real timing as placeholder would fabricate
-    cue timing silently. When the diagnostic is present the whole segment
-    timeline is untrustworthy for subtitles -- rendering it per-segment would
-    emit zero-duration cues players silently drop and, in the mixed shape,
-    reorder text against ``result.text`` -- so the result is routed to the same
-    synthetic whole-text fallback as ``segments is None``, refusing to
-    fabricate a partial timeline. Genuine zero-span segments in a
-    diagnostic-free result render faithfully, one cue each.
+    Signals -- never span values -- drive this function: the diagnostic says
+    placeholders exist, and the per-segment
+    :data:`~standard_asr.contract.results.SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER`
+    marker says WHICH (value-sniffing ``0.0`` spans cannot distinguish a
+    placeholder from a genuine zero-length segment at ``t=0``, and misreading
+    real timing would fabricate cue timing silently). Three shapes:
+
+    * No diagnostic: every span is real -- render per-segment faithfully,
+      including genuine zero-length cues.
+    * Diagnostic present, some segments unmarked (mixed): render the
+      real-timestamped segments as normal cues; OMIT the marked placeholders
+      from the timed projection -- any placement for timing-less text would be
+      fabricated, and a zero-duration cue at a made-up point is both a lie in
+      the file and invisible in players. One missing timestamp therefore never
+      discards a predominantly real timeline, and the omission is disclosed by
+      the diagnostic (the full text stays in ``result.text``).
+    * Diagnostic present, every segment marked: zero usable timing -- the same
+      synthetic whole-text fallback as ``segments is None``.
 
     Args:
         result: The transcription result.
 
     Returns:
         The segments to render, ordered by ``(start, channel, speaker)``. For
-        ``segments == []`` this is empty. When ``segments is None`` -- or the
-        result carries the ``segment_timestamps_unavailable`` diagnostic (its
-        timeline holds placeholders, e.g. a reduced timestamp-less stream) --
-        and ``text`` is non-empty, a single synthetic segment spanning
-        ``[0, duration]`` with the full text is returned -- or ``[0, 3 s]``
-        when ``duration`` is unknown, because players silently drop
-        zero-duration cues; when ``text`` is empty too, no cues are produced.
+        ``segments == []`` this is ALWAYS empty (the null rule holds even when
+        the diagnostic is present). When ``segments is None`` -- or every
+        segment is a marked placeholder -- and ``text`` is non-empty, a single
+        synthetic segment spanning ``[0, duration]`` with the full text is
+        returned, or ``[0, 3 s]`` when ``duration`` is unknown (players
+        silently drop zero-duration cues); when ``text`` is empty too, no cues
+        are produced.
     """
-    # ``segments == []`` (requested but empty) takes this branch too (an empty
-    # reduce emits no timestamp diagnostic) and sorts to zero cues, never
-    # reaching the synthetic fallback below.
-    if result.segments is not None and not _timing_unavailable(result):
-        return sorted(
-            result.segments,
-            key=lambda s: (
-                s.start,
-                s.channel if s.channel is not None else -1,
-                s.speaker if s.speaker is not None else "",
-            ),
-        )
+    # The null rule is unconditional: an explicit ``[]`` (requested but empty)
+    # yields ZERO cues even when the result also carries the timestamp
+    # diagnostic -- an app that deliberately emptied ``segments`` must never
+    # see a fabricated full-span cue resurrect the text it removed.
+    if result.segments == []:
+        return []
+    if result.segments is not None:
+        if not _timing_unavailable(result):
+            return _sorted_cues(result.segments)
+        # Placeholder spans present: keep every REAL-timestamped segment (the
+        # per-segment marker identifies placeholders exactly, so one missing
+        # timestamp never discards a predominantly real timeline). The
+        # placeholder segments themselves are OMITTED from the timed
+        # projection: a cue asserts "this text occurs at this time", and any
+        # placement for a timing-less segment would be fabricated (a
+        # zero-duration cue at a made-up point is both a lie in the file and
+        # invisible in every player). The omission is disclosed -- the result
+        # carries the segment_timestamps_unavailable diagnostic and the full
+        # text remains in ``result.text``.
+        real = [s for s in result.segments if not s.extra.get(SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER)]
+        if real:
+            return _sorted_cues(real)
+        # No real-timestamped segment at all: fall through to the synthetic
+        # whole-text cue (same as segments-not-applicable -- zero usable timing).
     if not result.text:
         return []
     end = result.duration if result.duration is not None else _SYNTHETIC_CUE_FALLBACK_END
     return [Segment(start=0.0, end=end, text=result.text)]
+
+
+def _sorted_cues(segments: list[Segment]) -> list[Segment]:
+    """Sort renderable segments by the top-level ordering key.
+
+    Args:
+        segments: The segments to order.
+
+    Returns:
+        The segments sorted by ``(start, channel, speaker)`` -- ``channel``
+        ``None`` first, ``speaker`` ``None`` first (mapped to ``""``, which no
+        valid label can be).
+    """
+    return sorted(
+        segments,
+        key=lambda s: (
+            s.start,
+            s.channel if s.channel is not None else -1,
+            s.speaker if s.speaker is not None else "",
+        ),
+    )
 
 
 def _timing_unavailable(result: TranscriptionResult) -> bool:
@@ -250,22 +291,24 @@ def to_srt(result: TranscriptionResult, *, include_speakers: bool = False) -> st
     unchanged; empty-text segments are skipped even when labelled (a label
     with no payload is not a cue).
 
-    Segment fallback: when ``result.segments is None`` (segmentation
-    not requested/applicable) -- or when the result carries the reducer's
-    ``segment_timestamps_unavailable`` diagnostic, the authoritative signal
-    that segment spans include ``0.0`` placeholders (a timestamp-less or
-    partially timestamp-less streaming reduce) -- but ``result.text`` is
-    non-empty, a single cue spanning the whole text is synthesized --
-    ``[0, duration]``, or ``[0, 3 s]`` when ``duration`` is unknown (players
-    silently drop zero-duration cues, so rendering placeholder spans
-    per-segment would display nothing and, in the mixed shape, reorder text
-    against ``result.text``; the renderer refuses to fabricate a partial
-    timeline). Genuine zero-span segments in a diagnostic-free result render
-    faithfully. ``segments == []`` (requested but empty, e.g. silence) yields
-    no cues. The synthetic cue carries no speaker label -- a whole-text cue
-    has no single attributable speaker -- so ``include_speakers`` has no
-    effect on it. Pass a segmented result for time-accurate (and
-    speaker-attributed) subtitles.
+    Placeholder timing: a result carrying the reducer's
+    ``segment_timestamps_unavailable`` diagnostic has ``0.0``-placeholder
+    spans on the segments marked with the reserved
+    ``timestamp_placeholder`` extra key. Marked segments are OMITTED from the
+    timed cues (any placement would be fabricated; the omission is disclosed
+    by the diagnostic and the text stays in ``result.text``), while unmarked
+    real-timestamped segments render normally -- one missing timestamp never
+    discards the rest of the timeline. When EVERY segment is a marked
+    placeholder -- or ``result.segments is None`` (segmentation not
+    requested/applicable) -- and ``result.text`` is non-empty, a single cue
+    spanning the whole text is synthesized: ``[0, duration]``, or ``[0, 3 s]``
+    when ``duration`` is unknown (players silently drop zero-duration cues).
+    Genuine zero-span segments in a diagnostic-free result render faithfully.
+    ``segments == []`` (requested but empty, e.g. silence) ALWAYS yields no
+    cues, diagnostic or not. The synthetic cue carries no speaker label -- a
+    whole-text cue has no single attributable speaker -- so
+    ``include_speakers`` has no effect on it. Pass a segmented result for
+    time-accurate (and speaker-attributed) subtitles.
 
     Args:
         result: The transcription result to render.
@@ -317,22 +360,24 @@ def to_vtt(result: TranscriptionResult, *, include_speakers: bool = False) -> st
     ``None`` are rendered unchanged; empty-text segments are skipped even when
     labelled.
 
-    Segment fallback: when ``result.segments is None`` (segmentation
-    not requested/applicable) -- or when the result carries the reducer's
-    ``segment_timestamps_unavailable`` diagnostic, the authoritative signal
-    that segment spans include ``0.0`` placeholders (a timestamp-less or
-    partially timestamp-less streaming reduce) -- but ``result.text`` is
-    non-empty, a single cue spanning the whole text is synthesized --
-    ``[0, duration]``, or ``[0, 3 s]`` when ``duration`` is unknown (players
-    silently drop zero-duration cues, so rendering placeholder spans
-    per-segment would display nothing and, in the mixed shape, reorder text
-    against ``result.text``; the renderer refuses to fabricate a partial
-    timeline). Genuine zero-span segments in a diagnostic-free result render
-    faithfully. ``segments == []`` (requested but empty, e.g. silence) yields
-    no cues. The synthetic cue carries no speaker label -- a whole-text cue
-    has no single attributable speaker -- so ``include_speakers`` has no
-    effect on it. Pass a segmented result for time-accurate (and
-    speaker-attributed) subtitles.
+    Placeholder timing: a result carrying the reducer's
+    ``segment_timestamps_unavailable`` diagnostic has ``0.0``-placeholder
+    spans on the segments marked with the reserved
+    ``timestamp_placeholder`` extra key. Marked segments are OMITTED from the
+    timed cues (any placement would be fabricated; the omission is disclosed
+    by the diagnostic and the text stays in ``result.text``), while unmarked
+    real-timestamped segments render normally -- one missing timestamp never
+    discards the rest of the timeline. When EVERY segment is a marked
+    placeholder -- or ``result.segments is None`` (segmentation not
+    requested/applicable) -- and ``result.text`` is non-empty, a single cue
+    spanning the whole text is synthesized: ``[0, duration]``, or ``[0, 3 s]``
+    when ``duration`` is unknown (players silently drop zero-duration cues).
+    Genuine zero-span segments in a diagnostic-free result render faithfully.
+    ``segments == []`` (requested but empty, e.g. silence) ALWAYS yields no
+    cues, diagnostic or not. The synthetic cue carries no speaker label -- a
+    whole-text cue has no single attributable speaker -- so
+    ``include_speakers`` has no effect on it. Pass a segmented result for
+    time-accurate (and speaker-attributed) subtitles.
 
     Args:
         result: The transcription result to render.

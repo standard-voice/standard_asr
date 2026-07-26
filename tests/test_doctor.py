@@ -431,8 +431,70 @@ def test_single_distribution_many_presets_unsatisfiable_is_one_offender(
     )
     report = doctor.diagnose()
     assert report.has_conflict is True
-    assert any("internally unsatisfiable" in c for c in report.conflicts)
+    # Deduplicated to ONE conflict: relation 0 is per DISTRIBUTION, so both
+    # presets of one broken distribution are a single fix, not two.
+    assert len(report.conflicts) == 1, report.conflicts
+    assert "internally unsatisfiable" in report.conflicts[0]
     assert not any("cannot share one process" in c for c in report.conflicts)
+
+
+def test_self_contradictory_plugin_does_not_co_blame_an_innocent_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round-2 regression: a self-contradictory distribution is judged ALONE.
+
+    ``std-broken`` pins ``<2,>=2.1`` -- no numpy anywhere satisfies it -- while
+    ``std-good`` (``>=2``) is perfectly compatible with the core floor. Keeping
+    the broken one in the joint intersection made the whole environment read as
+    a cross-plugin conflict: std-good was named as an offender it is not, and
+    the remedy offered was out-of-process isolation, which cannot fix a pin no
+    version satisfies. Relation 0 now reports the self-contradiction per
+    distribution and excludes it from every later relation.
+    """
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("broken/x", _FakeDist("std-broken", ["numpy<2", "numpy>=2.1"])),
+            _FakeEP("good/y", _FakeDist("std-good", ["numpy>=2"])),
+        ],
+    )
+    report = doctor.diagnose()
+
+    assert report.has_conflict is True
+    assert len(report.conflicts) == 1, report.conflicts
+    conflict = report.conflicts[0]
+    assert "internally unsatisfiable" in conflict
+    assert "std-broken" in conflict
+    # The innocent plugin is neither named nor implicated...
+    assert "std-good" not in conflict
+    # ...and no cross-plugin framing or isolation advice is offered for a fault
+    # that isolation cannot fix.
+    assert "cannot share one process" not in conflict
+    assert "separate processes" not in conflict
+    assert "out-of-process" not in conflict
+
+
+def test_two_distinct_self_contradictory_plugins_each_get_their_own_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relation 0 is PER DISTRIBUTION: two broken pins are two separate fixes.
+
+    Merging them into one message would make the author fix one and re-run into
+    a verdict that looks unchanged.
+    """
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("broken/x", _FakeDist("std-broken", ["numpy<2", "numpy>=2.1"])),
+            _FakeEP("other/y", _FakeDist("std-other", ["numpy<1.20", "numpy>=2.3"])),
+        ],
+    )
+    report = doctor.diagnose()
+
+    assert len(report.conflicts) == 2, report.conflicts
+    assert all("internally unsatisfiable" in c for c in report.conflicts)
+    named = {"std-broken" if "std-broken" in c else "std-other" for c in report.conflicts}
+    assert named == {"std-broken", "std-other"}
 
 
 def test_single_plugin_internally_unsatisfiable_is_conflict(
@@ -692,8 +754,11 @@ def test_packaging_unavailable_with_plugins_headline_is_not_clean(
     report = doctor.diagnose()
     assert report.analysis_unavailable is True
     rendered = doctor.format_report(report)
-    assert "Conflict analysis unavailable" in rendered
+    # The headline is deliberately GENERALIZED (it now covers the unreadable-core
+    # gap too); the packaging-specific cause and its fix live in the note.
+    assert "Conflict analysis unavailable or incomplete" in rendered
     assert "No dependency conflicts detected." not in rendered
+    assert any("optional 'packaging' library" in n for n in report.notes)
 
 
 def test_packaging_unavailable_without_plugins_stays_clean(
@@ -829,16 +894,22 @@ def test_diagnose_without_packaging_omits_core_row_and_its_unreadable_note(
     report = doctor.diagnose()
 
     assert report.core is None
-    assert not any("core numpy requirement" in n for n in report.notes)
-    # The gap IS disclosed -- by the analysis-unavailable state, not a false claim.
+    assert not any("distribution metadata is unreadable" in n for n in report.notes)
+    # The gap IS disclosed -- by the analysis-unavailable state plus the note
+    # naming the ACTUAL cause (a missing optional dependency, not a broken install).
     assert report.analysis_unavailable is True
-    assert any("packaging" in n for n in report.notes)
+    assert any("optional 'packaging' library" in n for n in report.notes)
 
 
 def test_core_metadata_unreadable_note_needs_packaging_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ``packaging`` present, genuinely unreadable core metadata still notes it."""
+    """With ``packaging`` present, genuinely unreadable core metadata still notes it.
+
+    The note names the ANOMALOUS-INSTALL gap specifically (distinct from the
+    packaging-absent gap), and flags the analysis as incomplete so the run
+    cannot exit clean.
+    """
     _patch_raw_entry_points(monkeypatch, [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))])
 
     def _requires(name: str) -> list[str]:
@@ -849,8 +920,12 @@ def test_core_metadata_unreadable_note_needs_packaging_present(
     report = doctor.diagnose()
 
     assert report.core is None
-    assert any("core numpy requirement" in n for n in report.notes)
-    assert report.analysis_unavailable is False
+    assert any("distribution metadata is unreadable" in n for n in report.notes)
+    assert any("plugin-vs-core numpy analysis could not run" in n for n in report.notes)
+    # This is the packaging-PRESENT gap, so the packaging note must not fire.
+    assert not any("optional 'packaging' library" in n for n in report.notes)
+    assert report.analysis_unavailable is True
+    assert report.is_clean is False
 
 
 def test_core_floor_conflicts_with_numpy1_plugin(
@@ -992,12 +1067,17 @@ def test_exotic_joint_emptiness_falls_back_to_core_attributed_message(
     assert "isolation cannot help" not in conflict
 
 
-def test_core_metadata_unreadable_adds_note(
+def test_core_metadata_unreadable_is_a_non_clean_analysis_gap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With plugins present but core metadata unreadable, the narrower analysis
-    must disclose the missing participant instead of reading as complete --
-    and the rendered listing must NOT show a core line it does not have."""
+    """Unreadable core metadata means the plugin-vs-core relation never ran.
+
+    That relation is the half that catches an environment NO process layout can
+    fix, so its absence is a non-clean ``analysis_unavailable`` state, not a
+    footer note under a green "No dependency conflicts detected" headline --
+    the core-floor gap this analysis exists to close would silently reopen.
+    The rendered listing must also NOT show a core line it does not have.
+    """
     _patch_eps(
         monkeypatch,
         [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))],
@@ -1005,9 +1085,19 @@ def test_core_metadata_unreadable_adds_note(
     )
     report = doctor.diagnose()
     assert report.core is None
-    assert any("core numpy requirement" in n for n in report.notes)
+    assert any("plugin-vs-core numpy analysis could not run" in n for n in report.notes)
+    assert any("cannot be proven conflict-free" in n for n in report.notes)
+    # No classified conflict -- but NOT clean, and the verdict/exit path agree.
     assert report.has_conflict is False
-    assert "core:" not in doctor.format_report(report)
+    assert report.analysis_unavailable is True
+    assert report.is_clean is False
+
+    rendered = doctor.format_report(report)
+    assert "core:" not in rendered
+    assert "No dependency conflicts detected." not in rendered
+    # The headline is the generalized one: it covers every analysis gap, and the
+    # specific gap is named by the note.
+    assert "Conflict analysis unavailable or incomplete" in rendered
 
 
 def test_plugin_vs_plugin_same_major_conflict_does_not_blame_core(

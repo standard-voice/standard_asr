@@ -62,6 +62,8 @@ from standard_asr.contract.params import (
     WordTimestampGranularity,
 )
 from standard_asr.contract.results import (
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER,
     ChannelResult,
     Diagnostic,
     Segment,
@@ -91,6 +93,7 @@ __all__ = [
     "AudioUrl",
     "ChannelResult",
     "ConfigError",
+    "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
     "DIARIZE",
     "Diagnostic",
     "DiarizationRequest",
@@ -105,6 +108,7 @@ __all__ = [
     "ModelRegistry",
     "ModelSpec",
     "RuntimeParams",
+    "SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER",
     "Segment",
     "StandardASR",
     "StandardASRError",

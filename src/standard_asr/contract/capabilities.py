@@ -33,6 +33,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 WordTimestampGranularityName = Literal["word", "segment", "char"]
 
+#: The closed set of mode-domain names (spec: the capability tree's top-level
+#: partitions). Homed here -- the module that DEFINES the mode domains -- so
+#: contract-layer signatures (e.g. ``effective_candidate_languages``'s
+#: ``mode``) can use the precise type without importing upward from
+#: ``runtime.gating`` (which re-exports it as ``Mode``).
+ModeName = Literal["batch", "streaming"]
+
 #: Mode values that count as "not supported" for enum/mode archetype nodes.
 _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
 
@@ -1133,6 +1140,7 @@ __all__ = [
     "GuidanceCaps",
     "granularity_offers_all",
     "LanguageCaps",
+    "ModeName",
     "PhraseHintsCap",
     "PhraseHintsConstraints",
     "PromptCap",

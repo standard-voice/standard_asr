@@ -663,6 +663,7 @@ Word:    start:float  end:float  text:str
 - **时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）**，与 §ST 同一原点。**每通道内**跨段单调；多通道时不同通道的段 `[start, end]` **允许重叠**（双声道同时说话），顶层 segments 按 `start` 稳定排序、`start` 相同时按 `channel` 排、仍相同时按 `speaker` 排（**最终 tie-break**；`None` 排在真实标签之前——单通道多说话人重叠段因此有确定顺序）。适配器把 ms / protobuf-duration / ticks 转入。
   > **排序是引擎义务，非构造期强制、合规套件亦不校验（明示，与 TR.4 不对称）**：该 `(start, channel, speaker)` 排序与每通道单调性是**引擎/适配器的义务**——既**不**在 `TranscriptionResult` 构造期强制，合规套件也**不**校验：`StreamReducer` 对无时间戳引擎合法地保留到达顺序、且仅按 `start` 排（无 channel tie-break），严格的 `(start, channel, speaker)` 校验（无论在构造期还是套件对 `session.result()` 输出）都会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是**不可表示的歧义形状**（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界以同一 `(start, channel, speaker)` 键防御性重排——这是标准层唯一的安全网。
 - `probability ∈ [0,1]`；若引擎给 logprob，**另立字段**，不与 probability 混。
+- **`Segment.extra` 的标准保留键（normative）**：`extra` 是引擎扩展槽位，但键 **`timestamp_placeholder`** 为标准**保留**（与 `TranscriptionResult.extra` 的 `provider_formats` 同款保留先例）：流式归约器在某段的事件不含时间戳时把该段的 `start`/`end` 存为 `0.0` 占位符，并以 `extra["timestamp_placeholder"] = true` 逐段标记（结果级另发 `segment_timestamps_unavailable` diagnostic 说明"存在占位"；本键说明**是哪些段**）。消费者（含标准 SRT/VTT 渲染器）MUST 以这两个信号而非嗅探 `0.0` 值来识别占位（`0.0` 与真实的 t=0 零长段按值不可区分）；引擎 MUST NOT 挪用该键作自有语义。实现常量：`standard_asr.SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER`。
 - **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_until` 等）加在**事件包装层**，不污染共享子模型。
 - **`session.result() -> TranscriptionResult`**：流式会话可归约为最终结果（反映 `final`；late `closed` 重格式化可更新它）。
 

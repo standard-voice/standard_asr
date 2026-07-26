@@ -836,3 +836,14 @@ __all__ = [
     "parse_entrypoint_name",
     "pep503_normalize",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    # The old print-based demo was removed (AGENTS: no print in library code);
+    # exiting silently here would read as "no models discovered" to someone
+    # debugging plugin visibility, so point at the real tool loudly instead.
+    raise SystemExit(
+        "This module has no CLI; run `standard-asr list` to inspect the "
+        "discovered models (add --strict-discovery to fail on invalid entry "
+        "points)."
+    )

@@ -118,10 +118,13 @@ class DoctorReport:
             analysis let doctor report such an environment clean.
         conflicts: Human-readable conflict descriptions.
         notes: Supplementary remediation hints (non-verdict footer lines).
-        analysis_unavailable: Whether conflict analysis could not run at all --
-            plugins are installed but the optional ``packaging`` distribution is
-            missing -- so the environment cannot be proven conflict-free. This
-            is a non-clean state distinct from "no conflicts detected".
+        analysis_unavailable: Whether conflict analysis could not (fully) run
+            with plugins installed -- the optional ``packaging`` distribution
+            is missing, or the core's own distribution metadata is unreadable
+            so the plugin-vs-core relation never ran -- so the environment
+            cannot be proven conflict-free. This is a non-clean state distinct
+            from "no conflicts detected"; the accompanying note names the
+            specific gap.
     """
 
     python_version: str
@@ -545,15 +548,20 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             report.core = PluginNumpy("(core)", _CORE_DISTRIBUTION, core_spec)
         elif packaging_available():
             # Core metadata unreadable (with packaging present, so marker
-            # evaluation was possible): the intersection is missing a
-            # participant that is always in the process. Say so rather than
-            # letting the narrower analysis read as complete. In the
-            # packaging-absent mode _core_numpy_spec returns None by design
-            # (a marker-blind core row would display the wrong floor) and the
-            # analysis-unavailable state below already discloses the gap.
+            # evaluation was possible): the plugin-vs-core relation -- the
+            # analysis half that catches an environment no process layout can
+            # fix -- cannot run at all. That is a NON-CLEAN state, exactly like
+            # the packaging-absent mode below: a footer note alone would leave
+            # is_clean True and the headline claiming "No dependency conflicts
+            # detected" while the core-floor gap this analysis exists to close
+            # silently reopened. In the packaging-absent mode _core_numpy_spec
+            # returns None by design (a marker-blind core row would display
+            # the wrong floor); that branch below sets the same flag.
+            report.analysis_unavailable = True
             report.notes.append(
                 "standard-asr's own distribution metadata is unreadable, so the "
-                "core numpy requirement could not join the conflict analysis."
+                "plugin-vs-core numpy analysis could not run; the environment "
+                "cannot be proven conflict-free."
             )
 
     if report.plugins and not packaging_available():
@@ -568,19 +576,41 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             "classified."
         )
 
-    # Relation 1 -- plugin vs core, per distribution. A plugin internally
-    # unsatisfiable ON ITS OWN is skipped here: that is a plugin declaration
-    # bug, and the environment-level branch below attributes it as one
-    # (blaming core for a self-contradictory pin would misdirect the fix).
+    # Relation 0 -- a distribution whose OWN numpy declaration is internally
+    # unsatisfiable (e.g. ``<2`` AND ``>=2.1``). It gets its dedicated
+    # self-contradiction conflict PER DISTRIBUTION and is excluded from every
+    # later relation: no numpy exists for it anywhere, so keeping it in the
+    # joint analysis co-blamed innocent plugins and advised isolation --
+    # advice that cannot fix a self-contradictory pin.
+    self_unsatisfiable: list[PluginNumpy] = []
+    seen_self_broken: set[str] = set()
+    for p in report.plugins:
+        if p.distribution in seen_self_broken:
+            continue
+        plugin_spec_set = _specset(p.numpy_spec)
+        if plugin_spec_set is not None and _intersection_is_empty([plugin_spec_set]):
+            seen_self_broken.add(p.distribution)
+            self_unsatisfiable.append(p)
+    for p in self_unsatisfiable:
+        report.conflicts.append(
+            f"numpy version conflict: {p.distribution} ({p.numpy_spec}) declares "
+            "an internally unsatisfiable numpy range (no version satisfies it). "
+            "Fix the plugin's numpy requirement. (Emptiness is decided by a "
+            "boundary-derived probe sound to one-sub-release granularity; if "
+            "you believe this range is satisfiable, please report a bug.)"
+        )
+
+    # Relation 1 -- plugin vs core, per distribution (self-contradictory
+    # distributions already reported and excluded above).
     core_spec_set = _specset(report.core.numpy_spec) if report.core is not None else None
     core_incompatible: list[PluginNumpy] = []
     if report.core is not None and core_spec_set is not None:
         seen_core_conflict_dists: set[str] = set()
         for p in report.plugins:
-            if p.distribution in seen_core_conflict_dists:
+            if p.distribution in seen_core_conflict_dists or p.distribution in seen_self_broken:
                 continue
             plugin_spec_set = _specset(p.numpy_spec)
-            if plugin_spec_set is None or _intersection_is_empty([plugin_spec_set]):
+            if plugin_spec_set is None:
                 continue
             if _intersection_is_empty([plugin_spec_set, core_spec_set]):
                 seen_core_conflict_dists.add(p.distribution)
@@ -599,7 +629,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
     # every process), but the core-incompatible distributions reported above
     # are excluded: they cannot run in any layout, and keeping them here would
     # produce isolation advice that silently fails for exactly those plugins.
-    excluded_dists = {p.distribution for p in core_incompatible}
+    excluded_dists = {p.distribution for p in core_incompatible} | seen_self_broken
     participants: list[PluginNumpy] = [
         p for p in report.plugins if p.distribution not in excluded_dists
     ]
@@ -665,51 +695,25 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
     elif spec_sets and _intersection_is_empty(spec_sets):
         # Real-intersection conflict that the 1.x/2.x classification alone misses
         # -- e.g. disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``) that share
-        # no satisfying numpy release. A SINGLE distribution whose own numpy
-        # declaration is internally unsatisfiable (e.g. ``<2`` and ``>=2.1``) is
-        # checked too: an impossible self-pin is a real conflict the user must
-        # see, not a silently-passed declaration. The single-vs-cross framing is
-        # decided by the count of distinct *plugin* distributions and by whether
-        # the plugin side is empty ON ITS OWN: with core in the intersection, a
-        # lone self-contradictory plugin must still read as the one offender
-        # (naming core would misattribute a plugin bug), so the plugin-only
-        # emptiness is tested first.
+        # no satisfying numpy release. Self-contradictory distributions were
+        # already reported and excluded in relation 0, so every participant here
+        # is individually satisfiable and attribution reduces to one question:
+        # is the PLUGIN-ONLY intersection already empty? If yes, this is a
+        # plugin-vs-plugin conflict -- core must be neither listed nor blamed
+        # (naming it would invert the remediation; out-of-process isolation IS
+        # the fix). Core joins the listing (and flips the remedy) only when the
+        # plugins alone are satisfiable and adding core empties the
+        # intersection.
         plugin_pairs = [(p, s) for p, s in zip(constrained, spec_sets) if p is not report.core]
         plugin_constrained = [p for p, _ in plugin_pairs]
         plugin_specs = [s for _, s in plugin_pairs]
-        if (
-            len(_unique_distributions(plugin_constrained)) == 1
-            and plugin_specs
-            and _intersection_is_empty(plugin_specs)
-        ):
-            listing = _render_distributions(plugin_constrained)
-            report.conflicts.append(
-                f"numpy version conflict: {listing} declares an internally "
-                "unsatisfiable numpy range (no version satisfies it). Fix the "
-                "plugin's numpy requirement. (Emptiness is decided by a "
-                "boundary-derived probe sound to one-sub-release granularity; if "
-                "you believe this range is satisfiable, please report a bug.)"
-            )
-        else:
-            # Attribute the conflict to its LOAD-BEARING participants. If the
-            # plugin-only intersection is already empty, this is a
-            # plugin-vs-plugin conflict: core must be neither listed nor
-            # blamed, because naming it would invert the remediation --
-            # out-of-process isolation is exactly the fix for plugin-vs-plugin,
-            # and the core-specific "isolation cannot help" text would tell the
-            # user their one escape hatch is useless. Core joins the listing
-            # (and flips the remedy) only when the plugins alone are
-            # satisfiable and adding core is what empties the intersection.
-            # (A single self-contradictory plugin never reaches here: the
-            # internal-unsatisfiable branch above catches it first, so
-            # plugin-only emptiness here implies >= 2 plugin distributions.)
-            plugins_alone_empty = bool(plugin_specs) and _intersection_is_empty(plugin_specs)
-            sides = plugin_constrained if plugins_alone_empty else constrained
-            listing = _render_distributions(sides)
-            report.conflicts.append(
-                f"numpy version conflict: {listing} declare numpy ranges with no "
-                "common satisfying version." + _remedy(sides)
-            )
+        plugins_alone_empty = bool(plugin_specs) and _intersection_is_empty(plugin_specs)
+        sides = plugin_constrained if plugins_alone_empty else constrained
+        listing = _render_distributions(sides)
+        report.conflicts.append(
+            f"numpy version conflict: {listing} declare numpy ranges with no "
+            "common satisfying version." + _remedy(sides)
+        )
 
     if sys.version_info >= (3, 13):
         # Computed over ALL plugins, not the exclusion-filtered participants:
@@ -765,9 +769,9 @@ def format_report(report: DoctorReport) -> str:
         # Claiming "no conflicts" here would be a silent wrong result; the
         # headline must carry the non-clean state.
         lines.append(
-            "Conflict analysis unavailable: the 'packaging' distribution is "
-            "not installed (pip install packaging). Cannot prove the "
-            "environment conflict-free."
+            "Conflict analysis unavailable or incomplete; the environment "
+            "cannot be proven conflict-free (see the note below for the "
+            "specific gap)."
         )
     if report.notes:
         lines.append("")

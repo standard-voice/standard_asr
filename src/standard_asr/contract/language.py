@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection
 
+from standard_asr.contract.capabilities import ModeName
 from standard_asr.contract.exceptions import UnsupportedFeatureError
 from standard_asr.contract.results import Diagnostic
 
@@ -223,7 +224,7 @@ def effective_candidate_languages(
     detectable_languages: Collection[str],
     max_count: int | None,
     strict: bool,
-    mode: str | None = None,
+    mode: ModeName | None = None,
 ) -> tuple[list[str] | None, list[Diagnostic]]:
     """Resolve the candidate languages in effect for a request.
 
@@ -237,9 +238,10 @@ def effective_candidate_languages(
             engine base passes its pre-canonicalized, ConfigError-checked set).
         max_count: Maximum candidate count, if constrained.
         strict: Whether to raise (vs truncate/drop + diagnostic) on violations.
-        mode: The mode being resolved (``str``: ``"batch"`` / ``"streaming"``),
-            or ``None`` when unknown (direct callers outside the engine
-            pipeline); carried on the strict-mode
+        mode: The mode being resolved (``"batch"`` / ``"streaming"``; the
+            signature enforces the closed set), or ``None`` when unknown
+            (direct callers outside the engine pipeline); carried on the
+            strict-mode
             :class:`UnsupportedFeatureError` so the rejection reads like every
             other strict gate rejection.
 

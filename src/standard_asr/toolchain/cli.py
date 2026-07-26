@@ -9,7 +9,6 @@ import argparse
 import inspect
 import io
 import json
-import math
 import sys
 import traceback
 from typing import IO, Any, Callable, Iterable, cast
@@ -18,6 +17,7 @@ from pydantic import ValidationError
 
 from standard_asr.audio.format import AudioFormat
 from standard_asr.compliance import (
+    DEFAULT_SYNC_BRIDGE_TIMEOUT,
     ComplianceIssue,
     ComplianceReport,
     check_entrypoints,
@@ -26,6 +26,7 @@ from standard_asr.compliance import (
     check_streaming_param_gating,
     check_sync_bridge,
     prepare_requires_arguments,
+    validate_bridge_timeout,
 )
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
@@ -71,6 +72,34 @@ Examples:
 """
 
 
+def _add_strict_discovery_flag(parser: Any) -> None:
+    """Register the shared ``--strict-discovery`` flag on a subparser.
+
+    One registration site for the six discovery-driven commands so the flag
+    name, default, and the collision-explaining help text can never drift
+    between them (the same single-owner pattern as ``_add_init_config_args``).
+
+    Args:
+        parser: The subcommand parser to extend.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+    """
+    parser.add_argument(
+        "--strict-discovery",
+        action="store_true",
+        help=(
+            "Fail on invalid plugin entry points during discovery. (Named "
+            "--strict-discovery, not --strict: 'strict' alone is the engine's "
+            "strict/best_effort PARAMETER-gating policy, an init-config field "
+            "set via --set strict=... -- a different knob.)"
+        ),
+    )
+
+
 def _add_inspection_subcommands(subparsers: Any) -> None:
     """Register the model-inspection verbs as flat top-level commands.
 
@@ -88,16 +117,7 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
         None.
     """
     list_parser = subparsers.add_parser("list", help="List discovered models.", allow_abbrev=False)
-    list_parser.add_argument(
-        "--strict-discovery",
-        action="store_true",
-        help=(
-            "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
-        ),
-    )
+    _add_strict_discovery_flag(list_parser)
     list_parser.add_argument(
         "--on-conflict",
         choices=["warn_keep_first", "replace"],
@@ -112,16 +132,7 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
         allow_abbrev=False,
     )
     show_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
-    show_parser.add_argument(
-        "--strict-discovery",
-        action="store_true",
-        help=(
-            "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
-        ),
-    )
+    _add_strict_discovery_flag(show_parser)
     show_parser.set_defaults(func=_cmd_show)
 
     cache_parser = subparsers.add_parser(
@@ -142,16 +153,7 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
         allow_abbrev=False,
     )
     prepare_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
-    prepare_parser.add_argument(
-        "--strict-discovery",
-        action="store_true",
-        help=(
-            "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
-        ),
-    )
+    _add_strict_discovery_flag(prepare_parser)
     _add_init_config_args(prepare_parser)
     prepare_parser.set_defaults(func=_cmd_prepare)
 
@@ -179,11 +181,12 @@ def _positive_finite_seconds(value: str) -> float:
         seconds = float(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid float value: {value!r}") from exc
-    if not math.isfinite(seconds) or seconds <= 0:
-        raise argparse.ArgumentTypeError(
-            f"must be a finite number of seconds greater than 0, got {value!r}"
-        )
-    return seconds
+    try:
+        return validate_bridge_timeout(seconds)
+    except ValueError as exc:
+        # One rule, one owner (compliance.validate_bridge_timeout); the CLI
+        # only converts the library's ValueError into an argparse usage error.
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _add_compliance_subcommands(subparsers: Any) -> None:
@@ -210,16 +213,7 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
         help="Verify entry point visibility and basic factory behaviour.",
         allow_abbrev=False,
     )
-    ep_parser.add_argument(
-        "--strict-discovery",
-        action="store_true",
-        help=(
-            "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
-        ),
-    )
+    _add_strict_discovery_flag(ep_parser)
     ep_parser.add_argument(
         "--no-instantiate",
         dest="instantiate",
@@ -243,16 +237,7 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
         nargs="*",
         help="Model keys to check (default: every discovered model).",
     )
-    run_parser.add_argument(
-        "--strict-discovery",
-        action="store_true",
-        help=(
-            "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
-        ),
-    )
+    _add_strict_discovery_flag(run_parser)
     run_parser.add_argument(
         "--quiet",
         action="store_true",
@@ -278,11 +263,11 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
         help=(
             "Total timeout in seconds for the sync-bridge check's whole bridged "
             "session -- open, end-of-audio, drain, and close combined (default: "
-            "5.0). Only meaningful together with --include-bridge (passing it "
-            "alone is a usage error, not a silent no-op). Raise it for engines "
-            "whose session setup or teardown is slow; the check's own "
-            "remediation advice ('re-run with a larger value') is actionable "
-            "through this flag."
+            f"{DEFAULT_SYNC_BRIDGE_TIMEOUT}). Only meaningful together with "
+            "--include-bridge (passing it alone is a usage error, not a silent "
+            "no-op). Raise it for engines whose session setup or teardown is "
+            "slow; the check's own remediation advice ('re-run with a larger "
+            "value') is actionable through this flag."
         ),
     )
     run_parser.set_defaults(func=_cmd_compliance_run)
@@ -309,16 +294,7 @@ def _add_transcribe_subcommand(subparsers: Any) -> None:
         "--options",
         help="JSON string of transcription options passed to the engine.",
     )
-    parser.add_argument(
-        "--strict-discovery",
-        action="store_true",
-        help=(
-            "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
-        ),
-    )
+    _add_strict_discovery_flag(parser)
     _add_init_config_args(parser)
     parser.add_argument(
         "--json",
@@ -754,7 +730,9 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
         args: Parsed CLI arguments.
 
     Returns:
-        Exit code: ``0`` when every executed check passed, else ``1``.
+        Exit code: ``0`` when every executed check passed; ``1`` when any
+        executed check failed; ``2`` on a usage error (``--bridge-timeout``
+        without ``--include-bridge``).
 
     Raises:
         EntrypointValidationError: In ``--strict-discovery`` mode, when
@@ -771,7 +749,9 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
             "--bridge-timeout)."
         )
         return 2
-    bridge_timeout = args.bridge_timeout if args.bridge_timeout is not None else 5.0
+    bridge_timeout = (
+        args.bridge_timeout if args.bridge_timeout is not None else DEFAULT_SYNC_BRIDGE_TIMEOUT
+    )
 
     registry = discover_models(strict=args.strict_discovery)
 
@@ -820,7 +800,11 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
 
 
 def _run_instance_checks(
-    registry: ModelRegistry, name: str, *, include_bridge: bool, bridge_timeout: float = 5.0
+    registry: ModelRegistry,
+    name: str,
+    *,
+    include_bridge: bool,
+    bridge_timeout: float = DEFAULT_SYNC_BRIDGE_TIMEOUT,
 ) -> list[ComplianceReport]:
     """Run the instantiation-level compliance checks for one model.
 
@@ -889,22 +873,20 @@ def _run_instance_checks(
         # trivially for an output-only engine, so it runs for any streaming engine.
         reports.append(check_recommended_wire_format(cast(EngineBase, engine), model=name))
         if include_bridge:
-            if _engine_supports(engine, "streaming_input"):
-                reports.append(_run_sync_bridge(engine, name, timeout=bridge_timeout))
-            else:
-                # The bridge FEEDS bare frames; an output-only engine's
-                # audio_format session fails the streaming_input capability
-                # gate before any bridging happens -- a failure about the
-                # check's shape, not the engine. Skip loudly instead.
-                print(
-                    f"{_INFO} {name}: skipped sync-bridge (engine declares no "
-                    "streaming_input; the bridge feeds bare PCM frames, which "
-                    "an output-only engine cannot accept)."
-                )
+            # No CLI-side capability pre-gate: check_sync_bridge itself
+            # classifies an establishment refusal against the engine's declared
+            # streaming_input (engine= below), so an output-only engine yields
+            # a STRUCTURED, --quiet-respecting sync_bridge_not_applicable
+            # warning inside the report set -- one layer, one message, visible
+            # to machine consumers -- instead of an ad-hoc print here that a
+            # script could never see.
+            reports.append(_run_sync_bridge(engine, name, timeout=bridge_timeout))
     return reports
 
 
-def _run_sync_bridge(engine: Any, name: str, *, timeout: float = 5.0) -> ComplianceReport:
+def _run_sync_bridge(
+    engine: Any, name: str, *, timeout: float = DEFAULT_SYNC_BRIDGE_TIMEOUT
+) -> ComplianceReport:
     """Run the sync-bridge check against a streaming engine.
 
     Builds a session factory from the engine's first declared wire encoding and
@@ -922,7 +904,19 @@ def _run_sync_bridge(engine: Any, name: str, *, timeout: float = 5.0) -> Complia
     Returns:
         The sync-bridge :class:`ComplianceReport`.
     """
-    audio_format = _streaming_audio_format(cast(EngineBase, engine))
+    try:
+        audio_format = _streaming_audio_format(cast(EngineBase, engine))
+    except Exception as exc:  # noqa: BLE001 - a per-model report, never an abort
+        # check_recommended_wire_format (run just before this) reports the same
+        # fault as recommended_wire_format_raised; guarding here keeps a broken
+        # implementation from escaping _run_instance_checks and aborting the
+        # WHOLE multi-model run -- every other model's reports must survive.
+        return _single_error_report(
+            name,
+            "sync_bridge_setup_failed",
+            f"cannot run sync-bridge: recommended_wire_format() raised: {exc!r} "
+            "(also reported by check_recommended_wire_format).",
+        )
     if audio_format is None:
         return _single_error_report(
             name,
@@ -934,7 +928,7 @@ def _run_sync_bridge(engine: Any, name: str, *, timeout: float = 5.0) -> Complia
     def _factory() -> Any:
         return engine.start_transcription(audio_format=audio_format)
 
-    return check_sync_bridge(_factory, timeout=timeout, model=name)
+    return check_sync_bridge(_factory, timeout=timeout, model=name, engine=engine)
 
 
 def _streaming_audio_format(engine: EngineBase) -> AudioFormat | None:
@@ -953,7 +947,10 @@ def _streaming_audio_format(engine: EngineBase) -> AudioFormat | None:
         usable sample rate to open a bare-frame session with.
 
     Raises:
-        None.
+        Exception: Whatever the engine's ``recommended_wire_format()`` raises
+            (a structural engine's implementation is arbitrary code); the sole
+            caller guards the call and converts a raise into a per-model
+            ``sync_bridge_setup_failed`` report.
     """
     return engine.recommended_wire_format()
 

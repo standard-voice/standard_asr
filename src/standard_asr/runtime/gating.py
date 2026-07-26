@@ -21,10 +21,11 @@ rules:
 from __future__ import annotations
 
 import unicodedata
-from typing import Literal, cast
+from typing import cast
 
 from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
+    ModeName,
     PhraseHintsCap,
     PromptCap,
     WordTimestampsCap,
@@ -33,7 +34,9 @@ from standard_asr.contract.exceptions import InvalidProviderParamError, Unsuppor
 from standard_asr.contract.params import DiarizationRequest, ProviderParams, RuntimeParams
 from standard_asr.contract.results import Diagnostic
 
-Mode = Literal["batch", "streaming"]
+#: Alias of the contract-layer :data:`~standard_asr.contract.capabilities.ModeName`
+#: (kept under the runtime layer's established name; one Literal, one home).
+Mode = ModeName
 
 #: Diagnostic codes the gating layer emits. These strings are
 #: part of the standard's contract -- applications match on them and the

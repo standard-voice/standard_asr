@@ -33,6 +33,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 #: rationale as the language codes living in :mod:`standard_asr.contract.language`.
 DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
 
+#: Standard-reserved key in :attr:`Segment.extra` marking THAT segment's
+#: ``start``/``end`` as ``0.0`` placeholders (set by the streaming reducer on
+#: segments whose events carried no timestamps). The result-level
+#: :data:`DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE` diagnostic says "some spans are
+#: placeholders"; this per-segment marker says WHICH -- without it a mixed
+#: result's one placeholder would force consumers to distrust (or value-sniff)
+#: every span, discarding a predominantly real timeline. ``Segment.extra`` is
+#: otherwise engine-owned; like ``TranscriptionResult.extra``'s
+#: ``provider_formats``, this is a standard-recognized reserved key engines
+#: MUST NOT repurpose.
+SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER = "timestamp_placeholder"
+
 
 class Diagnostic(BaseModel):
     """A structured, non-fatal notification from the standard layer.
@@ -213,7 +225,10 @@ class Segment(BaseModel):
         no_speech_prob: Optional no-speech probability.
         temperature: Optional decoding temperature.
         compression_ratio: Optional compression-ratio metric.
-        extra: Engine-specific extra data.
+        extra: Engine-specific extra data, plus the standard-reserved
+            :data:`SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER` key (set by the
+            streaming reducer when this segment's spans are ``0.0``
+            placeholders; engines MUST NOT repurpose it).
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative time,
@@ -518,6 +533,7 @@ class TranscriptionResult(BaseModel):
 __all__ = [
     "ChannelResult",
     "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
+    "SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER",
     "Diagnostic",
     "Segment",
     "TranscriptionResult",

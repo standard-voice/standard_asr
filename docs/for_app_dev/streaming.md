@@ -121,14 +121,16 @@ so your downstream code (subtitle rendering, search, etc.) works identically
 whether the input was batch or streamed.
 
 One honesty note: some engines emit no timestamps while streaming. Their reduced
-segments carry `start`/`end` of `0.0` as placeholders, and the result then
-includes a `segment_timestamps_unavailable` warning diagnostic -- do not use
-those spans for timing-sensitive work. That diagnostic is also the signal
-`to_srt` / `to_vtt` key on: any result carrying it (all-placeholder or mixed)
-renders as a single whole-text cue -- the renderers refuse to fabricate a
-partial timeline out of placeholder spans (which players would silently drop
-as zero-duration cues). Results without the diagnostic render per-segment
-faithfully, including genuine zero-length segments at `t=0`.
+segments carry `start`/`end` of `0.0` as placeholders, the result includes a
+`segment_timestamps_unavailable` warning diagnostic, and each placeholder
+segment is individually marked with the reserved `timestamp_placeholder` key in
+`Segment.extra` -- do not use marked spans for timing-sensitive work. The
+renderers key on those signals: marked placeholder segments are omitted from
+the timed cues (any placement would be fabricated; their text remains in
+`result.text`), unmarked real-timestamped segments render normally, and a
+result whose segments are ALL placeholders renders as a single whole-text cue.
+Results without the diagnostic render per-segment faithfully, including
+genuine zero-length segments at `t=0`.
 
 ## Synchronous bridge
 

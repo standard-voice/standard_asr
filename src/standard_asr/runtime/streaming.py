@@ -44,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
 from standard_asr.contract.results import (
     DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER,
     Diagnostic,
     Segment,
     TranscriptionResult,
@@ -640,6 +641,12 @@ class StreamReducer:
                     if event.speaker is not None
                     else synthesize_segment_speaker(event.words)
                 ),
+                # Mark placeholder spans PER SEGMENT (standard-reserved extra
+                # key): the result-level diagnostic says "some spans are
+                # placeholders", this says WHICH -- so a mixed result's
+                # consumers (the renderers) can keep the real timeline instead
+                # of distrusting every span.
+                extra=({} if has_ts else {SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER: True}),
             )
             self._has_timestamp[event.segment_id] = has_ts
         elif event.type == "supersede":
@@ -660,11 +667,15 @@ class StreamReducer:
             ``0.0`` placeholders, since :class:`~standard_asr.contract.results.Segment`
             requires finite times), the result carries a
             ``segment_timestamps_unavailable`` warning diagnostic so the
-            placeholder spans are never mistaken for real timing. That
-            diagnostic is also the AUTHORITATIVE signal the SRT/VTT renderers
-            key on to fall back to a single whole-text cue (placeholder spans
-            are indistinguishable from genuine zero-length ``t=0`` spans by
-            value, so consumers must use the diagnostic, never value-sniff).
+            placeholder spans are never mistaken for real timing, and each
+            placeholder segment is individually marked with the
+            standard-reserved
+            :data:`~standard_asr.contract.results.SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER`
+            key in ``Segment.extra``. Those signals are AUTHORITATIVE for
+            consumers (the SRT/VTT renderers omit marked segments from timed
+            cues and keep the real timeline): placeholder spans are
+            indistinguishable from genuine zero-length ``t=0`` spans by value,
+            so consumers must use the signals, never value-sniff.
         """
         order = list(self._order)
         if order and all(self._has_timestamp.get(sid, False) for sid in order):

@@ -8,10 +8,10 @@ from __future__ import annotations
 import argparse
 import sys
 import types
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from importlib.metadata import EntryPoint
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import pytest
 
@@ -19,7 +19,12 @@ from standard_asr import (
     RuntimeParams,
     TranscriptionResult,
 )
-from standard_asr.compliance import ComplianceIssue, ComplianceReport
+from standard_asr.audio.format import AudioFormat
+from standard_asr.compliance import (
+    DEFAULT_SYNC_BRIDGE_TIMEOUT,
+    ComplianceIssue,
+    ComplianceReport,
+)
 from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
     FlagCap,
@@ -324,6 +329,36 @@ class _OutputOnlyStreamEngine(_GatingStreamEngine):
 
 def _output_only_stream_factory() -> _OutputOnlyStreamEngine:  # pyright: ignore[reportUnusedFunction]
     return _OutputOnlyStreamEngine()
+
+
+class _BrokenWireConfig(BaseConfig[Literal["brokenwire"]]):
+    engine: Literal["brokenwire"] = "brokenwire"
+
+
+class _BrokenWireProps(_StreamOkProps):
+    engine_id: str = "brokenwire"
+    model_name: str = "engine"
+
+
+class _BrokenWireEngine(_GatingStreamEngine):
+    """Streaming engine whose ``recommended_wire_format()`` raises.
+
+    A structural implementation is free to override the derivation; a buggy
+    one takes the whole CLI run down with it unless the runner guards.
+    """
+
+    properties: ClassVar[BaseProperties] = _BrokenWireProps()
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _BrokenWireConfig
+
+    def __init__(self) -> None:
+        self.config = _BrokenWireConfig(engine="brokenwire")
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        raise RuntimeError("wire format derivation exploded")
+
+
+def _broken_wire_factory() -> _BrokenWireEngine:  # pyright: ignore[reportUnusedFunction]
+    return _BrokenWireEngine()
 
 
 def test_cli_models_show_no_capabilities(
@@ -1677,16 +1712,18 @@ def test_cli_compliance_run_include_bridge_runs_sync_bridge(
     assert "Compliance run passed" in output
 
 
-def test_cli_compliance_run_bridge_skipped_for_output_only_engine(
+def test_cli_compliance_run_bridge_not_applicable_for_output_only_engine(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--include-bridge on an output-only engine skips the bridge LOUDLY.
+    """--include-bridge on an output-only engine yields a STRUCTURED warning.
 
     The bridge feeds bare PCM frames; an output-only engine's
     ``start_transcription(audio_format=...)`` fails the ``streaming_input``
-    capability gate before any bridging happens -- a spurious failure about
-    the check's shape, not the engine. The CLI must skip with a note and MUST
-    NOT invoke ``check_sync_bridge`` at all.
+    capability gate. The CLI no longer pre-gates with an ad-hoc ``print`` a
+    script could never see: it always runs the bridge and hands it ``engine=``
+    so ``check_sync_bridge`` itself classifies the refusal, putting a
+    ``sync_bridge_not_applicable`` warning in the REPORT SET -- one layer, one
+    message, visible to machine consumers and honouring ``--quiet``.
     """
     eps = [
         EntryPoint(
@@ -1698,17 +1735,69 @@ def test_cli_compliance_run_bridge_skipped_for_output_only_engine(
     registry = discover_models(eps=eps, strict=True)
     _patch_discover(monkeypatch, registry)
 
-    def _fail_if_called(*args: object, **kwargs: object) -> object:
-        raise AssertionError("check_sync_bridge must not run for an output-only engine")
+    # Record the engine each check receives, delegating to the REAL checks so
+    # the classification below is the shipped behaviour, not a stub's.
+    constructed: list[object] = []
+    real_swap_check = cli.check_provider_params_swap_safety
+    real_check_sync_bridge = cli.check_sync_bridge
+    bridge_kwargs: list[dict[str, object]] = []
 
-    monkeypatch.setattr(cli, "check_sync_bridge", _fail_if_called)
+    def _spy_swap(engine: object) -> ComplianceReport:
+        constructed.append(engine)
+        return real_swap_check(cast(EngineBase, engine))
+
+    def _spy_bridge(factory: object, **kwargs: object) -> ComplianceReport:
+        bridge_kwargs.append(dict(kwargs))
+        return real_check_sync_bridge(
+            cast(Callable[[], TranscriptionSession], factory),
+            **cast(Any, kwargs),
+        )
+
+    monkeypatch.setattr(cli, "check_provider_params_swap_safety", _spy_swap)
+    monkeypatch.setattr(cli, "check_sync_bridge", _spy_bridge)
 
     exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "skipped sync-bridge" in output
+    # The bridge RUNS now -- no CLI-side capability pre-gate.
+    assert len(bridge_kwargs) == 1
+    # ...and it is handed THE constructed engine, so the check can read the
+    # engine's own streaming_input declaration (the only thing that earns the
+    # passing not-applicable verdict).
+    assert bridge_kwargs[0]["engine"] is constructed[0]
+    assert bridge_kwargs[0]["model"] == "streamout/only"
+    # Structured warning in the report set, not an ad-hoc informational print.
+    assert "[WARN] Warning streamout/only [sync_bridge_not_applicable]:" in output
     assert "streaming_input" in output
+    assert "skipped sync-bridge" not in output
+    assert "Compliance run passed" in output
+
+
+def test_cli_compliance_run_quiet_suppresses_the_not_applicable_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--quiet hides the not-applicable warning line; the run still passes.
+
+    This is the DX the old ad-hoc ``print`` could not deliver: a warning that
+    lives in the report set obeys the run's own verbosity flag.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge", "--quiet"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "sync_bridge_not_applicable" not in output
+    assert "Compliance run passed" in output
 
 
 @pytest.mark.parametrize("bad", ["0", "-1", "-0.5", "nan", "inf", "-inf", "abc"])
@@ -1724,6 +1813,25 @@ def test_cli_bridge_timeout_rejects_nonpositive_and_nonfinite(bad: str) -> None:
     with pytest.raises(SystemExit) as excinfo:
         parser.parse_args(["compliance", "run", "--include-bridge", "--bridge-timeout", bad])
     assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+def test_cli_bridge_timeout_surfaces_the_librarys_own_rule_text(bad: float) -> None:
+    """The CLI parser delegates the rule to ``compliance.validate_bridge_timeout``.
+
+    One rule, one owner: the CLI only wraps the library's ``ValueError`` into
+    an argparse usage error, so the two layers can never drift on WHICH values
+    are legal or on how the rejection is explained.
+    """
+    with pytest.raises(argparse.ArgumentTypeError, match="finite"):
+        cli._positive_finite_seconds(str(bad))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_cli_bridge_timeout_rejects_a_non_numeric_value_before_the_rule() -> None:
+    # A non-float never reaches validate_bridge_timeout: the conversion error is
+    # its own message, naming the offending text.
+    with pytest.raises(argparse.ArgumentTypeError, match="invalid float value"):
+        cli._positive_finite_seconds("abc")  # pyright: ignore[reportPrivateUsage]
 
 
 def test_cli_bridge_timeout_accepts_positive_finite_value() -> None:
@@ -1794,10 +1902,15 @@ def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
     seen: dict[str, object] = {}
 
     def _check_sync_bridge(
-        factory: object, *, timeout: float = 5.0, model: str | None = None
+        factory: object,
+        *,
+        timeout: float = 5.0,
+        model: str | None = None,
+        engine: object = None,
     ) -> ComplianceReport:
         seen["timeout"] = timeout
         seen["model"] = model
+        seen["engine"] = engine
         return ComplianceReport(registry=ModelRegistry({}), issues=[])
 
     monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
@@ -1812,13 +1925,19 @@ def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
     # The model key travels with it: in a multi-model run an unattributed bridge
     # issue renders as <registry> and the user cannot tell which engine failed.
     assert seen["model"] == "stream/ok"
+    # The engine travels too: without it the check cannot tell an output-only
+    # engine's honest refusal from a streaming engine's capability lie, and
+    # fails closed on both.
+    assert isinstance(seen["engine"], _GatingStreamEngine)
 
 
 def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Omitting the flag hands the documented 5.0 s default down, not the None
-    # sentinel argparse now parses to (check_sync_bridge rejects a non-float).
+    # Omitting the flag hands the library's DEFAULT_SYNC_BRIDGE_TIMEOUT down, not
+    # the None sentinel argparse now parses to (check_sync_bridge rejects a
+    # non-float). The default is READ from compliance, never re-literalled here,
+    # so --help and the applied budget can never advertise different numbers.
     eps = [
         EntryPoint(
             name="stream/ok",
@@ -1832,10 +1951,15 @@ def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
     seen: dict[str, object] = {}
 
     def _check_sync_bridge(
-        factory: object, *, timeout: float = -1.0, model: str | None = None
+        factory: object,
+        *,
+        timeout: float = -1.0,
+        model: str | None = None,
+        engine: object = None,
     ) -> ComplianceReport:
         seen["timeout"] = timeout
         seen["model"] = model
+        seen["engine"] = engine
         return ComplianceReport(registry=ModelRegistry({}), issues=[])
 
     monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
@@ -1844,8 +1968,25 @@ def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
     capsys.readouterr()
 
     assert exit_code == 0
-    assert seen["timeout"] == 5.0
+    assert seen["timeout"] == DEFAULT_SYNC_BRIDGE_TIMEOUT
     assert seen["model"] == "stream/ok"
+    assert isinstance(seen["engine"], _GatingStreamEngine)
+
+
+def test_cli_bridge_timeout_help_advertises_the_shared_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--help`` prints the constant's value, not a hand-copied literal.
+
+    A drifted help string tells the author their engine got a budget it never
+    got; the help text is built from ``DEFAULT_SYNC_BRIDGE_TIMEOUT`` itself.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["compliance", "run", "--help"])
+    assert excinfo.value.code == 0
+
+    output = capsys.readouterr().out
+    assert f"default: {DEFAULT_SYNC_BRIDGE_TIMEOUT}" in output
 
 
 def test_cli_compliance_run_failure_headline(
@@ -2011,6 +2152,73 @@ def test_cli_compliance_run_named_model_still_reports_global_collision(
 
     assert exit_code == 1
     assert "zeta" in output
+
+
+def test_cli_compliance_run_broken_wire_format_does_not_abort_the_whole_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A raising ``recommended_wire_format()`` is a per-model report, not an abort.
+
+    The bridge runner derives its bare-frame format from the engine; an
+    exception there used to escape ``_run_instance_checks`` and take down a
+    multi-model run, so ONE broken plugin hid every other plugin's verdict.
+    It is now contained as a ``sync_bridge_setup_failed`` error for that model
+    while the co-installed model's checks still report.
+    """
+    eps = [
+        EntryPoint(
+            name="brokenwire/engine",
+            value="tests.test_cli:_broken_wire_factory",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        ),
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    bridged: list[object] = []
+    real_check_sync_bridge = cli.check_sync_bridge
+
+    def _spy_bridge(factory: object, **kwargs: object) -> ComplianceReport:
+        bridged.append(kwargs.get("model"))
+        return real_check_sync_bridge(
+            cast(Callable[[], TranscriptionSession], factory),
+            **cast(Any, kwargs),
+        )
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _spy_bridge)
+
+    exit_code = cli.main(["compliance", "run", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    # The run COMPLETES (no traceback escaping) and fails on the broken model.
+    assert exit_code == 1
+    assert "Compliance run failed" in output
+    assert "[FAIL] Error brokenwire/engine [sync_bridge_setup_failed]:" in output
+    assert "recommended_wire_format() raised" in output
+    # The same fault is ALSO reported by the dedicated wire-format check, so the
+    # guard duplicates a verdict rather than inventing one.
+    assert "recommended_wire_format_raised" in output
+    # The healthy co-installed model was still bridged for real (the broken one
+    # never reaches the check -- there is no format to bridge with), and its
+    # verdict is clean, so nothing is attributed to it.
+    assert bridged == ["stream/ok"]
+    assert "stream/ok [sync_bridge" not in output
+
+
+def test_run_sync_bridge_broken_wire_format_is_a_contained_error() -> None:
+    # Unit-level companion to the run-level test above: the helper returns the
+    # report instead of propagating, and names the engine's own exception.
+    report = cli._run_sync_bridge(_BrokenWireEngine(), "brokenwire/engine")  # pyright: ignore[reportPrivateUsage]
+
+    assert report.passed is False
+    assert [(i.level, i.code) for i in report.issues] == [("error", "sync_bridge_setup_failed")]
+    assert "wire format derivation exploded" in report.issues[0].message
+    assert report.issues[0].model == "brokenwire/engine"
 
 
 def test_run_sync_bridge_no_wire_format_is_error() -> None:

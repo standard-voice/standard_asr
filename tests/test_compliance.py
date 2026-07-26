@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from collections.abc import AsyncIterator
 from importlib.metadata import EntryPoint
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import pytest
@@ -20,6 +21,7 @@ from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import InputKind
 from standard_asr.audio.wire import CANONICAL_WIRE_ENCODING
 from standard_asr.compliance import (
+    DEFAULT_SYNC_BRIDGE_TIMEOUT,
     ComplianceIssue,
     ComplianceReport,
     assert_prefix_invariant,
@@ -30,6 +32,7 @@ from standard_asr.compliance import (
     check_streaming_param_gating,
     check_sync_bridge,
     check_transcription_result,
+    validate_bridge_timeout,
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
@@ -63,6 +66,7 @@ from standard_asr.engine import (
 )
 from standard_asr.plugins.discovery import ModelRegistry, discover_models
 from standard_asr.runtime.config import env_var_name
+from standard_asr.runtime.interface import StandardASR
 from standard_asr.runtime.streaming import SyncSession, TranscriptionEvent, TranscriptionSession
 
 
@@ -825,13 +829,18 @@ def test_sync_bridge_raising_session_reports_error() -> None:
 
 def test_sync_bridge_factory_raising_reports_error() -> None:
     # A factory that raises (no session ever constructed) is reported as a bridge
-    # error, and -- since nothing was started -- never as a thread leak.
+    # error, and -- since nothing was started -- never as a thread leak. Session
+    # establishment now runs on the CALLING thread, before any bridging, so the
+    # message names that phase instead of the generic bridging one.
     def _bad_factory() -> TranscriptionSession:
         raise RuntimeError("factory boom")
 
     report = check_sync_bridge(_bad_factory, timeout=5.0)
     assert report.passed is False
-    assert any("raised while bridging" in i.message for i in report.issues)
+    assert [(i.level, i.code) for i in report.issues] == [("error", "sync_bridge_raised")]
+    assert "Session establishment raised" in report.issues[0].message
+    # The engine's own exception is quoted so the author can debug it.
+    assert "factory boom" in report.issues[0].message
     assert not any(i.code == "sync_bridge_thread_leak" for i in report.issues)
 
 
@@ -915,6 +924,34 @@ def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -
     assert any("did not terminate" in i.message for i in report.issues)
 
 
+def test_sync_bridge_hanging_establishment_is_reported_not_hung() -> None:
+    """A ``start_transcription`` that never returns is REPORTED, never waited out.
+
+    The no-deadlock check must not itself deadlock on session establishment:
+    establishment runs under its own bounded slice of the total timeout, so a
+    hanging factory yields a prompt ``sync_bridge_did_not_terminate`` naming
+    establishment instead of blocking ``check_sync_bridge`` (and the CLI run)
+    for the hang's full duration.
+    """
+    release = threading.Event()
+
+    def _hanging_factory() -> TranscriptionSession:
+        release.wait(timeout=30.0)
+        raise AssertionError("unreachable: the check must not wait out the hang")
+
+    start = time.monotonic()
+    report = check_sync_bridge(_hanging_factory, timeout=0.2)
+    elapsed = time.monotonic() - start
+    release.set()
+
+    assert elapsed < 5.0, f"check blocked for {elapsed:.1f}s on a hanging establishment"
+    assert report.passed is False
+    assert [(i.level, i.code) for i in report.issues] == [
+        ("error", "sync_bridge_did_not_terminate")
+    ]
+    assert "establishment" in report.issues[0].message
+
+
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
 def test_sync_bridge_rejects_nonpositive_or_nonfinite_timeout(bad: float) -> None:
     """A non-finite / non-positive ``timeout`` is a caller bug, rejected loudly.
@@ -963,27 +1000,228 @@ def test_sync_bridge_forwards_the_timeout_as_the_sync_session_submit_timeout(
     assert captured == [{"submit_timeout": 1.25}]
 
 
-def test_sync_bridge_unsupported_session_is_not_applicable_not_a_failure() -> None:
-    """An engine refusing session establishment as unsupported is NOT a failure.
+def _unsupported_factory() -> TranscriptionSession:
+    """Refuse session establishment the way a capability gate does.
 
-    The bridge feeds bare PCM frames, so an engine without ``streaming_input``
-    (e.g. output-only) rejects the factory's ``start_transcription`` on the
+    Returns:
+        Never returns.
+
+    Raises:
+        UnsupportedFeatureError: Always.
+    """
+    raise UnsupportedFeatureError("streaming_input is not supported by this engine")
+
+
+def _as_protocol(engine: EngineBase | None) -> StandardASR | None:
+    """Present a fixture engine as the ``StandardASR`` protocol for ``engine=``.
+
+    An ``EngineBase`` subclass that assigns its own ``BaseConfig`` subtype to
+    ``config`` is not structurally assignable to ``StandardASR`` (the protocol
+    declares the mutable, therefore invariant, ``config: BaseConfig[str]``), so
+    a nominally-compliant engine still needs this cast under pyright strict.
+    Runtime behaviour is unaffected -- ``check_sync_bridge`` only calls
+    ``supports()`` on the value.
+
+    Args:
+        engine: The fixture engine, or ``None``.
+
+    Returns:
+        The same object, typed as the protocol.
+    """
+    return cast("StandardASR | None", engine)
+
+
+def test_sync_bridge_unsupported_session_is_not_applicable_not_a_failure() -> None:
+    """An OUTPUT-ONLY engine refusing establishment as unsupported is NOT a failure.
+
+    The bridge feeds bare PCM frames, so an engine that does not declare
+    ``streaming_input`` rejects the factory's ``start_transcription`` on the
     capability gate. That is a property of the CHECK's shape, not an engine
     fault: blaming the engine would be a misdirected verdict, so it is reported
     as a single ``sync_bridge_not_applicable`` WARNING and the report passes.
+    The pass is earned only by the engine's OWN declaration, so ``engine=``
+    must be supplied for the check to verify it.
     """
-
-    def _unsupported_factory() -> TranscriptionSession:
-        raise UnsupportedFeatureError("streaming_input is not supported by this engine")
-
-    report = check_sync_bridge(_unsupported_factory, timeout=5.0)
+    report = check_sync_bridge(
+        _unsupported_factory, timeout=5.0, engine=_as_protocol(_OutputOnlyStreamEngine())
+    )
 
     assert report.passed is True
     assert [(i.level, i.code) for i in report.issues] == [("warning", "sync_bridge_not_applicable")]
     # The engine's own words are quoted so the author can see WHY it was skipped.
     assert "streaming_input is not supported by this engine" in report.issues[0].message
-    # Specifically NOT the generic "raised while bridging" error path.
+    # The verdict names the declaration that earned it, and disowns the fault.
+    assert "does not declare streaming_input" in report.issues[0].message
+    assert "property of the check" in report.issues[0].message
+    # Specifically NOT the generic error path.
     assert not any(i.code == "sync_bridge_raised" for i in report.issues)
+
+
+def test_sync_bridge_unsupported_establishment_by_streaming_input_engine_is_a_capability_lie() -> (
+    None
+):
+    """An engine that DECLARES ``streaming_input`` may not refuse establishment.
+
+    The not-applicable carve-out exists for engines that genuinely cannot
+    accept bare frames. An engine declaring the capability and then refusing
+    the session is a capability lie -- a declared-but-unimplemented streaming
+    hook, or a recommended wire format its own guard rejects -- and must FAIL,
+    or the standard's headline promise ("declared means usable") is
+    unenforced.
+    """
+    engine = _GatingStreamEngine()
+    assert engine.supports("streaming_input") is True
+
+    report = check_sync_bridge(_unsupported_factory, timeout=5.0, engine=_as_protocol(engine))
+
+    assert report.passed is False
+    assert [(i.level, i.code) for i in report.issues] == [("error", "sync_bridge_raised")]
+    message = report.issues[0].message
+    assert "Session establishment raised UnsupportedFeatureError" in message
+    assert "capability lie" in message
+    assert not any(i.code == "sync_bridge_not_applicable" for i in report.issues)
+
+
+def test_sync_bridge_unsupported_establishment_without_engine_fails_closed() -> None:
+    """With no ``engine=`` the claim is unverifiable, so the check FAILS closed.
+
+    Passing an establishment refusal on the exception type alone would let any
+    engine buy a green run by raising ``UnsupportedFeatureError``. The check
+    instead fails and tells the caller how to earn the not-applicable verdict.
+    """
+    report = check_sync_bridge(_unsupported_factory, timeout=5.0)
+
+    assert report.passed is False
+    assert [(i.level, i.code) for i in report.issues] == [("error", "sync_bridge_raised")]
+    assert "Pass engine=" in report.issues[0].message
+    assert not any(i.code == "sync_bridge_not_applicable" for i in report.issues)
+
+
+def test_sync_bridge_broken_supports_cannot_buy_the_not_applicable_pass() -> None:
+    """An engine whose ``supports()`` raises is unverifiable -- so it FAILS closed.
+
+    A broken capability reader must never be more permissive than a working
+    one, and the message must name the REAL fault: the caller DID pass
+    ``engine=``, so telling them to pass it would misdirect the fix -- the
+    honest remediation is that their ``supports()`` itself is broken.
+    """
+
+    class _BrokenSupportsEngine(_OutputOnlyStreamEngine):
+        def supports(self, dot_path: str) -> bool:
+            raise RuntimeError("capability tree exploded")
+
+    report = check_sync_bridge(
+        _unsupported_factory, timeout=5.0, engine=_as_protocol(_BrokenSupportsEngine())
+    )
+
+    assert report.passed is False
+    assert [(i.level, i.code) for i in report.issues] == [("error", "sync_bridge_raised")]
+    assert "supports() raised" in report.issues[0].message
+    assert "fix supports()" in report.issues[0].message
+    assert "Pass engine=" not in report.issues[0].message
+
+
+class _UnsupportedOnOpenSession(TranscriptionSession):
+    """Establishes fine, then raises ``UnsupportedFeatureError`` from ``_open``."""
+
+    async def _open(self) -> None:
+        raise UnsupportedFeatureError("adapter refuses to open")
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.done()  # pragma: no cover - never reached
+
+
+class _UnsupportedOnEndAudioSession(TranscriptionSession):
+    """Establishes and opens fine, then refuses ``end_audio`` as unsupported."""
+
+    async def end_audio(self) -> None:
+        raise UnsupportedFeatureError("adapter refuses end-of-audio")
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+
+@pytest.mark.parametrize(
+    "session_factory",
+    [_UnsupportedOnOpenSession, _UnsupportedOnEndAudioSession],
+    ids=["open", "end_audio"],
+)
+def test_sync_bridge_unsupported_past_establishment_is_always_a_failure(
+    session_factory: Any,
+) -> None:
+    """``UnsupportedFeatureError`` from the adapter's LIFECYCLE is a plain failure.
+
+    Regression: the not-applicable carve-out used to span the whole bridged
+    lifecycle, so an adapter that raised ``UnsupportedFeatureError`` from
+    ``_open`` / ``end_audio`` / the drain -- a real, declared-but-unimplemented
+    fault -- was reported as a PASSING "check not applicable". The carve-out is
+    now scoped to the factory call alone, so every post-establishment refusal
+    fails like any other mid-bridge exception. ``engine=`` is supplied with a
+    non-streaming_input engine (the shape that DOES earn the pass at
+    establishment) to prove the scoping, not the engine's declaration, is what
+    decides.
+    """
+    report = check_sync_bridge(
+        session_factory, timeout=5.0, engine=_as_protocol(_OutputOnlyStreamEngine()), model="a/x"
+    )
+
+    assert report.passed is False
+    assert not any(i.code == "sync_bridge_not_applicable" for i in report.issues)
+    raised = [i for i in report.issues if i.code == "sync_bridge_raised"]
+    assert [i.level for i in raised] == ["error"]
+    assert "raised while bridging" in raised[0].message
+    assert "UnsupportedFeatureError" in raised[0].message
+    assert raised[0].model == "a/x"
+
+
+@pytest.mark.parametrize(
+    "session_factory",
+    [_UnsupportedOnOpenSession, _UnsupportedOnEndAudioSession],
+    ids=["open", "end_audio"],
+)
+def test_sync_bridge_leak_check_still_runs_past_establishment(
+    session_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session that WAS constructed is still leak-checked when it then fails.
+
+    The lifecycle failure must not short-circuit the owned-loop-thread
+    assertion: an adapter that both refuses mid-bridge AND strands its loop
+    thread has two faults, and reporting only the first would let the leak ship.
+    """
+
+    def _force_alive(_self: SyncSession) -> bool:
+        return True
+
+    monkeypatch.setattr(SyncSession, "is_loop_alive", _force_alive)
+
+    report = check_sync_bridge(
+        session_factory, timeout=5.0, engine=_as_protocol(_OutputOnlyStreamEngine())
+    )
+
+    assert report.passed is False
+    assert {i.code for i in report.issues} == {"sync_bridge_raised", "sync_bridge_thread_leak"}
+
+
+def test_sync_bridge_establishment_failure_skips_the_leak_check() -> None:
+    """No session constructed means no owned loop thread to leak.
+
+    The mirror of the test above: an establishment failure returns before the
+    worker thread exists, so the report carries the establishment error ALONE
+    -- a phantom leak finding on a session that was never built would send the
+    author hunting a thread that does not exist.
+    """
+
+    def _bad_factory() -> TranscriptionSession:
+        raise RuntimeError("factory boom")
+
+    for factory, engine in (
+        (_bad_factory, None),
+        (_unsupported_factory, None),
+        (_unsupported_factory, _GatingStreamEngine()),
+    ):
+        report = check_sync_bridge(factory, timeout=5.0, engine=_as_protocol(engine))
+        assert [i.code for i in report.issues] == ["sync_bridge_raised"], (factory, engine)
 
 
 def test_sync_bridge_issues_carry_the_model_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -992,9 +1230,6 @@ def test_sync_bridge_issues_carry_the_model_key(monkeypatch: pytest.MonkeyPatch)
     In a multi-model ``compliance run`` an unattributed issue renders as
     ``<registry>`` and the user cannot tell which engine failed.
     """
-
-    def _unsupported_factory() -> TranscriptionSession:
-        raise UnsupportedFeatureError("no streaming_input")
 
     def _bad_factory() -> TranscriptionSession:
         raise RuntimeError("factory boom")
@@ -1007,13 +1242,16 @@ def test_sync_bridge_issues_carry_the_model_key(monkeypatch: pytest.MonkeyPatch)
             yield TranscriptionEvent.done()  # pragma: no cover - never reached
 
     by_code: dict[str, list[str | None]] = {}
-    for factory, timeout in (
-        (_unsupported_factory, 5.0),
-        (_bad_factory, 5.0),
-        (_HangSession, 0.05),
-        (_NoTerminalSession, 5.0),
+    for factory, timeout, engine in (
+        # not_applicable is earned only with a non-streaming_input engine.
+        (_unsupported_factory, 5.0, _OutputOnlyStreamEngine()),
+        (_bad_factory, 5.0, None),
+        (_HangSession, 0.05, None),
+        (_NoTerminalSession, 5.0, None),
     ):
-        report = check_sync_bridge(factory, timeout=timeout, model="a/x")
+        report = check_sync_bridge(
+            factory, timeout=timeout, model="a/x", engine=_as_protocol(engine)
+        )
         for issue in report.issues:
             by_code.setdefault(issue.code, []).append(issue.model)
 
@@ -1032,6 +1270,46 @@ def test_sync_bridge_issues_carry_the_model_key(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(SyncSession, "is_loop_alive", _force_alive)
     leak = check_sync_bridge(_CleanSession, timeout=5.0, model="a/x")
     assert [i.model for i in leak.issues if i.code == "sync_bridge_thread_leak"] == ["a/x"]
+
+
+# --------------------------------------------------------------------------- #
+# validate_bridge_timeout / DEFAULT_SYNC_BRIDGE_TIMEOUT (the shared rule)
+# --------------------------------------------------------------------------- #
+def test_default_sync_bridge_timeout_is_the_published_five_seconds() -> None:
+    # The number the CLI's --help advertises and its effective default both read.
+    assert DEFAULT_SYNC_BRIDGE_TIMEOUT == 5.0
+
+
+def test_check_sync_bridge_default_timeout_is_the_shared_constant() -> None:
+    """The check's default IS the constant object, not a copy of its value.
+
+    A duplicated literal would let the constant change while the check kept
+    applying the old budget -- and the CLI's ``--help`` would advertise a
+    number nothing enforces.
+    """
+    default = inspect.signature(check_sync_bridge).parameters["timeout"].default
+    assert default is DEFAULT_SYNC_BRIDGE_TIMEOUT
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+def test_validate_bridge_timeout_rejects_nonpositive_and_nonfinite(bad: float) -> None:
+    # Same rule as check_sync_bridge's guard -- this function IS that guard.
+    with pytest.raises(ValueError, match="finite number of seconds"):
+        validate_bridge_timeout(bad)
+
+
+@pytest.mark.parametrize("good", [0.001, 1.0, 12.5, 3600.0])
+def test_validate_bridge_timeout_returns_a_valid_timeout_unchanged(good: float) -> None:
+    # Returning the value (not None) is what lets callers write `return
+    # validate_bridge_timeout(x)` as a one-line parse-and-validate.
+    assert validate_bridge_timeout(good) == good
+
+
+def test_bridge_timeout_rule_is_exported_from_compliance() -> None:
+    # The CLI imports both from here; a public rule the toolchain depends on
+    # must be part of the module's advertised surface.
+    assert "validate_bridge_timeout" in compliance_module.__all__
+    assert "DEFAULT_SYNC_BRIDGE_TIMEOUT" in compliance_module.__all__
 
 
 # --------------------------------------------------------------------------- #

@@ -11,9 +11,11 @@ from collections.abc import Callable
 import pytest
 from pydantic import ValidationError
 
+import standard_asr as standard_asr_package
 from standard_asr.contract import results as results_module
 from standard_asr.contract.results import (
     DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER,
     ChannelResult,
     Diagnostic,
     Segment,
@@ -379,21 +381,45 @@ def test_zero_span_segment_keeps_its_speaker_label() -> None:
     assert "<v Alice>hi" in to_vtt(result, include_speakers=True)
 
 
-def test_timestamps_unavailable_diagnostic_forces_the_single_synthetic_cue() -> None:
-    # The DIAGNOSTIC -- not the span values -- routes a result to the synthetic
-    # whole-text fallback. A hand-built result carrying it is treated exactly
-    # like a reduced timestamp-less stream: its 0.0 spans are placeholders, so
-    # rendering them per-segment would emit only zero-duration cues players
-    # silently drop.
-    segs = [
-        Segment(start=0.0, end=0.0, text="hello"),
-        Segment(start=0.0, end=0.0, text="world"),
-    ]
-    diagnostic = Diagnostic(
-        level="warning",
-        code=DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
-        message="2 of 2 segments carry placeholder timestamps.",
+def _placeholder_diagnostic(message: str) -> Diagnostic:
+    """Build the reducer's placeholder-timestamp disclosure.
+
+    Args:
+        message: The human-readable detail.
+
+    Returns:
+        A warning :class:`Diagnostic` carrying the standard code.
+    """
+    return Diagnostic(level="warning", code=DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE, message=message)
+
+
+def _placeholder_segment(text: str, **kwargs: object) -> Segment:
+    """Build a segment marked as a placeholder span, as the reducer marks them.
+
+    Args:
+        text: The segment text.
+        **kwargs: Extra :class:`Segment` fields (e.g. ``speaker``).
+
+    Returns:
+        A ``0.0``-span segment carrying the reserved placeholder marker.
+    """
+    return Segment(
+        start=0.0,
+        end=0.0,
+        text=text,
+        extra={SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER: True},
+        **kwargs,  # pyright: ignore[reportArgumentType]
     )
+
+
+def test_timestamps_unavailable_diagnostic_forces_the_single_synthetic_cue() -> None:
+    # ALL segments marked as placeholders: there is zero usable timing, so the
+    # result routes to the synthetic whole-text fallback -- rendering the 0.0
+    # spans per-segment would emit only zero-duration cues players silently
+    # drop. Both signals are required: the result-level diagnostic says
+    # placeholders exist, the per-segment marker says WHICH.
+    segs = [_placeholder_segment("hello"), _placeholder_segment("world")]
+    diagnostic = _placeholder_diagnostic("2 of 2 segments carry placeholder timestamps.")
     result = TranscriptionResult(text="hello world", segments=segs, diagnostics=[diagnostic])
 
     srt = to_srt(result)
@@ -411,6 +437,30 @@ def test_timestamps_unavailable_diagnostic_forces_the_single_synthetic_cue() -> 
     assert "00:00:00.000 --> 00:00:07.500\nhello world" in to_vtt(known)
 
 
+def test_diagnostic_with_no_marked_segment_renders_every_span_faithfully() -> None:
+    # The diagnostic ALONE never discards timing: with no segment marked, every
+    # span is real and each renders as its own cue. (The reducer always marks
+    # the placeholders it created; a diagnostic with nothing marked describes a
+    # timeline whose retained segments all carry real timestamps.) Collapsing
+    # this to one synthetic cue would throw away a correct timeline -- and the
+    # speaker labels with it.
+    segs = [
+        Segment(start=0.0, end=1.0, text="hello", speaker="Alice"),
+        Segment(start=1.0, end=2.0, text="world", speaker="Bob"),
+    ]
+    result = TranscriptionResult(
+        text="hello world",
+        segments=segs,
+        diagnostics=[_placeholder_diagnostic("some spans were placeholders upstream")],
+    )
+
+    assert to_srt(result) == (
+        "1\n00:00:00,000 --> 00:00:01,000\nhello\n\n2\n00:00:01,000 --> 00:00:02,000\nworld\n"
+    )
+    assert to_srt(result, include_speakers=True).count("[Alice]: hello") == 1
+    assert to_vtt(result).count("-->") == 2
+
+
 def test_final_with_start_and_no_end_renders_its_real_zero_length_span() -> None:
     # A final carrying start=0.0 and no end is a REAL timestamp: the reducer
     # stores end=start and emits no diagnostic, so the renderer must show the
@@ -424,13 +474,14 @@ def test_final_with_start_and_no_end_renders_its_real_zero_length_span() -> None
     assert to_srt(result) == "1\n00:00:00,000 --> 00:00:00,000\nhello\n"
 
 
-def test_partially_timestamped_reduce_renders_one_synthetic_cue_in_text_order() -> None:
+def test_partially_timestamped_reduce_keeps_the_real_cue_and_omits_the_placeholder() -> None:
     # Mixed shape: one timestamped final and one timestamp-less final. The
-    # timeline is part-placeholder, so the reducer discloses it and the renderer
-    # refuses to fabricate a partial timeline: ONE synthetic cue carrying
-    # result.text, in result.text's order. Rendering per segment would sort the
-    # placeholder (0.0) ahead of the real 5 s span -- subtitles reordered against
-    # the transcript -- plus a zero-duration cue players drop.
+    # per-segment marker says exactly WHICH span is a placeholder, so the real
+    # 5-6 s cue survives with its true timing while the timing-less segment is
+    # OMITTED from the timed projection -- any placement for it would be
+    # fabricated, and a zero-duration cue at a made-up point is both a lie in
+    # the file and invisible in players. The omission is disclosed by the
+    # diagnostic, and the full text remains in result.text.
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "b", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "a"))
@@ -440,10 +491,95 @@ def test_partially_timestamped_reduce_renders_one_synthetic_cue_in_text_order() 
     assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
 
     srt = to_srt(result)
-    assert srt == "1\n00:00:00,000 --> 00:00:03,000\nb a\n"
-    assert "00:00:00,000 --> 00:00:00,000" not in srt
+    assert srt == "1\n00:00:05,000 --> 00:00:06,000\nb\n"
     assert srt.count("-->") == 1
-    assert to_vtt(result) == "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nb a\n"
+    # The placeholder's text is not rendered at a fabricated time...
+    assert "\na\n" not in srt
+    assert "00:00:00,000 --> 00:00:00,000" not in srt
+    # ...and the whole transcript is NOT collapsed into one synthetic cue either.
+    assert "b a" not in srt
+    assert to_vtt(result) == "WEBVTT\n\n00:00:05.000 --> 00:00:06.000\nb\n"
+
+
+def test_one_placeholder_never_discards_a_predominantly_real_timeline() -> None:
+    # Round-2 regression: with three real-timestamped segments and one
+    # placeholder, the whole timeline used to collapse into a single synthetic
+    # cue -- three correct spans (and their speaker labels) thrown away because
+    # of one missing timestamp. The three real cues must survive, correctly
+    # timed and attributed; only the unplaceable segment drops out.
+    segs = [
+        Segment(start=0.0, end=1.0, text="one", speaker="Alice"),
+        Segment(start=1.0, end=2.0, text="two", speaker="Bob"),
+        Segment(start=2.0, end=3.0, text="three", speaker="Alice"),
+        _placeholder_segment("four", speaker="Bob"),
+    ]
+    result = TranscriptionResult(
+        text="one two three four",
+        segments=segs,
+        diagnostics=[_placeholder_diagnostic("1 of 4 segments carry placeholder timestamps.")],
+    )
+
+    srt = to_srt(result, include_speakers=True)
+    assert srt == (
+        "1\n00:00:00,000 --> 00:00:01,000\n[Alice]: one\n\n"
+        "2\n00:00:01,000 --> 00:00:02,000\n[Bob]: two\n\n"
+        "3\n00:00:02,000 --> 00:00:03,000\n[Alice]: three\n"
+    )
+    assert "four" not in srt
+    vtt = to_vtt(result, include_speakers=True)
+    assert vtt.count("-->") == 3
+    assert "four" not in vtt
+
+
+def test_empty_segments_with_the_diagnostic_still_render_zero_cues() -> None:
+    # Round-2 regression: the null rule is unconditional. An app that
+    # deliberately emptied `segments` must never see the removed text resurrected
+    # as a fabricated full-span cue just because the result also carries the
+    # placeholder diagnostic.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "hello"))
+    reduced = reducer.result()
+    assert [d.code for d in reduced.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+
+    emptied = reduced.model_copy(update={"segments": []})
+
+    assert emptied.text == "hello"
+    assert to_srt(emptied) == ""
+    assert to_vtt(emptied) == "WEBVTT\n"
+
+
+def test_reducer_marks_only_the_placeholder_segments() -> None:
+    # The per-segment marker is what makes the mixed shape decidable: value
+    # sniffing cannot tell a 0.0 placeholder from a genuine zero-length span at
+    # t=0, so the reducer records the fact at the moment it invents the span.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "timed", start=5.0, end=6.0))
+    reducer.add(TranscriptionEvent.final("s2", "untimed"))
+    segments = reducer.result().segments
+    assert segments is not None
+
+    by_text = {s.text: s for s in segments}
+    assert by_text["untimed"].extra == {SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER: True}
+    # A real span carries NO marker -- the key is only ever a positive claim.
+    assert by_text["timed"].extra == {}
+
+
+def test_placeholder_marker_constant_and_its_top_level_export() -> None:
+    # The reserved key is part of the wire contract engines must not repurpose,
+    # so its value is pinned; and both placeholder signals are reachable from
+    # the package root -- an app consuming results should not have to import
+    # from `standard_asr.contract.results` to interpret them.
+    assert SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER == "timestamp_placeholder"
+    assert (
+        standard_asr_package.SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER
+        is SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER
+    )
+    assert (
+        standard_asr_package.DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE
+        is DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE
+    )
+    assert "SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER" in standard_asr_package.__all__
+    assert "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE" in standard_asr_package.__all__
 
 
 def test_timestamps_unavailable_constant_is_shared_by_results_and_streaming() -> None:

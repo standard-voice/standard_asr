@@ -8,8 +8,9 @@ from __future__ import annotations
 import inspect
 import math
 import threading
+import time
 from dataclasses import dataclass
-from typing import Callable, Iterable, Literal, Sequence
+from typing import Callable, Iterable, Literal, Protocol, Sequence, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -60,6 +61,8 @@ from standard_asr.runtime.streaming import (
 __all__ = [
     "ComplianceIssue",
     "ComplianceReport",
+    "DEFAULT_SYNC_BRIDGE_TIMEOUT",
+    "SupportsCapabilities",
     "assert_prefix_invariant",
     "check_entrypoints",
     "check_event_sequence",
@@ -68,6 +71,7 @@ __all__ = [
     "check_streaming_param_gating",
     "check_sync_bridge",
     "check_transcription_result",
+    "validate_bridge_timeout",
 ]
 
 #: Candidate (param-field, params-builder, capability-suffix) probes for an
@@ -2088,11 +2092,69 @@ def check_recommended_wire_format(
     return ComplianceReport(registry=None, issues=issues)
 
 
+class SupportsCapabilities(Protocol):
+    """The one-method surface :func:`check_sync_bridge` needs from an engine.
+
+    A deliberately minimal protocol instead of ``StandardASR``: the full
+    protocol declares the mutable (hence invariant) ``config`` attribute, so a
+    real plugin whose ``config`` is its own ``BaseConfig`` subtype is not
+    structurally assignable under strict typing -- the very callers the
+    ``engine=`` parameter exists for could not pass their engine without a
+    cast. The check consults nothing but ``supports()``.
+    """
+
+    def supports(self, dot_path: str) -> bool:
+        """Return whether the capability at ``dot_path`` is supported.
+
+        Args:
+            dot_path: A capability dot-path.
+
+        Returns:
+            ``True`` if supported.
+        """
+        ...
+
+
+#: Default total timeout (seconds) for the sync-bridge check's whole bridged
+#: session. THE single source of the value: the CLI's --bridge-timeout help
+#: and effective default both read it, so a change here can never leave the
+#: CLI silently applying (or --help advertising) a stale number.
+DEFAULT_SYNC_BRIDGE_TIMEOUT = 5.0
+
+
+def validate_bridge_timeout(timeout: float) -> float:
+    """Validate a sync-bridge timeout: MUST be finite and strictly positive.
+
+    The single owner of the rule, shared by :func:`check_sync_bridge` and the
+    CLI's ``--bridge-timeout`` parser (which wraps the ``ValueError`` into an
+    argparse usage error) so the two layers can never drift: ``<= 0`` yields
+    an instant false "did not terminate" verdict against a compliant engine,
+    and ``inf``/``nan`` hangs the check on the very deadlock it diagnoses.
+
+    Args:
+        timeout: The candidate timeout in seconds.
+
+    Returns:
+        ``timeout`` unchanged.
+
+    Raises:
+        ValueError: If ``timeout`` is not finite or not strictly positive.
+    """
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(
+            f"sync-bridge timeout must be a finite number of seconds > 0, "
+            f"got {timeout!r} (<= 0 yields an instant false 'did not terminate' "
+            "verdict; inf/nan hangs the check on the deadlock it diagnoses)."
+        )
+    return timeout
+
+
 def check_sync_bridge(
     session_factory: Callable[[], TranscriptionSession],
     *,
-    timeout: float = 5.0,
+    timeout: float = DEFAULT_SYNC_BRIDGE_TIMEOUT,
     model: str | None = None,
+    engine: SupportsCapabilities | None = None,
 ) -> ComplianceReport:
     """Drive an async adapter's :class:`SyncSession` from an external thread.
 
@@ -2107,8 +2169,12 @@ def check_sync_bridge(
         session_factory: A zero-argument callable returning a fresh async
             :class:`TranscriptionSession` (e.g. ``engine.start_transcription``
             bound with its arguments).
-        timeout: Total seconds to allow the whole bridged session -- open,
-            end-of-audio, drain, and close combined. MUST be finite and
+        timeout: Total seconds to allow the whole check -- session
+            establishment (``session_factory()``) plus the bridged open,
+            end-of-audio, drain, and close combined (establishment runs under
+            a bounded worker and the drive phase receives the remainder, so a
+            hanging ``start_transcription`` is reported instead of hanging the
+            check itself). MUST be finite and
             strictly positive: ``<= 0`` would make the wait return immediately
             (a false "did not terminate" verdict against a compliant engine)
             and ``inf``/``nan`` would hang the check on the very deadlock it
@@ -2126,26 +2192,161 @@ def check_sync_bridge(
         model: The model key (``engine/model``) to attribute issues to, or
             ``None`` for a single-engine run (a multi-model run needs the
             attribution to name the failing engine).
+        engine: The engine the factory drives, if available (anything with a
+            ``supports()`` method -- see :class:`SupportsCapabilities`; the
+            full ``StandardASR`` protocol is deliberately not required, so a
+            real plugin passes without casts). Used for exactly
+            one thing: classifying an ``UnsupportedFeatureError`` raised by
+            ``session_factory()`` itself (session establishment). Only an
+            engine that does NOT declare ``streaming_input`` earns the passing
+            ``sync_bridge_not_applicable`` verdict -- the bridge feeds bare
+            frames, which such an engine genuinely cannot accept. An engine
+            that DECLARES ``streaming_input`` yet refuses establishment is a
+            capability lie (a declared-but-unimplemented hook, or a
+            recommended wire format its own guard rejects) and FAILS. Without
+            ``engine`` the classification is fail-closed: an establishment
+            refusal is reported as a failure, with a hint to pass ``engine=``
+            when the engine is genuinely output-only.
 
     Returns:
         A :class:`ComplianceReport`. ``passed`` is ``True`` when the bridge
         terminated cleanly with no leaked background loop thread, or when the
-        check is not applicable (the engine rejected session establishment as
-        unsupported -- e.g. an output-only engine cannot accept the bridge's
-        bare-frame session; reported as a ``sync_bridge_not_applicable``
-        warning, never as an engine failure).
+        check is not applicable (session establishment refused as unsupported
+        by an engine KNOWN not to declare ``streaming_input``; reported as a
+        ``sync_bridge_not_applicable`` warning, never as an engine failure).
+        An ``UnsupportedFeatureError`` from anywhere PAST establishment (the
+        adapter's ``_open``, ``end_audio``, event drain, close) is always a
+        failing ``sync_bridge_raised`` -- the not-applicable carve-out is
+        scoped to the factory call alone.
 
     Raises:
         ValueError: If ``timeout`` is not finite or not strictly positive (a
             caller code bug, rejected independent of any policy).
     """
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError(
-            f"check_sync_bridge timeout must be a finite number of seconds > 0, "
-            f"got {timeout!r} (<= 0 yields an instant false 'did not terminate' "
-            "verdict; inf/nan hangs the check on the deadlock it diagnoses)."
-        )
+    validate_bridge_timeout(timeout)
     issues: list[ComplianceIssue] = []
+
+    # Establish the session on the calling thread, BEFORE any bridging -- the
+    # documented app pattern constructs the session on a non-driving thread
+    # too (SyncSession(engine.start_transcription(...))). Scoping establishment
+    # outside the DRIVE worker keeps the not-applicable carve-out surgical: an
+    # UnsupportedFeatureError from the adapter's own lifecycle (_open,
+    # end_audio, drain, close) can then NEVER be mistaken for "the check does
+    # not apply" -- it stays a failing sync_bridge_raised like any other
+    # mid-bridge exception. Establishment still runs under ITS OWN slice of
+    # the deadline (a bounded daemon worker): a hanging start_transcription is
+    # exactly the fault class this no-deadlock check exists to diagnose, so
+    # the check must never itself hang on it -- and the drive phase then gets
+    # whatever budget establishment left, keeping ``timeout`` a genuine
+    # whole-session total.
+    established: dict[str, object] = {}
+
+    def _establish() -> None:
+        try:
+            established["session"] = session_factory()
+        except BaseException as exc:  # noqa: BLE001 - classified below
+            established["exc"] = exc
+
+    establish_worker = threading.Thread(
+        target=_establish, name="compliance-sync-bridge-establish", daemon=True
+    )
+    establish_start = time.monotonic()
+    establish_worker.start()
+    establish_worker.join(timeout=timeout)
+    if establish_worker.is_alive():
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="sync_bridge_did_not_terminate",
+                message=(
+                    f"Session establishment did not complete within {timeout}s -- "
+                    "start_transcription hung (or legitimately needs longer). "
+                    "Re-run with a larger timeout to disambiguate (library: "
+                    "check_sync_bridge(..., timeout=...); CLI: standard-asr "
+                    "compliance run --include-bridge --bridge-timeout SECONDS)."
+                ),
+                model=model,
+            )
+        )
+        return ComplianceReport(registry=None, issues=issues)
+    remaining = max(0.0, timeout - (time.monotonic() - establish_start))
+    exc_or_none = established.get("exc")
+
+    if isinstance(exc_or_none, UnsupportedFeatureError):
+        exc = exc_or_none
+        declared_streaming_input: bool | None = None
+        supports_raised = False
+        if engine is not None:
+            try:
+                declared_streaming_input = bool(engine.supports("streaming_input"))
+            except Exception:  # noqa: BLE001 - a broken supports() cannot earn a pass
+                declared_streaming_input = None
+                supports_raised = True
+        if declared_streaming_input is False:
+            # The one honest not-applicable shape: the engine itself says it
+            # cannot accept bare-frame input, so the bridge has nothing to test.
+            issues.append(
+                ComplianceIssue(
+                    level="warning",
+                    code="sync_bridge_not_applicable",
+                    message=(
+                        "Sync-bridge check not applicable: the engine does not "
+                        "declare streaming_input and refused session "
+                        f"establishment as unsupported ({exc}). The bridge feeds "
+                        "bare PCM frames; this is a property of the check, not "
+                        "an engine failure."
+                    ),
+                    model=model,
+                )
+            )
+            return ComplianceReport(registry=None, issues=issues)
+        # Fail-closed: the engine declares streaming_input (a refusal is then a
+        # capability lie), or no engine was provided so the claim cannot be
+        # verified -- an unverifiable establishment refusal MUST NOT pass.
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="sync_bridge_raised",
+                message=(
+                    "Session establishment raised UnsupportedFeatureError "
+                    f"({exc}). "
+                    + (
+                        "The engine DECLARES streaming_input, so refusing a "
+                        "bare-frame session is a capability lie (a declared-but-"
+                        "unimplemented streaming hook, or a recommended wire "
+                        "format the engine's own guard rejects)."
+                        if declared_streaming_input
+                        else (
+                            "The engine's own supports() raised while verifying "
+                            "streaming_input -- a broken capability surface "
+                            "cannot earn a not-applicable pass; fix supports() "
+                            "first (the entry-point checks flag it too)."
+                            if supports_raised
+                            else "Pass engine=... so the check can verify "
+                            "whether the engine declares streaming_input (a "
+                            "genuinely output-only engine is then reported "
+                            "not-applicable instead of failing)."
+                        )
+                    )
+                ),
+                model=model,
+            )
+        )
+        return ComplianceReport(registry=None, issues=issues)
+    if exc_or_none is not None:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="sync_bridge_raised",
+                message=f"Session establishment raised: {exc_or_none!r}.",
+                model=model,
+            )
+        )
+        return ComplianceReport(registry=None, issues=issues)
+    # _establish stored either "exc" (handled above) or the constructed
+    # session; the dict is object-typed only because it crosses the thread.
+    session = cast(TranscriptionSession, established["session"])
+
     outcome: dict[str, object] = {}
     worker_name = "compliance-sync-bridge"
 
@@ -2157,19 +2358,11 @@ def check_sync_bridge(
             # --bridge-timeout above SyncSession's internal 30 s default was
             # silently inert for open/close and a slow-but-compliant adapter
             # failed as "raised" no matter how much time the user granted.
-            sync = SyncSession(session_factory(), submit_timeout=timeout)
+            sync = SyncSession(session, submit_timeout=timeout)
             with sync:
                 sync.end_audio()
                 events = list(sync)
             outcome["terminal"] = any(getattr(ev, "is_terminal", False) for ev in events)
-        except UnsupportedFeatureError as exc:
-            # Session ESTABLISHMENT was refused as unsupported (typically the
-            # factory driving start_transcription(audio_format=...) against an
-            # engine without streaming_input, e.g. output-only). The bridge
-            # feeds bare frames, so it does not apply to such an engine --
-            # report not-applicable, never an engine failure: blaming the
-            # engine for the check's own shape is a misdirected verdict.
-            outcome["not_applicable"] = str(exc)
         except Exception as exc:  # noqa: BLE001 - reported as a compliance error
             outcome["error"] = repr(exc)
         finally:
@@ -2187,7 +2380,7 @@ def check_sync_bridge(
     # deadlock would itself hang on it -- the daemon flag prevents that.
     worker = threading.Thread(target=_drive, name=worker_name, daemon=True)
     worker.start()
-    worker.join(timeout=timeout)
+    worker.join(timeout=remaining)
 
     if worker.is_alive():
         issues.append(
@@ -2203,23 +2396,6 @@ def check_sync_bridge(
                     "--bridge-timeout SECONDS). If it is a deadlock, check the "
                     "sync-bridge adapter contract: bind loop resources in "
                     "__aenter__, never touch the ambient event loop."
-                ),
-                model=model,
-            )
-        )
-        return ComplianceReport(registry=None, issues=issues)
-
-    if "not_applicable" in outcome:
-        issues.append(
-            ComplianceIssue(
-                level="warning",
-                code="sync_bridge_not_applicable",
-                message=(
-                    "Sync-bridge check not applicable: the engine refused session "
-                    f"establishment as unsupported ({outcome['not_applicable']}). "
-                    "An engine without streaming_input cannot accept the bridge's "
-                    "bare-frame session; this is a property of the check, not an "
-                    "engine failure."
                 ),
                 model=model,
             )

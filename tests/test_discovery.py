@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import runpy
 from importlib.metadata import EntryPoint, EntryPoints
 from typing import Any, AsyncIterator, ClassVar, Literal
 
@@ -26,6 +28,7 @@ from standard_asr.contract.exceptions import EntrypointValidationError, FactoryL
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
 from standard_asr.contract.params import ProviderParams
 from standard_asr.engine import BaseConfig, BaseProperties, SampleRateRange
+from standard_asr.plugins import discovery as discovery_module
 from standard_asr.plugins.discovery import (
     ENTRYPOINT_GROUP,
     ModelRegistry,
@@ -1248,3 +1251,20 @@ def test_check_sync_bridge_detects_deadlock() -> None:
     report = compliance.check_sync_bridge(_HangBridgeSession, timeout=0.5)
     assert report.passed is False
     assert any("deadlock" in i.message for i in report.iter_level("error"))
+
+
+def test_running_the_discovery_module_points_at_the_real_cli() -> None:
+    """``python -m standard_asr.plugins.discovery`` exits with a signpost.
+
+    The module has no CLI. Exiting silently would read as "no models
+    discovered" to someone debugging plugin visibility -- the exact wrong
+    conclusion -- so it exits loudly and names the tool that DOES list them.
+    """
+    module_file = inspect.getsourcefile(discovery_module)
+    assert module_file is not None
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_path(module_file, run_name="__main__")
+
+    message = str(excinfo.value.code)
+    assert "standard-asr list" in message
+    assert "--strict-discovery" in message
