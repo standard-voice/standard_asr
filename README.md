@@ -97,8 +97,9 @@ the people who know each engine best, and the core never becomes the bottleneck.
 - **No dependency hell, no licensing traps.** Each engine is its own pip-installable
   plugin, so restrictive licenses and heavy dependencies stay in the packages that carry
   them. Hard dependency conflicts (e.g. numpy 1.x vs 2.x) cannot share one environment —
-  `standard-asr doctor` surfaces them instead of letting them hide, and process isolation
-  is the escape hatch.
+  `standard-asr doctor` surfaces them instead of letting them hide. Process isolation is
+  the escape hatch for plugin-vs-plugin conflicts; a plugin incompatible with the core's
+  own numpy floor cannot run anywhere, and doctor reports that as its own conflict.
 - **The choice goes to the user.** End users — especially for under-served languages and
   domains — install the engine that serves them best and use it immediately, without
   waiting for the app author to add support.

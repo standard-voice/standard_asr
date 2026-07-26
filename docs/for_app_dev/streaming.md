@@ -16,9 +16,13 @@ async with engine.start_transcription(audio_format=audio_format) as session:
 ```
 
 `recommended_wire_format()` returns the engine's preferred sample rate and
-encoding as an `AudioFormat`. If you need a specific format (e.g. 8 kHz for
-telephony), construct one yourself -- the engine will raise
-`UnsupportedFeatureError` if it cannot accept it.
+encoding as an `AudioFormat`, or `None` when the engine declares no usable
+positive sample rate (no bare-frame session can be opened then). If you need a
+specific format (e.g. 8 kHz for telephony), construct one yourself -- the
+engine will raise `UnsupportedFeatureError` if it cannot accept it. The
+recommendation is derived from the engine's static Properties; whether a
+bare-frame session can be opened at all is a capability question -- gate on
+`engine.supports("streaming_input")` first.
 
 For whole-input streaming (the engine streams *output* over a complete audio
 file), pass `audio=` instead of `audio_format=`:

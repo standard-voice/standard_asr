@@ -38,6 +38,7 @@ StandardASRError
 | `IncompatibleAudioInputError` | `transcribe()` | Passed a URL to an engine that only accepts arrays, and no conversion path exists. |
 | `UnsafeAudioUrlError` | `transcribe()` | An `AudioUrl` failed the SSRF policy (non-HTTPS, private IP, etc.). |
 | `StreamClosedError` | `session.send_audio()` | Sending audio manually after `end_audio()` or after the session delivered a terminal event. (`feed()` never raises it: a managed source's post-terminal chunks are discarded by design.) |
+| `InvalidSessionUseError` | `session.feed()` / `session.send_audio()` / iterating the session | Driving a still-live session incorrectly: mixing managed `feed()` with manual `send_audio()`/`end_audio()`, calling `feed()` twice, or iterating the event stream twice. The session is NOT closed — fix the calling code; do not rebuild the session. |
 | `EntrypointValidationError` | `discover_models()` (strict mode) | A plugin's entry-point name is malformed. |
 | `FactoryLoadError` | `registry.engine_class()` / `registry.create()` | Plugin's entry point cannot be imported or the factory is misconfigured. |
 

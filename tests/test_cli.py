@@ -299,6 +299,33 @@ def _ungated_stream_factory() -> _UngatedStreamEngine:  # pyright: ignore[report
     return _UngatedStreamEngine()
 
 
+class _StreamOutConfig(BaseConfig[Literal["streamout"]]):
+    engine: Literal["streamout"] = "streamout"
+
+
+class _StreamOutOnlyProps(_StreamOkProps):
+    engine_id: str = "streamout"
+    model_name: str = "only"
+
+
+class _OutputOnlyStreamEngine(_GatingStreamEngine):
+    """Output-only streaming engine: streaming_output WITHOUT streaming_input."""
+
+    properties: ClassVar[BaseProperties] = _StreamOutOnlyProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(),
+        streaming_output=FlagCap(supported=True),
+    )
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _StreamOutConfig
+
+    def __init__(self) -> None:
+        self.config = _StreamOutConfig(engine="streamout")
+
+
+def _output_only_stream_factory() -> _OutputOnlyStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    return _OutputOnlyStreamEngine()
+
+
 def test_cli_models_show_no_capabilities(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1601,6 +1628,62 @@ def test_cli_compliance_run_include_bridge_runs_sync_bridge(
 
     assert exit_code == 0
     assert "Compliance run passed" in output
+
+
+def test_cli_compliance_run_bridge_skipped_for_output_only_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--include-bridge on an output-only engine skips the bridge LOUDLY.
+
+    The bridge feeds bare PCM frames; an output-only engine's
+    ``start_transcription(audio_format=...)`` fails the ``streaming_input``
+    capability gate before any bridging happens -- a spurious failure about
+    the check's shape, not the engine. The CLI must skip with a note and MUST
+    NOT invoke ``check_sync_bridge`` at all.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    def _fail_if_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError("check_sync_bridge must not run for an output-only engine")
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _fail_if_called)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "skipped sync-bridge" in output
+    assert "streaming_input" in output
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "-0.5", "nan", "inf", "-inf", "abc"])
+def test_cli_bridge_timeout_rejects_nonpositive_and_nonfinite(bad: str) -> None:
+    """--bridge-timeout must be a finite number of seconds > 0.
+
+    A bare ``type=float`` would accept these; fed into ``Thread.join`` they
+    become an immediately-expiring timeout (a false "did not terminate"
+    verdict blamed on the engine) or a hang (``inf``). argparse rejects them
+    as usage errors (exit 2) at parse time.
+    """
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["compliance", "run", "--include-bridge", "--bridge-timeout", bad])
+    assert excinfo.value.code == 2
+
+
+def test_cli_bridge_timeout_accepts_positive_finite_value() -> None:
+    """A positive finite --bridge-timeout parses to its float value."""
+    parser = cli.build_parser()
+    args = parser.parse_args(["compliance", "run", "--bridge-timeout", "12.5"])
+    assert args.bridge_timeout == 12.5
 
 
 def test_cli_compliance_run_bridge_timeout_defaults_to_five_seconds() -> None:

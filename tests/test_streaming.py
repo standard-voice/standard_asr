@@ -2932,6 +2932,7 @@ def test_stream_deadlines_model_validates_and_tracks_explicit_fields() -> None:
 
 
 def test_stream_deadlines_rejects_unknown_field() -> None:
+    """An unknown StreamDeadlines field fails construction (``extra='forbid'``)."""
     # extra="forbid": a misspelled deadline is a silently-dropped SAFETY
     # parameter -- under pydantic's default extra="ignore" the typo below was
     # swallowed and the session ran with max_idle at its adapter default, the
@@ -3078,6 +3079,7 @@ def test_feed_twice_raises() -> None:
 # MEDIUM -- StreamReducer: no fabricated 0.0 timestamps; arrival order kept
 # --------------------------------------------------------------------------- #
 def test_streaming_diagnostic_code_constants_match_their_wire_literals() -> None:
+    """Pin each streaming DIAG_* constant to its exact wire literal."""
     # The lifecycle guard's rejection verdicts and the reducer's timestamp
     # disclosure are wire-visible ``Diagnostic.code`` values consumers match on.
     # The emission sites now reference these constants, so constant and literal
@@ -3103,6 +3105,7 @@ def test_streaming_diagnostic_code_constants_match_their_wire_literals() -> None
 
 
 def test_reducer_preserves_arrival_order_without_timestamps() -> None:
+    """Timestamp-less finals keep arrival order and disclose the 0.0 placeholders."""
     reducer = StreamReducer()
     # No start/end given (timestamp-less engine like Qwen streaming).
     reducer.add(TranscriptionEvent.final("s1", "world"))
@@ -3125,6 +3128,7 @@ def test_reducer_preserves_arrival_order_without_timestamps() -> None:
 
 
 def test_reducer_sorts_when_all_have_timestamps() -> None:
+    """Fully-timestamped finals sort by ``start`` with nothing to disclose."""
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "second", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "first", start=1.0, end=2.0))
@@ -3135,6 +3139,7 @@ def test_reducer_sorts_when_all_have_timestamps() -> None:
 
 
 def test_reducer_no_sort_when_mixed_timestamps() -> None:
+    """Mixed timestamps preserve arrival order and disclose the placeholder count."""
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "b", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "a"))  # no timestamp
@@ -3150,6 +3155,7 @@ def test_reducer_no_sort_when_mixed_timestamps() -> None:
 
 
 def test_reducer_timestamp_diagnostic_ignores_superseded_segments() -> None:
+    """Only retained segments count toward the timestamp disclosure."""
     # Only RETAINED segments are disclosed: a timestamp-less segment that was
     # superseded away is not counted (and an all-timestamped remainder emits no
     # diagnostic at all).

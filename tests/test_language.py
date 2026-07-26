@@ -22,6 +22,7 @@ from standard_asr.contract.language import (
 
 
 def test_language_diagnostic_code_constants_match_their_wire_literals() -> None:
+    """Pin each language-family DIAG_* constant to its exact wire literal."""
     # The diagnostic ``code`` is a wire-visible contract consumers match on, so
     # the constant and its literal value are pinned together exactly once: a
     # silent rename of either side breaks here instead of in a consumer.
@@ -245,6 +246,7 @@ def test_effective_candidates_rejects_auto() -> None:
 
 
 def test_effective_candidates_strict_non_detectable_raises() -> None:
+    """Strict mode rejects a non-detectable candidate as UnsupportedFeatureError."""
     # A well-formed candidate the engine simply cannot detect is
     # valid-but-unreachable POLICY, not a caller code bug: it MUST be the
     # standard strict-gate rejection (UnsupportedFeatureError, spec RT R2) so
@@ -275,6 +277,7 @@ def test_effective_candidates_strict_non_detectable_raises() -> None:
 
 
 def test_effective_candidates_strict_non_detectable_carries_the_mode() -> None:
+    """The strict rejection carries the mode the engine pipeline passes."""
     # When the caller knows the mode (the engine pipeline passes
     # mode="batch"/"streaming"), the rejection carries it, so the error reads
     # like every other strict gate rejection.
@@ -333,6 +336,7 @@ def test_detectable_membership_canonicalizes_declared_side() -> None:
 
 
 def test_effective_candidates_strict_over_max_raises() -> None:
+    """Strict mode rejects an over-``max`` candidate list as UnsupportedFeatureError."""
     # Over-``max`` is the same class of rejection as non-detectable: a list the
     # engine cannot honour, not a malformed value -> UnsupportedFeatureError.
     with pytest.raises(UnsupportedFeatureError) as excinfo:
@@ -393,6 +397,7 @@ def test_dedup_before_membership_single_drop_diagnostic() -> None:
 
 @pytest.mark.parametrize("strict", [True, False])
 def test_auto_in_candidates_always_raises_even_best_effort(strict: bool) -> None:
+    """``'auto'`` in a candidate list raises a bare ValueError under either policy."""
     # 'auto' in a candidate list is a caller CODE bug -> always a bare
     # ValueError, independent of strict / best_effort, and explicitly NOT the
     # UnsupportedFeatureError the policy rejections use (that type would claim
@@ -413,6 +418,7 @@ def test_auto_in_candidates_always_raises_even_best_effort(strict: bool) -> None
 
 @pytest.mark.parametrize("strict", [True, False])
 def test_malformed_candidate_always_raises(strict: bool) -> None:
+    """A malformed candidate tag raises a bare ValueError under either policy."""
     # A malformed BCP-47 candidate ('english' instead of 'en') is a
     # caller bug -> always raises with a clear malformed-tag message naming the
     # offending tag, independent of strict / best_effort. It must NOT be silently

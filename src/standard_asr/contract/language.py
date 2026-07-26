@@ -237,9 +237,11 @@ def effective_candidate_languages(
             engine base passes its pre-canonicalized, ConfigError-checked set).
         max_count: Maximum candidate count, if constrained.
         strict: Whether to raise (vs truncate/drop + diagnostic) on violations.
-        mode: The mode (``"batch"`` / ``"streaming"``) being resolved, if known;
-            carried on the strict-mode :class:`UnsupportedFeatureError` so the
-            rejection reads like every other strict gate rejection.
+        mode: The mode being resolved (``str``: ``"batch"`` / ``"streaming"``),
+            or ``None`` when unknown (direct callers outside the engine
+            pipeline); carried on the strict-mode
+            :class:`UnsupportedFeatureError` so the rejection reads like every
+            other strict gate rejection.
 
     Returns:
         A ``(candidates, diagnostics)`` pair; ``candidates`` is ``None`` when not

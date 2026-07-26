@@ -190,7 +190,12 @@ class StandardASR(Protocol):
         variable) breaks on the standard's own 80% path. The value is purely
         derivable from the engine's static Properties (see
         :meth:`EngineBase.recommended_wire_format` for the derivation
-        ``EngineBase`` provides for free).
+        ``EngineBase`` provides for free) -- deliberately capability-blind:
+        whether a bare-frame session can be OPENED is the
+        ``streaming_input`` capability gate's job inside
+        :meth:`start_transcription`, so a batch-only or output-only engine
+        still derives a format here (callers gate on
+        ``supports("streaming_input")`` first, per the streaming guide).
 
         Returns:
             A wire format the engine's session-establishment guard accepts, or
@@ -1017,6 +1022,13 @@ class EngineBase(ABC):
           canonical ``pcm_s16le`` (used only when ``wire_encodings`` is
           unconstrained, where the engine accepts any encoding).
         * ``channels`` = 1 (v1 streaming wire is mono-only).
+
+        The derivation is deliberately capability-blind (Properties only):
+        whether a bare-frame session can be opened at all is decided by the
+        ``streaming_input`` gate in :meth:`start_transcription`, not here --
+        so the recommendation stays a pure, class-level static fact and the
+        compliance round-trip (format ⊆ ``ensure_stream_format_supported``)
+        holds for every engine, streaming or not.
 
         Returns:
             A wire format the engine's session-establishment guard accepts, or

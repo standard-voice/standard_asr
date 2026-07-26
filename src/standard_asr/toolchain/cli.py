@@ -9,6 +9,7 @@ import argparse
 import inspect
 import io
 import json
+import math
 import sys
 import traceback
 from typing import IO, Any, Callable, Iterable, cast
@@ -134,6 +135,36 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
     prepare_parser.set_defaults(func=_cmd_prepare)
 
 
+def _positive_finite_seconds(value: str) -> float:
+    """Parse an argparse seconds value that MUST be finite and strictly positive.
+
+    A bare ``type=float`` accepts ``0``, negatives, ``inf`` and ``nan``; fed
+    into ``check_sync_bridge`` those turn into a ``Thread.join`` timeout that
+    returns immediately (``<= 0``) or never (``inf``) -- a false
+    "did not terminate" verdict or a hang, blamed on the engine instead of the
+    flag. Reject them as usage errors at parse time.
+
+    Args:
+        value: The raw command-line token.
+
+    Returns:
+        The parsed seconds as a ``float``.
+
+    Raises:
+        argparse.ArgumentTypeError: If ``value`` is not a number, not finite,
+            or not strictly positive.
+    """
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid float value: {value!r}") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"must be a finite number of seconds greater than 0, got {value!r}"
+        )
+    return seconds
+
+
 def _add_compliance_subcommands(subparsers: Any) -> None:
     """Register ``compliance`` subcommands.
 
@@ -203,7 +234,7 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
     )
     run_parser.add_argument(
         "--bridge-timeout",
-        type=float,
+        type=_positive_finite_seconds,
         default=5.0,
         metavar="SECONDS",
         help=(
@@ -728,12 +759,20 @@ def _run_instance_checks(
     streaming or not). For a streaming engine
     it additionally runs ``check_streaming_param_gating`` and, when
     ``include_bridge`` is set, ``check_sync_bridge`` with ``bridge_timeout`` as
-    its total whole-session timeout (the CLI's ``--bridge-timeout``).
+    its total whole-session timeout (the CLI's ``--bridge-timeout``). The
+    bridge itself runs only for a ``streaming_input`` engine: it feeds bare
+    PCM frames, which an output-only engine's session cannot accept
+    (``start_transcription(audio_format=...)`` would fail on the capability
+    gate, a spurious failure about the CHECK, not the engine) -- an
+    output-only engine is reported as skipped instead.
 
     Args:
         registry: The discovered model registry.
         name: The model key to check.
         include_bridge: Whether to also run the session-opening sync-bridge check.
+        bridge_timeout: Total whole-session timeout in seconds (``float``)
+            handed to ``check_sync_bridge`` -- open, end-of-audio, drain, and
+            close combined.
 
     Returns:
         The reports produced for this model (possibly empty).
@@ -779,7 +818,18 @@ def _run_instance_checks(
         # trivially for an output-only engine, so it runs for any streaming engine.
         reports.append(check_recommended_wire_format(cast(EngineBase, engine)))
         if include_bridge:
-            reports.append(_run_sync_bridge(engine, name, timeout=bridge_timeout))
+            if _engine_supports(engine, "streaming_input"):
+                reports.append(_run_sync_bridge(engine, name, timeout=bridge_timeout))
+            else:
+                # The bridge FEEDS bare frames; an output-only engine's
+                # audio_format session fails the streaming_input capability
+                # gate before any bridging happens -- a failure about the
+                # check's shape, not the engine. Skip loudly instead.
+                print(
+                    f"{_INFO} {name}: skipped sync-bridge (engine declares no "
+                    "streaming_input; the bridge feeds bare PCM frames, which "
+                    "an output-only engine cannot accept)."
+                )
     return reports
 
 
