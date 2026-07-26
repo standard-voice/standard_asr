@@ -19,6 +19,22 @@ from standard_asr.contract.results import Word
 from standard_asr.runtime import streaming as streaming_module
 from standard_asr.runtime.streaming import (
     DEFAULT_DONE_TIMEOUT,
+    DIAG_AUDIO_CURSOR_DECREASED,
+    DIAG_FROZEN_PREFIX_REWRITTEN,
+    DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE,
+    DIAG_FROZEN_SPEAKER_REWRITTEN,
+    DIAG_LIFECYCLE_AFTER_TERMINAL,
+    DIAG_LIFECYCLE_CLOSED_SUPERSEDED,
+    DIAG_LIFECYCLE_FINAL_AFTER_FINAL,
+    DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL,
+    DIAG_LIFECYCLE_RETIRED_RESUPERSEDED,
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    DIAG_STABLE_UNTIL_CLAMPED,
+    DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE,
+    DIAG_SUPERSEDE_DELETES_FROZEN_TEXT,
+    DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
+    DIAG_SUPERSEDE_REINTRODUCES_SEGMENT,
+    DIAG_SUPERSEDE_UNKNOWN_OLD_ID,
     EventBufferOverflow,
     StreamDeadlines,
     StreamReducer,
@@ -2915,6 +2931,21 @@ def test_stream_deadlines_model_validates_and_tracks_explicit_fields() -> None:
         StreamDeadlines(max_session_seconds=-1.0)
 
 
+def test_stream_deadlines_rejects_unknown_field() -> None:
+    # extra="forbid": a misspelled deadline is a silently-dropped SAFETY
+    # parameter -- under pydantic's default extra="ignore" the typo below was
+    # swallowed and the session ran with max_idle at its adapter default, the
+    # exact opposite of what the caller wrote. It MUST fail at construction.
+    with pytest.raises(ValidationError) as excinfo:
+        StreamDeadlines(max_idle_seconds=5.0)  # type: ignore[call-arg]
+
+    errors = excinfo.value.errors()
+    assert [e["type"] for e in errors] == ["extra_forbidden"]
+    assert errors[0]["loc"] == ("max_idle_seconds",)
+    # The correctly-spelled field is still accepted (the guard is not blanket).
+    assert StreamDeadlines(max_idle=5.0).max_idle == 5.0
+
+
 def test_apply_deadline_overrides_touches_only_explicit_fields() -> None:
     session = _EchoSession(done_timeout=7.0, max_idle=9.0)
     overrides = StreamDeadlines(max_idle=0.5, max_session_seconds=11.0)
@@ -3046,6 +3077,31 @@ def test_feed_twice_raises() -> None:
 # --------------------------------------------------------------------------- #
 # MEDIUM -- StreamReducer: no fabricated 0.0 timestamps; arrival order kept
 # --------------------------------------------------------------------------- #
+def test_streaming_diagnostic_code_constants_match_their_wire_literals() -> None:
+    # The lifecycle guard's rejection verdicts and the reducer's timestamp
+    # disclosure are wire-visible ``Diagnostic.code`` values consumers match on.
+    # The emission sites now reference these constants, so constant and literal
+    # are pinned together here exactly once -- a rename breaks loudly instead of
+    # silently changing what applications receive. (Terminal EVENT codes such as
+    # done_timeout / backpressure are a different namespace and not listed.)
+    assert DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE == "segment_timestamps_unavailable"
+    assert DIAG_SUPERSEDE_UNKNOWN_OLD_ID == "supersede_unknown_old_id"
+    assert DIAG_LIFECYCLE_CLOSED_SUPERSEDED == "lifecycle_closed_superseded"
+    assert DIAG_LIFECYCLE_RETIRED_RESUPERSEDED == "lifecycle_retired_resuperseded"
+    assert DIAG_SUPERSEDE_REINTRODUCES_SEGMENT == "supersede_reintroduces_segment"
+    assert DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE == "supersede_cross_speaker_merge"
+    assert DIAG_SUPERSEDE_DELETES_FROZEN_TEXT == "supersede_deletes_frozen_text"
+    assert DIAG_LIFECYCLE_AFTER_TERMINAL == "lifecycle_after_terminal"
+    assert DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL == "lifecycle_partial_after_final"
+    assert DIAG_LIFECYCLE_FINAL_AFTER_FINAL == "lifecycle_final_after_final"
+    assert DIAG_FROZEN_PREFIX_REWRITTEN == "frozen_prefix_rewritten"
+    assert DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE == "frozen_prefix_rewritten_supersede"
+    assert DIAG_FROZEN_SPEAKER_REWRITTEN == "frozen_speaker_rewritten"
+    assert DIAG_AUDIO_CURSOR_DECREASED == "audio_cursor_decreased"
+    assert DIAG_STABLE_UNTIL_CLAMPED == "stable_until_clamped"
+    assert DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED == "supersede_obligation_unfulfilled"
+
+
 def test_reducer_preserves_arrival_order_without_timestamps() -> None:
     reducer = StreamReducer()
     # No start/end given (timestamp-less engine like Qwen streaming).
@@ -3054,13 +3110,28 @@ def test_reducer_preserves_arrival_order_without_timestamps() -> None:
     result = reducer.result()
     # Arrival order preserved (NOT re-sorted to 0.0 == 0.0 ambiguity).
     assert result.text == "world hello"
+    # The stored spans are 0.0 PLACEHOLDERS (Segment requires finite times), so
+    # shipping them silently would be a wrong timestamp: exactly one warning
+    # diagnostic discloses them, counting how many of how many.
+    assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+    diag = result.diagnostics[0]
+    assert diag.level == "warning"
+    assert diag.param == "segments"
+    assert "2 of 2" in diag.message
+    assert "placeholder" in diag.message
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["world", "hello"]
+    assert all(s.start == 0.0 and s.end == 0.0 for s in result.segments)
 
 
 def test_reducer_sorts_when_all_have_timestamps() -> None:
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "second", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "first", start=1.0, end=2.0))
-    assert reducer.result().text == "first second"
+    result = reducer.result()
+    assert result.text == "first second"
+    # Every retained segment carries real timing -> nothing to disclose.
+    assert result.diagnostics == []
 
 
 def test_reducer_no_sort_when_mixed_timestamps() -> None:
@@ -3068,7 +3139,27 @@ def test_reducer_no_sort_when_mixed_timestamps() -> None:
     reducer.add(TranscriptionEvent.final("s1", "b", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "a"))  # no timestamp
     # Mixed -> preserve arrival order, do not sort on a fabricated 0.0.
-    assert reducer.result().text == "b a"
+    result = reducer.result()
+    assert result.text == "b a"
+    # A partial disclosure is still a disclosure: one segment of two is a
+    # placeholder, and the count says so.
+    assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+    assert "1 of 2" in result.diagnostics[0].message
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["b", "a"]
+
+
+def test_reducer_timestamp_diagnostic_ignores_superseded_segments() -> None:
+    # Only RETAINED segments are disclosed: a timestamp-less segment that was
+    # superseded away is not counted (and an all-timestamped remainder emits no
+    # diagnostic at all).
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "dropped"))  # no timestamp
+    reducer.add(TranscriptionEvent.final("s2", "kept", start=1.0, end=2.0))
+    reducer.add(TranscriptionEvent.supersede(["s1"], ["s3"]))
+    result = reducer.result()
+    assert result.text == "kept"
+    assert result.diagnostics == []
 
 
 # --------------------------------------------------------------------------- #

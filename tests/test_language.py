@@ -5,16 +5,35 @@
 
 import pytest
 
+from standard_asr.contract.exceptions import UnsupportedFeatureError
 from standard_asr.contract.language import (
     AUTO,
     DIAG_CANDIDATE_LANGUAGE_DROPPED,
     DIAG_CANDIDATE_LANGUAGES_IGNORED,
     DIAG_CANDIDATE_LANGUAGES_TRUNCATED,
+    DIAG_LANGUAGE_FELL_BACK,
+    DIAG_LANGUAGE_NOT_SELECTABLE,
+    DIAG_LANGUAGE_REFINEMENT_ACCEPTED,
     effective_candidate_languages,
     effective_language,
     is_valid_bcp47,
     normalize_bcp47,
 )
+
+
+def test_language_diagnostic_code_constants_match_their_wire_literals() -> None:
+    # The diagnostic ``code`` is a wire-visible contract consumers match on, so
+    # the constant and its literal value are pinned together exactly once: a
+    # silent rename of either side breaks here instead of in a consumer.
+    assert DIAG_CANDIDATE_LANGUAGES_IGNORED == "candidate_languages_ignored"
+    assert DIAG_CANDIDATE_LANGUAGE_DROPPED == "candidate_language_dropped"
+    assert DIAG_CANDIDATE_LANGUAGES_TRUNCATED == "candidate_languages_truncated"
+    # Emitted by EngineBase._resolve_language_axis, but their single source of
+    # truth is this contract module -- so a consumer imports every
+    # language-family code from one place.
+    assert DIAG_LANGUAGE_FELL_BACK == "language_fell_back"
+    assert DIAG_LANGUAGE_NOT_SELECTABLE == "language_not_selectable"
+    assert DIAG_LANGUAGE_REFINEMENT_ACCEPTED == "language_refinement_accepted"
 
 
 def test_normalize_bcp47_canonical_casing() -> None:
@@ -226,7 +245,13 @@ def test_effective_candidates_rejects_auto() -> None:
 
 
 def test_effective_candidates_strict_non_detectable_raises() -> None:
-    with pytest.raises(ValueError):
+    # A well-formed candidate the engine simply cannot detect is
+    # valid-but-unreachable POLICY, not a caller code bug: it MUST be the
+    # standard strict-gate rejection (UnsupportedFeatureError, spec RT R2) so
+    # every transport maps it to the same client-error verdict (the server's
+    # 422) as any other strict rejection -- never a bare ValueError, which
+    # transports treat as an internal 500.
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
         effective_candidate_languages(
             AUTO,
             ["zz"],
@@ -236,6 +261,37 @@ def test_effective_candidates_strict_non_detectable_raises() -> None:
             max_count=3,
             strict=True,
         )
+
+    exc = excinfo.value
+    assert exc.param == "candidate_languages"
+    # No mode was supplied by this direct call, so none is claimed.
+    assert exc.mode is None
+    assert "detectable" in str(exc)
+    assert exc.hint is not None and "best_effort" in exc.hint
+    # Explicitly NOT a ValueError: that type is reserved for caller code bugs
+    # (malformed tag / 'auto'), and conflating the two is the regression this
+    # pins.
+    assert not isinstance(exc, ValueError)
+
+
+def test_effective_candidates_strict_non_detectable_carries_the_mode() -> None:
+    # When the caller knows the mode (the engine pipeline passes
+    # mode="batch"/"streaming"), the rejection carries it, so the error reads
+    # like every other strict gate rejection.
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        effective_candidate_languages(
+            AUTO,
+            ["zz"],
+            None,
+            candidate_supported=True,
+            detectable_languages=["en"],
+            max_count=3,
+            strict=True,
+            mode="streaming",
+        )
+
+    assert excinfo.value.mode == "streaming"
+    assert excinfo.value.param == "candidate_languages"
 
 
 def test_effective_candidates_best_effort_drops_non_detectable() -> None:
@@ -277,7 +333,9 @@ def test_detectable_membership_canonicalizes_declared_side() -> None:
 
 
 def test_effective_candidates_strict_over_max_raises() -> None:
-    with pytest.raises(ValueError):
+    # Over-``max`` is the same class of rejection as non-detectable: a list the
+    # engine cannot honour, not a malformed value -> UnsupportedFeatureError.
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
         effective_candidate_languages(
             AUTO,
             ["en", "ja", "ko"],
@@ -286,7 +344,15 @@ def test_effective_candidates_strict_over_max_raises() -> None:
             detectable_languages=["en", "ja", "ko"],
             max_count=2,
             strict=True,
+            mode="batch",
         )
+
+    exc = excinfo.value
+    assert exc.param == "candidate_languages"
+    assert exc.mode == "batch"
+    assert "3 entries" in str(exc) and "max is 2" in str(exc)
+    assert exc.hint is not None and "at most 2" in exc.hint
+    assert not isinstance(exc, ValueError)
 
 
 def test_effective_candidates_best_effort_truncates() -> None:
@@ -325,10 +391,13 @@ def test_dedup_before_membership_single_drop_diagnostic() -> None:
     assert len(dropped) == 1
 
 
-def test_auto_in_candidates_always_raises_even_best_effort() -> None:
-    # 'auto' in a candidate list is a caller bug -> always raises, independent
-    # of strict / best_effort.
-    with pytest.raises(ValueError, match="auto"):
+@pytest.mark.parametrize("strict", [True, False])
+def test_auto_in_candidates_always_raises_even_best_effort(strict: bool) -> None:
+    # 'auto' in a candidate list is a caller CODE bug -> always a bare
+    # ValueError, independent of strict / best_effort, and explicitly NOT the
+    # UnsupportedFeatureError the policy rejections use (that type would claim
+    # the engine merely lacks a feature the caller could ask differently for).
+    with pytest.raises(ValueError, match="auto") as excinfo:
         effective_candidate_languages(
             AUTO,
             ["en", "auto"],
@@ -336,8 +405,10 @@ def test_auto_in_candidates_always_raises_even_best_effort() -> None:
             candidate_supported=True,
             detectable_languages=["en"],
             max_count=3,
-            strict=False,
+            strict=strict,
         )
+
+    assert not isinstance(excinfo.value, UnsupportedFeatureError)
 
 
 @pytest.mark.parametrize("strict", [True, False])
@@ -346,7 +417,7 @@ def test_malformed_candidate_always_raises(strict: bool) -> None:
     # caller bug -> always raises with a clear malformed-tag message naming the
     # offending tag, independent of strict / best_effort. It must NOT be silently
     # dropped (best_effort) or misreported as "not detectable" (strict).
-    with pytest.raises(ValueError, match=r"malformed.*'english'"):
+    with pytest.raises(ValueError, match=r"malformed.*'english'") as excinfo:
         effective_candidate_languages(
             AUTO,
             ["english"],
@@ -356,6 +427,10 @@ def test_malformed_candidate_always_raises(strict: bool) -> None:
             max_count=3,
             strict=strict,
         )
+
+    # A code bug stays a bare ValueError even in strict mode, where the
+    # valid-but-unreachable rejections raise UnsupportedFeatureError.
+    assert not isinstance(excinfo.value, UnsupportedFeatureError)
 
 
 @pytest.mark.parametrize("candidates", [["AUTO"], ["Auto", "en"], ["auto"]])

@@ -33,6 +33,7 @@ from standard_asr.contract.exceptions import (
     EntrypointValidationError,
     FactoryLoadError,
     TranscriptionError,
+    UnsupportedFeatureError,
 )
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic
@@ -124,6 +125,11 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
         "prepare", help="Warm up a model (download/load weights if required)."
     )
     prepare_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
+    prepare_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on invalid entry points during discovery.",
+    )
     _add_init_config_args(prepare_parser)
     prepare_parser.set_defaults(func=_cmd_prepare)
 
@@ -195,6 +201,19 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
             "(off by default: it may bill / connect for cloud engines)."
         ),
     )
+    run_parser.add_argument(
+        "--bridge-timeout",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help=(
+            "Total timeout in seconds for the sync-bridge check's whole bridged "
+            "session -- open, end-of-audio, drain, and close combined (default: "
+            "5.0). Raise it for engines whose session setup or teardown is slow; "
+            "the check's own remediation advice ('re-run with a larger value') "
+            "is actionable through this flag."
+        ),
+    )
     run_parser.set_defaults(func=_cmd_compliance_run)
 
 
@@ -216,6 +235,11 @@ def _add_transcribe_subcommand(subparsers: Any) -> None:
     parser.add_argument(
         "--options",
         help="JSON string of transcription options passed to the engine.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on invalid entry points during discovery.",
     )
     _add_init_config_args(parser)
     parser.add_argument(
@@ -462,7 +486,7 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
             declares an invalid prepare() hook (a coroutine, a non-callable
             attribute, or one that requires arguments).
     """
-    registry = discover_models()
+    registry = discover_models(strict=args.strict)
     asr = registry.create(args.name, **_parse_init_config(args))
 
     prepare = getattr(asr, "prepare", None)
@@ -664,7 +688,14 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
         print(f"{_FAIL} Entry point compliance checks failed.")
 
     for name in names:
-        reports.extend(_run_instance_checks(registry, name, include_bridge=args.include_bridge))
+        reports.extend(
+            _run_instance_checks(
+                registry,
+                name,
+                include_bridge=args.include_bridge,
+                bridge_timeout=args.bridge_timeout,
+            )
+        )
 
     if not args.quiet:
         for report in reports:
@@ -687,7 +718,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
 
 
 def _run_instance_checks(
-    registry: ModelRegistry, name: str, *, include_bridge: bool
+    registry: ModelRegistry, name: str, *, include_bridge: bool, bridge_timeout: float = 5.0
 ) -> list[ComplianceReport]:
     """Run the instantiation-level compliance checks for one model.
 
@@ -696,7 +727,8 @@ def _run_instance_checks(
     ``check_provider_params_swap_safety`` (an unconditional MUST for any engine,
     streaming or not). For a streaming engine
     it additionally runs ``check_streaming_param_gating`` and, when
-    ``include_bridge`` is set, ``check_sync_bridge``.
+    ``include_bridge`` is set, ``check_sync_bridge`` with ``bridge_timeout`` as
+    its total whole-session timeout (the CLI's ``--bridge-timeout``).
 
     Args:
         registry: The discovered model registry.
@@ -747,11 +779,11 @@ def _run_instance_checks(
         # trivially for an output-only engine, so it runs for any streaming engine.
         reports.append(check_recommended_wire_format(cast(EngineBase, engine)))
         if include_bridge:
-            reports.append(_run_sync_bridge(engine, name))
+            reports.append(_run_sync_bridge(engine, name, timeout=bridge_timeout))
     return reports
 
 
-def _run_sync_bridge(engine: Any, name: str) -> ComplianceReport:
+def _run_sync_bridge(engine: Any, name: str, *, timeout: float = 5.0) -> ComplianceReport:
     """Run the sync-bridge check against a streaming engine.
 
     Builds a session factory from the engine's first declared wire encoding and
@@ -762,13 +794,12 @@ def _run_sync_bridge(engine: Any, name: str) -> ComplianceReport:
     Args:
         engine: The constructed engine instance.
         name: The model key (for messages).
+        timeout: Total whole-session timeout in seconds handed to
+            :func:`~standard_asr.compliance.check_sync_bridge` (the CLI's
+            ``--bridge-timeout``).
 
     Returns:
         The sync-bridge :class:`ComplianceReport`.
-
-    Raises:
-        ValidationError: When the engine's first declared wire encoding is blank,
-            so a valid :class:`AudioFormat` cannot be built for the session.
     """
     audio_format = _streaming_audio_format(cast(EngineBase, engine))
     if audio_format is None:
@@ -782,7 +813,7 @@ def _run_sync_bridge(engine: Any, name: str) -> ComplianceReport:
     def _factory() -> Any:
         return engine.start_transcription(audio_format=audio_format)
 
-    return check_sync_bridge(_factory)
+    return check_sync_bridge(_factory, timeout=timeout)
 
 
 def _streaming_audio_format(engine: EngineBase) -> AudioFormat | None:
@@ -978,19 +1009,21 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         EntrypointValidationError: When the named model is not installed.
         FactoryLoadError: When the engine's entry point cannot be loaded.
         ValueError: When ``--options`` is not a valid portable params object, or
-            from the engine on an invalid candidate-language list.
+            from the engine on a malformed / ``"auto"`` candidate-language entry
+            (a caller code bug; always raises).
         ConfigError: On an invalid language configuration, a malformed
             ``--config`` / ``--set``, or when the engine factory rejects its
             configuration (wrapped from pydantic and secret-scrubbed).
         AudioProcessingError: On a decode, size, missing-sample-rate, or
             incompatible-input failure in the conversion pipeline (includes its
             ``IncompatibleAudioInputError`` / ``UnsafeAudioUrlError`` subclasses).
-        UnsupportedFeatureError: In strict mode, on an unsupported parameter or a
-            non-selectable language.
+        UnsupportedFeatureError: In strict mode, on an unsupported parameter, a
+            non-selectable language, or a valid-but-unreachable candidate list
+            (non-detectable / over-``max``).
         InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
         TranscriptionError: On an engine-execution failure during transcription.
     """
-    registry = discover_models()
+    registry = discover_models(strict=args.strict)
     asr = registry.create(args.name, **_parse_init_config(args))
 
     params = _parse_options(args.options)
@@ -1151,7 +1184,13 @@ def main(argv: list[str] | None = None) -> int:
         _print_error(sanitized_validation_message(exc, prefix="Invalid configuration"))
         _debug_traceback(args)
         return 2
-    except (ConfigError, DiscoveryError, ValueError) as exc:
+    except (ConfigError, DiscoveryError, UnsupportedFeatureError, ValueError) as exc:
+        # UnsupportedFeatureError is named explicitly: it is a StructuredError,
+        # NOT a ValueError, yet a strict-mode rejection of an unsupported /
+        # unreachable request parameter is a usage error (exit 2) exactly like
+        # the ValueError family -- without this it fell into the generic
+        # runtime-failure branch below and scripts read a caller mistake as an
+        # internal failure (exit 1).
         _print_error(str(exc))
         _debug_traceback(args)
         return 2

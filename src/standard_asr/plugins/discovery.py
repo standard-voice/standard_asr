@@ -836,11 +836,3 @@ __all__ = [
     "parse_entrypoint_name",
     "pep503_normalize",
 ]
-
-
-if __name__ == "__main__":  # pragma: no cover
-    logging.basicConfig(level=logging.INFO)
-    registry = discover_models()
-    print("Discovered models:")
-    for name in registry.names():
-        print(f" - {name}")

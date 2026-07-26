@@ -666,10 +666,32 @@ class _CapturingAutoEngine(_CapturingArrayEngine):
 
 
 def test_candidate_languages_strict_non_detectable_raises_in_base() -> None:
-    with pytest.raises(ValueError, match="detectable"):
+    # Through the engine pipeline the strict rejection is the standard
+    # structured one: UnsupportedFeatureError carrying the offending param AND
+    # the mode the base resolved it in -- so it reads (and maps, e.g. to the
+    # server's 422) like every other strict gate rejection instead of escaping
+    # as a bare ValueError.
+    with pytest.raises(UnsupportedFeatureError, match="detectable") as excinfo:
         _AutoEngine().transcribe(
             _audio(), RuntimeParams(language="auto", candidate_languages=["zz"])
         )
+
+    assert excinfo.value.param == "candidate_languages"
+    assert excinfo.value.mode == "batch"
+    assert not isinstance(excinfo.value, ValueError)
+
+
+def test_candidate_languages_strict_over_max_raises_in_base() -> None:
+    # The over-``max`` strict rejection travels the same structured path (the
+    # declared cap is max=2).
+    with pytest.raises(UnsupportedFeatureError, match="max is 2") as excinfo:
+        _CapturingAutoEngine().transcribe(
+            _audio(),
+            RuntimeParams(language="auto", candidate_languages=["en", "ja", "ko"]),
+        )
+
+    assert excinfo.value.param == "candidate_languages"
+    assert excinfo.value.mode == "batch"
 
 
 def test_candidate_languages_best_effort_emits_diagnostic_in_base() -> None:

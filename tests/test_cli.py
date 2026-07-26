@@ -30,6 +30,7 @@ from standard_asr.contract.exceptions import (
     ConfigError,
     EntrypointValidationError,
     TranscriptionError,
+    UnsupportedFeatureError,
 )
 from standard_asr.engine import (
     BaseConfig,
@@ -448,6 +449,41 @@ def test_cli_transcribe(
     assert "dummy" in output
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected_strict"),
+    [
+        (["transcribe", "alpha/first", "dummy.wav"], False),
+        (["transcribe", "alpha/first", "dummy.wav", "--strict"], True),
+        (["prepare", "alpha/first"], False),
+        (["prepare", "alpha/first", "--strict"], True),
+    ],
+)
+def test_cli_transcribe_and_prepare_thread_strict_into_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected_strict: bool,
+) -> None:
+    # `transcribe` and `prepare` are uniform with `list` / `show`: --strict makes
+    # discovery FAIL on an invalid entry point instead of skipping it, and its
+    # absence keeps the lenient default. Captured at the discovery call so the
+    # flag cannot be parsed-but-dropped.
+    registry = _demo_registry()
+    seen: dict[str, object] = {}
+
+    def _discover_models(**kwargs: object) -> ModelRegistry:
+        seen.update(kwargs)
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+
+    exit_code = cli.main(argv)
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert seen["strict"] is expected_strict
+
+
 def test_cli_transcribe_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -563,6 +599,43 @@ def test_cli_transcribe_audio_processing_error(
 
     assert exit_code == 2
     assert "bad audio" in captured.err
+
+
+def test_cli_transcribe_unsupported_feature_is_usage_exit_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A strict-mode rejection is a usage error (exit 2), not a runtime failure.
+
+    ``UnsupportedFeatureError`` is a ``StructuredError`` -- NOT a ``ValueError``
+    -- so without its explicit entry in ``main()``'s usage-error branch it fell
+    into the generic runtime-failure branch (exit 1) and scripts misread a
+    caller mistake (e.g. a strict non-detectable candidate language) as an
+    internal failure.
+    """
+    registry = _demo_registry()
+
+    class _StrictRejectASR:
+        def transcribe(self, audio: object, params: object = None) -> None:
+            raise UnsupportedFeatureError(
+                "Candidate language 'zz' is not detectable by this engine.",
+                param="candidate_languages",
+                mode="batch",
+            )
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    def _create(*_: object, **__: object) -> _StrictRejectASR:
+        return _StrictRejectASR()
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+    monkeypatch.setattr(registry, "create", _create)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "not detectable" in captured.err
 
 
 def test_cli_transcribe_transcription_error(
@@ -1528,6 +1601,77 @@ def test_cli_compliance_run_include_bridge_runs_sync_bridge(
 
     assert exit_code == 0
     assert "Compliance run passed" in output
+
+
+def test_cli_compliance_run_bridge_timeout_defaults_to_five_seconds() -> None:
+    # The flag's default is part of the CLI contract (the check's remediation
+    # tells authors to raise it, so the baseline must be knowable).
+    parser = cli.build_parser()
+    args = parser.parse_args(["compliance", "run"])
+    assert args.bridge_timeout == 5.0
+    assert parser.parse_args(["compliance", "run", "--bridge-timeout", "30"]).bridge_timeout == 30.0
+
+
+def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --bridge-timeout is threaded all the way to check_sync_bridge: without
+    # this the check's own advice ("re-run with a larger timeout") named a knob
+    # no CLI user could reach.
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    seen: dict[str, object] = {}
+
+    def _check_sync_bridge(factory: object, *, timeout: float = 5.0) -> ComplianceReport:
+        seen["timeout"] = timeout
+        return ComplianceReport(registry=ModelRegistry({}), issues=[])
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
+
+    exit_code = cli.main(
+        ["compliance", "run", "stream/ok", "--include-bridge", "--bridge-timeout", "12.5"]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert seen["timeout"] == 12.5
+
+
+def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Omitting the flag hands the documented 5.0 s default down, not None.
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    seen: dict[str, object] = {}
+
+    def _check_sync_bridge(factory: object, *, timeout: float = -1.0) -> ComplianceReport:
+        seen["timeout"] = timeout
+        return ComplianceReport(registry=ModelRegistry({}), issues=[])
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
+
+    exit_code = cli.main(["compliance", "run", "stream/ok", "--include-bridge"])
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert seen["timeout"] == 5.0
 
 
 def test_cli_compliance_run_failure_headline(

@@ -22,7 +22,8 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 
 > [!WARNING]
 > **Alpha — the core protocol works, but major pieces are still missing.** The standard
-> interface is functional and validated by real engine plugins, but features like
+> interface is functional and exercised by real engine plugins (interface-level
+> compliance; end-to-end runtime verification is still being built), but features like
 > hardware metadata and model cards are not yet part of the protocol.
 > Developer documentation and tooling are also incomplete. Breaking changes will happen.
 > For production use, wait for a stable release. We follow semantic versioning.
@@ -93,9 +94,11 @@ the people who know each engine best, and the core never becomes the bottleneck.
 - **Audio negotiation, batteries included.** Hand over what you have — a file path, raw
   bytes, a NumPy array, a URL — and the framework negotiates and converts to whatever form
   the engine accepts, loudly reporting anything lossy. No more sample-rate guesswork.
-- **No dependency hell, no licensing traps.** Each engine is an isolated, pip-installable
-  plugin, so conflicting dependencies and restrictive licenses stay contained in the
-  packages that carry them.
+- **No dependency hell, no licensing traps.** Each engine is its own pip-installable
+  plugin, so restrictive licenses and heavy dependencies stay in the packages that carry
+  them. Hard dependency conflicts (e.g. numpy 1.x vs 2.x) cannot share one environment —
+  `standard-asr doctor` surfaces them instead of letting them hide, and process isolation
+  is the escape hatch.
 - **The choice goes to the user.** End users — especially for under-served languages and
   domains — install the engine that serves them best and use it immediately, without
   waiting for the app author to add support.
@@ -324,9 +327,10 @@ standard-asr compliance entrypoints
 ## Project status & design
 
 **Alpha.** The core protocol — engine interface, audio negotiation, capability discovery,
-streaming events, plugin system — is shipped and validated by four engine plugins. The
-toolchain (CLI, FastAPI server, compliance suite) works. What's missing: features like
-hardware metadata and model cards are not yet part of the protocol.
+streaming events, plugin system — is shipped and exercised by four engine plugins; the
+compliance suite verifies interface-level conformance (runtime inference verification is
+tracked separately). The toolchain (CLI, FastAPI server, compliance suite) works. What's
+missing: features like hardware metadata and model cards are not yet part of the protocol.
 Developer documentation, a richer CLI, and a plugin starter template are also not done yet.
 See the open issues for what's planned.
 

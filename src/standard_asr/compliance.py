@@ -476,8 +476,10 @@ def _check_engine_unguarded(
                 message=(
                     "Skipped instantiation: the factory requires configuration not "
                     f"present in this environment ({exc!r}). Set the engine's "
-                    "STANDARD_ASR_<ENGINE>_<FIELD> environment variable (e.g. an API "
-                    "key) or pass an explicit config to run the full instance checks."
+                    "STANDARD_ASR_<ENGINE>__<FIELD> environment variable (double "
+                    "underscore between engine and field, per env_var_name; e.g. an "
+                    "API key) or pass an explicit config to run the full instance "
+                    "checks."
                 ),
                 model=name,
             )
@@ -738,7 +740,15 @@ def _check_language_axis_config(
 #: Public callables every compliant engine MUST expose unconditionally
 #: (StandardASR protocol). ``start_transcription`` is required only
 #: when the engine declares a streaming axis -- handled separately below.
-_ALWAYS_REQUIRED_METHODS: tuple[str, ...] = ("transcribe", "transcribe_async", "supports")
+_ALWAYS_REQUIRED_METHODS: tuple[str, ...] = (
+    "transcribe",
+    "transcribe_async",
+    "supports",
+    # Part of the StandardASR protocol: the documented first step of the
+    # streaming journey, derivable from Properties (EngineBase provides it for
+    # free; a structural engine must implement it).
+    "recommended_wire_format",
+)
 
 
 def _check_required_surface(
@@ -2138,9 +2148,11 @@ def check_sync_bridge(
                     f"SyncSession did not terminate within {timeout}s -- this may be a "
                     "deadlock OR an adapter whose _open/_close legitimately takes "
                     f"longer than {timeout}s. Re-run with a larger timeout to "
-                    "disambiguate. If it is a deadlock, check the sync-bridge adapter "
-                    "contract: bind loop resources in __aenter__, never touch the "
-                    "ambient event loop."
+                    "disambiguate (library: check_sync_bridge(..., timeout=...); "
+                    "CLI: standard-asr compliance run --include-bridge "
+                    "--bridge-timeout SECONDS). If it is a deadlock, check the "
+                    "sync-bridge adapter contract: bind loop resources in "
+                    "__aenter__, never touch the ambient event loop."
                 ),
                 model=None,
             )

@@ -20,6 +20,11 @@ from standard_asr.contract.results import (
     synthesize_segment_speaker,
 )
 from standard_asr.renderers import to_srt, to_vtt
+from standard_asr.runtime.streaming import (
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    StreamReducer,
+    TranscriptionEvent,
+)
 
 
 def test_minimal_result() -> None:
@@ -27,6 +32,22 @@ def test_minimal_result() -> None:
     assert result.text == "hello"
     assert result.detected_language is None
     assert result.diagnostics == []
+
+
+def test_no_blanket_metadata_pocket_on_the_result() -> None:
+    # The blanket `metadata: dict[str, Any]` field was removed: a "standardized
+    # engine-agnostic metadata" dict with no standardized keys, no writer and no
+    # reader is the same unstructured-data disease the spec dropped from
+    # Properties and Capabilities. Standardized result data earns a real field;
+    # everything engine-specific goes in `extra`. The model is extra="forbid",
+    # so a caller still passing metadata= is rejected, never silently absorbed.
+    # (model_validate keeps the removed key a runtime rejection, not a static
+    # type error.)
+    assert "metadata" not in TranscriptionResult.model_fields
+    with pytest.raises(ValidationError):
+        TranscriptionResult.model_validate({"text": "x", "metadata": {"cost": 1}})
+    # The engine-specific pocket that DID survive still accepts it.
+    assert TranscriptionResult(text="x", extra={"cost": 1}).extra == {"cost": 1}
 
 
 def test_result_rejects_negative_duration() -> None:
@@ -285,6 +306,75 @@ def test_synthetic_cue_without_duration_has_visible_span() -> None:
     assert "1\n00:00:00,000 --> 00:00:03,000\nonly text" in srt
     vtt = to_vtt(result)
     assert "00:00:00.000 --> 00:00:03.000\nonly text" in vtt
+
+
+def test_all_zero_span_segments_fall_back_to_single_synthetic_cue() -> None:
+    # Every segment spanning exactly [0.0, 0.0] is the timing-less PLACEHOLDER
+    # shape a reduced timestamp-less stream produces. Rendering it one cue per
+    # segment would emit only zero-duration cues, which players silently drop --
+    # a subtitle file that displays nothing. It falls back to the same synthetic
+    # whole-text cue as segments=None, at the 3 s span used when duration is
+    # unknown.
+    segs = [
+        Segment(start=0.0, end=0.0, text="hello"),
+        Segment(start=0.0, end=0.0, text="world"),
+    ]
+    result = TranscriptionResult(text="hello world", segments=segs)
+
+    srt = to_srt(result)
+    assert srt == "1\n00:00:00,000 --> 00:00:03,000\nhello world\n"
+    # Exactly one cue -- not one per placeholder segment.
+    assert "2\n" not in srt
+
+    vtt = to_vtt(result)
+    assert "00:00:00.000 --> 00:00:03.000\nhello world" in vtt
+    assert vtt.count("-->") == 1
+
+
+def test_all_zero_span_segments_use_known_duration_for_the_synthetic_cue() -> None:
+    # When the result DOES know its duration, the synthetic cue spans it (the
+    # 3 s fallback is only for an unknown duration).
+    segs = [
+        Segment(start=0.0, end=0.0, text="a"),
+        Segment(start=0.0, end=0.0, text="b"),
+    ]
+    result = TranscriptionResult(text="a b", segments=segs, duration=7.5)
+
+    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:07,500\na b\n"
+    assert "00:00:00.000 --> 00:00:07.500\na b" in to_vtt(result)
+
+
+def test_all_zero_span_segments_with_empty_text_render_nothing() -> None:
+    # No text to synthesize a cue from -> no fabricated cue (the same rule the
+    # segments=None fallback follows).
+    result = TranscriptionResult(text="", segments=[Segment(start=0.0, end=0.0, text="")])
+    assert to_srt(result) == ""
+    assert to_vtt(result) == "WEBVTT\n"
+
+
+def test_single_zero_start_segment_with_real_end_is_not_the_fallback() -> None:
+    # A genuine segment that merely STARTS at 0.0 carries real timing: it must
+    # render as itself, never be swallowed by the timing-less fallback.
+    result = TranscriptionResult(
+        text="real", segments=[Segment(start=0.0, end=1.25, text="real")], duration=9.0
+    )
+    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:01,250\nreal\n"
+
+
+def test_reduced_timestampless_stream_renders_one_visible_cue_end_to_end() -> None:
+    # End-to-end: the StreamReducer's timestamp-less output (0.0 placeholders +
+    # the segment_timestamps_unavailable disclosure) must reach the subtitle
+    # renderers as ONE visible cue rather than a file of dropped zero-duration
+    # cues.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "hello"))
+    reducer.add(TranscriptionEvent.final("s2", "world"))
+    result = reducer.result()
+
+    assert result.duration is None
+    assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:03,000\nhello world\n"
+    assert "00:00:00.000 --> 00:00:03.000\nhello world" in to_vtt(result)
 
 
 def test_srt_skips_empty_segment_and_renumbers() -> None:

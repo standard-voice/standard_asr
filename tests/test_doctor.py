@@ -33,11 +33,24 @@ class _FakeEP:
     dist: _FakeDist | None
 
 
-def _patch_eps(monkeypatch: pytest.MonkeyPatch, eps: list[_FakeEP]) -> None:
+def _patch_eps(
+    monkeypatch: pytest.MonkeyPatch,
+    eps: list[_FakeEP],
+    *,
+    core_spec: str | None = ">=1.26",
+) -> None:
     def _entry_points(*, group: str) -> list[_FakeEP]:
         return eps
 
     monkeypatch.setattr(doctor, "entry_points", _entry_points)
+    # Pin the core's own numpy requirement: the real value is
+    # interpreter-conditional (>=1.26 below 3.13, >=2.1 at 3.13+), so an
+    # unpinned diagnose() would make these tests change verdict with the
+    # running interpreter. The default ">=1.26" admits both numpy majors, so
+    # plugin-vs-plugin scenarios keep their original meaning; core-conflict
+    # tests override it, and ``core_spec=None`` simulates unreadable core
+    # metadata.
+    monkeypatch.setattr(doctor, "_core_numpy_spec", lambda: core_spec)
 
 
 def test_no_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -423,8 +436,12 @@ def test_single_plugin_internally_unsatisfiable_is_conflict(
     )
     report = doctor.diagnose()
     assert report.has_conflict is True
-    assert any("internally unsatisfiable" in c for c in report.conflicts)
-    # A single offender is a self-contradiction, not a cross-plugin conflict.
+    conflict = next(c for c in report.conflicts if "internally unsatisfiable" in c)
+    # A single offender is a self-contradiction, not a cross-plugin conflict --
+    # and with core now in the intersection, the offender attribution must
+    # still name ONLY the plugin (blaming standard-asr for a plugin's
+    # self-contradictory pin would misdirect the fix).
+    assert "standard-asr" not in conflict
     assert not any("cannot share one process" in c for c in report.conflicts)
 
 
@@ -644,6 +661,230 @@ def test_packaging_unavailable_without_plugins_stays_clean(
     assert report.analysis_unavailable is False
     assert report.has_conflict is False
     assert "No Standard ASR plugins" in doctor.format_report(report)
+
+
+def test_core_numpy_spec_reads_marker_evaluated_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The core's interpreter-conditional dual-line numpy declaration must
+    resolve to the line whose marker holds on the running interpreter."""
+
+    def _requires(name: str) -> list[str]:
+        assert name == "standard-asr"
+        return [
+            'numpy>=1.26; python_version < "3.13"',
+            'numpy>=2.1; python_version >= "3.13"',
+            "pydantic>=2.5",
+        ]
+
+    monkeypatch.setattr(doctor, "requires", _requires)
+    monkeypatch.setattr(doctor.sys, "version_info", _VersionInfo(3, 13, 0, "final", 0))
+    assert doctor._core_numpy_spec() == ">=2.1"  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(doctor.sys, "version_info", _VersionInfo(3, 10, 0, "final", 0))
+    assert doctor._core_numpy_spec() == ">=1.26"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_core_numpy_spec_none_when_core_metadata_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unreadable core distribution metadata degrades to None (the caller then
+    reports the analysis gap), never to a crash."""
+
+    def _requires(name: str) -> list[str]:
+        raise doctor.PackageNotFoundError(name)
+
+    monkeypatch.setattr(doctor, "requires", _requires)
+    assert doctor._core_numpy_spec() is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_core_floor_conflicts_with_numpy1_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plugin pinned ``numpy<2`` against a core floor of ``>=2.1`` (the real
+    3.13+ floor) is a hard conflict even with zero plugin-vs-plugin conflicts --
+    the exact gap doctor previously missed by leaving core out of the analysis.
+    It is reported as a DEDICATED plugin-vs-core conflict (core is in every
+    process, so the remediation must say isolation cannot help; out-of-process
+    advice would be wrong here), and no environment-level message fires for a
+    plugin that cannot run in any layout."""
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy<2"]))],
+        core_spec=">=2.1",
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is True
+    conflict = next(c for c in report.conflicts if "conflict with standard-asr core" in c)
+    assert "std-funasr (<2)" in conflict
+    assert "numpy >=2.1" in conflict
+    assert "isolation cannot help" in conflict
+    assert "out-of-process" not in conflict
+    assert not any("1.x vs 2.x" in c for c in report.conflicts)
+
+
+def test_plugin_only_conflict_still_advises_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When core admits both majors (the sub-3.13 floor), a plugin-vs-plugin
+    split keeps the out-of-process remediation -- the core-specific text must
+    fire only when core is genuinely a conflict side."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy<2"])),
+            _FakeEP("new/qwen", _FakeDist("std-qwen", ["numpy>=2.1"])),
+        ],
+    )
+    report = doctor.diagnose()
+    conflict = next(c for c in report.conflicts if "1.x vs 2.x" in c)
+    assert "out-of-process" in conflict
+    assert "isolation cannot help" not in conflict
+
+
+def test_core_in_range_intersection_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same-major disjointness against the core floor (no 1.x/2.x split to
+    catch it) is a plugin-vs-core incompatibility: reported as the dedicated
+    core conflict with the core remediation."""
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy==2.0.*"]))],
+        core_spec=">=2.3",
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is True
+    conflict = next(c for c in report.conflicts if "conflict with standard-asr core" in c)
+    assert "std-a (==2.0.*)" in conflict
+    assert "numpy >=2.3" in conflict
+    assert "isolation cannot help" in conflict
+
+
+def test_core_conflict_reported_once_per_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A distribution shipping several presets carries one entry point each with
+    the SAME numpy spec; a core incompatibility belongs to the distribution, so
+    it must be reported once -- not once per preset (mirroring the
+    distribution-scoped dedup of the environment-level messages)."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("std-foo/p1", _FakeDist("std-foo", ["numpy<2"])),
+            _FakeEP("std-foo/p2", _FakeDist("std-foo", ["numpy<2"])),
+        ],
+        core_spec=">=2.1",
+    )
+    report = doctor.diagnose()
+    core_conflicts = [c for c in report.conflicts if "conflict with standard-asr core" in c]
+    assert len(core_conflicts) == 1
+    assert "std-foo (<2)" in core_conflicts[0]
+
+
+def test_mixed_shape_reports_core_conflict_not_misleading_isolation_advice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plugins that are ALSO mutually conflicting must not mask a plugin-vs-core
+    incompatibility: ``std-a ==2.0.*`` conflicts with both ``std-b >=2.3`` and a
+    ``>=2.1`` core. Isolating std-a cannot help (core is in the worker too), so
+    the report must carry the dedicated std-a-vs-core conflict -- and must NOT
+    advise isolating a plugin that is dead in any process layout. std-b remains
+    compatible with core and with the environment, so no further conflict fires."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("a/x", _FakeDist("std-a", ["numpy==2.0.*"])),
+            _FakeEP("b/y", _FakeDist("std-b", ["numpy>=2.3"])),
+        ],
+        core_spec=">=2.1",
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is True
+    conflict = next(c for c in report.conflicts if "conflict with standard-asr core" in c)
+    assert "std-a (==2.0.*)" in conflict
+    assert "std-b" not in conflict
+    assert not any("out-of-process" in c for c in report.conflicts)
+    assert not any("no common satisfying version" in c for c in report.conflicts)
+
+
+def test_exotic_joint_emptiness_falls_back_to_core_attributed_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-interval shape: every plugin is individually core-compatible and the
+    plugins agree with each other, yet the three-way intersection is empty
+    (core ``!=2.2.*`` excludes exactly the plugins' common band ``[2.2, 2.3)``).
+    No dedicated per-plugin core conflict applies, so the environment-level
+    fallback must fire, list core as a participant, and -- because every
+    plugin reaching this branch is by construction individually
+    core-compatible -- advise that per-process isolation WORKS (here: one
+    worker on 2.3.x, one on 2.1.x, each satisfying core). Saying "isolation
+    cannot help" in this branch would be false in its only reachable shape."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("a/x", _FakeDist("std-a", ["numpy>=2.2,<2.4"])),
+            _FakeEP("b/y", _FakeDist("std-b", ["numpy>=2.1,<2.3"])),
+        ],
+        core_spec="!=2.2.*",
+    )
+    report = doctor.diagnose()
+    assert report.has_conflict is True
+    assert not any("conflict with standard-asr core" in c for c in report.conflicts)
+    conflict = next(c for c in report.conflicts if "no common satisfying version" in c)
+    assert "standard-asr (!=2.2.*)" in conflict
+    assert "separate processes" in conflict
+    assert "isolation cannot help" not in conflict
+
+
+def test_core_metadata_unreadable_adds_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With plugins present but core metadata unreadable, the narrower analysis
+    must disclose the missing participant instead of reading as complete --
+    and the rendered listing must NOT show a core line it does not have."""
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))],
+        core_spec=None,
+    )
+    report = doctor.diagnose()
+    assert report.core is None
+    assert any("core numpy requirement" in n for n in report.notes)
+    assert report.has_conflict is False
+    assert "core:" not in doctor.format_report(report)
+
+
+def test_plugin_vs_plugin_same_major_conflict_does_not_blame_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the plugin-only intersection is ALREADY empty, core is not a
+    load-bearing participant: the message must list only the plugins and keep
+    the out-of-process remediation -- the core-specific 'isolation cannot help'
+    text here would be false and would misdirect the user away from the one
+    fix that works."""
+    _patch_eps(
+        monkeypatch,
+        [
+            _FakeEP("a/x", _FakeDist("std-a", ["numpy==2.0.*"])),
+            _FakeEP("b/y", _FakeDist("std-b", ["numpy>=2.3"])),
+        ],
+    )
+    report = doctor.diagnose()
+    conflict = next(c for c in report.conflicts if "no common satisfying version" in c)
+    assert "out-of-process" in conflict
+    assert "isolation cannot help" not in conflict
+    assert "standard-asr" not in conflict
+
+
+def test_format_report_renders_core_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The core requirement joins the intersection, so the listing must show it
+    -- a conflict naming standard-asr must trace back to a visible line."""
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))],
+    )
+    rendered = doctor.format_report(doctor.diagnose())
+    assert "core: [standard-asr] numpy >=1.26" in rendered
 
 
 def test_is_clean_is_the_single_verdict() -> None:

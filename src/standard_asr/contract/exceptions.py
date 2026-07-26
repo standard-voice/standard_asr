@@ -217,8 +217,9 @@ class InvalidSessionUseError(StandardASRError, ValueError):
     application used it. Catching :class:`StreamClosedError` here would lead an
     application to wrongly conclude the session terminated and rebuild it.
     Mixes in :class:`ValueError` (like :class:`ConfigError` /
-    :class:`InvalidProviderParamError`): it is a bad-call programming error, and
-    the server maps it to HTTP 422.
+    :class:`InvalidProviderParamError`): it is a bad-call programming error.
+    (It has no HTTP mapping: it fires only against an in-process session object,
+    and the server drives its own sessions correctly by construction.)
     """
 
     pass

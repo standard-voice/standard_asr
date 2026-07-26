@@ -49,6 +49,17 @@ from standard_asr.contract.results import Diagnostic
 #: Canonical fallback sample rate when a bare array omits its rate.
 ASSUMED_SAMPLE_RATE = 16000
 
+#: Diagnostic codes the conversion pipeline emits. The spec names these codes
+#: normatively (AI R3/R4/R6/R8), so -- like the ``DIAG_*`` constants in
+#: :mod:`standard_asr.runtime.gating` and :mod:`standard_asr.contract.language` --
+#: each is a wire-visible contract with a single source of truth here; several
+#: are emitted from more than one site in this module, where a repeated literal
+#: could silently drift.
+DIAG_AUDIO_CONVERSION = "audio_conversion"
+DIAG_NON_FINITE_AUDIO = "non_finite_audio"
+DIAG_RESAMPLED_WITH = "resampled_with"
+DIAG_ASSUMED_SAMPLE_RATE = "assumed_sample_rate"
+
 
 def _empty_diagnostics() -> list[Diagnostic]:
     """Return an empty diagnostics list (typed factory for dataclass default).
@@ -359,7 +370,7 @@ def _prepare_encoded(
         diags.append(
             Diagnostic(
                 level="warning",
-                code="audio_conversion",
+                code=DIAG_AUDIO_CONVERSION,
                 message="Encoded array to WAV/16-bit PCM (lossy float->int16).",
                 param="audio",
                 provided="array",
@@ -370,7 +381,7 @@ def _prepare_encoded(
             diags.append(
                 Diagnostic(
                     level="warning",
-                    code="audio_conversion",
+                    code=DIAG_AUDIO_CONVERSION,
                     message="Downmixed multi-channel audio to mono for encoding.",
                     param="audio",
                 )
@@ -384,7 +395,7 @@ def _prepare_encoded(
             diags.append(
                 Diagnostic(
                     level="warning",
-                    code="non_finite_audio",
+                    code=DIAG_NON_FINITE_AUDIO,
                     message=(
                         f"Sanitized {result.sanitized_non_finite} non-finite "
                         "sample(s) (NaN/Inf) to 0/+-1 during WAV encoding."
@@ -453,7 +464,7 @@ def _diagnose_non_finite(array: NDArray[np.float32], diags: list[Diagnostic]) ->
     diags.append(
         Diagnostic(
             level="warning",
-            code="non_finite_audio",
+            code=DIAG_NON_FINITE_AUDIO,
             message=(
                 f"Array delivery contains {bad} non-finite sample(s) (NaN/Inf); "
                 "forwarded unchanged."
@@ -611,7 +622,7 @@ def _prepare_array(
     diags.append(
         Diagnostic(
             level="info",
-            code="audio_conversion",
+            code=DIAG_AUDIO_CONVERSION,
             message=f"Decoded encoded audio to a waveform array at {native_sr} Hz.",
             param="audio",
             effective="array",
@@ -692,7 +703,7 @@ def _apply_sample_rate(
         diags.append(
             Diagnostic(
                 level="warning",
-                code="resampled_with",
+                code=DIAG_RESAMPLED_WITH,
                 message=(
                     f"Resampled {sample_rate} Hz -> {target} Hz with the built-in "
                     "fallback resampler. Install standard-asr[audio] for a "
@@ -707,7 +718,7 @@ def _apply_sample_rate(
         diags.append(
             Diagnostic(
                 level="info",
-                code="resampled_with",
+                code=DIAG_RESAMPLED_WITH,
                 message=f"Resampled {sample_rate} Hz -> {target} Hz (scipy resample_poly).",
                 param="audio",
                 # The rate transition lives in ``provided`` and the structured
@@ -730,11 +741,19 @@ def _assumed_sample_rate_diag() -> Diagnostic:
     """
     return Diagnostic(
         level="warning",
-        code="assumed_sample_rate",
+        code=DIAG_ASSUMED_SAMPLE_RATE,
         message=f"No sample rate provided; assumed {ASSUMED_SAMPLE_RATE} Hz.",
         param="audio",
         effective=ASSUMED_SAMPLE_RATE,
     )
 
 
-__all__ = ["ASSUMED_SAMPLE_RATE", "PreparedAudio", "execute_plan"]
+__all__ = [
+    "ASSUMED_SAMPLE_RATE",
+    "DIAG_ASSUMED_SAMPLE_RATE",
+    "DIAG_AUDIO_CONVERSION",
+    "DIAG_NON_FINITE_AUDIO",
+    "DIAG_RESAMPLED_WITH",
+    "PreparedAudio",
+    "execute_plan",
+]

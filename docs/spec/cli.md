@@ -31,6 +31,12 @@ Display (and optionally create, `--ensure`) the Standard ASR model cache
 directory.
 
 ### `standard-asr prepare <engine/model>`
+Flags:
+- `--strict`: fail on invalid entry points during discovery (the same flag as
+  `list` / `show` / `transcribe` / `compliance`; `serve` deliberately has no
+  discovery flags -- the server always discovers leniently so one broken
+  co-installed plugin cannot take every other engine's endpoint down with it).
+
 Warm up a model by loading or downloading weights. `prepare` is best-effort and
 maps onto the optional `prepare()` hook (spec IC.11): an engine that does not
 override the `EngineBase` default no-op is a reported no-op ("nothing to warm
@@ -59,6 +65,11 @@ arguments (e.g. credentials) is reported as *skipped*, not failed. Flags:
 - `--include-bridge`: also run the sync-bridge check. This **opens a streaming
   session** and is therefore off by default — for a cloud engine that is a
   billable connection.
+- `--bridge-timeout SECONDS` (default `5.0`): total timeout for the
+  sync-bridge check's whole bridged session (open, end-of-audio, drain, and
+  close combined). The check's remediation advice ("re-run with a larger
+  timeout") is actionable through this flag; library callers pass
+  `check_sync_bridge(..., timeout=...)`.
 
 The streaming **event-sequence** check needs an author-recorded event stream the
 CLI cannot synthesize; it remains a library API
@@ -66,6 +77,10 @@ CLI cannot synthesize; it remains a library API
 note naming it, so a green run is never mistaken for full coverage.
 
 ### `standard-asr transcribe <engine/model> <audio>`
+Flags:
+- `--strict`: fail on invalid entry points during discovery (the same flag as
+  `list` / `show` / `prepare` / `compliance`).
+
 Transcribe an audio file and print text or JSON output. `--options` accepts a
 JSON object mapping onto the portable standard set (`WireRuntimeParams`, e.g.
 `'{"language": "en"}'`). The engine-specific `provider_params` escape hatch is

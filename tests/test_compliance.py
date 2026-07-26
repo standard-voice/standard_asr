@@ -18,6 +18,7 @@ from standard_asr import TranscriptionResult
 from standard_asr import compliance as compliance_module
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import InputKind
+from standard_asr.audio.wire import CANONICAL_WIRE_ENCODING
 from standard_asr.compliance import (
     ComplianceIssue,
     ComplianceReport,
@@ -61,6 +62,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.plugins.discovery import ModelRegistry, discover_models
+from standard_asr.runtime.config import env_var_name
 from standard_asr.runtime.streaming import SyncSession, TranscriptionEvent, TranscriptionSession
 
 
@@ -116,6 +118,31 @@ class _GoodASR:
 
     def supports(self, dot_path: str) -> bool:
         return self.effective_capabilities.supports(dot_path)
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        """Derive the recommended wire format from this engine's Properties.
+
+        Mirrors ``EngineBase.recommended_wire_format`` (the derivation
+        ``EngineBase`` gives its subclasses for free), which a structural
+        (non-``EngineBase``) engine MUST implement itself now that the member is
+        part of the ``StandardASR`` protocol. Deriving it -- rather than
+        returning a constant -- keeps every subclass fixture below honest: one
+        that narrows ``properties`` (e.g. declares ``wire_encodings``)
+        automatically reports a format its own declaration admits.
+
+        Returns:
+            A mono wire format at the engine's required-or-native rate using its
+            first declared wire encoding (the canonical ``pcm_s16le`` when
+            ``wire_encodings`` is unconstrained), or ``None`` when the engine
+            declares no positive sample rate.
+        """
+        props = self.properties
+        sample_rate = props.required_input_sample_rate or props.native_sample_rate
+        if sample_rate <= 0:
+            return None
+        wire = props.wire_encodings
+        encoding = wire[0] if wire else CANONICAL_WIRE_ENCODING
+        return AudioFormat(encoding=encoding, sample_rate=sample_rate, channels=1)
 
 
 def good_factory() -> _GoodASR:  # pyright: ignore[reportUnusedFunction]
@@ -504,6 +531,22 @@ def no_supports_factory() -> _NoSupportsASR:  # pyright: ignore[reportUnusedFunc
     return _NoSupportsASR()
 
 
+class _NoWireFormatASR(_GoodASR):
+    """Batch engine missing the required ``recommended_wire_format`` method.
+
+    ``recommended_wire_format`` is unconditionally part of the ``StandardASR``
+    protocol -- the documented first step of the streaming journey that every
+    caller is taught to invoke -- so omitting it MUST be an error even for a
+    batch-only engine (a ``StandardASR``-typed variable would break on it).
+    """
+
+    recommended_wire_format: ClassVar[None] = None  # type: ignore[assignment]
+
+
+def no_wire_format_factory() -> _NoWireFormatASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoWireFormatASR()
+
+
 class _NoPropertiesProbeASR:
     """Engine exposing the methods but no ``properties`` attribute at all."""
 
@@ -612,6 +655,35 @@ def test_check_entrypoints_missing_transcribe_async_fails() -> None:
     assert any("'transcribe_async'" in i.message and i.level == "error" for i in report.issues), [
         i.message for i in report.issues
     ]
+
+
+def test_check_entrypoints_missing_recommended_wire_format_fails() -> None:
+    # recommended_wire_format joined _ALWAYS_REQUIRED_METHODS: a structural
+    # engine that omits it is flagged as an ERROR naming the member, exactly
+    # like the other unconditional protocol methods.
+    report = check_entrypoints(registry=_registry("no_wire_format_factory"))
+    assert report.passed is False
+    issue = next(
+        i
+        for i in report.issues
+        if i.code == "missing_required_method" and "recommended_wire_format" in i.message
+    )
+    assert issue.level == "error"
+    assert "StandardASR protocol" in issue.message
+
+
+def test_check_entrypoints_structural_engine_supplying_it_is_not_flagged() -> None:
+    # The mirror assertion: a structural engine that DOES implement the member
+    # (deriving it from its own Properties) draws no missing-method issue, so
+    # the check above cannot pass by flagging every engine.
+    report = check_entrypoints(registry=_registry("good_factory"))
+    assert not any(
+        i.code == "missing_required_method" and "recommended_wire_format" in i.message
+        for i in report.issues
+    ), [i.message for i in report.issues]
+    assert _GoodASR().recommended_wire_format() == AudioFormat(
+        encoding=CANONICAL_WIRE_ENCODING, sample_rate=16000, channels=1
+    )
 
 
 def test_check_entrypoints_missing_supports_fails() -> None:
@@ -2093,7 +2165,13 @@ def test_check_entrypoints_missing_credential_is_warning_not_error() -> None:
     skips = [i for i in report.issues if i.code == "factory_requires_config"]
     assert len(skips) == 1
     assert skips[0].level == "warning"
-    assert "STANDARD_ASR" in skips[0].message
+    # The remediation MUST name the env var in the form env_var_name() actually
+    # produces: a DOUBLE underscore separates engine from field. The old
+    # single-underscore advice (STANDARD_ASR_<ENGINE>_<FIELD>) sent authors to a
+    # variable the loader never reads -- pin the boundary so it cannot drift back.
+    assert "STANDARD_ASR_<ENGINE>__<FIELD>" in skips[0].message
+    assert "STANDARD_ASR_<ENGINE>_<FIELD>" not in skips[0].message
+    assert env_var_name("dummy", "api_key") == "STANDARD_ASR_DUMMY__API_KEY"
 
 
 def credentialed_validation_factory() -> _CredentialedASR:  # pyright: ignore[reportUnusedFunction]
@@ -2573,6 +2651,10 @@ def test_sync_bridge_timeout_message_disambiguates_slow_vs_deadlock() -> None:
     msg = next(i.message for i in report.issues if i.code == "sync_bridge_did_not_terminate")
     assert "deadlock OR" in msg
     assert "larger timeout" in msg
+    # The advice must be ACTIONABLE: name both knobs that raise the timeout --
+    # the library keyword and the CLI flag that now threads it through.
+    assert "check_sync_bridge(..., timeout=...)" in msg
+    assert "--bridge-timeout" in msg
 
 
 # _check_prepare_hook: the optional prepare warm-up hook MUST be

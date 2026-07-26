@@ -32,6 +32,8 @@ from standard_asr import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
+    CandidateLanguagesCap,
+    CandidateLanguagesConstraints,
     DeclaredCapabilities,
     DiarizationCap,
     FlagCap,
@@ -48,6 +50,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.plugins.discovery import ModelRegistry, discover_models
+from standard_asr.runtime.config import LanguageConfigMixin
 from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 from standard_asr.toolchain import server as server_module
 
@@ -281,6 +284,60 @@ class _RecordingEncodedASR(EngineBase):
 
 def _recording_encoded_factory() -> _RecordingEncodedASR:  # pyright: ignore[reportUnusedFunction]
     return _RecordingEncodedASR()
+
+
+class _AutoLangProperties(BaseProperties):
+    """Auto-detect engine with a BOUNDED detectable set (the 422 regression)."""
+
+    engine_id: str = "rec"
+    model_name: str = "autolang"
+    protocol_version: str = "1.0.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
+    selectable_languages: list[str] = ["auto"]
+    detectable_languages: list[str] = ["en", "ja", "ko"]
+
+
+class _AutoLangConfig(LanguageConfigMixin, BaseConfig[str]):
+    engine: str = "rec"
+    default_language: str | None = "auto"
+
+
+_AUTO_LANG_CAPS = DeclaredCapabilities(
+    batch=BatchCapabilities(
+        language=LanguageCaps(
+            runtime_override=FlagCap(supported=True),
+            candidate_languages=CandidateLanguagesCap(
+                supported=True,
+                constraints=CandidateLanguagesConstraints(max=2),
+            ),
+        )
+    )
+)
+
+
+class _AutoLangASR(EngineBase):
+    """Strict engine (config default) whose detectable set is bounded.
+
+    A request naming a candidate outside ``detectable_languages`` is a CLIENT
+    error the standard layer rejects in strict mode; it must reach the wire as a
+    422, never a 500.
+    """
+
+    properties: ClassVar[BaseProperties] = _AutoLangProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _AUTO_LANG_CAPS
+
+    def __init__(self) -> None:
+        self.config = _AutoLangConfig(engine="rec")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        _RECORDED["candidate_languages"] = params.candidate_languages
+        return TranscriptionResult(text="autolang")
+
+
+def _auto_lang_factory() -> _AutoLangASR:  # pyright: ignore[reportUnusedFunction]
+    return _AutoLangASR()
 
 
 class _RecordingOptionsASR(_DummyASR):
@@ -871,6 +928,80 @@ def test_transcribe_options_diarization_unknown_key_maps_to_422() -> None:
     }
     resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
+
+
+def test_strict_non_detectable_candidate_language_maps_to_422_not_500() -> None:
+    # REGRESSION: a strict engine asked for a well-formed candidate language it
+    # cannot detect is a CLIENT error. The standard layer used to raise a bare
+    # ValueError here, which fell through the server's client-error clauses into
+    # the catch-all and answered 500 "Internal transcription error" -- blaming
+    # the server for the caller's request and hiding the fixable reason. It is
+    # now the standard strict-gate UnsupportedFeatureError -> 422 with the
+    # offending parameter named in the detail.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_auto_lang_factory"))
+    client = TestClient(app)
+
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(_wav_bytes(rate=16000)).decode(),
+        "options": {"language": "auto", "candidate_languages": ["zz"]},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 422
+    detail = str(resp.json()["detail"])
+    # The detail names the offending tag and the reason, so the caller can fix it.
+    assert "'zz'" in detail
+    assert "detectable" in detail
+    # The generic internal-error text must NOT appear: this is the caller's bug.
+    assert "Internal transcription error" not in detail
+
+
+def test_strict_over_max_candidate_languages_maps_to_422() -> None:
+    # The sibling strict rejection (more candidates than the declared max=2)
+    # travels the same path to 422.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_auto_lang_factory"))
+    client = TestClient(app)
+
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(_wav_bytes(rate=16000)).decode(),
+        "options": {"language": "auto", "candidate_languages": ["en", "ja", "ko"]},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 422
+    detail = str(resp.json()["detail"])
+    assert "3 entries" in detail and "max is 2" in detail
+    assert "Internal transcription error" not in detail
+
+
+def test_detectable_candidate_languages_still_transcribe() -> None:
+    # The mirror case: candidates the engine CAN detect are accepted and reach
+    # the engine, so the 422 above is a real rejection and not a blanket block.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _RECORDED.clear()
+    app = server_module.create_app(registry=_registry_for("_auto_lang_factory"))
+    client = TestClient(app)
+
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(_wav_bytes(rate=16000)).decode(),
+        "options": {"language": "auto", "candidate_languages": ["en", "ja"]},
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 200
+    assert resp.json()["result"]["text"] == "autolang"
+    assert _RECORDED["candidate_languages"] == ["en", "ja"]
 
 
 def test_transcribe_json_with_bad_options_maps_to_422() -> None:

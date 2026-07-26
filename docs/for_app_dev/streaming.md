@@ -31,15 +31,26 @@ async with engine.start_transcription(audio="meeting.wav") as session:
 
 ## Feeding audio
 
-For live-input streaming, feed PCM byte chunks as an iterable:
+For live-input streaming there are two mutually exclusive input modes:
+
+**Managed mode** -- hand the session an iterable of PCM byte chunks and let it
+drive the input side for you:
 
 ```python
-session.feed(microphone)    # any (async) iterable of bytes
+session.feed(microphone)    # any sync or async iterable of bytes chunks
 ```
 
-When the audio source is exhausted, call `session.end_audio()` to signal
-end-of-input. If you feed an iterable, the session calls `end_audio()`
-automatically when the iterable finishes.
+`feed()` consumes the source and signals end-of-input automatically when the
+iterable finishes. Do **not** call `end_audio()` yourself in this mode -- a
+session is owned by exactly one input mode, and mixing them raises
+`InvalidSessionUseError`.
+
+**Manual mode** -- push chunks yourself and signal the end explicitly:
+
+```python
+await session.send_audio(chunk)   # repeat per chunk
+await session.end_audio()         # signal end-of-input
+```
 
 ## The event protocol
 
@@ -53,7 +64,7 @@ Every streaming session emits a sequence of `TranscriptionEvent` objects. The
 | `supersede` | The engine re-segmented: one or more previously-emitted segments are **replaced**. The replacement events follow immediately. | `None` | `None` (check `old_ids`). |
 | `progress` | A progress heartbeat (e.g. audio position). No transcript content. | `None` | `None` |
 | `done` | The session is complete. No more events will follow. | `None` | `None` |
-| `error` | An engine error mid-stream. | Error description. | `None` |
+| `error` | An engine error mid-stream. Machine-readable code in `event.code`; human detail in `event.extra["detail"]`; `event.recoverable` says whether the session may continue. | `None` | `None` |
 
 ## The core reduce
 
@@ -105,6 +116,17 @@ This gives you the same constant-shape result you get from `engine.transcribe()`
 so your downstream code (subtitle rendering, search, etc.) works identically
 whether the input was batch or streamed.
 
+One honesty note: some engines emit no timestamps while streaming. Their reduced
+segments carry `start`/`end` of `0.0` as placeholders, and the result then
+includes a `segment_timestamps_unavailable` warning diagnostic -- do not use
+those spans for timing-sensitive work. When **no** segment carries a real
+timestamp, `to_srt` / `to_vtt` recognize the shape and render a single
+whole-text cue instead of zero-duration cues that players would silently drop.
+When timestamps are **mixed** (some segments real, some placeholders -- a rare
+engine shape), the renderers keep the real cues and the placeholder segments
+still come out as zero-duration cues most players drop; check the diagnostic
+before rendering subtitles from such a result.
+
 ## Synchronous bridge
 
 If you cannot use `async`, wrap the session in `SyncSession`:
@@ -116,11 +138,15 @@ audio_format = engine.recommended_wire_format()
 sync = SyncSession(engine.start_transcription(audio_format=audio_format))
 
 with sync:
-    sync.feed_bytes(pcm_chunk)
-    sync.end_audio()
+    sync.feed(pcm_chunks)          # an iterable of bytes chunks (or one bytes chunk)
     for event in sync:
         print(event.type, event.text)
 ```
+
+`SyncSession` mirrors the async session's input modes: `feed(...)` for managed
+input (end-of-input is signalled automatically), or `send_audio(chunk)` +
+`end_audio()` for manual input. As with the async session, the two modes must
+not be mixed.
 
 `SyncSession` runs the async session on a background thread and exposes a
 blocking iterator. See the [API reference](../reference/streaming.md) for the
@@ -135,12 +161,19 @@ from standard_asr import StreamDeadlines
 
 async with engine.start_transcription(
     audio_format=audio_format,
-    deadlines=StreamDeadlines(max_idle_seconds=5.0, max_session_seconds=60.0),
+    deadlines=StreamDeadlines(max_idle=5.0, max_session_seconds=60.0),
 ) as session:
     ...
 ```
 
-When a deadline fires, the session emits a `done` event and closes cleanly.
+The three deadlines are `done_timeout` (pipeline-inactivity hang backstop),
+`max_idle` (content-stall detector), and `max_session_seconds` (absolute
+wall-clock cap); each accepts `None` to disable it.
+
+When a deadline fires, the session terminates with a terminal **`error`** event
+(`code` = `done_timeout` / `stream_stalled` / `session_timeout`) -- not a
+`done` event -- so a deadline-killed session is never mistaken for normal
+completion. Handle the `error` event's `code` to tell the cases apart.
 
 ## Diagnostics mid-stream
 

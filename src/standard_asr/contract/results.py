@@ -368,7 +368,6 @@ class TranscriptionResult(BaseModel):
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
         diagnostics: Conversion / best_effort / degradation diagnostics.
-        metadata: Standardized engine-agnostic metadata.
         extra: Engine-specific / experimental data (incl. provider formats).
 
     Raises:
@@ -401,9 +400,12 @@ class TranscriptionResult(BaseModel):
         default_factory=lambda: cast("list[Diagnostic]", []),
         description="Non-fatal diagnostics.",
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict, description="Standardized engine-agnostic metadata."
-    )
+    # No `metadata` pocket: the spec removed blanket metadata from Properties
+    # and Capabilities ("no known use case, invites unstructured data, breaks
+    # machine readability"), and a result-side "standardized metadata" dict with
+    # no standardized keys, no writer, and no reader was the same disease.
+    # Standardized result data gets a real field (additive-minor); everything
+    # engine-specific goes in `extra`.
     extra: dict[str, Any] = Field(
         default_factory=dict, description="Engine-specific / experimental data."
     )

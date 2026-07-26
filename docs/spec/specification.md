@@ -268,7 +268,7 @@
 > **strict / best_effort 边界（与 [§Runtime 参数 R3](#runtime-参数-runtime-parameters--normative) 的"不支持即报错"张力的澄清）**：这里三类情况分属两套错误模型，**不要混淆**：
 > - **功能不支持**（步 3，`candidate_languages.supported=false` 且确有候选列表）：这是一个**不支持的标准集参数**，但 R3 步 3 明确把它降为 `None` + diagnostic——**永不抛错**，**独立于 strict/best_effort**。它是 Runtime §R2"不支持参数 strict 抛错"的一个**显式 carve-out**：候选语言不支持时静默忽略并诚实诊断，比为一个纯优化项硬失败更合理。**前提**：确有候选语言被传入（步 2 拿到非空列表）；什么都没传时步 2 直接短路为 `None`，不发 diagnostic。
 > - **值非法**（步 4 的"malformed BCP-47 标签"或包含保留字 `auto`）：这是**调用方的代码 bug**（如把 `"english"`/`"auto"` 当候选传入），MUST **始终抛 `ValueError`**，**独立于 strict/best_effort**——与 §Runtime R3 的 `provider_params` 错误"始终抛、不被 strict/best_effort 吞掉"同源。
-> - **值合法但不可达**（步 4 的"non-detectable"或"超 `constraints.max`"）：这才走 §R2 的 strict/best_effort 策略——strict 抛错，best_effort 丢弃/截断 + diagnostic。
+> - **值合法但不可达**（步 4 的"non-detectable"或"超 `constraints.max`"）：这才走 §R2 的 strict/best_effort 策略——strict 抛 `UnsupportedFeatureError`（`param="candidate_languages"`，与其它 strict 门控拒绝同型，server 映射为 422），best_effort 丢弃/截断 + diagnostic。
 >
 > 实现：`standard_asr.contract.language.effective_candidate_languages`（其 `Raises` 文档逐条对应上述三类）。
 
@@ -646,10 +646,10 @@ TranscriptionResult:
   words: list[Word] | None               # 扁平词级（也可嵌 segment 内）
   channels: list[ChannelResult] | None   # 多通道分离（TR.4）
   diagnostics: list[Diagnostic]          # best_effort / 转换 / 降级 诊断
-  metadata: dict[str, Any]               # 标准化元信息
   extra: dict[str, Any]                  # 引擎特定/实验（含 provider 渲染格式）
 ```
 - **返回类型恒定**：`response_format` 不把返回变字符串；多通道不把顶层换成 `transcripts[]`。
+- **无 blanket `metadata`（与 Properties / Capabilities 同款决策）**：结果模型**不含**自由 `metadata: dict` 口袋——「标准化元信息」若无一个已定义的标准键，就只是又一条无 schema 的非结构化通道（§AI 3.2 / §C 3.3 砍掉 blanket metadata 的同一理由）。未来真正标准化的结果元信息按 additive-minor 以**具名字段**加入；引擎特定数据走 `extra`。
 - **null 规则（消歧）**：capability 声明「是否支持」；字段 `None`=**未请求/不适用**；`[]`=**请求但空**（如静音）。app 判「不支持」看 **capability**，不看字段 null。
 
 ## TR.2 `Segment` / `Word`（流批共享子模型）
@@ -845,16 +845,16 @@ nested 引擎声明 submodel（按 model-family）+ 标准 **artifact 路径解�
 | `partial` 事件 | 引擎对某段的**当前最佳猜测**。partial 的文本可能随着更多音频到来而变化（下一个 partial 会携带该段的完整当前文本，覆盖之前的）。 |
 | `final` 事件 | 引擎**不再因新音频改变**该段文本。表示一个语句/段落的转写已确定。 |
 | `supersede` 事件 | 引擎用一组新段**替换**一组旧段（用于两遍重打分等场景，详见 §5）。是**核心事件**，每个 compliant 应用都 MUST 处理。 |
-| `stable_until` | 一个非负整数，标明 `text` 的前多少个 **codepoint** 已冻结、不会再变（`text[:stable_until]` 即冻结前缀）。适配器 SHOULD 使该值落在字素簇 (grapheme cluster) 边界上。简单应用可忽略它；语音助手用它判断"前缀中哪些字已安全可以行动"。 |
+| `stable_until` | 一个非负整数，标明 `text` 的前多少个 **codepoint** 已冻结、不会再变（`text[:stable_until]` 即冻结前缀）。适配器 SHOULD 使该值落在字素簇 (grapheme cluster) 边界上。简单应用可忽略它；语音助手用它判断"前缀中哪些字已安全可以行动"。**冻结的范围是进行中的识别**：段终态的 `closed` 事件 MAY 对已冻结文本做一次后处理定稿改写（补标点/ITN/大小写，§6 豁免条款）——基于冻结前缀做**不可逆**动作（写库、发消息、触发工具）的应用 MUST 以识别语义为界，预期 `closed` 可能改写呈现形式。 |
 | `audio_processed_until` | 浮点数，表示引擎已处理到的音频时间点（秒），原点 = 本次会话的第一个音频采样。 |
 
 ---
 
 ## 3. 接口与能力
 
-### 3.1 两个方法（批量 vs 流式，返回类型不同）
+### 3.1 接口方法（两个转写入口 + 派生协议成员）
 
-标准有两个入口，**返回类型恒定、不会因某个 flag 变形**：
+标准有两个**转写入口**，**返回类型恒定、不会因某个 flag 变形**（此外协议表面还含 `supports()`（[§能力系统 R5](#能力系统-capabilities--normative)）、`transcribe_async` 与下文的 `recommended_wire_format()`——它们是查询/派生成员，不是转写入口）：
 
 | 方法 | 何时使用 | 返回 |
 |---|---|---|
@@ -877,6 +877,7 @@ start_transcription(
 - **`audio` 接受 coercion**：`audio` 的类型是 `AudioInputLike`，与 `transcribe` 的 `audio` 同规则接受裸值强制转换（裸 `str` = 本地路径、`bytes` = 编码字节、`ndarray` / `(ndarray, sample_rate)` = 波形），由标准层 `coerce_audio_input` 归一为 `AudioInput`。
 
 - **增量喂入**（ElevenLabs realtime、Qwen3 streaming）：传 `audio_format`，之后用 `send_audio(chunk)` 逐块喂裸 PCM 帧。
+- **`recommended_wire_format()`（协议成员，normative）**：每个 compliant 引擎 MUST 暴露 `recommended_wire_format() -> AudioFormat | None`——返回一个该引擎的会话建立守卫必然接受的最小裸帧 wire 格式（无可用正采样率时返回 `None`）。它是流式旅程文档化的第一步（README / quickstart / streaming 指南均以它开场），也是 CLI sync-bridge runner 与合规门控探针赖以打开会话的唯一来源，故属 `StandardASR` 协议表面而非 `EngineBase` 的私有便利。值 MUST 纯粹派生自 Properties：`sample_rate` = `required_input_sample_rate`（若设，`0` 视为未设）否则 `native_sample_rate`；`encoding` = `wire_encodings` 首项，未声明（unconstrained）时用 canonical `pcm_s16le`；`channels` = `1`。`EngineBase` 免费提供该派生；structural（非 `EngineBase`）引擎须自行实现同一派生。合规套件将其列入无条件必需方法，并校验其返回值能通过引擎自身的 `ensure_stream_format_supported`（自洽往返）。
 - **`deadlines`**：应用对会话终止 deadline（`done_timeout` / `max_idle` / `max_session_seconds`，语义见 §6.1）的逐字段覆盖。优先级 MUST 为：应用显式设置 > 适配器构造时选择 > 标准默认；由标准层模板在适配器构造会话**之后**统一施加（不依赖适配器转发，杜绝静默丢失）。未显式设置的字段不受影响。
 - **整段输入 + 流式输出**（OpenAI Audio SSE）：传 `audio`（一个完整的 `AudioInput`，如文件路径或编码字节），引擎一次收完后流式返回结果。
 - `audio_format` 与 `audio` **互斥**；同时传 MUST 报错。**两者皆缺是合法的**：引擎可在适配器内部自管 wire 格式（如固定协议格式的引擎），此时 `start_transcription()` 不带任何参数即开启增量会话——标准层只在两者**同时出现**时报错。**无参调用的能力门控**：无参开启的是增量（自管 wire 格式）会话，语义上即 §3.2 的 `streaming_input` 能力，故标准层 MUST 对无参调用施加与 `audio_format` 路径**相同**的 `streaming_input` 门控——仅声明 `streaming_output` 的引擎即使实现了流式钩子，无参调用也 MUST fail-closed 抛 `UnsupportedFeatureError`（缺失即不支持，[§能力系统 R1](#能力系统-capabilities--normative)），而非交回一个无法喂入的增量会话（实现：`EngineBase.start_transcription`）。

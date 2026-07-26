@@ -44,6 +44,9 @@ Mode = Literal["batch", "streaming"]
 DIAG_UNSUPPORTED_PARAMETER_IGNORED = "unsupported_parameter_ignored"
 DIAG_UNSUPPORTED_GRANULARITY_IGNORED = "unsupported_granularity_ignored"
 DIAG_PROMPT_TRUNCATED = "prompt_truncated"
+DIAG_PHRASE_HINTS_TRUNCATED = "phrase_hints_truncated"
+DIAG_GUIDANCE_DEGRADED_TO_PROMPT = "guidance_degraded_to_prompt"
+DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED = "guidance_degrade_phrase_hints_dropped"
 
 #: Portable standard-set fields and their capability dot-path suffixes.
 #:
@@ -667,7 +670,7 @@ def _enforce_phrase_hints_limits(
     diagnostics.append(
         Diagnostic(
             level="warning",
-            code="phrase_hints_truncated",
+            code=DIAG_PHRASE_HINTS_TRUNCATED,
             message=f"Truncated phrase_hints to declared limits in {mode} mode.",
             param="phrase_hints",
             provided=hints,
@@ -851,7 +854,7 @@ def _try_degrade_to_prompt(
             diagnostics.append(
                 Diagnostic(
                     level="warning",
-                    code="guidance_degrade_phrase_hints_dropped",
+                    code=DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED,
                     message=(
                         "phrase_hints unsupported; the synthesized prompt was truncated to "
                         f"the {max_tokens}-token budget before any phrase-hint term fit, so "
@@ -869,7 +872,7 @@ def _try_degrade_to_prompt(
     diagnostics.append(
         Diagnostic(
             level="warning",
-            code="guidance_degraded_to_prompt",
+            code=DIAG_GUIDANCE_DEGRADED_TO_PROMPT,
             message="phrase_hints unsupported; degraded into the prompt channel.",
             param="phrase_hints",
             provided=hints,
@@ -880,6 +883,9 @@ def _try_degrade_to_prompt(
 
 
 __all__ = [
+    "DIAG_GUIDANCE_DEGRADED_TO_PROMPT",
+    "DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED",
+    "DIAG_PHRASE_HINTS_TRUNCATED",
     "DIAG_PROMPT_TRUNCATED",
     "DIAG_UNSUPPORTED_GRANULARITY_IGNORED",
     "DIAG_UNSUPPORTED_PARAMETER_IGNORED",

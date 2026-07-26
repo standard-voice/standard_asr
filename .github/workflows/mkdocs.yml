@@ -47,4 +47,7 @@ jobs:
             mkdocs-material-
       - run: pip install mkdocs-material "mkdocstrings[python]>=0.29"
       - run: pip install -e .
-      - run: mkdocs gh-deploy --force
+      # --strict mirrors the CI "Docs build (strict)" PR gate: main should
+      # always be strict-clean, so this is a backstop that refuses to publish a
+      # site with doc/code drift rather than publishing it with warnings.
+      - run: mkdocs gh-deploy --force --strict

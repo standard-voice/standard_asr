@@ -36,6 +36,9 @@ from standard_asr.contract.capabilities import DeclaredCapabilities
 from standard_asr.contract.exceptions import ConfigError, UnsupportedFeatureError
 from standard_asr.contract.language import (
     AUTO,
+    DIAG_LANGUAGE_FELL_BACK,
+    DIAG_LANGUAGE_NOT_SELECTABLE,
+    DIAG_LANGUAGE_REFINEMENT_ACCEPTED,
     effective_candidate_languages,
     effective_language,
     normalize_bcp47,
@@ -93,12 +96,12 @@ class StandardASR(Protocol):
             UnsafeAudioUrlError: If an ``AudioUrl`` fails the SSRF policy.
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure in the conversion pipeline.
-            UnsupportedFeatureError: In strict mode, on an unsupported parameter
-                or a non-selectable ``language``.
+            UnsupportedFeatureError: In strict mode, on an unsupported parameter,
+                a non-selectable ``language``, or a valid-but-unreachable
+                candidate list (non-detectable candidate / over-``max``).
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
-            ValueError: On an invalid candidate-language list (always for a
-                malformed/``auto`` candidate; strict-only for non-detectable /
-                over-``max``).
+            ValueError: On a malformed or ``"auto"`` candidate-language entry
+                (a caller code bug; raises independent of strict/best_effort).
             TranscriptionError: On an engine-execution failure.
         """
         ...
@@ -173,6 +176,25 @@ class StandardASR(Protocol):
 
         Returns:
             ``True`` if supported.
+        """
+        ...
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        """Return a wire :class:`AudioFormat` this engine accepts for streaming.
+
+        Part of the protocol because it is the documented first step of the
+        streaming journey (README / quickstart / streaming guide all start with
+        it) and the toolchain's sync-bridge runner and gating probes rely on it
+        -- a member every caller is taught to invoke MUST be part of the
+        contract, or a structural engine (and every ``StandardASR``-typed
+        variable) breaks on the standard's own 80% path. The value is purely
+        derivable from the engine's static Properties (see
+        :meth:`EngineBase.recommended_wire_format` for the derivation
+        ``EngineBase`` provides for free).
+
+        Returns:
+            A wire format the engine's session-establishment guard accepts, or
+            ``None`` when no bare-frame streaming format can be recommended.
         """
         ...
 
@@ -509,14 +531,14 @@ class EngineBase(ABC):
             AudioProcessingError: On an audio failure surfaced by the conversion
                 pipeline -- a decode failure, an over-``max_file_size`` payload,
                 or (in strict mode) a bare array with no sample rate.
-            UnsupportedFeatureError: In strict mode, on an unsupported parameter
-                or a requested ``language`` not selectable by the engine.
+            UnsupportedFeatureError: In strict mode, on an unsupported parameter,
+                a requested ``language`` not selectable by the engine, or a
+                valid-but-unreachable candidate list (a non-detectable candidate
+                or one over the declared ``max``).
             InvalidProviderParamError: On wrong provider params.
-            ValueError: On an invalid candidate-language list -- a malformed
-                candidate tag or one containing ``auto`` raises **always**
-                (independent of strict/best_effort); a
-                non-detectable or over-``max`` candidate raises only in strict
-                mode.
+            ValueError: On a malformed candidate tag or one containing ``auto``
+                -- a caller code bug, raised **always** (independent of
+                strict/best_effort).
             TranscriptionError: On an engine-execution failure inside
                 :meth:`_transcribe`.
         """
@@ -658,8 +680,10 @@ class EngineBase(ABC):
 
         Raises:
             UnsupportedFeatureError: In strict mode, if the resolved language is
-                not selectable by this engine.
-            ValueError: In strict mode, on an invalid candidate-language list.
+                not selectable by this engine, or on a valid-but-unreachable
+                candidate list (non-detectable / over-``max``).
+            ValueError: On a malformed or ``"auto"`` candidate entry (always,
+                independent of strict/best_effort).
         """
         if not self.properties.has_language_axis:
             return params, []
@@ -698,7 +722,7 @@ class EngineBase(ABC):
             diagnostics.append(
                 Diagnostic(
                     level="warning",
-                    code="language_fell_back",
+                    code=DIAG_LANGUAGE_FELL_BACK,
                     message=(
                         f"Per-request language was dropped (engine does not support "
                         f"language.runtime_override in {mode} mode); transcribing with "
@@ -743,7 +767,7 @@ class EngineBase(ABC):
             diagnostics.append(
                 Diagnostic(
                     level="warning",
-                    code="language_not_selectable",
+                    code=DIAG_LANGUAGE_NOT_SELECTABLE,
                     message=(
                         f"Fell back from non-selectable language {eff_lang!r} to "
                         f"default_language {default_language!r} in {mode} mode."
@@ -763,7 +787,7 @@ class EngineBase(ABC):
             diagnostics.append(
                 Diagnostic(
                     level="info",
-                    code="language_refinement_accepted",
+                    code=DIAG_LANGUAGE_REFINEMENT_ACCEPTED,
                     message=(
                         f"language {eff_lang!r} accepted in {mode} mode as a "
                         f"refinement of selectable {matched!r} (RFC 4647 lookup); "
@@ -784,6 +808,7 @@ class EngineBase(ABC):
             detectable_languages=detectable,
             max_count=constraints,
             strict=self._strict,
+            mode=mode,
         )
         diagnostics.extend(candidate_diags)
         effective_params = params.model_copy(
@@ -1080,16 +1105,16 @@ class EngineBase(ABC):
 
         Raises:
             ValueError: If both ``audio_format`` and ``audio`` are provided, or
-                on an invalid candidate-language list (always for a
-                malformed/``auto`` candidate; strict-only for non-detectable /
-                over-``max``).
+                on a malformed/``auto`` candidate-language entry (a caller code
+                bug; always raises, independent of strict/best_effort).
             ConfigError: If the engine exposes a language axis but its
                 ``default_language`` is unset, malformed, or not in
                 ``selectable_languages``.
             UnsupportedFeatureError: When the requested streaming input/output
                 axis is unsupported, when streaming is unsupported, when the wire
                 format is unreachable, or, in strict mode, on an unsupported
-                parameter.
+                parameter or a valid-but-unreachable candidate list
+                (non-detectable / over-``max``).
             IncompatibleAudioInputError: If no conversion path exists for a
                 whole-input streaming ``audio`` value.
             UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the SSRF

@@ -123,6 +123,33 @@ _SYNC_BRIDGE_LOOP_THREAD_NAME = "standard-asr-sync-bridge-loop"
 
 _INPUT_SOURCE_ERROR_DETAIL = "Audio input source failed during streaming."
 
+#: Diagnostic codes the streaming layer emits (the lifecycle guard's event
+#: admission verdicts plus the reducer's timestamp disclosure). Like the
+#: ``DIAG_*`` constants in :mod:`standard_asr.runtime.gating` and
+#: :mod:`standard_asr.contract.language`, a diagnostic ``code`` is a
+#: wire-visible contract consumers match on, so each lives here as the single
+#: source of truth -- a consumer hard-coding the literal would silently match
+#: the wrong contract after a rename. (Terminal *event* codes such as
+#: ``done_timeout`` / ``backpressure`` are a different namespace: they are
+#: ``TranscriptionEvent.code`` values pinned by the spec's event table, not
+#: ``Diagnostic`` codes.)
+DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
+DIAG_SUPERSEDE_UNKNOWN_OLD_ID = "supersede_unknown_old_id"
+DIAG_LIFECYCLE_CLOSED_SUPERSEDED = "lifecycle_closed_superseded"
+DIAG_LIFECYCLE_RETIRED_RESUPERSEDED = "lifecycle_retired_resuperseded"
+DIAG_SUPERSEDE_REINTRODUCES_SEGMENT = "supersede_reintroduces_segment"
+DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE = "supersede_cross_speaker_merge"
+DIAG_SUPERSEDE_DELETES_FROZEN_TEXT = "supersede_deletes_frozen_text"
+DIAG_LIFECYCLE_AFTER_TERMINAL = "lifecycle_after_terminal"
+DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL = "lifecycle_partial_after_final"
+DIAG_LIFECYCLE_FINAL_AFTER_FINAL = "lifecycle_final_after_final"
+DIAG_FROZEN_PREFIX_REWRITTEN = "frozen_prefix_rewritten"
+DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE = "frozen_prefix_rewritten_supersede"
+DIAG_FROZEN_SPEAKER_REWRITTEN = "frozen_speaker_rewritten"
+DIAG_AUDIO_CURSOR_DECREASED = "audio_cursor_decreased"
+DIAG_STABLE_UNTIL_CLAMPED = "stable_until_clamped"
+DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED = "supersede_obligation_unfulfilled"
+
 
 class StreamDeadlines(BaseModel):
     """Application-side overrides for a session's termination deadlines.
@@ -140,7 +167,12 @@ class StreamDeadlines(BaseModel):
     ``None`` to explicitly disable that deadline.
     """
 
-    model_config = ConfigDict(frozen=True)
+    # extra="forbid" like every other application-input model (RuntimeParams,
+    # AudioFormat, ...): a misspelled deadline field (e.g. ``max_idle_seconds``)
+    # MUST fail at construction. Under pydantic's default extra="ignore" the
+    # typo'd override silently vanished and the session ran with the deadline
+    # disabled -- a silently-dropped safety parameter.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     done_timeout: float | None = Field(default=DEFAULT_DONE_TIMEOUT, gt=0.0)
     max_idle: float | None = Field(default=DEFAULT_MAX_IDLE, gt=0.0)
@@ -620,7 +652,15 @@ class StreamReducer:
         Returns:
             A :class:`TranscriptionResult` from the committed segments. Ordered
             by ``start`` only when every segment carries a real timestamp;
-            otherwise arrival order is preserved.
+            otherwise arrival order is preserved. When any retained segment
+            came from a timestamp-less event (its stored ``start``/``end`` are
+            ``0.0`` placeholders, since :class:`~standard_asr.contract.results.Segment`
+            requires finite times), the result carries a
+            ``segment_timestamps_unavailable`` warning diagnostic so the
+            placeholder spans are never mistaken for real timing (the SRT/VTT
+            renderers additionally detect the all-placeholder shape and fall
+            back to a single whole-text cue instead of emitting zero-duration
+            cues that players silently drop).
         """
         order = list(self._order)
         if order and all(self._has_timestamp.get(sid, False) for sid in order):
@@ -632,10 +672,30 @@ class StreamReducer:
         # space-joined as the v1 default; a no-space-language (CJK) separator is a
         # separate spec question, not silently changed here.
         text = " ".join(part for part in (segment.text.strip() for segment in segments) if part)
+        diagnostics: list[Diagnostic] = []
+        missing_ts = [sid for sid in order if not self._has_timestamp.get(sid, False)]
+        if missing_ts:
+            # The placeholder 0.0 spans are a representational necessity, not
+            # data; shipping them without a diagnostic would be a silent wrong
+            # timestamp (the cardinal sin). Explicit over implicit.
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    code=DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+                    message=(
+                        f"{len(missing_ts)} of {len(order)} reduced segments carry no "
+                        "engine timestamps; their start/end are 0.0 placeholders "
+                        "(arrival order preserved). Do not use these spans for "
+                        "timing-sensitive output."
+                    ),
+                    param="segments",
+                )
+            )
         return TranscriptionResult(
             text=text,
             segments=segments or None,
             detected_language=self._detected_language,
+            diagnostics=diagnostics,
         )
 
 
@@ -1098,7 +1158,7 @@ class _LifecycleGuard:
             for old in event.old_ids:
                 if old not in self._state:
                     self._reject(
-                        "supersede_unknown_old_id",
+                        DIAG_SUPERSEDE_UNKNOWN_OLD_ID,
                         f"supersede old_ids contains never-announced segment "
                         f"{old!r}; suppressed (old_ids MUST have "
                         "received at least one partial/final).",
@@ -1108,7 +1168,7 @@ class _LifecycleGuard:
                 old_state = self._state.get(old)
                 if old_state == "closed":
                     self._reject(
-                        "lifecycle_closed_superseded",
+                        DIAG_LIFECYCLE_CLOSED_SUPERSEDED,
                         f"supersede old_ids contains closed segment {old!r}; "
                         "suppressed (closed MUST NOT be superseded).",
                     )
@@ -1119,7 +1179,7 @@ class _LifecycleGuard:
                     # second retirement would copy the retired segment's frozen
                     # text into a SECOND independent replacement lineage.
                     self._reject(
-                        "lifecycle_retired_resuperseded",
+                        DIAG_LIFECYCLE_RETIRED_RESUPERSEDED,
                         f"supersede old_ids contains already-superseded segment "
                         f"{old!r}; suppressed (superseded is "
                         "terminal -- an id MUST NOT be retired twice).",
@@ -1128,7 +1188,7 @@ class _LifecycleGuard:
             for new in event.new_ids:
                 if new in self._state:
                     self._reject(
-                        "supersede_reintroduces_segment",
+                        DIAG_SUPERSEDE_REINTRODUCES_SEGMENT,
                         f"supersede new_ids contains already-known segment "
                         f"{new!r} (state {self._state[new]!r}); suppressed. "
                         "Either the id is being reused (a new_id "
@@ -1159,7 +1219,7 @@ class _LifecycleGuard:
             # the raw length and evade the pigeonhole.
             if len(distinct_speakers) > 1 and 0 < len(set(event.new_ids)) < len(distinct_speakers):
                 self._reject(
-                    "supersede_cross_speaker_merge",
+                    DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE,
                     f"supersede retires segments {event.old_ids!r} whose last-known "
                     f"speakers are {sorted(distinct_speakers)!r} but replaces them "
                     # Report the DISTINCT count the pigeonhole actually compared
@@ -1183,7 +1243,7 @@ class _LifecycleGuard:
                 # Pure deletion (empty new_ids) cannot preserve any frozen text;
                 # it MUST NOT silently destroy a prefix the user saw frozen.
                 self._reject(
-                    "supersede_deletes_frozen_text",
+                    DIAG_SUPERSEDE_DELETES_FROZEN_TEXT,
                     "supersede with empty new_ids would delete the frozen prefix "
                     f"of {event.old_ids!r}; suppressed (frozen text "
                     "MUST be preserved -- pure deletion is allowed only for "
@@ -1209,14 +1269,14 @@ class _LifecycleGuard:
             state = self._state.get(sid, "open")
             if state in ("superseded", "closed"):
                 self._reject(
-                    "lifecycle_after_terminal",
+                    DIAG_LIFECYCLE_AFTER_TERMINAL,
                     f"{event.type} for segment {sid!r} after it became {state}; "
                     "suppressed (illegal transition).",
                 )
                 return None
             if event.type == "partial" and state == "final":
                 self._reject(
-                    "lifecycle_partial_after_final",
+                    DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL,
                     f"partial for segment {sid!r} after final; suppressed (illegal transition).",
                 )
                 return None
@@ -1225,7 +1285,7 @@ class _LifecycleGuard:
                 # closed event; a plain final re-freezing/rewriting the segment
                 # is illegal.
                 self._reject(
-                    "lifecycle_final_after_final",
+                    DIAG_LIFECYCLE_FINAL_AFTER_FINAL,
                     f"non-closed final for segment {sid!r} already in state final; "
                     "suppressed (from final only supersede or a "
                     "closed event is legal).",
@@ -1235,7 +1295,7 @@ class _LifecycleGuard:
             # replace previously frozen text in place.
             if not is_closed_final and self._frozen_prefix_rewritten(event, sid):
                 self._reject(
-                    "frozen_prefix_rewritten",
+                    DIAG_FROZEN_PREFIX_REWRITTEN,
                     f"segment {sid!r} rewrote its already-frozen prefix "
                     "(text[:stable_until] changed); suppressed (the "
                     "frozen prefix is immutable).",
@@ -1261,7 +1321,7 @@ class _LifecycleGuard:
             ):
                 change = "retracts it (X->None)" if event.speaker is None else "changes it (X->Y)"
                 self._reject(
-                    "frozen_speaker_rewritten",
+                    DIAG_FROZEN_SPEAKER_REWRITTEN,
                     f"segment {sid!r} has a frozen prefix and an accepted speaker "
                     f"{self._last_speaker[sid]!r}, but this {event.type} {change}; "
                     "suppressed (a frozen segment's speaker is locked "
@@ -1319,7 +1379,7 @@ class _LifecycleGuard:
                     else:
                         obligation.frozen.pop(sid, None)
                     self._reject(
-                        "frozen_prefix_rewritten_supersede",
+                        DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE,
                         f"supersede replacement group {group!r} froze a "
                         f"concatenated prefix {f_new!r} that diverges from the "
                         f"retired frozen text {f_old!r} it MUST preserve; the freeze "
@@ -1396,7 +1456,7 @@ class _LifecycleGuard:
             reason += f"stable_until {clamped} invalid boundary -> {safe}"
             clamped = safe
         if reason:
-            self._reject("stable_until_clamped", reason)
+            self._reject(DIAG_STABLE_UNTIL_CLAMPED, reason)
         if clamped != su:
             event = event.model_copy(update={"stable_until": clamped})
         if not allow_decrease:
@@ -1490,7 +1550,7 @@ class _LifecycleGuard:
                 emitted.append(
                     Diagnostic(
                         level="info",
-                        code="supersede_obligation_unfulfilled",
+                        code=DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
                         message=(
                             f"supersede replacement {obligation.new_ids!r} ended with its "
                             f"concatenated frozen prefix shorter than the retired frozen text "
@@ -1533,7 +1593,7 @@ class _LifecycleGuard:
             return event, None
         if cursor < self._audio_cursor:
             self._reject(
-                "audio_cursor_decreased",
+                DIAG_AUDIO_CURSOR_DECREASED,
                 f"audio_processed_until decreased {cursor} -> clamped to "
                 f"{self._audio_cursor} (the cursor is monotonic).",
             )
@@ -2997,6 +3057,22 @@ __all__ = [
     "DEFAULT_MAX_GUARD_DIAGNOSTICS",
     "DEFAULT_MAX_IDLE",
     "DEFAULT_MAX_SESSION_SECONDS",
+    "DIAG_AUDIO_CURSOR_DECREASED",
+    "DIAG_FROZEN_PREFIX_REWRITTEN",
+    "DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE",
+    "DIAG_FROZEN_SPEAKER_REWRITTEN",
+    "DIAG_LIFECYCLE_AFTER_TERMINAL",
+    "DIAG_LIFECYCLE_CLOSED_SUPERSEDED",
+    "DIAG_LIFECYCLE_FINAL_AFTER_FINAL",
+    "DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL",
+    "DIAG_LIFECYCLE_RETIRED_RESUPERSEDED",
+    "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
+    "DIAG_STABLE_UNTIL_CLAMPED",
+    "DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE",
+    "DIAG_SUPERSEDE_DELETES_FROZEN_TEXT",
+    "DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED",
+    "DIAG_SUPERSEDE_REINTRODUCES_SEGMENT",
+    "DIAG_SUPERSEDE_UNKNOWN_OLD_ID",
     "EventType",
     "StreamDeadlines",
     "StreamReducer",

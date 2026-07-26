@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection
 
+from standard_asr.contract.exceptions import UnsupportedFeatureError
 from standard_asr.contract.results import Diagnostic
 
 #: Reserved token meaning "let the engine auto-detect the language".
@@ -24,6 +25,15 @@ AUTO = "auto"
 DIAG_CANDIDATE_LANGUAGES_IGNORED = "candidate_languages_ignored"
 DIAG_CANDIDATE_LANGUAGE_DROPPED = "candidate_language_dropped"
 DIAG_CANDIDATE_LANGUAGES_TRUNCATED = "candidate_languages_truncated"
+#: The remaining language-family codes are emitted by the engine base's
+#: language-axis resolution (``EngineBase._resolve_language_axis``), which has
+#: the engine context (``default_language``, selectable set) this module never
+#: sees -- but their single source of truth still lives HERE, with the rest of
+#: the language-family codes, so a consumer imports every language diagnostic
+#: code from one contract module.
+DIAG_LANGUAGE_FELL_BACK = "language_fell_back"
+DIAG_LANGUAGE_NOT_SELECTABLE = "language_not_selectable"
+DIAG_LANGUAGE_REFINEMENT_ACCEPTED = "language_refinement_accepted"
 
 _BCP47_RE = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 _PRIVATE_USE_RE = re.compile(r"^(?:x|i)(?:-[A-Za-z0-9]{1,8})+$", re.IGNORECASE)
@@ -213,6 +223,7 @@ def effective_candidate_languages(
     detectable_languages: Collection[str],
     max_count: int | None,
     strict: bool,
+    mode: str | None = None,
 ) -> tuple[list[str] | None, list[Diagnostic]]:
     """Resolve the candidate languages in effect for a request.
 
@@ -226,6 +237,9 @@ def effective_candidate_languages(
             engine base passes its pre-canonicalized, ConfigError-checked set).
         max_count: Maximum candidate count, if constrained.
         strict: Whether to raise (vs truncate/drop + diagnostic) on violations.
+        mode: The mode (``"batch"`` / ``"streaming"``) being resolved, if known;
+            carried on the strict-mode :class:`UnsupportedFeatureError` so the
+            rejection reads like every other strict gate rejection.
 
     Returns:
         A ``(candidates, diagnostics)`` pair; ``candidates`` is ``None`` when not
@@ -237,12 +251,25 @@ def effective_candidate_languages(
         diagnostic-free on ordinary requests.
 
     Raises:
-        ValueError: Unconditionally (independent of ``strict``) if a candidate is
-            a malformed BCP-47 tag or the reserved ``"auto"`` token, or if a
+        ValueError: Independent of ``strict``, if a candidate is a malformed
+            BCP-47 tag or the reserved ``"auto"`` token -- once per-item
+            validation is reached: per spec §LANG R3 the unsupported-capability
+            short-circuit (step 3) runs FIRST, so when the engine/mode does not
+            support candidate languages the provided list is ignored with a
+            diagnostic and its items are never validated here. Direct callers
+            relying on unconditional malformed-item rejection get it from
+            :class:`~standard_asr.contract.params.RuntimeParams` construction, which
+            validates every candidate before any resolution runs (the engine
+            pipeline is always covered by that). Also raised if a
             ``detectable_languages`` entry is empty/whitespace (engine paths
             pre-validate this into a ``ConfigError``; the bare error is the
-            direct-call contract); or, in strict mode, on a non-detectable or
-            over-limit candidate list.
+            direct-call contract). These are caller code bugs, never policy.
+        UnsupportedFeatureError: In strict mode, on a valid-but-unreachable
+            candidate list -- a candidate not in ``detectable_languages`` or a
+            list over ``max_count``. This is the standard strict-gate rejection
+            type (spec, Runtime Parameters R2), so every transport maps it to
+            the same client-error verdict as any other strict rejection (the
+            server's 422) instead of an internal-error 500.
     """
     diagnostics: list[Diagnostic] = []
     if effective_lang != AUTO:
@@ -323,7 +350,20 @@ def effective_candidate_languages(
     for norm in deduped:
         if norm not in detectable:
             if strict:
-                raise ValueError(f"Candidate language {norm!r} is not detectable.")
+                # Valid-but-unreachable: the standard strict-gate rejection
+                # (spec §RT R2), NOT a bare ValueError -- a bare ValueError is
+                # reserved for caller code bugs (malformed / 'auto' above) and
+                # would surface as an internal-error 500 through the server.
+                raise UnsupportedFeatureError(
+                    f"Candidate language {norm!r} is not detectable by this engine.",
+                    param="candidate_languages",
+                    mode=mode,
+                    hint=(
+                        "Request only detectable_languages members, or use "
+                        "best_effort to drop non-detectable candidates with a "
+                        "diagnostic."
+                    ),
+                )
             diagnostics.append(
                 Diagnostic(
                     level="warning",
@@ -339,7 +379,15 @@ def effective_candidate_languages(
 
     if max_count is not None and len(result) > max_count:
         if strict:
-            raise ValueError(f"candidate_languages has {len(result)} entries; max is {max_count}.")
+            raise UnsupportedFeatureError(
+                f"candidate_languages has {len(result)} entries; max is {max_count}.",
+                param="candidate_languages",
+                mode=mode,
+                hint=(
+                    f"Pass at most {max_count} candidates, or use best_effort "
+                    "to truncate with a diagnostic."
+                ),
+            )
         kept = result[:max_count]
         dropped = result[max_count:]
         diagnostics.append(
@@ -364,6 +412,9 @@ __all__ = [
     "DIAG_CANDIDATE_LANGUAGES_IGNORED",
     "DIAG_CANDIDATE_LANGUAGES_TRUNCATED",
     "DIAG_CANDIDATE_LANGUAGE_DROPPED",
+    "DIAG_LANGUAGE_FELL_BACK",
+    "DIAG_LANGUAGE_NOT_SELECTABLE",
+    "DIAG_LANGUAGE_REFINEMENT_ACCEPTED",
     "effective_candidate_languages",
     "effective_language",
     "is_valid_bcp47",

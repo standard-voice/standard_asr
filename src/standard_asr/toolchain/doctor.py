@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass, field
-from importlib.metadata import entry_points
+from importlib.metadata import PackageNotFoundError, entry_points, requires
 from typing import TYPE_CHECKING
 
 from standard_asr.plugins.discovery import ENTRYPOINT_GROUP
@@ -108,6 +108,14 @@ class DoctorReport:
     Args:
         python_version: The running interpreter version (``X.Y``).
         plugins: The discovered plugins and their numpy requirements.
+        core: The standard-asr core's own effective numpy requirement, as a
+            conflict participant (``None`` when no plugins are installed --
+            nothing to conflict with -- or when the core distribution's
+            metadata is unreadable). Core is ALWAYS in the process, so its
+            interpreter-conditional numpy floor MUST join the intersection: a
+            plugin whose numpy range excludes the core floor can never run
+            with standard-asr on this interpreter, and omitting core from the
+            analysis let doctor report such an environment clean.
         conflicts: Human-readable conflict descriptions.
         notes: Supplementary remediation hints (non-verdict footer lines).
         analysis_unavailable: Whether conflict analysis could not run at all --
@@ -118,6 +126,7 @@ class DoctorReport:
 
     python_version: str
     plugins: list[PluginNumpy] = field(default_factory=_empty_plugins)
+    core: PluginNumpy | None = None
     conflicts: list[str] = field(default_factory=_empty_strs)
     notes: list[str] = field(default_factory=_empty_strs)
     analysis_unavailable: bool = False
@@ -458,14 +467,59 @@ def _numpy_spec_for_display(requires: list[str] | None) -> str | None:
     return None
 
 
+#: The core distribution whose own numpy floor joins every conflict analysis.
+_CORE_DISTRIBUTION = "standard-asr"
+
+
+def _core_numpy_spec() -> str | None:
+    """Return the core's effective numpy specifier for the running interpreter.
+
+    The core declares an interpreter-conditional numpy floor (e.g.
+    ``numpy>=1.26`` below Python 3.13, ``numpy>=2.1`` at 3.13+), and the core is
+    in EVERY process that runs standard_asr -- including any isolated worker a
+    plugin would be moved into. Its requirement therefore belongs in the same
+    intersection as the plugins': without it, a plugin declaring e.g.
+    ``numpy<1.26`` read as conflict-free while resolution against core is
+    impossible on this interpreter.
+
+    Returns:
+        The effective numpy specifier string (marker-evaluated for the running
+        interpreter, same rules as :func:`_numpy_spec_for`), or ``None`` when
+        the core distribution's metadata is unreadable (an anomalous install;
+        the caller reports the analysis gap rather than silently narrowing it).
+    """
+    try:
+        core_requires = requires(_CORE_DISTRIBUTION)
+    except PackageNotFoundError:
+        return None
+    return _numpy_spec_for(core_requires)
+
+
 def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
-    """Diagnose numpy compatibility across installed plugins.
+    """Diagnose numpy compatibility across installed plugins AND the core.
+
+    Two distinct conflict relations are analyzed, in order, because their
+    remediations are different and conflating them misdirects the user:
+
+    1. **Plugin vs core** (see :func:`_core_numpy_spec`): core is in every
+       process -- including any isolated worker -- so a plugin whose numpy
+       range has no version in common with the core floor can never run with
+       standard-asr on this interpreter AT ALL. Each such distribution gets
+       its own dedicated conflict, and is then EXCLUDED from the
+       environment-level analysis below: it cannot run in any process layout,
+       so letting it participate would pollute the isolation advice (e.g. a
+       plugin-vs-plugin message telling the user to isolate a plugin that is
+       equally dead in the isolated worker).
+    2. **Environment level** among the remaining (core-compatible) plugins,
+       plus core: the 1.x-vs-2.x split and the general empty-intersection
+       check, whose remediation is out-of-process isolation.
 
     Args:
         group: The entry-point group to inspect.
 
     Returns:
-        A :class:`DoctorReport` describing plugins and any conflicts.
+        A :class:`DoctorReport` describing plugins, the core requirement, and
+        any conflicts.
     """
     py = f"{sys.version_info.major}.{sys.version_info.minor}"
     report = DoctorReport(python_version=py)
@@ -475,6 +529,19 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         dist_name = dist.name if dist is not None else "<unknown>"
         spec = _numpy_spec_for(dist.requires if dist is not None else None)
         report.plugins.append(PluginNumpy(ep.name, dist_name, spec))
+
+    if report.plugins:
+        core_spec = _core_numpy_spec()
+        if core_spec is not None:
+            report.core = PluginNumpy("(core)", _CORE_DISTRIBUTION, core_spec)
+        else:
+            # Core metadata unreadable: the intersection is missing a
+            # participant that is always in the process. Say so rather than
+            # letting the narrower analysis read as complete.
+            report.notes.append(
+                "standard-asr's own distribution metadata is unreadable, so the "
+                "core numpy requirement could not join the conflict analysis."
+            )
 
     if report.plugins and not packaging_available():
         # With plugins present but no analyzer, doctor cannot prove the
@@ -488,11 +555,49 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             "classified."
         )
 
+    # Relation 1 -- plugin vs core, per distribution. A plugin internally
+    # unsatisfiable ON ITS OWN is skipped here: that is a plugin declaration
+    # bug, and the environment-level branch below attributes it as one
+    # (blaming core for a self-contradictory pin would misdirect the fix).
+    core_spec_set = _specset(report.core.numpy_spec) if report.core is not None else None
+    core_incompatible: list[PluginNumpy] = []
+    if report.core is not None and core_spec_set is not None:
+        seen_core_conflict_dists: set[str] = set()
+        for p in report.plugins:
+            if p.distribution in seen_core_conflict_dists:
+                continue
+            plugin_spec_set = _specset(p.numpy_spec)
+            if plugin_spec_set is None or _intersection_is_empty([plugin_spec_set]):
+                continue
+            if _intersection_is_empty([plugin_spec_set, core_spec_set]):
+                seen_core_conflict_dists.add(p.distribution)
+                core_incompatible.append(p)
+        for p in core_incompatible:
+            report.conflicts.append(
+                f"numpy conflict with standard-asr core: {p.distribution} "
+                f"({p.numpy_spec}) shares no numpy version with the core "
+                f"requirement (numpy {report.core.numpy_spec}) on this "
+                "interpreter. Core is in every process -- isolation cannot "
+                "help: the plugin must change its numpy requirement, or run "
+                "under a Python version where the core floor differs."
+            )
+
+    # Relation 2 -- environment level. Core joins as a participant (it is in
+    # every process), but the core-incompatible distributions reported above
+    # are excluded: they cannot run in any layout, and keeping them here would
+    # produce isolation advice that silently fails for exactly those plugins.
+    excluded_dists = {p.distribution for p in core_incompatible}
+    participants: list[PluginNumpy] = [
+        p for p in report.plugins if p.distribution not in excluded_dists
+    ]
+    if report.core is not None:
+        participants.append(report.core)
+
     numpy1_only: list[PluginNumpy] = []
     numpy2_required: list[PluginNumpy] = []
     constrained: list[PluginNumpy] = []
     spec_sets: list[SpecifierSet] = []
-    for p in report.plugins:
+    for p in participants:
         spec_set = _specset(p.numpy_spec)
         if spec_set is not None:
             constrained.append(p)
@@ -503,6 +608,35 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         if req2:
             numpy2_required.append(p)
 
+    def _remedy(sides: list[PluginNumpy]) -> str:
+        """Return the remediation sentence for a conflict among ``sides``.
+
+        Args:
+            sides: Every participant in the conflict.
+
+        Returns:
+            Process-isolation advice. When core is among ``sides``, the
+            conflict is necessarily JOINT-only: every plugin for which
+            isolation genuinely cannot help (individually core-incompatible)
+            already got its own dedicated conflict in relation 1 and was
+            excluded from this analysis, so each plugin here IS individually
+            core-compatible and per-process isolation works by construction --
+            the sentence says so explicitly, naming core's participation.
+        """
+        if report.core is not None and report.core in sides:
+            return (
+                " The core requirement participates in the joint emptiness, "
+                "but every plugin here is individually core-compatible (a "
+                "plugin that is not gets its own dedicated conflict), so "
+                "out-of-process isolation works: run the conflicting plugins "
+                "in separate processes, each resolving its own numpy together "
+                "with the core requirement."
+            )
+        return (
+            " They cannot share one process; run the conflicting plugin "
+            "out-of-process (subprocess/server isolation)."
+        )
+
     if numpy1_only and numpy2_required:
         # Clean 1.x-vs-2.x split: the most actionable framing for the canonical
         # C-ABI break, named explicitly so the user knows which side to isolate.
@@ -512,8 +646,8 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             + _render_distributions(numpy1_only)
             + " require numpy<2 while "
             + _render_distributions(numpy2_required)
-            + " require numpy>=2. They cannot share one process; run the "
-            "conflicting plugin out-of-process (subprocess/server isolation)."
+            + " require numpy>=2."
+            + _remedy([*numpy1_only, *numpy2_required])
         )
     elif spec_sets and _intersection_is_empty(spec_sets):
         # Real-intersection conflict that the 1.x/2.x classification alone misses
@@ -522,10 +656,20 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         # declaration is internally unsatisfiable (e.g. ``<2`` and ``>=2.1``) is
         # checked too: an impossible self-pin is a real conflict the user must
         # see, not a silently-passed declaration. The single-vs-cross framing is
-        # decided by the count of distinct *distributions*, so a
-        # lone distribution shipping several presets still reads as one offender.
-        listing = _render_distributions(constrained)
-        if len(_unique_distributions(constrained)) == 1:
+        # decided by the count of distinct *plugin* distributions and by whether
+        # the plugin side is empty ON ITS OWN: with core in the intersection, a
+        # lone self-contradictory plugin must still read as the one offender
+        # (naming core would misattribute a plugin bug), so the plugin-only
+        # emptiness is tested first.
+        plugin_pairs = [(p, s) for p, s in zip(constrained, spec_sets) if p is not report.core]
+        plugin_constrained = [p for p, _ in plugin_pairs]
+        plugin_specs = [s for _, s in plugin_pairs]
+        if (
+            len(_unique_distributions(plugin_constrained)) == 1
+            and plugin_specs
+            and _intersection_is_empty(plugin_specs)
+        ):
+            listing = _render_distributions(plugin_constrained)
             report.conflicts.append(
                 f"numpy version conflict: {listing} declares an internally "
                 "unsatisfiable numpy range (no version satisfies it). Fix the "
@@ -534,10 +678,24 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
                 "you believe this range is satisfiable, please report a bug.)"
             )
         else:
+            # Attribute the conflict to its LOAD-BEARING participants. If the
+            # plugin-only intersection is already empty, this is a
+            # plugin-vs-plugin conflict: core must be neither listed nor
+            # blamed, because naming it would invert the remediation --
+            # out-of-process isolation is exactly the fix for plugin-vs-plugin,
+            # and the core-specific "isolation cannot help" text would tell the
+            # user their one escape hatch is useless. Core joins the listing
+            # (and flips the remedy) only when the plugins alone are
+            # satisfiable and adding core is what empties the intersection.
+            # (A single self-contradictory plugin never reaches here: the
+            # internal-unsatisfiable branch above catches it first, so
+            # plugin-only emptiness here implies >= 2 plugin distributions.)
+            plugins_alone_empty = bool(plugin_specs) and _intersection_is_empty(plugin_specs)
+            sides = plugin_constrained if plugins_alone_empty else constrained
+            listing = _render_distributions(sides)
             report.conflicts.append(
                 f"numpy version conflict: {listing} declare numpy ranges with no "
-                "common satisfying version. They cannot share one process; run the "
-                "conflicting plugin out-of-process (subprocess/server isolation)."
+                "common satisfying version." + _remedy(sides)
             )
 
     if sys.version_info >= (3, 13) and numpy1_only:
@@ -566,6 +724,11 @@ def format_report(report: DoctorReport) -> str:
         lines.append("Installed plugins:")
         for p in report.plugins:
             lines.append(f"  - {p.entrypoint} [{p.distribution}] numpy {p.numpy_spec}")
+        if report.core is not None:
+            # Core participates in the intersection (it is in every process);
+            # show its effective requirement so a core-involving conflict below
+            # is traceable to a visible line, not an invisible participant.
+            lines.append(f"  core: [{report.core.distribution}] numpy {report.core.numpy_spec}")
     lines.append("")
     if report.is_clean:
         # The clean claim is gated on the report's single verdict property, so

@@ -20,7 +20,7 @@ StandardASRError
 |   +-- FFmpegNotFoundError    FFmpeg needed but not on PATH
 |   +-- FFprobeNotFoundError   FFprobe needed but not on PATH
 +-- StreamClosedError          audio delivered to a closed session
-+-- InvalidSessionUseError     session driven incorrectly (e.g. double-end)
++-- InvalidSessionUseError     session driven incorrectly (e.g. mixing feed() with send_audio())
 +-- DiscoveryError             plugin discovery problem
     +-- EntrypointValidationError  bad entry-point name or metadata
     +-- FactoryLoadError          entry point failed to import / not callable
@@ -37,7 +37,7 @@ StandardASRError
 | `AudioProcessingError` | `transcribe()` | Corrupt audio file, missing sample rate, unsupported format without `[audio]` extra. |
 | `IncompatibleAudioInputError` | `transcribe()` | Passed a URL to an engine that only accepts arrays, and no conversion path exists. |
 | `UnsafeAudioUrlError` | `transcribe()` | An `AudioUrl` failed the SSRF policy (non-HTTPS, private IP, etc.). |
-| `StreamClosedError` | `session.feed()` / `session.send_audio()` | Sending audio after the session ended. |
+| `StreamClosedError` | `session.send_audio()` | Sending audio manually after `end_audio()` or after the session delivered a terminal event. (`feed()` never raises it: a managed source's post-terminal chunks are discarded by design.) |
 | `EntrypointValidationError` | `discover_models()` (strict mode) | A plugin's entry-point name is malformed. |
 | `FactoryLoadError` | `registry.engine_class()` / `registry.create()` | Plugin's entry point cannot be imported or the factory is misconfigured. |
 
