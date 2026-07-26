@@ -186,7 +186,7 @@ def validate_stable_until(text: str, stable_until: int) -> bool:
 class TranscriptionEvent(BaseModel):
     """A single streaming transcription event.
 
-    Args:
+    Attributes:
         type: The event type.
         segment_id: Stable id of the segment this event concerns.
         text: The segment's complete current text (cumulative/replace).

@@ -215,14 +215,8 @@ class ComplianceReport:
     def passed(self) -> bool:
         """Return ``True`` when no errors were encountered.
 
-        Args:
-            None.
-
         Returns:
             ``True`` when no error-level issues exist.
-
-        Raises:
-            None.
         """
 
         return not any(issue.level == "error" for issue in self.issues)
@@ -235,9 +229,6 @@ class ComplianceReport:
 
         Returns:
             Iterable of matching issues.
-
-        Raises:
-            None.
         """
 
         for issue in self.issues:
@@ -253,9 +244,6 @@ def _can_call_without_args(factory: object) -> bool:
 
     Returns:
         ``True`` when the callable has no required parameters.
-
-    Raises:
-        None.
     """
 
     try:
@@ -311,9 +299,6 @@ def check_entrypoints(
 
     Returns:
         Compliance report summarizing findings.
-
-    Raises:
-        None.
     """
 
     issues: list[ComplianceIssue] = []
@@ -1693,9 +1678,6 @@ def check_streaming_param_gating(engine: EngineBase) -> ComplianceReport:
     Returns:
         A :class:`ComplianceReport`; ``passed`` is ``True`` when the engine gated
         the unsupported parameter per its policy (or had nothing to gate).
-
-    Raises:
-        None.
     """
     issues: list[ComplianceIssue] = []
     model = _safe_engine_id(engine)
@@ -1960,9 +1942,6 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
     Returns:
         A :class:`ComplianceReport`; ``passed`` is ``True`` when the engine raised
         ``InvalidProviderParamError`` for the foreign provider params.
-
-    Raises:
-        None.
     """
     issues: list[ComplianceIssue] = []
     model = _safe_engine_id(engine)
@@ -2056,9 +2035,6 @@ def check_recommended_wire_format(engine: EngineBase) -> ComplianceReport:
     Returns:
         A :class:`ComplianceReport`. ``passed`` is ``True`` when no format is
         recommended, or the recommended format is accepted by the engine.
-
-    Raises:
-        None.
     """
     issues: list[ComplianceIssue] = []
     try:
@@ -2121,9 +2097,6 @@ def check_sync_bridge(
     Returns:
         A :class:`ComplianceReport`. ``passed`` is ``True`` when the bridge
         terminated cleanly with no leaked background loop thread.
-
-    Raises:
-        None.
     """
     issues: list[ComplianceIssue] = []
     outcome: dict[str, object] = {}

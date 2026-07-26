@@ -29,7 +29,7 @@ class Diagnostic(BaseModel):
     Diagnostics report lossy conversions, assumed parameters, best_effort
     degradations, and similar non-ideal paths.
 
-    Args:
+    Attributes:
         level: Severity, ``"info"`` or ``"warning"``.
         code: Stable machine-readable code (e.g. ``"audio_conversion"``).
         message: Human-readable explanation.
@@ -103,7 +103,7 @@ class Word(BaseModel):
         an adapter bug, so the model refuses to represent one rather than let it
         surface as a silent wrong timestamp downstream.
 
-    Args:
+    Attributes:
         start: Word start time in seconds (origin = first submitted sample;
             non-negative, finite).
         end: Word end time in seconds (non-negative, finite, ``>= start``).
@@ -113,9 +113,6 @@ class Word(BaseModel):
         speaker: Optional speaker label.
         channel: Optional channel index for provenance (``>= 0``).
         extra: Engine-specific extra data.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative time,
@@ -193,7 +190,7 @@ class Segment(BaseModel):
         overlapping segments (the single-channel multi-speaker case); ``None``
         sorts before any real label.
 
-    Args:
+    Attributes:
         start: Segment start time in seconds (origin = first submitted sample;
             non-negative, finite).
         end: Segment end time in seconds (non-negative, finite, ``>= start``).
@@ -206,9 +203,6 @@ class Segment(BaseModel):
         temperature: Optional decoding temperature.
         compression_ratio: Optional compression-ratio metric.
         extra: Engine-specific extra data.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative time,
@@ -325,14 +319,11 @@ def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
 class ChannelResult(BaseModel):
     """Per-channel transcription for multi-channel audio.
 
-    Args:
+    Attributes:
         channel: Channel index.
         text: Full transcript for this channel.
         segments: Optional segment-level details for this channel.
         words: Optional flattened word-level details for this channel.
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If field validation fails.
@@ -358,7 +349,7 @@ class TranscriptionResult(BaseModel):
     are the time-merge of all channels (never channel-0-only), so ignoring
     ``channels`` is always safe and lossless.
 
-    Args:
+    Attributes:
         text: Full transcript (required).
         detected_language: Detected language as a well-formed BCP-47 tag in
             ``auto`` mode; ``None`` when not applicable.
@@ -379,9 +370,6 @@ class TranscriptionResult(BaseModel):
         diagnostics: Conversion / best_effort / degradation diagnostics.
         metadata: Standardized engine-agnostic metadata.
         extra: Engine-specific / experimental data (incl. provider formats).
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative

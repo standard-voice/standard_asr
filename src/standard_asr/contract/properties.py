@@ -36,7 +36,7 @@ class SampleRateRange(BaseModel):
     betray the standard's "negotiate before the call" promise. On the
     wire it serializes as ``{"min": 8000, "max": 48000}``.
 
-    Args:
+    Attributes:
         min: Lowest accepted rate in Hz (inclusive, ``> 0``).
         max: Highest accepted rate in Hz (inclusive, ``>= min``).
     """
@@ -185,7 +185,7 @@ def _normalize_language_list(value: list[str], *, field: str, allow_auto: bool) 
 class BaseProperties(BaseModel):
     """Base class for ASR engine static properties.
 
-    Args:
+    Attributes:
         engine_id: Engine identifier (PEP 503 normalized).
         model_name: Model preset name within the engine.
         protocol_version: Standard ASR protocol version supported by the engine.
@@ -207,9 +207,6 @@ class BaseProperties(BaseModel):
             Capabilities (the free-form ``extra`` metadata pocket was
             removed; it duplicated the blanket metadata the standard deliberately
             dropped).
-
-    Returns:
-        None.
 
     Raises:
         ValueError: If validation fails.
