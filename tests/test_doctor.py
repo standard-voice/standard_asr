@@ -38,6 +38,7 @@ def _patch_eps(
     eps: list[_FakeEP],
     *,
     core_spec: str | None = ">=1.26",
+    core_unreadable: bool = False,
 ) -> None:
     def _entry_points(*, group: str) -> list[_FakeEP]:
         return eps
@@ -48,9 +49,18 @@ def _patch_eps(
     # unpinned diagnose() would make these tests change verdict with the
     # running interpreter. The default ">=1.26" admits both numpy majors, so
     # plugin-vs-plugin scenarios keep their original meaning; core-conflict
-    # tests override it, and ``core_spec=None`` simulates unreadable core
-    # metadata.
-    monkeypatch.setattr(doctor, "_core_numpy_spec", lambda: core_spec)
+    # tests override it. ``core_unreadable=True`` simulates unreadable core
+    # metadata (the pinned function RAISES, matching the real contract);
+    # ``core_spec=None`` simulates readable metadata with no
+    # interpreter-applicable numpy line.
+    if core_unreadable:
+
+        def _raise_unreadable() -> str | None:
+            raise doctor.PackageNotFoundError(doctor._CORE_DISTRIBUTION)  # pyright: ignore[reportPrivateUsage]
+
+        monkeypatch.setattr(doctor, "_core_numpy_spec", _raise_unreadable)
+    else:
+        monkeypatch.setattr(doctor, "_core_numpy_spec", lambda: core_spec)
 
 
 def test_no_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -795,17 +805,58 @@ def test_core_numpy_spec_reads_marker_evaluated_requirement(
     assert doctor._core_numpy_spec() == ">=1.26"  # pyright: ignore[reportPrivateUsage]
 
 
-def test_core_numpy_spec_none_when_core_metadata_missing(
+def test_core_numpy_spec_raises_when_core_metadata_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unreadable core distribution metadata degrades to None (the caller then
-    reports the analysis gap), never to a crash."""
+    """Unreadable core metadata PROPAGATES so the caller can tell it apart.
+
+    Returning None here would conflate a broken install with the legitimate
+    "readable metadata, no interpreter-applicable numpy line" state -- the
+    caller must report the first as a non-clean analysis gap and the second
+    as a mere informational note.
+    """
 
     def _requires(name: str) -> list[str]:
         raise doctor.PackageNotFoundError(name)
 
     monkeypatch.setattr(doctor, "requires", _requires)
+    with pytest.raises(doctor.PackageNotFoundError):
+        doctor._core_numpy_spec()  # pyright: ignore[reportPrivateUsage]
+
+
+def test_core_numpy_spec_none_when_no_applicable_numpy_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readable metadata without a numpy line returns None (a declaration fact)."""
+
+    def _requires(name: str) -> list[str]:
+        return ["pydantic>=2.5"]
+
+    monkeypatch.setattr(doctor, "requires", _requires)
     assert doctor._core_numpy_spec() is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_diagnose_readable_core_without_numpy_line_stays_clean_with_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No applicable core numpy line is NOT "unreadable metadata".
+
+    A repackaged/vendored core whose requirements were rewritten without a
+    numpy line is a working environment: doctor must not false-alarm a CI
+    gate with an "unreadable" claim and a red exit -- it discloses that the
+    plugin-vs-core relation has nothing to check and stays clean.
+    """
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))],
+        core_spec=None,
+    )
+    report = doctor.diagnose()
+    assert report.core is None
+    assert report.analysis_unavailable is False
+    assert report.is_clean is True
+    assert any("declares no numpy requirement" in n for n in report.notes)
+    assert not any("unreadable" in n for n in report.notes)
 
 
 #: The core's real declaration shape: interpreter-conditional, dual-line.
@@ -1081,7 +1132,7 @@ def test_core_metadata_unreadable_is_a_non_clean_analysis_gap(
     _patch_eps(
         monkeypatch,
         [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))],
-        core_spec=None,
+        core_unreadable=True,
     )
     report = doctor.diagnose()
     assert report.core is None

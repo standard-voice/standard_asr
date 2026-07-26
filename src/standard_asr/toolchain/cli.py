@@ -261,13 +261,14 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
         default=None,
         metavar="SECONDS",
         help=(
-            "Total timeout in seconds for the sync-bridge check's whole bridged "
-            "session -- open, end-of-audio, drain, and close combined (default: "
-            f"{DEFAULT_SYNC_BRIDGE_TIMEOUT}). Only meaningful together with "
-            "--include-bridge (passing it alone is a usage error, not a silent "
-            "no-op). Raise it for engines whose session setup or teardown is "
-            "slow; the check's own remediation advice ('re-run with a larger "
-            "value') is actionable through this flag."
+            "Timeout in seconds granted to each phase of the sync-bridge check "
+            "-- session establishment, then the bridged open/end-of-audio/"
+            f"drain/close (default: {DEFAULT_SYNC_BRIDGE_TIMEOUT}). Only "
+            "meaningful together with --include-bridge (passing it alone is a "
+            "usage error, not a silent no-op). Raise it for engines whose "
+            "session setup or teardown is slow; the check's own remediation "
+            "advice ('re-run with a larger value') is actionable through this "
+            "flag."
         ),
     )
     run_parser.set_defaults(func=_cmd_compliance_run)
@@ -813,21 +814,22 @@ def _run_instance_checks(
     ``check_provider_params_swap_safety`` (an unconditional MUST for any engine,
     streaming or not). For a streaming engine
     it additionally runs ``check_streaming_param_gating`` and, when
-    ``include_bridge`` is set, ``check_sync_bridge`` with ``bridge_timeout`` as
-    its total whole-session timeout (the CLI's ``--bridge-timeout``). The
-    bridge itself runs only for a ``streaming_input`` engine: it feeds bare
-    PCM frames, which an output-only engine's session cannot accept
-    (``start_transcription(audio_format=...)`` would fail on the capability
-    gate, a spurious failure about the CHECK, not the engine) -- an
-    output-only engine is reported as skipped instead.
+    ``include_bridge`` is set, ``check_sync_bridge`` with ``bridge_timeout``
+    as its per-phase timeout (the CLI's ``--bridge-timeout``). The bridge runs
+    for every streaming-axis engine; classification lives in the library:
+    ``check_sync_bridge(engine=...)`` reports an output-only engine (which
+    cannot accept the bridge's bare frames) as a passing, structured
+    ``sync_bridge_not_applicable`` warning in the report set -- never a
+    spurious failure, and never an ad-hoc CLI print a machine consumer would
+    miss.
 
     Args:
         registry: The discovered model registry.
         name: The model key to check.
         include_bridge: Whether to also run the session-opening sync-bridge check.
-        bridge_timeout: Total whole-session timeout in seconds (``float``)
-            handed to ``check_sync_bridge`` -- open, end-of-audio, drain, and
-            close combined.
+        bridge_timeout: Per-phase timeout in seconds (``float``) handed to
+            ``check_sync_bridge`` -- session establishment, then the bridged
+            open/end-of-audio/drain/close, each granted this budget.
 
     Returns:
         The reports produced for this model (possibly empty).
@@ -890,14 +892,17 @@ def _run_sync_bridge(
     """Run the sync-bridge check against a streaming engine.
 
     Builds a session factory from the engine's first declared wire encoding and
-    its native sample rate. A streaming engine that declares no usable
-    ``wire_encodings`` cannot be bridged from the CLI; that is reported as an
-    error (it is also flagged by ``check_entrypoints``).
+    its native sample rate. An engine that recommends no usable wire format is
+    reported as ``sync_bridge_not_applicable`` (passing) when it verifiably
+    does not declare ``streaming_input``, and as a hard
+    ``sync_bridge_no_wire_format`` error otherwise (a ``streaming_input``
+    engine without a reachable bare-frame format is a real declaration
+    problem).
 
     Args:
         engine: The constructed engine instance.
         name: The model key (for messages).
-        timeout: Total whole-session timeout in seconds handed to
+        timeout: Per-phase timeout in seconds handed to
             :func:`~standard_asr.compliance.check_sync_bridge` (the CLI's
             ``--bridge-timeout``).
 
@@ -918,11 +923,40 @@ def _run_sync_bridge(
             "(also reported by check_recommended_wire_format).",
         )
     if audio_format is None:
+        try:
+            streaming_input_declared: bool | None = bool(engine.supports("streaming_input"))
+        except Exception:  # noqa: BLE001 - a broken supports() cannot earn a pass
+            streaming_input_declared = None
+        if streaming_input_declared is False:
+            # An output-only engine with no recommendable wire format: the
+            # bridge (which feeds bare frames) has nothing to test -- the same
+            # not-applicable verdict check_sync_bridge itself reaches for an
+            # output-only engine that CAN construct a format. A hard error
+            # here failed compliant output-only engines on a property of the
+            # check's shape.
+            return ComplianceReport(
+                registry=None,
+                issues=[
+                    ComplianceIssue(
+                        level="warning",
+                        code="sync_bridge_not_applicable",
+                        message=(
+                            "Sync-bridge check not applicable: the engine does "
+                            "not declare streaming_input and recommends no "
+                            "bare-frame wire format. The bridge feeds bare PCM "
+                            "frames; this is a property of the check, not an "
+                            "engine failure."
+                        ),
+                        model=name,
+                    )
+                ],
+            )
         return _single_error_report(
             name,
             "sync_bridge_no_wire_format",
-            "cannot run sync-bridge: engine declares streaming but no usable wire "
-            "format (no declared sample rate to open a bare-frame session with).",
+            "cannot run sync-bridge: engine declares streaming_input but no usable "
+            "wire format (no declared sample rate to open a bare-frame session "
+            "with).",
         )
 
     def _factory() -> Any:

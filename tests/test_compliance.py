@@ -830,7 +830,7 @@ def test_sync_bridge_raising_session_reports_error() -> None:
 def test_sync_bridge_factory_raising_reports_error() -> None:
     # A factory that raises (no session ever constructed) is reported as a bridge
     # error, and -- since nothing was started -- never as a thread leak. Session
-    # establishment now runs on the CALLING thread, before any bridging, so the
+    # establishment now runs on a bounded establish worker, before any bridging, so the
     # message names that phase instead of the generic bridging one.
     def _bad_factory() -> TranscriptionSession:
         raise RuntimeError("factory boom")
@@ -922,6 +922,107 @@ def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -
     report = check_sync_bridge(_HangSession, timeout=0.05)
     assert report.passed is False
     assert any("did not terminate" in i.message for i in report.issues)
+
+
+def test_sync_bridge_late_session_after_timeout_is_torn_down_not_leaked() -> None:
+    """A session that finishes establishing after the timeout report is closed.
+
+    The check returns promptly with sync_bridge_did_not_terminate, but the
+    bounded establish worker may still complete afterwards; the session it
+    builds (which for real adapters can hold connections/state) must be torn
+    down best-effort, never silently leaked in a long-running host process.
+    """
+    closed = threading.Event()
+
+    class _SlowCloseTrackingSession(TranscriptionSession):
+        async def _close(self) -> None:
+            closed.set()
+
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+    def _slow_factory() -> TranscriptionSession:
+        time.sleep(0.4)
+        return _SlowCloseTrackingSession()
+
+    report = check_sync_bridge(_slow_factory, timeout=0.1)
+
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["sync_bridge_did_not_terminate"]
+    assert "establishment" in report.issues[0].message
+    # The worker completes ~0.3s later and must tear the late session down.
+    assert closed.wait(timeout=10.0), "late session was never closed (leaked)"
+
+
+def test_sync_bridge_late_session_teardown_failure_is_swallowed() -> None:
+    """A late session whose own teardown raises must not poison anything.
+
+    The teardown is best-effort on a daemon thread AFTER the check already
+    reported the establishment timeout: an adapter whose ``_open`` raises
+    during that teardown attempt must neither propagate nor change the
+    already-returned verdict.
+    """
+    attempted = threading.Event()
+
+    class _ExplodingTeardownSession(TranscriptionSession):
+        async def _open(self) -> None:  # pragma: no cover - must never run
+            raise AssertionError(
+                "teardown must be close-only: opening a late session would "
+                "initiate a fresh (billable) connection purely to destroy it"
+            )
+
+        async def _close(self) -> None:
+            attempted.set()
+            raise RuntimeError("teardown-time close explosion")
+
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+    def _slow_factory() -> TranscriptionSession:
+        time.sleep(0.4)
+        return _ExplodingTeardownSession()
+
+    report = check_sync_bridge(_slow_factory, timeout=0.1)
+
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["sync_bridge_did_not_terminate"]
+    assert attempted.wait(timeout=10.0), "late teardown was never attempted"
+
+
+def test_sync_bridge_hanging_supports_probe_is_reported_not_misclassified() -> None:
+    """A hung supports() classification probe is a TIMEOUT, not a wrong hint.
+
+    The probe runs inside the bounded establish worker; if it hangs, the
+    exception it was classifying is still un-classified, so the check must
+    report did-not-terminate (whose message names the probe) -- never fall
+    through to the fail-closed branch and tell a caller who DID pass
+    ``engine=`` to "Pass engine=...".
+    """
+    release = threading.Event()
+
+    class _HangingSupportsEngine(_OutputOnlyStreamEngine):
+        def supports(self, dot_path: str) -> bool:
+            release.wait(timeout=30.0)
+            return False  # pragma: no cover - the check must not wait this out
+
+    start = time.monotonic()
+    report = check_sync_bridge(
+        _unsupported_factory,
+        timeout=0.2,
+        engine=_as_protocol(_HangingSupportsEngine()),
+    )
+    elapsed = time.monotonic() - start
+    release.set()
+
+    assert elapsed < 5.0, f"check blocked for {elapsed:.1f}s on a hanging supports()"
+    assert report.passed is False
+    assert [(i.level, i.code) for i in report.issues] == [
+        ("error", "sync_bridge_did_not_terminate")
+    ]
+    assert "supports() classification probe" in report.issues[0].message
+    assert "Pass engine=" not in report.issues[0].message
 
 
 def test_sync_bridge_hanging_establishment_is_reported_not_hung() -> None:

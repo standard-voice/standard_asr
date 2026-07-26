@@ -437,13 +437,40 @@ def test_timestamps_unavailable_diagnostic_forces_the_single_synthetic_cue() -> 
     assert "00:00:00.000 --> 00:00:07.500\nhello world" in to_vtt(known)
 
 
-def test_diagnostic_with_no_marked_segment_renders_every_span_faithfully() -> None:
-    # The diagnostic ALONE never discards timing: with no segment marked, every
-    # span is real and each renders as its own cue. (The reducer always marks
-    # the placeholders it created; a diagnostic with nothing marked describes a
-    # timeline whose retained segments all carry real timestamps.) Collapsing
-    # this to one synthetic cue would throw away a correct timeline -- and the
-    # speaker labels with it.
+def test_marker_without_diagnostic_still_engages_placeholder_handling() -> None:
+    """The per-segment marker ALONE is a placeholder signal (mirror half).
+
+    A producer that marked segments without attaching the result-level
+    diagnostic has still declared those spans placeholders; rendering them as
+    real timing would be the same fabrication in mirror image. Mixed shape:
+    unmarked real cues render, marked ones are omitted -- identical to the
+    diagnostic-carrying case.
+    """
+    segs = [
+        Segment(start=1.0, end=2.0, text="real"),
+        Segment(
+            start=0.0,
+            end=0.0,
+            text="placeholder",
+            extra={SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER: True},
+        ),
+    ]
+    result = TranscriptionResult(text="real placeholder", segments=segs)
+
+    assert to_srt(result) == "1\n00:00:01,000 --> 00:00:02,000\nreal\n"
+
+
+def test_diagnostic_with_no_marked_segment_collapses_to_the_whole_text_cue() -> None:
+    """A diagnostic with NO marker in use is fail-safe: whole-text cue.
+
+    The two-part contract is diagnostic ("placeholders exist") + per-segment
+    marker ("these ones"). A producer that attached the diagnostic without
+    marking any segment has declared placeholders exist while identifying
+    none -- rendering every span as real would present the unidentifiable
+    placeholders as genuine timing (the fabrication the diagnostic exists to
+    prevent), so the renderer trusts the marker partition only when it is
+    actually in use and otherwise treats the whole timeline as unusable.
+    """
     segs = [
         Segment(start=0.0, end=1.0, text="hello", speaker="Alice"),
         Segment(start=1.0, end=2.0, text="world", speaker="Bob"),
@@ -454,24 +481,37 @@ def test_diagnostic_with_no_marked_segment_renders_every_span_faithfully() -> No
         diagnostics=[_placeholder_diagnostic("some spans were placeholders upstream")],
     )
 
-    assert to_srt(result) == (
-        "1\n00:00:00,000 --> 00:00:01,000\nhello\n\n2\n00:00:01,000 --> 00:00:02,000\nworld\n"
-    )
-    assert to_srt(result, include_speakers=True).count("[Alice]: hello") == 1
-    assert to_vtt(result).count("-->") == 2
+    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:03,000\nhello world\n"
+    assert to_vtt(result).count("-->") == 1
 
 
-def test_final_with_start_and_no_end_renders_its_real_zero_length_span() -> None:
-    # A final carrying start=0.0 and no end is a REAL timestamp: the reducer
-    # stores end=start and emits no diagnostic, so the renderer must show the
-    # engine's own 00:00:00,000 --> 00:00:00,000 span rather than fabricate a
-    # 3 s cue from a value that merely looks like a placeholder.
+def test_final_with_start_but_no_end_is_a_placeholder_not_a_fabricated_span() -> None:
+    """A start-only final has no usable SPAN: the reducer marks it.
+
+    Storing end=start would fabricate a zero-duration span players silently
+    drop, with no disclosure -- the exact silent-fabricated-timing class the
+    placeholder signaling exists to eliminate, previously covered only for
+    the both-bounds-missing case. A start-only final is therefore marked as a
+    placeholder and counted in the diagnostic; an EXPLICIT engine-sent
+    zero-length span (both bounds present and equal) stays real and renders
+    faithfully.
+    """
     reducer = StreamReducer()
-    reducer.add(TranscriptionEvent.final("s1", "hello", start=0.0))
+    reducer.add(TranscriptionEvent.final("s1", "hello", start=12.5))
     result = reducer.result()
 
-    assert result.diagnostics == []
-    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:00,000\nhello\n"
+    assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+    assert result.segments is not None
+    assert result.segments[0].extra == {SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER: True}
+    # All-placeholder -> whole-text synthetic cue, never an invisible
+    # zero-duration cue at a fabricated span.
+    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:03,000\nhello\n"
+
+    explicit = StreamReducer()
+    explicit.add(TranscriptionEvent.final("s1", "hello", start=0.0, end=0.0))
+    explicit_result = explicit.result()
+    assert explicit_result.diagnostics == []
+    assert to_srt(explicit_result) == "1\n00:00:00,000 --> 00:00:00,000\nhello\n"
 
 
 def test_partially_timestamped_reduce_keeps_the_real_cue_and_omits_the_placeholder() -> None:

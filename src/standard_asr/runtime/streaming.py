@@ -619,7 +619,13 @@ class StreamReducer:
         if event.type == "final" and event.segment_id is not None:
             if event.segment_id not in self._segments:
                 self._order.append(event.segment_id)
-            has_ts = event.start is not None
+            # A usable span needs BOTH bounds: a start-only final would store
+            # end=start -- a fabricated zero-duration span that renders as a
+            # cue players silently drop, with no disclosure. Such a segment is
+            # a placeholder like the fully-timestamp-less case: its STORED
+            # values may echo a real start, but the span is not real timing
+            # (and placeholder segments never participate in result() sorting).
+            has_ts = event.start is not None and event.end is not None
             # Do NOT fabricate 0.0 timestamps for timestamp-less engines: keep
             # a sentinel-free Segment whose start/end are 0.0 only when the
             # engine genuinely had none, and remember that fact so result()
@@ -663,8 +669,9 @@ class StreamReducer:
             A :class:`TranscriptionResult` from the committed segments. Ordered
             by ``start`` only when every segment carries a real timestamp;
             otherwise arrival order is preserved. When any retained segment
-            came from a timestamp-less event (its stored ``start``/``end`` are
-            ``0.0`` placeholders, since :class:`~standard_asr.contract.results.Segment`
+            came from an event without a usable timestamp span (``start``
+            and/or ``end`` missing -- the stored values are placeholders,
+            since :class:`~standard_asr.contract.results.Segment`
             requires finite times), the result carries a
             ``segment_timestamps_unavailable`` warning diagnostic so the
             placeholder spans are never mistaken for real timing, and each
@@ -698,10 +705,11 @@ class StreamReducer:
                     level="warning",
                     code=DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
                     message=(
-                        f"{len(missing_ts)} of {len(order)} reduced segments carry no "
-                        "engine timestamps; their start/end are 0.0 placeholders "
-                        "(arrival order preserved). Do not use these spans for "
-                        "timing-sensitive output."
+                        f"{len(missing_ts)} of {len(order)} reduced segments lack a "
+                        "usable engine timestamp span (start and/or end missing); "
+                        "their stored start/end are placeholder values, not real "
+                        "spans (arrival order preserved). Do not use these spans "
+                        "for timing-sensitive output."
                     ),
                     param="segments",
                 )

@@ -69,16 +69,20 @@ arguments (e.g. credentials) is reported as *skipped*, not failed. Flags:
 - `--include-bridge`: also run the sync-bridge check. This **opens a streaming
   session** and is therefore off by default — for a cloud engine that is a
   billable connection.
-- `--bridge-timeout SECONDS` (default `5.0`): total timeout for the
-  sync-bridge check's whole bridged session (open, end-of-audio, drain, and
-  close combined; it also caps each bridged lifecycle call). Only meaningful
+- `--bridge-timeout SECONDS` (default `5.0`): timeout granted to each phase
+  of the sync-bridge check -- session establishment, then the bridged drive
+  (open, end-of-audio, drain, close; it also caps each bridged lifecycle
+  call). Only meaningful
   with `--include-bridge` -- passing it alone is a usage error (exit 2), never
   a silent no-op. The check's remediation advice ("re-run with a larger
   timeout") is actionable through this flag; library callers pass
   `check_sync_bridge(..., timeout=...)` (finite, `> 0`; validated). An engine
   that refuses session establishment as unsupported (e.g. output-only, no
-  `streaming_input`) is reported `sync_bridge_not_applicable` (a warning), and
-  the CLI skips the bridge for such engines up front with a note.
+  `streaming_input`) is reported as a passing `sync_bridge_not_applicable`
+  warning in the report set -- structured and `--quiet`-respecting; there is
+  deliberately no CLI-side pre-gate, so machine consumers of the reports see
+  the verdict too. The flag's value is granted to each check phase
+  (establishment, then the bridged drive) independently.
 
 The streaming **event-sequence** check needs an author-recorded event stream the
 CLI cannot synthesize; it remains a library API

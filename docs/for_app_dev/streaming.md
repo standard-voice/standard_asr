@@ -120,11 +120,12 @@ This gives you the same constant-shape result you get from `engine.transcribe()`
 so your downstream code (subtitle rendering, search, etc.) works identically
 whether the input was batch or streamed.
 
-One honesty note: some engines emit no timestamps while streaming. Their reduced
-segments carry `start`/`end` of `0.0` as placeholders, the result includes a
-`segment_timestamps_unavailable` warning diagnostic, and each placeholder
-segment is individually marked with the reserved `timestamp_placeholder` key in
-`Segment.extra` -- do not use marked spans for timing-sensitive work. The
+One honesty note: some engines omit timestamps (or one of the two bounds)
+while streaming. Reduced segments without a usable `start`/`end` span store
+placeholder values, the result includes a `segment_timestamps_unavailable`
+warning diagnostic, and each placeholder segment is individually marked with
+the reserved `timestamp_placeholder` key in `Segment.extra` -- do not use
+marked spans for timing-sensitive work. The
 renderers key on those signals: marked placeholder segments are omitted from
 the timed cues (any placement would be fabricated; their text remains in
 `result.text`), unmarked real-timestamped segments render normally, and a

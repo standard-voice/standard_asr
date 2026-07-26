@@ -1841,6 +1841,90 @@ def test_cli_bridge_timeout_accepts_positive_finite_value() -> None:
     assert args.bridge_timeout == 12.5
 
 
+def test_cli_bridge_not_applicable_when_output_only_engine_has_no_wire_format(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No recommendable wire format + no streaming_input = not applicable.
+
+    An output-only engine that recommends no bare-frame format (a structural
+    engine may legitimately return None) must earn the same passing
+    ``sync_bridge_not_applicable`` verdict as one that CAN construct a format
+    -- the old hard ``sync_bridge_no_wire_format`` error failed a compliant
+    output-only engine on a property of the check's shape. A streaming_input
+    engine without a usable format keeps the hard error (a real declaration
+    problem).
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    def _no_wire_format(engine: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_streaming_audio_format", _no_wire_format)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "sync_bridge_not_applicable" in output
+    assert "sync_bridge_no_wire_format" not in output
+
+
+def test_cli_no_wire_format_with_broken_supports_keeps_the_hard_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A raising supports() cannot buy the not-applicable pass here either.
+
+    The no-wire-format branch takes the passing not-applicable verdict only
+    when the engine VERIFIABLY does not declare streaming_input; an engine
+    whose supports() raises is unverifiable and keeps the hard error --
+    mirroring check_sync_bridge's own fail-closed stance.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    def _no_wire_format(engine: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_streaming_audio_format", _no_wire_format)
+
+    real_create = registry.create
+
+    def _create_with_broken_supports(name: str, /, *args: object, **kwargs: object) -> object:
+        engine = real_create(name, *args, **kwargs)
+
+        def _boom(dot_path: str) -> bool:
+            if dot_path == "streaming_input":
+                raise RuntimeError("capability tree exploded")
+            return type(engine).supports(engine, dot_path)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+
+        monkeypatch.setattr(engine, "supports", _boom)
+        return engine
+
+    monkeypatch.setattr(registry, "create", _create_with_broken_supports)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "sync_bridge_no_wire_format" in output
+    assert "sync_bridge_not_applicable" not in output
+
+
 def test_cli_compliance_run_bridge_timeout_parses_to_a_none_sentinel() -> None:
     # The PARSED default is a None sentinel, not the literal 5.0: only that
     # distinguishes "user omitted the flag" from "user explicitly asked for 5 s",

@@ -10,6 +10,36 @@ releases may include breaking changes.
 
 ## [Unreleased]
 
+### Changed (breaking — pre-1.0 policy: long-term design over compatibility)
+
+- **`TranscriptionResult.metadata` removed.** The free-form "standardized
+  metadata" dict had no standardized keys, no writer, and no reader — the same
+  blanket-metadata channel the spec already removed from Properties and
+  Capabilities. Engine-specific data belongs in `extra`; future standardized
+  result data will land as named fields. A plugin still populating `metadata=`
+  now fails loudly: the engine template wraps the resulting `ValidationError`
+  as a `TranscriptionError` naming the plugin/core version mismatch (HTTP 5xx
+  through the server — never a client-blaming 422).
+- **Strict-mode candidate-language rejections raise `UnsupportedFeatureError`**
+  (`param="candidate_languages"`, with `mode`) instead of a bare `ValueError`,
+  matching every other strict-gate rejection (spec §RT R2) so all transports
+  map it to a client-error verdict (REST 422 / WS `unsupported` / CLI exit 2).
+  Malformed or `"auto"` candidate entries still raise `ValueError`
+  unconditionally (caller code bugs). Update `except ValueError` handlers
+  written against the old contract.
+- **CLI discovery flag renamed `--strict` → `--strict-discovery`** on `list` /
+  `show` / `prepare` / `transcribe` / `compliance`, and argparse prefix
+  abbreviation is disabled: bare `--strict` is now a loud usage error instead
+  of silently meaning discovery strictness while `strict` (the engine's
+  parameter-gating policy, `--set strict=...`) means something else on the
+  same command line.
+- **Streaming-reduced results disclose placeholder timing.** Timestamp-less
+  segments carry the reserved `timestamp_placeholder` marker in
+  `Segment.extra` plus a result-level `segment_timestamps_unavailable`
+  diagnostic; `to_srt`/`to_vtt` key on those signals (marked placeholders are
+  omitted from timed cues; all-placeholder results render one whole-text cue)
+  instead of emitting zero-duration cues players silently drop.
+
 ## [0.1.1] - 2026-06-16
 
 Initial public release: a universal, plug-and-play interface protocol for ASR

@@ -170,24 +170,27 @@ def _cues(result: TranscriptionResult) -> list[Segment]:
     diagnostic declares that SOME segment spans are ``0.0`` **placeholders**
     (the engine emitted no timestamps for them;
     :class:`~standard_asr.contract.results.Segment` requires finite times).
-    Signals -- never span values -- drive this function: the diagnostic says
-    placeholders exist, and the per-segment
+    Signals -- never span values -- drive this function: the result-level
+    diagnostic says placeholders exist, and the per-segment
     :data:`~standard_asr.contract.results.SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER`
-    marker says WHICH (value-sniffing ``0.0`` spans cannot distinguish a
-    placeholder from a genuine zero-length segment at ``t=0``, and misreading
-    real timing would fabricate cue timing silently). Three shapes:
+    marker says WHICH (value-sniffing spans cannot distinguish a placeholder
+    from a genuine zero-length segment at ``t=0``, and misreading real timing
+    would fabricate cue timing silently). EITHER signal engages placeholder
+    handling; the marker partition is trusted only when it is in use:
 
-    * No diagnostic: every span is real -- render per-segment faithfully,
+    * Neither signal: every span is real -- render per-segment faithfully,
       including genuine zero-length cues.
-    * Diagnostic present, some segments unmarked (mixed): render the
-      real-timestamped segments as normal cues; OMIT the marked placeholders
+    * Marker partition in use, some segments unmarked (mixed): render the
+      unmarked real segments as normal cues; OMIT the marked placeholders
       from the timed projection -- any placement for timing-less text would be
       fabricated, and a zero-duration cue at a made-up point is both a lie in
       the file and invisible in players. One missing timestamp therefore never
       discards a predominantly real timeline, and the omission is disclosed by
       the diagnostic (the full text stays in ``result.text``).
-    * Diagnostic present, every segment marked: zero usable timing -- the same
-      synthetic whole-text fallback as ``segments is None``.
+    * Every segment marked -- or the diagnostic present with NO segment marked
+      (the partition is not in use, so the placeholders are unidentifiable):
+      zero trustworthy timing -- the same synthetic whole-text fallback as
+      ``segments is None``.
 
     Args:
         result: The transcription result.
@@ -195,12 +198,12 @@ def _cues(result: TranscriptionResult) -> list[Segment]:
     Returns:
         The segments to render, ordered by ``(start, channel, speaker)``. For
         ``segments == []`` this is ALWAYS empty (the null rule holds even when
-        the diagnostic is present). When ``segments is None`` -- or every
-        segment is a marked placeholder -- and ``text`` is non-empty, a single
-        synthetic segment spanning ``[0, duration]`` with the full text is
-        returned, or ``[0, 3 s]`` when ``duration`` is unknown (players
-        silently drop zero-duration cues); when ``text`` is empty too, no cues
-        are produced.
+        the placeholder signals are present). When ``segments is None`` --
+        or every segment is a marked placeholder, or the diagnostic is present
+        with no marker in use -- and ``text`` is non-empty, a single synthetic
+        segment spanning ``[0, duration]`` with the full text is returned, or
+        ``[0, 3 s]`` when ``duration`` is unknown (players silently drop
+        zero-duration cues); when ``text`` is empty too, no cues are produced.
     """
     # The null rule is unconditional: an explicit ``[]`` (requested but empty)
     # yields ZERO cues even when the result also carries the timestamp
@@ -209,7 +212,13 @@ def _cues(result: TranscriptionResult) -> list[Segment]:
     if result.segments == []:
         return []
     if result.segments is not None:
-        if not _timing_unavailable(result):
+        marked = [s for s in result.segments if s.extra.get(SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER)]
+        # EITHER half of the two-part signal (result diagnostic, per-segment
+        # marker) engages placeholder handling: a producer that marked
+        # segments without attaching the diagnostic has still declared those
+        # spans placeholders, and rendering them as real timing would be the
+        # same fabrication in mirror image.
+        if not _timing_unavailable(result) and not marked:
             return _sorted_cues(result.segments)
         # Placeholder spans present: keep every REAL-timestamped segment (the
         # per-segment marker identifies placeholders exactly, so one missing
@@ -221,11 +230,21 @@ def _cues(result: TranscriptionResult) -> list[Segment]:
         # invisible in every player). The omission is disclosed -- the result
         # carries the segment_timestamps_unavailable diagnostic and the full
         # text remains in ``result.text``.
-        real = [s for s in result.segments if not s.extra.get(SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER)]
-        if real:
+        # The per-segment marker partition is trusted only when it is actually
+        # IN USE. A producer that attached the result-level diagnostic without
+        # marking any segment (half of the two-part contract) has declared
+        # "placeholders exist" while identifying none -- rendering everything
+        # as real would present the unidentifiable placeholders as genuine
+        # timing, the exact fabrication the diagnostic exists to prevent.
+        # Fail-safe: treat the whole timeline as unusable (whole-text cue).
+        if marked and len(marked) < len(result.segments):
+            real = [
+                s for s in result.segments if not s.extra.get(SEGMENT_EXTRA_TIMESTAMP_PLACEHOLDER)
+            ]
             return _sorted_cues(real)
-        # No real-timestamped segment at all: fall through to the synthetic
-        # whole-text cue (same as segments-not-applicable -- zero usable timing).
+        # Every segment marked, or none marked despite the diagnostic: zero
+        # trustworthy timing -- fall through to the synthetic whole-text cue
+        # (same as segments-not-applicable).
     if not result.text:
         return []
     end = result.duration if result.duration is not None else _SYNTHETIC_CUE_FALLBACK_END

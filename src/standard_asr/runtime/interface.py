@@ -175,6 +175,9 @@ class StandardASR(Protocol):
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
+            TranscriptionError: When a pydantic ``ValidationError`` escapes the
+                engine's session-construction hook (an invalid model
+                construction is an engine fault, never a request error).
         """
         ...
 
@@ -1172,6 +1175,10 @@ class EngineBase(ABC):
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
+            TranscriptionError: When a pydantic ``ValidationError`` escapes the
+                engine's ``_start_transcription`` hook (an invalid model
+                construction is an engine fault; wrapped here so it can never
+                masquerade as a client-input validation error).
         """
         self.ensure_stream_inputs_exclusive(audio_format, audio)
         if audio_format is not None and not self.effective_capabilities.supports("streaming_input"):
@@ -1249,9 +1256,27 @@ class EngineBase(ABC):
         prepared: PreparedAudio | None = None
         if audio is not None:
             prepared = self._prepare_audio(audio)
-        session = self._start_transcription(
-            gated_params=gated, audio_format=audio_format, prepared_audio=prepared
-        )
+        try:
+            session = self._start_transcription(
+                gated_params=gated, audio_format=audio_format, prepared_audio=prepared
+            )
+        except ValidationError as exc:
+            # Same engine-fault seam as the batch wrap on _transcribe: params
+            # were validated before this point, so a pydantic ValidationError
+            # escaping the hook is the ENGINE constructing an invalid model.
+            # Unwrapped it is a ValueError subclass and every transport
+            # misattributes it as a client mistake (WS "unsupported" echoing
+            # unsanitized pydantic detail; CLI usage-error exit 2).
+            raise TranscriptionError(
+                "Engine raised an unwrapped validation error inside its "
+                "_start_transcription hook -- an engine/plugin fault, not a "
+                "request error. See the chained ValidationError for the "
+                "offending fields.",
+                hint=(
+                    "Report this to the engine plugin's author; a core/plugin "
+                    "version mismatch is the usual cause."
+                ),
+            ) from exc
         # Friend API: validate the reserved-attribute guard now, before the base
         # seeds diagnostics / applies deadline overrides below -- so the check sees
         # the pristine post-__init__ snapshot and a subclass that clobbered base

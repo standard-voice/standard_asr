@@ -336,6 +336,49 @@ def test_engine_validation_error_wraps_as_transcription_error(
     assert not isinstance(exc_info.value, ValidationError)
 
 
+class _StaleStreamingHookEngine(_ArrayEngine):
+    """Streaming hook builds a contract model pydantic now rejects."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        ),
+        streaming=StreamingCapabilities(),
+        streaming_input=FlagCap(supported=True),
+    )
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        TranscriptionResult.model_validate({"text": "x", "metadata": {"cost": 1}})
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def test_streaming_hook_validation_error_wraps_as_transcription_error() -> None:
+    """The streaming seam gets the same engine-fault wrap as the batch seam.
+
+    A pydantic ValidationError escaping ``_start_transcription`` is the engine
+    constructing an invalid model (params were validated before the hook);
+    unwrapped it is a ValueError subclass, so the WS route labeled it a client
+    "unsupported" mistake echoing unsanitized pydantic detail and the CLI
+    exited 2 (usage error) for an engine fault.
+    """
+    engine = _StaleStreamingHookEngine()
+    with pytest.raises(TranscriptionError) as exc_info:
+        engine.start_transcription(
+            audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000)
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValidationError)
+    assert "_start_transcription" in str(exc_info.value)
+    assert "not a request error" in str(exc_info.value)
+    assert not isinstance(exc_info.value, ValidationError)
+
+
 def test_supports_routes_to_effective() -> None:
     engine = _ArrayEngine()
     assert engine.supports("batch.language.runtime_override") is True

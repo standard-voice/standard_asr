@@ -34,8 +34,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
 
 #: Standard-reserved key in :attr:`Segment.extra` marking THAT segment's
-#: ``start``/``end`` as ``0.0`` placeholders (set by the streaming reducer on
-#: segments whose events carried no timestamps). The result-level
+#: ``start``/``end`` as placeholder values, not a real span (set by the
+#: streaming reducer on segments whose events lacked a usable timestamp span
+#: -- ``start`` and/or ``end`` missing; a start-only event stores its real
+#: start with ``end=start``, still not a span). The result-level
 #: :data:`DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE` diagnostic says "some spans are
 #: placeholders"; this per-segment marker says WHICH -- without it a mixed
 #: result's one placeholder would force consumers to distrust (or value-sniff)

@@ -8,7 +8,6 @@ from __future__ import annotations
 import inspect
 import math
 import threading
-import time
 from dataclasses import dataclass
 from typing import Callable, Iterable, Literal, Protocol, Sequence, cast
 
@@ -2115,10 +2114,11 @@ class SupportsCapabilities(Protocol):
         ...
 
 
-#: Default total timeout (seconds) for the sync-bridge check's whole bridged
-#: session. THE single source of the value: the CLI's --bridge-timeout help
-#: and effective default both read it, so a change here can never leave the
-#: CLI silently applying (or --help advertising) a stale number.
+#: Default per-phase timeout (seconds) for the sync-bridge check: session
+#: establishment and the bridged drive each receive this budget. THE single
+#: source of the value: the CLI's --bridge-timeout help and effective default
+#: both read it, so a change here can never leave the CLI silently applying
+#: (or --help advertising) a stale number.
 DEFAULT_SYNC_BRIDGE_TIMEOUT = 5.0
 
 
@@ -2169,12 +2169,17 @@ def check_sync_bridge(
         session_factory: A zero-argument callable returning a fresh async
             :class:`TranscriptionSession` (e.g. ``engine.start_transcription``
             bound with its arguments).
-        timeout: Total seconds to allow the whole check -- session
-            establishment (``session_factory()``) plus the bridged open,
-            end-of-audio, drain, and close combined (establishment runs under
-            a bounded worker and the drive phase receives the remainder, so a
-            hanging ``start_transcription`` is reported instead of hanging the
-            check itself). MUST be finite and
+        timeout: Seconds granted to EACH phase of the check independently:
+            session establishment (``session_factory()`` plus, on an
+            unsupported refusal, the ``supports()`` classification probe) and
+            the bridged drive (open, end-of-audio, drain, close combined --
+            also each bridged lifecycle call's ``submit_timeout``). Both
+            phases run under bounded daemon workers, so a hanging
+            ``start_transcription`` or ``supports()`` is reported instead of
+            hanging the check; worst case the check takes about twice this
+            value. Per-phase (not a shared total) so a slow-but-successful
+            establishment can never starve the drive join into a false
+            "did not terminate" verdict. MUST be finite and
             strictly positive: ``<= 0`` would make the wait return immediately
             (a false "did not terminate" verdict against a compliant engine)
             and ``inf``/``nan`` would hang the check on the very deadlock it
@@ -2226,62 +2231,121 @@ def check_sync_bridge(
     validate_bridge_timeout(timeout)
     issues: list[ComplianceIssue] = []
 
-    # Establish the session on the calling thread, BEFORE any bridging -- the
-    # documented app pattern constructs the session on a non-driving thread
-    # too (SyncSession(engine.start_transcription(...))). Scoping establishment
-    # outside the DRIVE worker keeps the not-applicable carve-out surgical: an
-    # UnsupportedFeatureError from the adapter's own lifecycle (_open,
-    # end_audio, drain, close) can then NEVER be mistaken for "the check does
-    # not apply" -- it stays a failing sync_bridge_raised like any other
-    # mid-bridge exception. Establishment still runs under ITS OWN slice of
-    # the deadline (a bounded daemon worker): a hanging start_transcription is
-    # exactly the fault class this no-deadlock check exists to diagnose, so
-    # the check must never itself hang on it -- and the drive phase then gets
-    # whatever budget establishment left, keeping ``timeout`` a genuine
-    # whole-session total.
+    # Establish the session BEFORE any bridging, in its own bounded daemon
+    # worker (NOT on the calling thread): a hanging start_transcription -- or
+    # a hanging engine.supports() during the classification probe below,
+    # plugin code is arbitrary -- is exactly the fault class this no-deadlock
+    # check exists to diagnose, so the check must never itself hang on either.
+    # Scoping establishment outside the DRIVE worker keeps the not-applicable
+    # carve-out surgical: an UnsupportedFeatureError from the adapter's own
+    # lifecycle (_open, end_audio, drain, close) can then NEVER be mistaken
+    # for "the check does not apply" -- it stays a failing sync_bridge_raised
+    # like any other mid-bridge exception. Each phase (establishment; bridged
+    # drive) is granted the FULL ``timeout``: carving one budget across both
+    # let a slow-but-successful establishment starve the drive join into an
+    # instant false "did not terminate" verdict.
     established: dict[str, object] = {}
+    established_lock = threading.Lock()
+    abandoned = threading.Event()
+
+    def _teardown_late_session(late_session: TranscriptionSession) -> None:
+        """Best-effort close of a session that arrived after the check gave up.
+
+        Args:
+            late_session: The session ``start_transcription`` eventually built.
+        """
+        try:
+            # Close-only drive: __exit__ without __enter__ is tolerated by the
+            # base session (a never-entered session just awaits _close), so
+            # the teardown NEVER opens the session -- driving _open here would
+            # initiate a fresh (for cloud adapters: billable) connection
+            # purely to destroy it, the very cost that makes the bridge
+            # opt-in.
+            SyncSession(late_session, submit_timeout=timeout).__exit__(None, None, None)
+        except Exception:  # noqa: BLE001, S110 - best-effort; the check already reported
+            pass
 
     def _establish() -> None:
         try:
-            established["session"] = session_factory()
+            session_local = session_factory()
+        except UnsupportedFeatureError as exc:
+            with established_lock:
+                established["exc"] = exc
+            # Classification probe runs HERE, inside the bounded worker:
+            # supports() is plugin code and may block; the caller's thread
+            # must stay hang-proof. ``classified`` is set only AFTER the probe
+            # completes: an exc without it means the probe is still hanging,
+            # and the main thread must report did-not-terminate rather than
+            # classify on incomplete state (a wrong "Pass engine=" hint for a
+            # caller who DID pass the engine).
+            if engine is not None:
+                try:
+                    declared = bool(engine.supports("streaming_input"))
+                except Exception:  # noqa: BLE001 - a broken supports() cannot earn a pass
+                    with established_lock:
+                        established["supports_raised"] = True
+                else:
+                    with established_lock:
+                        established["declared_streaming_input"] = declared
+            with established_lock:
+                established["classified"] = True
         except BaseException as exc:  # noqa: BLE001 - classified below
-            established["exc"] = exc
+            with established_lock:
+                established["exc"] = exc
+                established["classified"] = True
+        else:
+            with established_lock:
+                if abandoned.is_set():
+                    late = session_local
+                else:
+                    established["session"] = session_local
+                    late = None
+            if late is not None:
+                # The check already reported an establishment timeout; do not
+                # leak the late session's resources (connections, state).
+                _teardown_late_session(late)
 
     establish_worker = threading.Thread(
         target=_establish, name="compliance-sync-bridge-establish", daemon=True
     )
-    establish_start = time.monotonic()
     establish_worker.start()
     establish_worker.join(timeout=timeout)
-    if establish_worker.is_alive():
+    with established_lock:
+        # Success requires either a stored session or a FULLY classified
+        # exception (exc + classified): an exc whose supports() probe is still
+        # hanging must read as a timeout, not be classified on partial state.
+        # is_alive() is deliberately not consulted -- a worker momentarily
+        # alive while exiting after a completed store must not read as hung.
+        timed_out = "session" not in established and not (
+            "exc" in established and "classified" in established
+        )
+        if timed_out:
+            abandoned.set()
+    if timed_out:
         issues.append(
             ComplianceIssue(
                 level="error",
                 code="sync_bridge_did_not_terminate",
                 message=(
                     f"Session establishment did not complete within {timeout}s -- "
-                    "start_transcription hung (or legitimately needs longer). "
-                    "Re-run with a larger timeout to disambiguate (library: "
-                    "check_sync_bridge(..., timeout=...); CLI: standard-asr "
-                    "compliance run --include-bridge --bridge-timeout SECONDS)."
+                    "start_transcription (or the supports() classification probe) "
+                    "hung, or legitimately needs longer. Re-run with a larger "
+                    "timeout to disambiguate (library: check_sync_bridge(..., "
+                    "timeout=...); CLI: standard-asr compliance run "
+                    "--include-bridge --bridge-timeout SECONDS). A session that "
+                    "finishes establishing after this report is closed "
+                    "best-effort, not leaked."
                 ),
                 model=model,
             )
         )
         return ComplianceReport(registry=None, issues=issues)
-    remaining = max(0.0, timeout - (time.monotonic() - establish_start))
     exc_or_none = established.get("exc")
 
     if isinstance(exc_or_none, UnsupportedFeatureError):
         exc = exc_or_none
-        declared_streaming_input: bool | None = None
-        supports_raised = False
-        if engine is not None:
-            try:
-                declared_streaming_input = bool(engine.supports("streaming_input"))
-            except Exception:  # noqa: BLE001 - a broken supports() cannot earn a pass
-                declared_streaming_input = None
-                supports_raised = True
+        declared_streaming_input = cast("bool | None", established.get("declared_streaming_input"))
+        supports_raised = bool(established.get("supports_raised"))
         if declared_streaming_input is False:
             # The one honest not-applicable shape: the engine itself says it
             # cannot accept bare-frame input, so the bridge has nothing to test.
@@ -2380,7 +2444,7 @@ def check_sync_bridge(
     # deadlock would itself hang on it -- the daemon flag prevents that.
     worker = threading.Thread(target=_drive, name=worker_name, daemon=True)
     worker.start()
-    worker.join(timeout=remaining)
+    worker.join(timeout=timeout)
 
     if worker.is_alive():
         issues.append(

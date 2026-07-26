@@ -109,9 +109,14 @@ class DoctorReport:
         python_version: The running interpreter version (``X.Y``).
         plugins: The discovered plugins and their numpy requirements.
         core: The standard-asr core's own effective numpy requirement, as a
-            conflict participant (``None`` when no plugins are installed --
-            nothing to conflict with -- or when the core distribution's
-            metadata is unreadable). Core is ALWAYS in the process, so its
+            conflict participant. ``None`` in four states: no plugins are
+            installed (nothing to conflict with); the core distribution's
+            metadata is unreadable (non-clean, ``analysis_unavailable``); the
+            metadata is readable but declares no interpreter-applicable numpy
+            line (disclosed via a note); or ``packaging`` is unavailable (the
+            marker-blind display fallback would show the wrong floor, so no
+            row is shown; ``analysis_unavailable`` covers it). Core is ALWAYS
+            in the process, so its
             interpreter-conditional numpy floor MUST join the intersection: a
             plugin whose numpy range excludes the core floor can never run
             with standard-asr on this interpreter, and omitting core from the
@@ -487,23 +492,28 @@ def _core_numpy_spec() -> str | None:
 
     Returns:
         The effective numpy specifier string (marker-evaluated for the running
-        interpreter, same rules as :func:`_numpy_spec_for`), or ``None`` when
-        the core distribution's metadata is unreadable (an anomalous install;
-        the caller reports the analysis gap rather than silently narrowing it)
-        OR when ``packaging`` is unavailable. The packaging-absent display
-        fallback other rows use is marker-blind and would show the FIRST line
-        of core's interpreter-conditional dual declaration -- ``>=1.26`` on a
-        3.13+ interpreter whose effective floor is ``>=2.1`` -- a factually
-        wrong core requirement in the very row added to expose it, so no core
-        row is shown at all in that mode (the report is already flagged
-        ``analysis_unavailable`` there).
+        interpreter, same rules as :func:`_numpy_spec_for`); ``None`` when
+        ``packaging`` is unavailable, OR when the metadata is readable but
+        declares no numpy requirement applicable to this interpreter (two
+        states the caller distinguishes via :func:`packaging_available` -- the
+        latter is a fact about the declaration, not an analysis failure). The
+        packaging-absent display fallback other rows use is marker-blind and
+        would show the FIRST line of core's interpreter-conditional dual
+        declaration -- ``>=1.26`` on a 3.13+ interpreter whose effective floor
+        is ``>=2.1`` -- a factually wrong core requirement in the very row
+        added to expose it, so no core row is shown at all in that mode (the
+        report is already flagged ``analysis_unavailable`` there).
+
+    Raises:
+        PackageNotFoundError: If the core distribution's metadata is
+            unreadable (an anomalous install; the caller reports it as a
+            non-clean analysis gap -- silently conflating it with "no numpy
+            line declared" would either false-alarm on repackaged cores or
+            hide a genuinely broken install).
     """
     if not packaging_available():
         return None
-    try:
-        core_requires = requires(_CORE_DISTRIBUTION)
-    except PackageNotFoundError:
-        return None
+    core_requires = requires(_CORE_DISTRIBUTION)
     return _numpy_spec_for(core_requires)
 
 
@@ -543,25 +553,38 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         report.plugins.append(PluginNumpy(ep.name, dist_name, spec))
 
     if report.plugins:
-        core_spec = _core_numpy_spec()
-        if core_spec is not None:
-            report.core = PluginNumpy("(core)", _CORE_DISTRIBUTION, core_spec)
-        elif packaging_available():
+        try:
+            core_spec = _core_numpy_spec()
+        except PackageNotFoundError:
             # Core metadata unreadable (with packaging present, so marker
             # evaluation was possible): the plugin-vs-core relation -- the
             # analysis half that catches an environment no process layout can
-            # fix -- cannot run at all. That is a NON-CLEAN state, exactly like
-            # the packaging-absent mode below: a footer note alone would leave
-            # is_clean True and the headline claiming "No dependency conflicts
-            # detected" while the core-floor gap this analysis exists to close
-            # silently reopened. In the packaging-absent mode _core_numpy_spec
-            # returns None by design (a marker-blind core row would display
-            # the wrong floor); that branch below sets the same flag.
+            # fix -- cannot run at all. That is a NON-CLEAN state, exactly
+            # like the packaging-absent mode below: a footer note alone would
+            # leave is_clean True and the headline claiming "No dependency
+            # conflicts detected" while the core-floor gap this analysis
+            # exists to close silently reopened.
+            core_spec = None
             report.analysis_unavailable = True
             report.notes.append(
                 "standard-asr's own distribution metadata is unreadable, so the "
                 "plugin-vs-core numpy analysis could not run; the environment "
                 "cannot be proven conflict-free."
+            )
+        if core_spec is not None:
+            report.core = PluginNumpy("(core)", _CORE_DISTRIBUTION, core_spec)
+        elif packaging_available() and not report.analysis_unavailable:
+            # Readable metadata, no numpy line applicable to this interpreter
+            # (e.g. a repackaged/vendored core with rewritten requirements):
+            # a fact about the declaration, NOT an unreadable-metadata
+            # failure -- claiming "unreadable" here false-alarmed CI gates on
+            # working environments. There is no core constraint to intersect,
+            # so relation 1 has nothing to check; disclose rather than stay
+            # silent (explicit over implicit).
+            report.notes.append(
+                "standard-asr's distribution metadata declares no numpy "
+                "requirement applicable to this interpreter, so the "
+                "plugin-vs-core analysis has nothing to check."
             )
 
     if report.plugins and not packaging_available():
