@@ -11,6 +11,7 @@ from typing import ClassVar, Literal
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from standard_asr import (
     ChannelResult,
@@ -293,6 +294,46 @@ def test_batch_engine_failure_wraps_as_transcription_error() -> None:
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     # It is a StandardASRError so a broad standard handler also catches it.
     assert isinstance(exc_info.value, standard_asr.StandardASRError)
+
+
+class _StaleResultEngine(_ArrayEngine):
+    """Plugin built against an older core: still passes the removed ``metadata``."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult.model_validate({"text": "x", "metadata": {"cost": 1}})
+
+
+class _InvalidSegmentEngine(_ArrayEngine):
+    """Builds a Segment the result model rejects (a negative start time)."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        bad = Segment(start=-1.0, end=1.0, text="x")
+        return TranscriptionResult(text="x", segments=[bad])
+
+
+@pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
+def test_engine_validation_error_wraps_as_transcription_error(
+    engine_type: type[_ArrayEngine],
+) -> None:
+    # A pydantic ValidationError escaping _transcribe is an ENGINE fault: params
+    # were already validated before the hook ran, so the only way one gets here
+    # is the engine constructing a result/Segment the contract rejects (a
+    # core/plugin version mismatch, an invalid timestamp). Unwrapped it
+    # masquerades as a client-input validation error -- the server's
+    # ValidationError clause turned it into a 422 blaming the request's options.
+    # The template wraps it into the portable batch error contract instead,
+    # preserving the original as __cause__ for the offending fields.
+    with pytest.raises(TranscriptionError) as exc_info:
+        engine_type().transcribe(_audio())
+
+    assert isinstance(exc_info.value.__cause__, ValidationError)
+    # The message must point at the engine/plugin, not at the caller's request.
+    assert "engine" in str(exc_info.value).lower()
+    assert "not a request error" in str(exc_info.value)
+    assert exc_info.value.hint is not None
+    assert "plugin" in exc_info.value.hint
+    # A ValidationError handler (the server's 422 path) must no longer match it.
+    assert not isinstance(exc_info.value, ValidationError)
 
 
 def test_supports_routes_to_effective() -> None:

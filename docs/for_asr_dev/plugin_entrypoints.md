@@ -34,7 +34,7 @@ explicit default `<engine_id>/` are valid declaration forms. A slash-less key
 (e.g. `faster-whisper` instead of `faster-whisper/`) is **not** a third valid
 form — it is almost always a typo that dropped `/<model_name>`. Discovery
 rejects it: `discover_models(strict=True)` (and `standard-asr compliance
-entrypoints --strict`) raise, while default discovery logs a warning naming the
+entrypoints --strict-discovery`) raise, while default discovery logs a warning naming the
 fix and skips the key. The trailing slash is required only on the *declaration*
 side; the *lookup* helpers below accept the bare engine id as a convenience
 alias for its default model.
@@ -176,7 +176,7 @@ standard-asr compliance entrypoints
 
 Flags of interest:
 
-- `--strict` rejects malformed entry points immediately.
+- `--strict-discovery` rejects malformed entry points immediately.
 - `--no-instantiate` skips smoke-instantiation (useful when a model needs mandatory credentials at runtime).
 - `--on-conflict replace` helps debug when multiple packages expose the same model id.
 

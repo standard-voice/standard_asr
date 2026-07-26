@@ -9,8 +9,10 @@ quick transcription.
 List all discovered models.
 
 Flags:
-- `--strict`: fail on invalid entry points during discovery (default: keep
-  going, skipping invalid ones).
+- `--strict-discovery`: fail on invalid plugin entry points during discovery
+  (default: keep going, skipping invalid ones). Deliberately NOT named
+  `--strict`: bare `strict` is the engine's strict/best_effort *parameter-gating*
+  policy (an init-config field, `--set strict=...`), a different knob.
 - `--on-conflict {warn_keep_first,replace}`: strategy for duplicate model keys
   (default: `warn_keep_first`).
 
@@ -24,7 +26,7 @@ R6; the two layers share one capability model). If an engine mis-declares its
 problem and the rest of the metadata still renders.
 
 Flags:
-- `--strict`: fail on invalid entry points during discovery.
+- `--strict-discovery`: fail on invalid plugin entry points during discovery.
 
 ### `standard-asr cache [--ensure]`
 Display (and optionally create, `--ensure`) the Standard ASR model cache
@@ -32,10 +34,12 @@ directory.
 
 ### `standard-asr prepare <engine/model>`
 Flags:
-- `--strict`: fail on invalid entry points during discovery (the same flag as
-  `list` / `show` / `transcribe` / `compliance`; `serve` deliberately has no
-  discovery flags -- the server always discovers leniently so one broken
-  co-installed plugin cannot take every other engine's endpoint down with it).
+- `--strict-discovery`: fail on invalid plugin entry points during discovery
+  (the same flag as `list` / `show` / `transcribe` / `compliance`; `serve`
+  deliberately has no discovery flags -- the server always discovers leniently
+  so one broken co-installed plugin cannot take every other engine's endpoint
+  down with it). On this command the name matters doubly: `--set strict=...`
+  configures the engine's parameter-gating policy on the same command line.
 
 Warm up a model by loading or downloading weights. `prepare` is best-effort and
 maps onto the optional `prepare()` hook (spec IC.11): an engine that does not
@@ -48,7 +52,7 @@ request. The hook MUST be a synchronous, zero-argument method; a coroutine
 ### `standard-asr compliance entrypoints`
 Validate entry points and factories (entry-point metadata + class-level
 capability declarations). Flags:
-- `--strict`: fail on invalid entry points at discovery time.
+- `--strict-discovery`: fail on invalid plugin entry points at discovery time.
 - `--no-instantiate`: skip instantiation attempts (avoids loading models).
 - `--quiet`: suppress warnings in the output.
 
@@ -60,16 +64,21 @@ constructs without arguments and declares a streaming axis, the streaming
 template is caught here, not just at the entry-point level (delivers G.2.1's
 "one command validates compliance"). An engine that requires constructor
 arguments (e.g. credentials) is reported as *skipped*, not failed. Flags:
-- `--strict`: fail on invalid entry points at discovery time.
+- `--strict-discovery`: fail on invalid plugin entry points at discovery time.
 - `--quiet`: suppress warnings in the output.
 - `--include-bridge`: also run the sync-bridge check. This **opens a streaming
   session** and is therefore off by default — for a cloud engine that is a
   billable connection.
 - `--bridge-timeout SECONDS` (default `5.0`): total timeout for the
   sync-bridge check's whole bridged session (open, end-of-audio, drain, and
-  close combined). The check's remediation advice ("re-run with a larger
+  close combined; it also caps each bridged lifecycle call). Only meaningful
+  with `--include-bridge` -- passing it alone is a usage error (exit 2), never
+  a silent no-op. The check's remediation advice ("re-run with a larger
   timeout") is actionable through this flag; library callers pass
-  `check_sync_bridge(..., timeout=...)`.
+  `check_sync_bridge(..., timeout=...)` (finite, `> 0`; validated). An engine
+  that refuses session establishment as unsupported (e.g. output-only, no
+  `streaming_input`) is reported `sync_bridge_not_applicable` (a warning), and
+  the CLI skips the bridge for such engines up front with a note.
 
 The streaming **event-sequence** check needs an author-recorded event stream the
 CLI cannot synthesize; it remains a library API
@@ -78,8 +87,11 @@ note naming it, so a green run is never mistaken for full coverage.
 
 ### `standard-asr transcribe <engine/model> <audio>`
 Flags:
-- `--strict`: fail on invalid entry points during discovery (the same flag as
-  `list` / `show` / `prepare` / `compliance`).
+- `--strict-discovery`: fail on invalid plugin entry points during discovery
+  (the same flag as `list` / `show` / `prepare` / `compliance`). Deliberately
+  NOT named `--strict`: this command also carries `--set strict=...` -- the
+  engine's strict/best_effort parameter-gating policy -- and one name meaning
+  two policies invited silent misconfiguration.
 
 Transcribe an audio file and print text or JSON output. `--options` accepts a
 JSON object mapping onto the portable standard set (`WireRuntimeParams`, e.g.

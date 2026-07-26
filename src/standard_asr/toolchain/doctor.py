@@ -486,8 +486,17 @@ def _core_numpy_spec() -> str | None:
         The effective numpy specifier string (marker-evaluated for the running
         interpreter, same rules as :func:`_numpy_spec_for`), or ``None`` when
         the core distribution's metadata is unreadable (an anomalous install;
-        the caller reports the analysis gap rather than silently narrowing it).
+        the caller reports the analysis gap rather than silently narrowing it)
+        OR when ``packaging`` is unavailable. The packaging-absent display
+        fallback other rows use is marker-blind and would show the FIRST line
+        of core's interpreter-conditional dual declaration -- ``>=1.26`` on a
+        3.13+ interpreter whose effective floor is ``>=2.1`` -- a factually
+        wrong core requirement in the very row added to expose it, so no core
+        row is shown at all in that mode (the report is already flagged
+        ``analysis_unavailable`` there).
     """
+    if not packaging_available():
+        return None
     try:
         core_requires = requires(_CORE_DISTRIBUTION)
     except PackageNotFoundError:
@@ -534,10 +543,14 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         core_spec = _core_numpy_spec()
         if core_spec is not None:
             report.core = PluginNumpy("(core)", _CORE_DISTRIBUTION, core_spec)
-        else:
-            # Core metadata unreadable: the intersection is missing a
+        elif packaging_available():
+            # Core metadata unreadable (with packaging present, so marker
+            # evaluation was possible): the intersection is missing a
             # participant that is always in the process. Say so rather than
-            # letting the narrower analysis read as complete.
+            # letting the narrower analysis read as complete. In the
+            # packaging-absent mode _core_numpy_spec returns None by design
+            # (a marker-blind core row would display the wrong floor) and the
+            # analysis-unavailable state below already discloses the gap.
             report.notes.append(
                 "standard-asr's own distribution metadata is unreadable, so the "
                 "core numpy requirement could not join the conflict analysis."
@@ -698,12 +711,21 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
                 "common satisfying version." + _remedy(sides)
             )
 
-    if sys.version_info >= (3, 13) and numpy1_only:
-        report.conflicts.append(
-            "On Python 3.13+ there is no numpy<2 wheel: "
-            + ", ".join(_unique_distributions(numpy1_only))
-            + " cannot be installed here. Use Python <3.13 or isolate the plugin."
-        )
+    if sys.version_info >= (3, 13):
+        # Computed over ALL plugins, not the exclusion-filtered participants:
+        # a numpy<2 plugin on 3.13 conflicts with the core floor (relation 1
+        # reports that), AND no numpy<2 wheel exists for this interpreter at
+        # all -- an independent fact worth stating, and one isolation cannot
+        # fix (the wheel is missing in every process on this interpreter).
+        numpy1_declared = [p for p in report.plugins if _classify_numpy(p.numpy_spec)[0]]
+        if numpy1_declared:
+            report.conflicts.append(
+                "On Python 3.13+ there is no numpy<2 wheel: "
+                + ", ".join(_unique_distributions(numpy1_declared))
+                + " cannot be installed on this interpreter in any process. Run "
+                "that plugin under Python <3.13 (e.g. an isolated older-Python "
+                "worker)."
+            )
 
     return report
 

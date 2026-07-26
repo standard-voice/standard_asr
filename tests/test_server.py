@@ -205,6 +205,40 @@ def _validation_error_transcribe_factory() -> (  # pyright: ignore[reportUnusedF
     return _ValidationErrorTranscribeASR()
 
 
+class _StaleResultProperties(BaseProperties):
+    engine_id: str = "dummy"
+    model_name: str = "echo"
+    protocol_version: str = "1.0.0"
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = "any"
+    selectable_languages: list[str] = []
+
+
+class _StaleResultEngine(EngineBase):
+    """A real ``EngineBase`` whose ``_transcribe`` builds an invalid result.
+
+    Models a plugin built against an older core: it still passes the removed
+    blanket ``metadata`` field, which the ``extra="forbid"`` result model
+    rejects with a pydantic ``ValidationError``.
+    """
+
+    properties: ClassVar[BaseProperties] = _StaleResultProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities()
+    )
+
+    def __init__(self) -> None:
+        self.config = _DummyConfig(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult.model_validate({"text": "x", "metadata": {"cost": 1}})
+
+
+def _stale_result_factory() -> _StaleResultEngine:  # pyright: ignore[reportUnusedFunction]
+    return _StaleResultEngine()
+
+
 # --- Real EngineBase engines that record what negotiation hands them ----------
 
 #: Set by the recording engines' ``_transcribe`` so tests can assert on the
@@ -766,6 +800,36 @@ def test_transcribe_engine_validation_error_maps_to_422_sanitized() -> None:
     # options, so the entry is anchored under ["options"].
     detail: list[dict[str, Any]] = resp.json()["detail"]
     assert any(entry["loc"][:1] == ["options"] and "beam" in entry["loc"] for entry in detail)
+
+
+def test_transcribe_engine_built_invalid_result_maps_to_500_not_422() -> None:
+    """An invalid result built INSIDE ``_transcribe`` is a 500, never a 422.
+
+    Regression: a pydantic ``ValidationError`` escaping ``_transcribe`` used to
+    reach the server's ``ValidationError`` clause and return 422 with a detail
+    anchored under ``["options"]`` -- telling the client its own request was
+    malformed when the fault was entirely the engine's (here: a plugin still
+    sending the removed ``metadata`` field). ``EngineBase.transcribe`` now wraps
+    it as a ``TranscriptionError``, so it lands on the generic internal path:
+    HTTP 500 with the stable non-leaking message.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stale_result_factory"))
+    client = TestClient(app)
+
+    payload = {
+        "model": "dummy/echo",
+        "audio": base64.b64encode(_wav_bytes(16000)).decode(),
+    }
+    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Internal transcription error. See server logs for details."
+    # The client's `options` must not be blamed, and no pydantic field detail leaks.
+    assert "options" not in resp.text
+    assert "metadata" not in resp.text
 
 
 def test_ws_stream_construction_config_error_reports_bad_request() -> None:

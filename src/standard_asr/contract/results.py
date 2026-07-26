@@ -22,6 +22,17 @@ from typing import Any, Literal, Sequence, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+#: Diagnostic code attached to a :class:`TranscriptionResult` whose ``segments``
+#: carry placeholder ``0.0`` spans because the engine emitted no timestamps
+#: (:class:`Segment` requires finite times, so a timestamp-less streaming
+#: reduce must store SOMETHING). It lives here -- not in the emitting reducer
+#: module -- because it describes a property of the RESULT that downstream
+#: consumers key on: the SRT/VTT renderers use it as the authoritative
+#: "timing unavailable" signal (value-sniffing ``0.0`` spans cannot distinguish
+#: a placeholder from a genuine zero-length span at t=0). Same family-home
+#: rationale as the language codes living in :mod:`standard_asr.contract.language`.
+DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
+
 
 class Diagnostic(BaseModel):
     """A structured, non-fatal notification from the standard layer.
@@ -506,6 +517,7 @@ class TranscriptionResult(BaseModel):
 
 __all__ = [
     "ChannelResult",
+    "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
     "Diagnostic",
     "Segment",
     "TranscriptionResult",

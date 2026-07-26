@@ -87,11 +87,16 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
     Raises:
         None.
     """
-    list_parser = subparsers.add_parser("list", help="List discovered models.")
+    list_parser = subparsers.add_parser("list", help="List discovered models.", allow_abbrev=False)
     list_parser.add_argument(
-        "--strict",
+        "--strict-discovery",
         action="store_true",
-        help="Fail on invalid entry points during discovery.",
+        help=(
+            "Fail on invalid plugin entry points during discovery. (Named "
+            "--strict-discovery, not --strict: 'strict' alone is the engine's "
+            "strict/best_effort PARAMETER-gating policy, an init-config field "
+            "set via --set strict=... -- a different knob.)"
+        ),
     )
     list_parser.add_argument(
         "--on-conflict",
@@ -102,18 +107,27 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
     list_parser.set_defaults(func=_cmd_list)
 
     show_parser = subparsers.add_parser(
-        "show", help="Show a model's properties, capabilities, and config schema."
+        "show",
+        help="Show a model's properties, capabilities, and config schema.",
+        allow_abbrev=False,
     )
     show_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
     show_parser.add_argument(
-        "--strict",
+        "--strict-discovery",
         action="store_true",
-        help="Fail on invalid entry points during discovery.",
+        help=(
+            "Fail on invalid plugin entry points during discovery. (Named "
+            "--strict-discovery, not --strict: 'strict' alone is the engine's "
+            "strict/best_effort PARAMETER-gating policy, an init-config field "
+            "set via --set strict=... -- a different knob.)"
+        ),
     )
     show_parser.set_defaults(func=_cmd_show)
 
     cache_parser = subparsers.add_parser(
-        "cache", help="Show (or create) the Standard ASR cache directory."
+        "cache",
+        help="Show (or create) the Standard ASR cache directory.",
+        allow_abbrev=False,
     )
     cache_parser.add_argument(
         "--ensure",
@@ -123,13 +137,20 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
     cache_parser.set_defaults(func=_cmd_cache)
 
     prepare_parser = subparsers.add_parser(
-        "prepare", help="Warm up a model (download/load weights if required)."
+        "prepare",
+        help="Warm up a model (download/load weights if required).",
+        allow_abbrev=False,
     )
     prepare_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
     prepare_parser.add_argument(
-        "--strict",
+        "--strict-discovery",
         action="store_true",
-        help="Fail on invalid entry points during discovery.",
+        help=(
+            "Fail on invalid plugin entry points during discovery. (Named "
+            "--strict-discovery, not --strict: 'strict' alone is the engine's "
+            "strict/best_effort PARAMETER-gating policy, an init-config field "
+            "set via --set strict=... -- a different knob.)"
+        ),
     )
     _add_init_config_args(prepare_parser)
     prepare_parser.set_defaults(func=_cmd_prepare)
@@ -180,17 +201,24 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
     compliance_parser = subparsers.add_parser(
         "compliance",
         help="Run compliance helpers to validate plugin behaviour.",
+        allow_abbrev=False,
     )
     compliance_sub = compliance_parser.add_subparsers(dest="compliance_command", required=True)
 
     ep_parser = compliance_sub.add_parser(
         "entrypoints",
         help="Verify entry point visibility and basic factory behaviour.",
+        allow_abbrev=False,
     )
     ep_parser.add_argument(
-        "--strict",
+        "--strict-discovery",
         action="store_true",
-        help="Fail on invalid entry points at discovery time.",
+        help=(
+            "Fail on invalid plugin entry points during discovery. (Named "
+            "--strict-discovery, not --strict: 'strict' alone is the engine's "
+            "strict/best_effort PARAMETER-gating policy, an init-config field "
+            "set via --set strict=... -- a different knob.)"
+        ),
     )
     ep_parser.add_argument(
         "--no-instantiate",
@@ -208,6 +236,7 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
     run_parser = compliance_sub.add_parser(
         "run",
         help="Run the full compliance suite (entry points + streaming gating).",
+        allow_abbrev=False,
     )
     run_parser.add_argument(
         "names",
@@ -215,9 +244,14 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
         help="Model keys to check (default: every discovered model).",
     )
     run_parser.add_argument(
-        "--strict",
+        "--strict-discovery",
         action="store_true",
-        help="Fail on invalid entry points at discovery time.",
+        help=(
+            "Fail on invalid plugin entry points during discovery. (Named "
+            "--strict-discovery, not --strict: 'strict' alone is the engine's "
+            "strict/best_effort PARAMETER-gating policy, an init-config field "
+            "set via --set strict=... -- a different knob.)"
+        ),
     )
     run_parser.add_argument(
         "--quiet",
@@ -235,14 +269,20 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
     run_parser.add_argument(
         "--bridge-timeout",
         type=_positive_finite_seconds,
-        default=5.0,
+        # None sentinel (not 5.0): the effective default is applied in
+        # _cmd_compliance_run so an EXPLICIT --bridge-timeout without
+        # --include-bridge can be rejected loudly -- with a literal default the
+        # two are indistinguishable and the flag was silently inert.
+        default=None,
         metavar="SECONDS",
         help=(
             "Total timeout in seconds for the sync-bridge check's whole bridged "
             "session -- open, end-of-audio, drain, and close combined (default: "
-            "5.0). Raise it for engines whose session setup or teardown is slow; "
-            "the check's own remediation advice ('re-run with a larger value') "
-            "is actionable through this flag."
+            "5.0). Only meaningful together with --include-bridge (passing it "
+            "alone is a usage error, not a silent no-op). Raise it for engines "
+            "whose session setup or teardown is slow; the check's own "
+            "remediation advice ('re-run with a larger value') is actionable "
+            "through this flag."
         ),
     )
     run_parser.set_defaults(func=_cmd_compliance_run)
@@ -260,7 +300,9 @@ def _add_transcribe_subcommand(subparsers: Any) -> None:
     Raises:
         None.
     """
-    parser = subparsers.add_parser("transcribe", help="Transcribe an audio file.")
+    parser = subparsers.add_parser(
+        "transcribe", help="Transcribe an audio file.", allow_abbrev=False
+    )
     parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
     parser.add_argument("audio", help="Path to audio file to transcribe.")
     parser.add_argument(
@@ -268,9 +310,14 @@ def _add_transcribe_subcommand(subparsers: Any) -> None:
         help="JSON string of transcription options passed to the engine.",
     )
     parser.add_argument(
-        "--strict",
+        "--strict-discovery",
         action="store_true",
-        help="Fail on invalid entry points during discovery.",
+        help=(
+            "Fail on invalid plugin entry points during discovery. (Named "
+            "--strict-discovery, not --strict: 'strict' alone is the engine's "
+            "strict/best_effort PARAMETER-gating policy, an init-config field "
+            "set via --set strict=... -- a different knob.)"
+        ),
     )
     _add_init_config_args(parser)
     parser.add_argument(
@@ -293,7 +340,9 @@ def _add_serve_subcommand(subparsers: Any) -> None:
     Raises:
         None.
     """
-    parser = subparsers.add_parser("serve", help="Start the FastAPI server for Standard ASR.")
+    parser = subparsers.add_parser(
+        "serve", help="Start the FastAPI server for Standard ASR.", allow_abbrev=False
+    )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")
     # No --reload: uvicorn's auto-reload requires an import-string app, but
@@ -318,6 +367,13 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="standard-asr",
+        # No prefix abbreviation, here and on every subparser: argparse's
+        # default abbreviation is implicit magic ("--strict" would silently
+        # parse as --strict-discovery, resurrecting the very strict-vs-
+        # strict-discovery confusion the flag rename exists to prevent), and
+        # any abbreviation a user scripts today can turn ambiguous -- a
+        # behavior change -- the day a new flag lands.
+        allow_abbrev=False,
         description="Standard ASR -- a universal interface for speech-to-text engines.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -351,7 +407,9 @@ def _add_doctor_subcommand(subparsers: Any) -> None:
     Raises:
         None.
     """
-    parser = subparsers.add_parser("doctor", help="Diagnose plugin dependency (numpy) conflicts.")
+    parser = subparsers.add_parser(
+        "doctor", help="Diagnose plugin dependency (numpy) conflicts.", allow_abbrev=False
+    )
     parser.set_defaults(func=_cmd_doctor)
 
 
@@ -385,10 +443,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
         Exit code.
 
     Raises:
-        EntrypointValidationError: In ``--strict`` mode, when discovery finds an
+        EntrypointValidationError: In ``--strict-discovery`` mode, when discovery finds an
             invalid entry point or an engine-identity collision.
     """
-    registry = discover_models(strict=args.strict, on_conflict=args.on_conflict)
+    registry = discover_models(strict=args.strict_discovery, on_conflict=args.on_conflict)
     names = registry.names()
     if not names:
         print("No Standard ASR models were discovered.")
@@ -413,11 +471,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
         Exit code.
 
     Raises:
-        EntrypointValidationError: In ``--strict`` mode when discovery finds an
+        EntrypointValidationError: In ``--strict-discovery`` mode when discovery finds an
             invalid entry point, or when the requested model name is unknown or
             malformed.
     """
-    registry = discover_models(strict=args.strict)
+    registry = discover_models(strict=args.strict_discovery)
     spec = registry.spec(args.name)
     model_label = spec.model_name or "<default>"
     print(f"Model: {spec.model_id}")
@@ -517,7 +575,7 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
             declares an invalid prepare() hook (a coroutine, a non-callable
             attribute, or one that requires arguments).
     """
-    registry = discover_models(strict=args.strict)
+    registry = discover_models(strict=args.strict_discovery)
     asr = registry.create(args.name, **_parse_init_config(args))
 
     prepare = getattr(asr, "prepare", None)
@@ -604,7 +662,7 @@ def _cmd_compliance_entrypoints(args: argparse.Namespace) -> int:
     Raises:
         None.
     """
-    report = check_entrypoints(strict_discovery=args.strict, instantiate=args.instantiate)
+    report = check_entrypoints(strict_discovery=args.strict_discovery, instantiate=args.instantiate)
 
     if report.passed:
         print(f"{_OK} Entry point compliance checks passed.")
@@ -699,12 +757,25 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
         Exit code: ``0`` when every executed check passed, else ``1``.
 
     Raises:
-        EntrypointValidationError: In ``--strict`` mode, when discovery finds an
-            invalid entry point or an engine-identity collision.
+        EntrypointValidationError: In ``--strict-discovery`` mode, when
+            discovery finds an invalid entry point or an engine-identity
+            collision.
     """
-    registry = discover_models(strict=args.strict)
+    # An explicit --bridge-timeout without --include-bridge is a usage error,
+    # not a silent no-op: the author would read "Compliance run passed" as
+    # "the bridge ran within my budget" when the bridge never executed.
+    if args.bridge_timeout is not None and not args.include_bridge:
+        _print_error(
+            "--bridge-timeout has no effect without --include-bridge; add "
+            "--include-bridge to run the sync-bridge check (or drop "
+            "--bridge-timeout)."
+        )
+        return 2
+    bridge_timeout = args.bridge_timeout if args.bridge_timeout is not None else 5.0
 
-    entrypoints = check_entrypoints(registry=registry, strict_discovery=args.strict)
+    registry = discover_models(strict=args.strict_discovery)
+
+    entrypoints = check_entrypoints(registry=registry, strict_discovery=args.strict_discovery)
     names = args.names or registry.names()
     if args.names:
         # Scope the entry-point report's per-engine issues to the named subset so an
@@ -724,7 +795,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
                 registry,
                 name,
                 include_bridge=args.include_bridge,
-                bridge_timeout=args.bridge_timeout,
+                bridge_timeout=bridge_timeout,
             )
         )
 
@@ -816,7 +887,7 @@ def _run_instance_checks(
         reports.append(check_streaming_param_gating(cast(EngineBase, engine)))
         # Self-consistency of the recommended wire format: cheap, and passes
         # trivially for an output-only engine, so it runs for any streaming engine.
-        reports.append(check_recommended_wire_format(cast(EngineBase, engine)))
+        reports.append(check_recommended_wire_format(cast(EngineBase, engine), model=name))
         if include_bridge:
             if _engine_supports(engine, "streaming_input"):
                 reports.append(_run_sync_bridge(engine, name, timeout=bridge_timeout))
@@ -863,7 +934,7 @@ def _run_sync_bridge(engine: Any, name: str, *, timeout: float = 5.0) -> Complia
     def _factory() -> Any:
         return engine.start_transcription(audio_format=audio_format)
 
-    return check_sync_bridge(_factory, timeout=timeout)
+    return check_sync_bridge(_factory, timeout=timeout, model=name)
 
 
 def _streaming_audio_format(engine: EngineBase) -> AudioFormat | None:
@@ -1073,7 +1144,7 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
         TranscriptionError: On an engine-execution failure during transcription.
     """
-    registry = discover_models(strict=args.strict)
+    registry = discover_models(strict=args.strict_discovery)
     asr = registry.create(args.name, **_parse_init_config(args))
 
     params = _parse_options(args.options)

@@ -390,18 +390,28 @@ def test_py313_wheel_note_lists_each_distribution_once(
 ) -> None:
     """the Python 3.13 'no numpy<2 wheel' note is distribution-scoped
     too, so a multi-preset numpy1 distribution appears once."""
+    # core_spec=">=2.1" is the REAL core floor on 3.13, so a numpy<2 plugin is
+    # ALSO core-incompatible and gets excluded from the environment-level
+    # participants. The wheel note is computed over ALL plugins precisely so
+    # that exclusion cannot swallow it -- the missing wheel is an independent
+    # fact about the interpreter. (An earlier ">=1.26" fixture paired the 3.13
+    # interpreter with the sub-3.13 core floor: an impossible combination that
+    # hid the interaction.)
     _patch_eps(
         monkeypatch,
         [
             _FakeEP("std-foo/p1", _FakeDist("std-foo", ["numpy<2"])),
             _FakeEP("std-foo/p2", _FakeDist("std-foo", ["numpy<2"])),
         ],
+        core_spec=">=2.1",
     )
     fake_vi = _VersionInfo(3, 13, 0, "final", 0)
     monkeypatch.setattr(doctor.sys, "version_info", fake_vi)
     report = doctor.diagnose()
     note = next(c for c in report.conflicts if "no numpy<2 wheel" in c)
     assert note.count("std-foo") == 1
+    # Both conflicts fire: the plugin-vs-core incompatibility AND the wheel fact.
+    assert any("conflict with standard-asr core" in c for c in report.conflicts)
 
 
 def test_single_distribution_many_presets_unsatisfiable_is_one_offender(
@@ -576,14 +586,50 @@ def test_numpy_spec_display_fallback_returns_none_without_numpy(
 
 
 def test_py313_no_numpy1_wheel_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On 3.13 a numpy<2 plugin yields BOTH the core conflict and the wheel note.
+
+    The two say different things and neither substitutes for the other: the
+    core conflict is about this environment's resolution, the wheel note is
+    about the interpreter (no numpy<2 wheel exists for 3.13 in ANY process).
+    Since the core floor on 3.13 is ``>=2.1``, the plugin is excluded from the
+    environment-level participants -- so a wheel note computed over the
+    filtered participants would silently never fire on the exact interpreter it
+    describes.
+    """
     _patch_eps(
         monkeypatch,
         [_FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy<2"]))],
+        core_spec=">=2.1",
     )
     fake_vi = _VersionInfo(3, 13, 0, "final", 0)
     monkeypatch.setattr(doctor.sys, "version_info", fake_vi)
     report = doctor.diagnose()
-    assert any("no numpy<2 wheel" in c for c in report.conflicts)
+    note = next(c for c in report.conflicts if "no numpy<2 wheel" in c)
+    assert "std-funasr" in note
+    assert any("conflict with standard-asr core" in c for c in report.conflicts)
+    # The remediation is honest about scope: the wheel is missing in every
+    # process on this interpreter, so in-process isolation is NOT a fix. The old
+    # "or isolate the plugin" phrasing advertised exactly that dead end.
+    assert "cannot be installed on this interpreter in any process" in note
+    assert "Run that plugin under Python <3.13" in note
+    assert "or isolate the plugin" not in note
+
+
+def test_no_wheel_note_below_py313(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Below 3.13 numpy<2 wheels exist, so the note must NOT fire.
+
+    The note is interpreter-scoped, not a blanket "numpy<2 is bad" warning:
+    with the sub-3.13 core floor (``>=1.26``) a numpy<2 plugin resolves fine and
+    the report stays clean.
+    """
+    _patch_eps(
+        monkeypatch,
+        [_FakeEP("old/funasr", _FakeDist("std-funasr", ["numpy<2"]))],
+    )
+    monkeypatch.setattr(doctor.sys, "version_info", _VersionInfo(3, 12, 0, "final", 0))
+    report = doctor.diagnose()
+    assert not any("no numpy<2 wheel" in c for c in report.conflicts)
+    assert report.has_conflict is False
 
 
 def test_packaging_available_false_when_import_fails(
@@ -695,6 +741,116 @@ def test_core_numpy_spec_none_when_core_metadata_missing(
 
     monkeypatch.setattr(doctor, "requires", _requires)
     assert doctor._core_numpy_spec() is None  # pyright: ignore[reportPrivateUsage]
+
+
+#: The core's real declaration shape: interpreter-conditional, dual-line.
+_CORE_DUAL_DECLARATION = [
+    'numpy>=1.26; python_version < "3.13"',
+    'numpy>=2.1; python_version >= "3.13"',
+    "pydantic>=2.5",
+]
+
+
+def _block_packaging(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ``packaging`` import fail (the optional-dependency-absent mode)."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name: str, *args: object, **kwargs: object) -> object:
+        if name.startswith("packaging"):
+            raise ImportError("no packaging")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+
+
+def _patch_core_declaration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve the core's real dual-line numpy declaration from ``requires``."""
+
+    def _requires(name: str) -> list[str]:
+        assert name == "standard-asr"
+        return _CORE_DUAL_DECLARATION
+
+    monkeypatch.setattr(doctor, "requires", _requires)
+
+
+def _patch_raw_entry_points(monkeypatch: pytest.MonkeyPatch, eps: list[_FakeEP]) -> None:
+    """Patch ONLY ``entry_points``, leaving the real ``_core_numpy_spec`` in play.
+
+    ``_patch_eps`` pins ``_core_numpy_spec`` to a fixed value, which is exactly
+    what the core-row tests below need to exercise for real.
+    """
+
+    def _entry_points(*, group: str) -> list[_FakeEP]:
+        return eps
+
+    monkeypatch.setattr(doctor, "entry_points", _entry_points)
+
+
+def test_core_numpy_spec_none_when_packaging_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``packaging`` the core row is omitted rather than shown wrong.
+
+    The display fallback the plugin rows use is marker-BLIND: it returns the
+    first matching line, ``>=1.26``, which is factually the wrong core floor on
+    a 3.13+ interpreter (the effective one is ``>=2.1``). Showing that in the
+    very row added to expose core conflicts would misinform; ``None`` is the
+    honest answer, and the report is already flagged analysis-unavailable.
+    """
+    _block_packaging(monkeypatch)
+    _patch_core_declaration(monkeypatch)
+    monkeypatch.setattr(doctor.sys, "version_info", _VersionInfo(3, 13, 0, "final", 0))
+
+    # What the marker-blind fallback WOULD have produced, and why it is refused.
+    assert (
+        doctor._numpy_spec_for(_CORE_DUAL_DECLARATION)  # pyright: ignore[reportPrivateUsage]
+        == ">=1.26"
+    )
+    assert doctor._core_numpy_spec() is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_diagnose_without_packaging_omits_core_row_and_its_unreadable_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The packaging-absent mode shows no core row and does NOT claim it is unreadable.
+
+    ``_core_numpy_spec`` returns ``None`` for two different reasons; the
+    "metadata is unreadable" note describes only the anomalous-install one. It
+    must not fire in the packaging-absent mode, where the metadata is perfectly
+    readable and the analysis-unavailable state already discloses the gap --
+    otherwise every packaging-less environment is told its install is broken.
+    """
+    _block_packaging(monkeypatch)
+    _patch_raw_entry_points(monkeypatch, [_FakeEP("a/x", _FakeDist("std-a", ["numpy<2"]))])
+    _patch_core_declaration(monkeypatch)
+
+    report = doctor.diagnose()
+
+    assert report.core is None
+    assert not any("core numpy requirement" in n for n in report.notes)
+    # The gap IS disclosed -- by the analysis-unavailable state, not a false claim.
+    assert report.analysis_unavailable is True
+    assert any("packaging" in n for n in report.notes)
+
+
+def test_core_metadata_unreadable_note_needs_packaging_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``packaging`` present, genuinely unreadable core metadata still notes it."""
+    _patch_raw_entry_points(monkeypatch, [_FakeEP("a/x", _FakeDist("std-a", ["numpy>=1.26"]))])
+
+    def _requires(name: str) -> list[str]:
+        raise doctor.PackageNotFoundError(name)
+
+    monkeypatch.setattr(doctor, "requires", _requires)
+
+    report = doctor.diagnose()
+
+    assert report.core is None
+    assert any("core numpy requirement" in n for n in report.notes)
+    assert report.analysis_unavailable is False
 
 
 def test_core_floor_conflicts_with_numpy1_plugin(

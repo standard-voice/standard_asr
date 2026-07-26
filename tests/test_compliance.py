@@ -915,6 +915,125 @@ def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -
     assert any("did not terminate" in i.message for i in report.issues)
 
 
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+def test_sync_bridge_rejects_nonpositive_or_nonfinite_timeout(bad: float) -> None:
+    """A non-finite / non-positive ``timeout`` is a caller bug, rejected loudly.
+
+    ``<= 0`` makes the join return immediately -- a false "did not terminate"
+    verdict blamed on a compliant engine -- and ``inf``/``nan`` make the check
+    wait forever on the very deadlock it exists to diagnose. Both are ValueErrors
+    raised BEFORE any session is created, so nothing is driven under a budget
+    that cannot produce a meaningful verdict.
+    """
+    calls: list[int] = []
+
+    def _factory() -> TranscriptionSession:
+        calls.append(1)  # pragma: no cover - the guard must run first
+        return _CleanSession()
+
+    with pytest.raises(ValueError, match="finite number of seconds"):
+        check_sync_bridge(_factory, timeout=bad)
+    assert calls == []
+
+
+def test_sync_bridge_forwards_the_timeout_as_the_sync_session_submit_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user's budget caps the bridged lifecycle calls, not only the join.
+
+    ``SyncSession``'s own ``submit_timeout`` default is 30 s, so before this
+    forwarding a ``--bridge-timeout`` above 30 s was silently inert for
+    ``_open``/``_close``: a slow-but-compliant adapter failed as
+    ``sync_bridge_raised`` (TimeoutError) no matter how much time the user
+    granted, and the check's own "re-run with a larger value" advice could not
+    work. Captured at the construction site so the kwarg cannot be dropped.
+    """
+    captured: list[dict[str, Any]] = []
+    real_sync_session = compliance_module.SyncSession
+
+    def _recording_sync_session(session: Any, **kwargs: Any) -> Any:
+        captured.append(dict(kwargs))
+        return real_sync_session(session, **kwargs)
+
+    monkeypatch.setattr(compliance_module, "SyncSession", _recording_sync_session)
+
+    report = check_sync_bridge(_CleanSession, timeout=1.25)
+
+    assert report.passed is True, [i.message for i in report.issues]
+    assert captured == [{"submit_timeout": 1.25}]
+
+
+def test_sync_bridge_unsupported_session_is_not_applicable_not_a_failure() -> None:
+    """An engine refusing session establishment as unsupported is NOT a failure.
+
+    The bridge feeds bare PCM frames, so an engine without ``streaming_input``
+    (e.g. output-only) rejects the factory's ``start_transcription`` on the
+    capability gate. That is a property of the CHECK's shape, not an engine
+    fault: blaming the engine would be a misdirected verdict, so it is reported
+    as a single ``sync_bridge_not_applicable`` WARNING and the report passes.
+    """
+
+    def _unsupported_factory() -> TranscriptionSession:
+        raise UnsupportedFeatureError("streaming_input is not supported by this engine")
+
+    report = check_sync_bridge(_unsupported_factory, timeout=5.0)
+
+    assert report.passed is True
+    assert [(i.level, i.code) for i in report.issues] == [("warning", "sync_bridge_not_applicable")]
+    # The engine's own words are quoted so the author can see WHY it was skipped.
+    assert "streaming_input is not supported by this engine" in report.issues[0].message
+    # Specifically NOT the generic "raised while bridging" error path.
+    assert not any(i.code == "sync_bridge_raised" for i in report.issues)
+
+
+def test_sync_bridge_issues_carry_the_model_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every sync-bridge issue is attributed to the model it came from.
+
+    In a multi-model ``compliance run`` an unattributed issue renders as
+    ``<registry>`` and the user cannot tell which engine failed.
+    """
+
+    def _unsupported_factory() -> TranscriptionSession:
+        raise UnsupportedFeatureError("no streaming_input")
+
+    def _bad_factory() -> TranscriptionSession:
+        raise RuntimeError("factory boom")
+
+    class _HangSession(TranscriptionSession):
+        async def _open(self) -> None:
+            time.sleep(1.0)
+
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.done()  # pragma: no cover - never reached
+
+    by_code: dict[str, list[str | None]] = {}
+    for factory, timeout in (
+        (_unsupported_factory, 5.0),
+        (_bad_factory, 5.0),
+        (_HangSession, 0.05),
+        (_NoTerminalSession, 5.0),
+    ):
+        report = check_sync_bridge(factory, timeout=timeout, model="a/x")
+        for issue in report.issues:
+            by_code.setdefault(issue.code, []).append(issue.model)
+
+    assert sorted(by_code) == [
+        "sync_bridge_did_not_terminate",
+        "sync_bridge_no_terminal",
+        "sync_bridge_not_applicable",
+        "sync_bridge_raised",
+    ]
+    assert all(models == ["a/x"] for models in by_code.values()), by_code
+
+    # The leak path too (forced, as in the dedicated leak test).
+    def _force_alive(_self: SyncSession) -> bool:
+        return True
+
+    monkeypatch.setattr(SyncSession, "is_loop_alive", _force_alive)
+    leak = check_sync_bridge(_CleanSession, timeout=5.0, model="a/x")
+    assert [i.model for i in leak.issues if i.code == "sync_bridge_thread_leak"] == ["a/x"]
+
+
 # --------------------------------------------------------------------------- #
 # check_recommended_wire_format (self-consistency)
 # --------------------------------------------------------------------------- #
@@ -961,6 +1080,31 @@ def test_recommended_wire_format_raising_is_reported() -> None:
     report = check_recommended_wire_format(_RaisingEngine())
     assert report.passed is False
     assert any(i.code == "recommended_wire_format_raised" for i in report.issues)
+
+
+def test_recommended_wire_format_issues_carry_the_model_key() -> None:
+    # Both failure paths attribute their issue to the model under test: in a
+    # multi-model `compliance run` an unattributed issue renders as <registry>,
+    # leaving the user unable to tell which engine declared the bad format.
+    class _RaisingEngine(_GatingStreamEngine):
+        def recommended_wire_format(self) -> Any:
+            raise RuntimeError("boom")
+
+    raised = check_recommended_wire_format(_RaisingEngine(), model="a/x")
+    assert [(i.code, i.model) for i in raised.issues] == [("recommended_wire_format_raised", "a/x")]
+
+    class _InconsistentEngine(_GatingStreamEngine):
+        properties: ClassVar[BaseProperties] = _StreamProps.model_construct(
+            native_sample_rate=16000, accepted_sample_rates=[8000], required_input_sample_rate=None
+        )
+
+    inconsistent = check_recommended_wire_format(_InconsistentEngine(), model="a/x")
+    assert [(i.code, i.model) for i in inconsistent.issues] == [
+        ("recommended_wire_format_self_inconsistent", "a/x")
+    ]
+
+    # The default stays None for a single-engine run (nothing to disambiguate).
+    assert [i.model for i in check_recommended_wire_format(_RaisingEngine()).issues] == [None]
 
 
 # --------------------------------------------------------------------------- #

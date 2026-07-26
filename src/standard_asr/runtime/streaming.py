@@ -43,6 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
 from standard_asr.contract.results import (
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
     Diagnostic,
     Segment,
     TranscriptionResult,
@@ -124,16 +125,18 @@ _SYNC_BRIDGE_LOOP_THREAD_NAME = "standard-asr-sync-bridge-loop"
 _INPUT_SOURCE_ERROR_DETAIL = "Audio input source failed during streaming."
 
 #: Diagnostic codes the streaming layer emits (the lifecycle guard's event
-#: admission verdicts plus the reducer's timestamp disclosure). Like the
-#: ``DIAG_*`` constants in :mod:`standard_asr.runtime.gating` and
-#: :mod:`standard_asr.contract.language`, a diagnostic ``code`` is a
-#: wire-visible contract consumers match on, so each lives here as the single
-#: source of truth -- a consumer hard-coding the literal would silently match
-#: the wrong contract after a rename. (Terminal *event* codes such as
-#: ``done_timeout`` / ``backpressure`` are a different namespace: they are
-#: ``TranscriptionEvent.code`` values pinned by the spec's event table, not
-#: ``Diagnostic`` codes.)
-DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
+#: admission verdicts). Like the ``DIAG_*`` constants in
+#: :mod:`standard_asr.runtime.gating` and :mod:`standard_asr.contract.language`,
+#: a diagnostic ``code`` is a wire-visible contract consumers match on, so each
+#: lives here as the single source of truth -- a consumer hard-coding the
+#: literal would silently match the wrong contract after a rename. The
+#: reducer's timestamp disclosure
+#: (:data:`~standard_asr.contract.results.DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE`,
+#: re-exported below) is homed in :mod:`standard_asr.contract.results` because
+#: it describes a property of the RESULT that the renderers consume. (Terminal
+#: *event* codes such as ``done_timeout`` / ``backpressure`` are a different
+#: namespace: they are ``TranscriptionEvent.code`` values pinned by the spec's
+#: event table, not ``Diagnostic`` codes.)
 DIAG_SUPERSEDE_UNKNOWN_OLD_ID = "supersede_unknown_old_id"
 DIAG_LIFECYCLE_CLOSED_SUPERSEDED = "lifecycle_closed_superseded"
 DIAG_LIFECYCLE_RETIRED_RESUPERSEDED = "lifecycle_retired_resuperseded"
@@ -657,10 +660,11 @@ class StreamReducer:
             ``0.0`` placeholders, since :class:`~standard_asr.contract.results.Segment`
             requires finite times), the result carries a
             ``segment_timestamps_unavailable`` warning diagnostic so the
-            placeholder spans are never mistaken for real timing (the SRT/VTT
-            renderers additionally detect the all-placeholder shape and fall
-            back to a single whole-text cue instead of emitting zero-duration
-            cues that players silently drop).
+            placeholder spans are never mistaken for real timing. That
+            diagnostic is also the AUTHORITATIVE signal the SRT/VTT renderers
+            key on to fall back to a single whole-text cue (placeholder spans
+            are indistinguishable from genuine zero-length ``t=0`` spans by
+            value, so consumers must use the diagnostic, never value-sniff).
         """
         order = list(self._order)
         if order and all(self._has_timestamp.get(sid, False) for sid in order):

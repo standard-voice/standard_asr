@@ -11,7 +11,9 @@ from collections.abc import Callable
 import pytest
 from pydantic import ValidationError
 
+from standard_asr.contract import results as results_module
 from standard_asr.contract.results import (
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
     ChannelResult,
     Diagnostic,
     Segment,
@@ -20,11 +22,8 @@ from standard_asr.contract.results import (
     synthesize_segment_speaker,
 )
 from standard_asr.renderers import to_srt, to_vtt
-from standard_asr.runtime.streaming import (
-    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
-    StreamReducer,
-    TranscriptionEvent,
-)
+from standard_asr.runtime import streaming as streaming_module
+from standard_asr.runtime.streaming import StreamReducer, TranscriptionEvent
 
 
 def test_minimal_result() -> None:
@@ -308,48 +307,154 @@ def test_synthetic_cue_without_duration_has_visible_span() -> None:
     assert "00:00:00.000 --> 00:00:03.000\nonly text" in vtt
 
 
-def test_all_zero_span_segments_fall_back_to_single_synthetic_cue() -> None:
-    # Every segment spanning exactly [0.0, 0.0] is the timing-less PLACEHOLDER
-    # shape a reduced timestamp-less stream produces. Rendering it one cue per
-    # segment would emit only zero-duration cues, which players silently drop --
-    # a subtitle file that displays nothing. It falls back to the same synthetic
-    # whole-text cue as segments=None, at the 3 s span used when duration is
-    # unknown.
+def test_zero_span_segments_without_the_diagnostic_render_faithfully() -> None:
+    # Span VALUES are never sniffed: a [0.0, 0.0] span in a result that carries
+    # no segment_timestamps_unavailable diagnostic is REAL timing the engine
+    # reported, so each segment renders as its own faithful zero-length cue.
+    # (The renderer previously guessed "all-zero == placeholder" and fabricated
+    # a 3 s whole-text cue here, silently inventing timing for genuinely
+    # timestamped segments -- the fix is to key on the diagnostic instead.)
     segs = [
         Segment(start=0.0, end=0.0, text="hello"),
         Segment(start=0.0, end=0.0, text="world"),
     ]
     result = TranscriptionResult(text="hello world", segments=segs)
+    assert result.diagnostics == []
 
     srt = to_srt(result)
-    assert srt == "1\n00:00:00,000 --> 00:00:03,000\nhello world\n"
-    # Exactly one cue -- not one per placeholder segment.
-    assert "2\n" not in srt
+    assert srt == (
+        "1\n00:00:00,000 --> 00:00:00,000\nhello\n\n2\n00:00:00,000 --> 00:00:00,000\nworld\n"
+    )
 
     vtt = to_vtt(result)
-    assert "00:00:00.000 --> 00:00:03.000\nhello world" in vtt
-    assert vtt.count("-->") == 1
+    assert "00:00:00.000 --> 00:00:00.000\nhello" in vtt
+    assert "00:00:00.000 --> 00:00:00.000\nworld" in vtt
+    assert vtt.count("-->") == 2
 
 
-def test_all_zero_span_segments_use_known_duration_for_the_synthetic_cue() -> None:
-    # When the result DOES know its duration, the synthetic cue spans it (the
-    # 3 s fallback is only for an unknown duration).
+def test_zero_span_segments_without_the_diagnostic_ignore_the_known_duration() -> None:
+    # A known duration does not license rewriting reported segment timing: with
+    # no diagnostic these are real spans, so `duration` never leaks into a cue.
     segs = [
         Segment(start=0.0, end=0.0, text="a"),
         Segment(start=0.0, end=0.0, text="b"),
     ]
     result = TranscriptionResult(text="a b", segments=segs, duration=7.5)
 
-    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:07,500\na b\n"
-    assert "00:00:00.000 --> 00:00:07.500\na b" in to_vtt(result)
+    srt = to_srt(result)
+    assert srt == "1\n00:00:00,000 --> 00:00:00,000\na\n\n2\n00:00:00,000 --> 00:00:00,000\nb\n"
+    assert "00:00:07,500" not in srt
+    assert "00:00:07.500" not in to_vtt(result)
 
 
-def test_all_zero_span_segments_with_empty_text_render_nothing() -> None:
-    # No text to synthesize a cue from -> no fabricated cue (the same rule the
-    # segments=None fallback follows).
+def test_diagnostic_free_empty_segment_text_renders_nothing() -> None:
+    # A payload-less segment yields no cue (the empty-payload rule), and with no
+    # diagnostic present the empty `text` is NOT a synthesis source either.
     result = TranscriptionResult(text="", segments=[Segment(start=0.0, end=0.0, text="")])
     assert to_srt(result) == ""
     assert to_vtt(result) == "WEBVTT\n"
+
+
+def test_zero_span_segment_text_survives_an_empty_result_text() -> None:
+    # A diagnostic-free result whose `text` is empty but whose segment carries
+    # the transcript must still render that segment. Under the old value-sniffing
+    # fallback this shape routed to the synthetic whole-text cue and, with `text`
+    # empty, produced an EMPTY subtitle file -- the transcript was dropped.
+    result = TranscriptionResult(text="", segments=[Segment(start=0.0, end=0.0, text="hello")])
+    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:00,000\nhello\n"
+    assert "hello" in to_vtt(result)
+
+
+def test_zero_span_segment_keeps_its_speaker_label() -> None:
+    # A diagnostic-free zero-span segment renders as a real cue, so
+    # include_speakers still attributes it. (The synthetic whole-text fallback
+    # drops labels -- it has no single attributable speaker -- so the old
+    # value-sniffing route silently discarded diarization here.)
+    result = TranscriptionResult(
+        text="x", segments=[Segment(start=0.0, end=0.0, text="hi", speaker="Alice")]
+    )
+    assert (
+        to_srt(result, include_speakers=True) == "1\n00:00:00,000 --> 00:00:00,000\n[Alice]: hi\n"
+    )
+    assert "<v Alice>hi" in to_vtt(result, include_speakers=True)
+
+
+def test_timestamps_unavailable_diagnostic_forces_the_single_synthetic_cue() -> None:
+    # The DIAGNOSTIC -- not the span values -- routes a result to the synthetic
+    # whole-text fallback. A hand-built result carrying it is treated exactly
+    # like a reduced timestamp-less stream: its 0.0 spans are placeholders, so
+    # rendering them per-segment would emit only zero-duration cues players
+    # silently drop.
+    segs = [
+        Segment(start=0.0, end=0.0, text="hello"),
+        Segment(start=0.0, end=0.0, text="world"),
+    ]
+    diagnostic = Diagnostic(
+        level="warning",
+        code=DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+        message="2 of 2 segments carry placeholder timestamps.",
+    )
+    result = TranscriptionResult(text="hello world", segments=segs, diagnostics=[diagnostic])
+
+    srt = to_srt(result)
+    assert srt == "1\n00:00:00,000 --> 00:00:03,000\nhello world\n"
+    assert "2\n" not in srt
+    vtt = to_vtt(result)
+    assert "00:00:00.000 --> 00:00:03.000\nhello world" in vtt
+    assert vtt.count("-->") == 1
+
+    # A known duration spans the synthetic cue instead of the 3 s fallback.
+    known = TranscriptionResult(
+        text="hello world", segments=segs, duration=7.5, diagnostics=[diagnostic]
+    )
+    assert to_srt(known) == "1\n00:00:00,000 --> 00:00:07,500\nhello world\n"
+    assert "00:00:00.000 --> 00:00:07.500\nhello world" in to_vtt(known)
+
+
+def test_final_with_start_and_no_end_renders_its_real_zero_length_span() -> None:
+    # A final carrying start=0.0 and no end is a REAL timestamp: the reducer
+    # stores end=start and emits no diagnostic, so the renderer must show the
+    # engine's own 00:00:00,000 --> 00:00:00,000 span rather than fabricate a
+    # 3 s cue from a value that merely looks like a placeholder.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "hello", start=0.0))
+    result = reducer.result()
+
+    assert result.diagnostics == []
+    assert to_srt(result) == "1\n00:00:00,000 --> 00:00:00,000\nhello\n"
+
+
+def test_partially_timestamped_reduce_renders_one_synthetic_cue_in_text_order() -> None:
+    # Mixed shape: one timestamped final and one timestamp-less final. The
+    # timeline is part-placeholder, so the reducer discloses it and the renderer
+    # refuses to fabricate a partial timeline: ONE synthetic cue carrying
+    # result.text, in result.text's order. Rendering per segment would sort the
+    # placeholder (0.0) ahead of the real 5 s span -- subtitles reordered against
+    # the transcript -- plus a zero-duration cue players drop.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "b", start=5.0, end=6.0))
+    reducer.add(TranscriptionEvent.final("s2", "a"))
+    result = reducer.result()
+
+    assert result.text == "b a"
+    assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+
+    srt = to_srt(result)
+    assert srt == "1\n00:00:00,000 --> 00:00:03,000\nb a\n"
+    assert "00:00:00,000 --> 00:00:00,000" not in srt
+    assert srt.count("-->") == 1
+    assert to_vtt(result) == "WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nb a\n"
+
+
+def test_timestamps_unavailable_constant_is_shared_by_results_and_streaming() -> None:
+    # The constant is homed in contract.results (it describes a property of the
+    # RESULT that the renderers consume) and re-exported by runtime.streaming
+    # (its emitter). Both names MUST be the same object: a copy would let the
+    # emitter and the renderer drift apart silently after a rename.
+    assert streaming_module.DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE is (
+        results_module.DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE
+    )
+    assert DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE == "segment_timestamps_unavailable"
 
 
 def test_single_zero_start_segment_with_real_end_is_not_the_fallback() -> None:

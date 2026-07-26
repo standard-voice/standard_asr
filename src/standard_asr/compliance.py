@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import threading
 from dataclasses import dataclass
 from typing import Callable, Iterable, Literal, Sequence
@@ -758,8 +759,11 @@ def _check_required_surface(
 ) -> None:
     """Verify the engine exposes the full required public surface.
 
-    Every engine MUST expose the unconditional batch/query surface
-    (:meth:`transcribe`, :meth:`transcribe_async`, :meth:`supports`); a missing
+    Every engine MUST expose the unconditional surface pinned by
+    :data:`_ALWAYS_REQUIRED_METHODS` -- :meth:`transcribe`,
+    :meth:`transcribe_async`, :meth:`supports`, and
+    :meth:`recommended_wire_format` (a ``StandardASR`` protocol member,
+    derivable from Properties even for batch-only engines); a missing
     member is a compliance **error**, not a silent accept. ``start_transcription``
     is required **only** when the engine declares a streaming axis
     (``streaming_input`` or ``streaming_output``) -- a batch-only engine
@@ -2025,7 +2029,9 @@ def check_provider_params_swap_safety(engine: EngineBase) -> ComplianceReport:
     return ComplianceReport(registry=None, issues=issues)
 
 
-def check_recommended_wire_format(engine: EngineBase) -> ComplianceReport:
+def check_recommended_wire_format(
+    engine: EngineBase, *, model: str | None = None
+) -> ComplianceReport:
     """Assert an engine's recommended wire format is one it would itself accept.
 
     :meth:`~standard_asr.runtime.interface.EngineBase.recommended_wire_format` is the
@@ -2041,6 +2047,10 @@ def check_recommended_wire_format(engine: EngineBase) -> ComplianceReport:
 
     Args:
         engine: The engine under test (declares ``streaming_input``).
+        model: The model key (``engine/model``) to attribute issues to, or
+            ``None`` for a single-engine run. In a multi-model run an
+            unattributed issue renders as ``<registry>`` and the user cannot
+            tell which engine failed.
 
     Returns:
         A :class:`ComplianceReport`. ``passed`` is ``True`` when no format is
@@ -2055,7 +2065,7 @@ def check_recommended_wire_format(engine: EngineBase) -> ComplianceReport:
                 level="error",
                 code="recommended_wire_format_raised",
                 message=f"EngineBase.recommended_wire_format() raised: {exc!r}.",
-                model=None,
+                model=model,
             )
         )
         return ComplianceReport(registry=None, issues=issues)
@@ -2072,7 +2082,7 @@ def check_recommended_wire_format(engine: EngineBase) -> ComplianceReport:
                         f"own ensure_stream_format_supported rejects it: {exc!r}. The "
                         "recommended format must be one the engine accepts."
                     ),
-                    model=None,
+                    model=model,
                 )
             )
     return ComplianceReport(registry=None, issues=issues)
@@ -2082,6 +2092,7 @@ def check_sync_bridge(
     session_factory: Callable[[], TranscriptionSession],
     *,
     timeout: float = 5.0,
+    model: str | None = None,
 ) -> ComplianceReport:
     """Drive an async adapter's :class:`SyncSession` from an external thread.
 
@@ -2096,18 +2107,44 @@ def check_sync_bridge(
         session_factory: A zero-argument callable returning a fresh async
             :class:`TranscriptionSession` (e.g. ``engine.start_transcription``
             bound with its arguments).
-        timeout: Seconds to allow the bridged session to drain and close. This
+        timeout: Total seconds to allow the whole bridged session -- open,
+            end-of-audio, drain, and close combined. MUST be finite and
+            strictly positive: ``<= 0`` would make the wait return immediately
+            (a false "did not terminate" verdict against a compliant engine)
+            and ``inf``/``nan`` would hang the check on the very deadlock it
+            exists to diagnose, so both are rejected loudly (the same rule the
+            CLI's ``--bridge-timeout`` enforces at parse time). It also caps
+            each bridged lifecycle call (forwarded as the ``SyncSession``
+            ``submit_timeout``), so granting a larger budget genuinely extends
+            slow-but-compliant ``_open``/``_close`` phases. This
             MUST exceed the adapter's real ``_open`` + ``_close`` cost: a slow but
             compliant adapter (a cloud session doing a real network handshake) is
             *not* a deadlock, so when a run reports a timeout, re-run with a larger
             value to tell "slow" from "stuck". The driver thread is a daemon, so a
             false positive (or a real deadlock) never blocks interpreter exit --
             the process is not held hostage by the fault this check diagnoses.
+        model: The model key (``engine/model``) to attribute issues to, or
+            ``None`` for a single-engine run (a multi-model run needs the
+            attribution to name the failing engine).
 
     Returns:
         A :class:`ComplianceReport`. ``passed`` is ``True`` when the bridge
-        terminated cleanly with no leaked background loop thread.
+        terminated cleanly with no leaked background loop thread, or when the
+        check is not applicable (the engine rejected session establishment as
+        unsupported -- e.g. an output-only engine cannot accept the bridge's
+        bare-frame session; reported as a ``sync_bridge_not_applicable``
+        warning, never as an engine failure).
+
+    Raises:
+        ValueError: If ``timeout`` is not finite or not strictly positive (a
+            caller code bug, rejected independent of any policy).
     """
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(
+            f"check_sync_bridge timeout must be a finite number of seconds > 0, "
+            f"got {timeout!r} (<= 0 yields an instant false 'did not terminate' "
+            "verdict; inf/nan hangs the check on the deadlock it diagnoses)."
+        )
     issues: list[ComplianceIssue] = []
     outcome: dict[str, object] = {}
     worker_name = "compliance-sync-bridge"
@@ -2115,11 +2152,24 @@ def check_sync_bridge(
     def _drive() -> None:
         sync: SyncSession | None = None
         try:
-            sync = SyncSession(session_factory())
+            # The user's timeout budget applies to the bridged lifecycle calls
+            # too (submit_timeout), not only the outer join: otherwise a
+            # --bridge-timeout above SyncSession's internal 30 s default was
+            # silently inert for open/close and a slow-but-compliant adapter
+            # failed as "raised" no matter how much time the user granted.
+            sync = SyncSession(session_factory(), submit_timeout=timeout)
             with sync:
                 sync.end_audio()
                 events = list(sync)
             outcome["terminal"] = any(getattr(ev, "is_terminal", False) for ev in events)
+        except UnsupportedFeatureError as exc:
+            # Session ESTABLISHMENT was refused as unsupported (typically the
+            # factory driving start_transcription(audio_format=...) against an
+            # engine without streaming_input, e.g. output-only). The bridge
+            # feeds bare frames, so it does not apply to such an engine --
+            # report not-applicable, never an engine failure: blaming the
+            # engine for the check's own shape is a misdirected verdict.
+            outcome["not_applicable"] = str(exc)
         except Exception as exc:  # noqa: BLE001 - reported as a compliance error
             outcome["error"] = repr(exc)
         finally:
@@ -2154,7 +2204,24 @@ def check_sync_bridge(
                     "sync-bridge adapter contract: bind loop resources in "
                     "__aenter__, never touch the ambient event loop."
                 ),
-                model=None,
+                model=model,
+            )
+        )
+        return ComplianceReport(registry=None, issues=issues)
+
+    if "not_applicable" in outcome:
+        issues.append(
+            ComplianceIssue(
+                level="warning",
+                code="sync_bridge_not_applicable",
+                message=(
+                    "Sync-bridge check not applicable: the engine refused session "
+                    f"establishment as unsupported ({outcome['not_applicable']}). "
+                    "An engine without streaming_input cannot accept the bridge's "
+                    "bare-frame session; this is a property of the check, not an "
+                    "engine failure."
+                ),
+                model=model,
             )
         )
         return ComplianceReport(registry=None, issues=issues)
@@ -2165,7 +2232,7 @@ def check_sync_bridge(
                 level="error",
                 code="sync_bridge_raised",
                 message=f"SyncSession raised while bridging: {outcome['error']}.",
-                model=None,
+                model=model,
             )
         )
     elif not outcome.get("terminal"):
@@ -2178,7 +2245,7 @@ def check_sync_bridge(
                 level="error",
                 code="sync_bridge_no_terminal",
                 message="SyncSession ended without emitting a terminal event.",
-                model=None,
+                model=model,
             )
         )
 
@@ -2193,7 +2260,7 @@ def check_sync_bridge(
                 level="error",
                 code="sync_bridge_thread_leak",
                 message="SyncSession did not tear down its owned background loop thread on close.",
-                model=None,
+                model=model,
             )
         )
 

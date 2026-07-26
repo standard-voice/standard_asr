@@ -480,18 +480,22 @@ def test_cli_transcribe(
     ("argv", "expected_strict"),
     [
         (["transcribe", "alpha/first", "dummy.wav"], False),
-        (["transcribe", "alpha/first", "dummy.wav", "--strict"], True),
+        (["transcribe", "alpha/first", "dummy.wav", "--strict-discovery"], True),
         (["prepare", "alpha/first"], False),
-        (["prepare", "alpha/first", "--strict"], True),
+        (["prepare", "alpha/first", "--strict-discovery"], True),
+        (["list"], False),
+        (["list", "--strict-discovery"], True),
+        (["show", "alpha/first"], False),
+        (["show", "alpha/first", "--strict-discovery"], True),
     ],
 )
-def test_cli_transcribe_and_prepare_thread_strict_into_discovery(
+def test_cli_strict_discovery_threads_into_discovery(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     argv: list[str],
     expected_strict: bool,
 ) -> None:
-    # `transcribe` and `prepare` are uniform with `list` / `show`: --strict makes
+    # Every discovery-facing subcommand is uniform: --strict-discovery makes
     # discovery FAIL on an invalid entry point instead of skipping it, and its
     # absence keeps the lenient default. Captured at the discovery call so the
     # flag cannot be parsed-but-dropped.
@@ -509,6 +513,49 @@ def test_cli_transcribe_and_prepare_thread_strict_into_discovery(
 
     assert exit_code == 0
     assert seen["strict"] is expected_strict
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["list", "--strict"],
+        ["show", "alpha/first", "--strict"],
+        ["prepare", "alpha/first", "--strict"],
+        ["transcribe", "alpha/first", "dummy.wav", "--strict"],
+        ["compliance", "entrypoints", "--strict"],
+        ["compliance", "run", "--strict"],
+    ],
+)
+def test_cli_bare_strict_flag_is_rejected(argv: list[str]) -> None:
+    """A bare ``--strict`` is a usage error (exit 2), never an abbreviation.
+
+    ``strict`` alone already names a DIFFERENT knob: the engine's
+    strict/best_effort PARAMETER-gating policy, an init-config field set via
+    ``--set strict=...``. The discovery flag is therefore spelled
+    ``--strict-discovery``, and argparse prefix abbreviation is disabled
+    (``allow_abbrev=False``) so ``--strict`` cannot silently resolve to it and
+    resurrect exactly the confusion the rename exists to prevent.
+    """
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(argv)
+    assert excinfo.value.code == 2
+
+
+def test_cli_does_not_abbreviate_long_flags() -> None:
+    # allow_abbrev=False is set on the top-level parser AND every subparser: an
+    # abbreviation a user scripts today can turn ambiguous the day a new flag
+    # lands, which would be a silent behavior change.
+    parser = cli.build_parser()
+    for argv in (
+        ["list", "--strict-disc"],
+        ["compliance", "run", "--include"],
+        ["compliance", "run", "--bridge", "5"],
+        ["serve", "--ho", "0.0.0.0"],
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(argv)
+        assert excinfo.value.code == 2
 
 
 def test_cli_transcribe_json(
@@ -1686,13 +1733,46 @@ def test_cli_bridge_timeout_accepts_positive_finite_value() -> None:
     assert args.bridge_timeout == 12.5
 
 
-def test_cli_compliance_run_bridge_timeout_defaults_to_five_seconds() -> None:
-    # The flag's default is part of the CLI contract (the check's remediation
-    # tells authors to raise it, so the baseline must be knowable).
+def test_cli_compliance_run_bridge_timeout_parses_to_a_none_sentinel() -> None:
+    # The PARSED default is a None sentinel, not the literal 5.0: only that
+    # distinguishes "user omitted the flag" from "user explicitly asked for 5 s",
+    # which _cmd_compliance_run needs to reject an explicit --bridge-timeout
+    # without --include-bridge instead of silently ignoring it. The documented
+    # 5.0 s default is applied there (see the effective-default test below).
     parser = cli.build_parser()
     args = parser.parse_args(["compliance", "run"])
-    assert args.bridge_timeout == 5.0
+    assert args.bridge_timeout is None
     assert parser.parse_args(["compliance", "run", "--bridge-timeout", "30"]).bridge_timeout == 30.0
+
+
+def test_cli_compliance_run_bridge_timeout_without_include_bridge_is_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --bridge-timeout only means anything with --include-bridge. Accepting it
+    # alone would print "Compliance run passed" to an author who reads it as
+    # "the bridge ran within my budget" -- a silently inert flag. It is a usage
+    # error (exit 2) naming the flag that would make it effective.
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    def _fail_if_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the bridge must not run without --include-bridge")
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _fail_if_called)
+
+    exit_code = cli.main(["compliance", "run", "stream/ok", "--bridge-timeout", "60"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "--include-bridge" in captured.err
+    assert "Compliance run passed" not in captured.out
 
 
 def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
@@ -1713,8 +1793,11 @@ def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
 
     seen: dict[str, object] = {}
 
-    def _check_sync_bridge(factory: object, *, timeout: float = 5.0) -> ComplianceReport:
+    def _check_sync_bridge(
+        factory: object, *, timeout: float = 5.0, model: str | None = None
+    ) -> ComplianceReport:
         seen["timeout"] = timeout
+        seen["model"] = model
         return ComplianceReport(registry=ModelRegistry({}), issues=[])
 
     monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
@@ -1726,12 +1809,16 @@ def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
 
     assert exit_code == 0
     assert seen["timeout"] == 12.5
+    # The model key travels with it: in a multi-model run an unattributed bridge
+    # issue renders as <registry> and the user cannot tell which engine failed.
+    assert seen["model"] == "stream/ok"
 
 
 def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Omitting the flag hands the documented 5.0 s default down, not None.
+    # Omitting the flag hands the documented 5.0 s default down, not the None
+    # sentinel argparse now parses to (check_sync_bridge rejects a non-float).
     eps = [
         EntryPoint(
             name="stream/ok",
@@ -1744,8 +1831,11 @@ def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
 
     seen: dict[str, object] = {}
 
-    def _check_sync_bridge(factory: object, *, timeout: float = -1.0) -> ComplianceReport:
+    def _check_sync_bridge(
+        factory: object, *, timeout: float = -1.0, model: str | None = None
+    ) -> ComplianceReport:
         seen["timeout"] = timeout
+        seen["model"] = model
         return ComplianceReport(registry=ModelRegistry({}), issues=[])
 
     monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
@@ -1755,6 +1845,7 @@ def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
 
     assert exit_code == 0
     assert seen["timeout"] == 5.0
+    assert seen["model"] == "stream/ok"
 
 
 def test_cli_compliance_run_failure_headline(

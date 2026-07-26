@@ -27,13 +27,19 @@ from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast, runtime_checkable
 
+from pydantic import ValidationError
+
 from standard_asr.audio.conversion import PreparedAudio, execute_plan
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioInput, AudioInputLike, coerce_audio_input
 from standard_asr.audio.negotiation import negotiate_or_raise
 from standard_asr.audio.wire import CANONICAL_WIRE_ENCODING
 from standard_asr.contract.capabilities import DeclaredCapabilities
-from standard_asr.contract.exceptions import ConfigError, UnsupportedFeatureError
+from standard_asr.contract.exceptions import (
+    ConfigError,
+    TranscriptionError,
+    UnsupportedFeatureError,
+)
 from standard_asr.contract.language import (
     AUTO,
     DIAG_LANGUAGE_FELL_BACK,
@@ -153,11 +159,15 @@ class StandardASR(Protocol):
             A streaming session.
 
         Raises:
-            ValueError: If both ``audio_format`` and ``audio`` are provided.
+            ValueError: If both ``audio_format`` and ``audio`` are provided, or
+                on a malformed/``auto`` candidate-language entry (a caller code
+                bug; always raises, independent of strict/best_effort).
             ConfigError: On an invalid language configuration.
             UnsupportedFeatureError: When streaming (or the requested streaming
                 input/output axis) is unsupported, when the wire format is
-                unreachable, or, in strict mode, on an unsupported parameter.
+                unreachable, or, in strict mode, on an unsupported parameter or
+                a valid-but-unreachable candidate list (non-detectable /
+                over-``max``).
             IncompatibleAudioInputError: If no conversion path exists for a
                 whole-input streaming ``audio`` value.
             UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the SSRF
@@ -545,7 +555,10 @@ class EngineBase(ABC):
                 -- a caller code bug, raised **always** (independent of
                 strict/best_effort).
             TranscriptionError: On an engine-execution failure inside
-                :meth:`_transcribe`.
+                :meth:`_transcribe` -- including a pydantic ``ValidationError``
+                escaping it (an invalid result construction is an engine
+                fault; the template wraps it here so it can never masquerade
+                as a client-input validation error).
         """
         request = params or RuntimeParams()
         # Fail fast: validate config + params (no audio needed) before decode.
@@ -562,7 +575,32 @@ class EngineBase(ABC):
         )
         # Audio decode/resample only after parameters are known-good.
         prepared = self._prepare_audio(audio)
-        result = self._transcribe(prepared, gated)
+        try:
+            result = self._transcribe(prepared, gated)
+        except ValidationError as exc:
+            # A pydantic ValidationError escaping _transcribe is an ENGINE
+            # fault (params were validated before this point; the usual cause
+            # is the engine constructing a TranscriptionResult/Segment the
+            # model rejects -- e.g. a field removed from the contract, or an
+            # invalid timestamp). Without this wrap it masquerades as a
+            # client-input validation error: the server's ValidationError
+            # clause turned it into a 422 blaming the request's options.
+            # Wrapping enforces the spec's portable batch error contract
+            # (engine-execution failure -> TranscriptionError, original
+            # exception preserved as __cause__) at the one template seam that
+            # can see it.
+            raise TranscriptionError(
+                "Engine produced an invalid result (or raised an unwrapped "
+                "validation error) inside _transcribe -- an engine/plugin "
+                "fault, not a request error. See the chained ValidationError "
+                "for the offending fields (e.g. a field the result model no "
+                "longer accepts).",
+                hint=(
+                    "Report this to the engine plugin's author; a core/plugin "
+                    "version mismatch (the plugin building a result with "
+                    "removed or invalid fields) is the usual cause."
+                ),
+            ) from exc
         # Standard-layer diarization synthesis: the streaming
         # reducer applies the same shared rule, so batch and streaming yield
         # the same Segment.speaker for the same engine output.

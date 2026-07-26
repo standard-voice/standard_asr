@@ -8,6 +8,14 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'src/standard_asr/**'
+      # The deploy builds from the LOCKED environment, so its output depends on
+      # these too: a mkdocs-material/mkdocstrings bump in uv.lock (or a docs
+      # dependency change in pyproject.toml, or an edit to this workflow, e.g.
+      # the UV_VERSION pin) must redeploy, or the published site silently
+      # diverges from the environment the CI docs gate validated.
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/mkdocs.yml'
   workflow_dispatch:
 
 # Least-privilege at the top level; the deploy job opts up to contents: write

@@ -123,13 +123,12 @@ whether the input was batch or streamed.
 One honesty note: some engines emit no timestamps while streaming. Their reduced
 segments carry `start`/`end` of `0.0` as placeholders, and the result then
 includes a `segment_timestamps_unavailable` warning diagnostic -- do not use
-those spans for timing-sensitive work. When **no** segment carries a real
-timestamp, `to_srt` / `to_vtt` recognize the shape and render a single
-whole-text cue instead of zero-duration cues that players would silently drop.
-When timestamps are **mixed** (some segments real, some placeholders -- a rare
-engine shape), the renderers keep the real cues and the placeholder segments
-still come out as zero-duration cues most players drop; check the diagnostic
-before rendering subtitles from such a result.
+those spans for timing-sensitive work. That diagnostic is also the signal
+`to_srt` / `to_vtt` key on: any result carrying it (all-placeholder or mixed)
+renders as a single whole-text cue -- the renderers refuse to fabricate a
+partial timeline out of placeholder spans (which players would silently drop
+as zero-duration cues). Results without the diagnostic render per-segment
+faithfully, including genuine zero-length segments at `t=0`.
 
 ## Synchronous bridge
 
