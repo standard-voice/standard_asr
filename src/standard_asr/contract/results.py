@@ -18,9 +18,146 @@ Null rules (disambiguation):
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence, cast
+from collections.abc import Mapping
+from typing import Annotated, Literal, Sequence, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
+
+#: Diagnostic code attached to a :class:`TranscriptionResult` whose ``segments``
+#: include entries without a full measured span (``start`` and/or ``end`` is
+#: ``None`` -- i.e. :attr:`Segment.timestamp_status` is not ``"measured"``).
+#: The per-segment truth IS the nullable ``start``/``end`` values themselves;
+#: this result-level diagnostic is the aggregate disclosure ("N of M segments
+#: lack a usable span") consumers can surface without walking the list. It
+#: lives here -- not in the emitting reducer module -- because it describes a
+#: property of the RESULT; same family-home rationale as the language codes
+#: living in :mod:`standard_asr.contract.language`.
+DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
+
+
+def to_json_value(value: object) -> JsonValue:
+    """Project a Python value into the wire value space.
+
+    Every wire-visible slot -- ``Diagnostic.provided`` / ``effective``, every
+    ``extra`` mapping -- is declared :data:`~pydantic.JsonValue`, because the
+    Python objects and the JSON documents are meant to be the same protocol
+    seen twice (G5.2). Declaring them ``Any`` admitted values with no JSON
+    representation at all, which then failed during the wire projection --
+    after an endpoint had already committed to a response.
+
+    Two things stand between an ordinary value and that declaration, and this
+    helper is where both are handled:
+
+    * a **structured** value (a pydantic submodel such as a
+      ``DiarizationRequest``) has a JSON form but is not itself JSON, so it
+      is dumped;
+    * a **typed container** (``list[str]``, ``dict[str, int]``) IS JSON data,
+      but a type checker will not accept it where ``list[JsonValue]`` is
+      expected, because ``list`` is invariant. That is a static-analysis
+      artifact, not a real mismatch, so it is absorbed here once instead of
+      forcing a ``cast`` at every call site.
+
+    Runtime validation is unaffected: the model still validates what it is
+    given, so a value that is genuinely not JSON is rejected loudly at
+    construction, naming the field.
+
+    Args:
+        value: The value to hand to a wire-visible slot.
+
+    Returns:
+        The value's JSON projection.
+    """
+    if isinstance(value, BaseModel):
+        return cast("JsonValue", value.model_dump(mode="json"))
+    return cast("JsonValue", value)
+
+
+def require_json_string_keys(value: object) -> object:
+    """Reject any non-string object key anywhere in a wire-visible JSON value.
+
+    JSON object keys are strings, full stop. pydantic's lax ``dict[str, ...]``
+    validation, however, COERCES a ``bytes`` key to ``str`` -- at every nesting
+    level -- so a Python caller could construct ``extra={b"x": 1}`` (a key no
+    JSON document can express) and have it silently become ``"x"``. Worse,
+    ``{"x": 1, b"x": 2}`` COLLAPSES to a single ``"x"`` (last wins): two
+    distinct Python keys silently become one -- the exact silent wrong result
+    a wire-visible slot must never produce, and a break of the Python/JSON
+    two-layer isomorphism (a Python-only key rewriting wire-visible content).
+
+    Applied as a ``mode="before"`` validator on every wire-visible JSON slot
+    (the ``extra`` mappings, :attr:`Diagnostic.provided` / :attr:`effective`)
+    BEFORE that coercion, this walks the whole structure and rejects any key
+    that is not an EXACT ``str``. A ``str`` SUBCLASS is refused too: a hostile
+    one can define ``__eq__`` / ``__hash__`` so two subclass keys that both
+    serialize to ``"x"`` do NOT collide in the input mapping, reintroducing
+    the very wire collision the exact-type check exists to deny. Object keys
+    from an actual wire document are always strings, so this only ever fires
+    for a Python caller reaching past the key domain the wire defines
+    (fail-loud, never a silent rewrite).
+
+    The walk is iterative (an explicit stack, no recursion limit to blow on a
+    deep structure) and cycle-safe (an identity memo over the containers it
+    descends), so a self-referential mapping terminates instead of hanging the
+    validator.
+
+    Args:
+        value: The raw field input (any JSON-shaped Python value).
+
+    Returns:
+        ``value`` unchanged when every object key is an exact string.
+
+    Raises:
+        PydanticCustomError: On the first non-string object key, with a fixed,
+            input-echo-free message (the offending key -- possibly ``bytes``
+            carrying credential-shaped data -- is never echoed).
+    """
+    stack: list[object] = [value]
+    seen: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Mapping):
+            mapping = cast("Mapping[object, object]", node)
+            ident = id(mapping)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            for key, item in mapping.items():
+                if type(key) is not str:
+                    raise PydanticCustomError(
+                        "standard_asr_json_object_key",
+                        "JSON object keys must be strings.",
+                    )
+                stack.append(item)
+        elif isinstance(node, (list, tuple)):
+            sequence = cast("Sequence[object]", node)
+            ident = id(sequence)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            stack.extend(sequence)
+    return value
+
+
+#: A wire-visible ``extra`` mapping: ``dict[str, JsonValue]`` whose object keys
+#: are enforced to be exact strings at every depth
+#: (:func:`require_json_string_keys`), so the Python and JSON layers share one
+#: key domain. Shared by every ``extra`` field across the result and streaming
+#: models so the rule lives in exactly one place.
+WireExtra = Annotated[dict[str, JsonValue], BeforeValidator(require_json_string_keys)]
+
+#: A wire-visible free JSON slot (:attr:`Diagnostic.provided` / ``effective``):
+#: any :data:`~pydantic.JsonValue`, with the same exact-string-key rule applied
+#: to any object it contains at any depth.
+WireJsonValue = Annotated[JsonValue, BeforeValidator(require_json_string_keys)]
 
 
 class Diagnostic(BaseModel):
@@ -38,14 +175,17 @@ class Diagnostic(BaseModel):
         effective: The value that took effect, if relevant.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # allow_inf_nan=False for the same reason JsonValue is used above: NaN
+    # and Infinity are Python floats but not JSON, so a diagnostic carrying
+    # one would construct and then fail the wire projection.
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     level: Literal["info", "warning"] = Field(default="info")
     code: str = Field(..., description="Stable machine-readable diagnostic code.")
     message: str = Field(..., description="Human-readable explanation.")
     param: str | None = Field(default=None, description="Parameter concerned, if any.")
-    provided: Any | None = Field(default=None, description="Value provided, if any.")
-    effective: Any | None = Field(default=None, description="Value applied, if any.")
+    provided: WireJsonValue = Field(default=None, description="Value provided, if any.")
+    effective: WireJsonValue = Field(default=None, description="Value applied, if any.")
 
 
 def validate_speaker_label(value: str | None) -> str | None:
@@ -77,15 +217,17 @@ def validate_speaker_label(value: str | None) -> str | None:
     # personal name and this error surfaces verbatim through server 422 bodies
     # and logs (the same redaction stance as the language-tag validator).
     if not value.strip():
-        raise ValueError(
+        raise PydanticCustomError(
+            "standard_asr_speaker_label_blank",
             "speaker label must not be empty or whitespace-only (use None for "
-            "'no speaker attribution')."
+            "'no speaker attribution').",
         )
     if value != value.strip():
-        raise ValueError(
+        raise PydanticCustomError(
+            "standard_asr_speaker_label_whitespace",
             "speaker label must not have leading or trailing whitespace (two "
             "labels differing only in edge whitespace would read as two "
-            "different speakers)."
+            "different speakers).",
         )
     return value
 
@@ -134,7 +276,7 @@ class Word(BaseModel):
         default=None, description="Optional speaker label (non-empty, no edge whitespace)."
     )
     channel: int | None = Field(default=None, ge=0, description="Optional channel index (>= 0).")
-    extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
+    extra: WireExtra = Field(default_factory=dict, description="Engine-specific extra data.")
 
     @field_validator("speaker")
     @classmethod
@@ -172,7 +314,9 @@ class Word(BaseModel):
             ValueError: If ``end`` is earlier than ``start``.
         """
         if self.end < self.start:
-            raise ValueError(f"Word end ({self.end}) must be >= start ({self.start}).")
+            raise PydanticCustomError(
+                "standard_asr_span_inverted", "Word end must be >= start (the span runs backwards)."
+            )
         return self
 
 
@@ -182,18 +326,30 @@ class Segment(BaseModel):
     Note:
         ``start`` / ``end`` follow the same time frame as :class:`Word`:
         non-negative finite float seconds with origin at the first submitted
-        sample (``t=0``), ``end >= start`` (zero-duration allowed), and NaN / Inf
-        rejected. Within one channel segments are time-ordered; the
-        top-level :class:`TranscriptionResult.segments` are sorted by
-        ``(start, channel, speaker)`` (cross-channel spans may overlap).
-        ``speaker`` is the final tie-break for equal-``(start, channel)``
-        overlapping segments (the single-channel multi-speaker case); ``None``
-        sorts before any real label.
+        sample (``t=0``), ``end >= start`` (zero-duration allowed), and NaN /
+        Inf rejected -- OR ``None`` when the engine measured no such time.
+        ``None`` is data, not absence-of-field: the values themselves are the
+        single source of timing truth (there is no side-channel marker), and
+        the legal shapes are pinned by :attr:`timestamp_status`. An ``end``
+        without a ``start`` is unrepresentable (rejected at construction):
+        no engine measures where speech stopped without knowing it started.
+
+        Ordering: within one channel, MEASURED segments are time-ordered, and
+        the top-level :class:`TranscriptionResult.segments` with a ``start``
+        are sorted by ``(start, channel, speaker)`` (cross-channel spans may
+        overlap; ``speaker`` is the final tie-break for equal-``(start,
+        channel)`` overlapping segments, ``None`` sorting before any real
+        label). A ``start=None`` segment has no time position: the producer
+        keeps the list in READING order instead (list order is the reading
+        order, and ``TranscriptionResult.text`` joins segment texts in list
+        order), so a single unmeasured segment never scrambles -- or forces
+        fabricated positions into -- an otherwise real timeline.
 
     Attributes:
         start: Segment start time in seconds (origin = first submitted sample;
-            non-negative, finite).
-        end: Segment end time in seconds (non-negative, finite, ``>= start``).
+            non-negative, finite), or ``None`` when unmeasured.
+        end: Segment end time in seconds (non-negative, finite, ``>= start``),
+            or ``None`` when unmeasured. Requires ``start``.
         text: Segment transcript text.
         words: Optional word-level details for this segment.
         speaker: Optional speaker label (authoritative diarization shape).
@@ -202,17 +358,29 @@ class Segment(BaseModel):
         no_speech_prob: Optional no-speech probability.
         temperature: Optional decoding temperature.
         compression_ratio: Optional compression-ratio metric.
-        extra: Engine-specific extra data.
+        extra: Engine-specific extra data (engine-owned; the standard reserves
+            no keys here).
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative time,
-            or ``end < start``).
+            ``end < start``, or ``end`` without ``start``).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    start: float = Field(..., ge=0.0, description="Segment start time in seconds (>= 0).")
-    end: float = Field(..., ge=0.0, description="Segment end time in seconds (>= 0, >= start).")
+    start: float | None = Field(
+        ...,
+        ge=0.0,
+        description="Segment start time in seconds (>= 0), or null when unmeasured.",
+    )
+    end: float | None = Field(
+        ...,
+        ge=0.0,
+        description=(
+            "Segment end time in seconds (>= 0, >= start), or null when "
+            "unmeasured; requires a non-null start."
+        ),
+    )
     text: str = Field(..., description="Segment transcript text.")
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this segment."
@@ -230,7 +398,7 @@ class Segment(BaseModel):
     compression_ratio: float | None = Field(
         default=None, description="Optional compression-ratio metric."
     )
-    extra: dict[str, Any] = Field(default_factory=dict, description="Engine-specific extra data.")
+    extra: WireExtra = Field(default_factory=dict, description="Engine-specific extra data.")
 
     @field_validator("speaker")
     @classmethod
@@ -256,22 +424,60 @@ class Segment(BaseModel):
 
     @model_validator(mode="after")
     def _check_span(self) -> Segment:
-        """Reject an inverted span (``end < start``) at construction.
+        """Pin the legal timing shapes at construction.
 
-        ``ge=0`` and ``allow_inf_nan=False`` already constrain each bound to a
-        non-negative finite value; this enforces the remaining invariant
-        that a span never runs backwards. Equal bounds (zero duration) are
-        allowed.
+        ``ge=0`` and ``allow_inf_nan=False`` already constrain each non-null
+        bound to a non-negative finite value; this enforces the remaining
+        shape invariants (see :attr:`timestamp_status`):
+
+        * ``(float, float)`` with ``end >= start`` -- a measured span (equal
+          bounds, i.e. zero duration, allowed);
+        * ``(float, None)`` -- a measured onset with no span (start-only);
+        * ``(None, None)`` -- timing unavailable;
+        * ``(None, float)`` -- REJECTED: an end without a start is not a
+          representable measurement, and admitting it would force every
+          consumer to define semantics for a shape no engine produces.
 
         Returns:
             The validated segment.
 
         Raises:
-            ValueError: If ``end`` is earlier than ``start``.
+            ValueError: If ``end`` is set without ``start``, or is earlier
+                than ``start``.
         """
-        if self.end < self.start:
-            raise ValueError(f"Segment end ({self.end}) must be >= start ({self.start}).")
+        if self.end is not None:
+            if self.start is None:
+                raise PydanticCustomError(
+                    "standard_asr_span_end_without_start",
+                    "Segment end is set without a start; a measured end requires a "
+                    "measured start (legal shapes: measured / start-only / "
+                    "unavailable).",
+                )
+            if self.end < self.start:
+                raise PydanticCustomError(
+                    "standard_asr_span_inverted",
+                    "Segment end must be >= start (the span runs backwards).",
+                )
         return self
+
+    @property
+    def timestamp_status(self) -> Literal["measured", "start_only", "unavailable"]:
+        """The segment's timing shape, derived from ``start``/``end``.
+
+        Derived, not stored: the nullable values are the single source of
+        truth, so the status can never disagree with them (the previous
+        design stored fabricated ``0.0`` spans guarded by a mutable
+        side-channel marker -- two truths that could, and did, diverge).
+
+        Returns:
+            ``"measured"`` (full span), ``"start_only"`` (real onset, no
+            usable span), or ``"unavailable"`` (no timing).
+        """
+        if self.start is None:
+            return "unavailable"
+        if self.end is None:
+            return "start_only"
+        return "measured"
 
 
 def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
@@ -355,20 +561,22 @@ class TranscriptionResult(BaseModel):
             ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
         duration: Audio duration in seconds, if known (non-negative, finite).
-        segments: Segments across all channels, if available. They
-            SHOULD be sorted by ``(start, channel, speaker)`` (monotonic within
-            a channel; ``speaker`` is the final tie-break, ``None`` sorting
-            first); this ordering is an **engine obligation**, neither enforced
-            at construction nor checked by the compliance suite (the streaming
-            reducer legitimately keeps arrival order for timestamp-less engines).
-            The SRT/VTT renderers' defensive re-sort is the only standard-layer
-            safety net.
+        segments: Segments across all channels, if available. Segments WITH a
+            ``start`` SHOULD be sorted by ``(start, channel, speaker)``
+            (monotonic within a channel; ``speaker`` is the final tie-break,
+            ``None`` sorting first); a ``start=None`` segment has no time
+            position, so the list stays in READING order instead (list order
+            is the reading order; ``text`` joins segment texts in list
+            order). The ordering is an **engine obligation**, neither
+            enforced at construction nor checked by the compliance suite
+            (the streaming reducer keeps arrival order whenever any retained
+            segment lacks a ``start``). The SRT/VTT renderers' defensive
+            re-sort of measured cues is the only standard-layer safety net.
         words: Flattened word-level details, if available.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
         diagnostics: Conversion / best_effort / degradation diagnostics.
-        metadata: Standardized engine-agnostic metadata.
         extra: Engine-specific / experimental data (incl. provider formats).
 
     Raises:
@@ -401,10 +609,13 @@ class TranscriptionResult(BaseModel):
         default_factory=lambda: cast("list[Diagnostic]", []),
         description="Non-fatal diagnostics.",
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict, description="Standardized engine-agnostic metadata."
-    )
-    extra: dict[str, Any] = Field(
+    # No `metadata` pocket: the spec removed blanket metadata from Properties
+    # and Capabilities ("no known use case, invites unstructured data, breaks
+    # machine readability"), and a result-side "standardized metadata" dict with
+    # no standardized keys, no writer, and no reader was the same disease.
+    # Standardized result data gets a real field (additive-minor); everything
+    # engine-specific goes in `extra`.
+    extra: WireExtra = Field(
         default_factory=dict, description="Engine-specific / experimental data."
     )
 
@@ -458,12 +669,14 @@ class TranscriptionResult(BaseModel):
            constant top-level ``segments``) would silently lose all per-channel
            detail. That shape is an engine bug, so the model refuses it.
 
-        The complementary ordering invariant (top-level ``segments`` sorted
-        by ``(start, channel, speaker)``, monotonic within a channel) is
+        The complementary ordering invariant (top-level ``segments`` with a
+        ``start`` sorted by ``(start, channel, speaker)``, monotonic within a
+        channel; ``start=None`` segments keeping reading order) is
         intentionally *not* enforced here: the streaming reducer
         (:class:`~standard_asr.runtime.streaming.StreamReducer`) legitimately preserves
-        arrival order for timestamp-less engines and sorts only by ``start``
-        (no channel/speaker tie-break), so a strict ``(start, channel,
+        arrival order whenever any retained segment lacks a ``start`` and
+        sorts only by ``start`` otherwise (no channel/speaker tie-break), so
+        a strict ``(start, channel,
         speaker)`` construct-time check would reject valid reduced results. For
         the same reason the compliance suite does not check ordering either;
         ordering is an engine obligation, and the renderers' defensive re-sort
@@ -481,33 +694,44 @@ class TranscriptionResult(BaseModel):
             seen: set[int] = set()
             for entry in self.channels:
                 if entry.channel in seen:
-                    raise ValueError(
-                        f"channels contains duplicate entries for channel index "
-                        f"{entry.channel}; the standard defines channels as one ChannelResult "
-                        f"per channel, so each channel index MUST be unique (a duplicate "
-                        f"makes the top-level merge ambiguous and silently drops data for "
-                        f"consumers keyed by channel)."
+                    raise PydanticCustomError(
+                        "standard_asr_channel_duplicate",
+                        "channels contains duplicate entries for one channel index; "
+                        "the standard defines channels as one ChannelResult per "
+                        "channel, so each channel index MUST be unique (a duplicate "
+                        "makes the top-level merge ambiguous and silently drops data "
+                        "for consumers keyed by channel).",
                     )
                 seen.add(entry.channel)
             for name in ("segments", "words"):
                 if getattr(self, name) is None and any(
                     getattr(entry, name) is not None for entry in self.channels
                 ):
-                    raise ValueError(
-                        f"channels entries carry {name} but the top-level {name} is None; "
-                        f"the standard requires the top level to be derivable from channels "
-                        f"(ignoring channels must be lossless). Populate the top-level "
-                        f"{name} with the time-merged union of all channels' {name}."
+                    raise PydanticCustomError(
+                        "standard_asr_channel_top_level_missing",
+                        "channels entries carry "
+                        + name
+                        + " but the top-level "
+                        + name
+                        + " is None; the standard requires the top level to be "
+                        "derivable from channels (ignoring channels must be "
+                        "lossless). Populate the top-level "
+                        + name
+                        + " with the time-merged union of all channels' "
+                        + name
+                        + ".",
                     )
         return self
 
 
 __all__ = [
     "ChannelResult",
+    "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
     "Diagnostic",
     "Segment",
     "TranscriptionResult",
     "Word",
     "synthesize_segment_speaker",
+    "to_json_value",
     "validate_speaker_label",
 ]

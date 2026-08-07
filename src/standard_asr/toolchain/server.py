@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -30,6 +30,7 @@ from standard_asr.audio.input import AudioBase64, AudioBytes, AudioInput
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
     ConfigError,
+    ConfigurationRequiredError,
     EntrypointValidationError,
     InvalidProviderParamError,
     UnsupportedFeatureError,
@@ -37,11 +38,16 @@ from standard_asr.contract.exceptions import (
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import TranscriptionResult
 from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
+from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
     loc_is_credential,
     loc_to_list,
+    log_exception_safely,
     sanitize_validation_errors,
     sanitized_validation_message,
+)
+from standard_asr.runtime.streaming import (
+    DIAGNOSTICS_TRUNCATED_CODE as _OVERFLOW_CODE,
 )
 from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 
@@ -71,6 +77,19 @@ DEFAULT_MAX_WS_FRAME_BYTES: int = DEFAULT_MAX_BODY_BYTES
 #: ``create_app(max_ws_session_bytes=...)``.
 DEFAULT_MAX_WS_SESSION_BYTES: int = 256 * 1024 * 1024
 
+#: Stable client-facing detail for a model whose engine requires server-side
+#: configuration that is absent from this deployment
+#: (``ConfigurationRequiredError`` -- at zero-arg construction, or discovered
+#: lazily at transcription/session establishment). Deliberately
+#: generic: the absent FIELD NAMES are deployment detail (safe-logged for the
+#: operator), never sent to an unauthenticated caller. Shared verbatim by the
+#: REST 503 body and the WS ``service_unavailable`` frame.
+_ENGINE_CONFIG_ABSENT_DETAIL: str = (
+    "The engine for this model requires server-side configuration that is not "
+    "present on this deployment (for example a credential environment "
+    "variable). This is an operator-side state, not a request error."
+)
+
 # The credential-scrubbing of pydantic validation errors is shared with the CLI
 # (and any other transport that surfaces an `options` validation error) so the
 # two cannot drift on the "never echo the request input" rule. The single owner
@@ -88,9 +107,9 @@ def _sanitized_validation_detail(
 ) -> list[dict[str, Any]]:
     """Build the structured, input-free 422 ``detail`` for a pydantic error.
 
-    Every REST ``422`` -- the global ``RequestValidationError`` handler *and* the
-    standalone-``ValidationError`` paths (the ``options`` build, engine
-    construction, and engine-side re-validation during ``transcribe``) -- returns
+    Every REST ``422`` -- the global ``RequestValidationError`` handler *and*
+    the standalone-``ValidationError`` path for the client's own request
+    material (the ``options`` build) -- returns
     the **same** machine-readable shape: a list of ``{type, loc, msg}`` entries
     (the input is never echoed back). Keeping one body shape per status code means a
     cross-language client parses a single structure (and can branch on ``type``,
@@ -263,6 +282,35 @@ class TranscribeJsonRequest(BaseModel):
     )
 
 
+class StreamConfigRequest(BaseModel):
+    """The WebSocket config/handshake frame -- a CLOSED request model.
+
+    ``extra="forbid"`` is the load-bearing part: the old ad-hoc parse
+    (``config["audio_format"]`` + ``config.get("options")``) silently ignored
+    unknown top-level keys, so a client typo (``"optinos"``) started the
+    session with defaults while the client believed its options were applied
+    -- a silent wrong result, the exact failure mode every other request
+    model on the wire surface already forbids.
+
+    Attributes:
+        audio_format: The negotiated raw-audio wire format for the session.
+        options: Optional transcription options as a JSON object (validated
+            against the portable ``WireRuntimeParams`` set by the caller).
+
+    Raises:
+        ValueError: If validation fails (unknown keys included).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    audio_format: AudioFormat = Field(
+        ..., description="Raw-audio wire format for the session's binary frames."
+    )
+    options: dict[str, Any] | None = Field(
+        default=None, description="Optional transcription options."
+    )
+
+
 class TranscribeResponse(BaseModel):
     """Standard transcription response.
 
@@ -328,7 +376,7 @@ def create_app(
         from fastapi import FastAPI, File, Form, HTTPException, Request
         from fastapi import WebSocket as _WebSocket
         from fastapi.exceptions import RequestValidationError
-        from fastapi.responses import JSONResponse
+        from fastapi.responses import JSONResponse, Response
     except ImportError as exc:
         raise ImportError(
             "FastAPI dependencies are missing. Install with: pip install 'standard-asr[server]'."
@@ -416,7 +464,7 @@ def create_app(
         model: str = Form(...),
         file: bytes = File(...),
         options: str | None = Form(None),
-    ) -> TranscribeResponse:
+    ) -> Response:
         """Transcribe audio from a multipart file upload.
 
         Args:
@@ -425,7 +473,9 @@ def create_app(
             options: Optional JSON options string.
 
         Returns:
-            Transcription response.
+            The transcription response, pre-encoded by
+            :func:`_run_transcription` (the single wire projection;
+            ``response_model`` stays for the OpenAPI schema).
 
         Raises:
             HTTPException: If decoding or transcription fails.
@@ -457,21 +507,24 @@ def create_app(
         # engine's accepted_input (so an encoded-only engine gets bytes, an
         # array engine gets an array at its accepted rate -- the upload's true
         # sample rate is never silently overridden).
-        return await _run_transcription(
+        body = await _run_transcription(
             model_registry, model, AudioBytes(data=file), params, HTTPException
         )
+        return Response(content=body, media_type="application/json")
 
     @app.post("/v1/transcribe:json", response_model=TranscribeResponse)
     async def transcribe_json(  # pyright: ignore[reportUnusedFunction]
         payload: TranscribeJsonRequest,
-    ) -> TranscribeResponse:
+    ) -> Response:
         """Transcribe audio from a JSON payload.
 
         Args:
             payload: JSON request payload.
 
         Returns:
-            Transcription response.
+            The transcription response, pre-encoded by
+            :func:`_run_transcription` (the single wire projection;
+            ``response_model`` stays for the OpenAPI schema).
 
         Raises:
             HTTPException: If decoding or transcription fails.
@@ -496,9 +549,10 @@ def create_app(
         # decodes and converts per the engine's accepted_input (see the
         # multipart endpoint). Decode failures surface as AudioProcessingError
         # and map to 400 in _run_transcription.
-        return await _run_transcription(
+        body = await _run_transcription(
             model_registry, payload.model, AudioBase64(payload.audio), params, HTTPException
         )
+        return Response(content=body, media_type="application/json")
 
     @app.get("/v1/capabilities/{model:path}")
     def capabilities(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -514,13 +568,20 @@ def create_app(
             The declared capability tree.
 
         Raises:
-            HTTPException: If the model is unknown or has no capabilities.
+            HTTPException: 404 if the model key is unknown or the engine
+                declares no capabilities; scrubbed 500 if the registered
+                model's plugin fails to load, its capability descriptor
+                raises, or its canonical JSON is unencodable (see
+                :func:`_metadata_or_http_error`).
         """
-        engine_class = _engine_class_or_404(model_registry, model, HTTPException)
-        caps = getattr(engine_class, "declared_capabilities", None)
-        if caps is None:
-            raise HTTPException(status_code=404, detail="No capabilities declared.")
-        return caps.canonical_json()
+
+        def _project(engine_class: Any) -> dict[str, Any]:
+            caps = getattr(engine_class, "declared_capabilities", None)
+            if caps is None:
+                raise HTTPException(status_code=404, detail="No capabilities declared.")
+            return caps.canonical_json()
+
+        return _metadata_or_http_error(model_registry, model, HTTPException, project=_project)
 
     @app.get("/v1/params-schema/{model:path}")
     def params_schema(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -538,13 +599,19 @@ def create_app(
             The provider-params JSON Schema, or ``{}`` if the engine has none.
 
         Raises:
-            HTTPException: If the model is unknown.
+            HTTPException: 404 if the model key is unknown; scrubbed 500
+                if the registered model's plugin fails to load, its
+                descriptor raises, or its schema is unencodable (see
+                :func:`_metadata_or_http_error`).
         """
-        engine_class = _engine_class_or_404(model_registry, model, HTTPException)
-        params_type = getattr(engine_class, "provider_params_type", None)
-        if params_type is None:
-            return {}
-        return params_type.model_json_schema()
+
+        def _project(engine_class: Any) -> dict[str, Any]:
+            params_type = getattr(engine_class, "provider_params_type", None)
+            if params_type is None:
+                return {}
+            return params_type.model_json_schema()
+
+        return _metadata_or_http_error(model_registry, model, HTTPException, project=_project)
 
     @app.get("/v1/config-schema/{model:path}")
     def config_schema(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -566,13 +633,19 @@ def create_app(
             declare a class-level ``config_type``.
 
         Raises:
-            HTTPException: If the model is unknown.
+            HTTPException: 404 if the model key is unknown; scrubbed 500
+                if the registered model's plugin fails to load, its
+                descriptor raises, or its schema is unencodable (see
+                :func:`_metadata_or_http_error`).
         """
-        engine_class = _engine_class_or_404(model_registry, model, HTTPException)
-        config_type = getattr(engine_class, "config_type", None)
-        if config_type is None:
-            return {}
-        return config_type.model_json_schema()
+
+        def _project(engine_class: Any) -> dict[str, Any]:
+            config_type = getattr(engine_class, "config_type", None)
+            if config_type is None:
+                return {}
+            return config_type.model_json_schema()
+
+        return _metadata_or_http_error(model_registry, model, HTTPException, project=_project)
 
     @app.websocket("/v1/stream/{model:path}")
     async def stream(  # pyright: ignore[reportUnusedFunction]
@@ -594,9 +667,10 @@ def create_app(
         """
         await websocket.accept()
         try:
-            config = await _receive_config_frame(websocket, max_ws_frame_bytes)
-            audio_format = AudioFormat(**config["audio_format"])
-            params = _build_params(config.get("options"))
+            raw_config = await _receive_config_frame(websocket, max_ws_frame_bytes)
+            request = StreamConfigRequest.model_validate(raw_config)
+            audio_format = request.audio_format
+            params = _build_params(request.options)
         except _ConfigFrameTooLarge as exc:
             # The config/handshake frame is bounded by the app cap too (not just
             # the transport ws_max_size), so the documented DoS bound holds
@@ -607,9 +681,32 @@ def create_app(
             )
             await websocket.close()
             return
+        except _ConfigFrameNotText as exc:
+            # A malformed handshake (binary first frame): the caller's mistake,
+            # reported with the standard-authored message.
+            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
+            await websocket.close()
+            return
+        except json.JSONDecodeError as exc:
+            # Unparseable JSON text: caller-fixable. JSONDecodeError's str()
+            # is positional ("Expecting value: line 1 column 2"), never the
+            # document text, so it is safe and actionable to send.
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "bad_request",
+                    "message": f"Config frame is not valid JSON: {exc}.",
+                }
+            )
+            await websocket.close()
+            return
         except ValidationError as exc:
-            # Sanitize: pydantic's str(exc) echoes the offending input value, so
-            # a mis-placed secret in options would be reflected to the client.
+            # The CLOSED StreamConfigRequest model rejects unknown top-level
+            # keys (a client typo like "optinos" must fail loudly, never start
+            # the session on silent defaults), a non-object frame, a bad
+            # audio_format, and invalid options -- all caller-fixable.
+            # Sanitize: pydantic's str(exc) echoes the offending input value,
+            # so a mis-placed secret in options would be reflected back.
             await websocket.send_json(
                 {
                     "type": "error",
@@ -619,32 +716,80 @@ def create_app(
             )
             await websocket.close()
             return
-        except Exception as exc:  # noqa: BLE001
-            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
+        except Exception:  # noqa: BLE001
+            # Anything else here is OUR fault (the receive machinery, an
+            # internal bug), not the caller's: the old catch-all mapped it to
+            # `bad_request` AND sent raw str(exc) -- misattributing the fault
+            # and leaking internal text to an unauthenticated client. Scrubbed
+            # internal_error, specifics safe-logged.
+            log_exception_safely(logger, "WS handshake failed internally for model %r", model)
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "internal_error",
+                    "message": "Internal handshake error. See server logs for details.",
+                }
+            )
             await websocket.close()
             return
 
         try:
             asr = await asyncio.to_thread(model_registry.create, model)
-        except (EntrypointValidationError, FactoryLoadError) as exc:
+        except EntrypointValidationError as exc:
+            # The caller's model key does not exist or cannot be parsed --
+            # genuinely caller-fixable; the authored message names only the
+            # caller's own key and the available keys.
             await websocket.send_json(
                 {"type": "error", "code": "unknown_model", "message": str(exc)}
             )
             await websocket.close()
             return
-        except (InvalidProviderParamError, ConfigError) as exc:
-            # Client-caused construction failure (bad config / missing
-            # credentials / invalid options) -- the caller can fix it, so it is a
-            # bad_request, mirroring the REST 422 mapping. These messages are
-            # authored for the caller (unlike pydantic's input echo above).
-            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
+        except FactoryLoadError:
+            # The key RESOLVED; a server-installed plugin failed to
+            # import/resolve/validate. That is an engine/deployment fault the
+            # caller can neither see nor fix -- calling it "unknown model"
+            # misattributed it, and the message carries plugin-internal
+            # import/annotation text that must not cross the trust boundary.
+            # Scrubbed internal_error, specifics safe-logged (§3.7 twin).
+            log_exception_safely(logger, "Registered model %r failed to load for streaming", model)
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "internal_error",
+                    "message": "Internal model construction error. See server logs for details.",
+                }
+            )
+            await websocket.close()
+            return
+        except ConfigurationRequiredError:
+            # MUST precede any broader arm (subclasses ConfigError). Zero-arg
+            # construction means every config input is the SERVER's: required
+            # config absent from this deployment is the operator's to fix --
+            # the WS twin of the REST 503, with the same stable generic detail
+            # (the absent field names are deployment detail, safe-logged only).
+            log_exception_safely(
+                logger,
+                "Engine %r requires configuration absent from the server environment",
+                model,
+            )
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "service_unavailable",
+                    "message": _ENGINE_CONFIG_ABSENT_DETAIL,
+                }
+            )
             await websocket.close()
             return
         except Exception:  # noqa: BLE001
-            # Internal/unexpected construction fault: never crash the route or
-            # leak detail. Log server-side; send a single generic, non-leaking
-            # frame (mirrors the REST scrubbed-500 contract).
-            logger.exception("Engine construction failed for streaming model %r", model)
+            # Internal/unexpected construction fault (incl. ConfigError /
+            # InvalidProviderParamError / ValidationError from the zero-arg
+            # factory -- a deployment or plugin defect, never the caller's;
+            # the old bad_request arm blamed the caller for faults it cannot
+            # see or fix): never crash the route or leak detail. Log
+            # server-side; send a single generic, non-leaking frame (mirrors
+            # the REST scrubbed-500 contract).
+            log_exception_safely(logger, "Engine construction failed for streaming model %r", model)
             await websocket.send_json(
                 {
                     "type": "error",
@@ -659,29 +804,109 @@ def create_app(
             # start_transcription is part of the structural StandardASR protocol
             # (a batch-only engine raises UnsupportedFeatureError, handled below).
             session = asr.start_transcription(audio_format=audio_format, params=params)
-        except (ConfigError, InvalidProviderParamError) as exc:
-            # The streaming template now runs the full gating pipeline at session
-            # establishment, so a language misconfig (ConfigError) or a
-            # swapped-engine provider_params mismatch (InvalidProviderParamError)
-            # surfaces HERE, not only at engine construction. These are
-            # client-fixable -> bad_request, mirroring the construction mapping
-            # above and the REST 422. NOTE: both subclass
-            # ValueError, so this clause MUST precede the UnsupportedFeatureError /
-            # ValueError clause below, which would otherwise mislabel them
-            # "unsupported".
-            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
+            # Sync-call boundary: an `async def` start_transcription (or a sync
+            # wrapper delegating to one) hands back a coroutine that the
+            # consumers below (`session.diagnostics()`, the bridge) would hit
+            # OUTSIDE this try as a secondary AttributeError while the
+            # coroutine leaked never-awaited. EngineContractError is not a
+            # ValueError, so it lands on the generic engine-fault arm below
+            # (scrubbed internal_error frame).
+            require_sync_result(
+                session, "start_transcription()", expected_type=TranscriptionSession
+            )
+        except ConfigurationRequiredError:
+            # Required config absent, discovered lazily at establishment (an
+            # engine deferring its credential check past construction): the WS
+            # twin of the REST 503 -- operator-side, stable generic message,
+            # never the absent field names. MUST precede the ConfigError arm
+            # (subclass), which MUST precede the ValueError arm below.
+            log_exception_safely(
+                logger,
+                "Engine %r requires configuration absent from the server environment",
+                model,
+            )
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "service_unavailable",
+                    "message": _ENGINE_CONFIG_ABSENT_DETAIL,
+                }
+            )
             await websocket.close()
             return
-        except (UnsupportedFeatureError, ValueError) as exc:
+        except (ConfigError, InvalidProviderParamError):
+            # An ENGINE fault, not a request error: the WS surface gives the
+            # client no way to cause either -- engine init config never
+            # crosses the wire, `provider_params` is rejected by
+            # WireRuntimeParams in the config frame, and client-fixable
+            # rejections have their own types (UnsupportedFeatureError ->
+            # `unsupported`; frame/options ValidationError -> `bad_request`
+            # at parse time). A ConfigError here is an engine
+            # declaration/config defect (e.g. a missing `default_language`)
+            # whose authored message may carry server-side config detail --
+            # the old `bad_request` frame blamed the caller AND surfaced that
+            # text. Scrubbed internal_error, specifics safe-logged. NOTE:
+            # both subclass ValueError -- callers must not rely on a broader
+            # ValueError arm existing (there deliberately is none).
+            log_exception_safely(
+                logger,
+                "Engine-side configuration/contract fault during establishment for %r",
+                model,
+            )
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "internal_error",
+                    "message": "Internal stream establishment error. See server logs for details.",
+                }
+            )
+            await websocket.close()
+            return
+        except ValidationError:
+            # By session establishment the client's params are already
+            # validated -- a bare ValidationError here is an ENGINE fault (a
+            # structural engine's internals; EngineBase wraps this seam as
+            # TranscriptionError, but the server cannot assume the base
+            # class). Labelling it "unsupported" misattributes the fault, and
+            # ``str(exc)`` echoes pydantic's offending input_value -- a
+            # mis-placed engine-side secret would cross the trust boundary.
+            # Scrubbed internal_error, logged server-side. A dedicated arm
+            # (not the generic one below) so the log names the seam.
+            log_exception_safely(
+                logger, "Engine-side validation failure during establishment for %r", model
+            )
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "internal_error",
+                    "message": "Internal stream establishment error. See server logs for details.",
+                }
+            )
+            await websocket.close()
+            return
+        except UnsupportedFeatureError as exc:
+            # The ONLY caller-fixable establishment rejection: the engine
+            # cannot serve this (validated) request's feature set. A bare
+            # ValueError deliberately does NOT belong here: by establishment
+            # every client input is already validated (config frame ->
+            # pydantic; language/candidates/unknown keys -> WireRuntimeParams;
+            # audio_format -> its model), and a compliant engine signals
+            # unsupported features with UnsupportedFeatureError -- so a
+            # surviving ValueError is an engine/adapter/SDK fault. Mapping it
+            # to `unsupported` blamed the caller AND sent str(exc) -- an
+            # engine-internal message, possibly credential-bearing -- to an
+            # unauthenticated client; it now falls to the scrubbed
+            # internal_error arm below (REST's fault-ownership twin, §3.7).
             await websocket.send_json({"type": "error", "code": "unsupported", "message": str(exc)})
             await websocket.close()
             return
         except Exception:  # noqa: BLE001
             # Internal/unexpected session-establishment fault (e.g. a fault in the
-            # engine's own _start_transcription hook): never crash the route or
-            # leak detail. Log server-side; send a single generic, non-leaking
-            # frame (mirrors the construction scrubbed-frame contract).
-            logger.exception("Stream session establishment failed for model %r", model)
+            # engine's own _start_transcription hook, or a bare ValueError from
+            # engine internals): never crash the route or leak detail. Log
+            # server-side; send a single generic, non-leaking frame (mirrors
+            # the construction scrubbed-frame contract).
+            log_exception_safely(logger, "Stream session establishment failed for model %r", model)
             await websocket.send_json(
                 {
                     "type": "error",
@@ -697,7 +922,37 @@ def create_app(
         # establishment, so a WS client can see WHY word_timestamps / prompt /
         # language were dropped or changed -- the REST path returns these on the
         # result, and the WS surface must not silently hide them.
-        diagnostics_frame = _initial_diagnostics_frame(session)
+        try:
+            diagnostics_frame = _initial_diagnostics_frame(session)
+        except Exception:  # noqa: BLE001 - projecting is the server's job, not the route's death
+            # This projection ran OUTSIDE every boundary: the establishment
+            # try/except has already returned by here, and `_bridge_stream`'s
+            # forward-loop catch has not started. A diagnostic carrying a
+            # value with no JSON form (only reachable past the JsonValue
+            # declaration -- `model_construct`, or mutation after
+            # construction) therefore killed the route with an unhandled
+            # exception, bypassing the operator-log redaction on the way out.
+            # Failing loudly is deliberate: diagnostics are the channel that
+            # tells a client something degraded, so dropping the frame and
+            # streaming on would hide exactly what the client needs.
+            log_exception_safely(logger, "Stream diagnostics projection failed for model %r", model)
+            # No session teardown on this return, deliberately: the session is
+            # CONSTRUCTED but never entered (start_transcription does not open;
+            # the producer/feed tasks and the adapter's _open run inside
+            # _bridge_stream's `async with`), so the standard layer holds no
+            # live resources here, and __aexit__ would call the adapter's
+            # _close without a matching _open -- an unspecified state. Same
+            # stance as the compliance gating probe's constructed-not-entered
+            # abandonment.
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "internal_error",
+                    "message": "Internal stream diagnostics error. See server logs for details.",
+                }
+            )
+            await websocket.close()
+            return
         if diagnostics_frame is not None:
             await websocket.send_json(diagnostics_frame)
 
@@ -724,7 +979,7 @@ class _ConfigFrameNotText(Exception):
     """
 
 
-async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> dict[str, Any]:
+async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> Any:
     """Receive and parse the WS config frame, bounded by the app per-frame cap.
 
     The audio frames are byte-bounded by :func:`_bridge_stream`, but the very
@@ -741,14 +996,17 @@ async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> d
         max_frame_bytes: The app per-frame byte cap.
 
     Returns:
-        The parsed config object.
+        The parsed JSON value, unvalidated -- the caller validates it against
+        the CLOSED :class:`StreamConfigRequest` model (which also rejects a
+        non-object frame).
 
     Raises:
         _ConfigFrameTooLarge: If the raw config frame exceeds ``max_frame_bytes``.
         _ConfigFrameNotText: If the first frame is not a text frame (e.g. a
             binary frame); surfaced as ``bad_request`` by the caller.
-        Exception: If the text frame is not parseable JSON (surfaced as
-            ``bad_request`` by the caller).
+        json.JSONDecodeError: If the text frame is not parseable JSON
+            (surfaced as ``bad_request`` by the caller -- its message is
+            positional, never the document text).
     """
     message = await websocket.receive()
     raw = message.get("text")
@@ -773,6 +1031,14 @@ async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> d
     return json.loads(payload)
 
 
+#: What the WS bridge has already delivered on the diagnostics channel:
+#: how many entries, and the rendered text of the overflow summary among
+#: them (``None`` when the channel has not overflowed). The summary is
+#: rewritten IN PLACE by the guard, so a count alone cannot detect a change
+#: -- see :func:`_diagnostics_delta_frame`.
+_DiagnosticsCursor = tuple[int, str | None]
+
+
 def _initial_diagnostics_frame(session: TranscriptionSession) -> dict[str, Any] | None:
     """Build the standard-layer diagnostics frame for a freshly-started session.
 
@@ -784,10 +1050,10 @@ def _initial_diagnostics_frame(session: TranscriptionSession) -> dict[str, Any] 
     single ``diagnostics`` frame up front so the client learns WHY a parameter
     was dropped or changed before audio flows.
 
-    Unlike the ``engine_error`` detail (raw ``str(exc)``, scrubbed by
-    :func:`_scrub_event_for_client`), these messages are standard-layer-authored
-    (not raw exception text), so they are forwarded verbatim -- exactly as REST
-    returns them.
+    Unlike the ``engine_error`` detail (pre-summarized exception text,
+    dropped by :func:`_scrub_event_for_client` before it leaves the server),
+    these messages are standard-layer-authored (not exception text), so they
+    are forwarded verbatim -- exactly as REST returns them.
 
     Args:
         session: The just-established streaming session.
@@ -806,57 +1072,88 @@ def _initial_diagnostics_frame(session: TranscriptionSession) -> dict[str, Any] 
 
 
 def _diagnostics_delta_frame(
-    session: TranscriptionSession, already_sent: int
-) -> tuple[dict[str, Any] | None, int]:
+    session: TranscriptionSession, already_sent: _DiagnosticsCursor
+) -> tuple[dict[str, Any] | None, _DiagnosticsCursor]:
     """Build a ``diagnostics`` frame for entries accrued since ``already_sent``.
 
     The session's bounded diagnostics channel grows mid-stream -- an engine's
     :meth:`~standard_asr.runtime.streaming.TranscriptionSession.emit_diagnostic` call, or a
     guard suppression -- but :func:`_initial_diagnostics_frame` is sent only once,
     at establishment. This returns the NEW diagnostics (those past ``already_sent``)
-    as a frame plus the updated total, so the bridge can forward them as they
+    as a frame plus the updated cursor, so the bridge can forward them as they
     appear. Without it a WS client never sees a diagnostic emitted after
     establishment, while the REST path returns all of them on the result -- a
     two-layer drift the WS surface must not introduce.
 
+    LENGTH IS NOT ENOUGH. Once the channel hits its cap the guard stops
+    appending and instead REWRITES its trailing ``diagnostics_truncated``
+    summary in place, updating the per-code tally. The list then stops
+    growing while its content keeps changing, so a length-only cursor
+    reported "nothing new" forever: the WS client kept the counts from the
+    FIRST overflow while the in-process and REST views converged on the
+    final ones -- exactly the two-layer drift G.5.2 forbids. The cursor
+    therefore carries the summary's rendered text as well, and a changed
+    summary is re-sent.
+
+    That makes the overflow summary a SINGLETON on the wire: a
+    ``diagnostics_truncated`` entry supersedes any previously delivered one
+    rather than appending beside it (documented in the server spec's WS
+    vocabulary). Bounded by construction -- the guard keeps exactly one such
+    entry -- and the final tally is delivered because the bridge takes a
+    delta after the terminal event, which the guard's own finalize precedes.
+
     Args:
         session: The streaming session.
-        already_sent: Number of diagnostics already delivered to the client.
+        already_sent: Cursor from the previous call; the caller seeds it
+            from what :func:`_initial_diagnostics_frame` delivered.
 
     Returns:
-        ``(frame, new_total)``; ``frame`` is ``None`` when nothing new has accrued.
+        ``(frame, cursor)``; ``frame`` is ``None`` when nothing new has accrued.
     """
     diagnostics = session.diagnostics()
-    if len(diagnostics) <= already_sent:
+    count, last_summary = already_sent
+    fresh = [diag.model_dump(mode="json") for diag in diagnostics[count:]]
+    summary = next(
+        (diag.message for diag in reversed(diagnostics) if diag.code == _OVERFLOW_CODE), None
+    )
+    if not fresh and summary == last_summary:
         return None, already_sent
-    frame = {
-        "type": "diagnostics",
-        "diagnostics": [diag.model_dump(mode="json") for diag in diagnostics[already_sent:]],
-    }
-    return frame, len(diagnostics)
+    if not fresh and summary is not None:
+        # The list did not grow; only the in-place summary changed. Re-send
+        # it alone -- the client replaces the entry it already has.
+        fresh = [
+            diag.model_dump(mode="json") for diag in diagnostics if diag.code == _OVERFLOW_CODE
+        ]
+    return {"type": "diagnostics", "diagnostics": fresh}, (len(diagnostics), summary)
 
 
 def _scrub_event_for_client(event: TranscriptionEvent) -> dict[str, Any]:
     """Serialize an event to JSON, stripping internal detail from errors.
 
-    The streaming layer stores a human-readable message (which for the
-    ``engine_error`` catch-all is ``str(exc)`` and may contain filesystem
-    paths, upstream URLs, or credential fragments) under ``extra["detail"]`` of
-    an ``error`` event. Forwarding it verbatim to an unauthenticated WebSocket
-    client would contradict the REST 500 non-leak contract, so
-    for ``error`` events the ``extra`` payload is dropped before it leaves the
-    server. The safe structured fields (``code``, ``recoverable``,
-    ``retriable_after``, ``segment_id``, and the gap/reconnect fields) are
-    preserved; operators keep the dropped detail via the caller's logging. To
-    surface a **non-sensitive** note to the client, an engine should use the
+    The standard streaming layer stores a human-readable message under
+    ``extra["detail"]`` of an ``error`` event -- for the ``engine_error``
+    catch-all this is already the input-echo-free summary
+    (``safe_exception_summary``, applied at the producer's catch site while
+    the exception chain still exists). That summarized text may still name
+    filesystem paths or upstream hosts (deliberate operator content), and an
+    engine-constructed ``error`` event's ``extra`` is plugin-authored data
+    the standard cannot vet at all -- so for EVERY ``error`` event the
+    ``extra`` payload is dropped before it leaves the server (forwarding it
+    verbatim to an unauthenticated WebSocket client would contradict the
+    REST 500 non-leak contract). The safe structured fields (``code``,
+    ``recoverable``, ``retriable_after``, ``segment_id``, and the
+    gap/reconnect fields) are preserved; operators keep the dropped detail
+    via the caller's logging (the server logs it as the opaque string it
+    received -- the chain is gone, so it cannot re-analyze one). To surface
+    a **non-sensitive** note to the client, an engine should use the
     structured diagnostics channel (:meth:`~standard_asr.runtime.streaming.\
 TranscriptionSession.emit_diagnostic`), forwarded as a ``diagnostics`` frame. That
     channel is engine-authored and is **NOT** scrubbed (it is forwarded verbatim,
     like the transcript), so it is for non-sensitive notes only -- *sensitive*
     operator detail belongs in server-side ``logging``, never in a client-facing
-    event or diagnostic. The asymmetry is deliberate: an ``error`` event's ``extra``
-    is auto-captured (it may hold ``str(exc)``) so the server drops it here; a
-    diagnostic is content the engine chose, so the engine owns its safety.
+    event or diagnostic. The asymmetry is deliberate: an ``error`` event's
+    ``extra`` is auto-captured, so the server drops it here; a diagnostic is
+    content the engine chose, so the engine owns its safety.
 
     Non-error events are serialized unchanged.
 
@@ -866,12 +1163,19 @@ TranscriptionSession.emit_diagnostic`), forwarded as a ``diagnostics`` frame. Th
     Returns:
         The JSON-serializable payload to send to the client.
     """
-    payload = event.model_dump(mode="json")
     if event.type == "error":
-        # Drop any internal detail (e.g. extra["detail"]); keep only the safe
-        # structured fields that the client protocol documents.
+        # DROP, then dump -- not dump, then overwrite. The rule is
+        # drop-before-send, and serializing first made the payload's fate
+        # depend on the very field being discarded: an `extra` value with no
+        # JSON form (an engine's exception object, a response handle) raised
+        # inside the dump, so the client lost `code`, `recoverable`,
+        # `retriable_after` and the gap/reconnect fields -- every safe
+        # structured field the protocol documents -- to a value that was
+        # never going to be sent.
+        payload = event.model_dump(mode="json", exclude={"extra"})
         payload["extra"] = {}
-    return payload
+        return payload
+    return event.model_dump(mode="json")
 
 
 async def _bridge_stream(
@@ -917,9 +1221,14 @@ async def _bridge_stream(
     pump_failed = False
     # Diagnostics already delivered to the client. The caller sent the
     # establishment-time set via _initial_diagnostics_frame; the producer has not
-    # run yet, so this count matches exactly what the client has, and any growth
-    # below (emit_diagnostic / guard suppression) is forwarded as a delta.
-    sent_diagnostics = len(session.diagnostics())
+    # run yet, so this cursor matches exactly what the client has, and any change
+    # below (emit_diagnostic / guard suppression / an updated overflow summary)
+    # is forwarded as a delta.
+    established = session.diagnostics()
+    sent_diagnostics: _DiagnosticsCursor = (
+        len(established),
+        next((d.message for d in reversed(established) if d.code == _OVERFLOW_CODE), None),
+    )
 
     async def _pump_audio() -> None:
         nonlocal pump_failed
@@ -957,7 +1266,7 @@ async def _bridge_stream(
             # and flag the forward loop to emit a single generic, non-leaking
             # error frame. (CancelledError derives from BaseException on the
             # teardown path, so it is not caught here and propagates as required.)
-            logger.exception("WebSocket audio pump failed")
+            log_exception_safely(logger, "WebSocket audio pump failed")
             pump_failed = True
             # Best-effort end the input so the session drains and the forward
             # loop wakes to deliver the generic error frame (rather than blocking
@@ -976,16 +1285,64 @@ async def _bridge_stream(
                     break
                 if event.type == "error":
                     # Keep the (potentially sensitive) detail server-side only;
-                    # the client receives the scrubbed event below.
-                    logger.error(
-                        "Stream error event for client: code=%r detail=%r",
-                        event.code,
-                        event.extra.get("detail"),
-                    )
+                    # the client receives the scrubbed event below. Log ONLY
+                    # values in the event's declared space: ``%r``/``%s`` on an
+                    # arbitrary object dispatches its ``__repr__``/``__str__``,
+                    # and a value installed PAST validation (a mutated
+                    # ``extra`` dict, ``model_construct``) reaches this line
+                    # before the scrub below -- a held ``ValidationError``'s
+                    # ``repr`` echoes its input into the very operator log the
+                    # redaction contract closes. Exact ``str``/``None``
+                    # dispatch no author code, so they log; anything else is
+                    # withheld by SHAPE (``type(...) is str``, never
+                    # ``isinstance`` -- a subclass can override rendering).
+                    # Logged with ``%r``, never ``%s``: an exact str's builtin
+                    # ``repr`` escapes every ``splitlines`` boundary (\\n, \\r,
+                    # NEL, U+2028/29 -- all non-printable), so a multi-line
+                    # engine-authored detail stays ONE log record instead of
+                    # forging lines a parser attributes to other requests.
+                    code = event.code
+                    detail = event.extra.get("detail")
+                    if (code is None or type(code) is str) and (
+                        detail is None or type(detail) is str
+                    ):
+                        logger.error(
+                            "Stream error event for client: code=%r detail=%r",
+                            code,
+                            detail,
+                        )
+                    else:
+                        # Keep whichever part IS exact str/None (the usual
+                        # case: a valid code beside a smuggled detail).
+                        safe_code: object = (
+                            code if (code is None or type(code) is str) else "<withheld>"
+                        )
+                        logger.error(
+                            "Stream error event for client: code=%r "
+                            "detail=<withheld: value installed past validation, "
+                            "its rendering dispatches author code>",
+                            safe_code,
+                        )
                 await websocket.send_json(_scrub_event_for_client(event))
                 # Forward any diagnostics the producer accrued while emitting this
                 # event (emit_diagnostic / a guard suppression), so the WS client
                 # sees them as they happen rather than never.
+                diag_frame, sent_diagnostics = _diagnostics_delta_frame(session, sent_diagnostics)
+                if diag_frame is not None:
+                    await websocket.send_json(diag_frame)
+            if violation or pump_failed:
+                # The break above skipped the per-event delta take, so forward
+                # diagnostics accrued since the last delivered event (an
+                # engine note, a guard suppression, an updated overflow
+                # summary) BEFORE the terminal policy frame -- otherwise the
+                # capped/failed session ends with the client never learning
+                # e.g. that a parameter was degraded, while the REST path
+                # returns every diagnostic on the result (the two-layer drift
+                # the delta forwarder exists to prevent). Best-effort by
+                # construction: the abandoned iteration is not drained, so a
+                # diagnostic the producer records after this take is gone --
+                # the cap is a resource bound, and cutting the violator off
+                # promptly outranks completing its session.
                 diag_frame, sent_diagnostics = _diagnostics_delta_frame(session, sent_diagnostics)
                 if diag_frame is not None:
                     await websocket.send_json(diag_frame)
@@ -1015,7 +1372,7 @@ async def _bridge_stream(
             # serialization) MUST NOT vanish silently (explicit > implicit /
             # fail-loud). Log the full detail server-side and best-effort send
             # one generic, non-leaking frame (mirrors the _pump_audio contract).
-            logger.exception("WebSocket event forwarding failed")
+            log_exception_safely(logger, "WebSocket event forwarding failed")
             try:
                 await websocket.send_json(
                     {
@@ -1039,22 +1396,32 @@ async def _create_engine_or_http_error(
 ) -> Any:
     """Instantiate the engine, mapping construction errors to HTTP status codes.
 
-    Engine construction (factory load + ``__init__``) can fail for distinct
-    reasons that must NOT all collapse to a non-spec ``500``:
+    Construction is ``registry.create(model)`` -- ZERO-ARG: the client chooses
+    the model key and nothing else; every configuration input (credentials,
+    endpoints, engine settings) comes from the server's own environment. Fault
+    ownership follows from that, mirroring the compliance suite's
+    classification of the same states:
 
-    - an unknown / unloadable model (``EntrypointValidationError`` /
-      ``FactoryLoadError``) is a routing problem -> ``404``;
-    - a client-supplied config problem surfaced during construction -- bad
-      config, missing credentials, or a construction-time ``pydantic``
-      ``ValidationError`` (which ``registry.create`` wraps into ``ConfigError``
-      with the offending input scrubbed and its entries carried in ``.details``;
-      a ``ConfigError`` / ``InvalidProviderParamError`` may also be raised
-      directly) -- is the caller's to fix -> ``422`` (rendered from
-      ``ConfigError.details``, ``["config"]``-anchored, so a mis-placed secret
-      never leaks);
-    - anything else is an internal fault -> a generic, scrubbed ``500`` whose
-      raw text is logged server-side only (same non-leak contract as
-      :func:`_run_transcription`).
+    - an unknown or malformed model KEY (``EntrypointValidationError``) is a
+      routing problem the caller can fix -> ``404``;
+    - a key that RESOLVED to a registered model whose server-installed plugin
+      then failed to load (``FactoryLoadError``) is a deployment fault, not a
+      routing one: the caller's key was right and nothing they can send will
+      change the outcome -> scrubbed ``500`` (``str(exc)`` also carries
+      plugin import internals, which §3.7 keeps off client surfaces);
+    - required configuration ABSENT from the server environment
+      (``ConfigurationRequiredError`` -- e.g. a credential env var not set) is
+      the OPERATOR's to fix, not the caller's: the model exists but is not
+      available on this deployment -> ``503`` with a stable generic detail
+      (never the field names; the specifics are safe-logged for the
+      operator);
+    - anything else -- including a plain ``ConfigError`` /
+      ``InvalidProviderParamError`` / ``ValidationError``, which from a
+      zero-arg factory is a broken deployment or plugin, exactly the state
+      compliance fails as ``engine_construction_failed`` -- is an internal
+      fault -> a generic, scrubbed ``500`` (same non-leak contract as
+      :func:`_run_transcription`). The old ``422`` mapping blamed the caller
+      for faults the caller cannot see, reach, or fix.
 
     Args:
         registry: The model registry.
@@ -1069,25 +1436,33 @@ async def _create_engine_or_http_error(
     """
     try:
         return await asyncio.to_thread(registry.create, model)
-    except (EntrypointValidationError, FactoryLoadError) as exc:
+    except EntrypointValidationError as exc:
+        # Unknown / unparseable model key: caller-fixable 404 with the
+        # authored message (it names only the caller's key + available keys).
         raise http_exception(status_code=404, detail=str(exc)) from exc  # type: ignore[call-arg]
-    except (InvalidProviderParamError, ConfigError) as exc:
-        # Client-caused construction failure (bad config / missing credentials /
-        # invalid options) -> 422, not 500. A construction-time pydantic
-        # ValidationError is wrapped into ConfigError (EC-1) carrying the
-        # sanitized structured entries in `.details`; render those in the same
-        # ["config"]-anchored structured shape as every other REST 422 so a
-        # mis-placed secret never leaks. An authored ConfigError /
-        # InvalidProviderParamError without details falls back to its message.
-        if exc.details is not None:
-            detail: Any = [{**entry, "loc": ["config", *entry["loc"]]} for entry in exc.details]
-        else:
-            detail = str(exc)
-        raise http_exception(status_code=422, detail=detail) from exc  # type: ignore[call-arg]
+    except FactoryLoadError as exc:
+        # The key resolved; the server-installed plugin failed to load. An
+        # engine/deployment fault: a 404 blamed the caller for a fault it
+        # cannot fix, and str(exc) carries plugin import/annotation
+        # internals. Scrubbed 500, specifics safe-logged (§3.7).
+        log_exception_safely(logger, "Registered model %r failed to load", model)
+        detail = "Internal model construction error. See server logs for details."
+        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+    except ConfigurationRequiredError as exc:
+        # MUST precede any broader arm: ConfigurationRequiredError subclasses
+        # ConfigError. The absent-config message names the missing field(s) --
+        # deployment detail an unauthenticated caller has no business seeing.
+        log_exception_safely(
+            logger, "Engine %r requires configuration absent from the server environment", model
+        )
+        detail = _ENGINE_CONFIG_ABSENT_DETAIL
+        raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
     except Exception as exc:  # noqa: BLE001
-        # Internal/unexpected construction fault: log details, return a stable
-        # generic message so we never leak internal paths or credential text.
-        logger.exception("Engine construction failed for model %r", model)
+        # Internal/unexpected construction fault (incl. ConfigError /
+        # ValidationError from the zero-arg factory: a deployment or plugin
+        # defect, never the caller's): log details, return a stable generic
+        # message so we never leak internal paths or credential text.
+        log_exception_safely(logger, "Engine construction failed for model %r", model)
         detail = "Internal model construction error. See server logs for details."
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
@@ -1098,7 +1473,7 @@ async def _run_transcription(
     audio: AudioInput,
     params: RuntimeParams | None,
     http_exception: type[Exception],
-) -> TranscribeResponse:
+) -> str:
     """Instantiate the engine, transcribe, and map errors to HTTP status codes.
 
     The audio is passed as an :data:`~standard_asr.audio.input.AudioInput` (not a
@@ -1115,7 +1490,10 @@ async def _run_transcription(
         http_exception: The ``HTTPException`` class to raise.
 
     Returns:
-        The transcription response.
+        The :class:`TranscribeResponse` document, JSON-encoded -- the exact
+        response body the routes send verbatim. Encoded inside the
+        fault-mapping region so the wire projection is proven (and paid for)
+        exactly once.
 
     Raises:
         Exception: ``http_exception`` with an appropriate status code.
@@ -1124,30 +1502,93 @@ async def _run_transcription(
 
     try:
         result = await asyncio.to_thread(asr.transcribe, audio, params)
+        # asyncio.to_thread returns transcribe()'s RAW value: an `async def`
+        # implementation (or a sync wrapper delegating to one) hands back a
+        # coroutine object that to_thread never drives. Enforce the sync-call
+        # boundary here, and build the response INSIDE the fault-mapping
+        # region -- a malformed result would otherwise raise a bare pydantic
+        # ValidationError out of TranscribeResponse(...) past every arm below
+        # (echoing engine input text past the scrubbed-500 contract).
+        require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
+        response = TranscribeResponse(model=model, result=result)
+        # Finish the wire projection INSIDE the fault-mapping region -- and
+        # ONCE. The dump is encoded here (allow_nan=False: NaN/Infinity are
+        # Python floats but not JSON), so a result carrying a value with no
+        # JSON form (reachable past the JsonValue declarations by
+        # `model_construct` or by mutating an `extra` dict after
+        # construction) fails HERE, in its true fault class -- the scrubbed
+        # 500 below, safe-logged -- never in the ASGI encoder after the
+        # endpoint returned. The encoded document IS the body the routes
+        # send verbatim: encoding as a proof and then letting FastAPI
+        # validate and serialize the same object AGAIN roughly doubled
+        # response-serialization CPU and peak memory on every successful
+        # request (tens of MB of words[] for a long recording).
+        # Encoded the way the wire had it before this function owned the
+        # projection (starlette's JSONResponse kwargs): ensure_ascii=False
+        # ships a CJK/Cyrillic/Arabic transcript as UTF-8 instead of 6-byte
+        # \uXXXX escapes (~1.35-3x smaller bodies on non-ASCII text), and
+        # compact separators drop the per-element padding. allow_nan=False
+        # stays: NaN/Infinity are Python floats but not JSON.
+        return json.dumps(
+            response.model_dump(mode="json"),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
     except ValidationError as exc:
-        # Client-caused, but sanitized: pydantic's raw detail echoes the offending
-        # input value (a mis-placed secret would be reflected back). Same
-        # structured shape as every other REST 422; the offending value the client
-        # sent travelled via ``options``, so anchor under ["options"].
-        detail = _sanitized_validation_detail(exc, loc_prefix=["options"])
-        raise http_exception(status_code=422, detail=detail) from exc  # type: ignore[call-arg]
-    except (
-        InvalidProviderParamError,
-        UnsupportedFeatureError,
-        ConfigError,
-    ) as exc:
-        # Client-caused: bad params / unsupported standard feature / invalid config.
+        # An ENGINE fault, not a request error: by this point the client's
+        # options were already validated (WireRuntimeParams at the route) and
+        # promoted to a typed RuntimeParams, so a bare pydantic
+        # ValidationError escaping transcribe() can only come from the
+        # engine's own internals (e.g. a structural engine constructing an
+        # invalid TranscriptionResult -- EngineBase wraps that seam as
+        # TranscriptionError, but the server cannot assume the base class).
+        # Mapping it to 422 blamed the client's options for a plugin bug;
+        # fault ownership must not depend on whether the engine inherits
+        # EngineBase. Scrubbed 500 (pydantic's message echoes input values) --
+        # and the LOG record is scrubbed the same way (the echo must not land
+        # in operator/CI logs either).
+        log_exception_safely(logger, "Engine-side validation failure for model %r", model)
+        detail = "Internal transcription error. See server logs for details."
+        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+    except ConfigurationRequiredError as exc:
+        # Required config absent, discovered lazily at CALL time (an engine
+        # that defers its credential check past construction): the same
+        # operator-side availability state as the construction 503 -- the
+        # caller cannot fix it and must not be told the field names. MUST
+        # precede the ConfigError arm (subclass).
+        log_exception_safely(
+            logger, "Engine %r requires configuration absent from the server environment", model
+        )
+        detail = _ENGINE_CONFIG_ABSENT_DETAIL
+        raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
+    except (ConfigError, InvalidProviderParamError) as exc:
+        # An ENGINE fault, not a request error: the wire surface gives the
+        # client no way to cause either -- engine init config never crosses
+        # the wire (construction is zero-arg), `provider_params` is rejected
+        # by WireRuntimeParams before transcription, and every client-fixable
+        # rejection has its own type (UnsupportedFeatureError below; request
+        # ValidationError at the route). A ConfigError here is an engine
+        # declaration/config defect (e.g. a bad `default_language`) whose
+        # authored message may carry server-side config detail. Scrubbed 500,
+        # specifics safe-logged for the operator.
+        log_exception_safely(logger, "Engine-side configuration/contract fault for model %r", model)
+        detail = "Internal transcription error. See server logs for details."
+        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+    except UnsupportedFeatureError as exc:
+        # Client-caused: the request asked for a feature/language the engine
+        # does not support (strict mode). The authored message is written for
+        # the caller.
         raise http_exception(status_code=422, detail=str(exc)) from exc  # type: ignore[call-arg]
     except AudioProcessingError as exc:
         raise http_exception(status_code=400, detail=str(exc)) from exc  # type: ignore[call-arg]
     except Exception as exc:  # noqa: BLE001
-        # Internal/unexpected: log details, return a stable generic message so we
+        # Internal/unexpected (including EngineContractError from the sync-call
+        # boundary above): log details, return a stable generic message so we
         # never leak internal paths or upstream/credential text to the client.
-        logger.exception("Transcription failed for model %r", model)
+        log_exception_safely(logger, "Transcription failed for model %r", model)
         detail = "Internal transcription error. See server logs for details."
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
-
-    return TranscribeResponse(model=model, result=result)
 
 
 def _build_params(options: dict[str, Any] | None) -> RuntimeParams | None:
@@ -1175,10 +1616,10 @@ def _build_params(options: dict[str, Any] | None) -> RuntimeParams | None:
     return WireRuntimeParams.model_validate(options).to_runtime_params()
 
 
-def _engine_class_or_404(
+def _engine_class_or_http_error(
     registry: ModelRegistry, model: str, http_exception: type[Exception]
 ) -> Any:
-    """Resolve an engine class (without instantiation) or raise a 404.
+    """Resolve an engine class (without instantiation), or map the failure to HTTP.
 
     Args:
         registry: The model registry.
@@ -1189,13 +1630,124 @@ def _engine_class_or_404(
         The engine class.
 
     Raises:
-        Exception: ``http_exception`` with status 404 if the model is unknown or
-            its class cannot be resolved.
+        Exception: ``http_exception`` -- 404 when the model key is unknown or
+            unparseable (caller-fixable), scrubbed 500 when the key resolved
+            but the plugin's class failed to load/resolve (an
+            engine/deployment fault, safe-logged).
     """
     try:
         return registry.engine_class(model)
-    except (EntrypointValidationError, FactoryLoadError) as exc:
+    except EntrypointValidationError as exc:
         raise http_exception(status_code=404, detail=str(exc)) from exc  # type: ignore[call-arg]
+    except FactoryLoadError as exc:
+        # Same fault-ownership split as engine construction: the metadata
+        # endpoints must not blame the caller for a broken plugin nor leak
+        # its import/annotation internals.
+        log_exception_safely(logger, "Registered model %r failed to load its class", model)
+        detail = "Internal model metadata error. See server logs for details."
+        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+
+
+def _prove_json_projectable(payload: object) -> None:
+    """Prove a payload can be sent, before the response is committed to.
+
+    The Python and JSON layers are meant to be the same protocol seen twice
+    (G5.2), and the wire-visible fields are declared in
+    :data:`~pydantic.JsonValue` so that holds by construction. This is the
+    enforcement point for what a declaration cannot reach: a value installed
+    past validation (``model_construct``, or mutating an ``extra`` dict after
+    construction). Without it the failure surfaced in the ASGI encoder --
+    after the endpoint had already returned, so the documented scrubbed
+    response and the safe-logging boundary were both bypassed.
+
+    ``allow_nan=False`` because ``NaN``/``Infinity`` are Python floats but
+    not JSON: the permissive default emits a document no conforming parser
+    accepts, which is a wrong result sent silently rather than a fault.
+
+    Args:
+        payload: The already-dumped payload.
+
+    Raises:
+        Exception: Whatever encoding raises (``TypeError``/``ValueError``),
+            for the caller's fault boundary to map.
+    """
+    json.dumps(payload, allow_nan=False)
+
+
+def _metadata_or_http_error(
+    registry: ModelRegistry,
+    model: str,
+    http_exception: type[Exception],
+    *,
+    project: Callable[[Any], dict[str, Any]],
+) -> dict[str, Any]:
+    """Run a whole metadata read behind ONE fault boundary, or map it to HTTP.
+
+    The read spans engine-class RESOLUTION too
+    (:func:`_engine_class_or_http_error`): everything from the model key
+    onward is third-party code -- loading the entry-point target, the
+    ``_is_protocol`` / ``transcribe`` duck-type reads (metaclass/descriptor
+    dispatch), then reading ``declared_capabilities`` /
+    ``provider_params_type`` / ``config_type`` (whatever descriptor the
+    plugin put there), ``canonical_json()`` and ``model_json_schema()``
+    (plugin methods, and a custom ``__get_pydantic_json_schema__`` runs
+    inside the latter). A raise anywhere in that stretch that is not one of
+    the mapped failures otherwise left the endpoint through Starlette's
+    unhandled-exception path: the client got an
+    undocumented plain 500 instead of the documented scrubbed body, and --
+    the reason this is a security fault and not a tidiness one --
+    :func:`log_exception_safely` never ran, so the ASGI server's own
+    traceback logger rendered the exception chain natively. A
+    ``ValidationError`` anywhere in it then printed its input echo into the
+    operator log, which is exactly what the redaction contract forbids.
+    These endpoints are unauthenticated discovery surfaces, so "a plugin
+    descriptor does not usually fail" is not a boundary.
+
+    The projection is also finished HERE rather than left to the ASGI
+    encoder: the value is JSON-encoded eagerly (rejecting non-finite
+    numbers, which are not JSON), so a plugin returning something
+    unencodable is a scrubbed 500 from inside the boundary instead of a
+    crash after the endpoint returned.
+
+    Args:
+        registry: The model registry.
+        model: Model key in ``engine/model`` format.
+        http_exception: The ``HTTPException`` class to raise.
+        project: Reads the metadata off the engine class and returns the
+            JSON-ready payload. It may raise ``http_exception`` itself for
+            a DELIBERATE verdict (e.g. 404 "no capabilities declared"),
+            which passes through unchanged.
+
+    Returns:
+        The payload, proven JSON-encodable.
+
+    Raises:
+        Exception: ``http_exception`` -- 404 for an unknown/unparseable
+            model key or the projection's own deliberate verdict, scrubbed
+            500 for every engine/deployment fault (safe-logged).
+    """
+    try:
+        # Resolution is INSIDE the boundary too: it dispatches the plugin's
+        # own machinery (loading the entry-point target, and
+        # ``_ensure_engine_class``'s ``_is_protocol`` / ``transcribe`` reads
+        # -- both metaclass/descriptor dispatch). A fault raised THERE (a
+        # metaclass property carrying a ``ValidationError``, say) is not an
+        # ``EntrypointValidationError``/``FactoryLoadError``; resolved
+        # outside this try it left the endpoint through Starlette's
+        # unhandled path -- the undocumented plain 500, and the ASGI
+        # server's native traceback logging of the raw chain, echo included.
+        engine_class = _engine_class_or_http_error(registry, model, http_exception)
+        payload = project(engine_class)
+        _prove_json_projectable(payload)
+    except http_exception:
+        # The resolution/projection's own deliberate verdicts (404/500
+        # mapped by the helper, or the projection's 404 "no capabilities").
+        raise
+    except Exception as exc:  # noqa: BLE001 - a plugin fault is a scrubbed 500
+        log_exception_safely(logger, "Model %r failed to produce its metadata", model)
+        detail = "Internal model metadata error. See server logs for details."
+        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+    return payload
 
 
 def run(

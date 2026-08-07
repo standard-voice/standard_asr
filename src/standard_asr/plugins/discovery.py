@@ -43,7 +43,10 @@ from pydantic import ValidationError
 from standard_asr.contract.exceptions import EntrypointValidationError, FactoryLoadError
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
 from standard_asr.runtime.config import BaseConfig
-from standard_asr.runtime.redaction import config_error_from_validation
+from standard_asr.runtime.redaction import (
+    config_error_from_validation,
+    safe_exception_summary,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from standard_asr.runtime.interface import StandardASR
@@ -214,7 +217,14 @@ class ModelSpec:
         try:
             target = self.entry_point.load()
         except Exception as exc:  # noqa: BLE001
-            message = f"Failed to load entry point target for {self.model_id!r}: {exc!r}"
+            # load() executes arbitrary plugin module code, so exc can be
+            # ANYTHING -- including a pydantic ValidationError whose repr
+            # echoes the offending input. safe_exception_summary (not {exc!r})
+            # keeps the interpolated text input-echo-free.
+            message = (
+                f"Failed to load entry point target for {self.model_id!r}: "
+                f"{safe_exception_summary(exc)}"
+            )
             raise FactoryLoadError(message) from exc
         if not callable(target):
             raise FactoryLoadError(
@@ -608,9 +618,22 @@ class ModelRegistry:
                 A construction-time pydantic ``ValidationError`` -- whether from
                 the bare constructor or an engine's own validator -- is wrapped
                 into ``ConfigError`` with the offending input scrubbed, so a
-                caller can ``except ConfigError`` uniformly (and the HTTP server
-                still maps it to 422). Use :meth:`config_schema` to discover what
-                configuration a model requires.
+                caller can ``except ConfigError`` uniformly. The wrap ASSERTS
+                the type's ownership contract: a factory's construction-time
+                ``ValidationError`` means the supplied configuration was
+                rejected (the documented bare-constructor pattern). An engine
+                whose factory lets a NON-config internal ``ValidationError``
+                escape construction mis-asserts that contract -- in-band the
+                two are indistinguishable, so the compliance suite's zero-arg
+                construction check (``engine_construction_failed``) polices
+                it, not consumer-side guessing. (The reference
+                server maps construction-time config faults by fault
+                ownership: absent required config -> 503, anything else ->
+                scrubbed 500 -- never a caller-blaming 422, since its
+                construction is zero-arg; the CLI maps them to usage exit 2,
+                since its invoker owns the config and the env.) Use
+                :meth:`config_schema` to
+                discover what configuration a model requires.
 
         Example:
             >>> asr = registry.create("faster-whisper/large-v3", device="cuda")
@@ -839,8 +862,11 @@ __all__ = [
 
 
 if __name__ == "__main__":  # pragma: no cover
-    logging.basicConfig(level=logging.INFO)
-    registry = discover_models()
-    print("Discovered models:")
-    for name in registry.names():
-        print(f" - {name}")
+    # The old print-based demo was removed (AGENTS: no print in library code);
+    # exiting silently here would read as "no models discovered" to someone
+    # debugging plugin visibility, so point at the real tool loudly instead.
+    raise SystemExit(
+        "This module has no CLI; run `standard-asr list` to inspect the "
+        "discovered models (add --strict-discovery to fail on invalid entry "
+        "points)."
+    )

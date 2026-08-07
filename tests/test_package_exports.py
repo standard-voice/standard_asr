@@ -47,16 +47,61 @@ def test_exceptions_are_fully_re_exported_at_top_level() -> None:
         assert getattr(standard_asr, name) is getattr(exceptions, name), name
 
 
+#: Capability-vocabulary names the engine facade re-exports under a DIFFERENT
+#: (established, layer-local) name mapped to the SAME object. Reachability from
+#: the facade is what the guard below protects; a second spelling of one object
+#: on the same surface would be exactly the noise the curation exists to
+#: prevent. Each entry is verified by identity, so an alias that stops pointing
+#: at the contract object fails just as loudly as a forgotten export.
+_FACADE_ALIASES: dict[str, str] = {
+    # ``ModeName`` is homed in contract.capabilities (the module that defines the
+    # mode domains); ``runtime.gating`` re-exports it as ``Mode``, the name the
+    # engine-author surface has always used (``gate_params(..., mode=...)``).
+    "ModeName": "Mode",
+}
+
+
 def test_capability_vocabulary_is_on_the_engine_facade() -> None:
-    # The capability vocabulary is the ENGINE-AUTHOR surface, so it lives on
-    # ``standard_asr.engine`` -- not the application-facing top level. EVERY name
-    # the capabilities submodule advertises MUST be re-exported from the facade
-    # (a true re-export). A future capability type added to capabilities.__all__
-    # but forgotten on the facade fails this immediately.
+    """Every capabilities export is reachable from the engine-author facade.
+
+    The capability vocabulary is the ENGINE-AUTHOR surface, so it lives on
+    ``standard_asr.engine`` -- not the application-facing top level. EVERY name
+    the capabilities submodule advertises MUST be reachable from the facade as
+    a true re-export (under its own name, or the aliased name above); a future
+    capability type added to ``capabilities.__all__`` but forgotten on the
+    facade fails this immediately, and every alias must stand in for a name
+    genuinely absent from the facade.
+    """
     caps_module = importlib.import_module("standard_asr.contract.capabilities")
-    assert set(caps_module.__all__) <= set(engine_facade.__all__)
-    for name in caps_module.__all__:
-        assert getattr(engine_facade, name) is getattr(caps_module, name), name
+    caps_exports: list[str] = list(caps_module.__all__)
+    expected = {_FACADE_ALIASES.get(name, name) for name in caps_exports}
+    assert expected <= set(engine_facade.__all__)
+    for name in caps_exports:
+        facade_name = _FACADE_ALIASES.get(name, name)
+        assert getattr(engine_facade, facade_name) is getattr(caps_module, name), name
+
+    # Every alias must be a real alias -- i.e. the contract name it stands in for
+    # is genuinely absent from the facade, so this table can never be used to
+    # excuse a name the facade actually forgot.
+    for name in _FACADE_ALIASES:
+        assert name not in engine_facade.__all__, name
+
+
+def test_mode_is_one_literal_with_one_home() -> None:
+    """The mode domain is ONE Literal with one defining home.
+
+    ``runtime.gating.Mode`` is an ALIAS of the contract-layer ``ModeName``, not
+    a second Literal: two independently-declared mode domains would let the
+    gating layer and the capability tree drift apart on what a mode even is.
+    """
+    caps_module = importlib.import_module("standard_asr.contract.capabilities")
+    gating = importlib.import_module("standard_asr.runtime.gating")
+
+    assert gating.Mode is caps_module.ModeName
+    assert engine_facade.Mode is caps_module.ModeName
+    assert get_args(caps_module.ModeName) == ("batch", "streaming")
+    # It is advertised by the module that DEFINES the domains.
+    assert "ModeName" in caps_module.__all__
 
     # The cap classes are usable straight from the facade import.
     from standard_asr.engine import (

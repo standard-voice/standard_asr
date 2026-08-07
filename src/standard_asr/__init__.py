@@ -41,7 +41,9 @@ from standard_asr.audio.negotiation import UnsafeAudioUrlError
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
     ConfigError,
+    ConfigurationRequiredError,
     DiscoveryError,
+    EngineContractError,
     EntrypointValidationError,
     FactoryLoadError,
     FFmpegNotFoundError,
@@ -52,6 +54,7 @@ from standard_asr.contract.exceptions import (
     StandardASRError,
     StreamClosedError,
     StructuredError,
+    SubtitleRenderingError,
     TranscriptionError,
     UnsupportedFeatureError,
 )
@@ -62,6 +65,7 @@ from standard_asr.contract.params import (
     WordTimestampGranularity,
 )
 from standard_asr.contract.results import (
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
     ChannelResult,
     Diagnostic,
     Segment,
@@ -69,7 +73,7 @@ from standard_asr.contract.results import (
     Word,
 )
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
-from standard_asr.renderers import to_srt, to_vtt
+from standard_asr.renderers import UnrenderablePolicy, to_srt, to_vtt
 from standard_asr.runtime.interface import StandardASR
 from standard_asr.runtime.streaming import (
     StreamDeadlines,
@@ -91,10 +95,13 @@ __all__ = [
     "AudioUrl",
     "ChannelResult",
     "ConfigError",
+    "ConfigurationRequiredError",
+    "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
     "DIARIZE",
     "Diagnostic",
     "DiarizationRequest",
     "DiscoveryError",
+    "EngineContractError",
     "EntrypointValidationError",
     "FFmpegNotFoundError",
     "FFprobeNotFoundError",
@@ -102,6 +109,7 @@ __all__ = [
     "IncompatibleAudioInputError",
     "InvalidProviderParamError",
     "InvalidSessionUseError",
+    "UnrenderablePolicy",
     "ModelRegistry",
     "ModelSpec",
     "RuntimeParams",
@@ -111,6 +119,7 @@ __all__ = [
     "StreamClosedError",
     "StreamDeadlines",
     "StructuredError",
+    "SubtitleRenderingError",
     "SyncSession",
     "TranscriptionError",
     "TranscriptionEvent",

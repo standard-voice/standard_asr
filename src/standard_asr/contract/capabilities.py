@@ -27,11 +27,29 @@ dot-path; missing keys are *fail-closed* (return ``False``).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Iterator, Literal, Sequence, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
+
+from standard_asr.contract.results import require_json_string_keys
 
 WordTimestampGranularityName = Literal["word", "segment", "char"]
+
+#: The closed set of mode-domain names (spec: the capability tree's top-level
+#: partitions). Homed here -- the module that DEFINES the mode domains -- so
+#: contract-layer signatures (e.g. ``effective_candidate_languages``'s
+#: ``mode``) can use the precise type without importing upward from
+#: ``runtime.gating`` (which re-exports it as ``Mode``).
+ModeName = Literal["batch", "streaming"]
 
 #: Mode values that count as "not supported" for enum/mode archetype nodes.
 _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
@@ -65,6 +83,53 @@ def _is_extension_key(key: object) -> bool:
     return isinstance(key, str) and key.startswith(_EXTENSION_PREFIX)
 
 
+def _reject_separator_keys_on_node_surface(extras: Mapping[str, object]) -> None:
+    """Reject a queryable-surface key that embeds the dot-path separator.
+
+    The dot-path grammar is the protocol's ONE query surface:
+    :meth:`DeclaredCapabilities.supports`, ``iter_queryable_paths`` /
+    ``iter_supported_paths``, ``covers`` and the compliance sweep all join
+    and split node names on ``"."``. A node key containing the separator
+    breaks that bijection both ways: the joined path can never resolve
+    (``supports`` splits it into segments the tree does not have, so the
+    sweep would fail a compliant plugin whose hand-written ``supports``
+    honestly answers ``True`` for its own declared vendor capability), and
+    two DISTINCT trees (``{"a.b": node}`` vs ``{"a": {"b": node}}``) join
+    to the SAME path string, letting ``covers``'s set containment conflate
+    them. A dotted key is legal JSON, so it is rejected HERE, loudly,
+    naming the key -- never silently mis-resolved later.
+
+    Only the node-traversal surface is constrained -- exactly the keys
+    :func:`_children` / :func:`_get_child` walk: ``x_*`` extension keys and
+    every key of a dict reachable by dict nesting from one. Dicts inside
+    lists are field internals (never nodes), and non-extension extras are
+    not queryable; their keys stay free, so value data keyed by e.g.
+    ``"v1.2"`` remains representable outside the path space.
+
+    Args:
+        extras: A model's extra keys (values already key-vetted as exact
+            ``str`` at every depth by ``require_json_string_keys``).
+
+    Raises:
+        ValueError: If a queryable-surface key contains ``"."``.
+    """
+    stack: list[tuple[str, object]] = [
+        (key, value) for key, value in extras.items() if _is_extension_key(key)
+    ]
+    while stack:
+        key, value = stack.pop()
+        if "." in key:
+            raise ValueError(
+                f"capability key {key!r} contains '.', the dot-path separator: "
+                "its path could never resolve via supports() and would collide "
+                "with a genuinely nested spelling. Rename the key (e.g. use "
+                "'_'), or move dotted-name data into a list or scalar value, "
+                "which is outside the queryable path space."
+            )
+        if isinstance(value, dict):
+            stack.extend(cast("dict[str, object]", value).items())
+
+
 def granularity_offers_all(granularities: Sequence[str]) -> bool:
     """Return whether a declared ``granularities`` list means "unbounded (all)".
 
@@ -94,14 +159,101 @@ def granularity_offers_all(granularities: Sequence[str]) -> bool:
     return not granularities
 
 
-class _CapNode(BaseModel):
+#: The JSON value space every extra key is validated into. A capability
+#: tree is a first-class wire-visible contract surface (G.5.2 -- the same
+#: model on the Python and wire layers), so an extension value must be
+#: expressible as a JSON document at CONSTRUCTION: otherwise the Python tree
+#: accepts a state (an arbitrary object, NaN/Inf) whose wire projection can
+#: only fail later, at the metadata endpoint.
+#:
+#: Why a validator + adapter rather than the ``__pydantic_extra__`` typed
+#: annotation: the native mechanism cannot express the floor contract here
+#: -- pydantic 2.5 builds typed extras only from an EAGER annotation, while
+#: this module (like the whole project) annotates lazily via
+#: ``from __future__ import annotations`` (the floor raises
+#: ``PydanticSchemaGenerationError`` on the deferred form at class
+#: creation). The adapter below was profiled to accept/reject identically
+#: to the native mechanism on both the floor and current pydantic.
+#:
+#: ``allow_inf_nan=False`` is set on the ADAPTER explicitly: the enclosing
+#: model's config does not propagate into a standalone ``TypeAdapter``.
+_EXTRA_VALUE_ADAPTER = TypeAdapter(dict[str, JsonValue], config=ConfigDict(allow_inf_nan=False))
+
+
+class _JsonExtraModel(BaseModel):
+    """Base for capability-tree models: tolerant KEYS, closed VALUES.
+
+    ``extra="allow"`` keeps parsing forward-compatible (a future standard
+    field or a typo is tolerated rather than fatal), while the value space
+    of every such key closes construction-side: anything a JSON document
+    cannot express is rejected loudly instead of surfacing as a projection
+    failure at the metadata endpoint. Non-finite floats are not JSON
+    (``allow_inf_nan=False``) and are rejected at the same boundary.
+
+    "Tolerant keys" tolerates UNKNOWN keys, not un-JSON ones: every extra
+    key must be an exact ``str`` at every depth (the same
+    :func:`~standard_asr.contract.results.require_json_string_keys` rule
+    the results-layer wire slots enforce). The check runs BEFORE the value
+    adapter because the adapter's lax ``dict[str, ...]`` validation would
+    otherwise DECODE a bytes key into its str spelling and the merge would
+    re-home the laundered key -- ``{b"supported": True}`` silently
+    overriding a declared ``supported=False``, or ``b"x_vendor"`` minting a
+    canonical extension key the input never spelled.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow", allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _extras_are_json_values(cls, data: Any) -> Any:
+        """Move every non-field key's value into the JSON value space.
+
+        The canonicalized adapter output is stored, not just checked, so the
+        in-process tree and any later ``model_validate`` of the wire
+        document agree byte-for-byte (e.g. a str-subclass value settles to a
+        plain ``str`` here rather than at dump time).
+
+        Args:
+            data: The raw constructor input.
+
+        Returns:
+            The input, with extra values replaced by their validated
+            canonical form.
+        """
+        if not isinstance(data, Mapping):
+            # An already-constructed instance gating through model_validate
+            # carries only values its own construction vetted.
+            return data
+        mapping = cast("Mapping[Any, Any]", data)
+        declared = cls.model_fields
+        extras: dict[Any, Any] = {
+            key: value for key, value in mapping.items() if key not in declared
+        }
+        if not extras:
+            return cast("Any", data)
+        # The KEY domain first (fail loudly): with every extra key proven an
+        # exact str, the adapter below canonicalizes only VALUES -- no key
+        # can change spelling, so no laundered collision with a declared
+        # field and no order-sensitive merge is possible.
+        require_json_string_keys(extras)
+        # And the PATH grammar: a queryable-surface key must not embed the
+        # dot-path separator, or the tree mints paths supports() can never
+        # resolve (see :func:`_reject_separator_keys_on_node_surface`).
+        _reject_separator_keys_on_node_surface(extras)
+        validated = _EXTRA_VALUE_ADAPTER.validate_python(extras)
+        merged = dict(mapping)
+        # Same keys, canonicalized values: updating in place keeps each key
+        # at its original position in the document.
+        merged.update(validated)
+        return merged
+
+
+class _CapNode(_JsonExtraModel):
     """Base class for all capability leaf nodes.
 
     Subclasses MUST expose an ``is_supported`` boolean property derived from
     their archetype (flag/bounded -> ``supported``; enum/mode -> ``mode``).
     """
-
-    model_config = ConfigDict(frozen=True, extra="allow")
 
     @property
     def is_supported(self) -> bool:  # pragma: no cover - overridden
@@ -143,18 +295,17 @@ def _mode_supported(mode: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Constraint submodels (machine-checkable limits, live with their feature).
 # --------------------------------------------------------------------------- #
-class CandidateLanguagesConstraints(BaseModel):
+class CandidateLanguagesConstraints(_JsonExtraModel):
     """Constraints for the candidate-languages capability.
 
     Attributes:
         max: Maximum number of candidate languages accepted.
     """
 
-    model_config = ConfigDict(frozen=True, extra="allow")
     max: int = Field(..., gt=0, description="Maximum number of candidate languages.")
 
 
-class PromptConstraints(BaseModel):
+class PromptConstraints(_JsonExtraModel):
     """Constraints for the prompt guidance channel.
 
     Attributes:
@@ -172,7 +323,6 @@ class PromptConstraints(BaseModel):
             rather than at it; the standard will not exceed the declared value.
     """
 
-    model_config = ConfigDict(frozen=True, extra="allow")
     max_tokens: int | None = Field(
         default=None,
         gt=0,
@@ -184,7 +334,7 @@ class PromptConstraints(BaseModel):
     )
 
 
-class PhraseHintsConstraints(BaseModel):
+class PhraseHintsConstraints(_JsonExtraModel):
     """Constraints for the phrase-hints guidance channel.
 
     Attributes:
@@ -193,7 +343,6 @@ class PhraseHintsConstraints(BaseModel):
         max_words_per_term: Optional maximum words per term.
     """
 
-    model_config = ConfigDict(frozen=True, extra="allow")
     max_terms: int | None = Field(default=None, gt=0, description="Maximum hint terms.")
     max_chars_per_term: int | None = Field(
         default=None, gt=0, description="Maximum characters per term."
@@ -203,14 +352,13 @@ class PhraseHintsConstraints(BaseModel):
     )
 
 
-class DiarizationConstraints(BaseModel):
+class DiarizationConstraints(_JsonExtraModel):
     """Constraints for the diarization capability.
 
     Attributes:
         max_speakers: Optional maximum number of speakers.
     """
 
-    model_config = ConfigDict(frozen=True, extra="allow")
     max_speakers: int | None = Field(default=None, gt=0, description="Maximum speakers.")
 
 
@@ -438,10 +586,8 @@ class StreamTimestampsCap(_CapNode):
 # --------------------------------------------------------------------------- #
 # Container nodes (group leaves; not capabilities themselves).
 # --------------------------------------------------------------------------- #
-class _Container(BaseModel):
+class _Container(_JsonExtraModel):
     """Base for grouping containers; tolerant of unknown / ``x_*`` keys."""
-
-    model_config = ConfigDict(frozen=True, extra="allow")
 
 
 class LanguageCaps(_Container):
@@ -712,6 +858,33 @@ class DeclaredCapabilities(_Container):
         """
         yield from _iter_paths(self, prefix="")
 
+    def iter_queryable_paths(self) -> Iterator[str]:
+        """Yield the dot-path of every NODE in the tree -- supported or not.
+
+        The node set is pinned by the two-layer isomorphism: exactly the
+        paths at which :meth:`canonical_json` renders a JSON object and at
+        which :meth:`supports` resolves a model/dict -- capability leaves,
+        containers, constraint submodels, and ``x_*`` extension subtrees
+        (typed or raw-dict; model extras pass the same ``x_*`` gate as every
+        other traversal, so a non-extension unknown key is not a node).
+        Scalar field values (a ``supported`` bool, a ``mode`` token, a
+        ``granularities`` list) are field internals, not nodes: neither
+        yielded nor descended. ``None`` children (an absent mode domain, a
+        ``constraints=None``) are skipped.
+
+        Unlike :meth:`iter_supported_paths` (the supported-only view behind
+        ``effective ⊆ declared``), UNSUPPORTED nodes are yielded and
+        descended, so a consumer can verify the fail-closed ``False`` answers
+        too -- e.g. an unsupported feature's ``constraints`` submodel MUST
+        probe ``False``. The compliance suite sweeps this set to assert a
+        hand-written ``supports()`` agrees with the tree on every node.
+
+        Yields:
+            Dot-paths of every capability node, container, submodel, and
+            extension subtree in the tree.
+        """
+        yield from _iter_node_paths(self, prefix="")
+
     def covers(self, other: DeclaredCapabilities) -> bool:
         """Return whether ``other`` is a valid narrowing of this tree.
 
@@ -956,6 +1129,30 @@ def _iter_paths(node: object, prefix: str) -> Iterator[str]:
             yield from _iter_paths(cast("object", child), path)
 
 
+def _iter_node_paths(node: object, prefix: str) -> Iterator[str]:
+    """Recursively yield every node path under ``node``, supported or not.
+
+    A node is any :class:`~pydantic.BaseModel` or dict child reachable through
+    :func:`_children` (which applies the ``x_*`` gate to model extras) --
+    the same object set :meth:`DeclaredCapabilities.canonical_json` renders
+    as JSON objects. Scalars and lists are field internals, ``None`` children
+    are absent domains; neither is a node.
+
+    Args:
+        node: A pydantic model or dict to walk.
+        prefix: The accumulated dot-path prefix.
+
+    Yields:
+        Every node dot-path, in traversal order.
+    """
+    for name, child in _children(node):
+        if not isinstance(child, (BaseModel, dict)):
+            continue
+        path = f"{prefix}.{name}" if prefix else name
+        yield path
+        yield from _iter_node_paths(cast("object", child), path)
+
+
 def _children(node: object) -> list[tuple[str, object]]:
     """Return ``(name, child)`` pairs for a model or dict node.
 
@@ -1133,6 +1330,7 @@ __all__ = [
     "GuidanceCaps",
     "granularity_offers_all",
     "LanguageCaps",
+    "ModeName",
     "PhraseHintsCap",
     "PhraseHintsConstraints",
     "PromptCap",

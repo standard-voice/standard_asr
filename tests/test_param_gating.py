@@ -35,6 +35,12 @@ from standard_asr.contract.params import (
 )
 from standard_asr.contract.results import Diagnostic
 from standard_asr.runtime.gating import (
+    DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED,
+    DIAG_GUIDANCE_DEGRADED_TO_PROMPT,
+    DIAG_PHRASE_HINTS_TRUNCATED,
+    DIAG_PROMPT_TRUNCATED,
+    DIAG_UNSUPPORTED_GRANULARITY_IGNORED,
+    DIAG_UNSUPPORTED_PARAMETER_IGNORED,
     _count_tokens,  # pyright: ignore[reportPrivateUsage]
     _enforce_phrase_hints_limits,  # pyright: ignore[reportPrivateUsage]
     _enforce_prompt_limit,  # pyright: ignore[reportPrivateUsage]
@@ -44,6 +50,20 @@ from standard_asr.runtime.gating import (
     _try_degrade_to_prompt,  # pyright: ignore[reportPrivateUsage]
     gate_params,
 )
+
+
+def test_gating_diagnostic_code_constants_match_their_wire_literals() -> None:
+    """A diagnostic ``code`` is a wire-visible contract consumers match on. The
+    emission sites now reference these constants, so constant and literal are
+    pinned together here exactly once: renaming either side breaks loudly
+    instead of silently changing what applications receive.
+    """
+    assert DIAG_UNSUPPORTED_PARAMETER_IGNORED == "unsupported_parameter_ignored"
+    assert DIAG_UNSUPPORTED_GRANULARITY_IGNORED == "unsupported_granularity_ignored"
+    assert DIAG_PROMPT_TRUNCATED == "prompt_truncated"
+    assert DIAG_PHRASE_HINTS_TRUNCATED == "phrase_hints_truncated"
+    assert DIAG_GUIDANCE_DEGRADED_TO_PROMPT == "guidance_degraded_to_prompt"
+    assert DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED == "guidance_degrade_phrase_hints_dropped"
 
 
 def _caps(
@@ -1026,7 +1046,10 @@ def test_diarization_unsupported_best_effort_drops_with_diagnostic() -> None:
     diag = diags[0]
     assert diag.code == "unsupported_parameter_ignored"
     assert diag.param == "diarization"
-    assert diag.provided == DIARIZE
+    # A diagnostic's `provided` is wire-visible, so a STRUCTURED parameter is
+    # projected into its JSON form at the emission site rather than left as a
+    # Python object for the transport to duck-type (JsonValue, G5.2).
+    assert diag.provided == DIARIZE.model_dump(mode="json")
     assert diag.effective is None
     assert "batch.diarization" in diag.message
 
