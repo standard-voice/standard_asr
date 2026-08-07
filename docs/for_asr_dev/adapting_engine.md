@@ -166,16 +166,117 @@ Build your config with `Config.from_env(engine_id, **explicit)` instead of the
 bare constructor. Unset fields fall back to
 `STANDARD_ASR_<ENGINE>__<FIELD>` environment variables (note the **double
 underscore** separating the engine and field segments; explicit args win), and
-credentials are wrapped in `SecretStr` by construction — never passed around as
-plaintext. Put secrets (`api_key`, tokens) in `SecretStr` fields via
-`secret_field()`; keep non-secret routing (`base_url`, `region`) plain. A
-composite field (e.g. `default_candidate_languages: list[str]`) takes its env
-value as JSON (`'["en","ja"]'`).
+credentials are wrapped in their masking carrier by construction — never passed
+around as plaintext. Put secrets (`api_key`, tokens) in `SecretStr` fields —
+or `SecretBytes` for byte credentials; exactly one carrier per field,
+optionally with `None` — via `secret_field()`; keep non-secret routing
+(`base_url`, `region`) plain. A
+structured field (a list, a mapping, a submodel, a `TypedDict`, a dataclass)
+takes its env value as JSON (`'["en","ja"]'`); a scalar one — including
+`SecretStr` and `Path` — takes the raw string, byte for byte. Which of the
+two applies is read off the field's own schema, so any shape the config
+guards accept is reachable through the env convention. One shape is refused
+at class definition: a field accepting BOTH (`str | list[str]`) has no
+defined reading — `"123"` is either that string or that JSON number, and
+either choice would disagree with the explicit constructor, which always
+takes the string. Declare one shape, or model the alternatives as a named
+submodel.
+
+The config's serialization surface is **closed**, and the closure is proved
+by sweeping the model's actual core schema rather than by listing forbidden
+decorators. Anything that would make `model_dump` run author code — or emit
+something other than your declared inputs — is rejected at class definition:
+`@computed_field`, `@model_serializer`, `@field_serializer`,
+`PlainSerializer`/`WrapSerializer` metadata, a `SerializeAsAny[...]` field
+(its dump follows the *runtime* object, so the declared type proves nothing),
+an **undeclared value shape** (`Any`, `object`, an unparametrized container,
+`dict[str, Any]` — same duck-typing, reached from the type instead of a
+marker; spell a heterogeneous mapping as `dict[str, str | int | bool | None]`
+or a named submodel), a **nested submodel** carrying any of those, a
+serializer installed through a custom `__get_pydantic_core_schema__`, and
+`Field(exclude=True)`. Keep `extra="forbid"` too (BaseConfig's default):
+`extra="allow"` stores undeclared caller data and dumps it verbatim past the
+secret mask, and `extra="ignore"` silently swallows a mistyped credential key
+so it reads as an absent credential rather than a loud error. The reason
+is one sentence: `public_dump()` is documented safe for `/v1/models`,
+persistence, and telemetry, which holds only while nothing author-defined can
+rematerialize a credential inside it — and its output must stay the declared
+input surface, so persisting and reloading a config round-trips.
+
+The input surface stays closed **at every depth**, not only on the config
+itself: every nested input container your schema reaches — an options
+submodel, a `TypedDict`, a dataclass — must forbid undeclared keys, and one
+that does not is rejected at class definition. pydantic's default for all
+three silently *drops* an unknown key, so a user's typo'd nested option
+(`{"decode": {"baem": 8}}`) would read as applied while your engine runs on
+the field's default — a silent wrong result. The rule reads the *effective*
+policy from the core schema, so pydantic's config propagation is honored: a
+bare `TypedDict` or stdlib dataclass inherits the config's `extra="forbid"`
+and is closed for free; a nested `BaseModel` needs
+`model_config = ConfigDict(extra="forbid")`, and a *pydantic* dataclass
+(which owns its config) needs
+`@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))`.
+
+Use a plain `@property` for derived in-process values (an `authorization`
+header belongs in your engine code, not in the config dump), and keep config
+fields to plain typed inputs.
+
+One boundary is yours to keep, because no serialization proof can hold it
+for you: **never copy a secret out of its carrier**. The closure proof
+bounds what the *schema* installs in the dump, not the contents of values
+your own code builds — a validator that writes `get_secret_value()` into a
+plain field or onto an object's display state (say, a `Path` subclass whose
+`__str__` embeds the token) emits that plaintext through `public_dump()`,
+and would through any dump mechanism. Read the credential with
+`reveal_dump()` at the point of use in your engine code and let it live
+nowhere else.
+
+Provider-native wire names map onto standard fields with **plain string
+aliases** (`Field(alias="xi-api-key")`, or an all-string `AliasChoices`);
+`AliasPath` — and any `AliasChoices` carrying one — is rejected at class
+definition: the flat env convention and the absent-vs-invalid config
+classifier (what makes a missing credential a compliance *skip* instead of a
+fail) both resolve fields by single string tokens, which a nested path alias
+cannot provide. If a value is genuinely nested, declare it as a submodel
+field (its env value arrives as JSON).
 
 ```python
 def __init__(self, **kwargs):
     self.config = MyConfig.from_env("my-engine", **kwargs)   # IC.4
 ```
+
+## Wire-visible values: `extra`, diagnostics
+
+Every slot the wire can see — a `TranscriptionResult` / `Segment` / `Word` /
+`TranscriptionEvent` `extra`, and `emit_diagnostic`'s `provided` / `effective`
+— holds **JSON values only** (`JsonValue`: null, bool, int, finite float,
+str, and lists/str-keyed dicts of those). The Python objects and the JSON
+documents are the same protocol seen twice, so a value with no JSON form is
+rejected at construction, naming the field, instead of failing later in the
+transport — after the server has already committed to a response. Non-finite
+floats (`NaN`, `Infinity`) are excluded for the same reason: they are Python
+floats but not JSON, and a conforming parser rejects the whole document.
+
+`emit_diagnostic` projects a **structured** value (a pydantic submodel) into
+its JSON form itself, so `provided=my_request_model` just works. For any
+other wire-visible slot — or to absorb the `list`-invariance complaint a
+type checker raises when a `list[str]` variable meets a `list[JsonValue]`
+parameter (a static-analysis artifact, not a real mismatch) — use
+`to_json_value` from the engine surface:
+
+```python
+from standard_asr.engine import to_json_value
+
+hints: list[str] = [...]
+event = TranscriptionEvent.final("s1", text, extra={"hints": to_json_value(hints)})
+```
+
+Runtime validation is unchanged either way: a value that is genuinely not
+JSON is rejected loudly at construction, naming the field.
+
+If you genuinely need an arbitrary in-process object, keep it in your own
+engine/session state: a standard protocol object's whole contract is that
+both layers can express it.
 
 ## Streaming responsibilities (what the base does vs you)
 
@@ -217,7 +318,9 @@ conditions.
 > Never put a credential, API key, auth'd URL, or raw exception text in a
 > diagnostic — route sensitive operator detail to `logging` instead. (The server
 > *does* scrub an `error` event's `extra`, because that is auto-captured
-> `str(exc)`; a diagnostic is content you chose, so its safety is yours.)
+> exception detail — pre-summarized input-echo-free by the standard layer, but
+> still operator-only content; a diagnostic is content you chose, so its safety
+> is yours.)
 
 ### Sequence invariants the guard enforces for free
 
@@ -256,6 +359,10 @@ the session with `session.diagnostics()`):
   never-announced segment was suppressed.
 - `supersede_reintroduces_segment` — a `supersede` whose `new_ids` reuse an
   already-known id was suppressed.
+- `supersede_noncontiguous_old_ids` — a `supersede` whose `old_ids` do not
+  form a contiguous block of the live reading order (in reading order) was
+  suppressed: the replacements would have no defined placement, and an
+  untimestamped transcript's word order would silently change.
 - `supersede_cross_speaker_merge` — a `supersede` that would merge segments
   carrying distinct non-null speakers into fewer segments was suppressed
   (someone's words would be silently mis-attributed).

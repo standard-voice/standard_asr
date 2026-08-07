@@ -9,13 +9,18 @@ quick transcription.
 List all discovered models.
 
 Flags:
-- `--strict`: fail on invalid entry points during discovery (default: keep
-  going, skipping invalid ones).
+- `--strict-discovery`: fail on invalid plugin entry points during discovery
+  (default: keep going, skipping invalid ones). Deliberately NOT named
+  `--strict`: bare `strict` is the engine's strict/best_effort *parameter-gating*
+  policy (an init-config field, `--set strict=...`), a different knob.
 - `--on-conflict {warn_keep_first,replace}`: strategy for duplicate model keys
   (default: `warn_keep_first`).
 
 ### `standard-asr show <engine/model>`
-Show metadata about a specific model entry point. The declared capabilities are
+Show metadata about a specific model entry point. If the model is registered but
+its plugin cannot be imported, `show` prints everything it could read plus a
+sanitized `Capabilities: <unavailable: ...>` line and exits **1** (the
+installation is broken; the caller's key was fine, so it is neither 0 nor 2). The declared capabilities are
 rendered as **canonical JSON** — the same serialization the REST
 `GET /v1/.../capabilities` endpoint returns, with a derived `supported` boolean
 at every node — so CLI and wire output can be compared field-for-field (spec §C
@@ -24,26 +29,46 @@ R6; the two layers share one capability model). If an engine mis-declares its
 problem and the rest of the metadata still renders.
 
 Flags:
-- `--strict`: fail on invalid entry points during discovery.
+- `--strict-discovery`: fail on invalid plugin entry points during discovery.
 
 ### `standard-asr cache [--ensure]`
 Display (and optionally create, `--ensure`) the Standard ASR model cache
 directory.
 
 ### `standard-asr prepare <engine/model>`
+Flags:
+- `--strict-discovery`: fail on invalid plugin entry points during discovery
+  (the same flag as `list` / `show` / `transcribe` / `compliance`; `serve`
+  deliberately has no discovery flags -- the server always discovers leniently
+  so one broken co-installed plugin cannot take every other engine's endpoint
+  down with it). On this command the name matters doubly: `--set strict=...`
+  configures the engine's parameter-gating policy on the same command line.
+
 Warm up a model by loading or downloading weights. `prepare` is best-effort and
 maps onto the optional `prepare()` hook (spec IC.11): an engine that does not
 override the `EngineBase` default no-op is a reported no-op ("nothing to warm
 up") and never transcribes, so a cloud engine is never billed for a stand-in
 request. The hook MUST be a synchronous, zero-argument method; a coroutine
-`prepare` (or a non-callable `prepare` attribute) is rejected as a usage error
-(it would otherwise be called but never awaited and falsely reported complete).
+`prepare` (or a non-callable / parameter-requiring `prepare` attribute) is
+rejected as an ENGINE fault — `EngineContractError`, exit 1 — because no flag
+or env var the invoker controls can fix a declaration (it would otherwise be
+called but never awaited and falsely reported complete). The attribute LOOKUP
+is engine code too: `prepare` may be a property, so a descriptor that raises is
+classified at the same seam as the call itself.
 
 ### `standard-asr compliance entrypoints`
-Validate entry points and factories (entry-point metadata + class-level
-capability declarations). Flags:
-- `--strict`: fail on invalid entry points at discovery time.
-- `--no-instantiate`: skip instantiation attempts (avoids loading models).
+Validate entry points and factories: entry-point metadata, class-level
+capability declarations, and — by default — instantiation of each zero-arg
+factory to verify the instance surface. Instantiation includes one
+**behavioral probe**: an engine declaring no streaming axis has
+`start_transcription()` called once with no arguments and MUST raise
+`UnsupportedFeatureError` (a compliant engine refuses at the capability gate
+before constructing anything; a returned session is never entered, but a
+non-compliant implementation may still run arbitrary author code in the
+method body). Flags:
+- `--strict-discovery`: fail on invalid plugin entry points at discovery time.
+- `--no-instantiate`: skip instantiation attempts (avoids loading models —
+  and skips the batch-only refusal probe with them).
 - `--quiet`: suppress warnings in the output.
 
 ### `standard-asr compliance run [engine/model ...]`
@@ -53,12 +78,65 @@ constructs without arguments and declares a streaming axis, the streaming
 **parameter-gating** check — so a streaming engine that bypassed the gating
 template is caught here, not just at the entry-point level (delivers G.2.1's
 "one command validates compliance"). An engine that requires constructor
-arguments (e.g. credentials) is reported as *skipped*, not failed. Flags:
-- `--strict`: fail on invalid entry points at discovery time.
+arguments (e.g. credentials) is reported as *skipped*, not failed — the same
+verdict whether the requirement shows up in the factory signature or as a
+`ConfigurationRequiredError` from a zero-arg factory whose credential is
+absent from the environment (`BaseConfig.from_env` raises that subtype
+automatically; one run never issues two contradictory verdicts for one
+engine). Any **other** `ConfigError` — an invalid supplied value, an
+inconsistent declaration — is a defect and **fails**: skipping it would let a
+broken plugin read as green-with-warning.
+
+**Per-model containment (normative)**: no single model's fault may deny the
+others their verdict — that aggregate IS the one-command guarantee. A
+factory raising anything (`RuntimeError` from an SDK that failed to
+initialize, `OSError` on an unreadable model directory, a plugin's own
+exception type) is reported for THAT model as
+`engine_construction_failed` and the run continues; a check implementation
+that itself falls over is reported as `compliance_check_crashed`, kept
+distinct so an author can tell "your plugin broke" from "the suite broke
+on your plugin". Both fail the run's exit code. `KeyboardInterrupt` and
+`SystemExit` are explicitly NOT contained: they are the operator's own
+control flow.
+
+**Probe honesty**: the default run's behavioral checks call public engine
+entry points with deliberately-rejectable inputs. The provider-params
+swap-safety check invokes `transcribe()` with a one-sample silent probe and a
+foreign engine's `provider_params`; the streaming gating check invokes
+`start_transcription()` with an unsupported parameter (the session is
+constructed but never entered, so the standard layer opens no wire
+connection — and a best_effort output-only engine is reported as an
+inconclusive skip rather than probed through real audio); the batch-only
+refusal probe (part of the entrypoint checks above) invokes a no-argument
+`start_transcription()` on engines declaring no streaming axis and requires
+`UnsupportedFeatureError`. A **compliant**
+engine rejects these at the gate, before any decode, connection, or
+inference. A **non-compliant** engine — the very thing the probes exist to
+catch — may execute its real pipeline on the probe (model load; for a cloud
+engine, a billable call), or run arbitrary method-body code before the
+missing refusal. Run compliance against staging credentials if that
+risk matters to you.
+
+Flags:
+- `--strict-discovery`: fail on invalid plugin entry points at discovery time.
 - `--quiet`: suppress warnings in the output.
 - `--include-bridge`: also run the sync-bridge check. This **opens a streaming
   session** and is therefore off by default — for a cloud engine that is a
   billable connection.
+- `--bridge-timeout SECONDS` (default `5.0`): timeout granted to each phase
+  of the sync-bridge check -- session establishment, then the bridged drive
+  (open, end-of-audio, drain, close; it also caps each bridged lifecycle
+  call). Only meaningful
+  with `--include-bridge` -- passing it alone is a usage error (exit 2), never
+  a silent no-op. The check's remediation advice ("re-run with a larger
+  timeout") is actionable through this flag; library callers pass
+  `check_sync_bridge(..., timeout=...)` (finite, `> 0`; validated). An engine
+  that refuses session establishment as unsupported (e.g. output-only, no
+  `streaming_input`) is reported as a passing `sync_bridge_not_applicable`
+  warning in the report set -- structured and `--quiet`-respecting; there is
+  deliberately no CLI-side pre-gate, so machine consumers of the reports see
+  the verdict too. The flag's value is granted to each check phase
+  (establishment, then the bridged drive) independently.
 
 The streaming **event-sequence** check needs an author-recorded event stream the
 CLI cannot synthesize; it remains a library API
@@ -66,6 +144,13 @@ CLI cannot synthesize; it remains a library API
 note naming it, so a green run is never mistaken for full coverage.
 
 ### `standard-asr transcribe <engine/model> <audio>`
+Flags:
+- `--strict-discovery`: fail on invalid plugin entry points during discovery
+  (the same flag as `list` / `show` / `prepare` / `compliance`). Deliberately
+  NOT named `--strict`: this command also carries `--set strict=...` -- the
+  engine's strict/best_effort parameter-gating policy -- and one name meaning
+  two policies invited silent misconfiguration.
+
 Transcribe an audio file and print text or JSON output. `--options` accepts a
 JSON object mapping onto the portable standard set (`WireRuntimeParams`, e.g.
 `'{"language": "en"}'`). The engine-specific `provider_params` escape hatch is
@@ -85,12 +170,18 @@ Launch the FastAPI server (requires `standard-asr[server]`). Flags:
 
 ### `standard-asr doctor`
 Read-only dependency diagnostic: enumerates installed plugins and reports numpy
-1.x-vs-2.x conflicts that cannot share a process (spec §DEP.5). Exit code `1` if
-a conflict is found, or if plugins are installed but the optional `packaging`
-distribution is missing — conflict analysis is then unavailable and the
-environment cannot be proven conflict-free; else `0` (including when no plugins
-are installed, since there is nothing to analyze). Does not resolve or install
-anything.
+1.x-vs-2.x conflicts that cannot share a process (spec §DEP.5). Range
+satisfiability is three-state: a conflict is asserted only on an exact
+`UNSAT` from `packaging`'s specifier algebra
+(`SpecifierSet.is_unsatisfiable()`, `packaging >= 26.1`); on an older
+`packaging` the fallback witness search can prove satisfiability but never
+emptiness, so undecidable relations are disclosed as
+analysis-unavailable — never convicted, never silently passed. Exit code `1`
+if a conflict is found, or if analysis is unavailable/incomplete with plugins
+installed (the optional `packaging` distribution is missing, or one or more
+relations were undecidable) — the environment cannot then be proven
+conflict-free; else `0` (including when no plugins are installed, since there
+is nothing to analyze). Does not resolve or install anything.
 
 ### Global Flags
 
@@ -109,5 +200,41 @@ anything.
   silently replaced.
 - JSON output for transcription with `--json`.
 - Clear error messages on failure (stderr).
-- Exit codes: `0` success, `1` runtime/transcription failures, `2` usage or
-  validation errors.
+- Exit codes: `0` success, `1` runtime/transcription failures **and engine
+  faults**, `2` usage or validation errors *the invoker can fix*. The split
+  follows the same fault ownership the server uses (server.md §3.7), applied
+  to the CLI's own caller role -- the invoking user owns the flags AND the
+  environment -- and it is classified **at the seam that knows the source**,
+  never by exception class alone:
+  - **Exit 2 (invoker-actionable).** A mis-typed flag; an unknown/malformed
+    model key; a bad `--options` payload (validated by `_parse_options`
+    before the engine runs); a strict-mode `UnsupportedFeatureError`; a bad
+    audio input; and every `ConfigError` -- configuration is invoker-owned
+    at the CLI *whichever seam it surfaces at*, including a factory
+    rejecting a supplied value and a deferred credential check raising
+    `ConfigurationRequiredError` at first transcribe. (The same errors are
+    a scrubbed 500/503 on the server, whose clients cannot supply config:
+    ownership follows the supplier, not the exception site.)
+  - **Exit 1 (engine/deployment fault).** A registered model whose plugin
+    fails to import (`FactoryLoadError` -- the server's scrubbed-500 state,
+    never the caller's 404/exit-2) on **every** command that touches the
+    plugin, `show` included: rendering the fault while returning 0 told a
+    script the model was usable, so `show` prints the metadata it has plus a
+    sanitized `Capabilities: <unavailable: ...>` line and still exits 1;
+    anything in the `ValueError` family escaping the **engine execution
+    seam** -- which starts at the ATTRIBUTE LOOKUP, not the call, since
+    `prepare` and `declared_capabilities` may be descriptors whose bodies are
+    plugin code (`transcribe()` / `prepare()` / class-level capability reads):
+    a bare SDK `ValueError`, a raw pydantic `ValidationError` from an
+    engine-internal model (rendered on the operator audience), an
+    `InvalidProviderParamError` the CLI user cannot have caused; every
+    `EngineContractError` (broken sync-call boundary, or a declaration
+    defect -- a coroutine/non-callable/parameter-requiring `prepare`, a
+    malformed declared language tag, a missing IC.6 `default_language`);
+    and `TranscriptionError` / other runtime failures.
+  The one in-band residual is documented on `ConfigError` itself: an engine
+  that raises it (or lets a non-config internal `ValidationError` escape its
+  factory, which `create()` wraps) for a fault that is NOT about the
+  supplied configuration mis-asserts the type's ownership contract; the
+  compliance suite's zero-arg construction check
+  (`engine_construction_failed`) polices that, not consumer-side guessing.
