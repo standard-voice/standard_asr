@@ -18,6 +18,7 @@ StandardASRError
 |   +-- InvalidProviderParamError  wrong engine's provider_params passed
 +-- AudioProcessingError       audio decode / size / sample-rate failure
 |   +-- IncompatibleAudioInputError  no conversion path exists
+|   |   +-- UnsafeAudioUrlError   AudioUrl failed the SSRF policy (non-HTTPS, private IP)
 |   +-- FFmpegNotFoundError    FFmpeg needed but not on PATH
 |   +-- FFprobeNotFoundError   FFprobe needed but not on PATH
 +-- EngineContractError        engine broke the protocol contract (async transcribe, bad declaration)
@@ -68,7 +69,10 @@ except ConfigError as exc:
 ```
 
 These fields let you build programmatic error handling (e.g. fall back to another
-engine when a feature is unsupported) without parsing message strings.
+engine when a feature is unsupported) without parsing message strings. Every
+`StructuredError` also carries `.details`, populated where structured context
+exists — `ConfigError`, for example, puts the sanitized pydantic validation
+entries there (`UnsupportedFeatureError` leaves it `None`).
 
 ## Diagnostics (non-fatal)
 

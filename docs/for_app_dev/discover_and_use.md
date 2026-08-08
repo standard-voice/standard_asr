@@ -42,18 +42,23 @@ The standard layer negotiates and converts to whatever the engine accepts
 ## 4. Per-request parameters (portable + escape hatch)
 
 ```python
-from standard_asr import RuntimeParams, WordTimestampGranularity
+from standard_asr import DIARIZE, RuntimeParams, WordTimestampGranularity
 
 result = engine.transcribe(
     "meeting.mp3",
     RuntimeParams(
         language="en",                              # or "auto"
         word_timestamps=WordTimestampGranularity.WORD,
+        diarization=DIARIZE,                        # "who said what" (presence = enable)
         prompt="Q3 budget review.",                 # free-text guidance
         phrase_hints=["Anthropic", "Claude"],       # term boosting
     ),
 )
 ```
+
+`diarization` is an on/off request marker: pass `DIARIZE` (or
+`DiarizationRequest()`) to enable it, leave it `None` to skip it. Gate it first
+with `engine.supports("batch.diarization")`.
 
 Engine-specific knobs go through `provider_params` (typed, swap-safe — passing
 the wrong engine's params raises `InvalidProviderParamError`).
@@ -73,7 +78,7 @@ Missing capabilities are **fail-closed** (`supports(...)` returns `False`).
 print(result.text)
 print(result.detected_language, result.duration)
 for seg in result.segments or []:
-    print(seg.start, seg.end, seg.text)
+    print(seg.start, seg.end, seg.speaker, seg.text)   # speaker: label when diarized, else None
 
 from standard_asr import to_srt, to_vtt
 open("out.srt", "w").write(to_srt(result))
@@ -86,6 +91,11 @@ output grid (players silently drop `T --> T` cues) — the renderers raise
 `SubtitleRenderingError` rather than silently dropping or hiding text or
 fabricating timing; pass `on_unrenderable="omit"` (keep only renderable
 cues) or `"collapse"` (one whole-text cue) to choose the loss explicitly.
+
+`segment.speaker` carries the speaker label when diarization was requested and
+supported (`word.speaker` gives the same detail at word level). Engines whose
+diarization is `always_on` may label speakers even without a request. A `None`
+label means "not attributed", never "unsupported" — capabilities answer support.
 
 ## 7. Streaming
 

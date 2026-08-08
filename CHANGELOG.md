@@ -10,6 +10,15 @@ releases may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Speaker diarization ("who said what").** An opt-in, per-request
+  `RuntimeParams.diarization` marker (the `DIARIZE` constant / `DiarizationRequest`)
+  requests speaker labels, gated by a new `<mode>.diarization` capability. Results
+  carry them on `Segment.speaker` / `Word.speaker` (and `TranscriptionEvent.speaker`
+  while streaming), and a single pinned rule synthesizes the segment label from its
+  words so batch and streaming agree. (#31)
+
 ### Changed (breaking — pre-1.0 policy: long-term design over compatibility)
 
 - **Credential safety is redesigned around a pinned trust model: plugins are
@@ -329,6 +338,17 @@ releases may include breaking changes.
   for each; the visible damage was the definition-time collision guard
   rejecting a legal declaration whose serialization alias merely spelled
   another field's name.
+
+### Changed (non-breaking)
+
+- **Internal package restructure.** The flat module layout is split into
+  audience-signaling subpackages (`audio`, `contract`, `plugins`, `runtime`,
+  `toolchain`). The public API is unchanged — every name still imports from
+  `standard_asr` (application surface) and `standard_asr.engine` (engine-author
+  surface). (#32)
+- **Roadmap moved to GitHub issue [#27](https://github.com/standard-voice/standard_asr/issues/27).**
+  The in-repo `docs/roadmap.md` was removed so there is a single, always-current
+  source of truth for what is planned.
 
 ### Fixed
 

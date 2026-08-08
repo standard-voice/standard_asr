@@ -5,14 +5,14 @@
 > 所有章节标题带「— NORMATIVE」,其中的 **MUST / MUST NOT / SHOULD** 按 RFC 2119 解读。
 > 经过 2026-06 的差距分析、设计、多轮独立审查定稿。
 >
-> **早期设计笔记**（2025–2026 初的工作草稿,使用旧模型）已移至 → `设计/legacy/pre-normative-设计笔记-2025-2026初.md`,不再包含在本文件中。
+> **早期设计笔记**（2025–2026 初的工作草稿,使用旧模型）已移至 → `../legacy/`,不再包含在本文件中。
 
 ---
 
-# 音频输入与采样率 (Audio Input & Sample Rate) — NORMATIVE
+# 音频输入与采样率 (Audio Input & Sample Rate) — NORMATIVE {#audio-input}
 
 > **本节定义**：应用如何向引擎传递音频、标准层如何在应用提供的音频形态与引擎接受的形态之间进行协商与转换、以及采样率的声明与重采样责任。本节取代 idea_docs 中「所有引擎只吃 np.float32」的旧契约。
-> **另见**：[§能力系统](#能力系统-capabilities--normative)（Capabilities 树结构与 Properties 边界规则）、[§流式协议](#流式协议-streaming--normative)（流式音频输入的 `audio_format` 与裸 PCM 帧）、[§Init Config](#init-config-baseconfig--normative)（初始化配置）。
+> **另见**：[§能力系统](#capabilities)（Capabilities 树结构与 Properties 边界规则）、[§流式协议](#streaming)（流式音频输入的 `audio_format` 与裸 PCM 帧）、[§Init Config](#init-config)（初始化配置）。
 > **组织**：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。
 
 ## 1. 概述（为什么需要这套机制）
@@ -57,7 +57,7 @@
 | `(ndarray, int)` | `AudioArray(samples, sample_rate)` | 元组第二元素为采样率 |
 | `ndarray` | `AudioArray(samples, sample_rate=None)` | 未提供采样率，由 R6 的 strict/best_effort 决定 |
 
-**流式音频是另一套表示**：流式通过 `start_transcription(audio_format=…)` 声明格式，`send_audio(chunk)` 喂裸 PCM 帧。batch 的 `AudioInput` 不用于流式逐块。唯一交叠：「整段输入+流式输出」（OpenAI SSE）中 `start_transcription` 的初始整段参数仍是 `AudioInput`（见 [§流式协议](#流式协议-streaming--normative)）。
+**流式音频是另一套表示**：流式通过 `start_transcription(audio_format=…)` 声明格式，`send_audio(chunk)` 喂裸 PCM 帧。batch 的 `AudioInput` 不用于流式逐块。唯一交叠：「整段输入+流式输出」（OpenAI SSE）中 `start_transcription` 的初始整段参数仍是 `AudioInput`（见 [§流式协议](#streaming)）。
 
 ### 3.2 引擎声明 —— Properties
 
@@ -72,7 +72,7 @@
 | `wire_encodings` | `list[str] \| None` | 否 | 流式 `audio_format` 会话允许的 wire 编码白名单（如 `["pcm_s16le", "mulaw"]`）。缺席语义见下。 |
 | `description` | `str \| None` | 否 | 仅**展示性**的人类可读描述。MUST NOT 承载影响协商/门控的机器可读数据。 |
 
-仅行为性 `self_resamples: bool` 放 Capabilities（见 [§能力系统 R7](#能力系统-capabilities--normative)）。引擎身份字段（`engine_id`/`model_name`/`protocol_version`）的 normative 定义见 [§Init Config IC.2](#init-config-baseconfig--normative)。
+仅行为性 `self_resamples: bool` 放 Capabilities（见 [§能力系统 R7](#capabilities)）。引擎身份字段（`engine_id`/`model_name`/`protocol_version`）的 normative 定义见 [§Init Config IC.2](#init-config)。
 
 **无 blanket metadata（normative）。** Properties **不含**自由 `extra: dict` 元数据口袋——与 §C 对能力树「砍掉 blanket `metadata`」（无已知用例、鼓励非结构化信息、破坏机器可读性）的决策对称。引擎需表达的机器可读信息 MUST 走结构化通道：标准字段（additive-minor 提案）或能力树的 `x_<vendor>_*` 实验命名空间；纯展示文本走 `description`。这避免在 wire 层形成无 schema、不可移植的私有并行声明通道。
 
@@ -85,7 +85,7 @@
 
 **采样率隶属判定（normative）。** 「输入采样率 ∈ `accepted_sample_rates`」对三形态的统一判定：`"any"`→恒真；列表→`rate ∈ list`；区间→`min ≤ rate ≤ max`（闭区间）。R7 的重采样决策、可达性不变量、流式会话率校验**均**用此统一判定（实现 `sample_rate_accepted`），任一调用点不得各行其是。重采样目标选择：列表取最近成员（偏好不升采样）；区间取输入**钳制进** `[min, max]`（最近可达点）。
 
-**`wire_encodings` 缺席语义（normative）。** 当引擎声明 `wire_encodings` 为具体列表时，会话建立 MUST fail-closed 拒绝列表外的 `audio_format.encoding`（实现：`EngineBase.ensure_stream_format_supported`）——一个引擎从未声明的编码 MUST NOT 被当作 PCM 误帧而静默错误转写。当 `wire_encodings` 为 `None` 时语义为「**unconstrained**」：标准层无法校验编码，遂跳过编码检查并信任引擎接受任意编码（典型为自管 wire 格式的适配器，仅经无参 `start_transcription()` 开会话、从不收 `audio_format`）。此处对编码是 **fail-open**——是对自管格式引擎的有意让步，而非能力系统 fail-closed 默认的例外（采样率与声道仍无条件 fail-closed）。补偿：合规套件对**声明了 `streaming_input` 却未声明 `wire_encodings`** 的引擎发 **warning**（漏声明会在 `audio_format` 会话上打开静默误帧窗口；自管格式引擎可忽略此 warning）。`pcm_s16le` 是 canonical wire 编码（[§AI 术语](#音频输入与采样率-audio-input--sample-rate--normative)：16-bit signed LE PCM）。
+**`wire_encodings` 缺席语义（normative）。** 当引擎声明 `wire_encodings` 为具体列表时，会话建立 MUST fail-closed 拒绝列表外的 `audio_format.encoding`（实现：`EngineBase.ensure_stream_format_supported`）——一个引擎从未声明的编码 MUST NOT 被当作 PCM 误帧而静默错误转写。当 `wire_encodings` 为 `None` 时语义为「**unconstrained**」：标准层无法校验编码，遂跳过编码检查并信任引擎接受任意编码（典型为自管 wire 格式的适配器，仅经无参 `start_transcription()` 开会话、从不收 `audio_format`）。此处对编码是 **fail-open**——是对自管格式引擎的有意让步，而非能力系统 fail-closed 默认的例外（采样率与声道仍无条件 fail-closed）。补偿：合规套件对**声明了 `streaming_input` 却未声明 `wire_encodings`** 的引擎发 **warning**（漏声明会在 `audio_format` 会话上打开静默误帧窗口；自管格式引擎可忽略此 warning）。`pcm_s16le` 是 canonical wire 编码（[§AI 术语](#audio-input)：16-bit signed LE PCM）。
 
 ## 4. 行为（规范）
 
@@ -132,7 +132,7 @@
 
 **R7.2 — 重采样目标率的选择顺序（normative）。** 当 R7 判定必须重采样时，标准 **MUST** 按以下顺序选择目标采样率（首个适用者胜）：① `required_input_sample_rate`（若设）；② 否则 `native_sample_rate`。R7 的两条可达性不变量保证：经引擎管线（`accepted_sample_rates` 为具体列表或区间时 required 与 native 均被 accepted 接受）①②**必然可达**，故无需第三级。仅当调用者**绕过 Properties 不变量直接调用** `execute_plan`（声明不满足不变量）时，实现 MAY 退到一个防御性兜底：在 accepted 中选与源采样率**绝对距离最近**者，并在等距时**偏好不升采样**（`≤ source`）的目标（区间则把源钳入 `[min, max]`；源采样率未知时选 `min(accepted)` / 区间下界以最小化无谓升采样）。此兜底是实现细节而非 normative 要求，独立实现可自选等价的 fail-loud 策略。把目标选择写入规范，避免其它实现选 `accepted[0]` 或 `max(accepted)` 导致同一输入跨实现得到不同质量的重采样结果。
 
-> **v1 实现说明**：v1 不在标准层重采样**流式裸帧**（流式引擎自行处理 wire 帧），因此上文"流式缺 `[audio]` 时会话建立报错"针对的是**未来**标准层流式重采样落地后的路径。v1 的会话建立校验（`EngineBase.ensure_stream_format_supported`）做**三项** fail-closed：①**wire 采样率可达性**——`required_input_sample_rate`（若设）MUST 强等（**含 `accepted_sample_rates="any"` + `required` 的可构造组合**），否则 wire rate MUST 被 `accepted_sample_rates` 接受（非 `"any"` 时，按统一隶属判定——列表成员或区间内）；②**mono-only**——`audio_format.channels` MUST = `1`（与 [§ST 3.1](#流式协议-streaming--normative):"v1 增量 wire 输入仅支持单声道"一致）；③**wire 编码**——当引擎声明 `wire_encodings`（具体列表）时拒绝列表外编码（`wire_encodings=None` 为 unconstrained，编码 fail-open，缺席语义见 [§AI 3.2](#音频输入与采样率-audio-input--sample-rate--normative)）。采样率拒绝是「标准层流式重采样」deferred 路径落地前的 v1 替代行为（届时该拒绝转为重采样）。批量 `transcribe` 路径的重采样与 `[audio]` 行为按本条全量生效。
+> **v1 实现说明**：v1 不在标准层重采样**流式裸帧**（流式引擎自行处理 wire 帧），因此上文"流式缺 `[audio]` 时会话建立报错"针对的是**未来**标准层流式重采样落地后的路径。v1 的会话建立校验（`EngineBase.ensure_stream_format_supported`）做**三项** fail-closed：①**wire 采样率可达性**——`required_input_sample_rate`（若设）MUST 强等（**含 `accepted_sample_rates="any"` + `required` 的可构造组合**），否则 wire rate MUST 被 `accepted_sample_rates` 接受（非 `"any"` 时，按统一隶属判定——列表成员或区间内）；②**mono-only**——`audio_format.channels` MUST = `1`（与 [§ST 3.1](#streaming):"v1 增量 wire 输入仅支持单声道"一致）；③**wire 编码**——当引擎声明 `wire_encodings`（具体列表）时拒绝列表外编码（`wire_encodings=None` 为 unconstrained，编码 fail-open，缺席语义见 [§AI 3.2](#audio-input)）。采样率拒绝是「标准层流式重采样」deferred 路径落地前的 v1 替代行为（届时该拒绝转为重采样）。批量 `transcribe` 路径的重采样与 `[audio]` 行为按本条全量生效。
 
 **R8 — 重采样质量与许可证。** fallback MUST 抗混叠（FFT-based，MUST NOT 裸线性/抽取）；用了 fallback MUST 发 `resampled_with=fallback` diagnostic。许可证：SHOULD clean-room FFT；MUST NOT vendoring SoX/soxr(LGPL/GPL) 或 2016 前 libsamplerate；soxr 仅作 `[audio]` 依赖。
 
@@ -199,10 +199,10 @@
 ---
 ---
 
-# 语言选择 (Language Selection) — NORMATIVE
+# 语言选择 (Language Selection) — NORMATIVE {#language-selection}
 
 > **本节定义**：应用如何指定转写语言、引擎如何声明所支持的语言、以及未指定时如何解析出最终生效的语言。本节将已定稿的语言系统以本规范的 Capabilities 结构完整重述，并修正了若干边界情形。
-> **另见**：[§能力系统](#能力系统-capabilities--normative)（Capabilities 树结构）、[§Runtime 参数](#runtime-参数-runtime-parameters--normative)（参数如何传入 `transcribe`）、`设计笔记和决策/1 language code 设计.md`（设计背景与决策记录）。
+> **另见**：[§能力系统](#capabilities)（Capabilities 树结构）、[§Runtime 参数](#runtime-parameters)（参数如何传入 `transcribe`）、`../design-notes/1 language code 设计.md`（设计背景与决策记录）。
 > **组织**：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。
 
 ## 1. 概述（为什么需要这套机制）
@@ -235,7 +235,7 @@
 | 能力路径 | 节点类型 | 含义 |
 |---|---|---|
 | `capabilities.<mode>.language.runtime_override` | flag `{supported}` | 是否允许单次请求通过 `language` 参数覆盖 `default_language`（`false` = 初始化后锁定） |
-| `capabilities.<mode>.language.candidate_languages` | bounded `{supported, constraints:{max}}` | 是否支持候选语言；`max` = 数量上限（一般 ≤ 4--5）。**原 Properties 中的 `max_candidate_languages` 已移至此处**（见 [§能力系统 C.6](#能力系统-capabilities--normative)） |
+| `capabilities.<mode>.language.candidate_languages` | bounded `{supported, constraints:{max}}` | 是否支持候选语言；`max` = 数量上限（一般 ≤ 4--5）。**原 Properties 中的 `max_candidate_languages` 已移至此处**（见 [§能力系统 C.6](#capabilities)） |
 
 **应用传入的参数：**
 
@@ -265,7 +265,7 @@
 3. 否则（确有生效列表），若 `<mode>.language.candidate_languages.supported` 为假 → `None` + 一条 diagnostic（"候选语言被忽略：当前引擎/当前模式不支持此功能"，`provided` = 被忽略的列表、`effective` = `None`）。该 diagnostic **仅在步 2 确实拿到非空列表时发出**——这样「`default_language=auto` 且不支持候选语言」这一常见引擎形态（多数本地 Whisper 系）在普通请求上不会被注入一条虚假 warning。
 4. 否则（支持且有生效列表），对结果列表执行校验：**去重但保序**；**禁止包含 `auto`**；每个值 MUST ∈ `detectable_languages`；长度 MUST ≤ `…candidate_languages.constraints.max`（超出时：strict 模式抛错；best_effort 模式截断 + diagnostic）。
 
-> **strict / best_effort 边界（与 [§Runtime 参数 R3](#runtime-参数-runtime-parameters--normative) 的"不支持即报错"张力的澄清）**：这里三类情况分属两套错误模型，**不要混淆**：
+> **strict / best_effort 边界（与 [§Runtime 参数 R3](#runtime-parameters) 的"不支持即报错"张力的澄清）**：这里三类情况分属两套错误模型，**不要混淆**：
 > - **功能不支持**（步 3，`candidate_languages.supported=false` 且确有候选列表）：这是一个**不支持的标准集参数**，但 R3 步 3 明确把它降为 `None` + diagnostic——**永不抛错**，**独立于 strict/best_effort**。它是 Runtime §R2"不支持参数 strict 抛错"的一个**显式 carve-out**：候选语言不支持时静默忽略并诚实诊断，比为一个纯优化项硬失败更合理。**前提**：确有候选语言被传入（步 2 拿到非空列表）；什么都没传时步 2 直接短路为 `None`，不发 diagnostic。
 > - **值非法**（步 4 的"malformed BCP-47 标签"或包含保留字 `auto`）：这是**调用方的代码 bug**（如把 `"english"`/`"auto"` 当候选传入），MUST **始终抛 `ValueError`**，**独立于 strict/best_effort**——与 §Runtime R3 的 `provider_params` 错误"始终抛、不被 strict/best_effort 吞掉"同源。
 > - **值合法但不可达**（步 4 的"non-detectable"或"超 `constraints.max`"）：这才走 §R2 的 strict/best_effort 策略——strict 抛 `UnsupportedFeatureError`（`param="candidate_languages"`，与其它 strict 门控拒绝同型，server 映射为 422），best_effort 丢弃/截断 + diagnostic。
@@ -286,16 +286,16 @@
 ## 6. 附注与理由
 
 - **R1 为何如此严格（修复 totality 漏洞）**：R2 步 2 会回退到 `default_language`。旧规则"仅多语言或支持 runtime override 的引擎才必填"在**单语言**引擎上留有漏洞——该引擎既非多语言、又不支持 runtime override，按旧规则无需提供 `default_language`，但 R2 步 2 仍会读取它 → 行为未定义。改为"有语言轴就必填"，以保证 R2 为全函数（total function）。
-- **`max_candidate_languages` 归位**：从 Properties 移入 `capabilities.<mode>.language.candidate_languages.constraints.max`——"只有在某功能被支持时才有意义的上限"应与该功能定义在一起（[§能力系统 C.6](#能力系统-capabilities--normative) 的边界规则）。旧 Properties 中的表述以本节为准。
+- **`max_candidate_languages` 归位**：从 Properties 移入 `capabilities.<mode>.language.candidate_languages.constraints.max`——"只有在某功能被支持时才有意义的上限"应与该功能定义在一起（[§能力系统 C.6](#capabilities) 的边界规则）。旧 Properties 中的表述以本节为准。
 
 
 ---
 ---
 
-# 能力系统 (Capabilities) — NORMATIVE
+# 能力系统 (Capabilities) — NORMATIVE {#capabilities}
 
 > **本节定义**：引擎如何声明自身支持的功能集合（能力）、应用如何查询这些能力、以及标准如何保证能力系统在版本演进中的向前兼容性。本节将已定稿的统一层级化能力模型以完整的规范格式重述，取代此前三套并存系统（`supports_*` 布尔字段、`FeatureFlag` 枚举、`feat_flag` 字典）的旧设计。
-> **另见**：[§语言选择](#语言选择-language-selection--normative)（能力系统在语言功能上的具体应用）、[§Runtime 参数](#runtime-参数-runtime-parameters--normative)（参数如何受能力门控）、`设计笔记和决策/6 核心设计决策 2026-06-06.md` D5（设计背景与决策记录）。
+> **另见**：[§语言选择](#language-selection)（能力系统在语言功能上的具体应用）、[§Runtime 参数](#runtime-parameters)（参数如何受能力门控）、`../design-notes/6 核心设计决策 2026-06-06.md` D5（设计背景与决策记录）。
 > **组织**：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。
 
 ## 1. 概述（为什么需要能力系统）
@@ -375,7 +375,7 @@ capabilities:
 
 但它是一个**普通的可查询 flag 节点**，与 `self_resamples` 一致：`supports("<mode>.diarization.always_on")` 是有效查询路径；声明 supported 时它出现在 `iter_supported_paths()` 中；canonical JSON 统一为它注入 `supported` 布尔值；`covers()` 通过标准集合包含把「declared 未声明 → effective 声明」的变化当作漂移（declaration drift）拒绝。矛盾态 `supported=false ∧ always_on 声明 supported` 仍**不可表示**（构造期 validator 拒绝）。
 
-唯一使 `always_on` 区别于其他 flag 的是**语义反转**：对其他 flag，`true` 表示「你 MAY 请求这个」；对 `always_on`，`true` 表示「这被强加给你」——未请求 speaker 标签也可能出现（对请求门控 diarization 的具名豁免）。这个反转是文字说明，不是表示层的差异。其填充豁免见 [§结果模型 TR.5](#结果模型-transcription-result--normative) 的具名豁免；架构上不可关闭的 joint 模型（如 joint ASR+diarization 解码器，speaker token 与文本 token 交织在同一输出序列）适用。**能关就必须关（normative）**：能够关闭 diarization 的引擎（原生 skip/disable 开关）MUST 在未请求时关闭；`always_on` 保留给架构上不可关的模型，MUST NOT 为省适配器工夫而声明（不可运行时验证，属声明诚实性义务，与 TR.3 的粒度声明诚实同类）。
+唯一使 `always_on` 区别于其他 flag 的是**语义反转**：对其他 flag，`true` 表示「你 MAY 请求这个」；对 `always_on`，`true` 表示「这被强加给你」——未请求 speaker 标签也可能出现（对请求门控 diarization 的具名豁免）。这个反转是文字说明，不是表示层的差异。其填充豁免见 [§结果模型 TR.5](#transcription-result) 的具名豁免；架构上不可关闭的 joint 模型（如 joint ASR+diarization 解码器，speaker token 与文本 token 交织在同一输出序列）适用。**能关就必须关（normative）**：能够关闭 diarization 的引擎（原生 skip/disable 开关）MUST 在未请求时关闭；`always_on` 保留给架构上不可关的模型，MUST NOT 为省适配器工夫而声明（不可运行时验证，属声明诚实性义务，与 TR.3 的粒度声明诚实同类）。
 
 ### 3.3 节点原型
 
@@ -445,10 +445,10 @@ engine.supports("streaming_input")                    # → True（顶层正交�
 ---
 ---
 
-# Runtime 参数 (Runtime Parameters) — NORMATIVE
+# Runtime 参数 (Runtime Parameters) — NORMATIVE {#runtime-parameters}
 
 > **本节定义**：应用在每次转写请求中可以传入哪些参数（可移植标准集 + 引擎特有逃生舱）、引擎如何校验和响应这些参数、以及 `guidance` 引导家族的共享契约与扩展机制。
-> **另见**：[§能力系统](#能力系统-capabilities--normative)（`engine.supports()` 点查）、[§语言选择](#语言选择-language-selection--normative)（`language`/`candidate_languages` 解析）、[§流式协议](#流式协议-streaming--normative)（流式参数冻结）、[§Init Config](#init-config-baseconfig--normative)（init/runtime 边界）。
+> **另见**：[§能力系统](#capabilities)（`engine.supports()` 点查）、[§语言选择](#language-selection)（`language`/`candidate_languages` 解析）、[§流式协议](#streaming)（流式参数冻结）、[§Init Config](#init-config)（init/runtime 边界）。
 > **组织**：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。
 > **取代**：idea_docs `spec/options.md` 的子类化方案。
 
@@ -476,10 +476,10 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 
 | 字段 | 类型 | 默认 | Capability 路径 | 含义 |
 |---|---|---|---|---|
-| `language` | `str \| None` | `None` | `<mode>.language.runtime_override` | 本次语言（BCP-47 / `"auto"`），覆盖 `default_language`。解析见 [§语言选择 R2](#语言选择-language-selection--normative)。 |
-| `candidate_languages` | `list[str] \| None` | `None` | `<mode>.language.candidate_languages` | 候选语言列表（仅 `auto` 下有意义）。解析见 [§语言选择 R3](#语言选择-language-selection--normative)。 |
+| `language` | `str \| None` | `None` | `<mode>.language.runtime_override` | 本次语言（BCP-47 / `"auto"`），覆盖 `default_language`。解析见 [§语言选择 R2](#language-selection)。 |
+| `candidate_languages` | `list[str] \| None` | `None` | `<mode>.language.candidate_languages` | 候选语言列表（仅 `auto` 下有意义）。解析见 [§语言选择 R3](#language-selection)。 |
 | `word_timestamps` | `WordTimestampGranularity \| None` | `None` | `<mode>.word_timestamps` | 词级时间戳。**枚举**（`word \| segment \| char`），非 bool。 |
-| `diarization` | `DiarizationRequest \| None` | `None` | `<mode>.diarization` | 说话人分离（"谁说了什么"）。**presence = enable**：`DiarizationRequest` 是 v1 的**空 frozen marker**（`extra="forbid"`、无字段）；便利常量 `DIARIZE = DiarizationRequest()`。语义与 wire 映射见 §3.4；结果语义见 [§结果模型 TR.5](#结果模型-transcription-result--normative)。 |
+| `diarization` | `DiarizationRequest \| None` | `None` | `<mode>.diarization` | 说话人分离（"谁说了什么"）。**presence = enable**：`DiarizationRequest` 是 v1 的**空 frozen marker**（`extra="forbid"`、无字段）；便利常量 `DIARIZE = DiarizationRequest()`。语义与 wire 映射见 §3.4；结果语义见 [§结果模型 TR.5](#transcription-result)。 |
 | `prompt` | `str \| None` | `None` | `<mode>.guidance.prompt` | 自由文本软提示（§3.3）。 |
 | `phrase_hints` | `list[str] \| None` | `None` | `<mode>.guidance.phrase_hints` | 词条 boost 集（§3.3）。 |
 | `on_unsupported` | `Literal["fail", "degrade_to_prompt"]` | `"fail"` | （无——策略指令） | `guidance` 降级策略（§3.3 opt-in 降级）。**无 capability 路径**：它是控制*遇到不支持的 guidance channel 时是否降级*的策略字段，不被能力门控。`"fail"` = **不降级**（按 strict/best_effort 走标准门控：strict 抛错、best_effort 丢弃+diagnostic）——它**不**强制本次请求整体失败，最终行为由全局 strict/best_effort 决定；`"degrade_to_prompt"` = 单向降级 rich→prompt。它是 `RuntimeParams` 顶层字段且**随 wire 可移植集传输**（`WireRuntimeParams`）。 |
@@ -542,7 +542,7 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 | `"diarization": null` | `None` | 未请求 |
 | 键缺席 | `None`（字段默认） | 未请求 |
 
-对象内的未知键（如 `{"diarization": {"unknown": true}}`）→ 校验错误（`extra="forbid"`；server 映射 422）——marker 毕业出新字段前，wire 不接受任何内部键。WS 开启（config/handshake 帧，形如 server 规范 §4.1.1 的扁平首帧——无 `type`/`start` 信封，marker 位于 `options` 下）：`{"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": {"diarization": {}}}`；事件随 [§流式协议 4.1](#流式协议-streaming--normative) 携带 `speaker`：`{"type": "final", "segment_id": "seg-3", "text": "I agree.", "speaker": "speaker_1", "start": 12.4, "end": 13.8}`。
+对象内的未知键（如 `{"diarization": {"unknown": true}}`）→ 校验错误（`extra="forbid"`；server 映射 422）——marker 毕业出新字段前，wire 不接受任何内部键。WS 开启（config/handshake 帧，形如 server 规范 §4.1.1 的扁平首帧——无 `type`/`start` 信封，marker 位于 `options` 下）：`{"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": {"diarization": {}}}`；事件随 [§流式协议 4.1](#streaming) 携带 `speaker`：`{"type": "final", "segment_id": "seg-3", "text": "I agree.", "speaker": "speaker_1", "start": 12.4, "end": 13.8}`。
 
 ## 4. 行为（规范）
 
@@ -558,7 +558,7 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 
 **R6 — 识别行为三态 flag（v1 占位）。** verbatim/disfluency/punctuation/ITN/profanity-filter 未来作标准三态（`unset | on | off`，capability 门控），不进 `guidance`。v1 先走 `provider_params`。
 
-**R7 — 批量运行时失败错误契约。** `transcribe` / `transcribe_async` 在引擎执行期（模型推理、网络调用、SDK）发生失败时 MUST 抛 `TranscriptionError`，并以 `raise TranscriptionError(...) from exc` 保留原始异常为 `__cause__`——使应用得以**跨引擎**用单一类型捕获运行时失败，而非各引擎各抛其原生异常（`RuntimeError` / SDK 异常 / `requests.HTTPError`…）。这是流式 [§6.2](#流式协议-streaming--normative) `error` 事件 `engine_error` 码的批量对应物：流式把引擎逃逸异常包装为 `engine_error` 事件，批量把它包装为 `TranscriptionError`。它表示**引擎/运行时故障**，与调用方可修的错误（`ConfigError` / `UnsupportedFeatureError` / `InvalidProviderParamError` / `AudioProcessingError`）属不同故障域，server MUST 映射为 5xx（而非 4xx）。约束作用于引擎模板钩子 `_transcribe`（`EngineBase` 为批量管线提供包装位点）；合规套件无法静态核验引擎是否包装，故本契约由规范 + 模板 + 文档约束，不进运行时强制门控。
+**R7 — 批量运行时失败错误契约。** `transcribe` / `transcribe_async` 在引擎执行期（模型推理、网络调用、SDK）发生失败时 MUST 抛 `TranscriptionError`，并以 `raise TranscriptionError(...) from exc` 保留原始异常为 `__cause__`——使应用得以**跨引擎**用单一类型捕获运行时失败，而非各引擎各抛其原生异常（`RuntimeError` / SDK 异常 / `requests.HTTPError`…）。这是流式 [§6.2](#streaming) `error` 事件 `engine_error` 码的批量对应物：流式把引擎逃逸异常包装为 `engine_error` 事件，批量把它包装为 `TranscriptionError`。它表示**引擎/运行时故障**，与调用方可修的错误（`ConfigError` / `UnsupportedFeatureError` / `InvalidProviderParamError` / `AudioProcessingError`）属不同故障域，server MUST 映射为 5xx（而非 4xx）。约束作用于引擎模板钩子 `_transcribe`（`EngineBase` 为批量管线提供包装位点）；合规套件无法静态核验引擎是否包装，故本契约由规范 + 模板 + 文档约束，不进运行时强制门控。
 
 ### 5.1 OpenAI：prompt + temperature
 
@@ -628,10 +628,10 @@ result = engine_b.transcribe(
 ---
 ---
 
-# 结果模型 (Transcription Result) — NORMATIVE
+# 结果模型 (Transcription Result) — NORMATIVE {#transcription-result}
 
 > **本节定义**：`transcribe` 和流式会话返回的转写结果的统一数据结构——顶层 `TranscriptionResult`、其子模型 `Segment` / `Word`、多通道与说话人分离的表示方式、以及格式渲染（SRT/VTT）的职责归属。
-> **另见**：[§能力系统](#能力系统-capabilities--normative)（capability 决定 optional 字段是否被填充）、[§流式协议](#流式协议-streaming--normative)（`TranscriptionEvent` 与事件流中的 Segment/Word 共享）、[§Runtime 参数](#runtime-参数-runtime-parameters--normative)（`word_timestamps` 等参数如何影响结果）。
+> **另见**：[§能力系统](#capabilities)（capability 决定 optional 字段是否被填充）、[§流式协议](#streaming)（`TranscriptionEvent` 与事件流中的 Segment/Word 共享）、[§Runtime 参数](#runtime-parameters)（`word_timestamps` 等参数如何影响结果）。
 > **组织**：概述 → 术语 → 声明与参数 → 行为（规范）→ 示例 → 附注与理由。
 > **取代**：idea_docs `spec/results.md`。
 
@@ -683,7 +683,7 @@ Word:    start:float  end:float  text:str
   - `channels` 中 `channel` 索引**重复**——TR.4 语义是「每通道一条」，重复使顶层合并歧义、且按 channel 建字典的消费方静默丢一半数据。
 
 ## TR.5 说话人（Speaker Diarization）
-说话人分离（"谁说了什么"）经 [§Runtime 参数 3.4](#runtime-参数-runtime-parameters--normative) 的 `diarization` marker 请求，能力声明于 `capabilities.<mode>.diarization`（[§能力系统 3.2](#能力系统-capabilities--normative)）。结果语义（normative）：
+说话人分离（"谁说了什么"）经 [§Runtime 参数 3.4](#runtime-parameters) 的 `diarization` marker 请求，能力声明于 `capabilities.<mode>.diarization`（[§能力系统 3.2](#capabilities)）。结果语义（normative）：
 
 - **`Segment.speaker`（权威）+ `Word.speaker`（可选细化）。继承规则**：`Word.speaker` 为 `None` 时继承所在段的 `Segment.speaker`；非 `None` 时在词级**覆盖**段级值（混合说话人段的词级细化）。**不**加顶层 `speakers[]` roster（YAGNI，需要时 additive）。
 - **`None` 语义（TR.1 重申）**：diarization **激活**时 `speaker=None` = "引擎无法判定该段/词的说话人"（显式的「不知道」）；未请求时 = 不适用。应用判「引擎是否支持/做了 diarization」MUST 看 capability，MUST NOT 看字段 null（TR.1 null 规则；always-on 豁免见下，使字段 null 判定更加不可靠）。
@@ -691,7 +691,7 @@ Word:    start:float  end:float  text:str
 - **标签有效性（构造期强制）**：`speaker` 标签 MUST 非空、非纯空白、且无首尾空白——`Segment` / `Word` / `TranscriptionEvent` 构造期拒绝（`""` 是既非 `None` 又非真实标签的第三种未定义状态；`"A "` 与 `"A"` 是两个不同字串 = 两个不同说话人，一个适配器 off-by-one 即静默打破一致性；**拒绝而非归一化**，与 `phrase_hints` 词条的 fail-loud 立场同款）。`None` 合法。标准**不**规定标签格式（`"speaker_0"`、`"A"`、known-speaker 场景的真实姓名皆可）。
 - **result 内一致性（适配器义务）**：同一结果内同一字串 = 同一说话人、不同说话人 = 不同字串。一致性范围横跨**所有**标签载体——顶层 `segments[]`、`words[]`、以及 `channels[]` 子结果：逐通道独立 diarize 的引擎（两个通道都把各自第一个说话人标 `"0"`）MUST 由适配器在组装前重标进同一个 result 级命名空间，否则同一字串静默指代两个人。非空性之外的一致性无法构造期强制，合规套件亦**不**校验——套件只提供下方「合规范围」条的负向 presence 交叉检查（`stream_exceeds_diarization` / `result_exceeds_diarization`：只比对「是否携带 speaker」与声明能力，**绝不**比对标签字串一致性）；一致性在无多说话人 fixtures 时不可验证，标准层不假装强制。与 TR.2 排序（同为引擎义务、构造期不强制、套件不校验，但渲染器在自身边界防御性重排兜底）不同，此项是**纯适配器义务**——连渲染器都不代为修复，没有任何标准层安全网。
 - 标签跨会话**不**稳定、**不**关联身份、**不**跨引擎可比。
-- **always-on 引擎的具名豁免（normative）**：声明 `always_on` 为 supported 的引擎 MAY 在 diarization **未被请求**时填充 `speaker`，这**不是**违规——它是对「未请求的数据 MUST NOT 回填」立场（TR.3 对 word timestamps 的禁令）的**有意、具名**豁免：架构上不可关闭的 joint 模型无法不产出 speaker，强制剥离 = 主动丢弃高价值数据 + 在静默方向（漏剥没人知道）留 bug 窗口。此类引擎 MAY 额外发一条 `info` diagnostic（`code="unrequested_speaker_labels"`）。想要无 speaker 标签的应用（隐私场景）在 always-on 引擎上无标准关闭手段，自行在客户端剥除。可关闭的引擎不享受此豁免（能关 MUST 关，[§能力系统 3.2](#能力系统-capabilities--normative)）。
+- **always-on 引擎的具名豁免（normative）**：声明 `always_on` 为 supported 的引擎 MAY 在 diarization **未被请求**时填充 `speaker`，这**不是**违规——它是对「未请求的数据 MUST NOT 回填」立场（TR.3 对 word timestamps 的禁令）的**有意、具名**豁免：架构上不可关闭的 joint 模型无法不产出 speaker，强制剥离 = 主动丢弃高价值数据 + 在静默方向（漏剥没人知道）留 bug 窗口。此类引擎 MAY 额外发一条 `info` diagnostic（`code="unrequested_speaker_labels"`）。想要无 speaker 标签的应用（隐私场景）在 always-on 引擎上无标准关闭手段，自行在客户端剥除。可关闭的引擎不享受此豁免（能关 MUST 关，[§能力系统 3.2](#capabilities)）。
 - **channel vs speaker 正交**：`channel` 是**物理来源**（哪个麦克风/线路），`speaker` 是**逻辑身份**（谁在说话）；两者 MAY 同时存在。引擎特有的 diarization×多通道互斥是**请求时适配器门控**（strict 抛 `UnsupportedFeatureError`；best_effort 丢弃 diarization + diagnostic），**不是** `effective_capabilities` 收窄——effective 能力是实例级/配置期收窄，通道数是随音频到达的请求级属性，实例级机制表达不了「这条请求是立体声，所以 diarization 不可用」。
 - **与 `word_timestamps` 的交互**：diarization 被请求时，`Segment.speaker` MUST 在可判定处填充（它是权威形状）；`Word.speaker` 仅当 `words` 本身被请求/填充时才可能出现（TR.3：`words=None`=未请求）。
 - **合规范围（诚实声明）**：diarization 的**正向**行为（标签质量、真实归属、hint 是否被用）在没有多说话人 fixtures 时不可验证；合规套件只强制**负向**交叉检查——声明不支持却发出 speaker（streaming：`stream_exceeds_diarization`；batch：`result_exceeds_diarization`，扫 `segments[]`/`words[]`/`channels[]` 全部载体）。
@@ -718,7 +718,7 @@ Word:    start:float  end:float  text:str
 ---
 ---
 
-# 依赖与兼容 (Dependencies) — NORMATIVE
+# 依赖与兼容 (Dependencies) — NORMATIVE {#dependencies}
 
 > 定稿。对应 D4。
 
@@ -762,7 +762,7 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 ---
 ---
 
-# Init Config (BaseConfig) — NORMATIVE
+# Init Config (BaseConfig) — NORMATIVE {#init-config}
 
 > 定稿。对应 D7。pydantic v2，UI-discoverable。
 
@@ -816,10 +816,10 @@ nested 引擎声明 submodel（按 model-family）+ 标准 **artifact 路径解�
 ---
 ---
 
-# 流式协议 (Streaming) — NORMATIVE
+# 流式协议 (Streaming) — NORMATIVE {#streaming}
 
 > **本节定义**：Standard ASR 引擎如何提供实时（流式）转写——应用如何开启流式会话、如何喂入和接收音频与结果、结果事件的格式与修订规则、以及连接中断时如何恢复。
-> **另见**：[§能力系统](#能力系统-capabilities--normative)（Capabilities 树结构）、[§结果模型](#结果模型-transcription-result--normative)（Segment/Word 定义）、[§音频输入](#音频输入与采样率-audio-input--sample-rate--normative)（输入类型）。
+> **另见**：[§能力系统](#capabilities)（Capabilities 树结构）、[§结果模型](#transcription-result)（Segment/Word 定义）、[§音频输入](#audio-input)（输入类型）。
 > **组织**：概述 → 术语 → 接口与能力 → 事件模型 → 段生命周期 → 生命周期与健壮性 → 示例 → 附注与理由 → 能力清单 → v1 ship vs defer。
 > **取代**：idea_docs `spec/streaming.md`。
 
@@ -857,7 +857,7 @@ nested 引擎声明 submodel（按 model-family）+ 标准 **artifact 路径解�
 
 ### 3.1 接口方法（两个转写入口 + 派生协议成员）
 
-标准有两个**转写入口**，**返回类型恒定、不会因某个 flag 变形**（此外协议表面还含 `supports()`（[§能力系统 R5](#能力系统-capabilities--normative)）、`transcribe_async` 与下文的 `recommended_wire_format()`——它们是查询/派生成员，不是转写入口）：
+标准有两个**转写入口**，**返回类型恒定、不会因某个 flag 变形**（此外协议表面还含 `supports()`（[§能力系统 R5](#capabilities)）、`transcribe_async` 与下文的 `recommended_wire_format()`——它们是查询/派生成员，不是转写入口）：
 
 | 方法 | 何时使用 | 返回 |
 |---|---|---|
@@ -883,7 +883,7 @@ start_transcription(
 - **`recommended_wire_format()`（协议成员，normative）**：每个 compliant 引擎 MUST 暴露 `recommended_wire_format() -> AudioFormat | None`——返回一个该引擎的会话建立守卫必然接受的最小裸帧 wire 格式（无可用正采样率时返回 `None`）。它是流式旅程文档化的第一步（README / quickstart / streaming 指南均以它开场），也是 CLI sync-bridge runner 与合规门控探针赖以打开会话的唯一来源，故属 `StandardASR` 协议表面而非 `EngineBase` 的私有便利。值 MUST 纯粹派生自 Properties：`sample_rate` = `required_input_sample_rate`（若设，`0` 视为未设）否则 `native_sample_rate`；`encoding` = `wire_encodings` 首项，未声明（unconstrained）时用 canonical `pcm_s16le`；`channels` = `1`。`EngineBase` 免费提供该派生；structural（非 `EngineBase`）引擎须自行实现同一派生。合规套件将其列入无条件必需方法，并校验其返回值能通过标准会话建立规则（实现：纯函数 `ensure_wire_format_supported(properties, audio_format)`，`EngineBase.ensure_stream_format_supported` 即该规则的委托——合规校验经由纯函数而非基类方法，故对 structural 引擎同样成立；自洽往返）。
 - **`deadlines`**：应用对会话终止 deadline（`done_timeout` / `max_idle` / `max_session_seconds`，语义见 §6.1）的逐字段覆盖。优先级 MUST 为：应用显式设置 > 适配器构造时选择 > 标准默认；由标准层模板在适配器构造会话**之后**统一施加（不依赖适配器转发，杜绝静默丢失）。未显式设置的字段不受影响。
 - **整段输入 + 流式输出**（OpenAI Audio SSE）：传 `audio`（一个完整的 `AudioInput`，如文件路径或编码字节），引擎一次收完后流式返回结果。
-- `audio_format` 与 `audio` **互斥**；同时传 MUST 报错。**两者皆缺是合法的**：引擎可在适配器内部自管 wire 格式（如固定协议格式的引擎），此时 `start_transcription()` 不带任何参数即开启增量会话——标准层只在两者**同时出现**时报错。**无参调用的能力门控**：无参开启的是增量（自管 wire 格式）会话，语义上即 §3.2 的 `streaming_input` 能力，故标准层 MUST 对无参调用施加与 `audio_format` 路径**相同**的 `streaming_input` 门控——仅声明 `streaming_output` 的引擎即使实现了流式钩子，无参调用也 MUST fail-closed 抛 `UnsupportedFeatureError`（缺失即不支持，[§能力系统 R1](#能力系统-capabilities--normative)），而非交回一个无法喂入的增量会话（实现：`EngineBase.start_transcription`）。
+- `audio_format` 与 `audio` **互斥**；同时传 MUST 报错。**两者皆缺是合法的**：引擎可在适配器内部自管 wire 格式（如固定协议格式的引擎），此时 `start_transcription()` 不带任何参数即开启增量会话——标准层只在两者**同时出现**时报错。**无参调用的能力门控**：无参开启的是增量（自管 wire 格式）会话，语义上即 §3.2 的 `streaming_input` 能力，故标准层 MUST 对无参调用施加与 `audio_format` 路径**相同**的 `streaming_input` 门控——仅声明 `streaming_output` 的引擎即使实现了流式钩子，无参调用也 MUST fail-closed 抛 `UnsupportedFeatureError`（缺失即不支持，[§能力系统 R1](#capabilities)），而非交回一个无法喂入的增量会话（实现：`EngineBase.start_transcription`）。
 - **v1 增量 wire 输入仅支持单声道（mono-only）**：`audio_format.channels` MUST = `1`。与批量 `transcribe` 路径不同，标准层**不处理**增量 wire 帧（它们被直接转发给流式引擎），因此**无法**像批量那样对多声道做降混；声明 `channels != 1` 的会话 MUST 在建立时 fail-closed 报错（实现：`EngineBase.ensure_stream_format_supported`）。如需多声道，调用方 MUST 自行在客户端降混到 mono 再喂入。多声道 wire 输入是未来能力（与 §AI R7 的"标准层流式重采样"同属 deferred 路径）。
 
 ### 3.2 两个正交能力轴
@@ -951,7 +951,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 | `segment_id` | `str \| None` | 所属段的稳定 id（`done` 和部分 `error`/`progress` 可为 `None`） |
 | `text` | `str \| None` | 该段的当前完整文本（`partial`/`final` 必有） |
 | `stable_until` | `int \| None` | 已冻结的 codepoint 数量（`text[:stable_until]` = 冻结前缀；见 §4.2） |
-| `words` | `list[Word] \| None` | 词级细节（可选，与 [§结果模型](#结果模型-transcription-result--normative) 共享同一 `Word` 定义） |
+| `words` | `list[Word] \| None` | 词级细节（可选，与 [§结果模型](#transcription-result) 共享同一 `Word` 定义） |
 | `speaker` | `str \| None` | 段级说话人标签。继承规则与 `Segment.speaker` 相同（TR.5）：`event.words[i].speaker` 非 `None` 时在词级覆盖；标签有效性规则同 TR.5（构造期拒绝空/纯空白/带首尾空白）。冻结区域保护见 §4.2 |
 | `start` / `end` | `float \| None` | 段的起止时间（秒，原点 = 会话第一个音频采样）|
 | `audio_processed_until` | `float \| None` | 引擎已处理到的音频时间点（§4.4） |
@@ -960,7 +960,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 | `finality` | `"final" \| "closed"`（默认 `"final"`） | 仅 `final` 事件有意义：`"closed"` 标记该 `segment_id` 进入终态（§6.2）。`closed` **不是**独立的 `type`——它是同一 id 上再发一次的 `final`，携带此标记（文本可能因后处理定稿而变化）；终态段 MUST NOT 再被 supersede |
 | `code` / `recoverable` / `retriable_after` | | 仅 `error` 事件使用（§7.2） |
 | `reconnect` / `gap_start` / `gap_end` | | 仅 `progress` 的重连通知使用（§7.3） |
-| `extra` | `dict[str, JsonValue]` | 引擎特定/实验数据槽位（默认 `{}`）。**同受 [§TR.1](#结果模型-transcription-result--normative) 的 JSON 值空间与 str 键域规则约束**（递归至任意深度，非字符串键与非有限 float 构造期 fail-loud）——`error` 事件的 `extra` 由 server 出栈前清空（§7.2），其余事件的 `extra` 原样转发上线，故它与结果模型的 `extra` 是同一个 wire 可见槽位、不可声明为 `Any`。语义与 [结果模型](#结果模型-transcription-result--normative) 的 `extra` 一致：**引擎特定、不可移植**，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集 |
+| `extra` | `dict[str, JsonValue]` | 引擎特定/实验数据槽位（默认 `{}`）。**同受 [§TR.1](#transcription-result) 的 JSON 值空间与 str 键域规则约束**（递归至任意深度，非字符串键与非有限 float 构造期 fail-loud）——`error` 事件的 `extra` 由 server 出栈前清空（§7.2），其余事件的 `extra` 原样转发上线，故它与结果模型的 `extra` 是同一个 wire 可见槽位、不可声明为 `Any`。语义与 [结果模型](#transcription-result) 的 `extra` 一致：**引擎特定、不可移植**，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集 |
 
 **`extra` 的 wire 转发/剥离规则**（两层同构，G.5.2）：
 
@@ -1016,7 +1016,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 
 每个事件可以携带 `audio_processed_until`（浮点秒数），表示引擎**已经处理到**的音频时间点。
 
-- 原点 = 本次会话的**第一个音频采样**的时刻（音频时间 t=0），与 [§结果模型](#结果模型-transcription-result--normative) 中 `Segment.start/end` 的原点相同。
+- 原点 = 本次会话的**第一个音频采样**的时刻（音频时间 t=0），与 [§结果模型](#transcription-result) 中 `Segment.start/end` 的原点相同。
 - MUST **单调递增**（不回退）；跨重连窗口期保持旧值（见 §7.3）。
 - **`progress` 事件**可以只携带 `audio_processed_until` 而不改变任何段的文本——用于心跳、表示"引擎在等更多证据"（DSM 架构的 padding token 场景）、或通知重连。
 - **心跳是 MAY，不是义务**。标准层的活性兜底不依赖心跳——`done_timeout` 由「事件**或**音频消费」共同重置（§6.1），纯静音期的会话存活不需要适配器做任何事。业界（Deepgram / AWS / Google 等）一致将流活性锚定在**音频流**而非转写事件流上，没有任何原生协议或官方 SDK 要求接收侧心跳节拍（docs/research/5）。
@@ -1265,7 +1265,7 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 
 ## 9. 能力清单（v1 流式 Capabilities）
 
-以下 capability 节点住在 `capabilities.streaming.*`（参见 [§能力系统](#能力系统-capabilities--normative)）：
+以下 capability 节点住在 `capabilities.streaming.*`（参见 [§能力系统](#capabilities)）：
 
 | Capability 路径 | 节点类型 | 含义 |
 |---|---|---|
@@ -1274,7 +1274,7 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 | `streaming.emits_partials` | flag `{supported}` | 是否发 partial 事件（false = 只发段末 final） |
 | `streaming.re_segments` | flag `{supported}` | 是否可能发 supersede |
 | `streaming.word_stability` | flag `{supported}` | 是否提供有意义的 `stable_until` |
-| `streaming.diarization` | bounded `{supported, always_on: {supported}, constraints: {max_speakers?}}` | 流式说话人分离（与 batch 分别声明；`always_on` 语义见 [§能力系统 3.2](#能力系统-capabilities--normative)，结果/事件语义见 [§结果模型 TR.5](#结果模型-transcription-result--normative) 与 §4.1/§4.2） |
+| `streaming.diarization` | bounded `{supported, always_on: {supported}, constraints: {max_speakers?}}` | 流式说话人分离（与 batch 分别声明；`always_on` 语义见 [§能力系统 3.2](#capabilities)，结果/事件语义见 [§结果模型 TR.5](#transcription-result) 与 §4.1/§4.2） |
 | `streaming.reconnect` | enum `{mode: seamless\|lossy\|unsupported}` | 重连能力 |
 | `streaming.finality_level` | enum `{mode: final\|closed}` | 能保证到哪级终态 |
 | `streaming.timestamps` | enum `{mode: native_frame_aligned\|post_align\|none}` | 流式时间戳来源 |
@@ -1287,6 +1287,6 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 
 **v1 包含**：`partial`/`final`/`supersede`/`progress`/`done`/`error` + 稳定 `segment_id` + 保守 `stable_until`(codepoints, SHOULD 字素簇边界) + `end_audio` + 两级终态标志 + 正交 input/output 能力 + `reconnect(lossy,gap)` + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。
 
-**defer（additive-later）**：运行时 `target_latency` 调整（v1 仅构造期固定）；`update_guidance()` 中途改引导（v1 保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（v1 声明 lossy）；多通道流式展开。
+**defer（additive-later）**：运行时 `target_latency` 调整（v1 仅构造期固定；流式节奏与延迟调优已有已定案设计——见 `docs/feat_plan/streaming-cadence-and-tuning.md` D1–D7，实现落地时将其规范文本与 rationale 并入本 spec）；`update_guidance()` 中途改引导（v1 保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（v1 声明 lossy）；多通道流式展开。
 
 

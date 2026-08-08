@@ -6,7 +6,9 @@ in under a minute.
 ## Install
 
 ```bash
-pip install "standard-asr[audio] @ git+https://github.com/standard-voice/standard_asr.git"
+pip install "standard-asr[audio]"
+# Each engine is its own package; experimental plugins install from their repo
+# until they publish to PyPI.
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
 ```
 
