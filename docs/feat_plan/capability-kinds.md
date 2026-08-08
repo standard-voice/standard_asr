@@ -93,13 +93,24 @@ behaviors into a `behavior.*` subtree breaks every path in every consumer, in
 the spec, and in the tests. The move adds no information that the `kind` field
 does not already give. Cost is high and value is zero, so the tree shape stays.
 
-Each capability leaf node gains one field:
+Each capability leaf node gains one field. The shared alias gives the domain,
+and each concrete class pins **one** value:
 
 ```python
-kind: Literal["requestable", "behavior", "limit"]
+CapabilityKind = Literal["requestable", "behavior", "limit"]
+
+class FlagCap(_FlagLikeNode):
+    kind: Literal["behavior"] = "behavior"
+
+class WordTimestampsCap(_FlagLikeNode):
+    kind: Literal["requestable"] = "requestable"
 ```
 
-Each node class declares its own value, and an engine author never sets it.
+Do not give a node the shared three-value type. That type states the domain
+only. It lets a node hold a valid but wrong value, such as a behavior node that
+declares `kind="requestable"`. A single-value `Literal` per class makes the
+wrong value a validation error, and it makes `kind` a required property in the
+generated schema.
 
 The domain holds three values, not the four kinds of D1. `observation` is never
 a node kind, because D2 keeps observations out of the tree. A reader who finds
@@ -107,15 +118,21 @@ a node kind, because D2 keeps observations out of the tree. A reader who finds
 
 Two further scope rules:
 
-- **Constraint submodels carry `kind="limit"`.** They are queryable paths, so a
-  client that walks the tree must get a kind at every path it can reach. The
-  four constraint classes have no shared base today. Each one derives directly
-  from `_JsonExtraModel`, in the same way as `_CapNode` and `_Container`. Add a
-  `_ConstraintNode` base that mirrors `_CapNode`, and put the field there.
+- **Constraint submodels carry `kind="limit"`.** The four constraint classes
+  have no shared base today. Each one derives directly from `_JsonExtraModel`,
+  in the same way as `_CapNode` and `_Container`. Add a `_ConstraintNode` base
+  that mirrors `_CapNode`, and put the field there.
 - **Containers do not carry a kind.** `BatchCapabilities`,
   `StreamingCapabilities`, and the other `_Container` types group nodes and
   declare nothing. `can_request()` returns `False` for a container path, in the
   same way as for a behavior.
+
+`iter_queryable_paths()` yields container paths too, so **not** every queryable
+path carries a kind. The rule is narrower: a path carries `kind` when it
+resolves to a capability node or to a constraint node. A container renders in
+`canonical_json()` and in the schema with no `kind` property, exactly as it does
+today. A client reads the absence as "this path groups nodes; it declares
+nothing".
 
 **D5 — Add `can_request(path)`. Keep `supports(path)` unchanged.**
 `supports(path)` keeps its current meaning and its fail-closed rule, so no
@@ -178,22 +195,38 @@ These items are implementation work, and they do not block the issues above:
    container path and for an absent path.
 3. Render `kind` in `canonical_json()`, and update the two-layer isomorphism
    test set.
-4. Assert that the generated JSON Schema carries `kind` at every node, with the
-   three-value domain. D3 rests on the schema, so a test must hold the schema
-   correct. The `canonical_json()` test in item 3 does not cover it.
+4. Assert that the generated JSON Schema carries a **required** `kind` property
+   on every concrete capability node and constraint node, and that its value is
+   the one value that class pins. A domain-only check passes a node that
+   declares the wrong kind, so it is not enough. D3 rests on the schema, so a
+   test must hold the schema correct. The `canonical_json()` test in item 3
+   does not cover it.
 5. Assert in the compliance suite that every entry in `_GATED_PARAMS` resolves
-   to a node with `kind="requestable"`. This makes the gating table and the
-   tree prove each other.
+   to a node with `kind="requestable"`.
 
    The second column of `_GATED_PARAMS` holds a **mode-relative suffix**, not a
    full path. `gate_params()` resolves it as `f"{mode}.{cap_suffix}"`. The
    assertion must therefore qualify each suffix with `batch` and with
    `streaming`, and it must skip a mode the engine does not declare. A raw
    lookup of `language.runtime_override` resolves nothing.
-6. Update `docs/spec/specification.md` and `docs/spec/server.md` for the new
+6. Assert the **reverse** direction as well: every node with
+   `kind="requestable"` appears in `_GATED_PARAMS`, or in a new explicit
+   exemption set beside it.
+
+   Item 5 alone leaves a hole. A new requestable node with no gating entry makes
+   `can_request()` answer `True` while the gating layer never checks the
+   request. The request then reaches the engine ungated, and an engine that does
+   not support it ignores it in silence. That is the cardinal sin.
+
+   `runtime/gating.py` already holds the same guard on the other axis. Its
+   import-time assertion proves that every `RuntimeParams` field is in
+   `_GATED_PARAMS` or in `_UNGATED_PORTABLE_FIELDS`. Mirror that pattern, with
+   the same loud failure and a written reason for each exemption.
+7. Update `docs/spec/specification.md` and `docs/spec/server.md` for the new
    field and the new query.
-7. Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.
+8. Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.
    Do not delete it.
 
-Item 5 is the important one. It removes the chance that the two definitions of
-"requestable" drift apart.
+Items 5 and 6 are the important pair. Only together do they make the gating
+table and the tree prove each other. Item 5 alone proves one direction, and one
+direction is not enough.
