@@ -134,7 +134,7 @@ def test_candidate_languages_rejects_auto(
 ) -> None:
     # 'auto' is a directive, never a candidate; its presence is a caller bug and
     # always raises (mirrors language.effective_candidate_languages, case-folded).
-    with pytest.raises(ValidationError, match="MUST NOT contain 'auto'"):
+    with pytest.raises(ValidationError, match="cannot contain 'auto'"):
         model(candidate_languages=value)
 
 

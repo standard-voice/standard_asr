@@ -369,7 +369,7 @@ def _validate_candidate_language_list(value: list[str] | None) -> list[str] | No
         if normalize_bcp47(tag) == AUTO:
             raise PydanticCustomError(
                 "standard_asr_candidate_language_auto",
-                "candidate_languages MUST NOT contain 'auto' (it is a directive, "
+                "candidate_languages cannot contain 'auto' (it is a directive, "
                 "not a candidate language).",
             )
     return value

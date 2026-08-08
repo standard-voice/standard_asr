@@ -273,14 +273,14 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
     """
     compliance_parser = subparsers.add_parser(
         "compliance",
-        help="Run compliance helpers to validate plugin behaviour.",
+        help="Run compliance helpers to validate plugin behavior.",
         allow_abbrev=False,
     )
     compliance_sub = compliance_parser.add_subparsers(dest="compliance_command", required=True)
 
     ep_parser = compliance_sub.add_parser(
         "entrypoints",
-        help="Verify entry point visibility and basic factory behaviour.",
+        help="Verify entry point visibility and basic factory behavior.",
         allow_abbrev=False,
     )
     _add_strict_discovery_flag(ep_parser)

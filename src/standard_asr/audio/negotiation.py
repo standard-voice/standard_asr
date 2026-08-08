@@ -57,8 +57,8 @@ class UnsafeAudioUrlError(IncompatibleAudioInputError):
             provided="AudioUrl",
             accepted=["fetchable_url"],
             hint=(
-                f"Refusing to forward {url!r}: {reason}. URLs MUST be HTTPS and "
-                "MUST NOT target private/loopback/link-local addresses (SSRF "
+                f"Refusing to forward {url!r}: {reason}. URLs must be HTTPS and "
+                "must not target private/loopback/link-local addresses (SSRF "
                 "defense). To allow a trusted internal endpoint, set "
                 "allow_private_urls=True in the engine's init config (HTTPS is "
                 "still required)."

@@ -729,6 +729,33 @@ def _to_normalized_float32(audio: NDArray[Any]) -> NDArray[np.float32]:
     return ensure_datatype(audio, "float32")
 
 
+def _require_positive_sample_rate(name: str, value: int) -> None:
+    """Reject a sample rate that is not greater than 0.
+
+    Args:
+        name: The parameter name to report in the error message.
+        value: The sample rate to check, in Hz.
+
+    Raises:
+        AudioProcessingError: If ``value`` is not greater than 0.
+    """
+    if value <= 0:
+        raise AudioProcessingError(f"{name} must be > 0, got {value}")
+
+
+def _require_valid_target_channels(value: int | None) -> None:
+    """Reject a target channel count that is set and not greater than 0.
+
+    Args:
+        value: The requested channel count, or ``None`` to keep the source count.
+
+    Raises:
+        AudioProcessingError: If ``value`` is not ``None`` and not greater than 0.
+    """
+    if value is not None and value <= 0:
+        raise AudioProcessingError(f"target_channels must be None or > 0, got {value}")
+
+
 def normalize_audio(
     audio: NDArray[Any],
     original_sr: int,
@@ -784,12 +811,9 @@ def normalize_audio(
     processed_audio: NDArray[np.float32] = _to_normalized_float32(audio)
     # Basic parameter validation
 
-    if original_sr <= 0:
-        raise AudioProcessingError(f"original_sr must be > 0, got {original_sr}")
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("original_sr", original_sr)
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
 
     # Check for empty audio
     if processed_audio.size == 0:
@@ -941,10 +965,8 @@ def load_audio(
 
         **Formats:** WAV, MP3, FLAC, OGG, and any format supported by FFmpeg.
     """
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
     if isinstance(source, str):
         # Improved base64 detection logic to avoid false positives
         s = source.strip()
@@ -1063,10 +1085,8 @@ def load_audio_from_path(
         For broader format support, install ``soundfile`` or ensure FFmpeg is in PATH.
     """
     # Basic parameter validation
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
 
     # Expand user (~) to avoid surprises across platforms
     from os import fspath
@@ -1162,10 +1182,8 @@ def load_audio_from_bytes(
         **Decoding priority:** ``soundfile`` → FFmpeg. Install one for format support.
     """
     # Basic parameter validation
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
     _enforce_decode_size(len(data), max_bytes)
     # Layer 2: `soundfile` is the best primary method for bytes (the shared
     # attempt owns the fall-back-vs-hard-reject exception discipline).
@@ -1226,8 +1244,7 @@ def decode_audio(
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
         TypeError: Unsupported source type.
     """
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_valid_target_channels(target_channels)
 
     if isinstance(source, str):
         # A bare str is ALWAYS a local file path -- never content-sniffed for a
@@ -1294,8 +1311,7 @@ def decode_audio_from_data_uri(
     """
     if not isinstance(value, str):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise TypeError(f"decode_audio_from_data_uri requires a str, got {type(value)}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_valid_target_channels(target_channels)
     # Gate-and-decode: the decoded size is estimated from the payload length
     # and checked BEFORE the decode allocates it (the exact length is re-checked
     # inside _decode_base64_bounded).

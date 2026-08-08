@@ -336,7 +336,7 @@ def effective_candidate_languages(
         # Compare AFTER normalization so 'AUTO'/'Auto'/'auto' are all rejected
         # with this explicit reason, not misreported as "not detectable".
         if norm == AUTO:
-            raise ValueError("candidate_languages MUST NOT contain 'auto'.")
+            raise ValueError("candidate_languages cannot contain 'auto'.")
         if norm in deduped_seen:
             continue
         deduped_seen.add(norm)

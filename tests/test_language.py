@@ -448,7 +448,7 @@ def test_reserved_auto_token_matched_case_insensitively(candidates: list[str]) -
     # The reserved 'auto' token is matched case-insensitively (after
     # normalization), so 'AUTO' / 'Auto' / 'auto' all hit the explicit
     # reserved-word error rather than being misreported as "not detectable".
-    with pytest.raises(ValueError, match="MUST NOT contain 'auto'"):
+    with pytest.raises(ValueError, match="cannot contain 'auto'"):
         effective_candidate_languages(
             AUTO,
             candidates,

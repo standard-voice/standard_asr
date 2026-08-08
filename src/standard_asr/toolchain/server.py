@@ -88,6 +88,25 @@ _ENGINE_CONFIG_ABSENT_DETAIL: str = (
     "variable). This is an operator-side state, not a request error."
 )
 
+
+def _internal_error_message(stage: str) -> str:
+    """Build the scrubbed internal-error message for a failed server stage.
+
+    The message names the stage and points the caller to the server logs. It
+    carries no internal detail, so it is safe to send to an unauthenticated
+    client. Every stage shares one format, so the client-facing wording cannot
+    drift between the REST and WebSocket paths.
+
+    Args:
+        stage: The stage that failed (for example ``"model construction"``).
+
+    Returns:
+        A client-safe message of the form ``"Internal <stage> error. See
+        server logs for details."``.
+    """
+    return f"Internal {stage} error. See server logs for details."
+
+
 # The credential-scrubbing of pydantic validation errors is shared with the CLI
 # (and any other transport that surfaces an `options` validation error) so the
 # two cannot drift on the "never echo the request input" rule. The single owner
@@ -723,7 +742,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal handshake error. See server logs for details.",
+                    "message": _internal_error_message("handshake"),
                 }
             )
             await websocket.close()
@@ -752,7 +771,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal model construction error. See server logs for details.",
+                    "message": _internal_error_message("model construction"),
                 }
             )
             await websocket.close()
@@ -790,7 +809,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal model construction error. See server logs for details.",
+                    "message": _internal_error_message("model construction"),
                 }
             )
             await websocket.close()
@@ -853,7 +872,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream establishment error. See server logs for details.",
+                    "message": _internal_error_message("stream establishment"),
                 }
             )
             await websocket.close()
@@ -875,7 +894,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream establishment error. See server logs for details.",
+                    "message": _internal_error_message("stream establishment"),
                 }
             )
             await websocket.close()
@@ -907,7 +926,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream establishment error. See server logs for details.",
+                    "message": _internal_error_message("stream establishment"),
                 }
             )
             await websocket.close()
@@ -944,7 +963,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream diagnostics error. See server logs for details.",
+                    "message": _internal_error_message("stream diagnostics"),
                 }
             )
             await websocket.close()
@@ -1374,7 +1393,7 @@ async def _bridge_stream(
                     {
                         "type": "error",
                         "code": "internal_error",
-                        "message": "Internal streaming error. See server logs for details.",
+                        "message": _internal_error_message("streaming"),
                     }
                 )
             except Exception:  # noqa: BLE001
@@ -1442,7 +1461,7 @@ async def _create_engine_or_http_error(
         # cannot fix, and str(exc) carries plugin import/annotation
         # internals. Scrubbed 500, specifics safe-logged (§3.7).
         log_exception_safely(logger, "Registered model %r failed to load", model)
-        detail = "Internal model construction error. See server logs for details."
+        detail = _internal_error_message("model construction")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     except ConfigurationRequiredError as exc:
         # MUST precede any broader arm: ConfigurationRequiredError subclasses
@@ -1459,7 +1478,7 @@ async def _create_engine_or_http_error(
         # defect, never the caller's): log details, return a stable generic
         # message so we never leak internal paths or credential text.
         log_exception_safely(logger, "Engine construction failed for model %r", model)
-        detail = "Internal model construction error. See server logs for details."
+        detail = _internal_error_message("model construction")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
 
@@ -1545,7 +1564,7 @@ async def _run_transcription(
         # and the LOG record is scrubbed the same way (the echo must not land
         # in operator/CI logs either).
         log_exception_safely(logger, "Engine-side validation failure for model %r", model)
-        detail = "Internal transcription error. See server logs for details."
+        detail = _internal_error_message("transcription")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     except ConfigurationRequiredError as exc:
         # Required config absent, discovered lazily at CALL time (an engine
@@ -1569,7 +1588,7 @@ async def _run_transcription(
         # authored message may carry server-side config detail. Scrubbed 500,
         # specifics safe-logged for the operator.
         log_exception_safely(logger, "Engine-side configuration/contract fault for model %r", model)
-        detail = "Internal transcription error. See server logs for details."
+        detail = _internal_error_message("transcription")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     except UnsupportedFeatureError as exc:
         # Client-caused: the request asked for a feature/language the engine
@@ -1583,7 +1602,7 @@ async def _run_transcription(
         # boundary above): log details, return a stable generic message so we
         # never leak internal paths or upstream/credential text to the client.
         log_exception_safely(logger, "Transcription failed for model %r", model)
-        detail = "Internal transcription error. See server logs for details."
+        detail = _internal_error_message("transcription")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
 
@@ -1640,7 +1659,7 @@ def _engine_class_or_http_error(
         # endpoints must not blame the caller for a broken plugin nor leak
         # its import/annotation internals.
         log_exception_safely(logger, "Registered model %r failed to load its class", model)
-        detail = "Internal model metadata error. See server logs for details."
+        detail = _internal_error_message("model metadata")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
 
@@ -1741,7 +1760,7 @@ def _metadata_or_http_error(
         raise
     except Exception as exc:  # noqa: BLE001 - a plugin fault is a scrubbed 500
         log_exception_safely(logger, "Model %r failed to produce its metadata", model)
-        detail = "Internal model metadata error. See server logs for details."
+        detail = _internal_error_message("model metadata")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     return payload
 
