@@ -3126,7 +3126,7 @@ class TranscriptionSession(ABC):
 
         After a terminal, nothing consumes the audio queue anymore (the
         producer -- :meth:`audio_chunks`'s ``get`` loop -- is finished or
-        cancelled), but a feeder may be blocked in ``await queue.put(...)``.
+        canceled), but a feeder may be blocked in ``await queue.put(...)``.
         Mark the input released and drain the queue: each drained item wakes
         one blocked putter (whose now-completing chunk is discarded -- the
         stream already carries the terminal), and the putter path
@@ -3314,7 +3314,7 @@ class SyncSession:
         warning — both of which would otherwise surface (and fail ``-W error``).
 
         Two dispatch paths by loop state. When the loop is still RUNNING on its
-        thread (the normal case), outstanding tasks are cancelled cross-thread and
+        thread (the normal case), outstanding tasks are canceled cross-thread and
         the loop is stopped before the join. When the loop is already
         STOPPED-but-not-closed (the pump's "died" branch, where ``run_forever`` has
         returned), a cross-thread submit would never execute -- it would stall the
@@ -3328,7 +3328,7 @@ class SyncSession:
         self._closed = True
         # Best-effort: cancel and await all outstanding tasks so nothing is
         # destroyed while pending. A truly blocking (non-awaiting) adapter can't be
-        # cancelled cooperatively; the join timeout is the backstop for that case.
+        # canceled cooperatively; the join timeout is the backstop for that case.
         if self._loop.is_running():
             try:
                 future = asyncio.run_coroutine_threadsafe(_cancel_all_tasks(), self._loop)

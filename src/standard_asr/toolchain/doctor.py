@@ -285,7 +285,7 @@ def _emptiness_candidates(combined: SpecifierSet) -> set[str]:
     sub-release-width interval such as ``>2.0,<2.1`` (witness ``2.0.1``) or
     ``>2.0,<2.0.1`` (witness ``2.0.0.99999``) is not misread as empty -- together
     with an open "arbitrarily large" sentinel (so an open ``>=``/``>`` lower
-    bound is recognised as satisfiable) and ``0`` (so an open ``<``/``<=`` upper
+    bound is recognized as satisfiable) and ``0`` (so an open ``<``/``<=`` upper
     bound is too).
 
     Coverage is **approximate, not total**: PEP 440 release tuples have

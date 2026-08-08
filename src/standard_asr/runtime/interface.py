@@ -17,7 +17,7 @@ engine contract. Two complementary forms are provided:
   authors subclass it and implement only the model-specific bits.
 
 The negotiation / conversion / gating pipeline runs in the standard layer
-(:class:`EngineBase`), so authors get consistent, correct behaviour for free.
+(:class:`EngineBase`), so authors get consistent, correct behavior for free.
 """
 
 from __future__ import annotations
@@ -584,7 +584,7 @@ class EngineBase(ABC):
         toolchain reports a no-op rather than failing.
 
         Engines that load weights MUST override this to materialize them (e.g.
-        call ``_ensure_model_loaded``), and that path MUST honour the same
+        call ``_ensure_model_loaded``), and that path MUST honor the same
         download gate as transcription: check
         :func:`~standard_asr.runtime.downloads.allow_downloads` and raise
         :class:`~standard_asr.contract.exceptions.DiscoveryError` when downloads are
@@ -1231,7 +1231,7 @@ class EngineBase(ABC):
         swap-safety is enforced on the streaming path too: a swapped-engine
         ``provider_params`` type-mismatch always raises
         :class:`~standard_asr.contract.exceptions.InvalidProviderParamError` (no longer
-        undefined behaviour), and an unsupported standard parameter is rejected
+        undefined behavior), and an unsupported standard parameter is rejected
         (strict) or dropped + diagnosed (best_effort) exactly as for batch.
 
         The streaming input/output capability axis is checked before the hook
@@ -1325,7 +1325,7 @@ class EngineBase(ABC):
         # the streaming-input axis. Gate it on the same 'streaming_input' capability
         # as the audio_format path; otherwise a streaming_output-only engine that
         # implements the hook would hand back an incremental session it cannot feed
-        # (audio_format=None, prepared_audio=None) -- undefined behaviour instead of
+        # (audio_format=None, prepared_audio=None) -- undefined behavior instead of
         # the fail-closed UnsupportedFeatureError. Placed AFTER the hook-override
         # defense so a batch-only engine still reports the clearer "does not support
         # streaming" rather than this capability-specific message.

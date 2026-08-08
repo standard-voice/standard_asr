@@ -56,7 +56,7 @@ _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
 
 #: Reserved prefix for experimental extension capabilities
 #: (``x_<vendor>_<feature>``). An *extra* (non-field) key on a typed standard node
-#: is a recognised capability only when it carries this prefix.
+#: is a recognized capability only when it carries this prefix.
 _EXTENSION_PREFIX = "x_"
 
 
@@ -452,8 +452,8 @@ class PhraseHintsCap(_FlagLikeNode):
 class DiarizationCap(_FlagLikeNode):
     """Capability for speaker diarization (requested via ``RuntimeParams.diarization``).
 
-    ``always_on`` is a **behavioural fact**, in the same family as
-    ``self_resamples`` (and the streaming behaviour flags ``emits_partials`` /
+    ``always_on`` is a **behavioral fact**, in the same family as
+    ``self_resamples`` (and the streaming behavior flags ``emits_partials`` /
     ``re_segments`` / ``word_stability``): it describes what the engine *does*
     -- its architecture cannot DISABLE diarization, so speaker labels may appear
     even when diarization is not requested -- and grants nothing an application
@@ -475,7 +475,7 @@ class DiarizationCap(_FlagLikeNode):
     not a difference in representation.
 
     It is NOT placed inside ``constraints`` (constraints are machine-checkable
-    request limits, and ``always_on`` is a behavioural fact, not a limit). It is
+    request limits, and ``always_on`` is a behavioral fact, not a limit). It is
     reserved for architecturally non-disableable engines: an engine that CAN
     disable diarization MUST disable it when diarization is not requested
     (can-disable-must-disable), and MUST NOT declare ``always_on`` for adapter
@@ -629,7 +629,7 @@ class StreamingGuidanceCaps(GuidanceCaps):
     (``supports("streaming.guidance.mutable_mid_stream")``) and does NOT promise an
     ``update_guidance()`` method; default ``supported=False`` coincides with the
     fail-closed "session-locked" semantics, so the compliance suite requires no
-    behaviour for it. Modelled as a :class:`FlagCap` (not a bare ``bool``) so it
+    behavior for it. Modeled as a :class:`FlagCap` (not a bare ``bool``) so it
     derives a uniform ``supported`` and ``covers()`` set-containment auto-rejects a
     ``declared=false -> effective=true`` widening.
 
@@ -680,7 +680,7 @@ class StreamingCapabilities(_Container):
     diarization: DiarizationCap = Field(default_factory=DiarizationCap)
     # Typed as the base GuidanceCaps so an engine that declares a plain
     # GuidanceCaps still validates (backward tolerance), but ``_coerce_streaming_
-    # guidance`` below normalises every provided value to the StreamingGuidanceCaps
+    # guidance`` below normalizes every provided value to the StreamingGuidanceCaps
     # subtype so the queryable ``mutable_mid_stream`` flag is a real typed node on
     # EVERY construction path (default, typed instance, plain-base instance, and
     # dict / model_validate / wire). Without that, a value supplied as a dict or a
@@ -699,7 +699,7 @@ class StreamingCapabilities(_Container):
     @field_validator("guidance", mode="before")
     @classmethod
     def _coerce_streaming_guidance(cls, value: object) -> object:
-        """Normalise the streaming guidance node to :class:`StreamingGuidanceCaps`.
+        """Normalize the streaming guidance node to :class:`StreamingGuidanceCaps`.
 
         The field is annotated as the base :class:`GuidanceCaps` for backward
         tolerance, but the runtime node MUST be the streaming subtype on every
@@ -716,7 +716,7 @@ class StreamingCapabilities(_Container):
                 or anything else).
 
         Returns:
-            A :class:`StreamingGuidanceCaps` for any recognised input -- a plain
+            A :class:`StreamingGuidanceCaps` for any recognized input -- a plain
             :class:`GuidanceCaps` is re-homed via its dump so its fields and
             ``x_*`` extras are preserved and ``mutable_mid_stream`` defaults to
             fail-closed. Any other value is returned unchanged for pydantic to
@@ -745,10 +745,10 @@ class DeclaredCapabilities(_Container):
         streaming_output: Whether the engine returns results incrementally. May
             only be supported when a ``streaming`` domain is declared.
         self_resamples: Whether the engine resamples audio internally. This is
-            one of the *behavioural* facts the spec declares in Capabilities
+            one of the *behavioral* facts the spec declares in Capabilities
             rather than Properties -- alongside the per-mode
-            ``diarization.always_on`` and the streaming behaviour flags; unlike
-            those it is engine-global (a static behaviour of the engine, not
+            ``diarization.always_on`` and the streaming behavior flags; unlike
+            those it is engine-global (a static behavior of the engine, not
             per-mode), so it lives at the top level alongside
             ``streaming_input`` / ``streaming_output``.
 

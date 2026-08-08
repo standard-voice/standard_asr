@@ -90,7 +90,7 @@ def _parse_entrypoint_name(name: str, *, declaration: bool = False) -> tuple[str
     """Parse an entry point name into ``(declared_id, canonical_id, model_name)``.
 
     The *declared* engine id is the verbatim left segment; the *canonical* id is
-    its PEP 503 normalisation, which is the registry/routing identity so
+    its PEP 503 normalization, which is the registry/routing identity so
     that ``my_engine`` and ``my-engine`` resolve to one engine.
 
     The ``declaration`` flag separates the two contexts this parser serves:
@@ -187,7 +187,7 @@ class ModelSpec:
             ``faster-whisper`` routing ``engine_id``). Kept for diagnostics
             only; never used for routing. Equals ``engine_id`` when already
             canonical. Note an upper-case form such as ``Faster_Whisper`` can
-            never appear here: the declared id is validated before normalisation
+            never appear here: the declared id is validated before normalization
             and rejects upper case outright (``plugin_entrypoints.md`` naming
             table), unlike the non-canonical-but-valid ``_``/``.`` separators
             which are folded.
@@ -351,7 +351,7 @@ class ModelSpec:
             ) from exc
 
     def _ensure_engine_class(self, cls: type) -> type["StandardASR"]:
-        """Validate ``cls`` is recognisably an engine class, then cast.
+        """Validate ``cls`` is recognizably an engine class, then cast.
 
         ``StandardASR`` is a ``runtime_checkable`` :class:`typing.Protocol` with
         non-method (``ClassVar``) members, so ``issubclass`` against it raises

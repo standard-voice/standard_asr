@@ -10,7 +10,7 @@ Both need the same surface-syntax check, so the validators live here in the
 contract layer -- the lowest layer -- and both consumers depend downward on it.
 
 The checks are purely syntactic. Canonicalisation of an engine id to its
-routing identity (PEP 503 normalisation) is a separate, discovery-layer step.
+routing identity (PEP 503 normalization) is a separate, discovery-layer step.
 """
 
 from __future__ import annotations

@@ -1209,7 +1209,7 @@ def decode_audio(
     Unlike :func:`load_audio`, this primitive does **not** resample: it returns
     the decoded waveform together with the source's original sample rate, so the
     caller can make the single authoritative resampling decision. This
-    is what the conversion layer needs to honour 8 kHz telephony and 24 kHz
+    is what the conversion layer needs to honor 8 kHz telephony and 24 kHz
     realtime engines without a spurious round-trip through 16 kHz (the standard
     must not upsample native-rate input).
 

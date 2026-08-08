@@ -183,7 +183,8 @@ class TranscriptionError(StructuredError):
 class AudioProcessingError(StandardASRError):
     """Raised when an error occurs during audio loading or processing.
 
-    This is typically raised by functions in the audio_loader module.
+    The audio loading and conversion functions in :mod:`standard_asr.audio`
+    raise this.
     """
 
     pass

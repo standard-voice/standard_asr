@@ -8,7 +8,7 @@ configuration: a discriminator ``engine`` (the entrypoint-derived ``engine_id``)
 plus "relevant-only" optional standard fields (provided via the applicability
 mixins below) plus engine-declared fields.
 
-Key normative behaviours implemented here:
+Key normative behaviors implemented here:
 
 * **Credential safety:** credential fields MUST use a masking carrier --
   ``SecretStr`` (or ``SecretBytes`` for byte credentials), exactly one per

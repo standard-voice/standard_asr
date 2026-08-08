@@ -280,7 +280,7 @@ def coerce_audio_input(value: AudioInputLike) -> AudioInput:
         The corresponding :data:`AudioInput` variant.
 
     Raises:
-        TypeError: If ``value`` is not a recognised audio input type.
+        TypeError: If ``value`` is not a recognized audio input type.
     """
     if isinstance(
         value, (AudioPath, AudioBytes, AudioArray, AudioUrl, AudioBase64, AudioStorageUri)

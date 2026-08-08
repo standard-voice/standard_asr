@@ -1440,7 +1440,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
 
     This is the single definition of the zero-argument half of the contract,
     shared by :func:`_check_prepare_hook` and the ``standard-asr prepare``
-    CLI command so the compliance verdict and the runtime behaviour cannot drift.
+    CLI command so the compliance verdict and the runtime behavior cannot drift.
 
     Args:
         prepare: An engine's ``prepare`` attribute, already confirmed callable.
@@ -1470,7 +1470,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
 
 
 def _check_prepare_hook(instance: object, name: str, issues: list[ComplianceIssue]) -> None:
-    """Verify the optional ``prepare()`` warm-up hook honours its contract.
+    """Verify the optional ``prepare()`` warm-up hook honors its contract.
 
     ``prepare()`` is optional, but when present (overridden past the
     :class:`~standard_asr.runtime.interface.EngineBase` no-op) it MUST be a
@@ -1783,7 +1783,7 @@ def _cross_check_event_capabilities(
       ``speaker`` or any ``words[i].speaker``): attribution is diarization
       output the engine declared it does not produce. This negative check is
       the only diarization coverage the suite can offer -- *positive*
-      diarization behaviour (correct labels) is unverifiable without
+      diarization behavior (correct labels) is unverifiable without
       multi-speaker fixtures, and the standard probes feed silence.
 
     The reverse -- declaring a capability a given recorded stream simply never
@@ -1915,7 +1915,7 @@ def check_event_sequence(
 
     Returns:
         A :class:`ComplianceReport`; ``passed`` is ``True`` when the sequence
-        honours every streaming invariant.
+        honors every streaming invariant.
     """
     guard = _LifecycleGuard(strict=False)
     issues: list[ComplianceIssue] = []
@@ -2014,7 +2014,7 @@ _PREFIX_INVARIANT_CODES: frozenset[str] = frozenset(
 
 
 def assert_prefix_invariant(events: Iterable[TranscriptionEvent]) -> None:
-    """Assert a recorded stream's partials honour the frozen-prefix invariant.
+    """Assert a recorded stream's partials honor the frozen-prefix invariant.
 
     Test helper for engine authors. Partials are **lossy under backpressure**: the
     base coalesces pending partials when the consumer is slow, so the
@@ -2135,7 +2135,7 @@ def check_transcription_result(
     reported as an error with code ``result_exceeds_diarization``.
 
     **Honest scoping note:** this is the only diarization coverage the suite
-    can offer. *Positive* diarization behaviour -- labels present when
+    can offer. *Positive* diarization behavior -- labels present when
     requested, correctly attributed, consistent across views -- is unverifiable
     without multi-speaker audio fixtures, and the standard probes feed silence.
     The check is therefore an opportunistic *negative* cross-check an author

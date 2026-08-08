@@ -135,7 +135,7 @@ def _normalize_language_list(value: list[str], *, field: str, allow_auto: bool) 
 
     Shared by the ``selectable_languages`` and ``detectable_languages``
     validators. BCP-47 matching is case-insensitive, so the reserved ``auto``
-    token MUST be recognised *after* normalization -- otherwise an upper-case
+    token MUST be recognized *after* normalization -- otherwise an upper-case
     ``"AUTO"`` would pass the literal pre-normalization guard, be canonicalized to
     ``"auto"`` by :func:`normalize_bcp47` (``"AUTO"`` validates as a 4-letter
     primary subtag), and land in the list despite the reserved-token ban
@@ -166,7 +166,7 @@ def _normalize_language_list(value: list[str], *, field: str, allow_auto: bool) 
     seen: dict[str, str] = {}
     for tag in value:
         # Normalize FIRST, then test against the reserved token: a case variant of
-        # "auto" must be recognised as the reserved token, not a BCP-47 tag.
+        # "auto" must be recognized as the reserved token, not a BCP-47 tag.
         canonical = AUTO if tag == AUTO else (normalize_bcp47(tag) if is_valid_bcp47(tag) else None)
         if canonical is None:
             raise ValueError(f"Invalid BCP 47 language tag: {tag!r}")

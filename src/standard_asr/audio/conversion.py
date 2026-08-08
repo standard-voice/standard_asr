@@ -156,14 +156,14 @@ def _target_array_sample_rate(
        ``execute_plan`` directly with declarations that violate the invariants.
        It then picks an **explicit nearest-reachable** rate relative to the
        source: for a discrete list, the accepted rate closest in absolute
-       distance to ``source_sample_rate``, preferring -- to honour the
+       distance to ``source_sample_rate``, preferring -- to honor the
        anti-upsampling spirit -- a rate that does **not** upsample (``<= source``)
        over one that does when both are equally near (deterministic and
        order-independent; the old ``accepted[0]`` could silently upsample, e.g.
        ``[48000, 16000]`` for 22050 Hz input picked 48000); for a
        ``SampleRateRange``, the source clamped into ``[min, max]``. When the
        source rate is unknown the smallest accepted rate (list) / the range
-       minimum is chosen (minimises gratuitous upsampling).
+       minimum is chosen (minimizes gratuitous upsampling).
 
     Args:
         accepted: The engine's accepted sample rates (list, range, or ``"any"``).
@@ -184,7 +184,7 @@ def _target_array_sample_rate(
     if sample_rate_accepted(accepted, native_sample_rate):
         return native_sample_rate
     if source_sample_rate is None:
-        # No source reference: pick the smallest reachable rate to minimise
+        # No source reference: pick the smallest reachable rate to minimize
         # gratuitous upsampling, deterministically. (For "any" we returned native
         # above; here ``accepted`` is a list or range.)
         return min(accepted) if isinstance(accepted, list) else accepted.min

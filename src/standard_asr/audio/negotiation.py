@@ -115,7 +115,7 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     engine (classic TOCTOU/DNS-rebinding). Pinning the validated address for the
     engine's subsequent fetch (DNS-pin) is a documented v1 limitation and a v2
     requirement. Strong SSRF defense for engine-fetched URLs requires
-    the engine to honour a pinned address.
+    the engine to honor a pinned address.
 
     Args:
         url: The URL to validate.

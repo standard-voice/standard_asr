@@ -23,7 +23,7 @@
 | `engine_id`  | `a-z`, `0-9`, `.`, `_`, `-`                          | Must start with `[a-z0-9]`; `/` is forbidden. **Upper case is rejected outright**, but a non-canonical lowercase form using `.`/`_` separators (e.g. `faster_whisper`) is *accepted and folded* to its PEP 503 routing identity (`faster-whisper`), with a normalization hint logged. The asymmetry is deliberate: distribution names on PyPI are lowercase by convention, so an upper-case engine id is treated as a mistake to fix at the source rather than silently rewritten, while the `.`/`_`↔`-` separator equivalence is a pure PEP 503 routing fold. The declared form is retained on `ModelSpec.declared_engine_id` for diagnostics. |
 | `model_name` | `A-Za-z0-9`, `.`, `_`, `+`, `%`, `:`, `-`            | `/` is forbidden. Empty string signals a default model and triggers a warning. |
 
-Multiple models per engine are encouraged. Each preset—quantised variants, multilingual/monolingual builds, device specialisations—should receive its own entry point so downstream users can request the exact behaviour they need.
+Multiple models per engine are encouraged. Each preset—quantized variants, multilingual/monolingual builds, device specializations—should receive its own entry point so downstream users can request the exact behavior they need.
 
 ### Default Models
 
