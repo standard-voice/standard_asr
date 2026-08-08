@@ -163,9 +163,9 @@ def _add_strict_discovery_flag(parser: Any) -> None:
         action="store_true",
         help=(
             "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
+            "--strict-discovery, not --strict. 'strict' alone is the engine's "
+            "strict/best_effort parameter-gating policy -- an init-config field "
+            "set via --set strict=..., a different setting.)"
         ),
     )
 
@@ -335,10 +335,9 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
             "-- session establishment, then the bridged open/end-of-audio/"
             f"drain/close (default: {DEFAULT_SYNC_BRIDGE_TIMEOUT}). Only "
             "meaningful together with --include-bridge (passing it alone is a "
-            "usage error, not a silent no-op). Raise it for engines whose "
-            "session setup or teardown is slow; the check's own remediation "
-            "advice ('re-run with a larger value') is actionable through this "
-            "flag."
+            "usage error, not a silent no-op). Raise it for engines with slow "
+            "session setup or teardown. This flag is how you act on the check's "
+            "'re-run with a larger value' advice."
         ),
     )
     run_parser.set_defaults(func=_cmd_compliance_run)

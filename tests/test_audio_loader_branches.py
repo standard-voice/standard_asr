@@ -159,7 +159,7 @@ def test_normalize_audio_truncates_channels(caplog: pytest.LogCaptureFixture) ->
     out = audio_loader.normalize_audio(audio, 16000, 16000, 2)
 
     assert out.shape[1] == 2
-    assert any("Down-mixing" in record.message for record in caplog.records)
+    assert any("Downmixing" in record.message for record in caplog.records)
 
 
 def test_load_audio_invalid_params() -> None:

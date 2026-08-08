@@ -7,8 +7,8 @@
 (spec, section "Runtime Parameters"). It carries the v1 portable standard set
 (``language``, ``candidate_languages``, ``word_timestamps``, ``diarization``,
 and the ``guidance`` family ``prompt`` / ``phrase_hints``) plus a single typed
-escape hatch, ``provider_params``, for engine-specific knobs. ASR authors MUST NOT add
-top-level fields (``extra="forbid"``); engine-specific knobs go through a
+escape hatch, ``provider_params``, for engine-specific parameters. ASR authors MUST NOT
+add top-level fields (``extra="forbid"``); engine-specific parameters go through a
 :class:`ProviderParams` subclass.
 
 The ``guidance`` family uses **flat fields** directly on ``RuntimeParams`` (no
@@ -73,14 +73,14 @@ class ProviderParams(BaseModel):
     The swap-safety match is **exact** (``type(provided) is <EngineParams>``),
     not ``isinstance``: every engine MUST publish a distinct *terminal* params
     type, because honoring a subclass would let one engine silently accept
-    another's params and drop the extra knobs. Inheritance is
+    another's params and drop the extra fields. Inheritance is
     therefore not a way to declare cross-engine compatibility. This bare base is
     never a valid concrete params model -- declaring it as an engine's
     ``provider_params`` type, or passing a bare instance, is rejected (the latter
     at :class:`RuntimeParams` construction).
     """
 
-    # Engine params subclasses may carry `model_*` knobs; opt out of pydantic's
+    # Engine params subclasses may carry `model_*` fields; opt out of pydantic's
     # `model_` protected namespace so they do not warn (the warning fires on
     # older pydantic, e.g. the lower-bounds 2.5).
     model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
@@ -98,7 +98,7 @@ class DiarizationRequest(BaseModel):
     -> ``DiarizationRequest()``; ``"diarization": null`` -> ``None``; key
     absent -> ``None``.
 
-    The model is a deliberately **empty** frozen marker in v1: tuning knobs
+    The model is a deliberately **empty** frozen marker in v1: tuning parameters
     (``num_speakers`` / ``min``/``max`` hints, granularity selection) are
     deferred because today's engine landscape cannot honor them portably --
     they graduate additively onto this model once support is broad enough.
@@ -142,7 +142,7 @@ class RuntimeParams(BaseModel):
         on_unsupported: Guidance degradation policy. ``"fail"`` (default) keeps
             the fail-closed contract; ``"degrade_to_prompt"`` opts into the
             one-way rich->prompt fallback (a diagnostic is emitted on degrade).
-        provider_params: Engine-specific typed knobs, or ``None``.
+        provider_params: Engine-specific typed parameters, or ``None``.
 
     Raises:
         ValueError: If field validation fails.
@@ -170,14 +170,14 @@ class RuntimeParams(BaseModel):
         description=(
             "Guidance degradation policy (opt-in one-way to prompt). This is a "
             "policy directive, not a capability-gated channel. 'fail' means do "
-            "NOT degrade -- the unsupported channel then follows the standard "
-            "strict/best_effort gate (strict raises, best_effort drops with a "
-            "diagnostic); it does NOT force the whole request to fail. "
+            "NOT degrade. The unsupported channel then follows the standard "
+            "strict/best_effort gate: strict raises, best_effort drops with a "
+            "diagnostic. 'fail' does NOT force the whole request to fail. "
             "'degrade_to_prompt' opts into the one-way rich->prompt fallback."
         ),
     )
     provider_params: ProviderParams | None = Field(
-        default=None, description="Engine-specific typed knobs."
+        default=None, description="Engine-specific typed parameters."
     )
 
     @field_validator("language")
@@ -472,9 +472,9 @@ class WireRuntimeParams(BaseModel):
         description=(
             "Guidance degradation policy (opt-in one-way to prompt). This is a "
             "policy directive, not a capability-gated channel. 'fail' means do "
-            "NOT degrade -- the unsupported channel then follows the standard "
-            "strict/best_effort gate (strict raises, best_effort drops with a "
-            "diagnostic); it does NOT force the whole request to fail. "
+            "NOT degrade. The unsupported channel then follows the standard "
+            "strict/best_effort gate: strict raises, best_effort drops with a "
+            "diagnostic. 'fail' does NOT force the whole request to fail. "
             "'degrade_to_prompt' opts into the one-way rich->prompt fallback."
         ),
     )

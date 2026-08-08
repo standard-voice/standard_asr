@@ -488,8 +488,8 @@ class BaseProperties(BaseModel):
         rates = self.accepted_sample_rates
         if rates != "any" and not sample_rate_accepted(rates, native):
             raise ValueError(
-                f"native_sample_rate={native} must be accepted by accepted_sample_rates "
-                f"{rates!r} (otherwise the engine's own native-rate input would be "
+                f"accepted_sample_rates {rates!r} must include native_sample_rate={native} "
+                f"(otherwise the engine's own native-rate input would be "
                 "silently resampled; an 8 kHz telephony model is a distinct native "
                 "model, not a low-rate variant)."
             )

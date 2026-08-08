@@ -6,7 +6,7 @@
 The core library renders the constant :class:`~standard_asr.contract.results.TranscriptionResult`
 into SRT and VTT, so every compliant engine gets subtitle output for free
 (spec, section "Transcription Result"). This replaces the old
-``response_format`` knob: rendering is a post-hoc transformation, not a request
+``response_format`` option: rendering is a post-hoc transformation, not a request
 parameter. Provider-rendered high-fidelity formats remain available only via
 ``result.extra["provider_formats"]``. Speaker labels are rendered only on
 explicit opt-in (``include_speakers=True``): SRT prefixes the cue
@@ -398,9 +398,10 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
         if on_unrenderable == "error":
             raise SubtitleRenderingError(
                 f"{len(unrenderable)} of {len(payload)} segments cannot "
-                "render as visible subtitle cues: the span is unmeasured (start "
-                "and/or end is None), or it quantizes to zero milliseconds on the "
-                "output grid (players silently drop a 'T --> T' cue). Rendering "
+                "render as visible subtitle cues. A segment is unrenderable when "
+                "its span is unmeasured (start and/or end is None), or when it "
+                "quantizes to zero milliseconds on the output grid (players "
+                "silently drop a 'T --> T' cue). Rendering "
                 "anyway would drop text or fabricate timing. Choose explicitly: "
                 "on_unrenderable='omit' keeps only the renderable cues (their "
                 "text alone reaches the file), or 'collapse' renders one "

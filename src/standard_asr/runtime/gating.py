@@ -694,7 +694,7 @@ def _check_provider_params(
     That is a real hole, not a hypothetical -- a vendor's engine family
     naturally models its params with inheritance (``EngineBParams(EngineAParams)``),
     so engine A would accept a ``EngineBParams`` instance and silently ignore B's
-    extra knobs (the cardinal sin: a parameter the caller set has no effect, with
+    extra fields (the cardinal sin: a parameter the caller set has no effect, with
     no error). Exact matching means every engine MUST publish a distinct terminal
     params type; inheritance is not a channel for declaring cross-engine
     compatibility. A bare :class:`ProviderParams` base instance can never match a
@@ -718,8 +718,8 @@ def _check_provider_params(
     if type(provided) is not expected:
         raise InvalidProviderParamError(
             f"provider_params must be exactly {expected.__name__}, "
-            f"got {type(provided).__name__} (swapped engine, or a subclass whose "
-            f"extra knobs would be silently ignored?)."
+            f"got {type(provided).__name__} (a swapped engine, or a subclass whose "
+            f"extra fields would be silently ignored)."
         )
 
 

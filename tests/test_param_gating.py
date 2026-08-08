@@ -160,7 +160,7 @@ def test_provider_params_subclass_rejected_exact_type() -> None:
     # Swap safety is EXACT-type, not isinstance. A subclass of the
     # expected type (the natural way a vendor models an engine family with
     # inheritance) must NOT pass -- otherwise engine A silently accepts engine
-    # B's params and drops B's extra knobs (the cardinal sin).
+    # B's params and drops B's extra fields (the cardinal sin).
     class _PSub(_P):
         y: int = 0
 

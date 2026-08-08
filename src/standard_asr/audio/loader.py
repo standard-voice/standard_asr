@@ -858,11 +858,11 @@ def normalize_audio(
             if target_channels > current_channels:  # Upscale (e.g., mono to stereo)
                 reps = int(math.ceil(target_channels / current_channels))
                 processed_audio = np.tile(processed_audio, (1, reps))[:, :target_channels]
-            else:  # Down-mix by truncation
+            else:  # Downmix by truncation
                 logger.warning(
-                    "Down-mixing from %d to %d channels by taking the first %d channels. "
-                    "This may result in information loss. For high-quality down-mixing, "
-                    "ensure your audio is processed via the FFmpeg backend.",
+                    "Downmixing from %d to %d channels by taking the first %d channels. "
+                    "This may lose information. For high-quality downmixing, use the "
+                    "FFmpeg backend.",
                     current_channels,
                     target_channels,
                     target_channels,
