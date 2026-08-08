@@ -702,7 +702,7 @@ Word:    start:float  end:float  text:str
   - **行终止符归一**：先把 `\r\n` 与裸 `\r` 归一为 `\n`，再折叠空行——裸 `\r` 在 WebVTT 与多数 SRT 解析器中均是行终止符，不归一则 `\r\r` 可绕过空行折叠伪造 cue。
   - **WebVTT 实体转义**：`to_vtt` MUST 按 W3C WebVTT cue-text 文法转义 `&`→`&amp;`、`<`→`&lt;`、`>`→`&gt;`（先 `&` 后 `<`/`>`，避免二次转义）。裸 `<` 会开启 cue-span tag、被浏览器 tokenizer 消费至下一个 `>`，使尖括号内文本（如引擎泄漏的 `<unk>`/`<|...|>` token、口述数学）在字幕中**静默消失**——正中「静默错误结果是头号大罪」。转义 `>` 同时使 payload 中的 `-->` 不再可能被读作 cue timing。
   - **SRT 不转义**：SRT 无字符引用机制，`to_srt` MUST NOT 套用实体转义（否则把字面 `&amp;`/`&lt;` 显示给用户）；`&` 与尖括号原样透传，下游若需中和标签应在渲染前对转写文本处理。
-- **`segments` 缺失时的回退（normative，消除跨实现未定义行为）**：基于 §TR.1 null 规则——`segments is None`（未请求/不适用）且 `text` 非空 → 合成一条覆盖全文的 cue：`[0, duration]`，`duration` 未知（如手工构造的结果）时用固定 `[0, 3s]`（播放器静默丢零时长 cue，故回退 cue MUST 非零时长）。`segments == []`（请求但空，如静音）→ 零 cue，绝不杜撰。标准归约器（`StreamReducer`/`session.result()`）产出的 `segments` **恒为列表**——空会话（静音、纯删除后无存活段）为 `[]` 而非 `null`：归约器执行了段生命周期，空是「已执行但为空」，`null` 的「未请求/不适用」语义与全文回退 cue 都不适用于它。其他语言 SDK MUST 采用同一回退以保「同结果同渲染」。
+- **`segments` 缺失时的回退（normative，消除跨实现未定义行为）**：基于 §TR.1 null 规则——`segments is None`（未请求/不适用）且 `text` 非空 → 合成一条覆盖全文的 cue：`[0, duration]`。判据是**输出毫秒网格上的可见性**，不是「已知/未知」：仅当 `duration` 在该网格上量化为**正值**时才用它，否则（未知如手工构造的结果、`0`、或模型合法但亚毫秒的 `0.0005`——它作为 float 为正却格式化成 `00:00:00,000`）一律用固定 `[0, 3s]`。播放器静默丢零时长 cue，故回退 cue MUST 非零时长。`segments == []`（请求但空，如静音）→ 零 cue，绝不杜撰。标准归约器（`StreamReducer`/`session.result()`）产出的 `segments` **恒为列表**——空会话（静音、纯删除后无存活段）为 `[]` 而非 `null`：归约器执行了段生命周期，空是「已执行但为空」，`null` 的「未请求/不适用」语义与全文回退 cue 都不适用于它。其他语言 SDK MUST 采用同一回退以保「同结果同渲染」。
 - **说话人渲染（opt-in，normative）**：`to_srt` / `to_vtt` 提供 keyword-only 参数 `include_speakers: bool = False`。默认 `False` 的理由是**文本纯净**（渲染器是结果的投影而非结果本身，调用方仍持有完整数据，`False` 不构成静默丢失；SRT 没有标准 speaker 语法，前缀会改变 cue 文本自身、污染下游文本处理）——**不是**向后兼容。`True` 时对 `speaker` 非 `None` 的段：
   - **SRT**：cue 文本加前缀 `"[<label>]: "`（字符串含尾随空格）。
   - **VTT**：把**整个**（可能多行的）已消毒 cue 正文包进 `<v <label>>` voice tag——per W3C WebVTT，无闭合标签的 `<v>` span 合法地延伸到 cue payload 结尾，故整体包裹对多行 cue 无歧义。
@@ -957,9 +957,10 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 | `audio_processed_until` | `float \| None` | 引擎已处理到的音频时间点（§4.4） |
 | `old_ids` / `new_ids` | `list[str]` | 仅 `supersede` 事件使用（§5） |
 | `detected_language` | `str \| None` | 引擎检测到的语言（BCP-47，非 `auto`；与结果模型同规则校验）。是 §6.3 重连连续性承诺的载体——重连前后 MUST 保持一致。终态事件缺失该值时由标准层盖上会话已归约的 sticky 语言（§6.4 终态语言盖章） |
+| `finality` | `"final" \| "closed"`（默认 `"final"`） | 仅 `final` 事件有意义：`"closed"` 标记该 `segment_id` 进入终态（§6.2）。`closed` **不是**独立的 `type`——它是同一 id 上再发一次的 `final`，携带此标记（文本可能因后处理定稿而变化）；终态段 MUST NOT 再被 supersede |
 | `code` / `recoverable` / `retriable_after` | | 仅 `error` 事件使用（§7.2） |
 | `reconnect` / `gap_start` / `gap_end` | | 仅 `progress` 的重连通知使用（§7.3） |
-| `extra` | `dict[str, Any]` | 引擎特定/实验数据槽位（默认 `{}`）。语义与 [结果模型](#结果模型-transcription-result--normative) 的 `extra` 一致：**引擎特定、不可移植**，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集 |
+| `extra` | `dict[str, JsonValue]` | 引擎特定/实验数据槽位（默认 `{}`）。**同受 [§TR.1](#结果模型-transcription-result--normative) 的 JSON 值空间与 str 键域规则约束**（递归至任意深度，非字符串键与非有限 float 构造期 fail-loud）——`error` 事件的 `extra` 由 server 出栈前清空（§7.2），其余事件的 `extra` 原样转发上线，故它与结果模型的 `extra` 是同一个 wire 可见槽位、不可声明为 `Any`。语义与 [结果模型](#结果模型-transcription-result--normative) 的 `extra` 一致：**引擎特定、不可移植**，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集 |
 
 **`extra` 的 wire 转发/剥离规则**（两层同构，G.5.2）：
 

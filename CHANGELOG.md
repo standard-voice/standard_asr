@@ -419,9 +419,6 @@ releases may include breaking changes.
 - **Server docstring: `FactoryLoadError` maps to a scrubbed 500, not 404.**
   The code was already right (a resolved key whose plugin fails to load is a
   deployment fault); the docstring described the mapping this PR replaced.
-- **doctor: the exact satisfiability oracle arrived in `packaging` 26.1**,
-  not 26.2. Runtime behavior is unchanged (the oracle is feature-detected).
-
 - **`standard-asr show` reports a broken plugin as an engine fault.** It was
   the one consumer that caught `FactoryLoadError`, printed
   `Capabilities: <unavailable: ...>`, and returned **0** — telling a script
