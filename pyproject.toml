@@ -90,6 +90,12 @@ audio = ["soundfile>=0.12", "scipy>=1.10"]
 docs = [
     "mkdocs-material>=9.6.18",
     "mkdocstrings[python]>=0.29",
+    # Security floor, declared even though it is only ever pulled in transitively
+    # (by mkdocs-material and mkdocstrings): GHSA-gm37-52c6-37mw (high) and
+    # GHSA-9xwg-3r6f-jcx2 (moderate) are fixed in 11.0.1 / 11.0.0, with no 10.x
+    # backport. Declaring the floor makes a vulnerable resolution fail at lock
+    # time instead of silently reappearing when a parent relaxes its own pin.
+    "pymdown-extensions>=11.0.1",
 ]
 # websockets is REQUIRED here: server.md promises a WebSocket streaming
 # endpoint, and bare uvicorn ships no WS protocol implementation -- without it
