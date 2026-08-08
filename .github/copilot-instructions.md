@@ -1,80 +1,40 @@
-`version: 2025.09.1-1`
+# Standard ASR — Copilot instructions
 
-# standard asr
+The canonical guidance for this repository is **[`AGENTS.md`](../AGENTS.md)**.
+Read it first. Prose rules are in **[`STYLE.md`](../STYLE.md)**; terminology is
+in **[`TERMINOLOGY.md`](../TERMINOLOGY.md)**. This file repeats only the rules
+that a code assistant most often breaks. When this file and `AGENTS.md` differ,
+`AGENTS.md` wins.
 
-## 1. Core Project Context
+## What this project is
 
-This is a standard ASR (Automatic Speech Recognition) library that provides a simple interface for interacting with various ASR models. It supports many popular ASR models and allows developers to easily transcribe audio into text.
+Standard ASR is a Python library that defines and enforces a universal interface
+protocol for ASR (speech-to-text) inference. It ships **no** ASR models. Each
+engine is a separate pip-installable plugin. The runtime discovers installed
+plugins, negotiates audio, gates parameters against declared capabilities, and
+returns a constant-shape result. Python 3.10 and later. Cross-platform (macOS,
+Windows, Linux).
 
-This project supports Python 3.10 and above. It is designed to be easy to use and integrate into existing applications.
+## Non-negotiable rules
 
-
-  - **Key Principles:**
-      - **Clean code:** Clean, testable, maintainable code, follows best practices of python 3.10+ and does not write deprecated code.
-
-Some key files and directories:
-
-```
-docs/                   # Documentation files
-.github/               # GitHub configuration files, inlcuding workflows
-src/standard_asr/          # Core library code
-pyproject.toml       # Project metadata and dependencies
-README.md            # Project overview and instructions
-```
-
-
-## 1. Overarching Coding Philosophy
-
-  - **Simplicity and Readability:** Write code that is simple, clear, and easy to understand. Avoid unnecessary complexity or premature optimization. Follow the Zen of Python.
-  - **Single Responsibility:** Each function, class, and module should do one thing and do it well.
-  - **Adherence to Best Practices**: Write clean, testable, and robust code that follows modern Python 3.10+ idioms. Adhere to the best practices of our core libraries (FastAPI, Pydantic v2).
-
-## C. Code Style
-
-### C.1. Formatting & Linting (Ruff)
-
-  - All Python code **MUST** be formatted with `uv run ruff format`.
-  - All Python code **MUST** pass `uv run ruff check` without errors.
-  - Import statements should be grouped by standard library, third-party, and local modules and sorted alphabetically (PEP 8).
-
-### C.2. Naming Conventions (PEP 8)
-
-  - Use `snake_case` for all variables, functions, methods, and module names.
-  - Use `PascalCase` for class names.
-  - Choose descriptive names. Avoid single-letter names except for loop counters or well-known initialisms.
-
-### C.3. Type Hints (CRITICAL)
-
-  - Target Python 3.10+. Use modern type hint syntax.
-  - **DO:** Use `|` for unions (e.g., `str | None`).
-  - **DON'T:** Use `Optional` from `typing` (e.g., `Optional[str]`).
-  - **DO:** Use built-in generics (e.g., `list[int]`, `dict[str, float]`).
-  - **DON'T:** Use capitalized types from `typing` (e.g., `List[int]`, `Dict[str, float]`).
-  - All function and method signatures (arguments and return values) **MUST** have accurate type hints. If third party libraries made it impossible to fix type errors, suppress the type checker.
-
-### C.4. Docstrings & Comments (CRITICAL)
-
-  - All public modules, functions, classes, and methods **MUST** have a docstring in English.
-  - Use the **Google Python Style** for docstrings.
-  - Docstrings **MUST** include:
-    1.  Summary.
-    2.  `Args:` section describing each parameter, its type, and its purpose.
-    3.  `Returns:` section describing the return value, its type, and its meaning.
-    4.  (Optional but encouraged) `Raises:` section for any exceptions thrown.
-  - All other code comments must also be in English.
-
-### C.5. Logging
-
-  - Use `logging` module for all informational or error output.
-  - Log messages should be in English, clear, and informative. Use emoji when appropriate.
-
-### C.6. Dependency Management
-
-  - First, try to solve the problem using the Python standard library or existing project dependencies defined in `pyproject.toml`.
-  - If a new dependency is required, it must have a compatible license and be well-maintained. We must minimize the risks for supply chain attacks.
-  - Use `uv add`, `uv remove`, `uv run` instead of pip to manage dependencies. If user uses conda, install uv with pip then.
-
-### C.7. Cross-Platform Compatibility
-
-  - All core logic **MUST** run on at least macOS, Windows, and Linux.
-  - If a feature is platform-specific (e.g., uses a Windows-only API) or hardware-specific (e.g., CUDA), it **MUST** be an optional component. The application should start and run core features even if that component is not available. Use graceful fallbacks or clear error messages.
+- **Prose:** follow `STYLE.md` (adapted ASD-STE100) and `TERMINOLOGY.md`
+  (canonical terms). Use **American spelling**.
+- **No emoji** in any shipped text — messages, logs, docstrings, or docs. The
+  CLI uses ASCII markers (`[OK]`, `[FAIL]`, `[WARN]`, `[INFO]`).
+- **Docstrings:** Google style, English. Include a summary, then `Args:`,
+  `Returns:`, and `Raises:` where they apply.
+- **Logging:** use the `logging` module. Never use `print` for library output.
+- **Type hints:** modern syntax. Use `str | None` and `list[int]`, not
+  `Optional[str]` or `List[int]`. Every signature is fully typed.
+- **Naming (PEP 8):** `snake_case` for variables, functions, and modules;
+  `PascalCase` for classes. A name is a design decision — choose it with care.
+- **A meaning change is gated.** A rename or a reworded message must be
+  necessary and fact-checked against the spec (`docs/spec/specification.md`) and
+  the real behavior. Many names are intentional; prefer to clarify them.
+- **Checks:** all code must pass `uv run ruff format`, `uv run ruff check`
+  (pydocstyle included), and `uv run pyright`.
+- **Dependencies:** prefer the standard library and existing dependencies. Use
+  `uv add`/`uv remove`/`uv run`, not `pip`.
+- **Cross-platform:** core logic runs on macOS, Windows, and Linux. A
+  platform-specific or hardware-specific feature is optional, with a graceful
+  fallback or a clear error.

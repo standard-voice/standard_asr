@@ -186,7 +186,7 @@ class SyncResultDefect:
 
 
 def safe_type_name(value: object) -> str:
-    """Name a value's type for an error message, never raising.
+    r"""Name a value's type for an error message, never raising.
 
     THE shared namer for every consumer that reports a protocol violation
     (this module's clauses, the compliance suite's issue messages), so a
@@ -200,7 +200,7 @@ def safe_type_name(value: object) -> str:
     being reported with an unrelated exception, so the fallback is a fixed
     literal.
 
-    A type's ``__name__`` is NOT a trusted string: ``type("A\\nB", (), {})``
+    A type's ``__name__`` is NOT a trusted string: ``type("A\nB", (), {})``
     stores a newline in it with no metaclass at all, and a metaclass can hand
     back arbitrary text on every read. Unescaped, that text embedded straight
     into an :class:`~standard_asr.contract.exceptions.EngineContractError`

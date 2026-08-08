@@ -75,7 +75,7 @@ class _TimedCue(NamedTuple):
 
 
 def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
-    """Sanitize segment text so it cannot forge or break cue structure.
+    r"""Sanitize segment text so it cannot forge or break cue structure.
 
     Cue blocks in SRT and WebVTT are separated by blank lines, so a transcript
     containing an interior blank line followed by an index and a timestamp line
@@ -95,9 +95,9 @@ def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
     viewer. (Angle-bracket text is passed through verbatim in SRT; see
     :func:`to_srt`.)
 
-    Line terminators are normalized to ``\\n`` first so a lone ``\\r`` -- a
+    Line terminators are normalized to ``\n`` first so a lone ``\r`` -- a
     valid line terminator in WebVTT and many SRT parsers -- cannot slip past the
-    blank-line collapse and forge a cue via ``\\r\\r``.
+    blank-line collapse and forge a cue via ``\r\r``.
 
     Args:
         text: Raw segment text.
@@ -119,11 +119,11 @@ def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
 
 
 def _sanitize_speaker_label(label: str, *, escape_markup: bool) -> str:
-    """Sanitize a speaker label for interpolation into a cue block.
+    r"""Sanitize a speaker label for interpolation into a cue block.
 
     The model validators (:func:`~standard_asr.contract.results.validate_speaker_label`)
     reject empty, whitespace-only, and edge-whitespace labels, but NOT interior
-    line terminators: ``"A\\nB"`` is a construction-valid label that, spliced
+    line terminators: ``"A\nB"`` is a construction-valid label that, spliced
     verbatim into a cue, would introduce a line break -- and a line break in the
     SRT ``[<label>]: `` prefix or the WebVTT ``<v <label>>`` annotation can
     forge or split cue structure exactly like unsanitized cue text. Every line

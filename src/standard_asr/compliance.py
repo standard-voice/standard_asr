@@ -250,7 +250,6 @@ class ComplianceReport:
         Returns:
             ``True`` when no error-level issues exist.
         """
-
         return not any(issue.level == "error" for issue in self.issues)
 
     def iter_level(self, level: Literal["error", "warning"]) -> Iterable[ComplianceIssue]:
@@ -262,7 +261,6 @@ class ComplianceReport:
         Returns:
             Iterable of matching issues.
         """
-
         for issue in self.issues:
             if issue.level == level:
                 yield issue
@@ -277,7 +275,6 @@ def _can_call_without_args(factory: object) -> bool:
     Returns:
         ``True`` when the callable has no required parameters.
     """
-
     try:
         signature = inspect.signature(factory)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -353,7 +350,6 @@ def check_entrypoints(
     Returns:
         Compliance report summarizing findings.
     """
-
     issues: list[ComplianceIssue] = []
 
     if registry is None:

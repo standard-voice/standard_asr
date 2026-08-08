@@ -69,7 +69,9 @@ class ASRFactory(Protocol):
         ...     return MyASREngine(**kwargs)
     """
 
-    def __call__(self, *args: Any, **kwargs: Any) -> "StandardASR": ...
+    def __call__(self, *args: Any, **kwargs: Any) -> "StandardASR":
+        """Create and return a ``StandardASR`` engine instance."""
+        ...
 
 
 def pep503_normalize(name: str) -> str:
@@ -81,7 +83,6 @@ def pep503_normalize(name: str) -> str:
     Returns:
         Normalized name in lowercase with runs of ``[-_.]`` replaced by ``-``.
     """
-
     return re.sub(r"[-_.]+", "-", name.lower())
 
 
@@ -122,7 +123,6 @@ def _parse_entrypoint_name(name: str, *, declaration: bool = False) -> tuple[str
         EntrypointValidationError: If the name does not meet formatting rules,
             or is a slash-less declaration.
     """
-
     if "/" not in name:
         if declaration:
             raise EntrypointValidationError(
@@ -169,7 +169,6 @@ def parse_entrypoint_name(name: str) -> tuple[str, str]:
     Raises:
         EntrypointValidationError: If the name does not meet formatting rules.
     """
-
     _, canonical_id, model_name = _parse_entrypoint_name(name)
     return canonical_id, model_name
 
@@ -729,7 +728,6 @@ def discover_models(
         ['faster-whisper/large-v3', 'whisper/base', ...]
         >>> asr = registry.create("faster-whisper/large-v3")
     """
-
     if on_conflict not in {"warn_keep_first", "replace"}:
         raise ValueError("on_conflict must be 'warn_keep_first' or 'replace'.")
 

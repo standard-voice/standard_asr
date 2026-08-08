@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-"""
-Audio loading and normalization utilities for the Standard ASR audio contract.
+"""Audio loading and normalization utilities for the Standard ASR audio contract.
 
 This module focuses on turning a wide range of audio inputs into a normalized
 NumPy array suitable for ASR models. It deliberately prefers light-weight,

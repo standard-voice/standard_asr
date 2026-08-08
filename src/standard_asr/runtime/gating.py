@@ -468,11 +468,11 @@ def _is_combining_mark(ch: str) -> bool:
 
 
 def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
-    """Truncate *text* to a PREFIX whose :func:`_count_tokens` is ``<= max_tokens``.
+    r"""Truncate *text* to a PREFIX whose :func:`_count_tokens` is ``<= max_tokens``.
 
     Truncation is "drop the tail", never "rewrite what survives": the result is a
     genuine prefix of ``text`` with its **original whitespace preserved** (a
-    multi-line prompt keeps its newlines; the degrade path's ``"\\n"`` separator
+    multi-line prompt keeps its newlines; the degrade path's ``"\n"`` separator
     between the request prompt and the framed hints is not flattened). The longest
     fitting prefix length is found by binary search -- ``_count_tokens`` is
     monotonic non-decreasing in the prefix length, so the predicate "fits" is a

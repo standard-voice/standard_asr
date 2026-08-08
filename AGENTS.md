@@ -34,6 +34,7 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 - `ruff` rule `NPY201` enabled. CI tests against numpy 1.26 AND latest 2.x.
 - Google-style docstrings (English): summary, args, returns, raises.
 - English for all code, comments, logs. `logging` module — no `print`.
+- Prose follows [`STYLE.md`](STYLE.md) (adapted ASD-STE100, two-tier) and [`TERMINOLOGY.md`](TERMINOLOGY.md) (canonical terms, American spelling). No emoji in shipped text. A meaning change (a rename or a reworded message) must be necessary and fact-checked against the spec; prefer clarifying an intentional name over changing it.
 - SPDX license header on every `.py` file:
   ```python
   # SPDX-FileCopyrightText: 2026 Standard Voice Contributors

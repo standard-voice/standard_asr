@@ -3,7 +3,7 @@
 ## Setup
 
 We use [uv](https://docs.astral.sh/uv/) for dependency, environment, and build
-management. After installing uv, initialise the project with all dependency
+management. After installing uv, initialize the project with all dependency
 groups:
 
 ```sh
@@ -66,6 +66,13 @@ a different interpreter will report spurious unresolved-import errors.
 `actionlint` is not a Python dependency. CI downloads a pinned binary and
 verifies its checksum; for local use, install it with your system package
 manager or run the equivalent check in CI.
+
+## Writing prose and docs
+
+Prose is part of the contract. Follow the writing standard in
+[`STYLE.md`](STYLE.md) (an adapted ASD-STE100) and the canonical terms in
+[`TERMINOLOGY.md`](TERMINOLOGY.md). `uv run ruff check` runs pydocstyle, so
+docstring structure is checked with the rest of the lint.
 
 ## Dependency policy
 
