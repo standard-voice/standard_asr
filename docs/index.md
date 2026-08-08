@@ -3,12 +3,12 @@
 **The open standard interface between applications and speech-recognition
 engines.**
 
-Standard ASR defines a vendor-neutral protocol so applications integrate
-speech-to-text once and gain every compliant engine, and engines implement once
+Standard ASR defines a vendor-neutral protocol. Applications integrate
+speech-to-text once and gain every compliant engine; engines implement it once
 and reach every application. Think USB-C for ASR inference.
 
 !!! warning "Pre-release"
-    Standard ASR is a work in progress. Breaking changes may land before
+    Standard ASR is a work in progress. Breaking changes may occur before
     `v1.0.0`. Try it out and tell us what you think.
 
 ## Who is this for?

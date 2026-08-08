@@ -30,7 +30,7 @@ model weights at runtime. The table below is the **contract**
   download.
 - **Raise clear errors**: if downloads are disabled and weights are missing,
   raise `DiscoveryError` with a clear next action.
-- **`prepare()` honours the same gate**: the optional warm-up hook (spec IC.11),
+- **`prepare()` honors the same gate**: the optional warm-up hook (spec IC.11),
   used by `standard-asr prepare` below, materializes weights at an
   explicit, transcription-free call point. An engine that overrides it MUST
   apply the same download gate as transcription — check `allow_downloads()` and
@@ -47,7 +47,7 @@ in this order:
    time, so the result is always absolute).
 2. **macOS / Linux**: `$XDG_CACHE_HOME/standard-asr` when `XDG_CACHE_HOME` is set
    to an **absolute** path (a relative value is ignored per the XDG Base
-   Directory spec); otherwise `~/.cache/standard-asr`. Honouring `XDG_CACHE_HOME`
+   Directory spec); otherwise `~/.cache/standard-asr`. Honoring `XDG_CACHE_HOME`
    matches the wider ML cache ecosystem (HuggingFace hub, pip, uv).
 3. **Windows**: `%LOCALAPPDATA%/standard-asr`. When `LOCALAPPDATA` is unset, its
    standard location `~/AppData/Local/standard-asr` is derived directly. The

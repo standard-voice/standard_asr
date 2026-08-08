@@ -1,7 +1,9 @@
 # standard_asr.contract.exceptions
 
-Every exception the library raises. All inherit from `StandardASRError`, so a
-single `except StandardASRError` catches anything the framework throws while
-still letting unexpected errors propagate.
+The domain exceptions the library raises. All inherit from `StandardASRError`,
+so `except StandardASRError` catches every Standard ASR domain error while
+letting other exceptions propagate. Programming misuse — for example, passing
+two mutually exclusive arguments — raises the built-in `ValueError` or
+`TypeError` instead.
 
 ::: standard_asr.contract.exceptions

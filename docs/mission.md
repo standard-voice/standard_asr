@@ -6,10 +6,10 @@ Speech recognition never got its standard interface. Every ASR library and cloud
 API ships its own calling convention, audio-input rules, and streaming protocol.
 Integrating one engine means writing an adapter; integrating five means
 maintaining five. In practice, most applications hard-wire two or three engines,
-and their users are stuck with whatever languages and domains those engines happen
-to cover.
+and their users are limited to whatever languages and domains those engines
+cover.
 
-Meanwhile, the model that would actually serve them best already exists -- as an
+Meanwhile, the model that would serve them best already exists -- as an
 open-source checkpoint, a cloud endpoint, or a research prototype. The problem is
 not a lack of good ASR; it is the absence of a shared protocol that lets
 applications and engines meet without per-pair integration work.
@@ -71,10 +71,11 @@ sharp, error paths explicit, no implicit behavior.
 ### Security by default
 
 Credentials use `SecretStr`. URLs are validated against the SSRF target set
-(HTTPS-only; private, loopback, and link-local addresses rejected) before being
-forwarded — in v1 this is a resolve-time check, honest about its limits: it is
-advisory against DNS rebinding, since the engine re-resolves at fetch time (see
-the spec's AudioUrl security policy). Unsafe options require explicit opt-in.
+before being forwarded: HTTPS only, with private, loopback, and link-local
+addresses rejected. In v1 this is a resolve-time check, honest about its limits.
+It is advisory against DNS rebinding, because the engine re-resolves the name at
+fetch time (see the spec's AudioUrl security policy). Unsafe options require
+explicit opt-in.
 
 ## Stakeholders
 

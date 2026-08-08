@@ -34,7 +34,7 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 **A preview of the current state.**
 [standard-asr-live](https://github.com/standard-voice/standard-asr-live) is an experimental
 terminal app written against Standard ASR alone — it never imports a concrete engine. In the
-clip below it starts out with nothing to transcribe with: no engines installed. One
+clip below it starts with no engines installed, so it has nothing to transcribe. One
 `pip install std-mlx-audio` later, the same command offers every model that plugin ships, and
 picking one streams live speech onto the screen. Nothing about the app changed — installing
 the engine _was_ the integration.
@@ -48,10 +48,9 @@ https://github.com/user-attachments/assets/528f5545-4c79-4a5b-a7fd-562cbf833938
 Speech recognition never got its standard interface. Every ASR library and cloud API ships
 its own calling convention, its own audio-input rules, its own streaming protocol.
 Integrating one engine means writing an adapter; integrating five means maintaining five.
-So in practice most applications hard-wire two or three engines — and their users are stuck
-with whatever languages and domains those engines happen to be good at, waiting for an
-"official support" release that usually never comes. Meanwhile the model that would actually
-serve them best already exists.
+So most applications hard-wire two or three engines. Their users then get only the languages
+and domains those engines handle well, and wait for an "official support" release that usually
+never comes. Meanwhile the model that would serve them best already exists.
 
 **Standard ASR** removes that tax: one vendor-neutral interface that both sides implement.
 Applications code against the protocol and gain every compliant engine, cloud API or local
@@ -60,13 +59,13 @@ one-line model-key change — not another adapter.
 
 ## "Nice idea — but how does a protocol with no adopters get adopted?"
 
-That's the right question to ask, so let's answer it up front.
+That's the right question to ask, so we answer it directly.
 
 **Standard ASR does not need any vendor's cooperation to be useful today.** For existing
-engines, compliance is a thin adapter — not a rewrite — and adapters are ordinary
-pip-installable plugin packages that anyone can publish. An application developer gets the
-payoff — one interface, swappable engines — from day one, with zero engines "officially" on
-board. If the protocol earns an ecosystem, engine authors gain an organic incentive to ship
+engines, compliance is a thin adapter — not a rewrite — and each adapter ships as an ordinary
+pip-installable plugin package that anyone can publish. An application developer gets the
+payoff — one interface, swappable engines — from day one, with zero engines officially
+adopted. If the protocol earns an ecosystem, engine authors gain an organic incentive to ship
 native compliance: one interface implemented means every Standard ASR application is a
 potential user, plus a CLI, an HTTP/WebSocket server, and a compliance test suite for free.
 But nothing waits on that flywheel to start turning.
@@ -86,8 +85,8 @@ the people who know each engine best, and the core never becomes the bottleneck.
 - **Write once, run with any engine.** Code against the protocol, not the vendor. Switching
   from a cloud API to a local model (or the reverse) is a one-line model-key change — your
   integration work survives every vendor decision you'll make later.
-- **One streaming model for every engine.** Real-time ASR is the wild west: some engines
-  rewrite their interim results, some never revise a token, some merge already-emitted
+- **One streaming model for every engine.** Real-time ASR has no shared conventions: some
+  engines rewrite their interim results, some never revise a token, some merge already-emitted
   segments after a second decoding pass. Standard ASR unifies all of it under one event
   protocol with explicit stability guarantees — designed against an in-repo survey of 30+
   real engine APIs ([`docs/research/`](docs/research/)).
@@ -328,7 +327,7 @@ standard-asr compliance entrypoints
 - Different languages have different state-of-the-art models; Whisper is strong in some, weak
   in others.
 - GPU/hardware acceleration support varies across platforms.
-- The field moves fast — today's SOTA will be replaced. Write once against Standard ASR, and
+- The field moves fast — today's state-of-the-art model will be replaced. Write once against Standard ASR, and
   countless engines (present and future) are supported automatically.
 
 ---

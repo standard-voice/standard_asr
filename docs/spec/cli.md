@@ -28,7 +28,7 @@ neither 0 nor 2).
 
 The declared capabilities are rendered as **canonical JSON** — the same
 serialization the REST `GET /v1/.../capabilities` endpoint returns, with a
-derived `supported` boolean at every node — so CLI and wire output can be
+derived `supported` boolean at every node. CLI and wire output can therefore be
 compared field-for-field (spec §C R6; the two layers share one capability model).
 If an engine mis-declares its `declared_capabilities` (e.g. as a raw dict), the
 capabilities line reports the problem and the rest of the metadata still renders.
@@ -207,10 +207,10 @@ precedence and coercion as on `prepare` above (`--set` overrides `--config`;
 `--set` values are strings the config coerces). They are distinct from
 `--options`, which carries per-request runtime params.
 
-In the default text mode the transcript is
-printed to stdout and any `TranscriptionResult.diagnostics` (lossy-conversion /
-degradation provenance) are rendered to **stderr**, so stdout stays a clean,
-pipeable transcript while a degrade is never silent. `--json` prints the full
+In the default text mode the transcript is printed to stdout. Any
+`TranscriptionResult.diagnostics` (lossy-conversion / degradation provenance)
+are rendered to **stderr**, so stdout stays a clean, pipeable transcript while a
+degrade is never silent. `--json` prints the full
 result (diagnostics included) to stdout.
 
 ### `standard-asr serve`
