@@ -64,12 +64,17 @@ Changelog = "https://github.com/standard-voice/standard_asr/blob/main/CHANGELOG.
 test = [
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
-    # The FastAPI server tests drive it via httpx's TestClient. fastapi>=0.118
-    # is the verified floor where `bytes = File(...)` coerces a filename'd
-    # multipart part to bytes (0.116 still 422s); httpx>=0.28 matches starlette's
-    # TestClient transport. Both verified by the lower-bounds CI lane.
-    "httpx>=0.28",
-    "fastapi>=0.118",
+    # The FastAPI server tests drive it via Starlette's `TestClient`, which since
+    # Starlette 1.2 runs on the `httpx2` transport; httpx2>=2.0 is that transport.
+    # fastapi>=0.133 mirrors the [server] extra's security floor (see the GHSA
+    # rationale there). It also subsumes the earlier fastapi>=0.118 multipart
+    # floor, where `bytes = File(...)` coerces a filename'd part to bytes (0.116
+    # still 422'd) — that floor was verified by the pre-migration lower-bounds
+    # lane and is kept as history; today's lane resolves fastapi 0.133 and can no
+    # longer re-test it. The lower-bounds CI lane verifies the CURRENT floors:
+    # fastapi 0.133, httpx2 2.0, starlette 1.3.1.
+    "httpx2>=2.0",
+    "fastapi>=0.133",
     "python-multipart>=0.0.9",
     "uvicorn>=0.30",
     # Mirror the [server] extra's WS library so the dev/CI environment matches
@@ -95,7 +100,26 @@ docs = [
 # endpoint, and bare uvicorn ships no WS protocol implementation -- without it
 # /v1/stream answers 404 on upgrade Pinned explicitly
 # instead of `uvicorn[standard]`, which would drag in uvloop/watchfiles/etc.
-server = ["fastapi>=0.118", "python-multipart>=0.0.9", "uvicorn>=0.30", "websockets>=12"]
+# Security floor (the load-bearing rationale for both floors below): all five
+# 2026 Starlette advisories — GHSA-82w8-qh3p-5jfq (high, fixed in 1.3.1),
+# GHSA-wqp7-x3pw-xc5r (high, 1.1.0), GHSA-x746-7m8f-x49c (medium, 1.1.0),
+# GHSA-86qp-5c8j-p5mr (medium, 1.0.1), GHSA-jp82-jpqv-5vv3 (low, 1.3.0) — are
+# fixed only on the Starlette 1.x line, with no 0.x backports. starlette>=1.3.1
+# is therefore declared DIRECTLY as a fail-loud floor: an app that pins a
+# vulnerable Starlette gets a resolver error, not a silently vulnerable server.
+# fastapi>=0.133 is the companion floor — the first release to drop FastAPI's
+# own `starlette<1.0.0` cap (0.132 still pins it), i.e. the lowest fastapi that
+# can coexist with the patched line; it also subsumes the earlier 0.118
+# multipart floor. The runtime code itself needs neither (it uses long-stable
+# FastAPI APIs); these floors exist for security and are what the lower-bounds
+# CI lane verifies.
+server = [
+    "fastapi>=0.133",
+    "starlette>=1.3.1",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
+    "websockets>=12",
+]
 
 [build-system]
 # Cap the build backend: uv_build can introduce breaking sdist/wheel format
@@ -108,12 +132,6 @@ build-backend = "uv_build"
 [tool.uv]
 # Guard against contributors rewriting the lockfile format with an old uv.
 required-version = ">=0.11.21"
-# Known incompatibility (see docs/compatibility-advisories.md): starlette 1.x's
-# TestClient requires `httpx2`; our server tests use the httpx-based TestClient.
-# This is a uv-level constraint on THIS repo's lock/dev resolution ONLY — it does
-# not narrow the downstream contract in [project]. Revisit 2026-09 (migrate to
-# httpx2, then drop this).
-constraint-dependencies = ["starlette<1.0"]
 
 [tool.uv.build-backend]
 module-root = "src"
@@ -153,14 +171,11 @@ addopts = [
     "--cov-report=xml",
 ]
 testpaths = ["tests"]
-# Warnings-as-errors so OUR deprecations/bugs fail the suite, with targeted
-# ignores for third-party (test-tooling) deprecations we don't control.
+# Warnings-as-errors so OUR deprecations/bugs fail the suite. No third-party
+# ignores at present: the last two (classic-httpx TestClient deprecations) left
+# with the httpx2 migration. Any new ignore must be targeted and justified here.
 filterwarnings = [
     "error",
-    # starlette's TestClient deprecates the httpx backend in favour of httpx2.
-    "ignore:Using `httpx` with `starlette.testclient`:DeprecationWarning",
-    # httpx's `app=` shortcut deprecation, used by starlette's TestClient.
-    "ignore:The 'app' shortcut is now deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]

@@ -90,8 +90,9 @@ Standard ASR is infrastructure others build on, so we manage dependencies around
 
 `[tool.uv] constraint-dependencies` is a third thing, often confused with (1):
 it constrains **only this repo's** lock/dev resolution and never narrows the
-downstream contract. We use it for dev-only pins (e.g. `starlette<1.0`, see the
-advisories doc).
+downstream contract. We reserve it for dev-only pins that must not leak into
+`[project]`; the advisories doc records how such a pin is justified and later
+retired (see the resolved `starlette < 1.0` entry for a worked example).
 
 ### Adding or changing a dependency
 

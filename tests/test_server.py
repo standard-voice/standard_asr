@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from importlib.metadata import EntryPoint
 from typing import Any, ClassVar, Literal, cast
 
-import httpx
+import httpx2
 import numpy as np
 import pytest
 
@@ -577,7 +577,7 @@ def test_create_app_empty_registry_exposes_no_models(monkeypatch: pytest.MonkeyP
 
     app = server_module.create_app(registry=ModelRegistry({}))
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/models")
+    resp: httpx2.Response = client.get("/v1/models")
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -589,11 +589,11 @@ def test_create_app_endpoints() -> None:
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
 
-    response: httpx.Response = client.get("/v1/health")
+    response: httpx2.Response = client.get("/v1/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
-    models: httpx.Response = client.get("/v1/models")
+    models: httpx2.Response = client.get("/v1/models")
     assert models.status_code == 200
     assert models.json()[0]["key"] == "dummy/echo"
 
@@ -601,7 +601,7 @@ def test_create_app_endpoints() -> None:
         "model": "dummy/echo",
         "audio": base64.b64encode(b"fake").decode("utf-8"),
     }
-    transcribe: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    transcribe: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert transcribe.status_code == 200
     assert transcribe.json()["result"]["text"] == "dummy"
 
@@ -618,7 +618,7 @@ def test_server_array_engine_keeps_native_rate_through_negotiation() -> None:
     client = TestClient(app)
 
     files = {"file": ("audio.wav", _wav_bytes(rate=8000), "audio/wav")}
-    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    resp: httpx2.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
     assert resp.status_code == 200
     assert _RECORDED["kind"] is InputKind.ARRAY
     assert _RECORDED["sample_rate"] == 8000
@@ -636,7 +636,7 @@ def test_server_encoded_engine_receives_original_bytes_multipart() -> None:
     client = TestClient(app)
 
     files = {"file": ("audio.wav", wav, "audio/wav")}
-    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    resp: httpx2.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
     assert resp.status_code == 200
     assert _RECORDED["kind"] is InputKind.ENCODED_BYTES
     assert _RECORDED["data"] == wav
@@ -653,7 +653,7 @@ def test_server_encoded_engine_receives_original_bytes_json() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(wav).decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 200
     assert _RECORDED["kind"] is InputKind.ENCODED_BYTES
     assert _RECORDED["data"] == wav
@@ -668,7 +668,7 @@ def test_transcribe_json_decode_error_maps_to_400() -> None:
     app = server_module.create_app(registry=_registry_for("_recording_array8k_factory"))
     client = TestClient(app)
 
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json", json={"model": "dummy/echo", "audio": "not-valid-base64!!!"}
     )
     assert resp.status_code == 400
@@ -683,7 +683,7 @@ def test_transcribe_file_decode_error_maps_to_400() -> None:
     client = TestClient(app)
 
     files = {"file": ("audio.wav", b"this is not audio", "audio/wav")}
-    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    resp: httpx2.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
     assert resp.status_code == 400
 
 
@@ -695,7 +695,7 @@ def test_transcribe_json_internal_error_maps_to_500() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
 
 
@@ -708,7 +708,7 @@ def test_transcribe_file_success_and_internal_error() -> None:
 
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     data = {"model": "dummy/echo"}
-    response: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
+    response: httpx2.Response = client.post("/v1/transcribe", data=data, files=files)
     assert response.status_code == 200
     assert response.json()["result"]["text"] == "dummy"
 
@@ -748,7 +748,7 @@ def test_transcribe_body_is_the_single_wire_projection_verbatim() -> None:
     app = server_module.create_app(registry=registry)
     client = TestClient(app)
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
-    response: httpx.Response = client.post(
+    response: httpx2.Response = client.post(
         "/v1/transcribe", data={"model": "dummy/echo"}, files=files
     )
     assert response.status_code == 200
@@ -834,7 +834,7 @@ def test_capabilities_endpoint() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/capabilities/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/capabilities/dummy/echo")
     assert resp.status_code == 200
     body = resp.json()
     assert body["batch"]["language"]["runtime_override"]["supported"] is True
@@ -846,7 +846,7 @@ def test_capabilities_endpoint_unknown_model() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/capabilities/nope/missing")
+    resp: httpx2.Response = client.get("/v1/capabilities/nope/missing")
     assert resp.status_code == 404
 
 
@@ -856,7 +856,7 @@ def test_params_schema_endpoint() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/params-schema/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/params-schema/dummy/echo")
     assert resp.status_code == 200
     schema = resp.json()
     assert "beam" in schema.get("properties", {})
@@ -871,7 +871,7 @@ def test_transcribe_client_error_maps_to_422() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
     assert "word_timestamps" in resp.json()["detail"]
 
@@ -884,7 +884,7 @@ def test_transcribe_unknown_model_maps_to_404() -> None:
     client = TestClient(app)
 
     payload = {"model": "nope/missing", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 404
 
 
@@ -897,7 +897,7 @@ def test_transcribe_500_does_not_leak_internal_detail() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     detail = resp.json()["detail"]
     assert "/secret/internal/path" not in detail
@@ -919,7 +919,7 @@ def test_transcribe_construction_config_error_maps_to_500_scrubbed() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     detail = resp.json()["detail"]
     assert "missing API key" not in detail
@@ -948,7 +948,7 @@ def test_transcribe_construction_missing_config_maps_to_503(
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
     with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
-        resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+        resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
 
     assert resp.status_code == 503
     detail = resp.json()["detail"]
@@ -969,7 +969,7 @@ def test_transcribe_construction_unexpected_error_maps_to_500_no_leak() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     detail = resp.json()["detail"]
     assert "instantiation forbidden" not in detail
@@ -985,7 +985,7 @@ def test_transcribe_file_construction_config_error_maps_to_500() -> None:
     client = TestClient(app)
 
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
-    resp: httpx.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    resp: httpx2.Response = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
     assert resp.status_code == 500
 
 
@@ -1004,7 +1004,7 @@ def test_transcribe_construction_validation_error_maps_to_500_scrubbed() -> None
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     assert "sk-SERVER-ENV-SECRET" not in resp.text
     assert "api_key" not in resp.text
@@ -1067,7 +1067,7 @@ def test_transcribe_lazy_missing_config_maps_to_503() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 503
     assert "server-side configuration" in resp.json()["detail"]
     assert "api_key" not in resp.text
@@ -1090,7 +1090,7 @@ def test_transcribe_engine_config_error_maps_to_500_scrubbed() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     assert "default_language" not in resp.text
     assert "See server logs" in resp.json()["detail"]
@@ -1110,7 +1110,7 @@ def test_transcribe_provider_param_error_maps_to_500_scrubbed() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     assert "sk-PROVIDER-SECRET" not in resp.text
     assert "See server logs" in resp.json()["detail"]
@@ -1136,7 +1136,7 @@ def test_transcribe_engine_validation_error_maps_to_500_scrubbed() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Internal transcription error. See server logs for details."
     assert "sk-ENGINE-SIDE-SECRET" not in resp.text
@@ -1166,7 +1166,7 @@ def test_transcribe_engine_validation_error_never_reaches_the_log(
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
     with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
-        resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+        resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
 
     assert resp.status_code == 500
     assert caplog.records  # the fault IS logged for operators...
@@ -1220,7 +1220,7 @@ def test_transcribe_engine_built_invalid_result_maps_to_500_not_422() -> None:
         "model": "dummy/echo",
         "audio": base64.b64encode(_wav_bytes(16000)).decode(),
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Internal transcription error. See server logs for details."
@@ -1246,7 +1246,7 @@ def test_transcribe_async_engine_maps_to_500_scrubbed() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Internal transcription error. See server logs for details."
     assert "coroutine" not in resp.text  # no raw pydantic detail escapes
@@ -1267,7 +1267,7 @@ def test_transcribe_wrong_result_type_maps_to_500_scrubbed() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Internal transcription error. See server logs for details."
     assert "dict-not-result" not in resp.text  # the engine's value never echoes
@@ -1462,7 +1462,7 @@ def test_body_size_limit_returns_413() -> None:
 
     big = base64.b64encode(b"x" * 1024).decode()
     payload = {"model": "dummy/echo", "audio": big}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 413
 
 
@@ -1643,7 +1643,7 @@ def test_transcribe_audio_error_maps_to_400() -> None:
     client = TestClient(app)
 
     payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 400
     assert "bad audio frames" in resp.json()["detail"]
 
@@ -1662,7 +1662,7 @@ def test_transcribe_json_with_options_builds_params() -> None:
         "audio": base64.b64encode(b"fake").decode(),
         "options": {"language": "en"},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 200
 
 
@@ -1680,7 +1680,7 @@ def test_transcribe_options_accept_diarization_marker() -> None:
         "audio": base64.b64encode(b"fake").decode(),
         "options": {"diarization": {}},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 200
     options = _RECORDED["options"]
     assert isinstance(options, RuntimeParams)
@@ -1701,7 +1701,7 @@ def test_transcribe_options_diarization_unknown_key_maps_to_422() -> None:
         "audio": base64.b64encode(b"fake").decode(),
         "options": {"diarization": {"num_speakers": 2}},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
 
 
@@ -1725,7 +1725,7 @@ def test_strict_non_detectable_candidate_language_maps_to_422_not_500() -> None:
         "audio": base64.b64encode(_wav_bytes(rate=16000)).decode(),
         "options": {"language": "auto", "candidate_languages": ["zz"]},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
 
     assert resp.status_code == 422
     detail = str(resp.json()["detail"])
@@ -1751,7 +1751,7 @@ def test_strict_over_max_candidate_languages_maps_to_422() -> None:
         "audio": base64.b64encode(_wav_bytes(rate=16000)).decode(),
         "options": {"language": "auto", "candidate_languages": ["en", "ja", "ko"]},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
 
     assert resp.status_code == 422
     detail = str(resp.json()["detail"])
@@ -1775,7 +1775,7 @@ def test_detectable_candidate_languages_still_transcribe() -> None:
         "audio": base64.b64encode(_wav_bytes(rate=16000)).decode(),
         "options": {"language": "auto", "candidate_languages": ["en", "ja"]},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
 
     assert resp.status_code == 200
     assert resp.json()["result"]["text"] == "autolang"
@@ -1795,7 +1795,7 @@ def test_transcribe_json_with_bad_options_maps_to_422() -> None:
         "audio": base64.b64encode(b"fake").decode(),
         "options": {"language": "english"},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
 
 
@@ -1809,7 +1809,7 @@ def test_transcribe_file_with_bad_options_maps_to_400() -> None:
 
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     data = {"model": "dummy/echo", "options": "{not json}"}
-    resp: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
+    resp: httpx2.Response = client.post("/v1/transcribe", data=data, files=files)
     assert resp.status_code == 400
 
 
@@ -1823,7 +1823,7 @@ def test_body_validation_error_does_not_echo_input() -> None:
     client = TestClient(app)
 
     # `audio` must be a string; send a recognisable sentinel as the wrong type.
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json", json={"model": "dummy/echo", "audio": 1234567890}
     )
     assert resp.status_code == 422
@@ -1841,7 +1841,7 @@ def test_body_validation_error_redacts_credential_field_value() -> None:
     client = TestClient(app)
 
     secret = "sk-LEAKED-SECRET-VALUE"
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json",
         json={"model": "dummy/echo", "audio": "Zm9v", "api_key": secret},
     )
@@ -1870,7 +1870,7 @@ def test_options_validation_error_does_not_echo_secret() -> None:
         "audio": "Zm9v",
         "options": {"api_key": secret},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
     assert secret not in resp.text
     # Structured list; the offending field is named in a loc entry
@@ -1896,7 +1896,7 @@ def test_options_validation_error_message_omits_input_value() -> None:
         "audio": "Zm9v",
         "options": {"language": sentinel},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
     assert sentinel not in resp.text
     # Structured list; the offending field is named (under
@@ -1920,7 +1920,7 @@ def test_transcribe_file_options_validation_error_is_sanitized() -> None:
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     secret = "sk-MULTIPART-SECRET"
     data = {"model": "dummy/echo", "options": json.dumps({"api_key": secret})}
-    resp: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
+    resp: httpx2.Response = client.post("/v1/transcribe", data=data, files=files)
     assert resp.status_code == 422
     assert secret not in resp.text
     # Structured list (same shape as the JSON endpoint).
@@ -1941,7 +1941,7 @@ def test_transcribe_json_rejects_provider_params_over_wire() -> None:
         "audio": "Zm9v",
         "options": {"language": "en", "provider_params": {"beam": 5}},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
     # The rejected key is named in a loc entry; cross-language clients
     # can also branch on the machine-readable type (``extra_forbidden``).
@@ -1959,7 +1959,7 @@ def test_transcribe_file_rejects_provider_params_over_wire() -> None:
     client = TestClient(app)
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     data = {"model": "dummy/echo", "options": json.dumps({"provider_params": {"beam": 5}})}
-    resp: httpx.Response = client.post("/v1/transcribe", data=data, files=files)
+    resp: httpx2.Response = client.post("/v1/transcribe", data=data, files=files)
     assert resp.status_code == 422
     # Structured list (same shape as the JSON endpoint).
     assert any("provider_params" in entry["loc"] for entry in resp.json()["detail"])
@@ -1983,7 +1983,7 @@ def test_transcribe_json_portable_params_still_work() -> None:
             "on_unsupported": "degrade_to_prompt",
         },
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 200
     assert resp.json()["result"]["text"] == "dummy"
 
@@ -2031,7 +2031,7 @@ def test_validation_error_with_non_string_loc_index_is_handled() -> None:
         "audio": "Zm9v",
         "options": {"candidate_languages": [123]},
     }
-    resp: httpx.Response = client.post("/v1/transcribe:json", json=payload)
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
     # Structured list; the loc carries the int index
     # (e.g. ["options", "candidate_languages", 0]) without error.
@@ -2157,7 +2157,7 @@ def test_capabilities_endpoint_none_caps_returns_404() -> None:
 
     app = server_module.create_app(registry=_registry_for("_no_caps_factory"))
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/capabilities/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/capabilities/dummy/echo")
     assert resp.status_code == 404
     assert "No capabilities" in resp.json()["detail"]
 
@@ -2169,7 +2169,7 @@ def test_params_schema_endpoint_none_returns_empty() -> None:
 
     app = server_module.create_app(registry=_registry_for("_no_caps_factory"))
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/params-schema/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/params-schema/dummy/echo")
     assert resp.status_code == 200
     assert resp.json() == {}
 
@@ -2181,7 +2181,7 @@ def test_config_schema_endpoint() -> None:
 
     app = server_module.create_app(registry=_registry_for("_with_config_type_factory"))
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/config-schema/dummy/echo")
     assert resp.status_code == 200
     schema = resp.json()
     assert "engine" in schema.get("properties", {})
@@ -2195,7 +2195,7 @@ def test_config_schema_endpoint_none_returns_empty() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/config-schema/dummy/echo")
     assert resp.status_code == 200
     assert resp.json() == {}
 
@@ -2206,7 +2206,7 @@ def test_config_schema_endpoint_unknown_model() -> None:
 
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/config-schema/nope/missing")
+    resp: httpx2.Response = client.get("/v1/config-schema/nope/missing")
     assert resp.status_code == 404
 
 
@@ -2218,7 +2218,7 @@ def test_config_schema_no_instantiation() -> None:
 
     app = server_module.create_app(registry=_registry_for("_no_instantiate_config_type_factory"))
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/config-schema/dummy/echo")
     assert resp.status_code == 200
     assert "engine" in resp.json().get("properties", {})
 
@@ -2230,7 +2230,7 @@ def test_invalid_content_length_returns_400() -> None:
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
     # A non-integer Content-Length must be rejected by the body-size middleware.
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json",
         content=b"{}",
         headers={"Content-Length": "not-a-number", "Content-Type": "application/json"},
@@ -2356,7 +2356,7 @@ def test_transcribe_file_over_limit_without_content_length() -> None:
     app = server_module.create_app(registry=_registry(), max_body_bytes=8)
     client = TestClient(app)
 
-    # Build a multipart body by hand and stream it via an iterator so httpx omits
+    # Build a multipart body by hand and stream it via an iterator so httpx2 omits
     # Content-Length (Transfer-Encoding: chunked), defeating the early guard.
     boundary = "----stdasrboundary"
     big_file = b"x" * 64
@@ -2376,7 +2376,7 @@ def test_transcribe_file_over_limit_without_content_length() -> None:
     def _gen() -> Any:
         yield parts
 
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe",
         content=_gen(),
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
@@ -2399,7 +2399,7 @@ def test_transcribe_json_over_limit_without_content_length() -> None:
     def _gen() -> Any:
         yield body
 
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json",
         content=_gen(),
         headers={"Content-Type": "application/json"},
@@ -2417,11 +2417,11 @@ def test_capabilities_no_instantiation() -> None:
     app = server_module.create_app(registry=_registry_for("_no_instantiate_factory"))
     client = TestClient(app)
 
-    caps: httpx.Response = client.get("/v1/capabilities/dummy/echo")
+    caps: httpx2.Response = client.get("/v1/capabilities/dummy/echo")
     assert caps.status_code == 200
     assert caps.json()["batch"]["language"]["runtime_override"]["supported"] is True
 
-    schema: httpx.Response = client.get("/v1/params-schema/dummy/echo")
+    schema: httpx2.Response = client.get("/v1/params-schema/dummy/echo")
     assert schema.status_code == 200
     assert "beam" in schema.json().get("properties", {})
 
@@ -3578,7 +3578,7 @@ def test_rest_registered_model_load_failure_is_scrubbed_500_not_404() -> None:
 
     app = server_module.create_app(registry=_broken_load_registry())
     client = TestClient(app)
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json", json={"model": "dummy/echo", "audio": "Zm9v"}
     )
     assert resp.status_code == 500
@@ -3616,7 +3616,7 @@ def test_metadata_endpoints_load_failure_is_scrubbed_500_not_404() -> None:
         "/v1/params-schema/dummy/echo",
         "/v1/config-schema/dummy/echo",
     ):
-        resp: httpx.Response = client.get(path)
+        resp: httpx2.Response = client.get(path)
         assert resp.status_code == 500, path
         assert "_missing_SENTINEL_target" not in resp.text, path
         assert "tests.test_server" not in resp.text, path
@@ -3629,7 +3629,7 @@ def test_truly_unknown_model_key_is_still_404() -> None:
 
     app = server_module.create_app(registry=_broken_load_registry())
     client = TestClient(app)
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json", json={"model": "nope/nothing", "audio": "Zm9v"}
     )
     assert resp.status_code == 404
@@ -3652,7 +3652,7 @@ def test_metadata_endpoints_contain_plugin_faults_and_never_leak(
 
     # (1) a metaclass property (the shape a lazily-built capability tree takes)
     app = server_module.create_app(registry=_registry_for("_hostile_caps_factory"))
-    resp: httpx.Response = TestClient(app).get("/v1/capabilities/dummy/echo")
+    resp: httpx2.Response = TestClient(app).get("/v1/capabilities/dummy/echo")
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Internal model metadata error. See server logs for details."
     assert _METADATA_SECRET not in resp.text
@@ -3691,7 +3691,7 @@ def test_metadata_boundary_starts_at_the_model_key(
         for route in ("capabilities", "params-schema", "config-schema"):
             with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
                 app = server_module.create_app(registry=_registry_for(factory))
-                resp: httpx.Response = TestClient(app).get(f"/v1/{route}/dummy/echo")
+                resp: httpx2.Response = TestClient(app).get(f"/v1/{route}/dummy/echo")
             assert resp.status_code == 500
             assert (
                 resp.json()["detail"]
@@ -3712,7 +3712,7 @@ def test_metadata_boundary_keeps_deliberate_verdicts_and_healthy_reads() -> None
 
     app = server_module.create_app(registry=_registry_for("_no_caps_factory"))
     client = TestClient(app)
-    resp: httpx.Response = client.get("/v1/capabilities/dummy/echo")
+    resp: httpx2.Response = client.get("/v1/capabilities/dummy/echo")
     assert resp.status_code == 404
     assert "No capabilities" in resp.json()["detail"]
     assert client.get("/v1/params-schema/dummy/echo").json() == {}
@@ -4042,7 +4042,7 @@ def test_rest_projection_failure_is_a_scrubbed_500_not_an_asgi_crash(
     caplog.set_level(logging.ERROR)
     app = server_module.create_app(registry=_registry_for("_unprojectable_result_factory"))
     client = TestClient(app, raise_server_exceptions=False)
-    resp: httpx.Response = client.post(
+    resp: httpx2.Response = client.post(
         "/v1/transcribe:json",
         json={"model": "dummy/echo", "audio": base64.b64encode(_wav_bytes(rate=16000)).decode()},
     )
