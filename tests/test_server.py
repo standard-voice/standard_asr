@@ -2238,7 +2238,7 @@ def test_config_schema_endpoint_broken_config_type_is_scrubbed_500(
     app = server_module.create_app(registry=_registry_for("_broken_config_type_factory"))
     client = TestClient(app)
     with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
-        resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+        resp: httpx2.Response = client.get("/v1/config-schema/dummy/echo")
 
     assert resp.status_code == 500
     # The response stays generic; the internal type name never reaches the wire.
