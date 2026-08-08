@@ -54,10 +54,16 @@ A drift guard in the same module proves that every `RuntimeParams` field is
 either in this table or in an explicit exempt set. The requestable set is
 therefore already exact. It is simply not visible in the capability tree.
 
-Every other declared node is a behavior: `streaming_input`,
+Every other declared **leaf** node is a behavior: `streaming_input`,
 `streaming_output`, `self_resamples`, `emits_partials`, `re_segments`,
 `word_stability`, `reconnect`, `finality_level`, `timestamps`, and
 `diarization.always_on`.
+
+The constraint submodels are a separate case. `DiarizationConstraints` and its
+siblings hold the limits on a requestable feature. They are queryable paths,
+because `iter_queryable_paths()` yields them. They are not `_CapNode`
+subclasses, so a `kind` field on `_CapNode` alone does not reach them. D4
+settles this.
 
 ## 3. Decisions (2026-08-08)
 
@@ -78,20 +84,38 @@ capability tree. Both can start now.
 standard targets clients in other languages. A generated JavaScript client
 reads the JSON Schema, and it never sees a Python method. If the kind lives
 only in a Python API, every non-Python client keeps the current defect. The
-kind must therefore appear in `canonical_json()`.
+kind must therefore appear in `canonical_json()` **and** in the generated JSON
+Schema. The schema is the artifact a non-Python client reads, so the schema is
+the contract this decision is about.
 
 **D4 — Add a `kind` field to the node. Do not move the nodes.** A move of
 behaviors into a `behavior.*` subtree breaks every path in every consumer, in
 the spec, and in the tests. The move adds no information that the `kind` field
 does not already give. Cost is high and value is zero, so the tree shape stays.
 
-Each capability node gains one field:
+Each capability leaf node gains one field:
 
 ```python
 kind: Literal["requestable", "behavior", "limit"]
 ```
 
 Each node class declares its own value, and an engine author never sets it.
+
+The domain holds three values, not the four kinds of D1. `observation` is never
+a node kind, because D2 keeps observations out of the tree. A reader who finds
+`observation` on a node has found a defect.
+
+Two further scope rules:
+
+- **Constraint submodels carry `kind="limit"`.** They are queryable paths, so a
+  client that walks the tree must get a kind at every path it can reach. The
+  four constraint classes have no shared base today. Each one derives directly
+  from `_JsonExtraModel`, in the same way as `_CapNode` and `_Container`. Add a
+  `_ConstraintNode` base that mirrors `_CapNode`, and put the field there.
+- **Containers do not carry a kind.** `BatchCapabilities`,
+  `StreamingCapabilities`, and the other `_Container` types group nodes and
+  declare nothing. `can_request()` returns `False` for a container path, in the
+  same way as for a behavior.
 
 **D5 — Add `can_request(path)`. Keep `supports(path)` unchanged.**
 `supports(path)` keeps its current meaning and its fail-closed rule, so no
@@ -107,19 +131,32 @@ def can_request(self, dot_path: str) -> bool:
 kind is `requestable`. For all other nodes it returns `False`.
 
 **D6 — `always_on` stops being a special case.** The node gets
-`kind="behavior"`. The prose inversion note in `contract/capabilities.py` is
-then wrong, because the field states the same fact. Delete the note when the
-field lands. A node with `kind="behavior"` always reads as a disclosure, so
-there is no inversion left to explain.
+`kind="behavior"`. Rewrite the prose note in `contract/capabilities.py`; do not
+delete it. The `kind` field replaces one sentence of that note, which is the
+sentence about the semantic inversion. The rest of the note carries meaning
+that no field states.
 
-**D7 — A requestable feature and a behavior are two nodes, never one.** Issue
-#37 needs punctuation and ITN as caller requests, and it also needs to disclose
-an engine that always applies them. Do not overload one node with both
+Keep this meaning in the rewritten note:
+
+- `always_on=True` means the engine applies diarization to every request.
+- The engine may emit speaker labels that the caller never asked for.
+- `always_on` may be supported only when `supported` is `True`. A model
+  validator already enforces this rule.
+
+**D7 — A requestable feature and a behavior are two nodes, never one.**
+Issue #37 needs punctuation and ITN as caller requests, and it also needs to
+disclose an engine that always applies them. Do not overload one node with both
 meanings, because that recreates the `always_on` problem. Use the pattern that
 `diarization` already shows:
 
 - `text_processing.punctuation` with `kind="requestable"`.
 - `text_processing.punctuation.always_on` with `kind="behavior"`.
+
+A behavior child node needs the same invariant that `DiarizationCap` already
+holds: the child may be supported only when its parent requestable feature is
+supported. Add the validator and the tests with the new nodes. Without the
+rule, an engine can declare that it always applies punctuation that it does not
+support.
 
 ## 4. Effect on the blocked issues
 
@@ -134,16 +171,29 @@ meanings, because that recreates the `always_on` problem. Use the pattern that
 
 These items are implementation work, and they do not block the issues above:
 
-1. Add the `kind` field to `_CapNode` and set the value on each node class.
-2. Add `can_request()` to `DeclaredCapabilities`.
+1. Add a `_ConstraintNode` base for the four constraint classes. Add the `kind`
+   field to `_CapNode` and to `_ConstraintNode`. Set the value on each node
+   class.
+2. Add `can_request()` to `DeclaredCapabilities`. Return `False` for a
+   container path and for an absent path.
 3. Render `kind` in `canonical_json()`, and update the two-layer isomorphism
    test set.
-4. Assert in the compliance suite that every path in `_GATED_PARAMS` resolves
+4. Assert that the generated JSON Schema carries `kind` at every node, with the
+   three-value domain. D3 rests on the schema, so a test must hold the schema
+   correct. The `canonical_json()` test in item 3 does not cover it.
+5. Assert in the compliance suite that every entry in `_GATED_PARAMS` resolves
    to a node with `kind="requestable"`. This makes the gating table and the
    tree prove each other.
-5. Update `docs/spec/specification.md` and `docs/spec/server.md` for the new
-   field and the new query.
-6. Delete the inversion note in `contract/capabilities.py`.
 
-Item 4 is the important one. It removes the chance that the two definitions of
+   The second column of `_GATED_PARAMS` holds a **mode-relative suffix**, not a
+   full path. `gate_params()` resolves it as `f"{mode}.{cap_suffix}"`. The
+   assertion must therefore qualify each suffix with `batch` and with
+   `streaming`, and it must skip a mode the engine does not declare. A raw
+   lookup of `language.runtime_override` resolves nothing.
+6. Update `docs/spec/specification.md` and `docs/spec/server.md` for the new
+   field and the new query.
+7. Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.
+   Do not delete it.
+
+Item 5 is the important one. It removes the chance that the two definitions of
 "requestable" drift apart.
