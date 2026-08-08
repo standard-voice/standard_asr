@@ -80,14 +80,14 @@ class MyEngine(EngineBase):
   diarize when the request passes the gate. The standard layer cannot verify
   this. Silently ignoring a gated-and-passed request is the cardinal sin: a
   silent wrong result.
-- Engine-specific knobs → a `ProviderParams` subclass set as
+- Engine-specific parameters → a `ProviderParams` subclass set as
   `provider_params_type`. Wrong-engine params raise `InvalidProviderParamError`.
 - Resolve the language with `standard_asr.contract.language.effective_language(...)`.
 - **`word_timestamps.granularities` declares what you can honestly *deliver*, not
   which native API switch exists.** Declare every granularity your engine can
   serve — including ones that come for free. If your model emits per-segment
   start/end on every run (most do), declare `"segment"` even when there is no
-  separate "segment mode" knob. Otherwise the standard layer rejects the
+  separate "segment mode" switch. Otherwise the standard layer rejects the
   cheapest, always-satisfiable request as a false incompatibility. Then map each
   granularity precisely (e.g. only `"word"` enables your forced-alignment pass; a
   `"segment"` request must not back-fill word-level data — `words=None` means

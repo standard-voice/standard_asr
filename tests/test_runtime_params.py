@@ -297,7 +297,7 @@ def test_diarization_request_is_empty_frozen_marker() -> None:
     # Frozen: even a never-declared attribute cannot be attached.
     with pytest.raises(ValidationError):
         marker.num_speakers = 3  # type: ignore[attr-defined]
-    # extra="forbid": a guessed future knob (num_speakers graduates additively
+    # extra="forbid": a guessed future parameter (num_speakers graduates additively
     # once portable) fails loudly instead of being silently ignored.
     with pytest.raises(ValidationError):
         DiarizationRequest(num_speakers=3)  # type: ignore[call-arg]

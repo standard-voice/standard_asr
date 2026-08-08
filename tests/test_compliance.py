@@ -4449,7 +4449,7 @@ def test_sync_bridge_timeout_message_disambiguates_slow_vs_deadlock() -> None:
     msg = next(i.message for i in report.issues if i.code == "sync_bridge_did_not_terminate")
     assert "deadlock OR" in msg
     assert "larger timeout" in msg
-    # The advice must be ACTIONABLE: name both knobs that raise the timeout --
+    # The advice must be ACTIONABLE: name both settings that raise the timeout --
     # the library keyword and the CLI flag that now threads it through.
     assert "check_sync_bridge(..., timeout=...)" in msg
     assert "--bridge-timeout" in msg

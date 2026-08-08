@@ -12,7 +12,7 @@ Flags:
 - `--strict-discovery`: fail on invalid plugin entry points during discovery
   (default: keep going, skipping invalid ones). Deliberately NOT named
   `--strict`: bare `strict` is the engine's strict/best_effort *parameter-gating*
-  policy (an init-config field, `--set strict=...`), a different knob.
+  policy (an init-config field, `--set strict=...`), a different setting.
 - `--on-conflict {warn_keep_first,replace}`: strategy for duplicate model keys
   (default: `warn_keep_first`).
 

@@ -711,7 +711,7 @@ def test_cli_strict_discovery_threads_into_discovery(
 def test_cli_bare_strict_flag_is_rejected(argv: list[str]) -> None:
     """A bare ``--strict`` is a usage error (exit 2), never an abbreviation.
 
-    ``strict`` alone already names a DIFFERENT knob: the engine's
+    ``strict`` alone already names a DIFFERENT setting: the engine's
     strict/best_effort PARAMETER-gating policy, an init-config field set via
     ``--set strict=...``. The discovery flag is therefore spelled
     ``--strict-discovery``, and argparse prefix abbreviation is disabled
@@ -3030,7 +3030,7 @@ def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """--bridge-timeout is threaded all the way to check_sync_bridge: without
-    this the check's own advice ("re-run with a larger timeout") named a knob
+    this the check's own advice ("re-run with a larger timeout") named a setting
     no CLI user could reach.
 
         Args:

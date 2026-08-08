@@ -129,7 +129,7 @@ subclass) that exposes:
   an optional `RuntimeParams`. Subclassing `EngineBase` gives you this
   `transcribe` template for free; you implement only `_transcribe(prepared,
   params)`.
-- Engine-specific knobs live in a typed `ProviderParams` subclass declared as
+- Engine-specific parameters live in a typed `ProviderParams` subclass declared as
   `provider_params_type` — never as extra top-level `RuntimeParams` fields
   (`RuntimeParams` is closed). See
   [`adapting_engine.md`](adapting_engine.md) for the full contract.
