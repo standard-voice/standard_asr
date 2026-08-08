@@ -4556,7 +4556,7 @@ class _CancelledOpenSession(TranscriptionSession):
 
     ``CancelledError`` is a ``BaseException`` on 3.8+, and it is the one
     that genuinely crosses the bridge into the DRIVE thread: the task
-    machinery marks the task cancelled and ``future.result()`` re-raises
+    machinery marks the task canceled and ``future.result()`` re-raises
     ``CancelledError`` in the calling thread (a ``SystemExit`` instead
     kills the loop thread itself -- a different containment layer).
     """

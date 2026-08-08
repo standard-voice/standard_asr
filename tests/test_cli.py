@@ -2388,7 +2388,7 @@ def test_cli_debug_traceback_for_named_branch(
 ) -> None:
     # A ValueError (caught by the ConfigError/DiscoveryError/ValueError
     # branch -> exit 2) must still print a trace under --debug. Previously only
-    # the final `except Exception` branch honoured --debug.
+    # the final `except Exception` branch honored --debug.
     called: dict[str, bool] = {"traceback": False}
 
     def _raise(_: object) -> int:
@@ -2691,7 +2691,7 @@ def test_cli_compliance_run_bridge_not_applicable_for_output_only_engine(
     script could never see: it always runs the bridge and hands it ``engine=``
     so ``check_sync_bridge`` itself classifies the refusal, putting a
     ``sync_bridge_not_applicable`` warning in the REPORT SET -- one layer, one
-    message, visible to machine consumers and honouring ``--quiet``.
+    message, visible to machine consumers and honoring ``--quiet``.
 
         Args:
             monkeypatch: Pytest fixture for attribute patching.
@@ -2708,7 +2708,7 @@ def test_cli_compliance_run_bridge_not_applicable_for_output_only_engine(
     _patch_discover(monkeypatch, registry)
 
     # Record the engine each check receives, delegating to the REAL checks so
-    # the classification below is the shipped behaviour, not a stub's.
+    # the classification below is the shipped behavior, not a stub's.
     constructed: list[object] = []
     real_swap_check = cli.check_provider_params_swap_safety
     real_check_sync_bridge = cli.check_sync_bridge

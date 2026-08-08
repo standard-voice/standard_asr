@@ -1612,7 +1612,7 @@ def test_aexit_without_aenter_has_no_tasks_to_cancel() -> None:
 
 def test_iterate_stops_on_closed_empty_buffer() -> None:
     # Teardown race guard: if the event buffer is closed with no terminal event
-    # ever landing (e.g. the producer was cancelled mid-flight), the iterator
+    # ever landing (e.g. the producer was canceled mid-flight), the iterator
     # must end cleanly when get() returns None rather than hang.
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession(done_timeout=5.0)
@@ -2986,7 +2986,7 @@ def test_deadline_terminal_stops_producer_so_result_matches_stream() -> None:
             session.feed([])
             async for event in session:
                 events.append(event)
-            # Give a not-cancelled producer ample time to emit the late final
+            # Give a not-canceled producer ample time to emit the late final
             # before reducing -- without the fix this makes result() diverge.
             await asyncio.sleep(0.3)
         return events, session.result().text

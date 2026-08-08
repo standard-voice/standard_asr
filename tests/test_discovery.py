@@ -1231,7 +1231,7 @@ def test_single_dist_many_models_is_not_a_collision() -> None:
 def test_normalized_engine_id_collision_across_dists_is_shadowed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # Two distributions whose engine_ids only differ by PEP 503 normalisation
+    # Two distributions whose engine_ids only differ by PEP 503 normalization
     # (``my_engine`` vs ``my-engine``) route to the same canonical id and the
     # same env-var prefix, so they MUST be flagged as a collision.
     ep_a = _ep_with_dist("my_engine/a", "dist-one")

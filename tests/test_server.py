@@ -7,7 +7,7 @@ The transcription endpoints deliberately do **not** pre-decode uploads: they
 hand the encoded payload to the engine's own standard negotiation. The tests
 below therefore exercise real :class:`EngineBase` engines so that decoding,
 resampling and encoded-passthrough are proven end-to-end (a bare stub that
-ignored the audio would mask the very contract the server must honour).
+ignored the audio would mask the very contract the server must honor).
 """
 
 from __future__ import annotations
@@ -1836,7 +1836,7 @@ def test_body_validation_error_does_not_echo_input() -> None:
     app = server_module.create_app(registry=_registry())
     client = TestClient(app)
 
-    # `audio` must be a string; send a recognisable sentinel as the wrong type.
+    # `audio` must be a string; send a recognizable sentinel as the wrong type.
     resp: httpx2.Response = client.post(
         "/v1/transcribe:json", json={"model": "dummy/echo", "audio": 1234567890}
     )

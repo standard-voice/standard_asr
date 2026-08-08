@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Essential tests for audio_loader module focusing on key functionality and regressions."""
+"""Essential tests for the audio loading utilities: key functionality and regressions."""
 
 import base64
 import io

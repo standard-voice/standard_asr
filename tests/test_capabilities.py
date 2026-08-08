@@ -789,7 +789,7 @@ def test_bare_x_star_dict_is_fail_closed_and_two_layer_consistent() -> None:
 
 
 def test_self_resamples_is_declarable_engine_global_flag() -> None:
-    # `self_resamples` is the one behavioural capability the spec places
+    # `self_resamples` is the one behavioral capability the spec places
     # in Capabilities. It is engine-global, queried via
     # `supports("self_resamples")` like streaming_input/streaming_output, and is
     # informational only -- it does not change any resampling decision.
@@ -838,7 +838,7 @@ def test_mutable_mid_stream_absent_on_batch_guidance() -> None:
 
 
 def test_mutable_mid_stream_covers_rejects_widening() -> None:
-    # Modelled as a FlagCap, so the effective <= declared invariant is
+    # Modeled as a FlagCap, so the effective <= declared invariant is
     # enforced by covers() set-containment with no special-casing -- declared
     # false -> effective true is a widening and is rejected; the reverse narrows.
     declared_false = DeclaredCapabilities(streaming=StreamingCapabilities())
@@ -854,7 +854,7 @@ def test_mutable_mid_stream_covers_rejects_widening() -> None:
 def test_streaming_capabilities_accepts_plain_guidance_caps() -> None:
     # backward tolerance: the streaming guidance field is typed as the
     # base GuidanceCaps, so an engine that declares a plain GuidanceCaps still
-    # validates. The before-validator normalises it to the streaming subtype, so
+    # validates. The before-validator normalizes it to the streaming subtype, so
     # ``mutable_mid_stream`` is a real (fail-closed) node rather than an invisible
     # extra -- keeping the typed Python and canonical-JSON layers in agreement.
     streaming = StreamingCapabilities(guidance=GuidanceCaps())
@@ -905,7 +905,7 @@ def test_mutable_mid_stream_covers_rejects_widening_on_json_path() -> None:
 
 
 def test_streaming_guidance_rejects_non_coercible_value() -> None:
-    # The before-validator only normalises recognised inputs (subtype, base, dict);
+    # The before-validator only normalizes recognized inputs (subtype, base, dict);
     # anything else falls through to pydantic, which rejects it natively.
     from pydantic import ValidationError
 
@@ -1048,7 +1048,7 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Diarization capability: streaming node + always_on behavioural flag.
+# Diarization capability: streaming node + always_on behavioral flag.
 # --------------------------------------------------------------------------- #
 def test_streaming_diarization_defaults_fail_closed() -> None:
     # StreamingCapabilities gains a diarization node with the same fail-closed
@@ -1080,7 +1080,7 @@ def test_always_on_requires_supported() -> None:
 
 
 def test_always_on_is_a_queryable_flag_node() -> None:
-    # always_on is a behavioural fact in the same family as self_resamples, but
+    # always_on is a behavioral fact in the same family as self_resamples, but
     # it IS a regular queryable FlagCap node: supports() resolves it, it appears
     # in iter_supported_paths() when supported, and canonical_json injects a
     # uniform `supported` boolean. The semantic inversion (True = imposed, not

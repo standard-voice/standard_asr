@@ -1768,7 +1768,7 @@ def test_base_start_transcription_hook_raises_unsupported() -> None:
 
 def test_non_streaming_engine_runs_exclusivity_guard_first() -> None:
     # Even for a non-streaming engine, the mutual-exclusion guard runs first
-    # (preserving the prior behaviour): passing both inputs raises ValueError,
+    # (preserving the prior behavior): passing both inputs raises ValueError,
     # not the unsupported-streaming error.
     from standard_asr.audio.format import AudioFormat
 

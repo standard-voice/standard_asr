@@ -338,7 +338,7 @@ def test_detectable_membership_canonicalizes_declared_side() -> None:
 def test_effective_candidates_strict_over_max_raises() -> None:
     """Strict mode rejects an over-``max`` candidate list as UnsupportedFeatureError."""
     # Over-``max`` is the same class of rejection as non-detectable: a list the
-    # engine cannot honour, not a malformed value -> UnsupportedFeatureError.
+    # engine cannot honor, not a malformed value -> UnsupportedFeatureError.
     with pytest.raises(UnsupportedFeatureError) as excinfo:
         effective_candidate_languages(
             AUTO,
