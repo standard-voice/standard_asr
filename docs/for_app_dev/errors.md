@@ -83,7 +83,7 @@ are **dropped** with a structured `Diagnostic` instead of raising:
 result = engine.transcribe("audio.wav", RuntimeParams(word_timestamps="word"))
 for diag in result.diagnostics:
     print(diag.code, diag.message)
-    # "unsupported_parameter_ignored"  "word_timestamps is not supported; ignored."
+    # unsupported_parameter_ignored Ignored unsupported parameter 'word_timestamps' in batch mode (capability 'batch.word_timestamps' not supported).
 ```
 
 Diagnostics surface:

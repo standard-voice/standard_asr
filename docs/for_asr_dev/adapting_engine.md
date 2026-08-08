@@ -69,15 +69,17 @@ class MyEngine(EngineBase):
 
 ## Map parameters
 
-- Portable standard set is gated for you against `declared_capabilities` before
-  `_transcribe` is called: `language`, `candidate_languages`, `word_timestamps`,
-  `diarization`, `prompt`, `phrase_hints`. Map them onto your model's native
-  arguments. `diarization` is presence = enable: map
-  `params.diarization is not None` onto your native enable switch (the v1
-  `DiarizationRequest` marker carries no fields). An engine declaring
-  `diarization.supported=True` MUST actually diarize when the request passes the
-  gate — the standard layer has no way to verify that, and silently ignoring a
-  gated-and-passed request is the cardinal sin (a silent wrong result).
+- The standard layer gates the portable standard set against your
+  `effective_capabilities` (which default to `declared_capabilities`) before it
+  calls `_transcribe`: `language`,
+  `candidate_languages`, `word_timestamps`, `diarization`, `prompt`,
+  `phrase_hints`. Map them onto your model's native arguments. For
+  `diarization`, presence means enable: map `params.diarization is not None`
+  onto your native enable switch (the v1 `DiarizationRequest` marker carries no
+  fields). An engine that declares `diarization.supported=True` MUST actually
+  diarize when the request passes the gate. The standard layer cannot verify
+  this. Silently ignoring a gated-and-passed request is the cardinal sin: a
+  silent wrong result.
 - Engine-specific knobs → a `ProviderParams` subclass set as
   `provider_params_type`. Wrong-engine params raise `InvalidProviderParamError`.
 - Resolve the language with `standard_asr.contract.language.effective_language(...)`.
@@ -85,10 +87,11 @@ class MyEngine(EngineBase):
   which native API switch exists.** Declare every granularity your engine can
   serve — including ones that come for free. If your model emits per-segment
   start/end on every run (most do), declare `"segment"` even when there is no
-  separate "segment mode" knob; otherwise the standard layer rejects the cheapest,
-  always-satisfiable request as a false incompatibility. Then map each granularity
-  precisely (e.g. only `"word"` flips your forced-alignment pass on; a `"segment"`
-  request must not back-fill word-level data — `words=None` means "not requested").
+  separate "segment mode" knob. Otherwise the standard layer rejects the
+  cheapest, always-satisfiable request as a false incompatibility. Then map each
+  granularity precisely (e.g. only `"word"` enables your forced-alignment pass; a
+  `"segment"` request must not back-fill word-level data — `words=None` means
+  "not requested").
 
 ## Audio you receive
 
@@ -122,29 +125,31 @@ calls your hook. Before your hook runs, the base has already:
   `ensure_stream_inputs_exclusive`;
 - validated the language config (LANG R1 / IC.6);
 - run the **fail-closed** wire-format check (`ensure_stream_format_supported`) on
-  both encoding and sample rate. It rejects an `audio_format.encoding` not in your
-  declared `wire_encodings` (so an undeclared encoding is not misframed as PCM and
-  silently mistranscribed) and a wire `sample_rate` you do not accept: per spec R7's
-  v1 note the standard does **not** resample streaming wire frames in v1 (only the
-  batch `transcribe` path resamples), so an unreachable wire rate is a loud error.
-  When `required_input_sample_rate` is set, the wire rate MUST equal it — even when
-  another rate appears in `accepted_sample_rates` (that list describes the batch
-  path, which resamples to the required rate before your engine; unresampled wire
-  frames at any other rate would be misread). Otherwise the rate is accepted when
-  `accepted_sample_rates` is `"any"` or when it is in that concrete list.
-  (Standard-layer streaming resampling is a deferred capability; this guard becomes
-  a resample once it lands.)
-- **gated the runtime parameters** against your `streaming` capabilities — provider
-  `provider_params` swap-safety (Runtime R3: a wrong `provider_params` type always
-  raises `InvalidProviderParamError`), capability gating (R2), guidance degradation
-  (R4) — and resolved the language axis. The gating / language **diagnostics** are
-  attached to the returned session and surface through `session.diagnostics()`.
+  both the encoding and the sample rate. It rejects an `audio_format.encoding` not
+  in your declared `wire_encodings`, so an undeclared encoding is not misframed as
+  PCM and silently mistranscribed. It also rejects a wire `sample_rate` you do not
+  accept. Per spec R7's v1 note, the standard does **not** resample streaming wire
+  frames in v1 (only the batch `transcribe` path resamples), so an unreachable
+  wire rate is a loud error. When `required_input_sample_rate` is set, the wire
+  rate MUST equal it — even when another rate appears in `accepted_sample_rates`.
+  That list describes the batch path, which resamples to the required rate before
+  your engine; unresampled wire frames at any other rate would be misread.
+  Otherwise the standard accepts the rate when `accepted_sample_rates` is `"any"`
+  or when it is in that concrete list. (Standard-layer streaming resampling is a
+  deferred capability; this guard becomes a resample once it lands.)
+- **gated the runtime parameters** against your `streaming` capabilities, and
+  resolved the language axis. Gating covers `provider_params` swap-safety
+  (Runtime R3: a wrong `provider_params` type always raises
+  `InvalidProviderParamError`), capability gating (R2), and guidance degradation
+  (R4). The base attaches the gating and language **diagnostics** to the returned
+  session; they surface through `session.diagnostics()`.
 - for the **whole-input** path (`audio=...`, e.g. OpenAI-style streaming output),
-  run that complete input through the **same** audio negotiation/conversion pipeline
-  as batch `transcribe` and hand your hook the result as `prepared_audio` (a
-  `PreparedAudio` already in one of your `accepted_input` shapes, with its
-  conversion diagnostics attached to the session). For the incremental
-  `audio_format=...` path there is no whole input, so `prepared_audio` is `None`.
+  run that complete input through the **same** audio negotiation/conversion
+  pipeline as batch `transcribe`, and hand your hook the result as
+  `prepared_audio`. The `prepared_audio` is a `PreparedAudio` already in one of
+  your `accepted_input` shapes, with its conversion diagnostics attached to the
+  session. For the incremental `audio_format=...` path there is no whole input,
+  so `prepared_audio` is `None`.
 
 Your hook receives the **already-gated, frozen** `gated_params` (spec R5: streaming
 params are frozen at `start_transcription` and MUST NOT change mid-stream). Use them
@@ -163,27 +168,26 @@ def _start_transcription(self, *, gated_params, audio_format, prepared_audio):
 ## Credentials & environment fallback (IC.4)
 
 Build your config with `Config.from_env(engine_id, **explicit)` instead of the
-bare constructor. Unset fields fall back to
-`STANDARD_ASR_<ENGINE>__<FIELD>` environment variables (note the **double
-underscore** separating the engine and field segments; explicit args win), and
-credentials are wrapped in their masking carrier by construction — never passed
-around as plaintext. Put secrets (`api_key`, tokens) in `SecretStr` fields —
-or `SecretBytes` for byte credentials; exactly one carrier per field,
-optionally with `None` — via `secret_field()`; keep non-secret routing
-(`base_url`, `region`) plain. A
-structured field (a list, a mapping, a submodel, a `TypedDict`, a dataclass)
-takes its env value as JSON (`'["en","ja"]'`); a scalar one — including
-`SecretStr` and `Path` — takes the raw string, byte for byte. Which of the
-two applies is read off the field's own schema, so any shape the config
-guards accept is reachable through the env convention. One shape is refused
-at class definition: a field accepting BOTH (`str | list[str]`) has no
-defined reading — `"123"` is either that string or that JSON number, and
-either choice would disagree with the explicit constructor, which always
-takes the string. Declare one shape, or model the alternatives as a named
-submodel.
+bare constructor. Unset fields fall back to `STANDARD_ASR_<ENGINE>__<FIELD>`
+environment variables. Note the **double underscore** that separates the engine
+and field segments; explicit args win. Credentials are wrapped in their masking
+carrier by construction, never passed around as plaintext. Put secrets
+(`api_key`, tokens) in `SecretStr` fields — or `SecretBytes` for byte
+credentials — via `secret_field()`. Declare exactly one carrier per field,
+optionally with `None`. Keep non-secret routing (`base_url`, `region`) plain.
 
-The config's serialization surface is **closed**, and the closure is proved
-by sweeping the model's actual core schema rather than by listing forbidden
+A structured field (a list, a mapping, a submodel, a `TypedDict`, a dataclass)
+takes its env value as JSON (`'["en","ja"]'`). A scalar field — including
+`SecretStr` and `Path` — takes the raw string, byte for byte. The field's own
+schema decides which of the two applies, so any shape the config guards accept
+is reachable through the env convention. One shape is refused at class
+definition: a field accepting BOTH (`str | list[str]`) has no defined reading.
+`"123"` is either that string or that JSON number, and either choice would
+disagree with the explicit constructor, which always takes the string. Declare
+one shape, or model the alternatives as a named submodel.
+
+The config's serialization surface is **closed**. The closure is proved by
+sweeping the model's actual core schema rather than by listing forbidden
 decorators. Anything that would make `model_dump` run author code — or emit
 something other than your declared inputs — is rejected at class definition:
 `@computed_field`, `@model_serializer`, `@field_serializer`,
@@ -194,51 +198,50 @@ an **undeclared value shape** (`Any`, `object`, an unparametrized container,
 marker; spell a heterogeneous mapping as `dict[str, str | int | bool | None]`
 or a named submodel), a **nested submodel** carrying any of those, a
 serializer installed through a custom `__get_pydantic_core_schema__`, and
-`Field(exclude=True)`. Keep `extra="forbid"` too (BaseConfig's default):
+`Field(exclude=True)`. Keep `extra="forbid"` too (BaseConfig's default).
 `extra="allow"` stores undeclared caller data and dumps it verbatim past the
-secret mask, and `extra="ignore"` silently swallows a mistyped credential key
-so it reads as an absent credential rather than a loud error. The reason
-is one sentence: `public_dump()` is documented safe for `/v1/models`,
-persistence, and telemetry, which holds only while nothing author-defined can
-rematerialize a credential inside it — and its output must stay the declared
-input surface, so persisting and reloading a config round-trips.
+secret mask. `extra="ignore"` silently swallows a mistyped credential key, so
+it reads as an absent credential rather than a loud error. The reason:
+`public_dump()` is documented safe for `/v1/models`, persistence, and
+telemetry. That holds only while nothing author-defined can rematerialize a
+credential inside it. Its output must also stay the declared input surface, so
+persisting and reloading a config round-trips.
 
 The input surface stays closed **at every depth**, not only on the config
-itself: every nested input container your schema reaches — an options
-submodel, a `TypedDict`, a dataclass — must forbid undeclared keys, and one
-that does not is rejected at class definition. pydantic's default for all
-three silently *drops* an unknown key, so a user's typo'd nested option
-(`{"decode": {"baem": 8}}`) would read as applied while your engine runs on
-the field's default — a silent wrong result. The rule reads the *effective*
-policy from the core schema, so pydantic's config propagation is honored: a
-bare `TypedDict` or stdlib dataclass inherits the config's `extra="forbid"`
-and is closed for free; a nested `BaseModel` needs
-`model_config = ConfigDict(extra="forbid")`, and a *pydantic* dataclass
-(which owns its config) needs
+itself. Every nested input container your schema reaches — an options submodel,
+a `TypedDict`, a dataclass — must forbid undeclared keys, and one that does not
+is rejected at class definition. pydantic's default for all three silently
+*drops* an unknown key. So a user's typo'd nested option
+(`{"decode": {"baem": 8}}`) would read as applied while your engine runs on the
+field's default — a silent wrong result. The rule reads the *effective* policy
+from the core schema, so pydantic's config propagation is honored. A bare
+`TypedDict` or stdlib dataclass inherits the config's `extra="forbid"` and is
+closed for free. A nested `BaseModel` needs
+`model_config = ConfigDict(extra="forbid")`. A *pydantic* dataclass (which owns
+its config) needs
 `@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))`.
 
 Use a plain `@property` for derived in-process values (an `authorization`
 header belongs in your engine code, not in the config dump), and keep config
 fields to plain typed inputs.
 
-One boundary is yours to keep, because no serialization proof can hold it
-for you: **never copy a secret out of its carrier**. The closure proof
-bounds what the *schema* installs in the dump, not the contents of values
-your own code builds — a validator that writes `get_secret_value()` into a
-plain field or onto an object's display state (say, a `Path` subclass whose
-`__str__` embeds the token) emits that plaintext through `public_dump()`,
-and would through any dump mechanism. Read the credential with
-`reveal_dump()` at the point of use in your engine code and let it live
-nowhere else.
+One boundary is yours to keep, because no serialization proof can hold it for
+you: **never copy a secret out of its carrier**. The closure proof bounds what
+the *schema* installs in the dump, not the contents of values your own code
+builds. A validator that writes `get_secret_value()` into a plain field or onto
+an object's display state (say, a `Path` subclass whose `__str__` embeds the
+token) emits that plaintext through `public_dump()` — and would through any dump
+mechanism. Read the credential with `reveal_dump()` at the point of use in your
+engine code, and let it live nowhere else.
 
 Provider-native wire names map onto standard fields with **plain string
-aliases** (`Field(alias="xi-api-key")`, or an all-string `AliasChoices`);
+aliases** (`Field(alias="xi-api-key")`, or an all-string `AliasChoices`).
 `AliasPath` — and any `AliasChoices` carrying one — is rejected at class
-definition: the flat env convention and the absent-vs-invalid config
-classifier (what makes a missing credential a compliance *skip* instead of a
-fail) both resolve fields by single string tokens, which a nested path alias
-cannot provide. If a value is genuinely nested, declare it as a submodel
-field (its env value arrives as JSON).
+definition. The flat env convention and the absent-vs-invalid config classifier
+(what makes a missing credential a compliance *skip* instead of a fail) both
+resolve fields by single string tokens, which a nested path alias cannot
+provide. If a value is genuinely nested, declare it as a submodel field (its env
+value arrives as JSON).
 
 ```python
 def __init__(self, **kwargs):
@@ -251,7 +254,7 @@ Every slot the wire can see — a `TranscriptionResult` / `Segment` / `Word` /
 `TranscriptionEvent` `extra`, and `emit_diagnostic`'s `provided` / `effective`
 — holds **JSON values only** (`JsonValue`: null, bool, int, finite float,
 str, and lists/str-keyed dicts of those). The Python objects and the JSON
-documents are the same protocol seen twice, so a value with no JSON form is
+documents are the same protocol seen twice. So a value with no JSON form is
 rejected at construction, naming the field, instead of failing later in the
 transport — after the server has already committed to a response. Non-finite
 floats (`NaN`, `Infinity`) are excluded for the same reason: they are Python
@@ -288,11 +291,12 @@ monotonicity clamping. **You** must: emit cumulative/replace `text`; set
 reconnect, detect the disconnect, re-establish, replay `self.replay_buffer()`,
 keep `segment_id`/timestamps/language continuous, and call
 `self.note_reconnect(gap_start, gap_end, content_lost=...)`. The base always
-emits the `progress(reconnect)` event; it emits a trailing **non-terminal**
+emits the `progress(reconnect)` event. It emits a trailing **non-terminal**
 `content_lost` error (`recoverable=true` — a fidelity warning; the session
-stays alive and events keep flowing) **only if you pass `content_lost=True`** — your own
-determination that the reconnect + replay could not cover the gap and
-unreplayable audio was permanently lost. The base does **not** infer loss from
+stays alive and events keep flowing) **only if you pass `content_lost=True`**.
+That is your own determination that the reconnect and replay could not cover the
+gap, and that unreplayable audio was permanently lost. The base does **not**
+infer loss from
 rolling-buffer eviction (a live ring is always evicting, so that would falsely
 claim loss on every long session); you decide, because only you know whether the
 replay actually bridged the gap.
@@ -315,7 +319,7 @@ conditions.
 > **Security:** a diagnostic is **engine-authored, client-facing output**, like
 > the transcript itself. Its `message`/`param`/`provided`/`effective` fields are
 > forwarded to (possibly unauthenticated) clients **verbatim and unredacted**.
-> Never put a credential, API key, auth'd URL, or raw exception text in a
+> Never put a credential, API key, authenticated URL, or raw exception text in a
 > diagnostic — route sensitive operator detail to `logging` instead. (The server
 > *does* scrub an `error` event's `extra`, because that is auto-captured
 > exception detail — pre-summarized input-echo-free by the standard layer, but
@@ -394,7 +398,7 @@ omit `audio_processed_until`, `words`, and `speaker`). A mismatch — e.g.
 declaring `word_stability` unsupported while emitting `stable_until>0` — is a
 capability⇄stream desync a client trusting your capabilities would mishandle.
 Record a real session and assert it with
-`check_event_sequence(events, capabilities=engine.declared_capabilities)`; the
+`check_event_sequence(events, capabilities=engine.declared_capabilities)`. The
 cross-check fails on any field your declaration does not back (codes
 `stream_exceeds_word_stability` / `stream_exceeds_timestamps` /
 `stream_exceeds_word_timestamps` / `stream_exceeds_diarization`). The standard
@@ -403,10 +407,10 @@ runtime — clamping would hide the bug; the contract is yours to keep.
 
 ### Testing: assert invariants, not partial counts
 
-Partials are **lossy under backpressure**: when the consumer reads slower than you
-produce, the base coalesces pending partials for a segment (spec ST.6.4), so the
-number of `partial` events a test observes is non-deterministic — the same engine
-may surface five partials or none, purely by timing. A test asserting
+Partials are **lossy under backpressure**. When the consumer reads slower than
+you produce, the base coalesces pending partials for a segment (spec ST.6.4). So
+the number of `partial` events a test observes is non-deterministic: the same
+engine may surface five partials or none, purely by timing. A test asserting
 `len(partials) == N` is therefore flaky. Assert the **invariants** instead:
 
 - the final/reduced text is correct (`session.result()`, or the `final` event);
@@ -423,11 +427,11 @@ Register an entry point under `standard_asr.models` (see
 
 **The entry-point factory MUST return a concrete engine class** (annotate its
 return type as your engine class, e.g. `-> MyEngine`), **not** the `StandardASR`
-protocol. Capabilities and the params schema are read from class-level
-`ClassVar`s *without instantiating or authenticating* the engine (CLI
-`show`, the registry, REST `GET /v1/capabilities` and
-`/v1/params-schema`); a Protocol return type has no readable `ClassVar`s, so it
-breaks instantiation-free discovery. The compliance suite enforces this.
+protocol. Capabilities and the params schema are read from class-level `ClassVar`s
+*without instantiating or authenticating* the engine (CLI `show`, the registry,
+REST `GET /v1/capabilities` and `/v1/params-schema`). A Protocol return type has
+no readable `ClassVar`s, so it breaks instantiation-free discovery. The
+compliance suite enforces this.
 
 Validate with:
 

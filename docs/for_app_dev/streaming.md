@@ -1,6 +1,6 @@
 # Streaming
 
-Standard ASR unifies the wildly divergent streaming behaviors of 30+ ASR engines
+Standard ASR unifies the widely divergent streaming behaviors of 30+ ASR engines
 under one event protocol. This guide covers everything an application developer
 needs to build a robust streaming integration.
 
@@ -89,7 +89,7 @@ not requested or is unsupported — except on engines whose diarization is
 
 Handle `partial`, `final`, and `supersede`, and your app is safe on every
 compliant engine -- including ones that rewrite interim text or merge segments
-after the fact:
+after emitting them:
 
 ```python
 order: list[str] = []       # reading order of live segment ids
@@ -109,15 +109,14 @@ async for event in session:
 ```
 
 Display text is `texts` joined in `order`. The state is a reading-order list
-plus a text map -- not a bare map -- because for engines that emit no
-timestamps, **list order is the reading order**, and a mid-stream `supersede`
-must splice its replacements into the retired block's position (a bare dict
-can only append, which would silently reorder the transcript). This exact
-reduce ships as `standard_asr.runtime.streaming.reduce_event`, and
-`StreamReducer` / `session.result()` build a full `TranscriptionResult` the
-same way.
+plus a text map, not a bare map. For engines that emit no timestamps, **list
+order is the reading order**. A mid-stream `supersede` must splice its
+replacements into the retired block's position. A bare dict can only append,
+which would silently reorder the transcript. This exact reduce ships as
+`standard_asr.runtime.streaming.reduce_event`, and `StreamReducer` /
+`session.result()` build a full `TranscriptionResult` the same way.
 
-Engines that never revise or re-segment simply never emit `supersede`. Your code
+Engines that never revise or re-segment never emit `supersede`. Your code
 does not need to know which engine is running.
 
 ## Stability guarantees
@@ -149,21 +148,21 @@ so your downstream code (subtitle rendering, search, etc.) works identically
 whether the input was batch or streamed.
 
 One honesty note: some engines omit timestamps (or one of the two bounds)
-while streaming. The reducer stores the engine's measurement verbatim --
+while streaming. The reducer stores the engine's measurement verbatim:
 `Segment.start`/`end` are `float | None`, and `None` means "not measured"
 (check `segment.timestamp_status`: `"measured"`, `"start_only"`, or
-`"unavailable"`). Nothing is fabricated: a result with any unmeasured span
+`"unavailable"`). Nothing is fabricated. A result with any unmeasured span
 also carries a `segment_timestamps_unavailable` warning diagnostic as the
-aggregate disclosure. The renderers read the values themselves: a result
-whose every segment is *renderable* (a measured span that survives the
-output's millisecond grid) renders per-segment faithfully, while an
-unmeasured span -- or a measured span that quantizes to zero milliseconds
-(players silently drop a `T --> T` cue) -- makes `to_srt`/`to_vtt` raise
-`SubtitleRenderingError` by default: rendering it would mean silently
-dropping, hiding, or fabricating timing, and that trade-off is yours to
-make. Pass `on_unrenderable="omit"` to keep only the renderable cues (the
-other segments' text stays in `result.text` but not in the file), or
-`"collapse"` to render one whole-text cue with no per-segment timeline.
+aggregate disclosure. The renderers read the values themselves. A result whose
+every segment is *renderable* (a measured span that survives the output's
+millisecond grid) renders per-segment faithfully. An unmeasured span makes
+`to_srt`/`to_vtt` raise `SubtitleRenderingError` by default. A measured span
+that quantizes to zero milliseconds does the same, because players silently
+drop a `T --> T` cue. Rendering such a segment would mean silently dropping,
+hiding, or fabricating timing, and that trade-off is yours to make. Pass
+`on_unrenderable="omit"` to keep only the renderable cues (the other segments'
+text stays in `result.text` but not in the file), or `"collapse"` to render one
+whole-text cue with no per-segment timeline.
 
 ## Synchronous bridge
 
@@ -182,7 +181,7 @@ with sync:
 ```
 
 `SyncSession` mirrors the async session's input modes: `feed(...)` for managed
-input (end-of-input is signalled automatically), or `send_audio(chunk)` +
+input (end-of-input is signaled automatically), or `send_audio(chunk)` +
 `end_audio()` for manual input. As with the async session, the two modes must
 not be mixed.
 
@@ -211,7 +210,7 @@ wall-clock cap); each accepts `None` to disable it.
 When a deadline fires, the session terminates with a terminal **`error`** event
 (`code` = `done_timeout` / `stream_stalled` / `session_timeout`) -- not a
 `done` event -- so a deadline-killed session is never mistaken for normal
-completion. Handle the `error` event's `code` to tell the cases apart.
+completion. Handle the `error` event's `code` to distinguish the cases.
 
 ## Diagnostics mid-stream
 

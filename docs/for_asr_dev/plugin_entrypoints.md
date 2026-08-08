@@ -20,10 +20,10 @@
 
 | Component    | Allowed characters                                  | Notes |
 |--------------|------------------------------------------------------|-------|
-| `engine_id`  | `a-z`, `0-9`, `.`, `_`, `-`                          | Must start with `[a-z0-9]`; `/` is forbidden. **Upper case is rejected outright**, but a non-canonical lowercase form using `.`/`_` separators (e.g. `faster_whisper`) is *accepted and folded* to its PEP 503 routing identity (`faster-whisper`), with a normalization hint logged. The asymmetry is deliberate: distribution names on PyPI are lowercase by convention, so an upper-case engine id is treated as a mistake to fix at the source rather than silently rewritten, while the `.`/`_`↔`-` separator equivalence is a pure PEP 503 routing fold. The declared form is retained on `ModelSpec.declared_engine_id` for diagnostics. |
+| `engine_id`  | `a-z`, `0-9`, `.`, `_`, `-`                          | Must start with `[a-z0-9]`; `/` is forbidden. **Upper case is rejected outright**, but a non-canonical lowercase form using `.`/`_` separators (e.g. `faster_whisper`) is *accepted and folded* to its PEP 503 routing identity (`faster-whisper`), with a normalization hint logged. The asymmetry is deliberate. Distribution names on PyPI are lowercase by convention, so an upper-case engine id is a mistake to fix at the source, not something to silently rewrite. The `.`/`_`↔`-` separator equivalence is a pure PEP 503 routing fold. The declared form is retained on `ModelSpec.declared_engine_id` for diagnostics. |
 | `model_name` | `A-Za-z0-9`, `.`, `_`, `+`, `%`, `:`, `-`            | `/` is forbidden. Empty string signals a default model and triggers a warning. |
 
-Multiple models per engine are encouraged. Each preset—quantized variants, multilingual/monolingual builds, device specializations—should receive its own entry point so downstream users can request the exact behavior they need.
+Multiple models per engine are encouraged. Give each preset its own entry point. Presets include quantized variants, multilingual or monolingual builds, and device specializations. A separate entry point per preset lets downstream users request the exact behavior they need.
 
 ### Default Models
 
@@ -33,18 +33,18 @@ A plugin **key** must contain the `/`: only `<engine_id>/<model_name>` and the
 explicit default `<engine_id>/` are valid declaration forms. A slash-less key
 (e.g. `faster-whisper` instead of `faster-whisper/`) is **not** a third valid
 form — it is almost always a typo that dropped `/<model_name>`. Discovery
-rejects it: the library call `discover_models(strict=True)` **raises**
-`EntrypointValidationError`, while `standard-asr compliance entrypoints
+rejects it. The library call `discover_models(strict=True)` **raises**
+`EntrypointValidationError`. `standard-asr compliance entrypoints
 --strict-discovery` **reports** it as an `entrypoint_invalid` compliance error
-and exits non-zero (a compliance check always returns a report, never raises);
-default discovery logs a warning naming the
-fix and skips the key. The trailing slash is required only on the *declaration*
+and exits non-zero (a compliance check always returns a report, never raises).
+Default discovery logs a warning naming the fix and skips the key. The trailing
+slash is required only on the *declaration*
 side; the *lookup* helpers below accept the bare engine id as a convenience
 alias for its default model.
 
 If you publish an explicit default (`engine_id/`), the factory **must** return an
-instance whose `properties.model_id` is exactly `engine_id/`. This invariant is
-validated by compliance checks.
+instance whose `properties.model_id` is exactly `engine_id/`. Compliance checks
+validate this invariant.
 
 ## Declaring Entry Points
 
@@ -299,15 +299,14 @@ also importable from `standard_asr.compliance`:
 | `check_transcription_result(result, capabilities=...)` | A recorded batch result carries no speaker labels beyond the declared `batch.diarization` capability (code `result_exceeds_diarization`) | library API only — drive it from your own tests with a recorded result |
 
 `standard-asr compliance run` orchestrates every check except
-`check_event_sequence` and `check_transcription_result` for you: the
+`check_event_sequence` and `check_transcription_result` for you. It runs the
 entrypoint instance checks (including the wire-format round-trip) and
 `check_provider_params_swap_safety` for each zero-arg engine, then
-`check_streaming_param_gating` for each
-streaming engine (no-billing probes), plus `check_sync_bridge` when opted
-in via `--include-bridge` (it opens a session). `check_event_sequence` needs an
-author-recorded event stream — and `check_transcription_result` an
-author-recorded batch result — that the CLI cannot synthesize, so wire them
-into your test suite:
+`check_streaming_param_gating` for each streaming engine (no-billing probes). It
+also runs `check_sync_bridge` when you opt in via `--include-bridge` (it opens a
+session). `check_event_sequence` needs an author-recorded event stream, and
+`check_transcription_result` an author-recorded batch result. The CLI cannot
+synthesize these, so wire them into your test suite:
 
 ```python
 import pytest
