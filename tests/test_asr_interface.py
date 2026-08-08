@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from standard_asr import (
     ChannelResult,
@@ -34,6 +35,7 @@ from standard_asr.contract.capabilities import (
 )
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
+    EngineContractError,
     IncompatibleAudioInputError,
     InvalidProviderParamError,
     TranscriptionError,
@@ -115,6 +117,26 @@ def _audio() -> AudioArray:
 
 def test_engine_is_standard_asr() -> None:
     assert isinstance(_ArrayEngine(), StandardASR)
+
+
+def test_engine_with_narrowed_config_is_assignable_without_cast() -> None:
+    """A real plugin's shape satisfies ``StandardASR`` under pyright strict.
+
+    Real engines annotate their OWN config subtype (``config: _Config``); with
+    ``config`` declared as a mutable protocol attribute that annotation made
+    the engine un-assignable (mutable protocol members are invariant), forcing
+    the very cast the protocol docstring promises is never needed. ``config``
+    is now a READ-ONLY protocol property (covariant), so this assignment
+    type-checks with no cast -- pyright strict over this file IS the
+    regression gate; the runtime assertions are corroboration.
+    """
+
+    class _NarrowedConfigEngine(_ArrayEngine):
+        config: _Config  # the real-plugin pattern: own subtype, narrowed
+
+    engine: StandardASR = _NarrowedConfigEngine()
+    assert isinstance(engine, StandardASR)
+    assert engine.config.engine == "arr"
 
 
 def test_standard_asr_protocol_includes_full_surface() -> None:
@@ -269,6 +291,76 @@ def test_transcribe_async() -> None:
     assert result.text == "n=8"
 
 
+def test_transcribe_async_returns_result_identity() -> None:
+    # The boundary in transcribe_async classifies; it must never copy or
+    # transform a conforming result on the way through.
+    captured: list[TranscriptionResult] = []
+
+    class _Capturing(_ArrayEngine):
+        def transcribe(
+            self, audio: object, params: RuntimeParams | None = None
+        ) -> TranscriptionResult:
+            result = super().transcribe(cast("AudioArray", audio), params)
+            captured.append(result)
+            return result
+
+    result = asyncio.run(_Capturing().transcribe_async(_audio()))
+    assert result is captured[0]
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_transcribe_async_async_def_transcribe_is_engine_fault() -> None:
+    # transcribe_async is a real CONSUMER of the synchronous `transcribe`
+    # member: a subclass that (illegally) overrides the PUBLIC method as
+    # `async def` hands asyncio.to_thread a coroutine it never drives. The
+    # template's `_transcribe` boundary cannot see this (the override
+    # bypasses the template entirely), so transcribe_async itself must run
+    # the shared sync-call boundary: EngineContractError, the stray
+    # coroutine closed (no never-awaited RuntimeWarning under
+    # warnings-as-errors), never a coroutine handed to the caller.
+    class _AsyncOverride(_ArrayEngine):
+        async def transcribe(  # type: ignore[override]
+            self, audio: object, params: RuntimeParams | None = None
+        ) -> TranscriptionResult:  # pragma: no cover - never awaited
+            raise AssertionError("never awaited")
+
+    with pytest.raises(EngineContractError, match=r"transcribe\(\).*awaitable"):
+        asyncio.run(_AsyncOverride().transcribe_async(_audio()))
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_transcribe_async_sync_override_returning_coroutine_is_engine_fault() -> None:
+    # The sibling defect shape: a SYNC override delegating to an async helper
+    # and returning the un-awaited coroutine. Same verdict, and the boundary
+    # closes the stray coroutine so nothing leaks.
+    class _CoroutineReturn(_ArrayEngine):
+        def transcribe(  # type: ignore[override]
+            self, audio: object, params: RuntimeParams | None = None
+        ) -> TranscriptionResult:
+            async def _inner() -> TranscriptionResult:  # pragma: no cover
+                raise AssertionError("never awaited")
+
+            return cast("TranscriptionResult", _inner())
+
+    with pytest.raises(EngineContractError, match=r"transcribe\(\).*awaitable"):
+        asyncio.run(_CoroutineReturn().transcribe_async(_audio()))
+
+
+def test_transcribe_async_wrong_type_result_is_engine_fault() -> None:
+    # A wrong-typed override result must be classified here, not surface as a
+    # confusing AttributeError deep in the caller. Type NAMES only -- the
+    # value itself (which could embed payload text) is never echoed.
+    class _WrongType(_ArrayEngine):
+        def transcribe(  # type: ignore[override]
+            self, audio: object, params: RuntimeParams | None = None
+        ) -> TranscriptionResult:
+            return cast("TranscriptionResult", {"text": "sk-SHOULD-NOT-ECHO"})
+
+    with pytest.raises(EngineContractError, match="dict, not TranscriptionResult") as exc_info:
+        asyncio.run(_WrongType().transcribe_async(_audio()))
+    assert "sk-SHOULD-NOT-ECHO" not in str(exc_info.value)
+
+
 def test_batch_engine_failure_wraps_as_transcription_error() -> None:
     # The batch error contract. An engine's native
     # execution failure inside _transcribe MUST surface as a portable
@@ -293,6 +385,93 @@ def test_batch_engine_failure_wraps_as_transcription_error() -> None:
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     # It is a StandardASRError so a broad standard handler also catches it.
     assert isinstance(exc_info.value, standard_asr.StandardASRError)
+
+
+class _StaleResultEngine(_ArrayEngine):
+    """Plugin built against an older core: still passes the removed ``metadata``."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult.model_validate({"text": "x", "metadata": {"cost": 1}})
+
+
+class _InvalidSegmentEngine(_ArrayEngine):
+    """Builds a Segment the result model rejects (a negative start time)."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        bad = Segment(start=-1.0, end=1.0, text="x")
+        return TranscriptionResult(text="x", segments=[bad])
+
+
+@pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
+def test_engine_validation_error_wraps_as_transcription_error(
+    engine_type: type[_ArrayEngine],
+) -> None:
+    """A pydantic ValidationError escaping _transcribe is an ENGINE fault: params
+    were already validated before the hook ran, so the only way one gets here
+    is the engine constructing a result/Segment the contract rejects (a
+    core/plugin version mismatch, an invalid timestamp). Unwrapped it
+    masquerades as a client-input validation error -- the server's
+    ValidationError clause turned it into a 422 blaming the request's options.
+    The template wraps it into the portable batch error contract instead,
+    preserving the original as __cause__ for the offending fields.
+
+        Args:
+            engine_type: The engine shape under test (parametrized).
+    """
+    with pytest.raises(TranscriptionError) as exc_info:
+        engine_type().transcribe(_audio())
+
+    assert isinstance(exc_info.value.__cause__, ValidationError)
+    # The message must point at the engine/plugin, not at the caller's request.
+    assert "engine" in str(exc_info.value).lower()
+    assert "not a request error" in str(exc_info.value)
+    assert exc_info.value.hint is not None
+    assert "plugin" in exc_info.value.hint
+    # A ValidationError handler (the server's 422 path) must no longer match it.
+    assert not isinstance(exc_info.value, ValidationError)
+
+
+class _StaleStreamingHookEngine(_ArrayEngine):
+    """Streaming hook builds a contract model pydantic now rejects."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        ),
+        streaming=StreamingCapabilities(),
+        streaming_input=FlagCap(supported=True),
+    )
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        TranscriptionResult.model_validate({"text": "x", "metadata": {"cost": 1}})
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def test_streaming_hook_validation_error_wraps_as_transcription_error() -> None:
+    """The streaming seam gets the same engine-fault wrap as the batch seam.
+
+    A pydantic ValidationError escaping ``_start_transcription`` is the engine
+    constructing an invalid model (params were validated before the hook);
+    unwrapped it is a ValueError subclass, so the WS route labeled it a client
+    "unsupported" mistake echoing unsanitized pydantic detail and the CLI
+    exited 2 (usage error) for an engine fault.
+    """
+    engine = _StaleStreamingHookEngine()
+    with pytest.raises(TranscriptionError) as exc_info:
+        engine.start_transcription(
+            audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000)
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValidationError)
+    assert "_start_transcription" in str(exc_info.value)
+    assert "not a request error" in str(exc_info.value)
+    assert not isinstance(exc_info.value, ValidationError)
 
 
 def test_supports_routes_to_effective() -> None:
@@ -388,9 +567,11 @@ class _NoDefaultEngine(_ArrayEngine):
 
 
 def test_language_axis_requires_default_language() -> None:
-    from standard_asr.contract.exceptions import ConfigError
-
-    with pytest.raises(ConfigError, match="default_language"):
+    # EngineContractError, not ConfigError: IC.6 obliges the ENGINE to make
+    # default_language required or defaulted when it declares the axis, so a
+    # None here is the engine's declaration inconsistency -- an engine fault
+    # (CLI exit 1 / scrubbed 500), never a value the caller can supply.
+    with pytest.raises(EngineContractError, match="default_language"):
         _NoDefaultEngine().transcribe(_audio())
 
 
@@ -446,13 +627,13 @@ class _WhitespaceSelectableEngine(_ArrayEngine):
     )
 
 
-def test_malformed_declared_selectable_tag_raises_config_error() -> None:
-    # A malformed declared selectable tag is an engine-author
-    # bug; the membership canonicalization must report it as ConfigError naming
-    # the offending declaration, not leak a bare ValueError.
-    from standard_asr.contract.exceptions import ConfigError
-
-    with pytest.raises(ConfigError, match="selectable_languages") as exc_info:
+def test_malformed_declared_selectable_tag_is_an_engine_fault() -> None:
+    # A malformed declared selectable tag is an engine-author bug; the
+    # membership canonicalization must report it as EngineContractError (the
+    # engine-fault type: no configuration value fixes a declaration) naming
+    # the offending declaration, not leak a bare ValueError and not claim
+    # ConfigError's caller-actionable meaning.
+    with pytest.raises(EngineContractError, match="selectable_languages") as exc_info:
         _WhitespaceSelectableEngine().transcribe(_audio())
     assert "malformed" in str(exc_info.value)
     assert "'arr'" in str(exc_info.value)
@@ -466,16 +647,14 @@ class _WhitespaceDetectableEngine(_ArrayEngine):
     )
 
 
-def test_malformed_declared_detectable_tag_raises_config_error() -> None:
+def test_malformed_declared_detectable_tag_is_an_engine_fault() -> None:
     # The declared-side detectable canonicalization carries the same
-    # ConfigError contract as its default_language / selectable_languages
-    # siblings. Previously a best_effort 'auto' request hit the per-request
+    # EngineContractError contract as its selectable_languages sibling.
+    # Previously a best_effort 'auto' request hit the per-request
     # canonicalization inside effective_candidate_languages and surfaced the
     # normalizer's bare ValueError (an uncontracted HTTP 500 via the server)
     # with the engine-misdeclaration cause invisible.
-    from standard_asr.contract.exceptions import ConfigError
-
-    with pytest.raises(ConfigError, match="detectable_languages") as exc_info:
+    with pytest.raises(EngineContractError, match="detectable_languages") as exc_info:
         _WhitespaceDetectableEngine(strict=False).transcribe(
             _audio(), RuntimeParams(language="auto")
         )
@@ -666,10 +845,33 @@ class _CapturingAutoEngine(_CapturingArrayEngine):
 
 
 def test_candidate_languages_strict_non_detectable_raises_in_base() -> None:
-    with pytest.raises(ValueError, match="detectable"):
+    # Through the engine pipeline the strict rejection is the standard
+    # structured one: UnsupportedFeatureError carrying the offending param AND
+    # the mode the base resolved it in -- so it reads (and maps, e.g. to the
+    # server's 422) like every other strict gate rejection instead of escaping
+    # as a bare ValueError.
+    with pytest.raises(UnsupportedFeatureError, match="detectable") as excinfo:
         _AutoEngine().transcribe(
             _audio(), RuntimeParams(language="auto", candidate_languages=["zz"])
         )
+
+    assert excinfo.value.param == "candidate_languages"
+    assert excinfo.value.mode == "batch"
+    assert not isinstance(excinfo.value, ValueError)
+
+
+def test_candidate_languages_strict_over_max_raises_in_base() -> None:
+    """The over-``max`` strict rejection travels the same structured path (the
+    declared cap is max=2).
+    """
+    with pytest.raises(UnsupportedFeatureError, match="max is 2") as excinfo:
+        _CapturingAutoEngine().transcribe(
+            _audio(),
+            RuntimeParams(language="auto", candidate_languages=["en", "ja", "ko"]),
+        )
+
+    assert excinfo.value.param == "candidate_languages"
+    assert excinfo.value.mode == "batch"
 
 
 def test_candidate_languages_best_effort_emits_diagnostic_in_base() -> None:
@@ -1718,3 +1920,137 @@ def test_synthesize_result_speakers_channels_matrix() -> None:
     # All-unchanged channels: identity fast path even with channels present.
     settled = _synthesize_result_speakers(synthesized)
     assert settled is synthesized
+
+
+class _AsyncBatchHookEngine(_ArrayEngine):
+    """An author who wrote ``async def _transcribe`` (the classic mistake)."""
+
+    async def _transcribe(  # type: ignore[override]
+        self, prepared: PreparedAudio, params: RuntimeParams
+    ) -> TranscriptionResult:
+        """Return a result asynchronously (the contract violation).
+
+        Args:
+            prepared: The prepared audio.
+            params: The gated params.
+
+        Returns:
+            Never actually awaited by the template.
+        """
+        return TranscriptionResult(text="never awaited")  # pragma: no cover - never driven
+
+
+class _WrongTypeBatchHookEngine(_ArrayEngine):
+    """An author whose hook returns a plain dict instead of the result model."""
+
+    def _transcribe(  # type: ignore[override]
+        self, prepared: PreparedAudio, params: RuntimeParams
+    ) -> TranscriptionResult:
+        """Return the wrong type.
+
+        Args:
+            prepared: The prepared audio.
+            params: The gated params.
+
+        Returns:
+            A dict, which is not a TranscriptionResult.
+        """
+        return cast("TranscriptionResult", {"text": "not a result"})
+
+
+def test_async_batch_hook_is_an_engine_contract_error() -> None:
+    """The sync boundary sits at the author HOOK, not only the public method.
+
+    The template consumes the hook's return value immediately (speaker
+    synthesis, then ``.diagnostics``), so an ``async def`` _transcribe
+    surfaced as ``AttributeError: 'coroutine' object has no attribute
+    'segments'`` -- plus a never-awaited coroutine -- long before a consumer's
+    own boundary could classify it. A synchronous public ``transcribe()``
+    says nothing about the hook it delegates to, so no surface-level modality
+    check can see this.
+    """
+    with pytest.raises(EngineContractError) as excinfo:
+        _AsyncBatchHookEngine().transcribe(_audio())
+    message = str(excinfo.value)
+    assert "_transcribe()" in message
+    assert "returned an awaitable" in message
+    assert "engine/plugin bug" in message
+
+
+def test_wrong_typed_batch_hook_is_an_engine_contract_error() -> None:
+    """A wrong-typed hook return is classified, not consumed."""
+    with pytest.raises(EngineContractError) as excinfo:
+        _WrongTypeBatchHookEngine().transcribe(_audio())
+    message = str(excinfo.value)
+    assert "_transcribe()" in message
+    assert "returned dict, not TranscriptionResult" in message
+
+
+class _AsyncStreamHookEngine(_StreamEngine):
+    """An author who wrote ``async def _start_transcription``."""
+
+    async def _start_transcription(  # type: ignore[override]
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        """Return a session asynchronously (the contract violation).
+
+        Args:
+            gated_params: The gated params.
+            audio_format: The wire format.
+            prepared_audio: The prepared whole-input audio.
+
+        Returns:
+            Never actually awaited by the template.
+        """
+        return _StreamSession()  # pragma: no cover - never driven
+
+
+class _WrongTypeStreamHookEngine(_StreamEngine):
+    """An author whose streaming hook returns a non-session object."""
+
+    def _start_transcription(  # type: ignore[override]
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        """Return the wrong type.
+
+        Args:
+            gated_params: The gated params.
+            audio_format: The wire format.
+            prepared_audio: The prepared whole-input audio.
+
+        Returns:
+            An object, which is not a TranscriptionSession.
+        """
+        return cast("TranscriptionSession", object())
+
+
+def test_async_streaming_hook_is_an_engine_contract_error() -> None:
+    """The streaming template guards its hook at the same seam.
+
+    Without it the template called ``session._ensure_reserved_attrs_checked()``
+    straight onto a coroutine.
+    """
+    fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+    with pytest.raises(EngineContractError) as excinfo:
+        _AsyncStreamHookEngine().start_transcription(audio_format=fmt)
+    message = str(excinfo.value)
+    assert "_start_transcription()" in message
+    assert "returned an awaitable" in message
+
+
+def test_wrong_typed_streaming_hook_is_an_engine_contract_error() -> None:
+    """A non-session return is classified before any private call on it."""
+    fmt = AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+    with pytest.raises(EngineContractError) as excinfo:
+        _WrongTypeStreamHookEngine().start_transcription(audio_format=fmt)
+    message = str(excinfo.value)
+    assert "_start_transcription()" in message
+    assert "returned object, not TranscriptionSession" in message

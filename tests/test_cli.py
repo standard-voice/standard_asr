@@ -8,10 +8,10 @@ from __future__ import annotations
 import argparse
 import sys
 import types
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from importlib.metadata import EntryPoint
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import pytest
 
@@ -19,7 +19,12 @@ from standard_asr import (
     RuntimeParams,
     TranscriptionResult,
 )
-from standard_asr.compliance import ComplianceIssue, ComplianceReport
+from standard_asr.audio.format import AudioFormat
+from standard_asr.compliance import (
+    DEFAULT_SYNC_BRIDGE_TIMEOUT,
+    ComplianceIssue,
+    ComplianceReport,
+)
 from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
     FlagCap,
@@ -28,8 +33,11 @@ from standard_asr.contract.capabilities import (
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
     ConfigError,
+    ConfigurationRequiredError,
     EntrypointValidationError,
+    FactoryLoadError,
     TranscriptionError,
+    UnsupportedFeatureError,
 )
 from standard_asr.engine import (
     BaseConfig,
@@ -149,8 +157,13 @@ def test_cli_models_show_unresolvable_class(
     exit_code = cli.main(["show", "alpha/first"])
     output = capsys.readouterr().out
 
-    assert exit_code == 0
+    # Exit 1, not 0: the caller's key was fine and nothing about the engine
+    # could be read, so reporting success told a script the model was usable.
+    # The metadata and the sanitized unavailable line are still printed --
+    # `show` gives the operator everything it could learn AND an honest code.
+    assert exit_code == 1
     assert "Capabilities: <unavailable" in output
+    assert "Engine ID" in output
 
 
 class _NoCapsClass:
@@ -290,12 +303,140 @@ def _batch_only_factory() -> _BatchOnlyEngine:  # pyright: ignore[reportUnusedFu
     return _BatchOnlyEngine()
 
 
+class _BatchOnlyBadWireEngine(_BatchOnlyEngine):
+    """Batch-only engine whose wire recommendation its own Properties reject."""
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        """Recommend a rate outside the engine's accepted set.
+
+        Returns:
+            A self-inconsistent format (the F4 counterexample).
+        """
+        return AudioFormat(encoding="pcm_s16le", sample_rate=4321)
+
+
+def _batch_only_bad_wire_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _BatchOnlyBadWireEngine
+):
+    return _BatchOnlyBadWireEngine()
+
+
 def _gating_stream_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
     return _GatingStreamEngine()
 
 
+class _OtherConfig(BaseConfig[Literal["other"]]):
+    engine: Literal["other"] = "other"
+
+
+class _OtherProps(_StreamOkProps):
+    engine_id: str = "other"
+    model_name: str = "model"  # model_id == 'other/model'
+
+
+#: Construction ledger for the co-installed-plugin scoping test: a named
+#: `compliance run` must never construct (and thereby probe) this engine.
+_unnamed_probe_constructions: list[str] = []
+
+
+class _OtherRecordingEngine(_GatingStreamEngine):
+    """A compliant co-installed engine that records every construction."""
+
+    properties: ClassVar[BaseProperties] = _OtherProps()
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _OtherConfig
+
+    def __init__(self) -> None:
+        _unnamed_probe_constructions.append("other/model")
+        self.config = _OtherConfig(engine="other")
+
+
+def _other_recording_factory() -> _OtherRecordingEngine:  # pyright: ignore[reportUnusedFunction]
+    return _OtherRecordingEngine()
+
+
+class _ArbitraryFactoryFault(Exception):
+    """A plugin-authored fault type the registry does not wrap."""
+
+
+def _runtime_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    raise RuntimeError("SDK initialization failed")
+
+
+def _type_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    raise TypeError("bad SDK signature")
+
+
+def _os_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    raise OSError("model directory unreadable")
+
+
+def _authored_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    raise _ArbitraryFactoryFault("plugin said no")
+
+
+def _keyboard_interrupt_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    raise KeyboardInterrupt
+
+
 def _ungated_stream_factory() -> _UngatedStreamEngine:  # pyright: ignore[reportUnusedFunction]
     return _UngatedStreamEngine()
+
+
+class _StreamOutConfig(BaseConfig[Literal["streamout"]]):
+    engine: Literal["streamout"] = "streamout"
+
+
+class _StreamOutOnlyProps(_StreamOkProps):
+    engine_id: str = "streamout"
+    model_name: str = "only"
+
+
+class _OutputOnlyStreamEngine(_GatingStreamEngine):
+    """Output-only streaming engine: streaming_output WITHOUT streaming_input."""
+
+    properties: ClassVar[BaseProperties] = _StreamOutOnlyProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(),
+        streaming_output=FlagCap(supported=True),
+    )
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _StreamOutConfig
+
+    def __init__(self) -> None:
+        self.config = _StreamOutConfig(engine="streamout")
+
+
+def _output_only_stream_factory() -> _OutputOnlyStreamEngine:  # pyright: ignore[reportUnusedFunction]
+    return _OutputOnlyStreamEngine()
+
+
+class _BrokenWireConfig(BaseConfig[Literal["brokenwire"]]):
+    engine: Literal["brokenwire"] = "brokenwire"
+
+
+class _BrokenWireProps(_StreamOkProps):
+    engine_id: str = "brokenwire"
+    model_name: str = "engine"
+
+
+class _BrokenWireEngine(_GatingStreamEngine):
+    """Streaming engine whose ``recommended_wire_format()`` raises.
+
+    A structural implementation is free to override the derivation; a buggy
+    one takes the whole CLI run down with it unless the runner guards.
+    """
+
+    properties: ClassVar[BaseProperties] = _BrokenWireProps()
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _BrokenWireConfig
+
+    def __init__(self) -> None:
+        self.config = _BrokenWireConfig(engine="brokenwire")
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        raise RuntimeError("wire format derivation exploded")
+
+
+def _broken_wire_factory() -> _BrokenWireEngine:  # pyright: ignore[reportUnusedFunction]
+    return _BrokenWireEngine()
 
 
 def test_cli_models_show_no_capabilities(
@@ -448,6 +589,99 @@ def test_cli_transcribe(
     assert "dummy" in output
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected_strict"),
+    [
+        (["transcribe", "alpha/first", "dummy.wav"], False),
+        (["transcribe", "alpha/first", "dummy.wav", "--strict-discovery"], True),
+        (["prepare", "alpha/first"], False),
+        (["prepare", "alpha/first", "--strict-discovery"], True),
+        (["list"], False),
+        (["list", "--strict-discovery"], True),
+        (["show", "alpha/first"], False),
+        (["show", "alpha/first", "--strict-discovery"], True),
+    ],
+)
+def test_cli_strict_discovery_threads_into_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected_strict: bool,
+) -> None:
+    """Every discovery-facing subcommand is uniform: --strict-discovery makes
+    discovery FAIL on an invalid entry point instead of skipping it, and its
+    absence keeps the lenient default. Captured at the discovery call so the
+    flag cannot be parsed-but-dropped.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+            argv: The command-line variant under test (parametrized).
+            expected_strict: The strictness expected to reach discovery (parametrized).
+    """
+    registry = _demo_registry()
+    seen: dict[str, object] = {}
+
+    def _discover_models(**kwargs: object) -> ModelRegistry:
+        seen.update(kwargs)
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+
+    exit_code = cli.main(argv)
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert seen["strict"] is expected_strict
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["list", "--strict"],
+        ["show", "alpha/first", "--strict"],
+        ["prepare", "alpha/first", "--strict"],
+        ["transcribe", "alpha/first", "dummy.wav", "--strict"],
+        ["compliance", "entrypoints", "--strict"],
+        ["compliance", "run", "--strict"],
+    ],
+)
+def test_cli_bare_strict_flag_is_rejected(argv: list[str]) -> None:
+    """A bare ``--strict`` is a usage error (exit 2), never an abbreviation.
+
+    ``strict`` alone already names a DIFFERENT knob: the engine's
+    strict/best_effort PARAMETER-gating policy, an init-config field set via
+    ``--set strict=...``. The discovery flag is therefore spelled
+    ``--strict-discovery``, and argparse prefix abbreviation is disabled
+    (``allow_abbrev=False``) so ``--strict`` cannot silently resolve to it and
+    resurrect exactly the confusion the rename exists to prevent.
+
+        Args:
+            argv: The command-line variant under test (parametrized).
+    """
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(argv)
+    assert excinfo.value.code == 2
+
+
+def test_cli_does_not_abbreviate_long_flags() -> None:
+    """allow_abbrev=False is set on the top-level parser AND every subparser: an
+    abbreviation a user scripts today can turn ambiguous the day a new flag
+    lands, which would be a silent behavior change.
+    """
+    parser = cli.build_parser()
+    for argv in (
+        ["list", "--strict-disc"],
+        ["compliance", "run", "--include"],
+        ["compliance", "run", "--bridge", "5"],
+        ["serve", "--ho", "0.0.0.0"],
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(argv)
+        assert excinfo.value.code == 2
+
+
 def test_cli_transcribe_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -563,6 +797,47 @@ def test_cli_transcribe_audio_processing_error(
 
     assert exit_code == 2
     assert "bad audio" in captured.err
+
+
+def test_cli_transcribe_unsupported_feature_is_usage_exit_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A strict-mode rejection is a usage error (exit 2), not a runtime failure.
+
+    ``UnsupportedFeatureError`` is a ``StructuredError`` -- NOT a ``ValueError``
+    -- so without its explicit entry in ``main()``'s usage-error branch it fell
+    into the generic runtime-failure branch (exit 1) and scripts misread a
+    caller mistake (e.g. a strict non-detectable candidate language) as an
+    internal failure.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    registry = _demo_registry()
+
+    class _StrictRejectASR:
+        def transcribe(self, audio: object, params: object = None) -> None:
+            raise UnsupportedFeatureError(
+                "Candidate language 'zz' is not detectable by this engine.",
+                param="candidate_languages",
+                mode="batch",
+            )
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    def _create(*_: object, **__: object) -> _StrictRejectASR:
+        return _StrictRejectASR()
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+    monkeypatch.setattr(registry, "create", _create)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "not detectable" in captured.err
 
 
 def test_cli_transcribe_transcription_error(
@@ -909,9 +1184,403 @@ def test_cli_models_prepare_construction_error_no_secret_echo(
     exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
-    assert exit_code == 2
+    # A RAW ValidationError escaping construction is an ENGINE fault (exit 1),
+    # not a usage error: caller-originating pydantic failures are classified
+    # upstream, and registry.create wraps real config failures as ConfigError.
+    assert exit_code == 1
     assert secret not in captured.err
     assert secret not in captured.out
+    assert "engine fault" in captured.err
+
+
+class _RawValidationErrorASR:
+    """A structural engine whose internals raise a raw ``ValidationError``.
+
+    Models a plugin that does not inherit ``EngineBase`` (so nothing wraps
+    the seam) and constructs an invalid internal model -- the CLI twin of
+    the server's scrubbed-500 case.
+    """
+
+    def transcribe(self, audio: Any, options: Any = None) -> Any:
+        """Build an invalid internal model.
+
+        Args:
+            audio: Ignored.
+            options: Ignored.
+
+        Returns:
+            Never returns.
+
+        Raises:
+            ValidationError: Always, from the engine's own model.
+        """
+        from pydantic import BaseModel
+
+        class _Internal(BaseModel):
+            settings: dict[str, int]
+
+        _Internal.model_validate(
+            {"settings": {"sk-PASTED-SECRET-0123456789abcdef0123456789": "bad"}}
+        )
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def prepare(self) -> None:
+        """Fail the same way during warm-up.
+
+        Raises:
+            ValidationError: Always.
+        """
+        self.transcribe(None)
+
+
+def test_cli_structural_engine_raw_validation_error_is_an_engine_fault(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The round-7 counterexample: a raw engine VE was reported as usage exit 2.
+
+    Every caller-originating pydantic failure is classified upstream
+    (``--options`` by ``_parse_options``, init config by ``registry.create``'s
+    ``ConfigError`` wrap, flags by argparse), so a raw ``ValidationError``
+    at the top level is a structural engine constructing an invalid model.
+    The server maps that seam to a scrubbed 500; the CLI now agrees (exit 1),
+    and reports it on the OPERATOR audience -- so a caller-derived mapping
+    key inside the engine's own path never reaches stderr or a CI log.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+    registry = _demo_registry()
+
+    def _create(*_: object, **__: object) -> _RawValidationErrorASR:
+        return _RawValidationErrorASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    for argv, label in (
+        (["transcribe", "alpha/first", "a.wav"], "transcribe"),
+        (["prepare", "alpha/first"], "prepare"),
+    ):
+        exit_code = cli.main(argv)
+        captured = capsys.readouterr()
+        assert exit_code == 1, label  # engine fault, not usage
+        assert exit_code != 2, label
+        assert "engine fault" in captured.err, label
+        # Operator surface: the pasted-key-shaped mapping key is masked
+        # (identifier-shaped values are the trust model's accepted limit).
+        assert "sk-PASTED-SECRET" not in captured.err, label
+        assert "[redacted-key]" in captured.err, label
+
+
+def test_cli_registered_plugin_load_failure_is_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A REGISTERED model whose plugin fails to import is an installation fault.
+
+    ``FactoryLoadError`` subclasses ``DiscoveryError``, so the usage arm
+    (exit 2) used to swallow it -- but the caller cannot fix a broken
+    installation, and the server maps the same state to a scrubbed 500,
+    never a 404 (the round-5 fault-ownership verdict). The CLI now agrees:
+    exit 1, with the sanitized summary and no raw chained text.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+    registry = _demo_registry()
+
+    def _create(*_: object, **__: object) -> object:
+        raise FactoryLoadError(
+            "Failed to load entry point 'alpha/first': No module named 'alpha_plugin'"
+        )
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    for argv, label in (
+        (["transcribe", "alpha/first", "a.wav"], "transcribe"),
+        (["prepare", "alpha/first"], "prepare"),
+    ):
+        exit_code = cli.main(argv)
+        captured = capsys.readouterr()
+        assert exit_code == 1, label
+        assert "alpha_plugin" in captured.err, label
+
+    # An UNKNOWN model key stays the caller's usage error (exit 2): only
+    # EntrypointValidationError means "fix your model name". A fresh
+    # registry, so the real spec lookup runs instead of the patched create.
+    _patch_discover(monkeypatch, _demo_registry())
+    exit_code = cli.main(["transcribe", "alpha/does-not-exist", "a.wav"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "does-not-exist" in captured.err
+
+
+class _ShowEntryPoint:
+    """The entry-point view `show` prints (module / attr / value)."""
+
+    module = "alpha_plugin"
+    attr = "create"
+    value = "alpha_plugin:create"
+
+
+class _ShowSpec:
+    """A minimal ModelSpec stand-in: the real one is a frozen dataclass."""
+
+    model_id = "alpha/first"
+    engine_id = "alpha"
+    model_name = "first"
+    entry_point = _ShowEntryPoint()
+
+
+def test_cli_show_reports_a_broken_plugin_as_an_engine_fault(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``show`` was the consumer that swallowed ``FactoryLoadError``.
+
+    ``main``'s exit-1 arm never saw it: the capabilities helper caught the
+    error, printed an ``<unavailable: ...>`` line, and ``_cmd_show``
+    returned 0 -- so a script probing a registered-but-broken installation
+    read success. The metadata and the sanitized line still print (the
+    operator loses no diagnostics), and the fault now propagates.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _BrokenSpec(_ShowSpec):
+        def engine_class(self) -> object:
+            """Fail like a registered plugin whose import is broken.
+
+            Returns:
+                Never returns.
+
+            Raises:
+                FactoryLoadError: Always.
+            """
+            raise FactoryLoadError(
+                "Failed to load entry point 'alpha/first': No module named 'alpha_plugin'"
+            )
+
+    def _spec(_name: str) -> Any:
+        return _BrokenSpec()
+
+    registry = _demo_registry()
+    monkeypatch.setattr(registry, "spec", _spec)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "alpha/first"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Engine ID" in captured.out
+    assert "Capabilities: <unavailable" in captured.out
+    assert "alpha_plugin" in captured.out + captured.err
+
+
+def test_cli_show_class_attribute_descriptor_is_an_engine_fault(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reading ``declared_capabilities`` is plugin code too.
+
+    ``show`` never constructs the engine, but the CLASS-level lookup can
+    still run a plugin descriptor (a metaclass property). Outside the
+    engine-fault seam its ``ValueError`` was reported as the invoker's
+    usage error.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _CapsMeta(type):
+        @property
+        def declared_capabilities(cls) -> object:
+            raise ValueError("capabilities descriptor exploded")
+
+    class _EngineClass(metaclass=_CapsMeta):
+        pass
+
+    class _DescriptorSpec(_ShowSpec):
+        def engine_class(self) -> object:
+            """Return the engine class whose metaclass property raises.
+
+            Returns:
+                The engine class.
+            """
+            return _EngineClass
+
+    def _spec(_name: str) -> Any:
+        return _DescriptorSpec()
+
+    registry = _demo_registry()
+    monkeypatch.setattr(registry, "spec", _spec)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "alpha/first"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "capabilities descriptor exploded" in captured.err
+
+
+def test_cli_prepare_attribute_lookup_runs_inside_the_engine_seam(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``prepare`` DESCRIPTOR raising is an engine fault, not usage.
+
+    The round-8 envelope wrapped the prepare CALL but not the binding, and
+    ``prepare`` may legitimately be a property: its body is engine code, so
+    a ``ValueError`` escaping the lookup was mapped to exit 2 by the broad
+    usage arm. A raw ``ValidationError`` from the same lookup keeps the
+    operator-audience scrub.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _RaisingDescriptorASR:
+        @property
+        def prepare(self) -> object:
+            raise ValueError("prepare descriptor failed internally")
+
+    class _ValidationDescriptorASR:
+        @property
+        def prepare(self) -> object:
+            from pydantic import BaseModel
+
+            class _Internal(BaseModel):
+                settings: dict[str, int]
+
+            _Internal.model_validate(
+                {"settings": {"sk-PASTED-SECRET-0123456789abcdef0123456789": "bad"}}
+            )
+            raise AssertionError("unreachable")  # pragma: no cover
+
+    class _CoroutineDescriptorASR:
+        @property
+        def prepare(self) -> object:
+            async def _warm() -> None:  # pragma: no cover - never awaited
+                return None
+
+            return _warm
+
+    registry = _demo_registry()
+    _patch_discover(monkeypatch, registry)
+
+    for engine_factory, needle in (
+        (_RaisingDescriptorASR, "prepare descriptor failed internally"),
+        (_ValidationDescriptorASR, "engine fault"),
+        (_CoroutineDescriptorASR, "coroutine"),
+    ):
+
+        def _create(*_args: object, **_kwargs: object) -> Any:
+            return engine_factory()
+
+        monkeypatch.setattr(registry, "create", _create)
+        exit_code = cli.main(["prepare", "alpha/first"])
+        captured = capsys.readouterr()
+        assert exit_code == 1, engine_factory.__name__
+        assert needle in captured.err, engine_factory.__name__
+        assert "sk-PASTED-SECRET" not in captured.err
+        assert "complete" not in captured.out.lower()
+
+
+def test_cli_engine_bare_value_error_at_execution_is_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bare ``ValueError`` escaping the ENGINE call is an engine fault.
+
+    The class is ambiguous -- ``_parse_options`` raises usage ``ValueError``
+    too -- so the seam classifies: everything caller-fixable is validated
+    before the engine runs, and the server maps the same engine-internal
+    ``ValueError`` to a scrubbed 500. Exit 2 here misread an SDK bug as the
+    user's mistake (the round-8 counterexample).
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+    registry = _demo_registry()
+
+    class _SdkBugASR:
+        def transcribe(self, audio: object, params: object = None) -> None:
+            raise ValueError("SDK returned malformed response")
+
+        def prepare(self) -> None:
+            raise ValueError("SDK returned malformed response")
+
+    def _create(*_: object, **__: object) -> _SdkBugASR:
+        return _SdkBugASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    for argv, label in (
+        (["transcribe", "alpha/first", "a.wav"], "transcribe"),
+        (["prepare", "alpha/first"], "prepare"),
+    ):
+        exit_code = cli.main(argv)
+        captured = capsys.readouterr()
+        assert exit_code == 1, label
+        assert "SDK returned malformed response" in captured.err, label
+
+    # The usage ValueError from --options still exits 2: same class,
+    # different seam, correctly separated.
+    exit_code = cli.main(["transcribe", "alpha/first", "a.wav", "--options", "[1]"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+
+
+def test_cli_config_error_is_invoker_owned_at_every_seam(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``ConfigError`` exits 2 whether it surfaces at construction or later.
+
+    At the CLI the invoking user owns the configuration -- the flags AND the
+    env vars -- so "the configuration is invalid/absent" is caller-actionable
+    there regardless of WHEN the engine checks it: a factory rejecting a
+    supplied value, and a deferred credential check surfacing
+    ``ConfigurationRequiredError`` at first transcribe, both name something
+    the invoker can fix. (The same errors are a scrubbed 500/503 on the
+    server, whose clients cannot supply config: ownership follows the
+    supplier, not the exception site.)
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+    registry = _demo_registry()
+
+    def _reject(*_: object, **__: object) -> object:
+        raise ConfigError("Invalid configuration for 'alpha/first': device: unknown value")
+
+    monkeypatch.setattr(registry, "create", _reject)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "a.wav", "--set", "device=warp"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "device" in captured.err
+
+    class _LazyCredentialASR:
+        def transcribe(self, audio: object, params: object = None) -> None:
+            raise ConfigurationRequiredError(
+                "Engine 'alpha' requires configuration: set STANDARD_ASR_ALPHA__API_KEY."
+            )
+
+    def _create(*_: object, **__: object) -> _LazyCredentialASR:
+        return _LazyCredentialASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "a.wav"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "STANDARD_ASR_ALPHA__API_KEY" in captured.err
 
 
 def test_cli_serve_doc_does_not_list_unparsed_reload_flag() -> None:
@@ -985,6 +1654,9 @@ def test_cli_models_prepare_rejects_coroutine_hook(
 ) -> None:
     # An `async def prepare` would be callable and return an
     # un-awaited coroutine; calling it must NOT report a false "prepare complete".
+    # Exit 1, not 2: a declaration-shape defect is the ENGINE author's
+    # contract violation (EngineContractError) -- no flag or env var the CLI
+    # user owns can fix it (round-8 fault-ownership rule).
     class _AsyncPrepASR:
         async def prepare(self) -> None:  # noqa: D401 - test double
             return None
@@ -1003,7 +1675,7 @@ def test_cli_models_prepare_rejects_coroutine_hook(
     exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
-    assert exit_code == 2
+    assert exit_code == 1
     assert "coroutine" in captured.err
     assert "complete" not in captured.out.lower()
 
@@ -1012,7 +1684,7 @@ def test_cli_models_prepare_rejects_non_callable_hook(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # A non-callable 'prepare' attribute is a declaration bug, not a
-    # "no hook" case -- reject it loudly.
+    # "no hook" case -- reject it loudly, as an engine fault (exit 1).
     class _BadPrepASR:
         prepare = "not callable"
 
@@ -1030,7 +1702,7 @@ def test_cli_models_prepare_rejects_non_callable_hook(
     exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
-    assert exit_code == 2
+    assert exit_code == 1
     assert "non-callable" in captured.err
 
 
@@ -1040,7 +1712,8 @@ def test_cli_models_prepare_rejects_required_args_hook(
     # The warm-up hook MUST be invocable with no arguments. A prepare()
     # that requires a parameter can never be driven by the CLI -- reject it with a
     # structured error rather than letting the call blow up with a bare TypeError
-    # (mirrors the compliance suite's 'prepare_hook_requires_args').
+    # (mirrors the compliance suite's 'prepare_hook_requires_args'); an
+    # engine fault (exit 1).
     class _ArgPrepASR:
         def prepare(self, warmup_level: int) -> None:  # noqa: D401 - test double
             return None
@@ -1059,7 +1732,7 @@ def test_cli_models_prepare_rejects_required_args_hook(
     exit_code = cli.main(["prepare", "alpha/first"])
     captured = capsys.readouterr()
 
-    assert exit_code == 2
+    assert exit_code == 1
     assert "required parameters" in captured.err
     assert "complete" not in captured.out.lower()
 
@@ -1085,6 +1758,380 @@ def test_cli_models_prepare_engine_base_default_is_noop(
 
     assert exit_code == 0
     assert "nothing to warm up" in output.lower()
+
+
+# ---------------------------------------------------------------------------
+# The runtime sync-call boundary at the CLI's REAL consumer sites: a plugin
+# whose sync member hands back a coroutine (or a wrong-typed value) must be an
+# ENGINE fault (exit 1) surfaced at the boundary -- never a false success, a
+# secondary AttributeError, or a leaked never-awaited coroutine.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_transcribe_async_engine_is_engine_fault_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A sync-wrapper ``transcribe`` returning a coroutine exits 1, loudly.
+
+    Pre-fix the coroutine flowed into ``result.text`` -- an unhandled
+    ``AttributeError`` traceback plus a never-awaited ``RuntimeWarning``.
+    The boundary closes the coroutine and names the real defect.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _AsyncASR:
+        async def _impl(self) -> None:
+            """Async implementation (never driven)."""
+            return None  # pragma: no cover - never awaited
+
+        def transcribe(self, audio: Any, options: Any = None) -> Any:
+            """Delegate to the async implementation (returns a coroutine)."""
+            return self._impl()
+
+    registry = _demo_registry()
+
+    def _create(*_: object) -> _AsyncASR:
+        return _AsyncASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "transcribe() returned an awaitable" in captured.err
+    assert "engine/plugin bug" in captured.err
+
+
+def test_cli_transcribe_wrong_result_type_is_engine_fault_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A non-``TranscriptionResult`` return is an engine fault named by type.
+
+    The message carries type names only -- the engine's value (which could
+    embed arbitrary payload text) is never echoed.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _DictASR:
+        def transcribe(self, audio: Any, options: Any = None) -> Any:
+            """Return the wrong type (a plain dict)."""
+            return {"text": "dict-not-result"}
+
+    registry = _demo_registry()
+
+    def _create(*_: object) -> _DictASR:
+        return _DictASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "dummy.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "transcribe() returned dict, not TranscriptionResult" in captured.err
+    assert "dict-not-result" not in captured.err
+
+
+def test_cli_models_prepare_sync_wrapper_returning_coroutine_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A sync ``prepare`` delegating to an ``async def`` must not read as success.
+
+    ``iscoroutinefunction`` cannot see this shape (the declaration IS sync);
+    pre-fix the CLI printed "Model prepare complete." while nothing warmed up
+    and the coroutine leaked. The strict require-``None`` boundary kills the
+    false success: engine fault, exit 1.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _WrapperPrepASR:
+        async def _async_prepare(self) -> None:
+            """Async warm-up implementation (never driven)."""
+            return None  # pragma: no cover - never awaited
+
+        def prepare(self) -> Any:
+            """Delegate to the async implementation (returns a coroutine)."""
+            return self._async_prepare()
+
+    registry = _demo_registry()
+
+    def _create(*_: object) -> _WrapperPrepASR:
+        return _WrapperPrepASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["prepare", "alpha/first"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "complete" not in captured.out.lower()
+    assert "prepare() returned an awaitable" in captured.err
+
+
+def test_cli_models_prepare_non_none_return_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``prepare()`` is pinned to return ``None``; any other value is a defect.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _ChattyPrepASR:
+        def prepare(self) -> Any:
+            """Return a non-None value (a contract violation)."""
+            return "warmed"
+
+    registry = _demo_registry()
+
+    def _create(*_: object) -> _ChattyPrepASR:
+        return _ChattyPrepASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["prepare", "alpha/first"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "complete" not in captured.out.lower()
+    assert "prepare() returned str, not None" in captured.err
+
+
+def test_cli_debug_traceback_does_not_reopen_the_pydantic_echo(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--debug`` must not double as a credential-leak opt-in.
+
+    The normal path scrubs the ``--options`` ValidationError; pre-fix,
+    ``--debug``'s ``traceback.print_exc()`` re-rendered the chained raw
+    error -- ``input_value=`` echo included -- into stderr/CI logs. The debug
+    trace now uses the safe chain rendering when a ValidationError is in the
+    chain (a plain exception keeps the full ordinary traceback).
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    registry = _demo_registry()
+    _patch_discover(monkeypatch, registry)
+    secret = "sk-DEBUG-SENTINEL"  # noqa: S105 - test fixture, not a real credential
+
+    exit_code = cli.main(
+        ["--debug", "transcribe", "alpha/first", "a.wav", "--options", f'{{"api_key": "{secret}"}}']
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert secret not in captured.err
+    assert secret not in captured.out
+    # The debug trace still exists and still names the fault structure.
+    assert "ValidationError" in captured.err
+    assert "test_cli" not in captured.out  # sanity: trace goes to stderr
+
+
+def test_cli_debug_traceback_keeps_full_trace_for_plain_exceptions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A chain without a ValidationError keeps the ordinary full traceback.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _BoomASR:
+        def transcribe(self, audio: Any, options: Any = None) -> Any:
+            """Raise a plain engine fault."""
+            raise RuntimeError("boom: plain engine fault")
+
+    registry = _demo_registry()
+
+    def _create(*_: object) -> _BoomASR:
+        return _BoomASR()
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["--debug", "transcribe", "alpha/first", "a.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Traceback (most recent call last)" in captured.err
+    assert "boom: plain engine fault" in captured.err
+
+
+class _EchoCopyingASR:
+    """An engine that wraps a pydantic failure by copying its text.
+
+    The classic third-party shape ``raise RuntimeError(f"...: {exc}") from
+    exc``: the wrapper's own message embeds pydantic's (truncated) input
+    echo, so any surface printing ``str(exc)`` re-leaks it.
+    """
+
+    def __init__(self, secret: str) -> None:
+        """Store the credential to mis-place into a validation failure.
+
+        Args:
+            secret: The sentinel credential.
+        """
+        self._secret = secret
+
+    def transcribe(self, audio: Any, options: Any = None) -> Any:
+        """Fail validation with the secret as input, then copy the echo.
+
+        Args:
+            audio: Ignored.
+            options: Ignored.
+
+        Returns:
+            Never returns.
+
+        Raises:
+            RuntimeError: Always, message embedding the pydantic echo.
+        """
+        from pydantic import BaseModel, ValidationError
+
+        class _Params(BaseModel):
+            beam: int
+
+        try:
+            _Params.model_validate({"beam": self._secret})
+        except ValidationError as exc:
+            raise RuntimeError(f"plugin failed: {exc}") from exc
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def test_cli_normal_error_line_scrubs_wrapped_validation_echo(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The NORMAL error line (no ``--debug``) is the leak that mattered.
+
+    ``_debug_traceback`` only guards the opt-in trace; the unconditional
+    ``_print_error(str(exc))`` line printed the copying wrapper's message --
+    truncated input echo included -- before any traceback logic ran. Every
+    catch arm now reports through the safe boundary. The secret is LONG so
+    pydantic truncates it: a substring check against the full value can
+    never catch this copy (the round-3 counterexample).
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    secret = "sk-" + "A" * 300 + "-END"  # noqa: S105 - test fixture
+    registry = _demo_registry()
+
+    def _create(*_: object) -> _EchoCopyingASR:
+        return _EchoCopyingASR(secret)
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "alpha/first", "a.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    for stream in (captured.err, captured.out):
+        assert "sk-AAAAA" not in stream  # truncated prefix must not leak
+        assert "-END" not in stream  # truncated suffix must not leak
+    # The line still names the fault structure for the operator.
+    assert "RuntimeError" in captured.err
+    assert "ValidationError" in captured.err
+
+
+def test_cli_debug_error_line_scrubs_wrapped_validation_echo(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With ``--debug`` the normal line AND the trace stay echo-free.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+    secret = "sk-" + "B" * 300 + "-TAIL"  # noqa: S105 - test fixture
+    registry = _demo_registry()
+
+    def _create(*_: object) -> _EchoCopyingASR:
+        return _EchoCopyingASR(secret)
+
+    monkeypatch.setattr(registry, "create", _create)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["--debug", "transcribe", "alpha/first", "a.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "sk-BBBBB" not in captured.err
+    assert "-TAIL" not in captured.err
+    # The safe chain rendering still shows structure and locations.
+    assert "ValidationError" in captured.err
+
+
+def test_cli_hostile_exception_str_reports_placeholder(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An exception whose ``__str__`` raises cannot crash error reporting.
+
+    The message is WITHHELD rather than probed: an author-defined display
+    is unauditable code, so the summary never dispatches it at all (a
+    hostile ``__str__`` that returned a credential would have been rendered
+    by the old "call it and see" placeholder path). Reporting still
+    completes -- the type name and the usage exit code survive.
+
+    Args:
+        monkeypatch: Pytest fixture for attribute patching.
+        capsys: Pytest fixture capturing stdout/stderr.
+    """
+
+    class _HostileError(Exception):
+        def __str__(self) -> str:
+            """Raise unconditionally.
+
+            Returns:
+                Never returns.
+
+            Raises:
+                RuntimeError: Always.
+            """
+            raise RuntimeError("boom from __str__")
+
+    def _raise(_: object) -> int:
+        raise _HostileError()
+
+    monkeypatch.setattr(cli, "_cmd_list", _raise)
+
+    exit_code = cli.main(["list"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "_HostileError: <exception str() failed>" in captured.err
+
+    # A display set to None dispatches no author code, so the untainted
+    # branch still renders it -- through the totality placeholder, since
+    # the protocol itself raises.
+    class _NoDisplayError(Exception):
+        __str__ = None  # pyright: ignore[reportAssignmentType]
+
+    def _raise_no_display(_: object) -> int:
+        raise _NoDisplayError()
+
+    monkeypatch.setattr(cli, "_cmd_list", _raise_no_display)
+    assert cli.main(["list"]) == 1
+    assert "_NoDisplayError: <exception str() failed>" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -1373,9 +2420,43 @@ def test_cli_compliance_run_batch_only_engine(
     assert "Compliance run passed" in output
 
 
+def test_cli_compliance_run_batch_only_bad_wire_format_fails_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A batch-only engine's broken wire recommendation FAILS a full run — once.
+
+    The F4 counterexample: `recommended_wire_format()` is unconditional (spec
+    §3.1), but the CLI used to run its round-trip only for streaming-axis
+    engines, so a batch-only engine shipped this defect through a green
+    `compliance run`. The round-trip now lives in the entrypoint instance
+    checks — and ONLY there, so one run reports the defect exactly once (the
+    old CLI-side call would now double-report).
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="batch/badwire",
+            value="tests.test_cli:_batch_only_bad_wire_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["compliance", "run", "batch/badwire"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert output.count("recommended_wire_format_self_inconsistent") == 1
+
+
 def test_parse_init_config_merges_config_under_set() -> None:
-    # --config supplies a base; --set overrides/adds (and wins). --set values
-    # stay strings (the engine's pydantic config coerces them, like the env path).
+    """--config supplies a base; --set overrides/adds (and wins). --set values
+    stay strings (the engine's pydantic config coerces them, like the env path).
+    """
     ns = argparse.Namespace(
         config='{"device": "cpu", "beam_size": 1}',
         set_=["beam_size=5", "compute_type=int8"],
@@ -1388,7 +2469,7 @@ def test_parse_init_config_merges_config_under_set() -> None:
 
 
 def test_parse_init_config_empty_when_unset() -> None:
-    # No --config / --set -> empty mapping (create() called with no init config).
+    """No --config / --set -> empty mapping (create() called with no init config)."""
     assert cli._parse_init_config(argparse.Namespace(config=None, set_=None)) == {}  # pyright: ignore[reportPrivateUsage]
 
 
@@ -1530,6 +2611,471 @@ def test_cli_compliance_run_include_bridge_runs_sync_bridge(
     assert "Compliance run passed" in output
 
 
+def test_cli_compliance_run_bridge_not_applicable_for_output_only_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--include-bridge on an output-only engine yields a STRUCTURED warning.
+
+    The bridge feeds bare PCM frames; an output-only engine's
+    ``start_transcription(audio_format=...)`` fails the ``streaming_input``
+    capability gate. The CLI no longer pre-gates with an ad-hoc ``print`` a
+    script could never see: it always runs the bridge and hands it ``engine=``
+    so ``check_sync_bridge`` itself classifies the refusal, putting a
+    ``sync_bridge_not_applicable`` warning in the REPORT SET -- one layer, one
+    message, visible to machine consumers and honouring ``--quiet``.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    # Record the engine each check receives, delegating to the REAL checks so
+    # the classification below is the shipped behaviour, not a stub's.
+    constructed: list[object] = []
+    real_swap_check = cli.check_provider_params_swap_safety
+    real_check_sync_bridge = cli.check_sync_bridge
+    bridge_kwargs: list[dict[str, object]] = []
+
+    def _spy_swap(engine: object) -> ComplianceReport:
+        constructed.append(engine)
+        return real_swap_check(cast(EngineBase, engine))
+
+    def _spy_bridge(factory: object, **kwargs: object) -> ComplianceReport:
+        bridge_kwargs.append(dict(kwargs))
+        return real_check_sync_bridge(
+            cast(Callable[[], TranscriptionSession], factory),
+            **cast(Any, kwargs),
+        )
+
+    monkeypatch.setattr(cli, "check_provider_params_swap_safety", _spy_swap)
+    monkeypatch.setattr(cli, "check_sync_bridge", _spy_bridge)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    # The bridge RUNS now -- no CLI-side capability pre-gate.
+    assert len(bridge_kwargs) == 1
+    # ...and it is handed THE constructed engine, so the check can read the
+    # engine's own streaming_input declaration (the only thing that earns the
+    # passing not-applicable verdict).
+    assert bridge_kwargs[0]["engine"] is constructed[0]
+    assert bridge_kwargs[0]["model"] == "streamout/only"
+    # Structured warning in the report set, not an ad-hoc informational print.
+    assert "[WARN] Warning streamout/only [sync_bridge_not_applicable]:" in output
+    assert "streaming_input" in output
+    assert "skipped sync-bridge" not in output
+    assert "Compliance run passed" in output
+
+
+def test_cli_compliance_run_quiet_suppresses_the_not_applicable_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--quiet hides the not-applicable warning line; the run still passes.
+
+    This is the DX the old ad-hoc ``print`` could not deliver: a warning that
+    lives in the report set obeys the run's own verbosity flag.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge", "--quiet"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "sync_bridge_not_applicable" not in output
+    assert "Compliance run passed" in output
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "-0.5", "nan", "inf", "-inf", "abc", "1e300"])
+def test_cli_bridge_timeout_rejects_nonpositive_and_nonfinite(bad: str) -> None:
+    """--bridge-timeout must be finite, > 0, and within the platform's wait cap.
+
+    A bare ``type=float`` would accept these; fed into ``Thread.join`` they
+    become an immediately-expiring timeout (a false "did not terminate"
+    verdict blamed on the engine), a hang (``inf``), or an ``OverflowError``
+    mid-check (a finite value beyond ``threading.TIMEOUT_MAX``, e.g.
+    ``1e300``). argparse rejects them as usage errors (exit 2) at parse time.
+
+        Args:
+            bad: A value the rule must reject (parametrized).
+    """
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["compliance", "run", "--include-bridge", "--bridge-timeout", bad])
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+def test_cli_bridge_timeout_surfaces_the_librarys_own_rule_text(bad: float) -> None:
+    """The CLI parser delegates the rule to ``compliance.validate_bridge_timeout``.
+
+    One rule, one owner: the CLI only wraps the library's ``ValueError`` into
+    an argparse usage error, so the two layers can never drift on WHICH values
+    are legal or on how the rejection is explained.
+
+        Args:
+            bad: A value the rule must reject (parametrized).
+    """
+    with pytest.raises(argparse.ArgumentTypeError, match="finite"):
+        cli._positive_finite_seconds(str(bad))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_cli_bridge_timeout_rejects_a_non_numeric_value_before_the_rule() -> None:
+    """A non-float never reaches validate_bridge_timeout: the conversion error is
+    its own message, naming the offending text.
+    """
+    with pytest.raises(argparse.ArgumentTypeError, match="invalid float value"):
+        cli._positive_finite_seconds("abc")  # pyright: ignore[reportPrivateUsage]
+
+
+def test_cli_bridge_timeout_accepts_positive_finite_value() -> None:
+    """A positive finite --bridge-timeout parses to its float value."""
+    parser = cli.build_parser()
+    args = parser.parse_args(["compliance", "run", "--bridge-timeout", "12.5"])
+    assert args.bridge_timeout == 12.5
+
+
+def test_cli_bridge_not_applicable_when_output_only_engine_has_no_wire_format(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No recommendable wire format + no streaming_input = not applicable.
+
+    An output-only engine that recommends no bare-frame format (a structural
+    engine may legitimately return None) must earn the same passing
+    ``sync_bridge_not_applicable`` verdict as one that CAN construct a format
+    -- the old hard ``sync_bridge_no_wire_format`` error failed a compliant
+    output-only engine on a property of the check's shape. A streaming_input
+    engine without a usable format keeps the hard error (a real declaration
+    problem).
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    def _no_wire_format(engine: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_streaming_audio_format", _no_wire_format)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "sync_bridge_not_applicable" in output
+    assert "sync_bridge_no_wire_format" not in output
+
+
+def test_cli_bridge_unclassifiable_wire_format_gets_its_own_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A wire-format value the boundary cannot classify is reported not re-read.
+
+    The sync-bridge gate is a REAL consumer of the boundary verdict: a
+    hostile ``__mro__`` metaclass makes every metadata read raise, so the
+    report must come from the VERDICT alone (never a second
+    ``type(value).__name__`` -- that read would crash the error path).
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    class _HostileMroMeta(type):
+        @property
+        def __mro__(cls) -> tuple[type, ...]:
+            """Fail any introspection that reads the MRO.
+
+            Returns:
+                Never returns.
+
+            Raises:
+                RuntimeError: Always.
+            """
+            raise RuntimeError("hostile mro read")
+
+    class _Hostile(metaclass=_HostileMroMeta):
+        pass
+
+    def _hostile_wire_format(engine: object) -> object:
+        return _Hostile()
+
+    monkeypatch.setattr(cli, "_streaming_audio_format", _hostile_wire_format)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "protocol_member_unclassifiable_result" in output
+    assert "could not be safely classified" in output
+
+
+def test_cli_no_wire_format_with_broken_supports_keeps_the_hard_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A raising supports() cannot buy the not-applicable pass here either.
+
+    The no-wire-format branch takes the passing not-applicable verdict only
+    when the engine VERIFIABLY does not declare streaming_input; an engine
+    whose supports() raises is unverifiable and keeps the hard error --
+    mirroring check_sync_bridge's own fail-closed stance. The message must
+    name the ACTUAL fault (supports() raised, declaration unverifiable), not
+    assert "declares streaming_input" -- a declaration that was never
+    observed.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="streamout/only",
+            value="tests.test_cli:_output_only_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    def _no_wire_format(engine: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_streaming_audio_format", _no_wire_format)
+
+    real_create = registry.create
+
+    def _create_with_broken_supports(name: str, /, *args: object, **kwargs: object) -> object:
+        engine = real_create(name, *args, **kwargs)
+
+        def _boom(dot_path: str) -> bool:
+            if dot_path == "streaming_input":
+                raise RuntimeError("capability tree exploded")
+            return type(engine).supports(engine, dot_path)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+
+        monkeypatch.setattr(engine, "supports", _boom)
+        return engine
+
+    monkeypatch.setattr(registry, "create", _create_with_broken_supports)
+
+    exit_code = cli.main(["compliance", "run", "streamout/only", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "sync_bridge_no_wire_format" in output
+    assert "sync_bridge_not_applicable" not in output
+    # Honest attribution: supports() raised, so the declaration is
+    # unverifiable -- the message must not claim the engine declares
+    # streaming_input.
+    assert "supports() raised" in output
+    assert "engine declares streaming_input" not in output
+
+
+def test_cli_compliance_run_bridge_timeout_parses_to_a_none_sentinel() -> None:
+    """The PARSED default is a None sentinel, not the literal 5.0: only that
+    distinguishes "user omitted the flag" from "user explicitly asked for 5 s",
+    which _cmd_compliance_run needs to reject an explicit --bridge-timeout
+    without --include-bridge instead of silently ignoring it. The documented
+    5.0 s default is applied there (see the effective-default test below).
+    """
+    parser = cli.build_parser()
+    args = parser.parse_args(["compliance", "run"])
+    assert args.bridge_timeout is None
+    assert parser.parse_args(["compliance", "run", "--bridge-timeout", "30"]).bridge_timeout == 30.0
+
+
+def test_cli_compliance_run_bridge_timeout_without_include_bridge_is_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--bridge-timeout only means anything with --include-bridge. Accepting it
+    alone would print "Compliance run passed" to an author who reads it as
+    "the bridge ran within my budget" -- a silently inert flag. It is a usage
+    error (exit 2) naming the flag that would make it effective.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    def _fail_if_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the bridge must not run without --include-bridge")
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _fail_if_called)
+
+    exit_code = cli.main(["compliance", "run", "stream/ok", "--bridge-timeout", "60"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "--include-bridge" in captured.err
+    assert "Compliance run passed" not in captured.out
+
+
+def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--bridge-timeout is threaded all the way to check_sync_bridge: without
+    this the check's own advice ("re-run with a larger timeout") named a knob
+    no CLI user could reach.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    seen: dict[str, object] = {}
+
+    def _check_sync_bridge(
+        factory: object,
+        *,
+        timeout: float = 5.0,
+        model: str | None = None,
+        engine: object = None,
+    ) -> ComplianceReport:
+        seen["timeout"] = timeout
+        seen["model"] = model
+        seen["engine"] = engine
+        return ComplianceReport(registry=ModelRegistry({}), issues=[])
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
+
+    exit_code = cli.main(
+        ["compliance", "run", "stream/ok", "--include-bridge", "--bridge-timeout", "12.5"]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert seen["timeout"] == 12.5
+    # The model key travels with it: in a multi-model run an unattributed bridge
+    # issue renders as <registry> and the user cannot tell which engine failed.
+    assert seen["model"] == "stream/ok"
+    # The engine travels too: without it the check cannot tell an output-only
+    # engine's honest refusal from a streaming engine's capability lie, and
+    # fails closed on both.
+    assert isinstance(seen["engine"], _GatingStreamEngine)
+
+
+def test_cli_compliance_run_without_bridge_timeout_uses_the_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Omitting the flag hands the library's DEFAULT_SYNC_BRIDGE_TIMEOUT down, not
+    the None sentinel argparse now parses to (check_sync_bridge rejects a
+    non-float). The default is READ from compliance, never re-literalled here,
+    so --help and the applied budget can never advertise different numbers.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    seen: dict[str, object] = {}
+
+    def _check_sync_bridge(
+        factory: object,
+        *,
+        timeout: float = -1.0,
+        model: str | None = None,
+        engine: object = None,
+    ) -> ComplianceReport:
+        seen["timeout"] = timeout
+        seen["model"] = model
+        seen["engine"] = engine
+        return ComplianceReport(registry=ModelRegistry({}), issues=[])
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _check_sync_bridge)
+
+    exit_code = cli.main(["compliance", "run", "stream/ok", "--include-bridge"])
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert seen["timeout"] == DEFAULT_SYNC_BRIDGE_TIMEOUT
+    assert seen["model"] == "stream/ok"
+    assert isinstance(seen["engine"], _GatingStreamEngine)
+
+
+def test_cli_bridge_timeout_help_advertises_the_shared_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--help`` prints the constant's value, not a hand-copied literal.
+
+    A drifted help string tells the author their engine got a budget it never
+    got; the help text is built from ``DEFAULT_SYNC_BRIDGE_TIMEOUT`` itself.
+
+        Args:
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["compliance", "run", "--help"])
+    assert excinfo.value.code == 0
+
+    output = capsys.readouterr().out
+    assert f"default: {DEFAULT_SYNC_BRIDGE_TIMEOUT}" in output
+
+
 def test_cli_compliance_run_failure_headline(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1593,17 +3139,88 @@ def test_cli_compliance_run_unknown_model_is_reported(
     assert "unknown model" in output
 
 
-def test_cli_compliance_run_construction_error_is_reported(
+def test_cli_compliance_run_configuration_required_is_skipped_not_failed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A zero-arg engine whose construction raises a client-side config error is
-    # reported for that model rather than aborting the whole run.
+    """A zero-arg factory raising ConfigurationRequiredError is a SKIP.
+
+    check_entrypoints classifies exactly this state (required credential
+    absent from the environment; from_env raises the narrow subtype
+    automatically) as a factory_requires_config WARNING skip; the instance
+    layer failing the same engine in the same `compliance run` gave one
+    engine two contradictory verdicts in one command. The verdict must not
+    depend on which layer looked first.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    from standard_asr.contract.exceptions import ConfigurationRequiredError
+
+    registry = _compliant_dummy_registry()
+
+    def _boom(_name: str, /, *args: object, **kwargs: object) -> object:
+        raise ConfigurationRequiredError("missing credential")
+
+    _patch_discover(monkeypatch, registry)
+    monkeypatch.setattr(registry, "create", _boom)
+
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "skipped instance checks" in output
+    assert "missing credential" in output
+    assert "could not construct engine" not in output
+
+
+def test_cli_compliance_run_plain_config_error_still_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A plain ConfigError (invalid config, NOT absence) stays a failure.
+
+    The skip is scoped to the narrow ConfigurationRequiredError: waiving
+    every ConfigError would let a broken plugin (an inconsistent declaration,
+    an invalid supplied value, a wrapped construction ValidationError) read
+    as green-with-warning -- a false clean verdict on a defective engine.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
     from standard_asr.contract.exceptions import ConfigError
 
     registry = _compliant_dummy_registry()
 
     def _boom(_name: str, /, *args: object, **kwargs: object) -> object:
-        raise ConfigError("missing credential")
+        raise ConfigError("engine declaration is internally inconsistent")
+
+    _patch_discover(monkeypatch, registry)
+    monkeypatch.setattr(registry, "create", _boom)
+
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "could not construct engine" in output
+    assert "skipped instance checks" not in output
+
+
+def test_cli_compliance_run_non_config_construction_error_still_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The skip is scoped to ConfigurationRequiredError (absent configuration)
+    ONLY: a factory failing for any other reason is a broken plugin and
+    stays a per-model error rather than aborting the whole run.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    registry = _compliant_dummy_registry()
+
+    def _boom(_name: str, /, *args: object, **kwargs: object) -> object:
+        raise ValueError("factory exploded")
 
     _patch_discover(monkeypatch, registry)
     monkeypatch.setattr(registry, "create", _boom)
@@ -1615,53 +3232,47 @@ def test_cli_compliance_run_construction_error_is_reported(
     assert "could not construct engine" in output
 
 
-def test_scope_entrypoints_report_keeps_named_global_and_collision() -> None:
-    # Scoping an entry-point report to a named subset keeps (a) the named
-    # models, (b) registry-global invariants (model is None), and (c) engine_id
-    # collisions (shadowed_engine_ids); it drops an unrelated co-installed plugin's
-    # per-engine issue so it cannot fail a named run.
-    base = _compliant_dummy_registry()
-    registry = ModelRegistry({k: base.spec(k) for k in base.names()}, shadowed_engine_ids={"zeta"})
-    report = ComplianceReport(
-        registry=None,
-        issues=[
-            ComplianceIssue(level="error", code="a", message="m", model="stream/ok"),
-            ComplianceIssue(level="error", code="b", message="m", model="alpha/first"),
-            ComplianceIssue(level="error", code="c", message="m", model=None),
-            ComplianceIssue(level="error", code="engine_id_collision", message="m", model="zeta"),
-        ],
-    )
-    scoped = cli._scope_entrypoints_report(  # pyright: ignore[reportPrivateUsage]
-        report, registry, {"stream/ok"}
-    )
-    assert {issue.model for issue in scoped.issues} == {"stream/ok", None, "zeta"}
-
-
-def test_cli_compliance_run_named_model_ignores_unrelated_plugin_failure(
+def test_cli_compliance_run_named_subset_scopes_probes_at_the_source(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A named run must NOT fail because an UNRELATED co-installed plugin has
-    # a per-engine entry-point problem; the headline and exit code reflect only the
-    # named subset plus registry-global invariants.
-    registry = _compliant_dummy_registry()
+    # `compliance run <named>` on a machine with a co-installed plugin must
+    # scope the per-engine checks AT THE SOURCE, not filter the report
+    # afterwards: the instance checks execute engine code (construction, the
+    # supports() sweep, the start_transcription() refusal probe -- a model
+    # load; for a cloud engine a billable call), and the old post-hoc filter
+    # discarded only the verdicts while the user still paid those side
+    # effects on an engine they never named.
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="other/model",
+            value="tests.test_cli:_other_recording_factory",
+            group="standard_asr.models",
+        ),
+    ]
+    registry = discover_models(eps=eps, strict=True)
     _patch_discover(monkeypatch, registry)
-    crafted = ComplianceReport(
-        registry=None,
-        issues=[
-            ComplianceIssue(
-                level="error",
-                code="provider_params_type_not_closed",
-                message="alpha/first is broken",
-                model="alpha/first",
-            )
-        ],
-    )
-    _patch_check_entrypoints(monkeypatch, crafted)
+    _unnamed_probe_constructions.clear()
 
     exit_code = cli.main(["compliance", "run", "stream/ok"])
     output = capsys.readouterr().out
 
     assert exit_code == 0
+    assert "Compliance run passed" in output
+    # The engine the user never named was never constructed, so none of its
+    # instance probes ran either.
+    assert _unnamed_probe_constructions == []
+
+    # Unnamed run: both engines are checked (the scope is the user's choice,
+    # not a new default narrowing).
+    exit_code = cli.main(["compliance", "run"])
+    capsys.readouterr()
+    assert exit_code == 0
+    assert _unnamed_probe_constructions != []
     assert "alpha/first" not in output
     assert "Compliance run passed" in output
 
@@ -1693,6 +3304,245 @@ def test_cli_compliance_run_named_model_still_reports_global_collision(
 
     assert exit_code == 1
     assert "zeta" in output
+
+
+def test_cli_compliance_run_broken_wire_format_does_not_abort_the_whole_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A raising ``recommended_wire_format()`` is a per-model report, not an abort.
+
+    The bridge runner derives its bare-frame format from the engine; an
+    exception there used to escape ``_run_instance_checks`` and take down a
+    multi-model run, so ONE broken plugin hid every other plugin's verdict.
+    It is now contained as a ``sync_bridge_setup_failed`` error for that model
+    while the co-installed model's checks still report.
+
+        Args:
+            monkeypatch: Pytest fixture for attribute patching.
+            capsys: Pytest fixture capturing stdout/stderr.
+    """
+    eps = [
+        EntryPoint(
+            name="brokenwire/engine",
+            value="tests.test_cli:_broken_wire_factory",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        ),
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    bridged: list[object] = []
+    real_check_sync_bridge = cli.check_sync_bridge
+
+    def _spy_bridge(factory: object, **kwargs: object) -> ComplianceReport:
+        bridged.append(kwargs.get("model"))
+        return real_check_sync_bridge(
+            cast(Callable[[], TranscriptionSession], factory),
+            **cast(Any, kwargs),
+        )
+
+    monkeypatch.setattr(cli, "check_sync_bridge", _spy_bridge)
+
+    exit_code = cli.main(["compliance", "run", "--include-bridge"])
+    output = capsys.readouterr().out
+
+    # The run COMPLETES (no traceback escaping) and fails on the broken model.
+    assert exit_code == 1
+    assert "Compliance run failed" in output
+    assert "[FAIL] Error brokenwire/engine [sync_bridge_setup_failed]:" in output
+    assert "recommended_wire_format() raised" in output
+    # The same fault is ALSO reported by the dedicated wire-format check, so the
+    # guard duplicates a verdict rather than inventing one.
+    assert "recommended_wire_format_raised" in output
+    # The healthy co-installed model was still bridged for real (the broken one
+    # never reaches the check -- there is no format to bridge with), and its
+    # verdict is clean, so nothing is attributed to it.
+    assert bridged == ["stream/ok"]
+    assert "stream/ok [sync_bridge" not in output
+
+
+def test_run_sync_bridge_broken_wire_format_is_a_contained_error() -> None:
+    """Unit-level companion to the run-level test above: the helper returns the
+    report instead of propagating, and names the engine's own exception.
+    """
+    report = cli._run_sync_bridge(_BrokenWireEngine(), "brokenwire/engine")  # pyright: ignore[reportPrivateUsage]
+
+    assert report.passed is False
+    assert [(i.level, i.code) for i in report.issues] == [("error", "sync_bridge_setup_failed")]
+    assert "wire format derivation exploded" in report.issues[0].message
+    assert report.issues[0].model == "brokenwire/engine"
+
+
+class _CliFakeAwaitable:
+    """An awaitable that is not a coroutine (nothing to close)."""
+
+    def __await__(self) -> Any:  # pragma: no cover - never actually awaited
+        yield
+
+
+def test_engine_supports_fails_closed_on_malformed_answers() -> None:
+    """The CLI pre-gate counts ONLY a literal True as supported.
+
+    bool() coercion silently promoted a truthy coroutine or a "false" string
+    to a capability verdict (and leaked the coroutine unawaited -- the
+    suite's warnings-as-errors policy is the leak oracle). The compliance
+    checks report the underlying defect; this pre-gate's job is to not act
+    on a lie and not leak.
+    """
+
+    class _Answers:
+        def __init__(self, value: Any) -> None:
+            self._value = value
+
+        def supports(self, dot_path: str) -> Any:
+            return self._value
+
+    async def _coro() -> bool:
+        return True  # pragma: no cover - never awaited by design
+
+    assert cli._engine_supports(_Answers(True), "x") is True  # pyright: ignore[reportPrivateUsage]
+    assert cli._engine_supports(_Answers(False), "x") is False  # pyright: ignore[reportPrivateUsage]
+    assert cli._engine_supports(_Answers("false"), "x") is False  # pyright: ignore[reportPrivateUsage]
+    assert cli._engine_supports(_Answers(1), "x") is False  # pyright: ignore[reportPrivateUsage]
+    assert cli._engine_supports(_Answers(_coro()), "x") is False  # pyright: ignore[reportPrivateUsage]
+    assert cli._engine_supports(_Answers(_CliFakeAwaitable()), "x") is False  # pyright: ignore[reportPrivateUsage]
+
+
+def test_run_sync_bridge_async_wire_format_is_modality_error() -> None:
+    """An async recommended_wire_format hands the bridge an awaitable instead
+    of an AudioFormat: reported under the same code the compliance layer
+    uses, with the stray coroutine closed (warnings-as-errors would fail
+    this test on a leak), never fed into a session open.
+    """
+
+    class _AsyncWireEngine(_GatingStreamEngine):
+        async def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            raise AssertionError("never awaited")  # pragma: no cover
+
+    report = cli._run_sync_bridge(_AsyncWireEngine(), "stream/ok")  # pyright: ignore[reportPrivateUsage]
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["protocol_member_not_synchronous"]
+    assert "SYNCHRONOUS" in report.issues[0].message
+
+
+def test_run_sync_bridge_non_coroutine_awaitable_wire_format_same_error() -> None:
+    """The non-coroutine awaitable shape (nothing to close) draws the same
+    verdict.
+    """
+
+    class _AwaitableWireEngine(_GatingStreamEngine):
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            return _CliFakeAwaitable()
+
+    report = cli._run_sync_bridge(_AwaitableWireEngine(), "stream/ok")  # pyright: ignore[reportPrivateUsage]
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["protocol_member_not_synchronous"]
+
+
+def test_run_sync_bridge_wrong_typed_wire_format_never_reaches_the_engine() -> None:
+    """A non-``AudioFormat`` recommendation stops at the bridge boundary.
+
+    This is a REAL consumer: pre-fix only the awaitable shape was caught, so
+    a str/dict/duck recommendation was handed straight into
+    ``start_transcription(audio_format=...)`` -- potentially triggering model
+    loads or a secondary crash misblamed on the bridge. The value's own text
+    is never echoed (type name only).
+    """
+    opened: list[object] = []
+
+    class _StrWireEngine(_GatingStreamEngine):
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            return "pcm_s16le;sk-WIRE-SECRET"
+
+        def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
+            self, **kwargs: Any
+        ) -> Any:
+            opened.append(kwargs)  # pragma: no cover - must never be reached
+            raise AssertionError("engine must not be opened")  # pragma: no cover
+
+    report = cli._run_sync_bridge(_StrWireEngine(), "stream/ok")  # pyright: ignore[reportPrivateUsage]
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["protocol_member_wrong_return_type"]
+    assert "returned str, not AudioFormat / None" in report.issues[0].message
+    assert "sk-WIRE-SECRET" not in report.issues[0].message
+    assert opened == []
+
+
+def test_run_sync_bridge_async_start_transcription_is_invalid_session() -> None:
+    """The CLI bridge path reports an async opener at the factory boundary.
+
+    The CLI's canonical factory wraps start_transcription; an `async def`
+    opener used to hand check_sync_bridge a coroutine that was stored as the
+    session, misreported as a bridge lifecycle fault deep in SyncSession, and
+    leaked unawaited (warnings-as-errors would fail this test on the leak).
+    """
+
+    class _AsyncStartEngine(_GatingStreamEngine):
+        async def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
+            self,
+            *,
+            audio_format: Any = None,
+            params: Any = None,
+            audio: Any = None,
+            deadlines: Any = None,
+        ) -> Any:
+            raise AssertionError("never awaited")  # pragma: no cover
+
+    report = cli._run_sync_bridge(_AsyncStartEngine(), "stream/ok", timeout=5.0)  # pyright: ignore[reportPrivateUsage]
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["sync_bridge_invalid_session"]
+    assert not any("did not terminate" in i.message for i in report.issues)
+
+
+def test_run_sync_bridge_awaitable_supports_is_unverifiable_hard_error() -> None:
+    """No usable wire format + supports() answering an awaitable: the
+    declaration is unverifiable -- fail-closed hard error with an honest
+    message (never a fabricated "declares streaming_input" from a truthy
+    coroutine, never a not-applicable pass).
+    """
+
+    class _NoFormatAsyncSupportsEngine(_GatingStreamEngine):
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            return None
+
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            async def _answer() -> bool:
+                return False  # pragma: no cover - never awaited by design
+
+            return _answer()
+
+    report = cli._run_sync_bridge(_NoFormatAsyncSupportsEngine(), "stream/ok")  # pyright: ignore[reportPrivateUsage]
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["sync_bridge_no_wire_format"]
+    assert "non-boolean/awaitable" in report.issues[0].message
+
+    class _NoFormatAwaitableSupportsEngine(_NoFormatAsyncSupportsEngine):
+        def supports(self, dot_path: str) -> Any:
+            return _CliFakeAwaitable()  # non-coroutine awaitable: nothing to close
+
+    report = cli._run_sync_bridge(_NoFormatAwaitableSupportsEngine(), "stream/ok")  # pyright: ignore[reportPrivateUsage]
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["sync_bridge_no_wire_format"]
+
+
+def test_run_sync_bridge_non_bool_supports_is_unverifiable_hard_error() -> None:
+    """Same fail-closed arm for a truthy non-bool answer."""
+
+    class _NoFormatStringSupportsEngine(_GatingStreamEngine):
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            return None
+
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            return "false"
+
+    report = cli._run_sync_bridge(_NoFormatStringSupportsEngine(), "stream/ok")  # pyright: ignore[reportPrivateUsage]
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["sync_bridge_no_wire_format"]
 
 
 def test_run_sync_bridge_no_wire_format_is_error() -> None:
@@ -1791,3 +3641,111 @@ def test_ensure_utf8_stream_tolerates_reconfigure_failure(
 
     # Must return without raising.
     cli._ensure_utf8_stream(_BadReconfigure())  # pyright: ignore[reportPrivateUsage,reportArgumentType]
+
+
+@pytest.mark.parametrize(
+    ("factory", "marker"),
+    [
+        ("_runtime_error_factory", "SDK initialization failed"),
+        ("_type_error_factory", "bad SDK signature"),
+        ("_os_error_factory", "model directory unreadable"),
+        ("_authored_error_factory", "plugin said no"),
+    ],
+)
+def test_cli_compliance_run_contains_any_factory_fault_per_model(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    factory: str,
+    marker: str,
+) -> None:
+    # `compliance run`'s contract is a verdict for EVERY model in one run
+    # (G2.1). registry.create wraps only a construction-time ValidationError,
+    # so a factory's own RuntimeError/TypeError/OSError/authored type
+    # propagates verbatim -- and a named-types catch let exactly those abort
+    # the loop, denying every LATER model its verdict.
+    eps = [
+        EntryPoint(
+            name="broken/first",
+            value=f"tests.test_cli:{factory}",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="later/gating",
+            value="tests.test_cli:_ungated_stream_factory",
+            group="standard_asr.models",
+        ),
+    ]
+    _patch_discover(monkeypatch, discover_models(eps=eps, strict=True))
+
+    exit_code = cli.main(["compliance", "run"])
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+
+    assert exit_code == 1
+    # The broken model is reported, with its own reason...
+    assert "broken/first [engine_construction_failed]" in output
+    assert marker in output
+    # ...and the LATER model was still reached and judged on its own merits
+    # (its gating defect is a verdict only the loop's continuation produces).
+    assert "gating_strict_accepted" in output
+    assert "Compliance run failed" in output
+
+
+def test_cli_compliance_run_does_not_swallow_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The containment is `except Exception`, never BaseException: the
+    # operator's own control flow must still stop the run.
+    eps = [
+        EntryPoint(
+            name="interrupt/first",
+            value="tests.test_cli:_keyboard_interrupt_factory",
+            group="standard_asr.models",
+        )
+    ]
+    _patch_discover(monkeypatch, discover_models(eps=eps, strict=True))
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["compliance", "run"])
+
+
+def test_cli_compliance_run_contains_a_crashing_check_implementation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Defense in depth behind the construction arm: if a CHECK itself falls
+    # over on a shape nobody anticipated, that is still one model's verdict,
+    # reported under its own code so it stays distinguishable from a plugin
+    # construction fault.
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="stream/two",
+            value="tests.test_cli:_gating_stream_factory",
+            group="standard_asr.models",
+        ),
+    ]
+    _patch_discover(monkeypatch, discover_models(eps=eps, strict=True))
+
+    real_checks = cli._run_instance_checks  # pyright: ignore[reportPrivateUsage]
+
+    def _crash_on_first(
+        registry: ModelRegistry, name: str, **kwargs: object
+    ) -> list[ComplianceReport]:
+        if name == "stream/ok":
+            raise RuntimeError("check implementation exploded")
+        return real_checks(registry, name, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(cli, "_run_instance_checks", _crash_on_first)
+
+    exit_code = cli.main(["compliance", "run"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "compliance_check_crashed" in output
+    assert "check implementation exploded" in output
+    # The second model still ran.
+    assert "stream/two" in output

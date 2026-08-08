@@ -12,13 +12,29 @@ from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
 from standard_asr.contract.results import Word
 from standard_asr.runtime import streaming as streaming_module
 from standard_asr.runtime.streaming import (
     DEFAULT_DONE_TIMEOUT,
+    DIAG_AUDIO_CURSOR_DECREASED,
+    DIAG_FROZEN_PREFIX_REWRITTEN,
+    DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE,
+    DIAG_FROZEN_SPEAKER_REWRITTEN,
+    DIAG_LIFECYCLE_AFTER_TERMINAL,
+    DIAG_LIFECYCLE_CLOSED_SUPERSEDED,
+    DIAG_LIFECYCLE_FINAL_AFTER_FINAL,
+    DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL,
+    DIAG_LIFECYCLE_RETIRED_RESUPERSEDED,
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    DIAG_STABLE_UNTIL_CLAMPED,
+    DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE,
+    DIAG_SUPERSEDE_DELETES_FROZEN_TEXT,
+    DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
+    DIAG_SUPERSEDE_REINTRODUCES_SEGMENT,
+    DIAG_SUPERSEDE_UNKNOWN_OLD_ID,
     EventBufferOverflow,
     StreamDeadlines,
     StreamReducer,
@@ -147,15 +163,18 @@ def test_event_speaker_serializes_on_wire_dump() -> None:
 # reduce
 # --------------------------------------------------------------------------- #
 def test_reduce_event_partial_final_supersede() -> None:
-    segs: dict[str, str] = {}
-    reduce_event(segs, TranscriptionEvent.partial("s1", "hel"))
-    reduce_event(segs, TranscriptionEvent.final("s1", "hello"))
-    assert segs == {"s1": "hello"}
-    reduce_event(segs, TranscriptionEvent.final("s2", "world"))
-    reduce_event(segs, TranscriptionEvent.supersede(["s1", "s2"], ["s3"]))
-    assert segs == {}
-    reduce_event(segs, TranscriptionEvent.final("s3", "hello world"))
-    assert segs == {"s3": "hello world"}
+    order: list[str] = []
+    texts: dict[str, str] = {}
+    reduce_event(order, texts, TranscriptionEvent.partial("s1", "hel"))
+    reduce_event(order, texts, TranscriptionEvent.final("s1", "hello"))
+    assert (order, texts) == (["s1"], {"s1": "hello"})
+    reduce_event(order, texts, TranscriptionEvent.final("s2", "world"))
+    reduce_event(order, texts, TranscriptionEvent.supersede(["s1", "s2"], ["s3"]))
+    # The replacement takes over the retired block's position; its text
+    # arrives with its own final.
+    assert (order, texts) == (["s3"], {})
+    reduce_event(order, texts, TranscriptionEvent.final("s3", "hello world"))
+    assert (order, texts) == (["s3"], {"s3": "hello world"})
 
 
 def test_stream_reducer_result() -> None:
@@ -368,6 +387,48 @@ def test_emit_diagnostic_surfaces_in_session_diagnostics() -> None:
     assert note.param == "vad"
     assert note.provided == "webrtc"
     assert note.effective == "energy"
+
+
+def test_emit_diagnostic_projects_a_pydantic_model_instead_of_raising() -> None:
+    """A structured ``provided``/``effective`` is projected, not a session killer.
+
+    ``Diagnostic.provided`` is a wire-JSON slot, so passing a pydantic
+    submodel raised ``ValidationError`` out of a live ``_produce`` --
+    ``_run_producer`` caught it and force-terminated the session with
+    ``engine_error``: the client lost the rest of the transcript for what
+    used to be a working non-fatal note. ``emit_diagnostic`` now applies the
+    same :func:`to_json_value` projection the standard's own diagnostics
+    (gating, language) already use, so the author intent just works; a value
+    with genuinely no JSON form still fails loudly (documented ``Raises:``).
+    """
+    from standard_asr.engine import to_json_value  # the documented import path
+
+    class _Sub(BaseModel):
+        beam: int
+        hints: list[str]
+
+    class _ModelDiagSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            self.emit_diagnostic(
+                code="request_degraded",
+                message="request adjusted",
+                provided=_Sub(beam=5, hints=["a", "b"]),
+                effective=to_json_value(["a"]),
+            )
+            yield TranscriptionEvent.final("s1", "hello")
+
+    async def run() -> tuple[list[TranscriptionEvent], list[streaming_module.Diagnostic]]:
+        async with _ModelDiagSession() as session:
+            events = [event async for event in session]
+        return events, session.diagnostics()
+
+    events, diags = asyncio.run(run())
+    # The stream survived: no engine_error terminal, the final arrived.
+    assert [e.type for e in events if e.type == "final"] == ["final"]
+    assert all(e.code != "engine_error" for e in events if e.type == "error")
+    note = next(d for d in diags if d.code == "request_degraded")
+    assert note.provided == {"beam": 5, "hints": ["a", "b"]}
+    assert note.effective == ["a"]
 
 
 def test_session_feed_mode() -> None:
@@ -597,6 +658,54 @@ def test_session_producer_error_surfaced() -> None:
     events = asyncio.run(run())
     assert events[-1].type == "error"
     assert events[-1].code == "engine_error"
+    # Generic exception text is the deliberate operator channel: the summary
+    # carries the real message (type-prefixed) for server-side logging.
+    assert events[-1].extra["detail"] == "RuntimeError: boom"
+
+
+def test_session_producer_validation_error_detail_is_scrubbed() -> None:
+    """The engine_error detail is scrubbed AT THE SOURCE, while the chain exists.
+
+    A producer fault wrapping a pydantic ``ValidationError`` (here with the
+    input echo copied into the wrapper's own message) used to freeze
+    ``str(exc)`` -- echo included -- into ``extra["detail"]``, a plain string
+    the server then wrote to operator logs where no later redaction layer
+    could recognize it.
+    """
+    secret = "sk-PRODUCER-SECRET"  # noqa: S105 - test fixture, not a real credential
+
+    class _EngineParams(BaseModel):
+        beam: int
+
+    class _LeakySession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            try:
+                _EngineParams.model_validate({"beam": secret})
+            except ValidationError as exc:
+                raise RuntimeError(f"engine rejected params: {exc}") from exc
+            yield TranscriptionEvent.done()  # pragma: no cover
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _LeakySession()
+        session.feed([])
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    terminal = events[-1]
+    assert terminal.type == "error"
+    assert terminal.code == "engine_error"
+    detail = terminal.extra["detail"]
+    assert isinstance(detail, str)
+    assert secret not in detail
+    assert secret not in terminal.model_dump_json()
+    # The fault structure survives for the operator: wrapper type + sanitized
+    # ValidationError summary.
+    assert "RuntimeError" in detail
+    assert "ValidationError" in detail
+    # The failing field is NAMED (accident model: field-name-shaped loc
+    # components are kept), the value never; the wrapper's own message is
+    # withheld when it interpolated the chained error's text.
+    assert "beam" in detail
 
 
 def _assert_input_source_error(events: list[TranscriptionEvent], raw_detail: str) -> None:
@@ -725,6 +834,48 @@ def test_sync_bridge_forwards_diagnostics() -> None:
     assert [d.code for d in diags] == ["unsupported_parameter_ignored"]
 
 
+def test_sync_bridge_serializes_result_and_diagnostics_with_the_loop() -> None:
+    """``result()``/``diagnostics()`` run ON the owned loop while live.
+
+    Both reduce/snapshot state the producer task mutates (a supersede pops
+    segments mid-walk of the reading order), and they were the ONLY bridge
+    members running on the caller's thread: a rendering loop
+    (``for ev in sync: render(sync.result())``) raced the producer and
+    crashed with a spurious ``KeyError`` or returned a torn result mixing
+    pre- and post-supersede segments. Submission to the owned loop is the
+    same mutual exclusion every other member already uses. After teardown
+    the producer is gone: the direct call is safe, and the
+    result-after-the-``with``-block pattern keeps working.
+    """
+    from standard_asr.runtime.streaming import (
+        _SYNC_BRIDGE_LOOP_THREAD_NAME,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    reduce_threads: list[str] = []
+
+    class _ThreadRecordingSession(_EchoSession):
+        def result(self) -> streaming_module.TranscriptionResult:
+            reduce_threads.append(threading.current_thread().name)
+            return super().result()
+
+        def diagnostics(self) -> list[streaming_module.Diagnostic]:
+            reduce_threads.append(threading.current_thread().name)
+            return super().diagnostics()
+
+    with SyncSession(_ThreadRecordingSession()) as sync:
+        sync.feed([b"abc"])
+        sync.result()
+        sync.diagnostics()
+        assert reduce_threads == [_SYNC_BRIDGE_LOOP_THREAD_NAME] * 2
+        list(sync)
+    reduce_threads.clear()
+    assert sync.result().text  # still functional after teardown...
+    sync.diagnostics()
+    # ...via the direct call (no loop thread exists anymore to submit to).
+    assert _SYNC_BRIDGE_LOOP_THREAD_NAME not in reduce_threads
+    assert len(reduce_threads) == 2
+
+
 # --------------------------------------------------------------------------- #
 # Coalescing buffer: stale partial dropped by terminal-for-segment event
 # --------------------------------------------------------------------------- #
@@ -737,24 +888,66 @@ async def _drain_buffer(buf: _CoalescingBuffer) -> list[TranscriptionEvent]:
         out.append(ev)
 
 
-def test_coalescing_partial_dropped_by_same_segment_final() -> None:
+def test_coalescing_sole_mention_partial_is_kept_and_precedes_final() -> None:
+    # The pending partial is the consumer's ONLY mention of s0 -- its
+    # reading-order declaration. It is kept and delivered BEFORE the final
+    # (never after: no revival), so the delivered stream declares s0 at the
+    # same relative position the session's reducer did.
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer()
         buf.put(TranscriptionEvent.partial("s0", "hel"))  # pending, not delivered
-        buf.put(TranscriptionEvent.final("s0", "hello"))  # invalidates the partial
+        buf.put(TranscriptionEvent.final("s0", "hello"))
         buf.close()
         return await _drain_buffer(buf)
 
     events = asyncio.run(run())
-    # The stale partial MUST be dropped; only the final survives. No partial
-    # may be delivered AFTER the final (would revive a dead segment).
-    assert [e.type for e in events] == ["final"]
-    assert events[0].text == "hello"
+    assert [e.type for e in events] == ["partial", "final"]
+    assert [e.text for e in events] == ["hel", "hello"]
 
 
-def test_coalescing_partial_dropped_by_supersede_old_ids() -> None:
+def test_coalescing_partial_dropped_by_same_segment_final_once_declared() -> None:
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s0", "h"))
+        first = await buf.get()  # s0 is now declared to the consumer
+        buf.put(TranscriptionEvent.partial("s0", "hel"))  # pending again
+        buf.put(TranscriptionEvent.final("s0", "hello"))  # invalidates the partial
+        buf.close()
+        return [first, *(await _drain_buffer(buf))] if first else []
+
+    events = asyncio.run(run())
+    # Once the segment was delivered, the stale pending partial MUST be
+    # dropped; only the final follows. No partial may be delivered AFTER the
+    # final (would revive a dead segment).
+    assert [e.type for e in events] == ["partial", "final"]
+    assert [e.text for e in events] == ["h", "hello"]
+
+
+def test_coalescing_sole_mention_partials_kept_before_supersede() -> None:
+    # A supersede retiring never-delivered segments would otherwise reach the
+    # consumer's reduce with never-declared old_ids (suppressed there while
+    # the session spliced it -- textual drift). The declarations are
+    # delivered first; the supersede still retires them, in order.
+    async def run() -> list[TranscriptionEvent]:
+        buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s1", "aaa"))
+        buf.put(TranscriptionEvent.partial("s2", "bbb"))
+        buf.put(TranscriptionEvent.supersede(["s1", "s2"], ["s3"]))
+        buf.close()
+        return await _drain_buffer(buf)
+
+    events = asyncio.run(run())
+    assert [e.type for e in events] == ["partial", "partial", "supersede"]
+    assert [e.segment_id for e in events[:2]] == ["s1", "s2"]
+
+
+def test_coalescing_partial_dropped_by_supersede_once_declared() -> None:
+    async def run() -> list[TranscriptionEvent]:
+        buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s1", "aa"))
+        buf.put(TranscriptionEvent.partial("s2", "bb"))
+        for _ in range(2):
+            await buf.get()  # both segments now declared to the consumer
         buf.put(TranscriptionEvent.partial("s1", "aaa"))
         buf.put(TranscriptionEvent.partial("s2", "bbb"))
         # supersede retires s1 and s2 -> both pending partials MUST be dropped.
@@ -766,17 +959,20 @@ def test_coalescing_partial_dropped_by_supersede_old_ids() -> None:
     assert [e.type for e in events] == ["supersede"]
 
 
-def test_coalescing_partial_dropped_by_closed() -> None:
+def test_coalescing_partial_dropped_by_closed_once_declared() -> None:
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer()
+        buf.put(TranscriptionEvent.partial("s0", "d"))
+        first = await buf.get()  # s0 declared
         buf.put(TranscriptionEvent.partial("s0", "draft"))
         buf.put(TranscriptionEvent.closed("s0", "Final."))  # closed = final variant
         buf.close()
-        return await _drain_buffer(buf)
+        rest = await _drain_buffer(buf)
+        return [first, *rest] if first else rest
 
     events = asyncio.run(run())
-    assert [e.type for e in events] == ["final"]
-    assert events[0].finality == "closed"
+    assert [e.type for e in events] == ["partial", "final"]
+    assert events[-1].finality == "closed"
 
 
 def test_coalescing_latest_partial_wins() -> None:
@@ -917,9 +1113,12 @@ def test_final_supersede_never_dropped_at_capacity() -> None:
     types = [e.type for e in events]
     assert "final" in types and "supersede" in types
     assert "error" not in types
-    # The supersede invalidated the pending s0 partial (dead segment never
-    # revives), but the s1 partial is unaffected and still delivered.
+    # The pending s0 partial is its segment's sole mention, so it is kept and
+    # delivered BEFORE the supersede that retires it; s1 is unaffected.
     assert any(e.type == "partial" and e.segment_id == "s1" for e in events)
+    s0_index = next(i for i, e in enumerate(events) if e.segment_id == "s0")
+    supersede_index = next(i for i, e in enumerate(events) if e.type == "supersede")
+    assert s0_index < supersede_index
 
 
 def test_session_backpressure_overflow_emits_error() -> None:
@@ -971,6 +1170,232 @@ def test_adapter_done_bypasses_backpressure_overflow_without_duplicate() -> None
     assert events[-1].type == "done"
     assert [event.type for event in events].count("done") == 1
     assert all(event.type != "error" for event in events)
+
+
+def test_terminal_event_carries_session_detected_language() -> None:
+    # The terminal is the one event always delivered, always last, never
+    # dropped -- stamping the session's sticky language onto it makes
+    # reduce(delivered).detected_language == result().detected_language hold
+    # by construction, in every consumer-speed interleaving.
+    events = [
+        TranscriptionEvent.partial("s0", "h", detected_language="en"),
+        TranscriptionEvent.final("s0", "hi"),
+    ]
+
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _ScriptedSession(events)
+        delivered = await _collect(session)
+        return delivered, session.result()
+
+    delivered, result = asyncio.run(run())
+    assert delivered[-1].type == "done"
+    assert delivered[-1].detected_language == "en"
+    assert result.detected_language == "en"
+
+
+def test_terminal_stamp_closes_the_invalidated_language_drift() -> None:
+    # The review counterexample: the only language-carrying event is a
+    # pending partial invalidated by a language-less final under a slow
+    # consumer. The declaration keep-rule already delivers that partial; the
+    # terminal stamp additionally guarantees convergence even for streams
+    # where the language rode an event that legitimately coalesced away.
+    class _Trace(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.partial("s0", "hel", detected_language="en")
+            yield TranscriptionEvent.final("s0", "hello")
+
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _Trace()
+        delivered = await _collect_after_producer_runs(session)
+        return delivered, session.result()
+
+    delivered, result = asyncio.run(run())
+    assert result.detected_language == "en"
+    replay = StreamReducer()
+    for event in delivered:
+        replay.add(event)
+    assert replay.result().detected_language == "en"
+
+
+def test_coalesce_reordered_language_converges_via_terminal() -> None:
+    # The sticky language is order-sensitive (last non-None wins) but
+    # coalescing is not: an in-place coalesce moves a NEWER assignment (fr,
+    # coalesced into s0's earlier slot) ahead of an OLDER one (de, pending
+    # in s1's later slot), so the delivered running language ends at de
+    # while the session's is fr. No per-event carry-forward can fix an
+    # ordering problem; the terminal stamp makes the end state converge.
+    class _Reorder(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.partial("s0", "a", detected_language="en")
+            yield TranscriptionEvent.partial("s1", "b", detected_language="de")
+            yield TranscriptionEvent.partial("s0", "ab", detected_language="fr")
+
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _Reorder()
+        delivered = await _collect_after_producer_runs(session)
+        return delivered, session.result()
+
+    delivered, result = asyncio.run(run())
+    assert result.detected_language == "fr"
+    # Delivered content order really is s0(fr) then s1(de) -- the drift the
+    # stamp exists to close.
+    content = [e for e in delivered if e.is_content]
+    assert [e.detected_language for e in content] == ["fr", "de"]
+    replay = StreamReducer()
+    for event in delivered:
+        replay.add(event)
+    assert replay.result().detected_language == "fr"
+
+
+def test_engine_authored_terminal_language_is_never_overwritten() -> None:
+    # An engine-emitted terminal carrying its own language IS the newest
+    # assignment: the stamp only fills a None, and the reducer commits the
+    # engine's value, so both reads agree on the engine's tag.
+    events = [
+        TranscriptionEvent.partial("s0", "h", detected_language="en"),
+        TranscriptionEvent.final("s0", "hi"),
+        TranscriptionEvent.done(detected_language="fr"),
+    ]
+
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _ScriptedSession(events)
+        delivered = await _collect(session)
+        return delivered, session.result()
+
+    delivered, result = asyncio.run(run())
+    assert delivered[-1].detected_language == "fr"
+    assert result.detected_language == "fr"
+
+
+def test_silent_session_terminal_carries_no_language() -> None:
+    # No admitted event carried a language -> nothing to stamp; the done
+    # event stays language-less (never fabricate).
+    async def run() -> list[TranscriptionEvent]:
+        return await _collect(_ScriptedSession([]))
+
+    delivered = asyncio.run(run())
+    assert delivered[-1].type == "done"
+    assert delivered[-1].detected_language is None
+
+
+def test_backpressure_terminal_is_stamped_with_session_language() -> None:
+    # The forced backpressure error runs the same terminal funnel: the
+    # admitted language survives onto the terminal even when the session
+    # ends by overflow.
+    class _LanguageThenFlood(TranscriptionSession):
+        def __init__(self) -> None:
+            super().__init__(event_buffer_capacity=2)
+
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.partial("s0", "x", detected_language="en")
+            for i in range(4):
+                yield TranscriptionEvent.partial(f"flood-{i}", "y")
+
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _LanguageThenFlood()
+        delivered = await _collect_after_producer_runs(session)
+        return delivered, session.result()
+
+    delivered, result = asyncio.run(run())
+    assert delivered[-1].code == "backpressure"
+    assert delivered[-1].detected_language == "en"
+    assert result.detected_language == "en"
+    replay = StreamReducer()
+    for event in delivered:
+        replay.add(event)
+    assert replay.result().detected_language == "en"
+
+
+def test_delivered_stream_preserves_reading_order_under_backpressure() -> None:
+    # Out-of-order finalization with a slow consumer: with the pending
+    # declarations dropped, the delivered stream's first mentions moved to
+    # the finals' arrival order, so an app-side reduce of the delivered
+    # events read "world hello" while session.result() read "hello world" --
+    # a silently reordered transcript (the cardinal sin), reachable with
+    # nothing but a slow consumer and finals completing out of order.
+    class _OutOfOrderFinals(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.partial("s0", "he")
+            yield TranscriptionEvent.partial("s1", "wo")
+            yield TranscriptionEvent.final("s1", "world")
+            yield TranscriptionEvent.final("s0", "hello")
+
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _OutOfOrderFinals()
+        events = await _collect_after_producer_runs(session)
+        return events, session.result()
+
+    events, result = asyncio.run(run())
+    assert result.text == "hello world"
+    replay = StreamReducer()
+    for event in events:
+        replay.add(event)
+    replayed = replay.result()
+    assert replayed.text == result.text
+    assert replayed.segments is not None and result.segments is not None
+    assert [s.text for s in replayed.segments] == [s.text for s in result.segments]
+
+
+def test_delivered_supersede_reduces_identically_when_old_segment_never_delivered() -> None:
+    # A supersede retiring a segment whose only mention was still pending:
+    # with that declaration dropped, the delivered supersede carried a
+    # never-declared old_id -- the app-side reduce SUPPRESSED it (and
+    # appended the replacement at the tail: "one two") while the session
+    # spliced it in place ("two one"). The kept declaration makes both
+    # reads identical, with no suppression diagnostics on the replay.
+    class _FastSupersede(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            yield TranscriptionEvent.partial("b", "tw")
+            yield TranscriptionEvent.final("a", "one")
+            yield TranscriptionEvent.supersede(["b"], ["c"])
+            yield TranscriptionEvent.final("c", "two")
+
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _FastSupersede()
+        events = await _collect_after_producer_runs(session)
+        return events, session.result()
+
+    events, result = asyncio.run(run())
+    assert result.text == "two one"
+    replay = StreamReducer()
+    for event in events:
+        replay.add(event)
+    replayed = replay.result()
+    assert replayed.text == result.text
+    assert not any(
+        d.code.startswith("supersede") or d.code.startswith("lifecycle")
+        for d in replayed.diagnostics
+    )
+
+
+def test_overflow_event_is_refused_entirely_never_polluting_result() -> None:
+    # The buffer-overflow commit-ordering bug: the producer reduced FIRST and
+    # buffered second, so the very event whose put() raised overflow -- an
+    # event the consumer can never see -- was already part of result().
+    # A refused event must be refused ENTIRELY: its detected_language must
+    # not stick, its segment must not claim a reading-order position, and
+    # everything actually admitted must still be delivered ahead of the
+    # backpressure terminal (delivered-reduce == result()).
+    async def run() -> tuple[list[TranscriptionEvent], Any]:
+        session = _FloodThenEventSession(
+            TranscriptionEvent.partial("s-refused", "x", detected_language="de"),
+            event_buffer_capacity=2,
+        )
+        events = await _collect_after_producer_runs(session)
+        return events, session.result()
+
+    events, result = asyncio.run(run())
+    assert events[-1].code == "backpressure"
+    assert all(event.segment_id != "s-refused" for event in events)
+    assert result.detected_language is None
+    # Everything the reducer admitted was delivered (the admitted flooding
+    # partials precede the terminal), so an app-side reduce of the delivered
+    # events agrees with result().
+    replay = StreamReducer()
+    for event in events:
+        replay.add(event)
+    assert replay.result().detected_language == result.detected_language
+    assert replay.result().text == result.text
 
 
 def test_non_terminal_overflow_still_emits_backpressure_when_consumer_is_slow() -> None:
@@ -1925,6 +2350,42 @@ def test_guard_supersede_duplicate_new_ids_evasion_still_suppressed() -> None:
     assert "s3" not in state
 
 
+def test_forged_empty_old_ids_supersede_degrades_never_crashes() -> None:
+    """An empty-``old_ids`` supersede is suppressed, not an ``IndexError``.
+
+    The model validator requires a supersede to retire at least one id, but
+    the guard and reducer independently defend against events materialized
+    through validator-bypassing paths (model_construct/model_copy). An empty
+    block sailed past every per-old-id loop straight into
+    ``block_start([])``'s ``positions[0]`` -- and the resulting IndexError
+    escaped into ``_run_producer``'s generic handler, terminating the WHOLE
+    session with ``engine_error`` for one malformed event.
+    """
+    forged = TranscriptionEvent.model_construct(type="supersede", old_ids=[], new_ids=["b"])
+
+    # Guard: suppressed with the no-defined-placement diagnostic.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s1", "hello"))
+    assert guard.admit(forged) is None
+    assert any(d.code == "supersede_noncontiguous_old_ids" for d in guard.diagnostics)
+
+    # Reducer: same degradation; the live segment survives untouched.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "hello", start=0.0, end=1.0))
+    reducer.add(forged)
+    result = reducer.result()
+    assert result.text == "hello"
+    assert any(d.code == "supersede_noncontiguous_old_ids" for d in result.diagnostics)
+
+    # The spec §5.2 reference reduce raises its DOCUMENTED type, ValueError
+    # -- callers wrote `except ValueError` against its contract.
+    order = ["s1"]
+    texts = {"s1": "hello"}
+    with pytest.raises(ValueError, match="MUST retire at least one segment"):
+        reduce_event(order, texts, forged)
+    assert order == ["s1"] and texts == {"s1": "hello"}
+
+
 def test_guard_supersede_unknown_speakers_allowed() -> None:
     # Segments that never carried a speaker do not count as distinct: a merge
     # of unlabelled segments (or one labelled + one unlabelled) is admitted.
@@ -2254,7 +2715,10 @@ def test_guard_supersede_unknown_old_id_suppressed() -> None:
 
 def test_guard_supersede_unknown_old_id_strict_raises() -> None:
     guard = _LifecycleGuard(strict=True)
-    with pytest.raises(ValueError, match="never-announced"):
+    # "never-declared", not "never-announced": the shared admission wording
+    # is accurate for both consumers -- an id can be declared by an earlier
+    # supersede's new_ids without ever receiving a partial/final.
+    with pytest.raises(ValueError, match="never-declared"):
         guard.admit(TranscriptionEvent.supersede(["never-seen"], ["b"]))
 
 
@@ -2409,6 +2873,19 @@ def test_event_model_validate_passes_non_dict_through() -> None:
     # pydantic's own type validation reject it (not mask it with a TypeError).
     with pytest.raises(ValueError):
         TranscriptionEvent.model_validate(123)
+
+
+def test_event_extra_rejects_bytes_object_keys() -> None:
+    # The event's wire-visible extra shares the result models' string key
+    # domain: a bytes key (coerced to str by lax pydantic, colliding silently)
+    # must fail loudly, at every nesting depth.
+    with pytest.raises(ValidationError) as exc_info:
+        TranscriptionEvent.partial("s", "t", extra={b"k": 1})
+    assert exc_info.value.errors()[0]["type"] == "standard_asr_json_object_key"
+    with pytest.raises(ValidationError):
+        TranscriptionEvent.partial("s", "t", extra={"ok": {b"nested": 1}})
+    # Legit string-keyed extra is untouched.
+    assert TranscriptionEvent.partial("s", "t", extra={"k": {"n": 1}}).extra == {"k": {"n": 1}}
 
 
 def test_event_explicit_none_detected_language_passes() -> None:
@@ -2915,6 +3392,22 @@ def test_stream_deadlines_model_validates_and_tracks_explicit_fields() -> None:
         StreamDeadlines(max_session_seconds=-1.0)
 
 
+def test_stream_deadlines_rejects_unknown_field() -> None:
+    """An unknown StreamDeadlines field fails construction (``extra='forbid'``)."""
+    # extra="forbid": a misspelled deadline is a silently-dropped SAFETY
+    # parameter -- under pydantic's default extra="ignore" the typo below was
+    # swallowed and the session ran with max_idle at its adapter default, the
+    # exact opposite of what the caller wrote. It MUST fail at construction.
+    with pytest.raises(ValidationError) as excinfo:
+        StreamDeadlines(max_idle_seconds=5.0)  # type: ignore[call-arg]
+
+    errors = excinfo.value.errors()
+    assert [e["type"] for e in errors] == ["extra_forbidden"]
+    assert errors[0]["loc"] == ("max_idle_seconds",)
+    # The correctly-spelled field is still accepted (the guard is not blanket).
+    assert StreamDeadlines(max_idle=5.0).max_idle == 5.0
+
+
 def test_apply_deadline_overrides_touches_only_explicit_fields() -> None:
     session = _EchoSession(done_timeout=7.0, max_idle=9.0)
     overrides = StreamDeadlines(max_idle=0.5, max_session_seconds=11.0)
@@ -3046,29 +3539,124 @@ def test_feed_twice_raises() -> None:
 # --------------------------------------------------------------------------- #
 # MEDIUM -- StreamReducer: no fabricated 0.0 timestamps; arrival order kept
 # --------------------------------------------------------------------------- #
+def test_streaming_diagnostic_code_constants_match_their_wire_literals() -> None:
+    """Pin each streaming DIAG_* constant to its exact wire literal."""
+    # The lifecycle guard's rejection verdicts and the reducer's timestamp
+    # disclosure are wire-visible ``Diagnostic.code`` values consumers match on.
+    # The emission sites now reference these constants, so constant and literal
+    # are pinned together here exactly once -- a rename breaks loudly instead of
+    # silently changing what applications receive. (Terminal EVENT codes such as
+    # done_timeout / backpressure are a different namespace and not listed.)
+    assert DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE == "segment_timestamps_unavailable"
+    assert DIAG_SUPERSEDE_UNKNOWN_OLD_ID == "supersede_unknown_old_id"
+    assert DIAG_LIFECYCLE_CLOSED_SUPERSEDED == "lifecycle_closed_superseded"
+    assert DIAG_LIFECYCLE_RETIRED_RESUPERSEDED == "lifecycle_retired_resuperseded"
+    assert DIAG_SUPERSEDE_REINTRODUCES_SEGMENT == "supersede_reintroduces_segment"
+    assert DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE == "supersede_cross_speaker_merge"
+    assert DIAG_SUPERSEDE_DELETES_FROZEN_TEXT == "supersede_deletes_frozen_text"
+    assert DIAG_LIFECYCLE_AFTER_TERMINAL == "lifecycle_after_terminal"
+    assert DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL == "lifecycle_partial_after_final"
+    assert DIAG_LIFECYCLE_FINAL_AFTER_FINAL == "lifecycle_final_after_final"
+    assert DIAG_FROZEN_PREFIX_REWRITTEN == "frozen_prefix_rewritten"
+    assert DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE == "frozen_prefix_rewritten_supersede"
+    assert DIAG_FROZEN_SPEAKER_REWRITTEN == "frozen_speaker_rewritten"
+    assert DIAG_AUDIO_CURSOR_DECREASED == "audio_cursor_decreased"
+    assert DIAG_STABLE_UNTIL_CLAMPED == "stable_until_clamped"
+    assert DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED == "supersede_obligation_unfulfilled"
+
+
 def test_reducer_preserves_arrival_order_without_timestamps() -> None:
+    """Timestamp-less finals keep arrival order and store real ``None`` timing."""
     reducer = StreamReducer()
     # No start/end given (timestamp-less engine like Qwen streaming).
     reducer.add(TranscriptionEvent.final("s1", "world"))
     reducer.add(TranscriptionEvent.final("s2", "hello"))
     result = reducer.result()
-    # Arrival order preserved (NOT re-sorted to 0.0 == 0.0 ambiguity).
+    # Arrival order preserved (there are no starts to sort on, and nothing is
+    # fabricated to make them sortable).
     assert result.text == "world hello"
+    # The unmeasured spans are stored VERBATIM as None (the values are the
+    # per-segment truth); exactly one warning diagnostic aggregates the count.
+    assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+    diag = result.diagnostics[0]
+    assert diag.level == "warning"
+    assert diag.param == "segments"
+    assert "2 of 2" in diag.message
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["world", "hello"]
+    assert all(s.start is None and s.end is None for s in result.segments)
+    assert all(s.timestamp_status == "unavailable" for s in result.segments)
+
+
+def test_event_end_without_start_is_rejected() -> None:
+    """A content event carrying ``end`` but no ``start`` is malformed.
+
+    Mirrors ``Segment``'s shape invariant (measured / start-only /
+    unavailable). Pre-guard, the reducer silently fabricated ``start=0.0``
+    for this shape -- a silent wrong timestamp.
+    """
+    for factory in (TranscriptionEvent.partial, TranscriptionEvent.final):
+        with pytest.raises(ValidationError, match="end without start"):
+            factory("s1", "text", end=2.0)
+    # start-only and both-bounds stay legal on events, as on segments.
+    assert TranscriptionEvent.final("s1", "text", start=1.0).end is None
+    assert TranscriptionEvent.final("s1", "text", start=1.0, end=2.0).end == 2.0
+
+
+def test_event_end_before_start_is_rejected() -> None:
+    """A content event whose span runs backwards is malformed at construction.
+
+    The other half of the ``Segment`` mirror (``end >= start``,
+    zero-duration allowed). Unchecked, the shape passed the event model and
+    the guard, then crashed only when the reducer built the ``Segment`` --
+    deferring one malformed event into a whole-session failure.
+    """
+    for factory in (TranscriptionEvent.partial, TranscriptionEvent.final):
+        with pytest.raises(ValidationError, match="end >= start"):
+            factory("s1", "text", start=2.0, end=1.0)
+    # A zero-duration span stays legal, as on segments.
+    assert TranscriptionEvent.final("s1", "text", start=2.0, end=2.0).end == 2.0
 
 
 def test_reducer_sorts_when_all_have_timestamps() -> None:
+    """Fully-timestamped finals sort by ``start`` with nothing to disclose."""
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "second", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "first", start=1.0, end=2.0))
-    assert reducer.result().text == "first second"
+    result = reducer.result()
+    assert result.text == "first second"
+    # Every retained segment carries real timing -> nothing to disclose.
+    assert result.diagnostics == []
 
 
 def test_reducer_no_sort_when_mixed_timestamps() -> None:
+    """Mixed timestamps preserve arrival order and disclose the placeholder count."""
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "b", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "a"))  # no timestamp
     # Mixed -> preserve arrival order, do not sort on a fabricated 0.0.
-    assert reducer.result().text == "b a"
+    result = reducer.result()
+    assert result.text == "b a"
+    # A partial disclosure is still a disclosure: one segment of two is a
+    # placeholder, and the count says so.
+    assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
+    assert "1 of 2" in result.diagnostics[0].message
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["b", "a"]
+
+
+def test_reducer_timestamp_diagnostic_ignores_superseded_segments() -> None:
+    """Only retained segments count toward the timestamp disclosure."""
+    # Only RETAINED segments are disclosed: a timestamp-less segment that was
+    # superseded away is not counted (and an all-timestamped remainder emits no
+    # diagnostic at all).
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "dropped"))  # no timestamp
+    reducer.add(TranscriptionEvent.final("s2", "kept", start=1.0, end=2.0))
+    reducer.add(TranscriptionEvent.supersede(["s1"], ["s3"]))
+    result = reducer.result()
+    assert result.text == "kept"
+    assert result.diagnostics == []
 
 
 # --------------------------------------------------------------------------- #
@@ -3091,29 +3679,37 @@ def test_coalescing_buffer_large_drain_order() -> None:
 # SURVEY -- WeNet two-pass supersede preserves frozen prefix; DSM; FireRed
 # --------------------------------------------------------------------------- #
 def test_survey_wenet_two_pass_supersede_reduce() -> None:
-    # First pass finalizes seg-3/seg-4; second pass merges into seg-5.
-    segs: dict[str, str] = {}
-    reduce_event(segs, TranscriptionEvent.final("seg-3", "hello"))
-    reduce_event(segs, TranscriptionEvent.final("seg-4", "world"))
-    reduce_event(segs, TranscriptionEvent.supersede(["seg-3", "seg-4"], ["seg-5"]))
-    assert segs == {}
-    reduce_event(segs, TranscriptionEvent.final("seg-5", "hello world"))
-    assert segs == {"seg-5": "hello world"}
+    # First pass finalizes seg-3/seg-4; second pass merges into seg-5, which
+    # takes over the retired block's reading-order position in place.
+    order: list[str] = []
+    texts: dict[str, str] = {}
+    reduce_event(order, texts, TranscriptionEvent.final("seg-3", "hello"))
+    reduce_event(order, texts, TranscriptionEvent.final("seg-4", "world"))
+    reduce_event(order, texts, TranscriptionEvent.supersede(["seg-3", "seg-4"], ["seg-5"]))
+    assert (order, texts) == (["seg-5"], {})
+    reduce_event(order, texts, TranscriptionEvent.final("seg-5", "hello world"))
+    assert (order, texts) == (["seg-5"], {"seg-5": "hello world"})
 
 
 def test_reduce_event_ignores_non_text_events() -> None:
-    # done / error / heartbeat carry no segment text -> the map is untouched.
-    segs: dict[str, str] = {"s1": "kept"}
-    reduce_event(segs, TranscriptionEvent.done())
-    reduce_event(segs, TranscriptionEvent.make_error("x", recoverable=False))
-    assert segs == {"s1": "kept"}
+    # done / error / heartbeat carry no segment text -> the state is untouched.
+    order: list[str] = ["s1"]
+    texts: dict[str, str] = {"s1": "kept"}
+    reduce_event(order, texts, TranscriptionEvent.done())
+    reduce_event(order, texts, TranscriptionEvent.make_error("x", recoverable=False))
+    assert (order, texts) == (["s1"], {"s1": "kept"})
 
 
-def test_reduce_event_supersede_unknown_old_id_is_noop() -> None:
-    # Superseding an id that was never committed must not raise.
-    segs: dict[str, str] = {"s1": "a"}
-    reduce_event(segs, TranscriptionEvent.supersede(["ghost"], ["s2"]))
-    assert segs == {"s1": "a"}
+def test_reduce_event_supersede_unknown_old_id_raises() -> None:
+    # A supersede retiring an id that holds no live position has no defined
+    # placement: the helper (which has no diagnostics channel) fails loudly
+    # instead of corrupting the order. The guard-filtered session path never
+    # delivers such an event to application reduces.
+    order: list[str] = ["s1"]
+    texts: dict[str, str] = {"s1": "a"}
+    with pytest.raises(ValueError, match="ghost.*no live reading-order position"):
+        reduce_event(order, texts, TranscriptionEvent.supersede(["ghost"], ["s2"]))
+    assert (order, texts) == (["s1"], {"s1": "a"})
 
 
 def test_reducer_records_detected_language() -> None:
@@ -3483,3 +4079,429 @@ def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -
         for ev in sync:
             events.append(ev)
     assert [e.type for e in events] == ["partial"]
+
+
+# --------------------------------------------------------------------------- #
+# supersede placement golden traces (wire-shaped events -> reading order)
+# --------------------------------------------------------------------------- #
+#: Wire-shaped (JSON-dict) event traces with the expected reduced reading
+#: order and text. Each trace drives BOTH canonical reduces -- the
+#: ``reduce_event`` helper and ``StreamReducer`` -- through
+#: ``TranscriptionEvent.model_validate`` (the wire layer), pinning the
+#: two-layer isomorphism: same vectors, same order, same text. All segments
+#: are untimestamped unless a trace says otherwise, so list order IS the
+#: reading order (the spec's null-timestamp rule) and nothing is rescued by
+#: a timestamp sort.
+_PLACEMENT_TRACES: list[dict[str, Any]] = [
+    {
+        "name": "replace-first-block",
+        "events": [
+            {"type": "final", "segment_id": "a", "text": "hello"},
+            {"type": "final", "segment_id": "b", "text": "world"},
+            {"type": "supersede", "old_ids": ["a"], "new_ids": ["a2"]},
+            {"type": "final", "segment_id": "a2", "text": "hi"},
+        ],
+        "order": ["a2", "b"],
+        "text": "hi world",
+    },
+    {
+        "name": "replace-middle-block",
+        "events": [
+            {"type": "final", "segment_id": "a", "text": "one"},
+            {"type": "final", "segment_id": "b", "text": "two"},
+            {"type": "final", "segment_id": "c", "text": "three"},
+            {"type": "supersede", "old_ids": ["b"], "new_ids": ["b2"]},
+            {"type": "final", "segment_id": "b2", "text": "TWO"},
+        ],
+        "order": ["a", "b2", "c"],
+        "text": "one TWO three",
+    },
+    {
+        "name": "replace-last-block",
+        "events": [
+            {"type": "final", "segment_id": "a", "text": "one"},
+            {"type": "final", "segment_id": "b", "text": "two"},
+            {"type": "supersede", "old_ids": ["b"], "new_ids": ["b2"]},
+            {"type": "final", "segment_id": "b2", "text": "TWO"},
+        ],
+        "order": ["a", "b2"],
+        "text": "one TWO",
+    },
+    {
+        "name": "merge-many-to-one-mid-stream",
+        "events": [
+            {"type": "final", "segment_id": "s1", "text": "alpha"},
+            {"type": "final", "segment_id": "s2", "text": "beta"},
+            {"type": "final", "segment_id": "s3", "text": "gamma"},
+            {"type": "final", "segment_id": "s4", "text": "delta"},
+            {"type": "supersede", "old_ids": ["s2", "s3"], "new_ids": ["m"]},
+            {"type": "final", "segment_id": "m", "text": "beta-gamma"},
+        ],
+        "order": ["s1", "m", "s4"],
+        "text": "alpha beta-gamma delta",
+    },
+    {
+        "name": "split-one-to-many-mid-stream",
+        "events": [
+            {"type": "final", "segment_id": "s1", "text": "alpha"},
+            {"type": "final", "segment_id": "s2", "text": "betagamma"},
+            {"type": "final", "segment_id": "s3", "text": "delta"},
+            {"type": "supersede", "old_ids": ["s2"], "new_ids": ["x", "y"]},
+            {"type": "final", "segment_id": "x", "text": "beta"},
+            {"type": "final", "segment_id": "y", "text": "gamma"},
+        ],
+        "order": ["s1", "x", "y", "s3"],
+        "text": "alpha beta gamma delta",
+    },
+    {
+        "name": "many-to-many-mid-stream",
+        "events": [
+            {"type": "final", "segment_id": "s1", "text": "a"},
+            {"type": "final", "segment_id": "s2", "text": "b"},
+            {"type": "final", "segment_id": "s3", "text": "c"},
+            {"type": "final", "segment_id": "s4", "text": "d"},
+            {"type": "supersede", "old_ids": ["s2", "s3"], "new_ids": ["t", "u"]},
+            {"type": "final", "segment_id": "t", "text": "B"},
+            {"type": "final", "segment_id": "u", "text": "C"},
+        ],
+        "order": ["s1", "t", "u", "s4"],
+        "text": "a B C d",
+    },
+    {
+        "name": "pure-deletion-mid-stream",
+        "events": [
+            {"type": "final", "segment_id": "s1", "text": "keep"},
+            {"type": "final", "segment_id": "s2", "text": "drop"},
+            {"type": "final", "segment_id": "s3", "text": "tail"},
+            {"type": "supersede", "old_ids": ["s2"], "new_ids": []},
+        ],
+        "order": ["s1", "s3"],
+        "text": "keep tail",
+    },
+    {
+        "name": "replacement-partial-before-final",
+        "events": [
+            {"type": "final", "segment_id": "a", "text": "hello"},
+            {"type": "final", "segment_id": "b", "text": "world"},
+            {"type": "supersede", "old_ids": ["a"], "new_ids": ["a2"]},
+            {"type": "partial", "segment_id": "a2", "text": "h"},
+            {"type": "final", "segment_id": "a2", "text": "hi"},
+        ],
+        "order": ["a2", "b"],
+        "text": "hi world",
+    },
+    {
+        "name": "chained-supersede-contentless-link",
+        "events": [
+            # A -> B -> C where B never produces a partial/final: its
+            # supersede-declared position still anchors the second splice.
+            {"type": "final", "segment_id": "A", "text": "first"},
+            {"type": "final", "segment_id": "tail", "text": "last"},
+            {"type": "supersede", "old_ids": ["A"], "new_ids": ["B"]},
+            {"type": "supersede", "old_ids": ["B"], "new_ids": ["C"]},
+            {"type": "final", "segment_id": "C", "text": "FIRST"},
+        ],
+        "order": ["C", "tail"],
+        "text": "FIRST last",
+    },
+    {
+        "name": "partial-declares-position",
+        "events": [
+            # "a" is declared by a partial only; the replacement still takes
+            # a's position, ahead of the finalized "b".
+            {"type": "partial", "segment_id": "a", "text": "he"},
+            {"type": "final", "segment_id": "b", "text": "world"},
+            {"type": "supersede", "old_ids": ["a"], "new_ids": ["a2"]},
+            {"type": "final", "segment_id": "a2", "text": "hi"},
+        ],
+        "order": ["a2", "b"],
+        "text": "hi world",
+    },
+]
+
+
+def _wire_events(trace: dict[str, Any]) -> list[TranscriptionEvent]:
+    """Validate a trace's dict events through the wire model.
+
+    Args:
+        trace: One golden trace.
+
+    Returns:
+        The validated events.
+    """
+    return [TranscriptionEvent.model_validate(raw) for raw in trace["events"]]
+
+
+@pytest.mark.parametrize("trace", _PLACEMENT_TRACES, ids=lambda t: t["name"])
+def test_supersede_placement_golden_traces_reduce_event(trace: dict[str, Any]) -> None:
+    """The reduce_event helper reproduces every golden reading order."""
+    order: list[str] = []
+    texts: dict[str, str] = {}
+    for event in _wire_events(trace):
+        reduce_event(order, texts, event)
+    assert order == trace["order"]
+    display = " ".join(texts[sid] for sid in order if sid in texts)
+    assert display == trace["text"]
+
+
+@pytest.mark.parametrize("trace", _PLACEMENT_TRACES, ids=lambda t: t["name"])
+def test_supersede_placement_golden_traces_stream_reducer(trace: dict[str, Any]) -> None:
+    """StreamReducer agrees with the helper on every golden trace."""
+    reducer = StreamReducer()
+    for event in _wire_events(trace):
+        reducer.add(event)
+    result = reducer.result()
+    assert result.text == trace["text"]
+    # The reduced segments are the FINALIZED ids of the golden order, with
+    # each segment carrying its final text.
+    final_texts = {
+        raw["segment_id"]: raw["text"] for raw in trace["events"] if raw["type"] == "final"
+    }
+    expected = [(sid, final_texts[sid]) for sid in trace["order"] if sid in final_texts]
+    assert result.segments is not None
+    assert [segment.text for segment in result.segments] == [text for _, text in expected]
+
+
+def test_supersede_placement_with_timestamps_still_time_sorts() -> None:
+    # When EVERY retained segment carries a start, the timestamp sort stays
+    # authoritative (replacement carries the real re-measured span).
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("a", "hello", start=0.0, end=1.0))
+    reducer.add(TranscriptionEvent.final("b", "world", start=1.0, end=2.0))
+    reducer.add(TranscriptionEvent.supersede(["a"], ["a2"]))
+    reducer.add(TranscriptionEvent.final("a2", "hi", start=0.0, end=1.0))
+    assert reducer.result().text == "hi world"
+
+    # MIXED spans (one segment unmeasured) -> reading order governs, which
+    # after the in-place splice is already the correct order.
+    mixed = StreamReducer()
+    mixed.add(TranscriptionEvent.final("a", "hello", start=0.0, end=1.0))
+    mixed.add(TranscriptionEvent.final("b", "world"))
+    mixed.add(TranscriptionEvent.supersede(["a"], ["a2"]))
+    mixed.add(TranscriptionEvent.final("a2", "hi"))
+    assert mixed.result().text == "hi world"
+
+
+def test_supersede_noncontiguous_old_block_is_suppressed_everywhere() -> None:
+    # old_ids skipping over a live unrelated segment have no defined
+    # placement: the reducer suppresses (duplicate-text side effect, like
+    # every suppressed supersede) and diagnoses; the helper raises; the
+    # session guard suppresses with the same code (strict raises below).
+    events = [
+        TranscriptionEvent.final("a", "one"),
+        TranscriptionEvent.final("x", "keep"),
+        TranscriptionEvent.final("b", "two"),
+        TranscriptionEvent.supersede(["a", "b"], ["m"]),
+        TranscriptionEvent.final("m", "merged"),
+    ]
+    reducer = StreamReducer()
+    for event in events:
+        reducer.add(event)
+    result = reducer.result()
+    # Suppressed supersede -> retired-nothing; m arrives as a fresh segment.
+    assert result.text == "one keep two merged"
+    assert any(d.code == "supersede_noncontiguous_old_ids" for d in result.diagnostics)
+
+    order: list[str] = []
+    texts: dict[str, str] = {}
+    with pytest.raises(ValueError, match="contiguous block"):
+        for event in events:
+            reduce_event(order, texts, event)
+
+
+def test_supersede_misordered_old_ids_are_suppressed() -> None:
+    # Positions contiguous but listed AGAINST reading order: old_ids MUST be
+    # in reading order (the frozen-prefix concatenation rule depends on it).
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("a", "one"))
+    reducer.add(TranscriptionEvent.final("b", "two"))
+    reducer.add(TranscriptionEvent.supersede(["b", "a"], ["m"]))
+    reducer.add(TranscriptionEvent.final("m", "merged"))
+    result = reducer.result()
+    assert result.text == "one two merged"
+    assert any(d.code == "supersede_noncontiguous_old_ids" for d in result.diagnostics)
+
+
+def test_reducer_suppresses_unknown_retired_and_reintroduced_ids() -> None:
+    # The reducer mirrors the guard's order-integrity rejections so a
+    # standalone (guardless) reduce degrades identically: unknown old id,
+    # double retirement, reintroduced new id, and a final resurrecting a
+    # retired id are each suppressed with the guard's diagnostic code.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("a", "one"))
+    reducer.add(TranscriptionEvent.supersede(["ghost"], ["g2"]))
+    reducer.add(TranscriptionEvent.supersede(["a"], ["a2"]))
+    reducer.add(TranscriptionEvent.supersede(["a"], ["a3"]))  # retired twice
+    reducer.add(TranscriptionEvent.supersede(["a2"], ["a"]))  # reintroduces a
+    reducer.add(TranscriptionEvent.final("a", "zombie"))  # resurrects a
+    reducer.add(TranscriptionEvent.final("a2", "ONE"))
+    result = reducer.result()
+    assert result.text == "ONE"
+    codes = [d.code for d in result.diagnostics]
+    assert codes.count("supersede_unknown_old_id") == 1
+    assert codes.count("lifecycle_retired_resuperseded") == 1
+    assert codes.count("supersede_reintroduces_segment") == 1
+    assert codes.count("lifecycle_after_terminal") == 1
+    # result() is idempotent: a second call reports the same state.
+    assert reducer.result().text == "ONE"
+    assert [d.code for d in reducer.result().diagnostics] == codes
+
+
+def test_reducer_suppressed_events_do_not_commit_detected_language() -> None:
+    # A suppressed event must change NOTHING -- the sticky session language
+    # included. Committing it on entry let a refused supersede rewrite
+    # result().detected_language while its content was suppressed: the event
+    # stream and its reduction silently disagreeing (the drift this pins).
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s0", "hello", detected_language="en"))
+    # Suppressed: unknown old id -- its 'fr' must not stick.
+    reducer.add(TranscriptionEvent.supersede(["never-declared"], ["s1"], detected_language="fr"))
+    assert reducer.result().detected_language == "en"
+    # Suppressed: final resurrecting a retired id.
+    reducer.add(TranscriptionEvent.supersede(["s0"], ["s2"]))
+    reducer.add(TranscriptionEvent.final("s0", "zombie", detected_language="de"))
+    assert reducer.result().detected_language == "en"
+    # Suppressed: partial for a retired id (guard's after-terminal mirror).
+    reducer.add(TranscriptionEvent.partial("s0", "zombie", detected_language="it"))
+    result = reducer.result()
+    assert result.detected_language == "en"
+    assert [d.code for d in result.diagnostics].count("lifecycle_after_terminal") == 2
+    # An admitted event still commits (last non-None wins), and the sticky
+    # accessor reports the same value result() does.
+    reducer.add(TranscriptionEvent.final("s2", "bonjour", detected_language="fr"))
+    assert reducer.detected_language == "fr"
+    assert reducer.result().detected_language == "fr"
+
+
+def test_reducer_suppressed_partial_does_not_declare_position() -> None:
+    # The retired-partial suppression must also keep its (refused)
+    # declaration out of the reading order -- identical to the pre-existing
+    # silent ignore, now diagnosed.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("a", "one"))
+    reducer.add(TranscriptionEvent.supersede(["a"], ["b"]))
+    reducer.add(TranscriptionEvent.partial("a", "ghost"))  # suppressed
+    reducer.add(TranscriptionEvent.final("b", "two"))
+    result = reducer.result()
+    assert result.text == "two"
+    assert [d.code for d in result.diagnostics].count("lifecycle_after_terminal") == 1
+
+
+def test_guard_suppresses_noncontiguous_supersede_and_strict_raises() -> None:
+    guard = _LifecycleGuard()
+    assert guard.admit(TranscriptionEvent.final("a", "one")) is not None
+    assert guard.admit(TranscriptionEvent.final("x", "keep")) is not None
+    assert guard.admit(TranscriptionEvent.final("b", "two")) is not None
+    assert guard.admit(TranscriptionEvent.supersede(["a", "b"], ["m"])) is None
+    assert any(d.code == "supersede_noncontiguous_old_ids" for d in guard.diagnostics)
+    # The suppressed event mutated nothing: a and b are still live and a
+    # CONTIGUOUS retirement of a alone still works.
+    assert guard.admit(TranscriptionEvent.supersede(["a"], ["a2"])) is not None
+
+    strict = _LifecycleGuard(strict=True)
+    assert strict.admit(TranscriptionEvent.final("a", "one")) is not None
+    assert strict.admit(TranscriptionEvent.final("x", "keep")) is not None
+    assert strict.admit(TranscriptionEvent.final("b", "two")) is not None
+    with pytest.raises(ValueError, match="contiguous block"):
+        strict.admit(TranscriptionEvent.supersede(["a", "b"], ["m"]))
+
+
+def test_session_reduces_mid_stream_supersede_in_place() -> None:
+    # End-to-end through TranscriptionSession: the guard admits the legal
+    # splice and the session's reducer places the replacement in reading
+    # order (no timestamps anywhere).
+    events = [
+        TranscriptionEvent.final("a", "hello"),
+        TranscriptionEvent.final("b", "world"),
+        TranscriptionEvent.supersede(["a"], ["a2"]),
+        TranscriptionEvent.final("a2", "hi"),
+    ]
+
+    async def _run() -> str:
+        session = _ScriptedSession(events)
+        async with session:
+            async for _ in session:
+                pass
+        return session.result().text
+
+    assert asyncio.run(_run()) == "hi world"
+
+
+def test_reading_order_ledger_and_helper_edge_paths() -> None:
+    # The ledger's own unknown-id answer (its callers pre-check for precise
+    # diagnostics, but the primitive must be safe standalone).
+    ledger = streaming_module._ReadingOrderLedger()  # pyright: ignore[reportPrivateUsage]
+    ledger.declare("a")
+    assert ledger.block_start(["ghost"]) is None
+    assert "a" in ledger and "ghost" not in ledger
+
+    # reduce_event: a reintroduced new_id fails loudly (the helper has no
+    # diagnostics channel to suppress into).
+    order: list[str] = []
+    texts: dict[str, str] = {}
+    reduce_event(order, texts, TranscriptionEvent.final("a", "one"))
+    reduce_event(order, texts, TranscriptionEvent.final("b", "two"))
+    with pytest.raises(ValueError, match="already holds a reading-order position"):
+        reduce_event(order, texts, TranscriptionEvent.supersede(["a"], ["b"]))
+
+    # A partial for a RETIRED id cannot resurrect a reading-order position.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("a", "one"))
+    reducer.add(TranscriptionEvent.final("b", "two"))
+    reducer.add(TranscriptionEvent.supersede(["a"], ["a2"]))
+    reducer.add(TranscriptionEvent.partial("a", "zombie"))
+    reducer.add(TranscriptionEvent.final("a2", "ONE"))
+    assert reducer.result().text == "ONE two"
+
+
+def test_empty_reduced_result_carries_an_empty_segments_list() -> None:
+    """An empty reduction is "performed but empty" -- [] on the wire, not null.
+
+    The spec's null rule: ``None`` = not requested / not applicable (the
+    renderers may synthesize a whole-text fallback cue over it), ``[]`` =
+    requested-and-performed but empty (zero cues, never fabricated). The
+    reducer ran the segment lifecycle, so its emptiness is the second
+    state: a fresh reducer, a silence-only session, and a
+    delete-everything supersede all reduce to ``segments == []``.
+    """
+    from standard_asr.renderers import to_srt, to_vtt
+
+    fresh = StreamReducer().result()
+    assert fresh.segments == []
+    assert fresh.text == ""
+    assert fresh.model_dump(mode="json")["segments"] == []
+
+    silence = StreamReducer()
+    silence.add(TranscriptionEvent.progress(audio_processed_until=5.0))
+    silence.add(TranscriptionEvent.done())
+    assert silence.result().segments == []
+
+    deleted = StreamReducer()
+    deleted.add(TranscriptionEvent.final("s1", "gone"))
+    deleted.add(TranscriptionEvent.supersede(["s1"], []))
+    result = deleted.result()
+    assert result.segments == []
+    assert result.text == ""
+    # Zero cues, never a fabricated whole-text fallback (that is the
+    # segments-is-None shape, which a reduced result can no longer be).
+    assert to_srt(result) == ""
+    assert to_vtt(result) == "WEBVTT\n"
+
+    # The batch side is untouched: an engine that was not asked for
+    # segments still models the "not requested" state as None.
+    from standard_asr.contract.results import TranscriptionResult
+
+    assert TranscriptionResult(text="hi").segments is None
+
+
+def test_silent_session_end_to_end_reduces_to_empty_list() -> None:
+    async def _run() -> Any:
+        session = _ScriptedSession([TranscriptionEvent.progress(audio_processed_until=1.0)])
+        async with session:
+            async for _ in session:
+                pass
+        return session.result()
+
+    result = asyncio.run(_run())
+    assert result.segments == []
+    assert result.text == ""

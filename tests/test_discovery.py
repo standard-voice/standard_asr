@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import runpy
 from importlib.metadata import EntryPoint, EntryPoints
 from typing import Any, AsyncIterator, ClassVar, Literal
 
@@ -22,10 +24,15 @@ from standard_asr.contract.capabilities import (
     FlagCap,
     LanguageCaps,
 )
-from standard_asr.contract.exceptions import EntrypointValidationError, FactoryLoadError
+from standard_asr.contract.exceptions import (
+    ConfigError,
+    EntrypointValidationError,
+    FactoryLoadError,
+)
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
 from standard_asr.contract.params import ProviderParams
 from standard_asr.engine import BaseConfig, BaseProperties, SampleRateRange
+from standard_asr.plugins import discovery as discovery_module
 from standard_asr.plugins.discovery import (
     ENTRYPOINT_GROUP,
     ModelRegistry,
@@ -429,6 +436,70 @@ def test_model_registry_create_forwards_arguments() -> None:
     instance = registry.create("alpha/first", foo="bar")
     assert isinstance(instance, _DummyASR)
     assert instance.kwargs["foo"] == "bar"
+
+
+class _NamedConfigEngine(_DummyASR):
+    """Engine whose declared config_type feeds create()'s error rendering."""
+
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _DummyConfig
+
+    def __init__(self, **kwargs: Any) -> None:
+        # A bare-constructor config failure: raw pydantic ValidationError.
+        _DummyConfig(engine="dummy", default_language=object())  # type: ignore[arg-type]
+        super().__init__(**kwargs)  # pragma: no cover - never reached
+
+
+def _named_config_engine_factory(**kwargs: Any) -> _NamedConfigEngine:  # pyright: ignore[reportUnusedFunction]
+    return _NamedConfigEngine(**kwargs)
+
+
+def _opaque_validation_factory(**kwargs: Any) -> Any:  # pyright: ignore[reportUnusedFunction]
+    # A FACTORY with an opaque return annotation (engine class unreachable
+    # without calling it) whose ValidationError create() must still wrap --
+    # with no name source at all.
+    _DummyConfig(engine="dummy", default_language=object())  # type: ignore[arg-type]
+    return _DummyASR(**kwargs)  # pragma: no cover - never reached
+
+
+def _no_config_type_factory(**kwargs: Any) -> _DummyASR:  # pyright: ignore[reportUnusedFunction]
+    # Engine class resolvable but declares NO config_type: the name-source
+    # resolution finds nothing and the wrap stays fully masked.
+    _DummyConfig(engine="dummy", default_language=object())  # type: ignore[arg-type]
+    return _DummyASR(**kwargs)  # pragma: no cover - never reached
+
+
+def test_create_config_error_names_declared_fields_via_config_type() -> None:
+    """create()'s ConfigError names the failing field, never the input.
+
+    The wrap is uniform for every factory shape -- an annotated engine
+    class, an opaque factory function, a class with no config_type: the
+    accident-model scrubber names field-name-shaped loc components (the
+    typo-names-the-key DX) and drops the input echo, with no engine-class
+    resolution needed.
+    """
+    eps = [
+        EntryPoint(
+            name="named/model",
+            value="tests.test_discovery:_named_config_engine_factory",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="opaque/model",
+            value="tests.test_discovery:_opaque_validation_factory",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="bare/model",
+            value="tests.test_discovery:_no_config_type_factory",
+            group="standard_asr.models",
+        ),
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    for key in ("named/model", "opaque/model", "bare/model"):
+        with pytest.raises(ConfigError) as excinfo:
+            registry.create(key)
+        assert "default_language" in str(excinfo.value), key
+        assert "object object" not in str(excinfo.value), key
 
 
 def test_compliance_reports_error_when_registry_empty() -> None:
@@ -1248,3 +1319,20 @@ def test_check_sync_bridge_detects_deadlock() -> None:
     report = compliance.check_sync_bridge(_HangBridgeSession, timeout=0.5)
     assert report.passed is False
     assert any("deadlock" in i.message for i in report.iter_level("error"))
+
+
+def test_running_the_discovery_module_points_at_the_real_cli() -> None:
+    """``python -m standard_asr.plugins.discovery`` exits with a signpost.
+
+    The module has no CLI. Exiting silently would read as "no models
+    discovered" to someone debugging plugin visibility -- the exact wrong
+    conclusion -- so it exits loudly and names the tool that DOES list them.
+    """
+    module_file = inspect.getsourcefile(discovery_module)
+    assert module_file is not None
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_path(module_file, run_name="__main__")
+
+    message = str(excinfo.value.code)
+    assert "standard-asr list" in message
+    assert "--strict-discovery" in message

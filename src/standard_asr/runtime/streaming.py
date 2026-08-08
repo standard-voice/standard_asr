@@ -36,20 +36,32 @@ import time
 import unicodedata
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import AsyncIterable, AsyncIterator, Coroutine, Iterable, Iterator
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Sequence,
+)
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
 from standard_asr.contract.results import (
+    DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
     Diagnostic,
     Segment,
     TranscriptionResult,
+    WireExtra,
     Word,
     synthesize_segment_speaker,
+    to_json_value,
     validate_speaker_label,
 )
+from standard_asr.runtime.redaction import log_exception_safely, safe_exception_summary
 
 LOGGER = logging.getLogger(__name__)
 
@@ -107,6 +119,16 @@ DEFAULT_AUDIO_HISTORY_MAXLEN = 256
 #: overflow is reported honestly rather than silently dropped.
 DEFAULT_MAX_GUARD_DIAGNOSTICS = 1000
 
+#: Code of the aggregated summary that replaces individual diagnostics once
+#: the bounded channel overflows. Public because it is a SINGLETON with
+#: cross-layer semantics: the guard keeps exactly one such entry and rewrites
+#: it in place as more diagnostics overflow, so a wire consumer forwarding
+#: the channel incrementally must treat a later occurrence as SUPERSEDING the
+#: one it already delivered (see the server's diagnostics delta frame) rather
+#: than appending beside it. Stable so a reader -- and the compliance suite
+#: -- can recognize a truncated diagnostic stream.
+DIAGNOSTICS_TRUNCATED_CODE = "diagnostics_truncated"
+
 #: Seconds per wait slice of the sync bridge's event pump. Event waits are
 #: unbounded by design (a live, fed session may legitimately go arbitrarily
 #: long between events); the pump polls in slices purely to detect the death
@@ -122,6 +144,36 @@ _SYNC_PUMP_POLL_SECONDS = 5.0
 _SYNC_BRIDGE_LOOP_THREAD_NAME = "standard-asr-sync-bridge-loop"
 
 _INPUT_SOURCE_ERROR_DETAIL = "Audio input source failed during streaming."
+
+#: Diagnostic codes the streaming layer emits (the lifecycle guard's event
+#: admission verdicts). Like the ``DIAG_*`` constants in
+#: :mod:`standard_asr.runtime.gating` and :mod:`standard_asr.contract.language`,
+#: a diagnostic ``code`` is a wire-visible contract consumers match on, so each
+#: lives here as the single source of truth -- a consumer hard-coding the
+#: literal would silently match the wrong contract after a rename. The
+#: reducer's timestamp disclosure
+#: (:data:`~standard_asr.contract.results.DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE`,
+#: re-exported below) is homed in :mod:`standard_asr.contract.results` because
+#: it describes a property of the RESULT that the renderers consume. (Terminal
+#: *event* codes such as ``done_timeout`` / ``backpressure`` are a different
+#: namespace: they are ``TranscriptionEvent.code`` values pinned by the spec's
+#: event table, not ``Diagnostic`` codes.)
+DIAG_SUPERSEDE_UNKNOWN_OLD_ID = "supersede_unknown_old_id"
+DIAG_LIFECYCLE_CLOSED_SUPERSEDED = "lifecycle_closed_superseded"
+DIAG_LIFECYCLE_RETIRED_RESUPERSEDED = "lifecycle_retired_resuperseded"
+DIAG_SUPERSEDE_REINTRODUCES_SEGMENT = "supersede_reintroduces_segment"
+DIAG_SUPERSEDE_NONCONTIGUOUS = "supersede_noncontiguous_old_ids"
+DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE = "supersede_cross_speaker_merge"
+DIAG_SUPERSEDE_DELETES_FROZEN_TEXT = "supersede_deletes_frozen_text"
+DIAG_LIFECYCLE_AFTER_TERMINAL = "lifecycle_after_terminal"
+DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL = "lifecycle_partial_after_final"
+DIAG_LIFECYCLE_FINAL_AFTER_FINAL = "lifecycle_final_after_final"
+DIAG_FROZEN_PREFIX_REWRITTEN = "frozen_prefix_rewritten"
+DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE = "frozen_prefix_rewritten_supersede"
+DIAG_FROZEN_SPEAKER_REWRITTEN = "frozen_speaker_rewritten"
+DIAG_AUDIO_CURSOR_DECREASED = "audio_cursor_decreased"
+DIAG_STABLE_UNTIL_CLAMPED = "stable_until_clamped"
+DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED = "supersede_obligation_unfulfilled"
 
 
 class StreamDeadlines(BaseModel):
@@ -140,7 +192,12 @@ class StreamDeadlines(BaseModel):
     ``None`` to explicitly disable that deadline.
     """
 
-    model_config = ConfigDict(frozen=True)
+    # extra="forbid" like every other application-input model (RuntimeParams,
+    # AudioFormat, ...): a misspelled deadline field (e.g. ``max_idle_seconds``)
+    # MUST fail at construction. Under pydantic's default extra="ignore" the
+    # typo'd override silently vanished and the session ran with the deadline
+    # disabled -- a silently-dropped safety parameter.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     done_timeout: float | None = Field(default=DEFAULT_DONE_TIMEOUT, gt=0.0)
     max_idle: float | None = Field(default=DEFAULT_MAX_IDLE, gt=0.0)
@@ -242,7 +299,7 @@ class TranscriptionEvent(BaseModel):
     gap_start: float | None = Field(default=None, ge=0.0)
     gap_end: float | None = Field(default=None, ge=0.0)
     detected_language: str | None = None
-    extra: dict[str, Any] = Field(default_factory=dict)
+    extra: WireExtra = Field(default_factory=dict)
 
     @property
     def stable_text(self) -> str:
@@ -379,6 +436,31 @@ class TranscriptionEvent(BaseModel):
         if self.type in ("partial", "final"):
             if self.segment_id is None or self.text is None:
                 raise ValueError(f"{self.type} event MUST carry both segment_id and text.")
+            if self.end is not None and self.start is None:
+                # Mirrors Segment's shape invariant (measured / start-only /
+                # unavailable): no engine measures where speech stopped
+                # without knowing it started. Pre-guard, the reducer silently
+                # fabricated start=0.0 for this shape -- exactly the silent
+                # wrong timestamp the nullable model exists to kill.
+                raise ValueError(
+                    f"{self.type} event carries end without start; a measured end "
+                    "requires a measured start (legal timing shapes: measured / "
+                    "start-only / unavailable)."
+                )
+            if self.end is not None and self.start is not None and self.end < self.start:
+                # The other half of the same Segment mirror (end >= start;
+                # zero-duration allowed). Unchecked here, the shape passed
+                # event validation and the guard, then blew up only when the
+                # reducer built the Segment -- turning one malformed engine
+                # event into a whole-session engine_error AND the only raise
+                # path on the reducer's admitted flow (the producer's
+                # buffer-then-reduce commit ordering relies on admitted
+                # events reducing without error).
+                raise ValueError(
+                    f"{self.type} event carries end={self.end} earlier than "
+                    f"start={self.start}; a segment span must satisfy end >= start "
+                    "(zero-duration allowed)."
+                )
             su = self.stable_until
             if su is not None and not 0 <= su <= len(self.text):
                 # Structural bound only: ``text[:stable_until]`` must be a real
@@ -536,58 +618,395 @@ class TranscriptionEvent(BaseModel):
         return cls(type="error", code=code, recoverable=recoverable, **kw)
 
 
-def reduce_event(segments: dict[str, str], event: TranscriptionEvent) -> None:
-    """Apply the canonical streaming reduce to a ``{segment_id: text}`` map.
+class _ReadingOrderLedger:
+    """Reading-order positions of the LIVE segment ids of one stream.
 
-    This is the core reduce every compliant application implements, including
-    ``supersede`` handling. Non-text events are ignored.
+    The spec's ordering rule for untimestamped segments (``start=null``) is
+    "list order IS reading order", and ``supersede`` is the one event that
+    can change an already-claimed position: its ``old_ids`` MUST form a
+    contiguous block of the live reading order (in matching order) and its
+    ``new_ids`` take over that block's position IN PLACE. This ledger is
+    that rule as a data structure -- first mention appends, a supersede
+    splices -- shared by the lifecycle guard (which validates and
+    suppresses) and the reducer (which orders the reduced result), so the
+    two can never drift.
+    """
+
+    __slots__ = ("_order",)
+
+    def __init__(self) -> None:
+        """Initialize an empty ledger."""
+        self._order: list[str] = []
+
+    def __contains__(self, segment_id: str) -> bool:
+        """Return whether ``segment_id`` currently holds a live position.
+
+        Args:
+            segment_id: The id to look up.
+
+        Returns:
+            ``True`` while the id is live (declared and not retired).
+        """
+        return segment_id in self._order
+
+    def declare(self, segment_id: str) -> None:
+        """Claim the next reading-order position on first mention (idempotent).
+
+        Args:
+            segment_id: The id being declared (via ``partial`` / ``final``).
+        """
+        if segment_id not in self._order:
+            self._order.append(segment_id)
+
+    def block_start(self, old_ids: Sequence[str]) -> int | None:
+        """Return the splice position of a contiguous, order-matching block.
+
+        Args:
+            old_ids: The supersede's retired ids, in event order.
+
+        Returns:
+            The block's first position when ``old_ids`` occupy consecutive
+            live positions in exactly the event's order; ``None`` when the
+            block is EMPTY (nothing retires, so no position is named for
+            the replacements to take over -- only a validator-bypassing
+            path can materialize such an event, and it must degrade to
+            suppression like every other forged supersede, never crash the
+            session), when any id is not live, the block has gaps (an
+            unrelated live segment sits between two retired ones), or the
+            event lists them out of reading order. ``None`` means the event
+            has no defined placement and MUST be suppressed, not guessed
+            at.
+        """
+        if not old_ids:
+            return None
+        try:
+            positions = [self._order.index(old) for old in old_ids]
+        except ValueError:
+            return None
+        start = positions[0]
+        if positions != list(range(start, start + len(positions))):
+            return None
+        return start
+
+    def splice(self, old_ids: Sequence[str], new_ids: Sequence[str], *, start: int) -> None:
+        """Replace the validated block with ``new_ids`` at its position.
+
+        Args:
+            old_ids: The retired ids (already validated by
+                :meth:`block_start`).
+            new_ids: The replacement ids, in reading order; they take over
+                the block's position (an empty list is a pure deletion).
+            start: The block's first position, from :meth:`block_start`.
+        """
+        self._order[start : start + len(old_ids)] = list(new_ids)
+
+    def order(self) -> list[str]:
+        """Return a copy of the live reading order.
+
+        Returns:
+            The live segment ids, reading order.
+        """
+        return list(self._order)
+
+
+def reduce_event(order: list[str], texts: dict[str, str], event: TranscriptionEvent) -> None:
+    """Apply the canonical streaming reduce (the spec §5.2 reference).
+
+    This is the core reduce every compliant application implements --
+    including the ``supersede`` handling -- mirroring the specification's
+    snippet line for line. The state is a reading-order list plus a text
+    map, NOT a bare map: for untimestamped streams the spec's ordering rule
+    is "list order IS reading order", and a mid-stream ``supersede`` must
+    splice its replacements into the retired block's position -- a plain
+    dict can only append, which silently reorders the transcript (the
+    cardinal sin). Display text is ``texts`` joined in ``order``
+    (``" ".join(texts[sid] for sid in order if sid in texts)`` for
+    space-delimited languages). Non-text events are ignored.
+
+    This helper assumes a lifecycle-legal stream, which is what
+    :class:`TranscriptionSession` delivers (its guard suppresses illegal
+    events before they reach the application). Driving it with a raw
+    non-compliant stream fails loudly instead of corrupting the order.
 
     Args:
-        segments: The mutable segment-text map to update in place.
+        order: The mutable reading-order list of live segment ids, updated
+            in place (first mention claims the next position; a supersede
+            splices).
+        texts: The mutable ``{segment_id: text}`` map, updated in place.
         event: The event to apply.
+
+    Raises:
+        ValueError: If a ``supersede`` retires nothing at all (empty
+            ``old_ids`` -- only a validator-bypassing construction can
+            produce one), retires an id that holds no live position, lists
+            ``old_ids`` non-contiguously or out of reading order, or
+            reintroduces an id that already holds one.
     """
     if event.type in ("partial", "final") and event.segment_id is not None:
-        segments[event.segment_id] = event.text or ""
+        if event.segment_id not in order:
+            order.append(event.segment_id)
+        texts[event.segment_id] = event.text or ""
     elif event.type == "supersede":
+        if not event.old_ids:
+            raise ValueError(
+                "supersede old_ids is empty: a supersede MUST retire at least "
+                "one segment, so an empty block names no reading-order "
+                "position for its new_ids to take over."
+            )
+        positions: list[int] = []
         for old_id in event.old_ids:
-            segments.pop(old_id, None)
+            try:
+                positions.append(order.index(old_id))
+            except ValueError:
+                raise ValueError(
+                    f"supersede old_id {old_id!r} holds no live reading-order "
+                    "position (never declared, or already retired)."
+                ) from None
+        start = positions[0]
+        if positions != list(range(start, start + len(positions))):
+            raise ValueError(
+                f"supersede old_ids {event.old_ids!r} MUST form a contiguous "
+                "block of the live reading order, in reading order; a "
+                "non-contiguous or reordered block has no defined placement."
+            )
+        for new_id in event.new_ids:
+            if new_id in order:
+                raise ValueError(
+                    f"supersede new_id {new_id!r} already holds a reading-order "
+                    "position (a new_id MUST be fresh)."
+                )
+        order[start : start + len(event.old_ids)] = list(event.new_ids)
+        for old_id in event.old_ids:
+            texts.pop(old_id, None)
+
+
+def _supersede_admission(
+    event: TranscriptionEvent,
+    *,
+    ledger: _ReadingOrderLedger,
+    old_state: Callable[[str], str | None],
+    new_state: Callable[[str], str | None],
+) -> int | tuple[str, str]:
+    """Apply THE supersede admission rules and return the verdict (shared).
+
+    The one implementation of the four preconditions every consumer of a
+    ``supersede`` must check before splicing -- shared by the lifecycle
+    guard and the standalone :class:`StreamReducer` for the same reason
+    :class:`_ReadingOrderLedger` is: two hand-written copies of the same
+    rules, written against different state, drift; a rule changed in one
+    made a guarded session and a standalone reducer disagree about what
+    the same event stream means. The ledger extraction covered the
+    ordering half; this covers the validation half.
+
+    The rules, in canonical order (first violation wins, per-id in event
+    order):
+
+    1. **Unknown old**: every ``old_id`` must hold a state -- declared by a
+       partial/final or introduced by an earlier supersede's ``new_ids``.
+    2. **Closed old** (guard only -- a reducer's state vocabulary never
+       answers ``"closed"``): closed MUST NOT be superseded.
+    3. **Retired old**: superseded is terminal; an id retires the moment it
+       appears in ``old_ids``, and a second retirement would copy the
+       retired segment's frozen text into a SECOND independent replacement
+       lineage.
+    4. **Reintroduced new**: a ``new_id`` MUST be fresh -- an id that
+       already holds any state is either being reused or this supersede
+       was delivered out of order.
+
+    then the placement rule (:meth:`_ReadingOrderLedger.block_start`):
+    ``old_ids`` MUST form a contiguous block of the LIVE reading order, in
+    matching order -- the one rule that gives an untimestamped stream's
+    supersede a defined position. A gapped or reordered (or forged empty)
+    block has no coherent placement, so the whole event is suppressed
+    rather than guessed at.
+
+    Args:
+        event: The ``supersede`` event to judge.
+        ledger: The consumer's reading-order ledger (NOT mutated here; the
+            caller splices only on admission, after its own extra rules).
+        old_state: State lookup for retired ids -- ``None`` for
+            never-declared, ``"closed"`` / ``"superseded"`` for the terminal
+            states, anything else for a live state token.
+        new_state: State lookup for replacement ids -- ``None`` for fresh,
+            any state token otherwise (interpolated into the diagnostic).
+
+    Returns:
+        The block's splice position (``int``) on admission, else the
+        ``(code, message)`` rejection the caller reports through its own
+        channel (the guard's ``_reject``, the reducer's ``_suppress``).
+    """
+    for old in event.old_ids:
+        if old_state(old) is None:
+            return (
+                DIAG_SUPERSEDE_UNKNOWN_OLD_ID,
+                f"supersede old_ids contains never-declared segment {old!r}; "
+                "suppressed (old_ids MUST have been declared by a "
+                "partial/final or an earlier supersede).",
+            )
+    for old in event.old_ids:
+        state = old_state(old)
+        if state == "closed":
+            return (
+                DIAG_LIFECYCLE_CLOSED_SUPERSEDED,
+                f"supersede old_ids contains closed segment {old!r}; "
+                "suppressed (closed MUST NOT be superseded).",
+            )
+        if state == "superseded":
+            return (
+                DIAG_LIFECYCLE_RETIRED_RESUPERSEDED,
+                f"supersede old_ids contains already-superseded segment "
+                f"{old!r}; suppressed (superseded is terminal -- an id MUST "
+                "NOT be retired twice).",
+            )
+    for new in event.new_ids:
+        state = new_state(new)
+        if state is not None:
+            return (
+                DIAG_SUPERSEDE_REINTRODUCES_SEGMENT,
+                f"supersede new_ids contains already-known segment {new!r} "
+                f"(state {state!r}); suppressed. Either the id is being "
+                "reused (a new_id MUST be fresh) or this supersede was "
+                "delivered out of order (a supersede MUST precede any "
+                "partial/final of its new_ids).",
+            )
+    block_start = ledger.block_start(event.old_ids)
+    if block_start is None:
+        return (
+            DIAG_SUPERSEDE_NONCONTIGUOUS,
+            f"supersede old_ids {event.old_ids!r} do not form a contiguous "
+            "block of the live reading order (in reading order), so the "
+            "replacements have no defined placement; suppressed. Side effect "
+            "of suppression: the retired segments stay alive downstream "
+            "while the replacement arrives as fresh segments -- this harms "
+            "only non-compliant engines.",
+        )
+    return block_start
 
 
 class StreamReducer:
     """Reduces a stream of events into a :class:`TranscriptionResult`.
 
-    Tracks finalized segments in arrival order, honouring ``supersede`` removals,
-    so :meth:`result` reflects the session's committed transcription.
+    Tracks committed (finalized) segments on a reading-order ledger
+    (:class:`_ReadingOrderLedger`): every id claims its position at FIRST
+    mention -- a ``partial`` claims a position even before any final (the
+    spec's declaration rule) -- and a ``supersede`` splices its
+    replacements into the retired block's position IN PLACE, so a
+    mid-stream re-segmentation cannot reorder an untimestamped transcript.
+
+    The reducer enforces exactly the invariants its own order-soundness
+    requires -- a supersede whose ``old_ids`` are unknown, retired, or not
+    a contiguous in-order block, a supersede reintroducing a known id, and
+    a ``partial`` or ``final`` for a retired id are each SUPPRESSED with a
+    warning diagnostic (surfaced via :meth:`result`), mirroring the session
+    guard's semantics so a standalone reducer degrades identically. A
+    suppressed event commits NOTHING -- not even the sticky
+    ``detected_language`` (the admitted-only commit discipline of
+    :meth:`add`). Full
+    lifecycle enforcement (frozen prefixes, speakers, ``stable_until``)
+    remains the session guard's job: events reaching this reducer through
+    :class:`TranscriptionSession` are already guard-filtered, so these
+    checks fire only for raw non-compliant streams.
 
     Timestamp handling: many engines (e.g. Qwen3 streaming) emit no timestamps.
-    Rather than fabricate ``start=0.0`` / ``end=0.0`` (which would collapse and
-    mis-sort the transcript), the reducer preserves arrival order and only sorts
-    by ``start`` when *every* retained segment carries a real timestamp.
+    The engine's measurement is stored VERBATIM -- a missing ``start``/``end``
+    stays ``None`` on the reduced :class:`~standard_asr.contract.results.Segment`
+    (``timestamp_status`` derives from the values; nothing is fabricated and
+    there is no side-channel marker) -- and the reducer preserves reading
+    order, sorting by ``start`` only when *every* retained segment
+    carries one.
     """
 
     def __init__(self) -> None:
         """Initialize an empty reducer."""
         self._segments: dict[str, Segment] = {}
-        self._has_timestamp: dict[str, bool] = {}
-        self._order: list[str] = []
+        self._ledger = _ReadingOrderLedger()
+        self._retired: set[str] = set()
+        self._suppressions: list[Diagnostic] = []
         self._detected_language: str | None = None
+
+    def _suppress(self, code: str, message: str) -> None:
+        """Record a suppression diagnostic for :meth:`result`.
+
+        Args:
+            code: Diagnostic code (shared with the session guard's codes).
+            message: Human-readable explanation.
+        """
+        self._suppressions.append(Diagnostic(level="warning", code=code, message=message))
+
+    def _lifecycle_state(self, segment_id: str) -> str | None:
+        """Express the reducer's segment knowledge in the shared vocabulary.
+
+        The reducer's state (a retired set plus ledger membership) answers
+        :func:`_supersede_admission`'s lookups: ``"superseded"`` for a
+        retired id, ``"live"`` for one holding a reading-order position,
+        ``None`` for never-declared. The reducer never answers ``"closed"``
+        -- it does not track finality; that arm is the guard's.
+
+        Args:
+            segment_id: The id to look up.
+
+        Returns:
+            The state token, or ``None`` when unknown.
+        """
+        if segment_id in self._retired:
+            return "superseded"
+        if segment_id in self._ledger:
+            return "live"
+        return None
 
     def add(self, event: TranscriptionEvent) -> None:
         """Incorporate one event into the running result.
 
+        State commits only on the ADMITTED path: every suppression below
+        returns before the method's tail, and the sticky
+        ``detected_language`` is committed at that tail -- so a suppressed
+        event changes nothing, not even session-level metadata (the same
+        admitted-only commit discipline the session guard applies to its
+        ``audio_processed_until`` cursor). Committing the language on entry
+        let a suppressed supersede's ``detected_language`` rewrite
+        ``result()`` while the event itself was refused -- an event stream
+        and its reduction silently disagreeing about what happened.
+
         Args:
             event: The event to incorporate.
         """
-        if event.detected_language is not None:
-            self._detected_language = event.detected_language
-        if event.type == "final" and event.segment_id is not None:
-            if event.segment_id not in self._segments:
-                self._order.append(event.segment_id)
-            has_ts = event.start is not None
-            # Do NOT fabricate 0.0 timestamps for timestamp-less engines: keep
-            # a sentinel-free Segment whose start/end are 0.0 only when the
-            # engine genuinely had none, and remember that fact so result()
-            # never sorts on a fabricated value.
+        if event.type == "partial" and event.segment_id is not None:
+            # A partial commits no text here, but it DECLARES the segment:
+            # the id claims its reading-order position now, so a later
+            # supersede retiring it -- or splicing a replacement into its
+            # position -- places the replacement where this segment sat,
+            # not at the end. A retired id cannot resurrect a position --
+            # suppressed with the guard's after-terminal code so a
+            # standalone reducer degrades identically to a guarded session
+            # (which never forwards such a partial).
+            if event.segment_id in self._retired:
+                self._suppress(
+                    DIAG_LIFECYCLE_AFTER_TERMINAL,
+                    f"partial for segment {event.segment_id!r} after it was "
+                    "superseded; suppressed (a retired segment must not "
+                    "resurrect -- its position was taken over by its "
+                    "replacements).",
+                )
+                return
+            self._ledger.declare(event.segment_id)
+        elif event.type == "final" and event.segment_id is not None:
+            if event.segment_id in self._retired:
+                self._suppress(
+                    DIAG_LIFECYCLE_AFTER_TERMINAL,
+                    f"final for segment {event.segment_id!r} after it was "
+                    "superseded; suppressed (a retired segment must not "
+                    "resurrect -- its position was taken over by its "
+                    "replacements).",
+                )
+                return
+            self._ledger.declare(event.segment_id)
+            # The engine's timing is stored VERBATIM: None means "not
+            # measured" and is data, not a gap to fill -- fabricating 0.0
+            # spans (the retired design) produced values indistinguishable
+            # from a genuine t=0 zero-length span and needed a side-channel
+            # marker to disclaim them. The event model already rejects an
+            # ``end`` without a ``start``, so the segment's shape invariant
+            # holds by construction.
             # Speaker: the event-level label is authoritative; when it is None
             # but the words carry speakers, THE pinned segment-speaker synthesis rule runs
             # HERE because the reducer bypasses EngineBase.transcribe's batch
@@ -596,8 +1015,8 @@ class StreamReducer:
             # speakers (inverting the inheritance rule) and silently diverge
             # from what the same engine yields through the batch path.
             self._segments[event.segment_id] = Segment(
-                start=event.start if event.start is not None else 0.0,
-                end=event.end if event.end is not None else (event.start or 0.0),
+                start=event.start,
+                end=event.end,
                 text=event.text or "",
                 words=event.words,
                 speaker=(
@@ -606,25 +1025,79 @@ class StreamReducer:
                     else synthesize_segment_speaker(event.words)
                 ),
             )
-            self._has_timestamp[event.segment_id] = has_ts
         elif event.type == "supersede":
+            # THE shared admission rules (_supersede_admission), against the
+            # reducer's own state expressed in the shared vocabulary. The
+            # reducer has no "closed" tracking, so that arm never fires here
+            # -- full lifecycle enforcement is the session guard's job.
+            verdict = _supersede_admission(
+                event,
+                ledger=self._ledger,
+                old_state=self._lifecycle_state,
+                new_state=self._lifecycle_state,
+            )
+            if isinstance(verdict, tuple):
+                self._suppress(*verdict)
+                return
+            self._ledger.splice(event.old_ids, event.new_ids, start=verdict)
             for old_id in event.old_ids:
-                if old_id in self._segments:
-                    del self._segments[old_id]
-                    self._has_timestamp.pop(old_id, None)
-                    self._order.remove(old_id)
+                self._retired.add(old_id)
+                self._segments.pop(old_id, None)
+        # Admitted-commit point (mirrors the guard's cursor commit): every
+        # suppression above has already returned, so only an event that was
+        # actually incorporated -- including non-content progress/done/error,
+        # which are never suppressed here -- updates the sticky session
+        # language (last non-None wins).
+        if event.detected_language is not None:
+            self._detected_language = event.detected_language
+
+    @property
+    def detected_language(self) -> str | None:
+        """The sticky session-level detected language reduced so far.
+
+        The last non-``None`` ``detected_language`` carried by an ADMITTED
+        event (a suppressed event never commits one). This is the same value
+        :meth:`result` reports; exposed separately so a caller holding a
+        live reducer (e.g. the session's terminal-event funnel) can read it
+        without building a full intermediate result.
+
+        Returns:
+            The sticky language tag, or ``None`` when no admitted event has
+            carried one.
+        """
+        return self._detected_language
 
     def result(self) -> TranscriptionResult:
         """Build the reduced transcription result.
 
         Returns:
-            A :class:`TranscriptionResult` from the committed segments. Ordered
-            by ``start`` only when every segment carries a real timestamp;
-            otherwise arrival order is preserved.
+            A :class:`TranscriptionResult` from the committed segments.
+            Ordered by ``start`` when every retained segment carries one
+            (``measured`` and ``start_only`` alike -- a real onset is a real
+            time position); otherwise the ledger's reading order is used
+            (declaration order with supersede replacements IN PLACE), and
+            ``text`` joins segment texts in the same list order either
+            way. When any retained segment lacks a full measured span
+            (``timestamp_status != "measured"``), the result carries the
+            aggregate ``segment_timestamps_unavailable`` warning diagnostic;
+            the per-segment truth is the nullable ``start``/``end`` values
+            themselves (consumers such as the SRT/VTT renderers read those,
+            never a marker, and never value-sniff). Suppression diagnostics
+            recorded by :meth:`add` (order-integrity violations of a raw
+            non-compliant stream) are included first.
+
+            ``segments`` is ALWAYS a list -- ``[]`` for an empty session
+            (silence, a fresh reducer, or every segment retired by pure
+            deletion), never ``None``: the reducer performed the segment
+            lifecycle, so emptiness is the spec's "requested but empty"
+            state, and the renderers' null rule (``None`` + non-empty text
+            synthesizes a whole-text fallback cue; ``[]`` renders zero
+            cues) depends on the distinction being kept on the wire.
         """
-        order = list(self._order)
-        if order and all(self._has_timestamp.get(sid, False) for sid in order):
-            order.sort(key=lambda sid: self._segments[sid].start)
+        order = [sid for sid in self._ledger.order() if sid in self._segments]
+        starts = {sid: seg.start for sid in order if (seg := self._segments[sid]).start is not None}
+        if order and len(starts) == len(order):
+            order.sort(key=lambda sid: starts[sid])
         segments = [self._segments[sid] for sid in order]
         # Strip each segment and drop empties so a segment carrying edge
         # whitespace (or an empty committed segment) does not inject a double
@@ -632,10 +1105,37 @@ class StreamReducer:
         # space-joined as the v1 default; a no-space-language (CJK) separator is a
         # separate spec question, not silently changed here.
         text = " ".join(part for part in (segment.text.strip() for segment in segments) if part)
+        diagnostics: list[Diagnostic] = list(self._suppressions)
+        unmeasured = [sid for sid in order if self._segments[sid].timestamp_status != "measured"]
+        if unmeasured:
+            # The nullable spans already say "unmeasured" per segment; this is
+            # the aggregate disclosure a consumer can surface without walking
+            # the list. Explicit over implicit.
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    code=DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+                    message=(
+                        f"{len(unmeasured)} of {len(order)} reduced segments lack a "
+                        "usable timestamp span (start and/or end is None; a "
+                        "start-only final keeps its real start but has no span). "
+                        "Do not use them for timing-sensitive output."
+                    ),
+                    param="segments",
+                )
+            )
         return TranscriptionResult(
             text=text,
-            segments=segments or None,
+            # ALWAYS a list: the reducer performed the segment lifecycle, so
+            # an empty outcome is "performed but empty" -- the spec's `[]`
+            # (a silent session, a fresh reducer, everything retired), never
+            # `None` ("not requested / not applicable"). The renderers key
+            # on exactly this distinction: `[]` renders zero cues, while
+            # `None` with non-empty text synthesizes a whole-text fallback
+            # cue -- an empty session must never fabricate one.
+            segments=segments,
             detected_language=self._detected_language,
+            diagnostics=diagnostics,
         )
 
 
@@ -664,8 +1164,18 @@ class _CoalescingBuffer:
     Pending ``partial`` events are merged per ``segment_id`` (latest wins); a
     same-segment ``final`` / ``closed`` / ``supersede`` invalidates and DROPS the
     pending partial so a replaced/finalized segment can never revive (a merge
-    MUST be invalidated by the same segment's final/closed/supersede, and that
-    partial MUST be dropped). ``final`` / ``supersede`` / ``done`` / ``error`` are never
+    MUST be invalidated by the same segment's final/closed/supersede) --
+    with ONE carve-out: a pending partial that is the consumer's only
+    mention of its segment (nothing for that id was ever delivered, so the
+    partial is the segment's reading-order DECLARATION) is kept and
+    delivered ahead of the invalidating event instead. Dropping it moved
+    the segment's first delivered mention to the invalidating event's queue
+    position, silently reordering the delivered transcript relative to
+    ``session.result()`` for untimestamped streams (and starving a
+    delivered supersede of its ``old_ids`` declaration entirely). Delivered
+    BEFORE the final/supersede, the stale partial can never revive the dead
+    segment -- the no-revival rule is about ordering, not existence.
+    ``final`` / ``supersede`` / ``done`` / ``error`` are never
     dropped or reordered. When a coalesce replaces a pending partial, the
     replaced partial's non-``None`` ``speaker`` / ``detected_language`` are
     carried forward into the survivor when the survivor left them ``None``
@@ -697,21 +1207,42 @@ class _CoalescingBuffer:
         self._live_count = 0
         self._event = asyncio.Event()
         self._closed = False
+        # Segment ids the CONSUMER's reduce has already declared: the ids of
+        # delivered content events (partial/final ``segment_id``, a delivered
+        # supersede's introduced ``new_ids``). Read by the invalidation rule
+        # in :meth:`put`: a pending partial that is the consumer's only
+        # mention of its segment is that segment's reading-order DECLARATION
+        # and is kept, not dropped (see the class docstring). Grows with the
+        # session's distinct delivered segments -- the same accepted scale as
+        # the guard's and reducer's per-segment maps.
+        self._declared_to_consumer: set[str] = set()
 
-    def put(self, event: TranscriptionEvent) -> None:
+    def put(self, event: TranscriptionEvent) -> TranscriptionEvent:
         """Add an event, coalescing superseded partials.
 
         ``final`` / ``supersede`` / ``error`` / ``done`` are appended drop-proof
         (bypassing the bound), so only a NEW partial slot for a
         not-yet-pending segment or a ``progress`` event can overflow.
 
+        **Exception-atomic**: the overflow check runs before ANY buffer
+        state changes, so a raising ``put`` leaves the buffer exactly as it
+        was -- the producer relies on this to refuse an event *entirely*
+        (neither delivered nor reduced) instead of half-committing it.
+
         Args:
             event: The event to enqueue.
+
+        Returns:
+            The CANONICAL event as committed to the buffer -- ``event``
+            itself, or (for a coalesced partial) the survivor carrying any
+            carried-forward ``speaker`` / ``detected_language``. The
+            producer hands exactly this value to the reducer, so the
+            reduction consumes what the consumer will actually see.
 
         Raises:
             EventBufferOverflow: If the buffer is at capacity and the event is a
                 NEW partial for a not-yet-pending segment (growing the buffer)
-                or a ``progress`` heartbeat.
+                or a ``progress`` heartbeat. Raised before any mutation.
         """
         if event.type == "partial" and event.segment_id is not None:
             slot = self._partial_slot.get(event.segment_id)
@@ -744,26 +1275,45 @@ class _CoalescingBuffer:
                     event = event.model_copy(update=carried)
                 slot.event = event
                 self._event.set()
-                return
+                return event
             self._reserve()
             slot = _Slot(event)
             self._partial_slot[event.segment_id] = slot
             self._items.append(slot)
             self._live_count += 1
             self._event.set()
-            return
+            return event
 
         # A terminal-for-segment event invalidates and DROPS any pending
-        # partial for that/those segment(s) so a dead segment never revives.
+        # partial for that/those segment(s) so a dead segment never revives --
+        # UNLESS that partial is the consumer's only mention of the segment.
         if event.type in ("final", "supersede"):
             targets = [event.segment_id, *event.old_ids]
             for sid in targets:
                 if sid is None:
                     continue
-                stale = self._partial_slot.pop(sid, None)
-                if stale is not None and stale.alive:
-                    stale.alive = False
-                    self._live_count -= 1
+                stale = self._partial_slot.get(sid)
+                if stale is None or not stale.alive:
+                    continue
+                if sid not in self._declared_to_consumer:
+                    # The pending partial is the segment's DECLARATION: the
+                    # consumer has never seen this id, so dropping the
+                    # partial would move the segment's first mention -- its
+                    # reading-order position -- to THIS event's place at the
+                    # queue tail. For untimestamped streams (list order IS
+                    # reading order) that silently reorders the delivered
+                    # transcript relative to session.result(), and a
+                    # supersede retiring the id would reach the consumer's
+                    # reduce with a never-declared old_id (suppressed there,
+                    # spliced here -- textual drift). Keeping it is safe:
+                    # the partial's slot PRECEDES this event, so it is
+                    # delivered before the final/supersede and can never
+                    # revive the dead segment; and its slot already counts
+                    # against capacity, so nothing new can grow.
+                    continue
+                del self._partial_slot[sid]
+                stale.alive = False
+                self._live_count -= 1
             # final / supersede MUST never be dropped: append
             # drop-proof, bypassing the capacity bound. Only a NEW partial slot
             # (which GROWS the buffer for a not-yet-pending segment) may overflow
@@ -775,7 +1325,7 @@ class _CoalescingBuffer:
             self._items.append(_Slot(event))
             self._live_count += 1
             self._event.set()
-            return
+            return event
 
         if event.type in ("error", "done"):
             # error MUST never be dropped either (the never-drop rule does not
@@ -790,14 +1340,15 @@ class _CoalescingBuffer:
             self._items.append(_Slot(event))
             self._live_count += 1
             self._event.set()
-            return
+            return event
 
         self._reserve()
         self._items.append(_Slot(event))
         self._live_count += 1
         self._event.set()
+        return event
 
-    def put_forced(self, event: TranscriptionEvent) -> None:
+    def put_forced(self, event: TranscriptionEvent) -> TranscriptionEvent:
         """Append a terminal event bypassing the capacity bound.
 
         Terminal events (``done`` / ``error``) MUST never be dropped, even when
@@ -808,10 +1359,16 @@ class _CoalescingBuffer:
 
         Args:
             event: The terminal event to append.
+
+        Returns:
+            ``event`` itself (the canonical committed value, mirroring
+            :meth:`put` so every producer path follows the same
+            commit-then-reduce shape).
         """
         self._items.append(_Slot(event))
         self._live_count += 1
         self._event.set()
+        return event
 
     def _reserve(self) -> None:
         """Ensure room for one more live event.
@@ -845,6 +1402,15 @@ class _CoalescingBuffer:
                 and self._partial_slot.get(event.segment_id) is slot
             ):
                 del self._partial_slot[event.segment_id]
+            if event.is_content:
+                # Record what the consumer's reduce now knows: a delivered
+                # partial/final declares its segment, a delivered supersede
+                # introduces its new_ids (old_ids need no record -- they are
+                # retired, and the guard admits no further events for them).
+                # This feeds the sole-mention keep rule in :meth:`put`.
+                if event.segment_id is not None:
+                    self._declared_to_consumer.add(event.segment_id)
+                self._declared_to_consumer.update(event.new_ids)
             return event
         return None
 
@@ -966,10 +1532,10 @@ class _LifecycleGuard:
     ``superseded`` (terminal). ``new_ids`` from a supersede start ``open``.
     """
 
-    #: Diagnostic code of the aggregated overflow summary appended once the cap
-    #: is reached. Stable so a reader (and the compliance suite) can recognize a
-    #: truncated diagnostic stream.
-    OVERFLOW_CODE = "diagnostics_truncated"
+    #: Diagnostic code of the aggregated overflow summary appended once the
+    #: cap is reached (module-level :data:`DIAGNOSTICS_TRUNCATED_CODE` is the
+    #: owner; this alias keeps the guard's own references short).
+    OVERFLOW_CODE = DIAGNOSTICS_TRUNCATED_CODE
 
     def __init__(
         self, *, strict: bool = False, max_diagnostics: int = DEFAULT_MAX_GUARD_DIAGNOSTICS
@@ -991,6 +1557,11 @@ class _LifecycleGuard:
         self._strict = strict
         self._max_diagnostics = max_diagnostics
         self._state: dict[str, str] = {}
+        #: Live reading-order ledger: declarations append, supersedes splice.
+        #: The guard validates the supersede placement rule against it (the
+        #: reducer holds its own instance for ordering the reduced result;
+        #: both see only ACCEPTED events, so they stay in lockstep).
+        self._ledger = _ReadingOrderLedger()
         self._stable_until: dict[str, int] = {}
         self._frozen_text: dict[str, str] = {}
         #: Last ACCEPTED non-None segment-level speaker per segment id. One
@@ -1095,48 +1666,21 @@ class _LifecycleGuard:
         event, pending_cursor = self._clamp_audio_cursor(event)
         sid = event.segment_id
         if event.type == "supersede":
-            for old in event.old_ids:
-                if old not in self._state:
-                    self._reject(
-                        "supersede_unknown_old_id",
-                        f"supersede old_ids contains never-announced segment "
-                        f"{old!r}; suppressed (old_ids MUST have "
-                        "received at least one partial/final).",
-                    )
-                    return None
-            for old in event.old_ids:
-                old_state = self._state.get(old)
-                if old_state == "closed":
-                    self._reject(
-                        "lifecycle_closed_superseded",
-                        f"supersede old_ids contains closed segment {old!r}; "
-                        "suppressed (closed MUST NOT be superseded).",
-                    )
-                    return None
-                if old_state == "superseded":
-                    # superseded is a terminal state: an id retires
-                    # the moment it appears in old_ids. Without this check a
-                    # second retirement would copy the retired segment's frozen
-                    # text into a SECOND independent replacement lineage.
-                    self._reject(
-                        "lifecycle_retired_resuperseded",
-                        f"supersede old_ids contains already-superseded segment "
-                        f"{old!r}; suppressed (superseded is "
-                        "terminal -- an id MUST NOT be retired twice).",
-                    )
-                    return None
-            for new in event.new_ids:
-                if new in self._state:
-                    self._reject(
-                        "supersede_reintroduces_segment",
-                        f"supersede new_ids contains already-known segment "
-                        f"{new!r} (state {self._state[new]!r}); suppressed. "
-                        "Either the id is being reused (a new_id "
-                        "MUST be fresh) or this supersede was delivered out of "
-                        "order (a supersede MUST precede any "
-                        "partial/final of its new_ids).",
-                    )
-                    return None
+            # THE shared admission rules (_supersede_admission): the four
+            # id-set preconditions plus the placement rule, judged before
+            # any state mutation of this branch. The guard's extra rules
+            # (cross-speaker pigeonhole, frozen-text preservation) follow
+            # below -- they need guard-only state and stay here.
+            verdict = _supersede_admission(
+                event,
+                ledger=self._ledger,
+                old_state=self._state.get,
+                new_state=self._state.get,
+            )
+            if isinstance(verdict, tuple):
+                self._reject(*verdict)
+                return None
+            block_start = verdict
             # Cross-speaker merge ban: the retired segments'
             # last-known non-None speakers, taken from the same ledger the
             # frozen-speaker rule maintains. When fewer replacement segments
@@ -1159,7 +1703,7 @@ class _LifecycleGuard:
             # the raw length and evade the pigeonhole.
             if len(distinct_speakers) > 1 and 0 < len(set(event.new_ids)) < len(distinct_speakers):
                 self._reject(
-                    "supersede_cross_speaker_merge",
+                    DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE,
                     f"supersede retires segments {event.old_ids!r} whose last-known "
                     f"speakers are {sorted(distinct_speakers)!r} but replaces them "
                     # Report the DISTINCT count the pigeonhole actually compared
@@ -1183,13 +1727,14 @@ class _LifecycleGuard:
                 # Pure deletion (empty new_ids) cannot preserve any frozen text;
                 # it MUST NOT silently destroy a prefix the user saw frozen.
                 self._reject(
-                    "supersede_deletes_frozen_text",
+                    DIAG_SUPERSEDE_DELETES_FROZEN_TEXT,
                     "supersede with empty new_ids would delete the frozen prefix "
                     f"of {event.old_ids!r}; suppressed (frozen text "
                     "MUST be preserved -- pure deletion is allowed only for "
                     "segments with no frozen prefix).",
                 )
                 return None
+            self._ledger.splice(event.old_ids, event.new_ids, start=block_start)
             for old in event.old_ids:
                 self._state[old] = "superseded"
             for new in event.new_ids:
@@ -1209,14 +1754,14 @@ class _LifecycleGuard:
             state = self._state.get(sid, "open")
             if state in ("superseded", "closed"):
                 self._reject(
-                    "lifecycle_after_terminal",
+                    DIAG_LIFECYCLE_AFTER_TERMINAL,
                     f"{event.type} for segment {sid!r} after it became {state}; "
                     "suppressed (illegal transition).",
                 )
                 return None
             if event.type == "partial" and state == "final":
                 self._reject(
-                    "lifecycle_partial_after_final",
+                    DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL,
                     f"partial for segment {sid!r} after final; suppressed (illegal transition).",
                 )
                 return None
@@ -1225,7 +1770,7 @@ class _LifecycleGuard:
                 # closed event; a plain final re-freezing/rewriting the segment
                 # is illegal.
                 self._reject(
-                    "lifecycle_final_after_final",
+                    DIAG_LIFECYCLE_FINAL_AFTER_FINAL,
                     f"non-closed final for segment {sid!r} already in state final; "
                     "suppressed (from final only supersede or a "
                     "closed event is legal).",
@@ -1235,7 +1780,7 @@ class _LifecycleGuard:
             # replace previously frozen text in place.
             if not is_closed_final and self._frozen_prefix_rewritten(event, sid):
                 self._reject(
-                    "frozen_prefix_rewritten",
+                    DIAG_FROZEN_PREFIX_REWRITTEN,
                     f"segment {sid!r} rewrote its already-frozen prefix "
                     "(text[:stable_until] changed); suppressed (the "
                     "frozen prefix is immutable).",
@@ -1261,7 +1806,7 @@ class _LifecycleGuard:
             ):
                 change = "retracts it (X->None)" if event.speaker is None else "changes it (X->Y)"
                 self._reject(
-                    "frozen_speaker_rewritten",
+                    DIAG_FROZEN_SPEAKER_REWRITTEN,
                     f"segment {sid!r} has a frozen prefix and an accepted speaker "
                     f"{self._last_speaker[sid]!r}, but this {event.type} {change}; "
                     "suppressed (a frozen segment's speaker is locked "
@@ -1319,7 +1864,7 @@ class _LifecycleGuard:
                     else:
                         obligation.frozen.pop(sid, None)
                     self._reject(
-                        "frozen_prefix_rewritten_supersede",
+                        DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE,
                         f"supersede replacement group {group!r} froze a "
                         f"concatenated prefix {f_new!r} that diverges from the "
                         f"retired frozen text {f_old!r} it MUST preserve; the freeze "
@@ -1342,6 +1887,9 @@ class _LifecycleGuard:
                 self._state[sid] = "closed" if event.finality == "closed" else "final"
             else:
                 self._state[sid] = "open"
+            # First ACCEPTED mention claims the reading-order position (a
+            # supersede-declared id already sits where the splice put it).
+            self._ledger.declare(sid)
             self._commit_audio_cursor(pending_cursor)
             return event
 
@@ -1396,7 +1944,7 @@ class _LifecycleGuard:
             reason += f"stable_until {clamped} invalid boundary -> {safe}"
             clamped = safe
         if reason:
-            self._reject("stable_until_clamped", reason)
+            self._reject(DIAG_STABLE_UNTIL_CLAMPED, reason)
         if clamped != su:
             event = event.model_copy(update={"stable_until": clamped})
         if not allow_decrease:
@@ -1490,7 +2038,7 @@ class _LifecycleGuard:
                 emitted.append(
                     Diagnostic(
                         level="info",
-                        code="supersede_obligation_unfulfilled",
+                        code=DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
                         message=(
                             f"supersede replacement {obligation.new_ids!r} ended with its "
                             f"concatenated frozen prefix shorter than the retired frozen text "
@@ -1533,7 +2081,7 @@ class _LifecycleGuard:
             return event, None
         if cursor < self._audio_cursor:
             self._reject(
-                "audio_cursor_decreased",
+                DIAG_AUDIO_CURSOR_DECREASED,
                 f"audio_processed_until decreased {cursor} -> clamped to "
                 f"{self._audio_cursor} (the cursor is monotonic).",
             )
@@ -1908,8 +2456,8 @@ class TranscriptionSession(ABC):
         message: str,
         level: Literal["info", "warning"] = "info",
         param: str | None = None,
-        provided: object | None = None,
-        effective: object | None = None,
+        provided: JsonValue | BaseModel = None,
+        effective: JsonValue | BaseModel = None,
     ) -> None:
         """Surface a structured diagnostic from ``_produce`` (the streaming channel).
 
@@ -1932,7 +2480,8 @@ class TranscriptionSession(ABC):
         unauthenticated) WebSocket client as a ``diagnostics`` frame, and, for the
         batch counterpart ``result.diagnostics``, in the REST response -- and is
         **NOT** redacted. The standard layer scrubs only the detail IT auto-captures
-        (an ``error`` event's ``extra``, which may hold ``str(exc)``); content you
+        (an ``error`` event's ``extra``, which holds a scrubbed exception
+        summary -- never a raw ``str(exc)``); content you
         pass here is your contract to keep. NEVER pass a credential, API key, a URL
         with embedded auth, or raw exception text -- route sensitive operator detail
         to ``logging`` instead. (That asymmetry is deliberate: an ``error`` event's
@@ -1944,8 +2493,23 @@ class TranscriptionSession(ABC):
             message: Human-readable explanation (client-facing; no secrets).
             level: ``"info"`` or ``"warning"`` (default ``"info"``).
             param: The parameter the diagnostic concerns, if any.
-            provided: The value the application provided, if relevant (client-facing).
-            effective: The value that took effect, if relevant (client-facing).
+            provided: The value the application provided, if relevant
+                (client-facing). A pydantic model is projected into its JSON
+                form via :func:`~standard_asr.contract.results.to_json_value`
+                -- the same projection the standard's own diagnostics apply
+                -- so passing a request submodel just works instead of
+                raising out of a live ``_produce``.
+            effective: The value that took effect, if relevant
+                (client-facing; projected like ``provided``).
+
+        Raises:
+            pydantic.ValidationError: If ``provided`` / ``effective`` has no
+                JSON form even after projection (e.g. an arbitrary in-process
+                object) -- an engine bug surfaced loudly at the call site,
+                naming the field, instead of failing later in the transport.
+                Raising from ``_produce`` terminates the session, so keep
+                such objects in your own state (see the docs' wire-visible
+                values section).
         """
         self._guard.record_diagnostic(
             Diagnostic(
@@ -1953,8 +2517,8 @@ class TranscriptionSession(ABC):
                 code=code,
                 message=message,
                 param=param,
-                provided=provided,
-                effective=effective,
+                provided=to_json_value(provided),
+                effective=to_json_value(effective),
             )
         )
 
@@ -2159,7 +2723,9 @@ class TranscriptionSession(ABC):
         except asyncio.CancelledError:
             raise
         except Exception:
-            LOGGER.exception("Fed audio source failed during streaming.")
+            # The fed source is arbitrary application/engine code; scrub any
+            # chained ValidationError before its text reaches the log.
+            log_exception_safely(LOGGER, "Fed audio source failed during streaming.")
             await self._audio_queue.put(_INPUT_SOURCE_FAILURE)
             self._ended = True
         else:
@@ -2287,8 +2853,10 @@ class TranscriptionSession(ABC):
         pending = self._pending_reconnects
         self._pending_reconnects = []
         for ev in pending:
-            self._reducer.add(ev)
-            self._buffer.put_forced(ev)
+            # Same commit-then-reduce shape as the main producer loop
+            # (put_forced cannot fail, so the order is uniformity here, not
+            # load-bearing atomicity).
+            self._reducer.add(self._buffer.put_forced(ev))
 
     async def _run_producer(self) -> None:
         """Drive ``_produce``, appending a terminal ``done`` or ``error``.
@@ -2296,6 +2864,21 @@ class TranscriptionSession(ABC):
         Enforces lifecycle invariants (suppressing illegal transitions), flushes
         adapter-driven reconnect events in order, and converts a send-side
         buffer overflow into a terminal ``backpressure`` error.
+
+        **Event commit ordering** (the stream == result invariant's write
+        side): every admitted event is committed to the buffer FIRST and the
+        CANONICAL committed value -- ``put``'s return, carrying any
+        coalescing carry-forward -- is then handed to the reducer, so the
+        reduction consumes exactly what the consumer will see. The pair is
+        atomic to every observer: ``put`` raises overflow *before any
+        mutation* (an overflowing event is refused entirely -- neither
+        delivered nor reduced, so it cannot pollute ``result()``), the
+        reducer is total for admitted events (every structurally illegal
+        shape is rejected at event construction), and no ``await`` separates
+        the two calls, so neither the consumer task nor a ``result()``
+        caller can observe one committed without the other. Reducing FIRST
+        was the original overflow bug: the refused event was already part of
+        ``result()`` -- state the consumer could never have seen.
 
         Pending adapter reconnect events are drained drop-proof BEFORE every
         terminal append (so a queued ``progress`` + ``content_lost`` precedes,
@@ -2309,13 +2892,13 @@ class TranscriptionSession(ABC):
                 admitted = self._guard.admit(event)
                 if admitted is None:
                     continue  # illegal transition: suppressed (diagnosed).
-                self._reducer.add(admitted)
                 if admitted.is_terminal:
                     # Engine-emitted terminal: run the shared terminal funnel,
-                    # then deliver drop-proof.
-                    self._buffer.put_forced(self._terminate(admitted))
+                    # then deliver drop-proof and reduce the same canonical
+                    # value the funnel produced.
+                    self._reducer.add(self._buffer.put_forced(self._terminate(admitted)))
                     return
-                self._buffer.put(admitted)
+                self._reducer.add(self._buffer.put(admitted))
             self._drain_pending_reconnects()
             # Session ended cleanly: the funnel sweeps for supersede obligations
             # whose replacement never re-froze all the retired frozen text. Any
@@ -2336,7 +2919,12 @@ class TranscriptionSession(ABC):
             self._force_error("input_source_error", _INPUT_SOURCE_ERROR_DETAIL)
         except Exception as exc:  # noqa: BLE001 - surfaced as an error event
             self._drain_pending_reconnects()
-            self._force_error("engine_error", str(exc))
+            # The detail string outlives the exception object (it rides the
+            # error event into server logs), so it MUST be scrubbed at the
+            # moment the chain still exists: a raw str(exc) here would freeze
+            # a chained ValidationError's input echo into a plain string no
+            # later redaction layer can recognize.
+            self._force_error("engine_error", safe_exception_summary(exc))
         finally:
             # Guard: any path that skipped the drains above (e.g. an early
             # terminal return while reconnects were still queued) still flushes
@@ -2495,20 +3083,42 @@ class TranscriptionSession(ABC):
         silently skip a step:
 
         * run the supersede-obligation sweep (idempotent) so
-          :meth:`diagnostics` is complete on every exit path; and
+          :meth:`diagnostics` is complete on every exit path;
         * release the audio-input side: a terminal also ends the producer --
           the audio queue's only drainer -- so without a release, an
           application feeder blocked in :meth:`send_audio` on the bounded
-          queue would never wake (a deadlock inside ``async with session:``).
+          queue would never wake (a deadlock inside ``async with session:``);
+          and
+        * stamp the session's reduced ``detected_language`` onto a terminal
+          that carries none. The sticky language is ORDER-sensitive (last
+          non-``None`` wins) while coalescing is not: an in-place coalesce
+          can move a newer language assignment to an earlier delivery slot,
+          and an invalidation can retire the only partial that carried one
+          -- so no per-event carry-forward can make the delivered stream's
+          running language converge to the session's in every interleaving
+          (a carried value can even land AFTER a newer delivered one and
+          regress it). The terminal event is the one event that is always
+          delivered, always last, and never dropped, so stamping it makes
+          ``reduce(delivered events).detected_language ==
+          session.result().detected_language`` hold by construction. An
+          engine-authored terminal language is never overwritten (it is
+          itself the newest assignment, and the reducer commits it).
 
         Args:
             terminal: The terminal event about to be delivered.
 
         Returns:
-            The terminal event, for delivery by the caller.
+            The terminal event -- with the session language stamped in when
+            the terminal carried none -- for delivery by the caller.
         """
         self._guard.finalize()
         self._release_audio_input()
+        if terminal.detected_language is None:
+            sticky = self._reducer.detected_language
+            if sticky is not None:
+                # model_copy skips validators -- fine: the sticky value was
+                # validated on the admitted event that carried it.
+                terminal = terminal.model_copy(update={"detected_language": sticky})
         return terminal
 
     def _release_audio_input(self) -> None:
@@ -2952,25 +3562,64 @@ class SyncSession:
     def result(self) -> TranscriptionResult:
         """Reduce the session so far into a transcription result.
 
+        SERIALIZED WITH THE PRODUCER while the bridge is live: the reduction
+        walks reducer state the producer task mutates (a supersede pops
+        segments mid-walk), so it is submitted to the owned loop like every
+        other bridge member -- asyncio's run-to-completion between awaits is
+        the mutual exclusion, and the wrapper coroutine never awaits around
+        the call. Running it on the caller's thread instead read that state
+        concurrently: a rendering loop (``for ev in sync: render(sync.
+        result())``) crashed with a spurious ``KeyError`` or returned a torn
+        result mixing pre- and post-supersede segments. After teardown
+        (``__exit__``, or a timed-out lifecycle call) no producer runs
+        anymore, so the direct call is safe -- and keeps the
+        result-after-the-``with``-block pattern working.
+
         Returns:
             The reduced result.
+
+        Raises:
+            TimeoutError: If the live loop cannot run the reduction within
+                the submit timeout (frozen by blocking adapter code); the
+                bridge is torn down first (no-hang contract).
         """
-        return self._session.result()
+        if self._closed:
+            return self._session.result()
+
+        async def _do_result() -> TranscriptionResult:
+            return self._session.result()
+
+        return cast("TranscriptionResult", self._submit(_do_result(), timeout=self._submit_timeout))
 
     def diagnostics(self) -> list[Diagnostic]:
         """Return the session's standard-layer and lifecycle diagnostics.
 
-        Mirrors :meth:`TranscriptionSession.diagnostics` (forwarded directly, like
-        :meth:`result`) so a synchronously-driven session exposes the same
-        parameter-gating / language-resolution / lifecycle-suppression
-        diagnostics as the async one. Without this the sync bridge would silently
-        drop a first-class, compliance-checked part of the session surface (the
-        sync bridge is a faithful mirror of the async session).
+        Mirrors :meth:`TranscriptionSession.diagnostics` so a synchronously-
+        driven session exposes the same parameter-gating / language-resolution
+        / lifecycle-suppression diagnostics as the async one. Without this the
+        sync bridge would silently drop a first-class, compliance-checked part
+        of the session surface (the sync bridge is a faithful mirror of the
+        async session). Serialized with the producer exactly like
+        :meth:`result` (the snapshot copies guard state the producer task
+        appends to); direct once torn down.
 
         Returns:
             The accumulated diagnostics.
+
+        Raises:
+            TimeoutError: If the live loop cannot run the snapshot within
+                the submit timeout (frozen by blocking adapter code); the
+                bridge is torn down first (no-hang contract).
         """
-        return self._session.diagnostics()
+        if self._closed:
+            return self._session.diagnostics()
+
+        async def _do_diagnostics() -> list[Diagnostic]:
+            return self._session.diagnostics()
+
+        return cast(
+            "list[Diagnostic]", self._submit(_do_diagnostics(), timeout=self._submit_timeout)
+        )
 
     def is_loop_alive(self) -> bool:
         """Whether the owned background event-loop thread is still running.
@@ -2997,6 +3646,23 @@ __all__ = [
     "DEFAULT_MAX_GUARD_DIAGNOSTICS",
     "DEFAULT_MAX_IDLE",
     "DEFAULT_MAX_SESSION_SECONDS",
+    "DIAG_AUDIO_CURSOR_DECREASED",
+    "DIAG_FROZEN_PREFIX_REWRITTEN",
+    "DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE",
+    "DIAG_FROZEN_SPEAKER_REWRITTEN",
+    "DIAG_LIFECYCLE_AFTER_TERMINAL",
+    "DIAG_LIFECYCLE_CLOSED_SUPERSEDED",
+    "DIAG_LIFECYCLE_FINAL_AFTER_FINAL",
+    "DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL",
+    "DIAG_LIFECYCLE_RETIRED_RESUPERSEDED",
+    "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
+    "DIAG_STABLE_UNTIL_CLAMPED",
+    "DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE",
+    "DIAG_SUPERSEDE_DELETES_FROZEN_TEXT",
+    "DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED",
+    "DIAG_SUPERSEDE_REINTRODUCES_SEGMENT",
+    "DIAGNOSTICS_TRUNCATED_CODE",
+    "DIAG_SUPERSEDE_UNKNOWN_OLD_ID",
     "EventType",
     "StreamDeadlines",
     "StreamReducer",

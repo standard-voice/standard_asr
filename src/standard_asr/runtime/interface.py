@@ -27,15 +27,25 @@ from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast, runtime_checkable
 
+from pydantic import ValidationError
+
 from standard_asr.audio.conversion import PreparedAudio, execute_plan
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioInput, AudioInputLike, coerce_audio_input
 from standard_asr.audio.negotiation import negotiate_or_raise
 from standard_asr.audio.wire import CANONICAL_WIRE_ENCODING
 from standard_asr.contract.capabilities import DeclaredCapabilities
-from standard_asr.contract.exceptions import ConfigError, UnsupportedFeatureError
+from standard_asr.contract.exceptions import (
+    ConfigError,
+    EngineContractError,
+    TranscriptionError,
+    UnsupportedFeatureError,
+)
 from standard_asr.contract.language import (
     AUTO,
+    DIAG_LANGUAGE_FELL_BACK,
+    DIAG_LANGUAGE_NOT_SELECTABLE,
+    DIAG_LANGUAGE_REFINEMENT_ACCEPTED,
     effective_candidate_languages,
     effective_language,
     normalize_bcp47,
@@ -51,9 +61,11 @@ from standard_asr.contract.results import (
 )
 from standard_asr.runtime.config import BaseConfig
 from standard_asr.runtime.gating import Mode, gate_params
+from standard_asr.runtime.protocol_boundary import require_sync_result
+from standard_asr.runtime.streaming import TranscriptionSession
 
 if TYPE_CHECKING:
-    from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionSession
+    from standard_asr.runtime.streaming import StreamDeadlines
 
 
 @runtime_checkable
@@ -70,9 +82,27 @@ class StandardASR(Protocol):
     engine as ``StandardASR`` and call the streaming entry point without a cast.
     """
 
-    config: BaseConfig[str]
     properties: ClassVar[BaseProperties]
     declared_capabilities: ClassVar[DeclaredCapabilities]
+
+    @property
+    def config(self) -> BaseConfig[str]:
+        """The engine's runtime configuration.
+
+        Declared as a READ-ONLY property, not a mutable attribute: a mutable
+        protocol member is invariant under strict typing, so a real engine
+        annotating its own subtype (``config: WhisperConfig``) would not be
+        structurally assignable to ``StandardASR`` without a cast -- defeating
+        the protocol's own no-cast promise above. Read-only makes the member
+        covariant (any engine's narrower config satisfies it), and matches
+        intent: config is constructor-injected; callers never reassign it
+        through the protocol. Implementations satisfy this with a plain
+        (even mutable) instance attribute -- no ``@property`` required.
+
+        Returns:
+            The engine's config instance.
+        """
+        ...
 
     def transcribe(
         self, audio: AudioInputLike, params: RuntimeParams | None = None
@@ -88,17 +118,22 @@ class StandardASR(Protocol):
             The transcription result.
 
         Raises:
-            ConfigError: On an invalid language configuration.
+            ConfigError: On an invalid language configuration VALUE
+                (``default_language`` malformed or not selectable) -- fixable
+                by whoever supplies the config.
+            EngineContractError: On an engine-declaration defect -- a
+                declared language axis with no ``default_language`` (IC.6),
+                or a malformed declared selectable/detectable tag.
             IncompatibleAudioInputError: If no conversion path exists.
             UnsafeAudioUrlError: If an ``AudioUrl`` fails the SSRF policy.
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure in the conversion pipeline.
-            UnsupportedFeatureError: In strict mode, on an unsupported parameter
-                or a non-selectable ``language``.
+            UnsupportedFeatureError: In strict mode, on an unsupported parameter,
+                a non-selectable ``language``, or a valid-but-unreachable
+                candidate list (non-detectable candidate / over-``max``).
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
-            ValueError: On an invalid candidate-language list (always for a
-                malformed/``auto`` candidate; strict-only for non-detectable /
-                over-``max``).
+            ValueError: On a malformed or ``"auto"`` candidate-language entry
+                (a caller code bug; raises independent of strict/best_effort).
             TranscriptionError: On an engine-execution failure.
         """
         ...
@@ -150,11 +185,19 @@ class StandardASR(Protocol):
             A streaming session.
 
         Raises:
-            ValueError: If both ``audio_format`` and ``audio`` are provided.
-            ConfigError: On an invalid language configuration.
+            ValueError: If both ``audio_format`` and ``audio`` are provided, or
+                on a malformed/``auto`` candidate-language entry (a caller code
+                bug; always raises, independent of strict/best_effort).
+            ConfigError: On an invalid language configuration VALUE
+                (``default_language`` malformed or not selectable).
+            EngineContractError: On an engine-declaration defect -- a
+                declared language axis with no ``default_language`` (IC.6),
+                or a malformed declared selectable/detectable tag.
             UnsupportedFeatureError: When streaming (or the requested streaming
                 input/output axis) is unsupported, when the wire format is
-                unreachable, or, in strict mode, on an unsupported parameter.
+                unreachable, or, in strict mode, on an unsupported parameter or
+                a valid-but-unreachable candidate list (non-detectable /
+                over-``max``).
             IncompatibleAudioInputError: If no conversion path exists for a
                 whole-input streaming ``audio`` value.
             UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the SSRF
@@ -162,6 +205,9 @@ class StandardASR(Protocol):
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
+            TranscriptionError: When a pydantic ``ValidationError`` escapes the
+                engine's session-construction hook (an invalid model
+                construction is an engine fault, never a request error).
         """
         ...
 
@@ -173,6 +219,30 @@ class StandardASR(Protocol):
 
         Returns:
             ``True`` if supported.
+        """
+        ...
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        """Return a wire :class:`AudioFormat` this engine accepts for streaming.
+
+        Part of the protocol because it is the documented first step of the
+        streaming journey (README / quickstart / streaming guide all start with
+        it) and the toolchain's sync-bridge runner and gating probes rely on it
+        -- a member every caller is taught to invoke MUST be part of the
+        contract, or a structural engine (and every ``StandardASR``-typed
+        variable) breaks on the standard's own 80% path. The value is purely
+        derivable from the engine's static Properties (see
+        :meth:`EngineBase.recommended_wire_format` for the derivation
+        ``EngineBase`` provides for free) -- deliberately capability-blind:
+        whether a bare-frame session can be OPENED is the
+        ``streaming_input`` capability gate's job inside
+        :meth:`start_transcription`, so a batch-only or output-only engine
+        still derives a format here (callers gate on
+        ``supports("streaming_input")`` first, per the streaming guide).
+
+        Returns:
+            A wire format the engine's session-establishment guard accepts, or
+            ``None`` when no bare-frame streaming format can be recommended.
         """
         ...
 
@@ -315,6 +385,88 @@ def _synthesize_result_speakers(result: TranscriptionResult) -> TranscriptionRes
     return result.model_copy(update=update)
 
 
+def ensure_wire_format_supported(properties: BaseProperties, audio_format: AudioFormat) -> None:
+    """Validate a streaming wire format against an engine's declared Properties.
+
+    The standard's session-establishment format rule as a PURE function of
+    ``(Properties, AudioFormat)`` -- the single owner shared by
+    :meth:`EngineBase.ensure_stream_format_supported` (the template's
+    establishment guard) and the compliance suite's
+    ``check_recommended_wire_format`` round-trip. Compliance validating through
+    this function instead of the ``EngineBase`` method keeps the check honest
+    for structural (non-``EngineBase``) engines: the guard method is NOT a
+    ``StandardASR`` protocol member, so calling it on a structural engine
+    raised ``AttributeError`` and mis-reported a fully-compliant engine as
+    self-inconsistent.
+
+    See :meth:`EngineBase.ensure_stream_format_supported` for the full
+    normative semantics (fail-closed on sample rate and channels; fail-closed
+    on encoding only when ``wire_encodings`` is declared).
+
+    Args:
+        properties: The engine's declared static Properties.
+        audio_format: The wire format the session declared.
+
+    Raises:
+        UnsupportedFeatureError: If ``wire_encodings`` is declared and the
+            requested encoding is not among them, if the wire ``channels`` is
+            not ``1`` (v1 streaming wire is mono-only), or if the wire sample
+            rate is not reachable for the engine (fail-closed; v1 does not
+            resample streaming wire frames).
+    """
+    props = properties
+    wire = props.wire_encodings
+    if wire is not None and audio_format.encoding not in wire:
+        raise UnsupportedFeatureError(
+            f"Streaming wire encoding {audio_format.encoding!r} is not supported; "
+            f"engine {props.engine_id!r} declares wire_encodings={wire}.",
+            param="audio_format.encoding",
+            mode="streaming",
+            hint=f"Open the session with one of the declared wire_encodings={wire}.",
+        )
+
+    if audio_format.channels != 1:
+        raise UnsupportedFeatureError(
+            f"Streaming wire format declares channels={audio_format.channels}; v1 "
+            "streaming wire input is mono-only. The standard layer does not process "
+            "incremental wire frames, so it cannot downmix multi-channel frames the "
+            "way the batch path does. Downmix to mono before feeding.",
+            param="audio_format.channels",
+            mode="streaming",
+            hint="Open the session with AudioFormat(..., channels=1) and downmix client-side.",
+        )
+
+    rate = audio_format.sample_rate
+    required = props.required_input_sample_rate
+    # A hard-required wire rate binds regardless of accepted_sample_rates:
+    # "any" + required_input_sample_rate is constructible (the declaration
+    # reachability validator only checks concrete lists), and v1 does not
+    # resample streaming wire frames, so a differing rate fails closed here.
+    if required is not None and rate != required:
+        raise UnsupportedFeatureError(
+            f"Streaming wire sample_rate {rate} Hz does not match the "
+            f"required_input_sample_rate={required} Hz that engine "
+            f"{props.engine_id!r} hard-requires. v1 does not resample streaming "
+            "wire frames, so the required rate is enforced at session "
+            "establishment even when accepted_sample_rates is 'any'.",
+            param="audio_format.sample_rate",
+            mode="streaming",
+            hint=f"Open the session at sample_rate={required}.",
+        )
+    accepted = props.accepted_sample_rates
+    if accepted != "any" and not sample_rate_accepted(accepted, rate):
+        raise UnsupportedFeatureError(
+            f"Streaming wire sample_rate {rate} Hz is not accepted by engine "
+            f"{props.engine_id!r} (accepted_sample_rates={accepted!r}). v1 does "
+            "not resample streaming wire frames, so an unreachable rate is "
+            "rejected at session establishment rather than silently "
+            "mistranscribed. Open the session at an accepted rate.",
+            param="audio_format.sample_rate",
+            mode="streaming",
+            hint=f"Open the session at an accepted_sample_rates value: {accepted!r}.",
+        )
+
+
 class EngineBase(ABC):
     """Abstract base implementing the standard transcribe pipeline.
 
@@ -356,19 +508,23 @@ class EngineBase(ABC):
         validators on defaults), and BCP-47 membership is case-insensitive, so
         every membership test must canonicalize both sides through the same
         rule. Centralizing it also gives a malformed declared tag ONE
-        contract: the engine-naming :class:`ConfigError` (HTTP 422 through the
-        server) on every path -- previously the detectable set was
+        contract: the engine-naming :class:`EngineContractError` on every
+        path -- previously the detectable set was
         canonicalized per request inside
         :func:`~standard_asr.contract.language.effective_candidate_languages`, where an
         empty class-default tag surfaced as an uncontracted bare
-        ``ValueError`` (an opaque HTTP 500) instead.
+        ``ValueError`` (an opaque HTTP 500) instead. It is a DECLARATION
+        defect -- the engine author's spec violation, nothing any caller
+        can fix -- so it is typed as an engine fault, not as
+        :class:`ConfigError` (whose invalid-configuration meaning maps to
+        caller-actionable surfaces such as the CLI's usage exit).
 
         Returns:
             A ``(selectable, detectable)`` pair of canonical tag sets.
 
         Raises:
-            ConfigError: If a declared selectable or detectable tag is
-                malformed (empty or whitespace-only), naming the engine.
+            EngineContractError: If a declared selectable or detectable tag
+                is malformed (empty or whitespace-only), naming the engine.
         """
         if self._language_sets_cache is not None:
             return self._language_sets_cache
@@ -377,7 +533,7 @@ class EngineBase(ABC):
                 _canonical_language(tag) for tag in self.properties.selectable_languages
             )
         except ValueError as exc:
-            raise ConfigError(
+            raise EngineContractError(
                 f"selectable_languages {self.properties.selectable_languages!r} declared "
                 f"by engine {self.properties.engine_id!r} contains a malformed tag: {exc}"
             ) from exc
@@ -386,7 +542,7 @@ class EngineBase(ABC):
                 _canonical_language(tag) for tag in self.properties.detectable_languages
             )
         except ValueError as exc:
-            raise ConfigError(
+            raise EngineContractError(
                 f"detectable_languages {self.properties.detectable_languages!r} declared "
                 f"by engine {self.properties.engine_id!r} contains a malformed tag: {exc}"
             ) from exc
@@ -499,26 +655,31 @@ class EngineBase(ABC):
             diagnostics attached.
 
         Raises:
-            ConfigError: If the engine exposes a language axis but its
-                ``default_language`` is unset, malformed, or not in
-                ``selectable_languages``; or if a declared selectable/detectable
-                tag is itself malformed (an engine-declaration bug).
+            ConfigError: If the engine's ``default_language`` VALUE is
+                malformed or not in ``selectable_languages`` -- fixable by
+                whoever supplies the config.
+            EngineContractError: On an engine-declaration defect -- a
+                declared language axis with no ``default_language`` (IC.6),
+                or a malformed declared selectable/detectable tag.
             IncompatibleAudioInputError: If no conversion path exists.
             UnsafeAudioUrlError: If an ``AudioUrl`` fails the SSRF policy
                 (non-HTTPS, or a private/loopback/link-local target).
             AudioProcessingError: On an audio failure surfaced by the conversion
                 pipeline -- a decode failure, an over-``max_file_size`` payload,
                 or (in strict mode) a bare array with no sample rate.
-            UnsupportedFeatureError: In strict mode, on an unsupported parameter
-                or a requested ``language`` not selectable by the engine.
+            UnsupportedFeatureError: In strict mode, on an unsupported parameter,
+                a requested ``language`` not selectable by the engine, or a
+                valid-but-unreachable candidate list (a non-detectable candidate
+                or one over the declared ``max``).
             InvalidProviderParamError: On wrong provider params.
-            ValueError: On an invalid candidate-language list -- a malformed
-                candidate tag or one containing ``auto`` raises **always**
-                (independent of strict/best_effort); a
-                non-detectable or over-``max`` candidate raises only in strict
-                mode.
+            ValueError: On a malformed candidate tag or one containing ``auto``
+                -- a caller code bug, raised **always** (independent of
+                strict/best_effort).
             TranscriptionError: On an engine-execution failure inside
-                :meth:`_transcribe`.
+                :meth:`_transcribe` -- including a pydantic ``ValidationError``
+                escaping it (an invalid result construction is an engine
+                fault; the template wraps it here so it can never masquerade
+                as a client-input validation error).
         """
         request = params or RuntimeParams()
         # Fail fast: validate config + params (no audio needed) before decode.
@@ -535,7 +696,41 @@ class EngineBase(ABC):
         )
         # Audio decode/resample only after parameters are known-good.
         prepared = self._prepare_audio(audio)
-        result = self._transcribe(prepared, gated)
+        try:
+            result = self._transcribe(prepared, gated)
+            # The boundary belongs HERE, at the author hook, not only on the
+            # public method a consumer sees: the template consumes this value
+            # immediately (speaker synthesis, then .diagnostics), so an
+            # `async def` _transcribe surfaced as a secondary AttributeError
+            # on a coroutine -- plus a never-awaited warning -- long before
+            # any consumer's own check could classify it. A public
+            # `transcribe()` being synchronous says nothing about the hook it
+            # delegates to, so no surface-level modality check can see this.
+            require_sync_result(result, "_transcribe()", expected_type=TranscriptionResult)
+        except ValidationError as exc:
+            # A pydantic ValidationError escaping _transcribe is an ENGINE
+            # fault (params were validated before this point; the usual cause
+            # is the engine constructing a TranscriptionResult/Segment the
+            # model rejects -- e.g. a field removed from the contract, or an
+            # invalid timestamp). Without this wrap it masquerades as a
+            # client-input validation error: the server's ValidationError
+            # clause turned it into a 422 blaming the request's options.
+            # Wrapping enforces the spec's portable batch error contract
+            # (engine-execution failure -> TranscriptionError, original
+            # exception preserved as __cause__) at the one template seam that
+            # can see it.
+            raise TranscriptionError(
+                "Engine produced an invalid result (or raised an unwrapped "
+                "validation error) inside _transcribe -- an engine/plugin "
+                "fault, not a request error. See the chained ValidationError "
+                "for the offending fields (e.g. a field the result model no "
+                "longer accepts).",
+                hint=(
+                    "Report this to the engine plugin's author; a core/plugin "
+                    "version mismatch (the plugin building a result with "
+                    "removed or invalid fields) is the usual cause."
+                ),
+            ) from exc
         # Standard-layer diarization synthesis: the streaming
         # reducer applies the same shared rule, so batch and streaming yield
         # the same Segment.speaker for the same engine output.
@@ -593,19 +788,29 @@ class EngineBase(ABC):
         silently transcribing in the wrong language.
 
         Raises:
-            ConfigError: If the language axis is exposed but ``default_language``
-                is unset, malformed (empty/whitespace), or not in
-                ``selectable_languages``; or if a declared selectable or
-                detectable tag is itself malformed.
+            ConfigError: If ``default_language`` carries an invalid VALUE --
+                malformed (empty/whitespace) or not in
+                ``selectable_languages``. The value came from the
+                configuration, so whoever supplies the config can fix it
+                (the CLI's usage exit; the reference server's clients
+                cannot supply config, so it scrubs to 500 there).
+            EngineContractError: If the language axis is exposed but
+                ``default_language`` is unset -- IC.6 obliges the ENGINE to
+                make it required or defaulted when it declares the axis, so
+                a ``None`` here is the engine's declaration inconsistency,
+                not a fixable configuration value -- or if a declared
+                selectable/detectable tag is itself malformed.
         """
         if not self.properties.has_language_axis:
             return
         default = getattr(self.config, "default_language", None)
         if default is None:
-            raise ConfigError(
+            raise EngineContractError(
                 f"Engine {self.properties.engine_id!r} exposes a language axis "
                 "(selectable_languages is non-empty) so its config MUST set "
-                "default_language."
+                "default_language (IC.6: required or defaulted when the axis "
+                "is declared -- an engine-declaration defect, not a value the "
+                "caller can supply)."
             )
         # Canonicalize BOTH sides: BCP-47 membership is case-insensitive, and
         # either default_language or the declared sets may be a non-canonical
@@ -658,8 +863,10 @@ class EngineBase(ABC):
 
         Raises:
             UnsupportedFeatureError: In strict mode, if the resolved language is
-                not selectable by this engine.
-            ValueError: In strict mode, on an invalid candidate-language list.
+                not selectable by this engine, or on a valid-but-unreachable
+                candidate list (non-detectable / over-``max``).
+            ValueError: On a malformed or ``"auto"`` candidate entry (always,
+                independent of strict/best_effort).
         """
         if not self.properties.has_language_axis:
             return params, []
@@ -698,7 +905,7 @@ class EngineBase(ABC):
             diagnostics.append(
                 Diagnostic(
                     level="warning",
-                    code="language_fell_back",
+                    code=DIAG_LANGUAGE_FELL_BACK,
                     message=(
                         f"Per-request language was dropped (engine does not support "
                         f"language.runtime_override in {mode} mode); transcribing with "
@@ -743,7 +950,7 @@ class EngineBase(ABC):
             diagnostics.append(
                 Diagnostic(
                     level="warning",
-                    code="language_not_selectable",
+                    code=DIAG_LANGUAGE_NOT_SELECTABLE,
                     message=(
                         f"Fell back from non-selectable language {eff_lang!r} to "
                         f"default_language {default_language!r} in {mode} mode."
@@ -763,7 +970,7 @@ class EngineBase(ABC):
             diagnostics.append(
                 Diagnostic(
                     level="info",
-                    code="language_refinement_accepted",
+                    code=DIAG_LANGUAGE_REFINEMENT_ACCEPTED,
                     message=(
                         f"language {eff_lang!r} accepted in {mode} mode as a "
                         f"refinement of selectable {matched!r} (RFC 4647 lookup); "
@@ -784,6 +991,7 @@ class EngineBase(ABC):
             detectable_languages=detectable,
             max_count=constraints,
             strict=self._strict,
+            mode=mode,
         )
         diagnostics.extend(candidate_diags)
         effective_params = params.model_copy(
@@ -820,13 +1028,28 @@ class EngineBase(ABC):
             The transcription result.
 
         Raises:
+            EngineContractError: If :meth:`transcribe` (overridden by the
+                subclass) violated the synchronous protocol contract --
+                returned an awaitable (``async def``) or a value that is not
+                a :class:`~standard_asr.contract.results.TranscriptionResult`.
             Exception: The same exception set as :meth:`transcribe` (it runs that
                 method): ``ConfigError``, ``IncompatibleAudioInputError``,
                 ``UnsafeAudioUrlError``, ``AudioProcessingError``,
                 ``UnsupportedFeatureError``, ``InvalidProviderParamError``,
                 ``ValueError``, and ``TranscriptionError``.
         """
-        return await asyncio.to_thread(self.transcribe, audio, params)
+        result = await asyncio.to_thread(self.transcribe, audio, params)
+        # This bridge is a real CONSUMER of the synchronous protocol member,
+        # exactly like the CLI and the server's REST path: `self.transcribe`
+        # is virtual dispatch into subclass code, and the template's own
+        # `_transcribe` boundary above says nothing about a subclass that
+        # overrode the PUBLIC method (an `async def transcribe` hands
+        # to_thread a coroutine it never drives; a wrong-typed override
+        # passes straight through). Unchecked, the caller received that
+        # coroutine as the "result" -- the wrong type AND a never-awaited
+        # leak -- so the one shared boundary runs here too.
+        require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
+        return result
 
     @abstractmethod
     def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
@@ -921,57 +1144,10 @@ class EngineBase(ABC):
                 rate is not reachable for the engine (fail-closed; v1 does not
                 resample streaming wire frames).
         """
-        props = self.properties
-        wire = props.wire_encodings
-        if wire is not None and audio_format.encoding not in wire:
-            raise UnsupportedFeatureError(
-                f"Streaming wire encoding {audio_format.encoding!r} is not supported; "
-                f"engine {props.engine_id!r} declares wire_encodings={wire}.",
-                param="audio_format.encoding",
-                mode="streaming",
-                hint=f"Open the session with one of the declared wire_encodings={wire}.",
-            )
-
-        if audio_format.channels != 1:
-            raise UnsupportedFeatureError(
-                f"Streaming wire format declares channels={audio_format.channels}; v1 "
-                "streaming wire input is mono-only. The standard layer does not process "
-                "incremental wire frames, so it cannot downmix multi-channel frames the "
-                "way the batch path does. Downmix to mono before feeding.",
-                param="audio_format.channels",
-                mode="streaming",
-                hint="Open the session with AudioFormat(..., channels=1) and downmix client-side.",
-            )
-
-        rate = audio_format.sample_rate
-        required = props.required_input_sample_rate
-        # A hard-required wire rate binds regardless of accepted_sample_rates:
-        # "any" + required_input_sample_rate is constructible (the declaration
-        # reachability validator only checks concrete lists), and v1 does not
-        # resample streaming wire frames, so a differing rate fails closed here.
-        if required is not None and rate != required:
-            raise UnsupportedFeatureError(
-                f"Streaming wire sample_rate {rate} Hz does not match the "
-                f"required_input_sample_rate={required} Hz that engine "
-                f"{props.engine_id!r} hard-requires. v1 does not resample streaming "
-                "wire frames, so the required rate is enforced at session "
-                "establishment even when accepted_sample_rates is 'any'.",
-                param="audio_format.sample_rate",
-                mode="streaming",
-                hint=f"Open the session at sample_rate={required}.",
-            )
-        accepted = props.accepted_sample_rates
-        if accepted != "any" and not sample_rate_accepted(accepted, rate):
-            raise UnsupportedFeatureError(
-                f"Streaming wire sample_rate {rate} Hz is not accepted by engine "
-                f"{props.engine_id!r} (accepted_sample_rates={accepted!r}). v1 does "
-                "not resample streaming wire frames, so an unreachable rate is "
-                "rejected at session establishment rather than silently "
-                "mistranscribed. Open the session at an accepted rate.",
-                param="audio_format.sample_rate",
-                mode="streaming",
-                hint=f"Open the session at an accepted_sample_rates value: {accepted!r}.",
-            )
+        # Delegates to the module-level pure rule so the compliance suite can
+        # validate the identical semantics for structural (non-EngineBase)
+        # engines without reaching for this method.
+        ensure_wire_format_supported(self.properties, audio_format)
 
     def recommended_wire_format(self) -> AudioFormat | None:
         """Return a minimal wire :class:`AudioFormat` to open a streaming session.
@@ -992,6 +1168,13 @@ class EngineBase(ABC):
           canonical ``pcm_s16le`` (used only when ``wire_encodings`` is
           unconstrained, where the engine accepts any encoding).
         * ``channels`` = 1 (v1 streaming wire is mono-only).
+
+        The derivation is deliberately capability-blind (Properties only):
+        whether a bare-frame session can be opened at all is decided by the
+        ``streaming_input`` gate in :meth:`start_transcription`, not here --
+        so the recommendation stays a pure, class-level static fact and the
+        compliance round-trip (format ⊆ ``ensure_stream_format_supported``)
+        holds for every engine, streaming or not.
 
         Returns:
             A wire format the engine's session-establishment guard accepts, or
@@ -1080,16 +1263,18 @@ class EngineBase(ABC):
 
         Raises:
             ValueError: If both ``audio_format`` and ``audio`` are provided, or
-                on an invalid candidate-language list (always for a
-                malformed/``auto`` candidate; strict-only for non-detectable /
-                over-``max``).
-            ConfigError: If the engine exposes a language axis but its
-                ``default_language`` is unset, malformed, or not in
-                ``selectable_languages``.
+                on a malformed/``auto`` candidate-language entry (a caller code
+                bug; always raises, independent of strict/best_effort).
+            ConfigError: If the engine's ``default_language`` VALUE is
+                malformed or not in ``selectable_languages``.
+            EngineContractError: On an engine-declaration defect -- a
+                declared language axis with no ``default_language`` (IC.6),
+                or a malformed declared selectable/detectable tag.
             UnsupportedFeatureError: When the requested streaming input/output
                 axis is unsupported, when streaming is unsupported, when the wire
                 format is unreachable, or, in strict mode, on an unsupported
-                parameter.
+                parameter or a valid-but-unreachable candidate list
+                (non-detectable / over-``max``).
             IncompatibleAudioInputError: If no conversion path exists for a
                 whole-input streaming ``audio`` value.
             UnsafeAudioUrlError: If a whole-input ``AudioUrl`` fails the SSRF
@@ -1097,6 +1282,10 @@ class EngineBase(ABC):
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
+            TranscriptionError: When a pydantic ``ValidationError`` escapes the
+                engine's ``_start_transcription`` hook (an invalid model
+                construction is an engine fault; wrapped here so it can never
+                masquerade as a client-input validation error).
         """
         self.ensure_stream_inputs_exclusive(audio_format, audio)
         if audio_format is not None and not self.effective_capabilities.supports("streaming_input"):
@@ -1174,9 +1363,33 @@ class EngineBase(ABC):
         prepared: PreparedAudio | None = None
         if audio is not None:
             prepared = self._prepare_audio(audio)
-        session = self._start_transcription(
-            gated_params=gated, audio_format=audio_format, prepared_audio=prepared
-        )
+        try:
+            session = self._start_transcription(
+                gated_params=gated, audio_format=audio_format, prepared_audio=prepared
+            )
+            # Same seam as the batch hook: the template calls private methods
+            # on this value on the very next lines, so a coroutine or a
+            # wrong-typed object had to be classified here or not at all.
+            require_sync_result(
+                session, "_start_transcription()", expected_type=TranscriptionSession
+            )
+        except ValidationError as exc:
+            # Same engine-fault seam as the batch wrap on _transcribe: params
+            # were validated before this point, so a pydantic ValidationError
+            # escaping the hook is the ENGINE constructing an invalid model.
+            # Unwrapped it is a ValueError subclass and every transport
+            # misattributes it as a client mistake (WS "unsupported" echoing
+            # unsanitized pydantic detail; CLI usage-error exit 2).
+            raise TranscriptionError(
+                "Engine raised an unwrapped validation error inside its "
+                "_start_transcription hook -- an engine/plugin fault, not a "
+                "request error. See the chained ValidationError for the "
+                "offending fields.",
+                hint=(
+                    "Report this to the engine plugin's author; a core/plugin "
+                    "version mismatch is the usual cause."
+                ),
+            ) from exc
         # Friend API: validate the reserved-attribute guard now, before the base
         # seeds diagnostics / applies deadline overrides below -- so the check sees
         # the pristine post-__init__ snapshot and a subclass that clobbered base
@@ -1236,4 +1449,4 @@ class EngineBase(ABC):
         )
 
 
-__all__ = ["EngineBase", "StandardASR"]
+__all__ = ["EngineBase", "StandardASR", "ensure_wire_format_supported"]

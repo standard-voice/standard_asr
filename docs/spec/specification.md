@@ -268,7 +268,7 @@
 > **strict / best_effort 边界（与 [§Runtime 参数 R3](#runtime-参数-runtime-parameters--normative) 的"不支持即报错"张力的澄清）**：这里三类情况分属两套错误模型，**不要混淆**：
 > - **功能不支持**（步 3，`candidate_languages.supported=false` 且确有候选列表）：这是一个**不支持的标准集参数**，但 R3 步 3 明确把它降为 `None` + diagnostic——**永不抛错**，**独立于 strict/best_effort**。它是 Runtime §R2"不支持参数 strict 抛错"的一个**显式 carve-out**：候选语言不支持时静默忽略并诚实诊断，比为一个纯优化项硬失败更合理。**前提**：确有候选语言被传入（步 2 拿到非空列表）；什么都没传时步 2 直接短路为 `None`，不发 diagnostic。
 > - **值非法**（步 4 的"malformed BCP-47 标签"或包含保留字 `auto`）：这是**调用方的代码 bug**（如把 `"english"`/`"auto"` 当候选传入），MUST **始终抛 `ValueError`**，**独立于 strict/best_effort**——与 §Runtime R3 的 `provider_params` 错误"始终抛、不被 strict/best_effort 吞掉"同源。
-> - **值合法但不可达**（步 4 的"non-detectable"或"超 `constraints.max`"）：这才走 §R2 的 strict/best_effort 策略——strict 抛错，best_effort 丢弃/截断 + diagnostic。
+> - **值合法但不可达**（步 4 的"non-detectable"或"超 `constraints.max`"）：这才走 §R2 的 strict/best_effort 策略——strict 抛 `UnsupportedFeatureError`（`param="candidate_languages"`，与其它 strict 门控拒绝同型，server 映射为 422），best_effort 丢弃/截断 + diagnostic。
 >
 > 实现：`standard_asr.contract.language.effective_candidate_languages`（其 `Raises` 文档逐条对应上述三类）。
 
@@ -397,7 +397,7 @@ capabilities:
 
 **R1 — 缺失即不支持 (fail-closed)。** 应用 MUST 将能力树中**缺失的键**视为**不支持**。省略整个 `streaming` 域 = 不支持 streaming。
 
-**R2 — 容忍解析未知键。** 能力容器 MUST 宽容解析未知键（忽略并继续，不报错）。这使新版引擎能被旧版应用安全解析。
+**R2 — 容忍解析未知键。** 能力容器 MUST 宽容解析未知键（忽略并继续，不报错）。这使新版引擎能被旧版应用安全解析。**容忍的是键的集合，值的空间 MUST 闭合**：任何未知键（未来标准字段或 `x_*` 扩展——后文 R4）的**值** MUST 处于 JSON 值空间（嵌套对象/数组/字符串/数/布尔/null，且**非有限**数非法）——能力树是 Python/wire 同一协议的两次呈现（G.5.2），构造期接受一个 JSON 文档无法承载的值（任意对象、NaN/Inf）会让两层模型在 wire 投影时才**响亮失约**（参考实现：构造期 before-validator 按 `dict[str, JsonValue]` 校验并存入规范化后的值；非 JSON 值**构造期 fail-loud**，绝不把投影失败留给响应路径）。**键域同受 §TR.1 键域规则约束**：容忍的未知键 MUST 是**精确 `str`**（递归至任意深度），**任何**非字符串键构造期 fail-loud，绝不 coerce——宽松 `dict[str, …]` 校验会把 `bytes` 键**解码成其 `str` 拼写**，归并时该洗白后的键会**覆写同名声明字段**（`{b"supported": True}` 静默改写 `supported=False`——正是能力门控绝不能产生的 silent wrong result）或凭空铸出输入从未拼写的 `x_*` 扩展键（参考实现：与 results 层 wire 槽位共用 `contract.results.require_json_string_keys`，先于值 adapter 执行）。
 
 > R1 和 R2 是一对**不对称规则**：缺失键 → 安全假定不支持；多出的未知键 → 安全忽略。共同保证向前兼容。
 
@@ -646,23 +646,26 @@ TranscriptionResult:
   words: list[Word] | None               # 扁平词级（也可嵌 segment 内）
   channels: list[ChannelResult] | None   # 多通道分离（TR.4）
   diagnostics: list[Diagnostic]          # best_effort / 转换 / 降级 诊断
-  metadata: dict[str, Any]               # 标准化元信息
-  extra: dict[str, Any]                  # 引擎特定/实验（含 provider 渲染格式）
+  extra: dict[str, JsonValue]            # 引擎特定/实验（含 provider 渲染格式）
 ```
 - **返回类型恒定**：`response_format` 不把返回变字符串；多通道不把顶层换成 `transcripts[]`。
+- **无 blanket `metadata`（与 Properties / Capabilities 同款决策）**：结果模型**不含**自由 `metadata: dict` 口袋——「标准化元信息」若无一个已定义的标准键，就只是又一条无 schema 的非结构化通道（§AI 3.2 / §C 3.3 砍掉 blanket metadata 的同一理由）。未来真正标准化的结果元信息按 additive-minor 以**具名字段**加入；引擎特定数据走 `extra`。
+- **每个 wire 可见槽位 MUST 声明为 JSON 值空间**（`JsonValue`：null/bool/int/有限 float/str/其递归的 list 与 str-keyed dict）——`extra`、`Diagnostic.provided`/`effective`、以及任何 `x_*` 扩展值。声明为 `Any` 与 G5.2 的两层同构直接冲突：它准入**根本没有 JSON 表示**的 Python 对象（socket、numpy 数组、裸 `object()`），而 server 规范同时承诺 diagnostics 与非 error 的 `extra` **原样转发**——两条承诺不可能同时成立：这类值构造时一切正常，直到 wire 投影时失败，而那时**响应已经提交**。声明收紧后，失败落在引擎作者能处理的地方：构造期、点名字段。非有限 float （`NaN`/`Infinity`）**同样排除**：它们是 Python float 但不是 JSON，`json.dumps` 只在非标准模式下输出、符合规范的解析器会拒绝整份文档——准入它们就是把本类型要消灭的「构造得了、发不出去」重新引回来。真正需要任意进程内对象的引擎，把它留在自己的 session/engine 状态里；标准协议对象的全部契约就是两层都能表达它。（类型层不可达的残余——`model_construct`、构造后改写 `extra` dict——由传输层的**及早投影**兜底：REST 与 metadata 响应在返回前完成编码、WS 首帧 diagnostics 在自己的边界内投影，使失败落进 scrubbed 500 / scrubbed error frame 而非 ASGI 崩溃。）
+- **对象键的键域在两层同构（normative）**：JSON object key **只能是 string**，故每个 wire 可见 JSON 槽位（`extra`、`Diagnostic.provided`/`effective`、递归至任意深度的嵌套 object）的键 MUST 在构造期就要求是**精确 `str`**，**任何**非字符串键 fail-loud，绝不 coerce。pydantic 的宽松 `dict[str, …]` 会把 `bytes` 键**静默转成 `str`**（且逐层递归），于是 Python 调用方能构造 `extra={b"x": 1}`——一个任何 JSON 文档都表达不了、只在 Python 层被准入的键；更严重的是 `{"x": 1, b"x": 2}` 会**塌缩**成单个 `"x"`（后者胜出），两个不同的 Python 键静默合一——正是 wire 可见槽位绝不能产生的 silent wrong result，也是「Python-only 键改写 wire 可见内容」对 G5.2 两层同构的直接违反。要求精确 `str`（连 `str` 子类也拒——恶意子类可覆写 `__eq__`/`__hash__` 使两个都序列化成 `"x"` 的键在输入映射里保持相异，从而在序列化时重新引入该冲突）。来自真实 wire 文档的 object 键恒为字符串，故该规则只会为「越过 wire 键域的 Python 调用方」触发（参考实现 `contract.results.require_json_string_keys`，经 `mode="before"` 校验器统一挂在每个 wire JSON 槽位上）。
 - **null 规则（消歧）**：capability 声明「是否支持」；字段 `None`=**未请求/不适用**；`[]`=**请求但空**（如静音）。app 判「不支持」看 **capability**，不看字段 null。
 
 ## TR.2 `Segment` / `Word`（流批共享子模型）
 ```
-Segment: start:float  end:float  text:str
+Segment: start:float|null  end:float|null  text:str
          words:list[Word]|None  speaker:str|None  channel:int|None
          avg_logprob/no_speech_prob/…:float|None  extra:dict
 Word:    start:float  end:float  text:str
          probability:float|None  speaker:str|None  channel:int|None  extra:dict
 ```
-- **时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）**，与 §ST 同一原点。**每通道内**跨段单调；多通道时不同通道的段 `[start, end]` **允许重叠**（双声道同时说话），顶层 segments 按 `start` 稳定排序、`start` 相同时按 `channel` 排、仍相同时按 `speaker` 排（**最终 tie-break**；`None` 排在真实标签之前——单通道多说话人重叠段因此有确定顺序）。适配器把 ms / protobuf-duration / ticks 转入。
-  > **排序是引擎义务，非构造期强制、合规套件亦不校验（明示，与 TR.4 不对称）**：该 `(start, channel, speaker)` 排序与每通道单调性是**引擎/适配器的义务**——既**不**在 `TranscriptionResult` 构造期强制，合规套件也**不**校验：`StreamReducer` 对无时间戳引擎合法地保留到达顺序、且仅按 `start` 排（无 channel tie-break），严格的 `(start, channel, speaker)` 校验（无论在构造期还是套件对 `session.result()` 输出）都会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是**不可表示的歧义形状**（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界以同一 `(start, channel, speaker)` 键防御性重排——这是标准层唯一的安全网。
+- **时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）**，与 §ST 同一原点。**每通道内**（有测量值的段间）跨段单调；多通道时不同通道的段 `[start, end]` **允许重叠**（双声道同时说话），顶层**带 `start` 的** segments 按 `start` 稳定排序、`start` 相同时按 `channel` 排、仍相同时按 `speaker` 排（**最终 tie-break**；`None` 排在真实标签之前——单通道多说话人重叠段因此有确定顺序）；`start=null` 的段无时间位置，列表保持**阅读顺序**（列表顺序即阅读顺序，`text` 按列表顺序 join）。适配器把 ms / protobuf-duration / ticks 转入。
+  > **排序是引擎义务，非构造期强制、合规套件亦不校验（明示，与 TR.4 不对称）**：该 `(start, channel, speaker)` 排序与每通道单调性是**引擎/适配器的义务**——既**不**在 `TranscriptionResult` 构造期强制，合规套件也**不**校验：`StreamReducer` 在任一保留段缺 `start` 时合法地保留到达顺序、否则仅按 `start` 排（无 channel tie-break），严格的 `(start, channel, speaker)` 校验（无论在构造期还是套件对 `session.result()` 输出）都会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是**不可表示的歧义形状**（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界以同一 `(start, channel, speaker)` 键防御性重排——这是标准层唯一的安全网。
 - `probability ∈ [0,1]`；若引擎给 logprob，**另立字段**，不与 probability 混。
+- **`Segment` 时间可空（normative）**：`start`/`end` 为 **`float | null`**，`null` = 引擎**未测量**该时间——是数据，不是缺字段；合法形状仅三种：`(float, float)`（**measured**，`end >= start`）、`(float, null)`（**start_only**，有真实起点但无可用区间）、`(null, null)`（**unavailable**）；`(null, float)`（有终点无起点）**不可表示**，构造期拒绝。衍生只读属性 `Segment.timestamp_status ∈ {"measured","start_only","unavailable"}` 由值派生（**不存储**，因此永不与值矛盾）。流式归约器把引擎的测量**原样存入**（绝不伪造 `0.0`），任一保留段非 measured 时结果级另发 `segment_timestamps_unavailable` diagnostic 作聚合披露；**逐段真相就是可空值本身**——消费者（含标准 SRT/VTT 渲染器）MUST 读值判定，MUST NOT 嗅探 `0.0` 或依赖任何 `extra` 标记（历史上的保留键 `timestamp_placeholder` 已删除；`Segment.extra` 完全归引擎所有，标准不保留任何键）。`TranscriptionEvent` 的 `partial`/`final` 同样拒绝 `(null, float)` 形状（两层同一不变量）。标准渲染器的策略针对**不可渲染（unrenderable）段**、由调用者显式选择：一个段不可渲染，当且仅当其无 measured span，**或** measured span 在输出毫秒格上量化为零（`_to_millis(end) <= _to_millis(start)`——`T --> T` cue 被播放器静默丢弃，渲染成功字符串却无人看见文本）。`to_srt`/`to_vtt` 的 `on_unrenderable ∈ {"error", "omit", "collapse"}`（`"error"` 为默认，抛 `SubtitleRenderingError`（携 `.unrenderable`/`.total` 计数）；`"omit"` 仅渲染可渲染段；`"collapse"` 整文单 cue；未知值响亮拒绝——Literal 不在运行时强制）。渲染器 MUST NOT 自行加宽 span（如捏造 1 ms）——那是未经授权的时间伪造；可渲染性是**渲染器属性**（取决于输出量化格），与模型的 `timestamp_status`（报告测量了什么）语义分离——无声丢字、无声隐藏与无声伪造时间皆为 cardinal sin，默认必须响亮。
 - **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_until` 等）加在**事件包装层**，不污染共享子模型。
 - **`session.result() -> TranscriptionResult`**：流式会话可归约为最终结果（反映 `final`；late `closed` 重格式化可更新它）。
 
@@ -699,9 +702,9 @@ Word:    start:float  end:float  text:str
   - **行终止符归一**：先把 `\r\n` 与裸 `\r` 归一为 `\n`，再折叠空行——裸 `\r` 在 WebVTT 与多数 SRT 解析器中均是行终止符，不归一则 `\r\r` 可绕过空行折叠伪造 cue。
   - **WebVTT 实体转义**：`to_vtt` MUST 按 W3C WebVTT cue-text 文法转义 `&`→`&amp;`、`<`→`&lt;`、`>`→`&gt;`（先 `&` 后 `<`/`>`，避免二次转义）。裸 `<` 会开启 cue-span tag、被浏览器 tokenizer 消费至下一个 `>`，使尖括号内文本（如引擎泄漏的 `<unk>`/`<|...|>` token、口述数学）在字幕中**静默消失**——正中「静默错误结果是头号大罪」。转义 `>` 同时使 payload 中的 `-->` 不再可能被读作 cue timing。
   - **SRT 不转义**：SRT 无字符引用机制，`to_srt` MUST NOT 套用实体转义（否则把字面 `&amp;`/`&lt;` 显示给用户）；`&` 与尖括号原样透传，下游若需中和标签应在渲染前对转写文本处理。
-- **`segments` 缺失时的回退（normative，消除跨实现未定义行为）**：基于 §TR.1 null 规则——`segments is None`（未请求/不适用）且 `text` 非空 → 合成一条覆盖全文的 cue：`[0, duration]`，`duration` 未知（如归约流）时用固定 `[0, 3s]`（播放器静默丢零时长 cue，故回退 cue MUST 非零时长）。`segments == []`（请求但空，如静音）→ 零 cue，绝不杜撰。其他语言 SDK MUST 采用同一回退以保「同结果同渲染」。
+- **`segments` 缺失时的回退（normative，消除跨实现未定义行为）**：基于 §TR.1 null 规则——`segments is None`（未请求/不适用）且 `text` 非空 → 合成一条覆盖全文的 cue：`[0, duration]`。判据是**输出毫秒网格上的可见性**，不是「已知/未知」：仅当 `duration` 在该网格上量化为**正值**时才用它，否则（未知如手工构造的结果、`0`、或模型合法但亚毫秒的 `0.0005`——它作为 float 为正却格式化成 `00:00:00,000`）一律用固定 `[0, 3s]`。播放器静默丢零时长 cue，故回退 cue MUST 非零时长。`segments == []`（请求但空，如静音）→ 零 cue，绝不杜撰。标准归约器（`StreamReducer`/`session.result()`）产出的 `segments` **恒为列表**——空会话（静音、纯删除后无存活段）为 `[]` 而非 `null`：归约器执行了段生命周期，空是「已执行但为空」，`null` 的「未请求/不适用」语义与全文回退 cue 都不适用于它。其他语言 SDK MUST 采用同一回退以保「同结果同渲染」。
 - **说话人渲染（opt-in，normative）**：`to_srt` / `to_vtt` 提供 keyword-only 参数 `include_speakers: bool = False`。默认 `False` 的理由是**文本纯净**（渲染器是结果的投影而非结果本身，调用方仍持有完整数据，`False` 不构成静默丢失；SRT 没有标准 speaker 语法，前缀会改变 cue 文本自身、污染下游文本处理）——**不是**向后兼容。`True` 时对 `speaker` 非 `None` 的段：
-  - **SRT**：cue 文本加前缀 `[<label>]: `。
+  - **SRT**：cue 文本加前缀 `"[<label>]: "`（字符串含尾随空格）。
   - **VTT**：把**整个**（可能多行的）已消毒 cue 正文包进 `<v <label>>` voice tag——per W3C WebVTT，无闭合标签的 `<v>` span 合法地延伸到 cue payload 结尾，故整体包裹对多行 cue 无歧义。
   - **注入顺序（normative）**：speaker 标记 MUST 在上文 cue 文本消毒（行终止符归一/实体转义）**之后**注入，否则 voice tag 自身会被转义。**标签自身 MUST 针对其注入上下文消毒**：内部换行折叠为空格（模型验证器拒绝首尾空白但**不**拒绝内部换行——标签不得伪造 cue 结构）；VTT 的 voice-tag annotation 上下文额外转义 `&`→`&amp;`、`<`→`&lt;`、`>`→`&gt;`（先 `&`；裸 `>` 会提前终止 tag，字符引用在 annotation 中合法）。
   - `speaker` 为 `None` 的段不加前缀/tag；空文本段即便带 speaker 仍被跳过（无 payload 即无 cue）。
@@ -728,7 +731,7 @@ numpy>=2.1;  python_version >= "3.13"
 （1.24/1.26 无 cp313 wheel；Python 3.13+ 起需 numpy 2.x。）**无上限 cap**（遵 numpy 下游指南 / SPEC-0）。
 
 ## DEP.2 稳定子集强制
-核心只用 numpy 1&2 行为一致的 API；**`clip`/`astype` 等有行为变化的点 MUST 防御**（编码路径**先 `clip` 再 cast`**；禁 `copy=False`，用 `np.asarray`）。
+核心只用 numpy 1&2 行为一致的 API；**`clip`/`astype` 等有行为变化的点 MUST 防御**（编码路径**先 `clip` 再 cast**；禁 `copy=False`，用 `np.asarray`）。
 
 CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `.github/workflows/`,策略见 `CONTRIBUTING.md`「Dependency policy」):
 - **ruff NPY201** —— 静态拦截 numpy 2.0 移除/改名的 API。
@@ -772,16 +775,16 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 **两层 fail-loud（normative）。** 标记与报告分两层，互补：发现层把碰撞记入 `ModelRegistry.shadowed_engine_ids` 并在默认（非 strict）发现时 `logger.warning`、strict 发现时抛 `EntrypointValidationError`（实现：`discover_models`）；**合规套件 MUST 把每个 shadowed `engine_id` 报告为 error**（实现：`check_entrypoints`，code `engine_id_collision`），且 MUST 在默认运行中也报告它——碰撞使 `config.engine` 路由依赖安装顺序，是协议级身份混乱，不能仅以一行日志放行。无效 entrypoint 名（strict 发现会抛 `EntrypointValidationError`）同样 MUST 由合规套件转为 error issue 而非异常：合规检查永远返回报告（`check_entrypoints` 承诺 `Raises: None`），并随后以宽松模式重新发现，使同环境内合法引擎仍被检查。
 
 ## IC.3 凭证安全（normative）
-- 凭证字段 MUST 用 **`SecretStr`**，且 MUST 是 `BaseConfig` 的**顶层标量字段**（mask `repr`/`str`/默认 `model_dump`）。secret-field 标记 MUST NOT 出现在嵌套 submodel 或 secret 容器（如 `list[SecretStr]`）上：脱敏管线（类定义期强制、空白保留 validator、`public_dump` 按名遮蔽）只覆盖顶层标量字段，嵌套/容器 secret 会静默泄漏明文——参考实现在**类定义期 fail-loud 拒绝**这两种形态（`__pydantic_init_subclass__`），指引把凭证提升为顶层标量。
-- 序列化：`/v1/models`、持久化、telemetry 用**脱敏 dump**（参考实现 `BaseConfig.public_dump()`，亦是默认 `model_dump`/`model_dump_json` 行为）；仅显式调用**专门的 reveal-dump API**（参考实现 `BaseConfig.reveal_dump()`——独立命名方法，比布尔开关更易 grep 审计）在进程内调引擎 SDK 时材料化明文。该明文结果 MUST NEVER 被日志/持久化/下发 `/v1/models`/telemetry。
+- 凭证字段 MUST 用 **`SecretStr`**（或 `SecretBytes`），且 MUST 是 `BaseConfig` 的**顶层标量字段**（mask `repr`/`str`/默认 `model_dump`）。注解 MUST 恰好解析为**唯一一个** carrier（`SecretStr` 或 `SecretBytes`，可选与 `None` 成 union，**不得含其他成员**）：明文 union 成员（如 `SecretStr | int`）让构造值绕过遮蔽（schema 标 password、`repr`/`model_dump` 出明文）；双 carrier（`SecretStr | SecretBytes`）令原始字符串包裹不可判定。字段 **default 同受约束**（pydantic 不校验 default）：必填、`None`（仅当注解容纳 `None`）、或 carrier 实例——明文字符串 default 与 `default_factory` 均在类定义期 fail-loud 拒绝。空白保留 validator 按字段自身 carrier 包裹原始字符串**与 bytes-like 输入**（`SecretStr` ← str 原样 / bytes 经 UTF-8 解码（非法 UTF-8 响亮失败、绝不猜编码）；`SecretBytes` ← str 经 UTF-8 编码 / bytes 原样——与 pydantic lax 强转方向一致，exact-contents 契约对两类输入同等成立）；该 validator 对**任意 `Mapping` 输入**成立（`model_validate` 接受 `MappingProxyType` 等只读映射，仅认 `dict` 会让这些输入静默绕过包裹被全局 strip 改写）。carrier 与标记 MUST 成对出现：凡注解中出现 carrier（`SecretStr`/`SecretBytes`，任意深度）的顶层字段 MUST 携带 secret-field 标记——未标记的 carrier 是半保护状态：dump 虽被 pydantic 遮蔽，但空白保留 validator 不覆盖它（原始字符串输入被 `str_strip_whitespace` 静默改写——正是本管线禁止的凭证重写），schema 也不渲染 password/write-only。secret-field 标记与裸 carrier 都 MUST NOT 出现在嵌套 submodel 或 secret 容器（如 `list[SecretStr]`）上：脱敏管线（类定义期强制、空白保留 validator、`public_dump` 按名遮蔽、`reveal_dump` 解包）只覆盖顶层标量字段，嵌套标记 secret 会静默泄漏明文、嵌套裸 carrier 则半坏（空白被剥、reveal 不可达）——参考实现在**类定义期 fail-loud 拒绝**这些形态（`__pydantic_init_subclass__`），指引把凭证提升为顶层标量。**config 的输入面与序列化面都是封闭的，由类定义期的枚举守卫建立**（accident 模型，见 AGENTS.md 信任模型；此前的 core-schema 闭合证明按硬预算移除——经 `__get_pydantic_core_schema__` 在普通字段上走私 serializer 的通道需要作者**主动**绕过枚举，是敌手，超出信任模型，不防）。**(1) 输入面 MUST 封闭**：`extra="forbid"`（`BaseConfig` 默认；子类覆写在类定义期拒绝）——扁平输入键词汇表、absent-vs-invalid 分类器、「点名被拒键」的 typo DX 与 `public_dump` 的按名遮蔽都以「每个被接受的键都属于已声明字段」为前提：`allow` 会把未声明的调用方数据存上实例并原样 dump（按名遮蔽只认识已声明字段，够不到它），`ignore` 静默吞掉拼错的凭证键（读起来等同凭证缺失）。封闭作用于**任意深度**：schema 可达的每个嵌套输入容器（submodel、`TypedDict`、dataclass）都 MUST 拒绝未声明键——pydantic 对三者的默认都是**静默丢弃**未知键，嵌套选项的 typo（`{"decode": {"baem": 8}}`）在调用方读来「已生效」而引擎实际跑在字段默认值上，正是顶层规则要杀死的 silent wrong result 下移一层。该守卫读取 core schema 上的**有效**策略键（`config.extra_fields_behavior`，2.5 下界与当前版本同键；这是读一个策略键，不是证明），pydantic 的 config 传播规则被如实继承而非重推：裸 `TypedDict` 与 stdlib dataclass 继承外层 config 的 `forbid`（免费封闭），pydantic dataclass 持有自己的 config（须自行 `config=ConfigDict(extra="forbid")`），嵌套 `BaseModel` 须自带 `model_config = ConfigDict(extra="forbid")`；非 `forbid`（含默认缺席与 `ignore`）及读不出策略的未来形状一律类定义期 fail-closed 拒绝。**(2) 序列化面按声明枚举**（参考实现 `runtime.config._annotation_serialization_gap`：walk 声明注解——union、泛型容器、`Annotated` 元数据，嵌套 submodel 递归——加上类自身的 decorator 扫描），类定义期以精确消息拒绝四类形态：**未声明的值形状**（`Any`/`object`/未参数化容器/`dict[str, Any]`）——pydantic 把这种字段的运行期对象按**该对象自己的**规则序列化（存进去的 submodel 会输出其 computed field，凭证随之外泄），其 JSON Schema 为空、与 G3.1 的「可渲染配置表单」直接冲突，env 值亦无定义读法；异构映射改以联合声明（`dict[str, str | int | bool | None]`）或具名 submodel 表达。**`SerializeAsAny` 标记**——dump 跟随**运行时**对象，声明类型不再界定 `public_dump` 输出。**作者序列化钩子**——`@computed_field`/`@model_serializer`/`@field_serializer`（本类声明或继承，嵌套 submodel 任意深度同查——嵌套钩子在父层 dump 内运行）与字段上的 `PlainSerializer`/`WrapSerializer` Annotated 元数据：它们运行在 `model_dump` **内部**（即脱敏 dump 内部），能把兄弟 secret 以按名遮蔽永远碰不到的 key 重新材料化为明文（computed `authorization`、读 `self.api_key` 的 field_serializer），且其输出偏离已声明的输入字段（`extra="forbid"` 下 computed key 无法回读；auto-UI 渲染的是 `model_fields`）；派生值用普通 `@property` 或在引擎内推导。**`exclude=True`**——dump 丢失已声明输入 = 持久化后重载静默改变配置。**(3) 守卫的边界是声明**，值层面的封套始终是 carrier 契约（IC.3）：把 secret 拷出 carrier 的作者代码（after-validator 把 `get_secret_value()` 写进声明为 `str` 的字段）原理上不可由任何声明或 schema 审计拦截——泄漏值是一个普通 `str`，其内容没有机制能判为 secret。凭证 MUST 存于 secret 标记的 carrier 字段、由按名遮蔽覆盖，且 MUST NOT 被拷出 carrier 进入任何其他字段或对象状态（frozen config 使天真的字段赋值响亮失败，这是真实缓解，但值状态的变异不在 frozen 覆盖内）。`public_dump` = `model_dump` + 按名遮蔽这一等式的可靠性正建立在以上封闭之上。
+- 序列化：`/v1/models`、持久化、telemetry 用**脱敏 dump**（参考实现 `BaseConfig.public_dump()`，亦是默认 `model_dump`/`model_dump_json` 行为）；仅显式调用**专门的 reveal-dump API**（参考实现 `BaseConfig.reveal_dump()`——独立命名方法，比布尔开关更易 grep 审计）在进程内调引擎 SDK 时材料化明文。该明文结果 MUST NEVER 被日志/持久化/下发 `/v1/models`/telemetry。**operator 日志同为传输面**：一般异常文本可进 operator 日志（排障需要真实消息），但 pydantic `ValidationError` 的 input 回显 MUST NEVER 落日志——含经 `__cause__`/`__context__` 链被 `logger.exception` 的 traceback 间接渲染的情形（标准层本就把原始错误链在脱敏包装之下，`raise ... from exc`，链是回显进日志的常规路径）。规则（参考实现 `runtime.redaction.log_exception_safely`）：沿链走（有 `__cause__` 走 `__cause__`，否则走 `__context__`——`from None` 只抑制**显示**，被抑制的错误仍在 `__context__`；有界且防环）；链上无 `ValidationError` ⇒ 原生 traceback 照常（operator 保留全部栈帧）；有 ⇒ 改记单行脱敏摘要（`safe_exception_summary`）：逐链节 `TypeName: text`，`ValidationError` 节以脱敏 loc/msg 条目渲染（点名字段、绝不回显值——与 422 body 同一套条目规则：条目仅由 `type`/`loc`/`msg` 重建，`input`/`ctx`/`url` 整体丢弃；凭证命名字段、以及**内容上含有 offending 值**的 validator 消息（cross-field model validator 的 `loc` 为空，凭证名检查够不着，故按内容比对，含 model 级 input mapping 的各字段值）redact 为 `[redacted]`；非字段名形状的 `loc` 组件——粘贴的 key 材料长或含标点——掩码为 `[redacted-key]`，pydantic 结构标记与非字符串组件保留），其余节用自身 `str()`——但消息**逐字节**含有链上 `ValidationError` 文本之行的包装节（`raise RuntimeError(f"...: {exc}") from exc` 的诚实作者事故：`str(ve)` 被原样复制进包装消息，普通子串比对即可捕获）消息扣留。摘要有界且行安全：链节封顶、逐节折叠为单行（多行消息不得在面向行的日志/报告中伪造第二条记录；折叠按全部 `str.splitlines` 行边界，NEL 与 `U+2028`/`U+2029` 在内）并限长，节自身 `str()` 抛异常降级为占位文本——做日志的收容层绝不因此崩溃。**接受的残差（AGENTS.md 信任模型）**：改写/重编码的回显、复制文本后丢弃链的包装、显式良性 `__cause__` 遮住 `__context__` 中 `ValidationError` 的包装、恰为字段名形状的敏感值，均可能到达日志——关闭它们需要对第三方代码做证明、内省 pydantic/CPython 内部，按硬预算不做：插件是受信代码，防御目标是诚实失误，此前试图关闭这些残差的机器自身产生的缺陷多于它关闭的残差。残差真咬人时，答案是 `runtime.redaction` 里一条针对性规则，不是 prover。与 server spec §3.7 的 operator-log redaction 规则一致。
 - secret-field 标记（`json_schema_extra`）→ auto-UI 渲染 password / write-only；REST POST 收、GET 不回。
 - **密（`api_key`/token） vs 端点路由（`base_url`/`region`/`org_id`，非密）分两类**：后者可日志/UI/序列化。
 
 ## IC.4 env 回退（normative）
 - **`STANDARD_ASR_<NORMENGINE>__<NORMFIELD>`**（引擎段与字段段之间用**双下划线** `__` 分隔）。normalization = 大写、把每个非字母数字**连续段**折成**单个** `_`（非每字符一个 `_`），故任一段不含 `__`，使 `__` 边界唯一可解析。**为何双下划线**：单下划线分隔下 `(engine="openai", field="api_key")` 与 `(engine="openai-api", field="key")` 都归一为 `STANDARD_ASR_OPENAI_API_KEY`，引擎边界不可恢复——两个引擎可能静默读到彼此凭证。**碰撞检测**：单 config 类内拒绝两字段归一同名（跨引擎碰撞已由 `__` 边界根治）。
-- 一约定 per 字段名（引擎 native 名如 EL `xi-api-key` 在适配器映射到标准名）。**覆盖范围**：env 回退覆盖 config 的**所有字段**——标准 mixin 字段（凭证/端点路由/device/语言/download root）**与**引擎声明字段（如 `beam_size`、`model_path`）均获得对应 env 入口，这是有意的全表 DX。**仅排除三个 fail-loud 安全/身份字段**：`engine`（entrypoint 派生身份，绝不由 env 设）、`strict` 与 `allow_private_urls`（env 不得静默翻转 best_effort 或放宽 SSRF 守卫）。
-- **复合（非标量）字段的 env 值先按 JSON 解析**：env 变量恒为裸字符串，无法强转为 `list`/`dict` 等（如标准字段 `default_candidate_languages: list[str]`），故对复合注解字段先 `json.loads`，**解析失败保留原串**让构造期**响亮失败**（绝不静默丢值）。标量字段（含凭证 `SecretStr`、`Path`）**原样透传**、不被重解释。
-- 优先级：**显式 config > env > （必填缺失）报错**。「显式」= 该字段名**作为键出现**在显式入参中——显式传入的 `None` **是一个值**、压过 env（规则是「显式即胜」，非「显式非 None 才胜」）；包装层若以 `None` 默认透传可选 kwargs，需先剔除 `None` 键才能让 env 回退生效。多账户：保留 profile 段 hook（v1 不实现）。
+- 一约定 per 字段名（引擎 native 名如 EL `xi-api-key` 在适配器映射到标准名——仅允许**纯字符串** alias：字符串 `alias`/`validation_alias` 或全字符串 `AliasChoices`；`AliasPath`（及含其的 `AliasChoices`）在类定义期 fail-loud 拒绝——平面 env 约定与 absent-vs-invalid 分类器均以单一字符串 token 解析字段，嵌套路径别名无法表达）。平面输入键词汇表 MUST **跨字段唯一**：一字段的 alias/choice 与另一字段的 canonical 名或 alias 相撞，会让单个调用方键静默填充两个独立设置（`populate_by_name` 两者皆填）并使 loc-token 解析歧义——任何跨字段键碰撞在类定义期 fail-loud 拒绝（同字段内重复键去重即可）。**覆盖范围**：env 回退覆盖 config 的**所有字段**——标准 mixin 字段（凭证/端点路由/device/语言/download root）**与**引擎声明字段（如 `beam_size`、`model_path`）均获得对应 env 入口，这是有意的全表 DX。**仅排除三个 fail-loud 安全/身份字段**：`engine`（entrypoint 派生身份，绝不由 env 设）、`strict` 与 `allow_private_urls`（env 不得静默翻转 best_effort 或放宽 SSRF 守卫）。
+- **复合（非标量）字段的 env 值先按 JSON 解析**：env 变量恒为裸字符串，无法强转为 `list`/`dict` 等（如标准字段 `default_candidate_languages: list[str]`），故对复合字段先 `json.loads`，**解析失败保留原串**让构造期**响亮失败**（绝不静默丢值）。标量字段（含凭证 `SecretStr`、`Path`）**原样透传**、不被重解释。该分类 MUST 由字段的 **core schema** 判定，而非注解的 origin 白名单：白名单已被证伪为**残缺**——`Mapping[str, int]`、`Sequence[str]`、`TypedDict`、dataclass 全都通过所有类定义期守卫（它们是完全声明的普通 config 形态），却因无 origin 条目而**无法经自己的 env 约定构造**；继续加白名单只会推迟下一次遗漏（named tuple、type alias、未来的 pydantic kind），与本规范其他证明已放弃枚举、改扫实际执行之 artifact 的理由相同。规则：走字段 schema，穿过包装（`nullable`/`default`/union/`json-or-python`/validator 函数），遇到**结构化 kind**（list/set/frozenset/tuple/dict/typed-dict/model/dataclass/generator）即判定为 JSON 并**停止下降**（其成员描述的是文档的**内容**，不是文档如何抵达）。**`Json[T]` 注解字段是唯一的「结构化形、raw 读」**：该注解的契约就是输入**即** JSON 文档文本（由 pydantic 自有 `json` validator 解码——显式构造器取字符串而**拒绝**解码后的值），故其 core-schema kind `json` 必须与结构 kind 一样**终止行走**、但判定为 raw（其内层 schema 描述的也是解码后文档的内容，不是 env 串如何抵达）；沿内层判为「先 JSON 解码」会把解码值喂给 `json` validator 而构造失败——字段可定义、显式构造可用、却经自己的 env 约定不可达，与上述残缺白名单的病根相同。两个错误方向**不对称**，故偏置是刻意的：把结构化误判为 raw 会在构造期**响亮失败**（pydantic 拒绝该字符串），而把标量误判为 JSON 会**静默重解释**——`"123"` 变整数 123、`"null"` 变 `None`——正是本规范定义的 cardinal sin；故 JSON 只在**正面证据**下返回，未识别形状一律留在 raw。**同时到达标量与结构化的字段**（如 `str | list[str]`）没有可定义的 env 读法（无规则能判断 `"123"` 是该字符串还是该 JSON 数字，且任一选择都会与显式构造器分歧——后者恒取字符串），MUST 在**类定义期**响亮拒绝，而非在某个 env var 恰好被设置时才静默选边。
+- 优先级：**显式 config > env > （必填缺失）报错**。「显式」= 该字段以**任一平面输入键**（canonical 名、字符串 alias/`validation_alias`、`AliasChoices` 任一 choice——与空白保留 validator、absent-vs-invalid 分类器共用同一 alias 词汇表）**作为键出现**在显式入参中：以 alias 显式供值同样压过该字段的 canonical env 回退（否则 `extra="forbid"` 下 alias 值与 env canonical 键相撞、响亮误拒）。显式传入的 `None` **是一个值**、压过 env（规则是「显式即胜」，非「显式非 None 才胜」）；包装层若以 `None` 默认透传可选 kwargs，需先剔除 `None` 键才能让 env 回退生效。调用方对同一字段同时传两个键仍由 pydantic 响亮拒绝。多账户：保留 profile 段 hook（v1 不实现）。
 
 ## IC.5 适用性谓词（applicability —— 跨 §C/§AI/IC 同一规则）
 可选标准字段用 **capability-bearing config mixin**（`DeviceConfigMixin`/`LanguageConfigMixin`/`DownloadConfigMixin`…）：**字段出现在模型里 ⇒ 适用**——auto-UI 据此渲染正确表单，无需逐字段隐藏。「缺失 ⇒ 不适用」；「present-with-default ⇒ 适用-默认」。
@@ -845,16 +848,16 @@ nested 引擎声明 submodel（按 model-family）+ 标准 **artifact 路径解�
 | `partial` 事件 | 引擎对某段的**当前最佳猜测**。partial 的文本可能随着更多音频到来而变化（下一个 partial 会携带该段的完整当前文本，覆盖之前的）。 |
 | `final` 事件 | 引擎**不再因新音频改变**该段文本。表示一个语句/段落的转写已确定。 |
 | `supersede` 事件 | 引擎用一组新段**替换**一组旧段（用于两遍重打分等场景，详见 §5）。是**核心事件**，每个 compliant 应用都 MUST 处理。 |
-| `stable_until` | 一个非负整数，标明 `text` 的前多少个 **codepoint** 已冻结、不会再变（`text[:stable_until]` 即冻结前缀）。适配器 SHOULD 使该值落在字素簇 (grapheme cluster) 边界上。简单应用可忽略它；语音助手用它判断"前缀中哪些字已安全可以行动"。 |
+| `stable_until` | 一个非负整数，标明 `text` 的前多少个 **codepoint** 已冻结、不会再变（`text[:stable_until]` 即冻结前缀）。适配器 SHOULD 使该值落在字素簇 (grapheme cluster) 边界上。简单应用可忽略它；语音助手用它判断"前缀中哪些字已安全可以行动"。**冻结的范围是进行中的识别**：段终态的 `closed` 事件 MAY 对已冻结文本做一次后处理定稿改写（补标点/ITN/大小写，§6 豁免条款）——基于冻结前缀做**不可逆**动作（写库、发消息、触发工具）的应用 MUST 以识别语义为界，预期 `closed` 可能改写呈现形式。 |
 | `audio_processed_until` | 浮点数，表示引擎已处理到的音频时间点（秒），原点 = 本次会话的第一个音频采样。 |
 
 ---
 
 ## 3. 接口与能力
 
-### 3.1 两个方法（批量 vs 流式，返回类型不同）
+### 3.1 接口方法（两个转写入口 + 派生协议成员）
 
-标准有两个入口，**返回类型恒定、不会因某个 flag 变形**：
+标准有两个**转写入口**，**返回类型恒定、不会因某个 flag 变形**（此外协议表面还含 `supports()`（[§能力系统 R5](#能力系统-capabilities--normative)）、`transcribe_async` 与下文的 `recommended_wire_format()`——它们是查询/派生成员，不是转写入口）：
 
 | 方法 | 何时使用 | 返回 |
 |---|---|---|
@@ -877,6 +880,7 @@ start_transcription(
 - **`audio` 接受 coercion**：`audio` 的类型是 `AudioInputLike`，与 `transcribe` 的 `audio` 同规则接受裸值强制转换（裸 `str` = 本地路径、`bytes` = 编码字节、`ndarray` / `(ndarray, sample_rate)` = 波形），由标准层 `coerce_audio_input` 归一为 `AudioInput`。
 
 - **增量喂入**（ElevenLabs realtime、Qwen3 streaming）：传 `audio_format`，之后用 `send_audio(chunk)` 逐块喂裸 PCM 帧。
+- **`recommended_wire_format()`（协议成员，normative）**：每个 compliant 引擎 MUST 暴露 `recommended_wire_format() -> AudioFormat | None`——返回一个该引擎的会话建立守卫必然接受的最小裸帧 wire 格式（无可用正采样率时返回 `None`）。它是流式旅程文档化的第一步（README / quickstart / streaming 指南均以它开场），也是 CLI sync-bridge runner 与合规门控探针赖以打开会话的唯一来源，故属 `StandardASR` 协议表面而非 `EngineBase` 的私有便利。值 MUST 纯粹派生自 Properties：`sample_rate` = `required_input_sample_rate`（若设，`0` 视为未设）否则 `native_sample_rate`；`encoding` = `wire_encodings` 首项，未声明（unconstrained）时用 canonical `pcm_s16le`；`channels` = `1`。`EngineBase` 免费提供该派生；structural（非 `EngineBase`）引擎须自行实现同一派生。合规套件将其列入无条件必需方法，并校验其返回值能通过标准会话建立规则（实现：纯函数 `ensure_wire_format_supported(properties, audio_format)`，`EngineBase.ensure_stream_format_supported` 即该规则的委托——合规校验经由纯函数而非基类方法，故对 structural 引擎同样成立；自洽往返）。
 - **`deadlines`**：应用对会话终止 deadline（`done_timeout` / `max_idle` / `max_session_seconds`，语义见 §6.1）的逐字段覆盖。优先级 MUST 为：应用显式设置 > 适配器构造时选择 > 标准默认；由标准层模板在适配器构造会话**之后**统一施加（不依赖适配器转发，杜绝静默丢失）。未显式设置的字段不受影响。
 - **整段输入 + 流式输出**（OpenAI Audio SSE）：传 `audio`（一个完整的 `AudioInput`，如文件路径或编码字节），引擎一次收完后流式返回结果。
 - `audio_format` 与 `audio` **互斥**；同时传 MUST 报错。**两者皆缺是合法的**：引擎可在适配器内部自管 wire 格式（如固定协议格式的引擎），此时 `start_transcription()` 不带任何参数即开启增量会话——标准层只在两者**同时出现**时报错。**无参调用的能力门控**：无参开启的是增量（自管 wire 格式）会话，语义上即 §3.2 的 `streaming_input` 能力，故标准层 MUST 对无参调用施加与 `audio_format` 路径**相同**的 `streaming_input` 门控——仅声明 `streaming_output` 的引擎即使实现了流式钩子，无参调用也 MUST fail-closed 抛 `UnsupportedFeatureError`（缺失即不支持，[§能力系统 R1](#能力系统-capabilities--normative)），而非交回一个无法喂入的增量会话（实现：`EngineBase.start_transcription`）。
@@ -952,15 +956,16 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 | `start` / `end` | `float \| None` | 段的起止时间（秒，原点 = 会话第一个音频采样）|
 | `audio_processed_until` | `float \| None` | 引擎已处理到的音频时间点（§4.4） |
 | `old_ids` / `new_ids` | `list[str]` | 仅 `supersede` 事件使用（§5） |
-| `detected_language` | `str \| None` | 引擎检测到的语言（BCP-47，非 `auto`；与结果模型同规则校验）。是 §6.3 重连连续性承诺的载体——重连前后 MUST 保持一致 |
+| `detected_language` | `str \| None` | 引擎检测到的语言（BCP-47，非 `auto`；与结果模型同规则校验）。是 §6.3 重连连续性承诺的载体——重连前后 MUST 保持一致。终态事件缺失该值时由标准层盖上会话已归约的 sticky 语言（§6.4 终态语言盖章） |
+| `finality` | `"final" \| "closed"`（默认 `"final"`） | 仅 `final` 事件有意义：`"closed"` 标记该 `segment_id` 进入终态（§6.2）。`closed` **不是**独立的 `type`——它是同一 id 上再发一次的 `final`，携带此标记（文本可能因后处理定稿而变化）；终态段 MUST NOT 再被 supersede |
 | `code` / `recoverable` / `retriable_after` | | 仅 `error` 事件使用（§7.2） |
 | `reconnect` / `gap_start` / `gap_end` | | 仅 `progress` 的重连通知使用（§7.3） |
-| `extra` | `dict[str, Any]` | 引擎特定/实验数据槽位（默认 `{}`）。语义与 [结果模型](#结果模型-transcription-result--normative) 的 `extra` 一致：**引擎特定、不可移植**，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集 |
+| `extra` | `dict[str, JsonValue]` | 引擎特定/实验数据槽位（默认 `{}`）。**同受 [§TR.1](#结果模型-transcription-result--normative) 的 JSON 值空间与 str 键域规则约束**（递归至任意深度，非字符串键与非有限 float 构造期 fail-loud）——`error` 事件的 `extra` 由 server 出栈前清空（§7.2），其余事件的 `extra` 原样转发上线，故它与结果模型的 `extra` 是同一个 wire 可见槽位、不可声明为 `Any`。语义与 [结果模型](#结果模型-transcription-result--normative) 的 `extra` 一致：**引擎特定、不可移植**，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集 |
 
 **`extra` 的 wire 转发/剥离规则**（两层同构，G.5.2）：
 
 - **非 `error` 事件**：`extra` MUST 原样透传上 wire——`extra` 是引擎扩展槽位（与 `Segment`/`Word` 的 `extra` 惯例一致），其他语言的客户端按本表即可解释收到的键。
-- **`error` 事件**：server MUST 在出栈前清空 `extra`（置为 `{}`）后再发给客户端。标准层把人类可读的诊断字符串存于 `extra["detail"]`（`engine_error` catch-all 下即 `str(exc)`，可能含文件路径 / 上游 URL / 凭证片段），故不得转发给（未认证的）客户端；安全的结构化字段（`code` / `recoverable` / `retriable_after` / `segment_id` 及 gap/reconnect 字段）保留。被剥离的 detail 由 server 记入操作日志（详见 [server.md §4.2](server.md)）。
+- **`error` 事件**：server MUST 在出栈前清空 `extra`（置为 `{}`）后再发给客户端。标准层把人类可读的诊断字符串存于 `extra["detail"]`——`engine_error` catch-all 下即**已在 producer 捕获点做过 input-echo-free 摘要**的文本（`safe_exception_summary`；届时异常链尚在，redaction 不可能推迟到日志层）；摘要文本仍可含文件路径 / 上游主机名（有意的 operator 内容），故不得转发给（未认证的）客户端。引擎自建 `error` 事件的 `extra` 属 plugin-authored 数据、标准层无从审查，因此清空规则对**所有** `error` 事件一体适用（引擎作者自行负责其 server 端日志内容的安全）。安全的结构化字段（`code` / `recoverable` / `retriable_after` / `segment_id` 及 gap/reconnect 字段）保留。被剥离的 detail 由 server 以**收到的不透明字符串原样**记入操作日志——链已不存在，server 不会（也无法）重新分析（详见 [server.md §4.2](server.md)）。
 
 每种事件的含义：
 
@@ -1057,21 +1062,30 @@ supersede(old_ids=["seg-3","seg-4"], new_ids=["seg-5"])
 **核心 reduce（每个 compliant 应用 MUST 实现）**：
 
 ```python
-if event.type == "partial":
-    segments[event.segment_id] = event.text       # 显示
-elif event.type == "final":
-    segments[event.segment_id] = event.text       # 提交/替换
+order: list[str] = []       # 存活段 id 的阅读顺序（列表顺序即阅读顺序）
+texts: dict[str, str] = {}  # segment_id -> 当前文本
+
+if event.type in ("partial", "final"):
+    if event.segment_id not in order:
+        order.append(event.segment_id)   # 首次宣告认领下一个阅读位置
+    texts[event.segment_id] = event.text # 显示 / 提交
 elif event.type == "supersede":
+    pos = order.index(event.old_ids[0])  # 旧块起点（old_ids 连续、按阅读顺序）
     for old_id in event.old_ids:
-        del segments[old_id]                       # 删除旧段
-    # new_ids 的内容会随后通过 partial/final 事件到达
+        order.remove(old_id)             # 退休旧段
+        texts.pop(old_id, None)
+    order[pos:pos] = event.new_ids       # 新段原位接管旧块的阅读位置
+# 显示文本 = 按 order 串接 texts（new_ids 的内容随后经 partial/final 到达）
 ```
+
+状态是**阅读顺序列表 + 文本映射**而非裸映射：无时间戳流（`start=null`）的阅读顺序就是列表顺序（§TR），而 mid-stream 的 `supersede` 必须把替换段**原位**接进被退休块的位置——裸 dict 只能在末尾追加，会静默改变词序（cardinal sin）。参考实现 `runtime.streaming.reduce_event` 与上述逐行一致（对违反 placement 不变量的事件 fail-loud；经 `TranscriptionSession` 驱动时守卫已先抑制它们）。
 
 **`supersede` 是核心事件（非可选）**——即使 `re_segments` capability 为 `false`（引擎承诺不发 supersede），应用代码也 MUST 包含上面的 reduce 逻辑。这样无论切换到任何引擎都安全。
 
 **规则与不变量**：
 - `old_ids` 与 `new_ids` **MUST 无交集**——一个被替换的 id 不会被复用；id 一旦出现在 `old_ids` 中即退休。两个列表各自内部也 **MUST NOT 重复** id——lineage 是 set-to-set（见下），`old_ids`/`new_ids` 本质是集合：`old_ids` 重复 = 同一段退休两次；`new_ids` 重复会使守卫的跨说话人鸽笼计数与冻结前缀拼接（F_new）把同一段计两次。三条皆**构造期拒绝**。
 - **顺序语义**：`old_ids` 与 `new_ids` 都 MUST 按**阅读（时间）顺序**排列——这是下面"冻结前缀保留"规则做拼接（concatenation）的前提。
+- **连续区间与原位替换（placement，normative）**：`old_ids` MUST 构成**当前存活阅读顺序**中的一个**连续区间**，且事件内顺序与存活顺序一致；`new_ids` MUST **原位**接管该区间的阅读位置（区间内按 `new_ids` 顺序）。每个段 id 在**首次宣告**时（收到首个 `partial`/`final`，或作为 `supersede` 的 `new_ids` 被引入）认领当前阅读顺序的下一个位置。这是无时间戳流（`start=null`，列表顺序即阅读顺序，见 §TR）在 supersede 后仍有确定阅读顺序的**唯一**依据——把替换段当作新段追加到末尾会静默改变最终词序（cardinal sin：`final(a,"hi") final(b,"world") supersede([a],[a2]) final(a2,"HI")` 的正确归约是 `HI world`，追加式归约给出 `world HI`）。语义根据：supersede 表达对一段**连续语音区间**的重转写（合并/拆分**相邻**段）——冻结前缀保留规则的 F_old 拼接本就预设旧段文本相邻，跨越无关存活段的"替换"没有连贯语义。非连续或乱序的 `old_ids` 使整个 supersede 事件被**抑制**并发 **`supersede_noncontiguous_old_ids`** diagnostic（strict 模式 raise；抑制语义与跨说话人合并禁令一致：旧段继续存活、新段以全新段到达、归约可能出现重复文本——只伤害不合规适配器）。
 - `new_ids` 中的段可能先以 `partial` 到达（不一定立刻是 `final`）——应用的 reduce 应在 `new_ids` 的第一个事件到达时就开始渲染新段文本。
 - **排序**：`supersede` 事件 MUST 在其 `new_ids` 的任何 `partial`/`final` 之前投递；`old_ids` 中的 id 必须在之前已被**宣告**过——「宣告」= 收到过至少一个 `partial` / `final`，**或**作为更早一次 `supersede` 的 `new_ids` 被引入（链式 supersede `A→B`、`B→C` 中，`B` 即使从未收到 partial/final 也算已宣告）。
 - **冻结前缀保留（拼接覆盖规则）**：`supersede` 操作 MUST 保留已冻结的文本。设 **F_old** = 被替换的旧段（按 `old_ids` 顺序）各自冻结前缀 `text[:stable_until]` 的拼接；**F_new** = 新段（按 `new_ids` 顺序）各自当前冻结前缀的拼接（随新段后续 `partial`/`final` 不断冻结更多文本而增长）。**不变量**：F_old 与 F_new MUST 在其公共前缀上一致——任何一方都 MUST NOT 改写另一方。换言之，**用户已经看到并"确信不变"的文字，在段被替换后仍然不变**。
@@ -1178,8 +1192,9 @@ elif event.type == "supersede":
 
 当事件消费方处理速度慢于产生速度时：
 
-- **`partial` 事件**：按 `segment_id` 合并——只保留该段最新的 partial（保留最大 `audio_processed_until`）。**合并 MUST 被同 segment 的 `final`/`closed`/`supersede` 作废**——如果 partial 尚未投递但该段已进入终态或被替换，该 partial MUST 丢弃（避免复活已替换的段）。**语义字段 carry-forward（normative）**：合并替换时，若存活的较新 partial 的 `speaker` 或 `detected_language` 为 `None` 而被替换的 pending partial 携带非 `None` 值，标准层 MUST 把该值 carry-forward 进存活事件——盲整体替换会静默丢弃已交付的语义（引擎未在每个 partial 重申 speaker/语言时，被合并掉的那次赋值就消失了）。较新的**非 `None`** 值总是胜出（不复活旧值）；carry-forward 天然限于同一 `segment_id`（合并本就按段）。其安全性分两区域诚实论证：**冻结区域**——§4.2 禁止 X→None 撤回，且标准层 `_LifecycleGuard` 会在该转移到达合并缓冲之前就**抑制**它（发 `frozen_speaker_rewritten` diagnostic），故此处存活方的 `None` 只可能是「未重申」，不可能是「刻意撤回」；**未冻结区域**——§4.2 明确**允许** X→None（刻意撤回），故 carry-forward **可能**把一个已过时的临时 speaker 重新呈现出来。这仍然安全，不是因为撤回不可能，而是因为未冻结 partial 的 speaker 本就**不可据以行动**（§7.2：应用 MUST NOT 对无冻结保护的 partial speaker 采取行动）；且它自洽——若该段随后冻结，守卫会锁定其**最后被接受的**非 `None` speaker（§4.2），恰是被 carry-forward 的那个值。适配器最佳实践仍 SHOULD 在每个 partial 重复 speaker；carry-forward 是标准层兜底。
+- **`partial` 事件**：按 `segment_id` 合并——只保留该段最新的 partial（保留最大 `audio_processed_until`）。**合并 MUST 被同 segment 的 `final`/`closed`/`supersede` 作废**——若该段已有任一内容事件投递给消费方（该段的阅读顺序宣告已抵达），被作废的 pending partial MUST 丢弃（投递在段终态事件之后会复活已替换的段）。**唯一提及例外（normative）**：若该 pending partial 是消费方对该段的**唯一**提及——该段从未有任何内容事件投递——它就是该段在 delivered 流中的**阅读顺序宣告**，标准层 MUST 保留它并在作废事件**之前**投递（它在队列中本就先于作废事件，不构成复活——no-revival 约束的是顺序，不是存在）。丢弃宣告曾产生两种静默漂移：无时间戳流（§5：列表顺序即阅读顺序）中该段的首次提及被移到作废事件的队尾位置，delivered 流的归约与 `session.result()` **词序不同**（cardinal sin）；以及退休从未投递段的 `supersede` 以 never-declared `old_ids` 抵达消费方归约——那里被抑制、会话内却已 splice，两侧文本直接分叉。保留的 stale partial 只占用它已占用的缓冲槽位，不引入新的增长向量。**语义字段 carry-forward（normative）**：合并替换时，若存活的较新 partial 的 `speaker` 或 `detected_language` 为 `None` 而被替换的 pending partial 携带非 `None` 值，标准层 MUST 把该值 carry-forward 进存活事件——盲整体替换会静默丢弃已交付的语义（引擎未在每个 partial 重申 speaker/语言时，被合并掉的那次赋值就消失了）。较新的**非 `None`** 值总是胜出（不复活旧值）；carry-forward 天然限于同一 `segment_id`（合并本就按段）。其安全性分两区域诚实论证：**冻结区域**——§4.2 禁止 X→None 撤回，且标准层 `_LifecycleGuard` 会在该转移到达合并缓冲之前就**抑制**它（发 `frozen_speaker_rewritten` diagnostic），故此处存活方的 `None` 只可能是「未重申」，不可能是「刻意撤回」；**未冻结区域**——§4.2 明确**允许** X→None（刻意撤回），故 carry-forward **可能**把一个已过时的临时 speaker 重新呈现出来。这仍然安全，不是因为撤回不可能，而是因为未冻结 partial 的 speaker 本就**不可据以行动**（§7.2：应用 MUST NOT 对无冻结保护的 partial speaker 采取行动）；且它自洽——若该段随后冻结，守卫会锁定其**最后被接受的**非 `None` speaker（§4.2），恰是被 carry-forward 的那个值。适配器最佳实践仍 SHOULD 在每个 partial 重复 speaker；carry-forward 是标准层兜底。
 - **`final`、`supersede`、`done`、`error` 事件**：**永不丢弃、永不重排**。
+- **终态语言盖章（normative）**：sticky 语言语义（最后一个非 `None` 胜出）是**顺序敏感**的，而合并不是——原位合并可把较新的语言赋值移到较早的投递槽位、作废可淘汰唯一携带语言的 partial，故任何逐事件 carry-forward 都无法在所有交错下让 delivered 流的 running language 收敛到会话值（被 carry 的旧值甚至可能落在更新的已投递值之后并把它回退）。终态事件是唯一**必然投递、必然最后、永不丢弃**的事件，故标准层 MUST 在终态事件（`done` 或终态 `error`，含标准层合成的 backpressure/deadline 终态）缺失 `detected_language` 时盖上会话已归约的 sticky 语言；引擎自带的终态语言从不被覆写（它本身就是最新赋值，归约两侧同样收敛于它）。由此 `reduce(delivered events).detected_language == session.result().detected_language` 按构造成立。
 - 发送侧有界缓冲区，溢出发 `error`。
 - sync 桥的事件队列（§6.5）也遵守同样的背压规则。
 - **诊断通道同样有界。** 标准层 `_LifecycleGuard` 的 lifecycle-suppression 诊断（抑制的非法转移、钳制的 `stable_until` / 音频游标）经 `session.diagnostics()` 暴露——一个每事件都触发钳制的轻微越界引擎（如游标持续抖动）在数小时直播会话中会无界累积诊断，这与会话其余资源（事件缓冲、音频队列、滚动音频缓冲区均有界）的哲学相悖。故诊断列表 MUST 有上限：达到上限后，标准层 MUST NOT 再保留逐条诊断，而是聚合为单条尾部 `diagnostics_truncated` 汇总（按 code 计数）——上限被命中这一事实 MUST 被诚实上报，绝不静默丢弃（实现：`_LifecycleGuard`，默认上限 `DEFAULT_MAX_GUARD_DIAGNOSTICS`）。
@@ -1241,7 +1256,7 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 
 ## 8. 附注与理由
 
-- **为什么 `supersede` 是核心事件而非可选？** 如果 `supersede` 只是可选的高级功能、简单应用可以忽略它，那么当简单应用切换到一个会发 `supersede` 的引擎时，它的 reduce 就是错的（旧段没被删、新段凭空出现 → 文本重复/矛盾）。把 `supersede` 设为核心意味着每个应用的 reduce 都天然能处理段替换，无论引擎是否实际使用。代价 = 应用代码多 3 行（`del segments[old_id]`）；收益 = 切引擎永远安全。
+- **为什么 `supersede` 是核心事件而非可选？** 如果 `supersede` 只是可选的高级功能、简单应用可以忽略它，那么当简单应用切换到一个会发 `supersede` 的引擎时，它的 reduce 就是错的（旧段没被删、新段凭空出现 → 文本重复/矛盾）。把 `supersede` 设为核心意味着每个应用的 reduce 都天然能处理段替换，无论引擎是否实际使用。代价 = 应用代码约 10 行（阅读顺序列表 + 文本映射的原位 splice，见 §5.2 核心 reduce——曾经的 3 行 dict 版本在无时间戳流上会静默改变词序，是被撤回的错误设计）；收益 = 切引擎永远安全。
 - **为什么要用累积/replace 而不是 delta？** delta 更小，但只有在引擎永不修改已发文本时才有效。很多引擎（Google/AWS/ElevenLabs/Qwen3/WeNet）会修改已发文本。选累积 = 适用于所有引擎；delta 的应用可以用两次累积文本做差得到。
 - **为什么 `stable_until` 用 codepoint 而非字素簇？** codepoint 是 Python 字符串的原生索引单位——`text[:stable_until]` 直接可用、零依赖。实际上适配器从引擎拿到的稳定边界是 word/token 级的,映射到 `text` 中的位置天然就是字素簇边界,不存在"切到组合字符中间"的现实场景。标准用 SHOULD 建议适配器落在字素簇边界,而非用 MUST 强制标准层维护 UAX#29 状态机——这与标准不做音频解码(交给 `[audio]`)、不做 URL fetch(交给引擎)是同一哲学:标准定义语义,不承担不必要的实现。
 - **整段输入为何需要 `start_transcription` 的 `audio` 参数（验证 C-1）？** OpenAI Audio SSE 需要一次上传完整文件然后流式收结果。如果只有 `audio_format` + `send_audio(chunk)`，应用就得把 mp3 文件假装成 PCM 帧来喂——但 mp3 不是 PCM（§AI.1 明确禁止混淆编码容器与裸 PCM 帧）。增加 `audio` 参数让整段输入走正确的 `AudioInput` 路径。

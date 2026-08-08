@@ -70,3 +70,29 @@ def test_invalid_provider_param_error_is_structured_value_error() -> None:
     assert err.param == "beam_size"
     assert isinstance(err, StructuredError)
     assert isinstance(err, ValueError)
+
+
+def test_structured_error_exposes_exactly_the_documented_attributes() -> None:
+    """The app-developer guide's attribute names must be real.
+
+    ``docs/for_app_dev/errors.md`` advertised ``.detail`` / ``.engine_id``,
+    which never existed -- copying the published snippet raised
+    ``AttributeError``, the very "docs teach a wrong API" failure this
+    branch exists to remove. Pin the real surface so the guide cannot drift
+    from it again.
+    """
+    err = ConfigError("bad", param="base_url", hint="use https", details=[{"loc": ["x"]}])
+    assert err.param == "base_url"
+    assert err.hint == "use https"
+    assert err.details == [{"loc": ["x"]}]
+    for absent in ("detail", "engine_id"):
+        assert not hasattr(err, absent), absent
+
+    unsupported = UnsupportedFeatureError(
+        "no word timestamps", param="word_timestamps", mode="batch", hint="drop it"
+    )
+    assert (unsupported.param, unsupported.mode, unsupported.hint) == (
+        "word_timestamps",
+        "batch",
+        "drop it",
+    )

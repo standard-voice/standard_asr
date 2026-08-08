@@ -8,7 +8,10 @@ This module is the **single import path for engine authors**. Where the top-leve
 engine, pass audio, read a result), ``standard_asr.engine`` aggregates the types
 an *engine* author implements and declares against:
 
-- the base class and protocol (:class:`EngineBase`, :class:`StandardASR`);
+- the base class and protocol (:class:`EngineBase`, :class:`StandardASR`),
+  plus the standard session-establishment wire-format rule
+  (:func:`ensure_wire_format_supported`) for structural engines that implement
+  their own establishment guard;
 - the typed config surface (:class:`BaseConfig`, the applicability mixins,
   :func:`secret_field`);
 - static metadata (:class:`BaseProperties`, :class:`SampleRateRange`,
@@ -17,7 +20,9 @@ an *engine* author implements and declares against:
   ``*Cap`` / ``*Constraints`` node);
 - language resolution and download-policy helpers (:func:`effective_language`,
   :data:`AUTO`, :func:`resolve_download_root`);
-- the result and streaming types an engine constructs and emits.
+- the result and streaming types an engine constructs and emits, plus the
+  wire projection helper (:func:`to_json_value`) for values headed into a
+  wire-visible slot.
 
 Exceptions an engine raises live in :mod:`standard_asr.contract.exceptions` (and are also
 re-exported at the package top level). Compliance helpers for testing your plugin
@@ -83,6 +88,7 @@ from standard_asr.contract.results import (
     Segment,
     TranscriptionResult,
     Word,
+    to_json_value,
 )
 from standard_asr.runtime.config import (
     BaseConfig,
@@ -95,7 +101,7 @@ from standard_asr.runtime.config import (
 )
 from standard_asr.runtime.downloads import allow_downloads, resolve_download_root
 from standard_asr.runtime.gating import Mode
-from standard_asr.runtime.interface import EngineBase, StandardASR
+from standard_asr.runtime.interface import EngineBase, StandardASR, ensure_wire_format_supported
 from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 
 __all__ = [
@@ -148,9 +154,11 @@ __all__ = [
     "allow_downloads",
     "effective_candidate_languages",
     "effective_language",
+    "ensure_wire_format_supported",
     "env_var_name",
     "granularity_offers_all",
     "normalize_bcp47",
     "resolve_download_root",
     "secret_field",
+    "to_json_value",
 ]

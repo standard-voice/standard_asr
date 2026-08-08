@@ -33,8 +33,11 @@ A plugin **key** must contain the `/`: only `<engine_id>/<model_name>` and the
 explicit default `<engine_id>/` are valid declaration forms. A slash-less key
 (e.g. `faster-whisper` instead of `faster-whisper/`) is **not** a third valid
 form — it is almost always a typo that dropped `/<model_name>`. Discovery
-rejects it: `discover_models(strict=True)` (and `standard-asr compliance
-entrypoints --strict`) raise, while default discovery logs a warning naming the
+rejects it: the library call `discover_models(strict=True)` **raises**
+`EntrypointValidationError`, while `standard-asr compliance entrypoints
+--strict-discovery` **reports** it as an `entrypoint_invalid` compliance error
+and exits non-zero (a compliance check always returns a report, never raises);
+default discovery logs a warning naming the
 fix and skips the key. The trailing slash is required only on the *declaration*
 side; the *lookup* helpers below accept the bare engine id as a convenience
 alias for its default model.
@@ -176,7 +179,8 @@ standard-asr compliance entrypoints
 
 Flags of interest:
 
-- `--strict` rejects malformed entry points immediately.
+- `--strict-discovery` reports malformed entry points as `entrypoint_invalid`
+  errors (non-zero exit; the report still covers the valid engines).
 - `--no-instantiate` skips smoke-instantiation (useful when a model needs mandatory credentials at runtime).
 - `--on-conflict replace` helps debug when multiple packages expose the same model id.
 
@@ -214,16 +218,17 @@ also importable from `standard_asr.compliance`:
 | `check_entrypoints` | Entry-point metadata, capability declarations, the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
 | `check_provider_params_swap_safety(engine)` | An engine rejects another engine's `provider_params` rather than silently misreading them (spec Runtime R3 / §5.4) | `standard-asr compliance run` (per zero-arg engine) |
 | `check_streaming_param_gating(engine)` | A streaming engine gates an unsupported standard parameter per its strict/best_effort policy | `standard-asr compliance run` (per zero-arg streaming engine) |
-| `check_recommended_wire_format(engine)` | A streaming engine's `recommended_wire_format()` is internally consistent with its declared sample rate / wire encoding | `standard-asr compliance run` (per zero-arg streaming engine) |
+| `check_recommended_wire_format(engine)` | `recommended_wire_format()` returns `AudioFormat \| None` and any returned format passes the engine's own session-establishment rule — the member is unconditional (spec §3.1: Properties-pure, capability-blind), so this holds for **every** engine, batch-only included | `standard-asr compliance run` (per zero-arg engine, inside the entrypoint instance checks) |
 | `check_sync_bridge(session_factory)` | The async→sync bridge terminates without deadlock or a leaked thread | `standard-asr compliance run --include-bridge` (opens a session) |
 | `check_event_sequence(events)` | A recorded streaming event stream obeys the segment/event-order contract | library API only — drive it from your own tests with recorded events |
 | `check_transcription_result(result, capabilities=...)` | A recorded batch result carries no speaker labels beyond the declared `batch.diarization` capability (code `result_exceeds_diarization`) | library API only — drive it from your own tests with a recorded result |
 
 `standard-asr compliance run` orchestrates every check except
-`check_event_sequence` and `check_transcription_result` for you:
+`check_event_sequence` and `check_transcription_result` for you: the
+entrypoint instance checks (including the wire-format round-trip) and
 `check_provider_params_swap_safety` for each zero-arg engine, then
-`check_streaming_param_gating` and `check_recommended_wire_format` for each
-streaming engine (both no-billing probes), plus `check_sync_bridge` when opted
+`check_streaming_param_gating` for each
+streaming engine (no-billing probes), plus `check_sync_bridge` when opted
 in via `--include-bridge` (it opens a session). `check_event_sequence` needs an
 author-recorded event stream — and `check_transcription_result` an
 author-recorded batch result — that the CLI cannot synthesize, so wire them

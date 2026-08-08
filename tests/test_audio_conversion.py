@@ -15,6 +15,10 @@ import numpy as np
 import pytest
 
 from standard_asr.audio.conversion import (
+    DIAG_ASSUMED_SAMPLE_RATE,
+    DIAG_AUDIO_CONVERSION,
+    DIAG_NON_FINITE_AUDIO,
+    DIAG_RESAMPLED_WITH,
     PreparedAudio,
     _target_array_sample_rate,  # pyright: ignore[reportPrivateUsage]
     execute_plan,
@@ -31,6 +35,18 @@ from standard_asr.audio.input import (
 from standard_asr.audio.negotiation import ConversionOp, ConversionPlan, negotiate
 from standard_asr.contract.exceptions import AudioProcessingError
 from standard_asr.contract.properties import SampleRateRange
+
+
+def test_conversion_diagnostic_code_constants_match_their_wire_literals() -> None:
+    """The spec names these codes normatively and several are emitted from more
+    than one site in the module, so they are constants now. Pin constant and
+    literal together exactly once: a rename must break here, not silently
+    change what applications match on.
+    """
+    assert DIAG_AUDIO_CONVERSION == "audio_conversion"
+    assert DIAG_NON_FINITE_AUDIO == "non_finite_audio"
+    assert DIAG_RESAMPLED_WITH == "resampled_with"
+    assert DIAG_ASSUMED_SAMPLE_RATE == "assumed_sample_rate"
 
 
 def _scipy_usable() -> bool:

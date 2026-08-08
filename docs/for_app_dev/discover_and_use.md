@@ -79,6 +79,14 @@ from standard_asr import to_srt, to_vtt
 open("out.srt", "w").write(to_srt(result))
 ```
 
+If any segment cannot render as a *visible* cue — it lacks a measured
+`start`/`end` span (some engines omit timestamps — check
+`seg.timestamp_status`), or its span quantizes to zero milliseconds on the
+output grid (players silently drop `T --> T` cues) — the renderers raise
+`SubtitleRenderingError` rather than silently dropping or hiding text or
+fabricating timing; pass `on_unrenderable="omit"` (keep only renderable
+cues) or `"collapse"` (one whole-text cue) to choose the loss explicitly.
+
 ## 7. Streaming
 
 ```python

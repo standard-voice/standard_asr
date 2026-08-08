@@ -59,16 +59,79 @@ class StructuredError(StandardASRError):
 
 
 class ConfigError(StructuredError, ValueError):
-    """Raised when a configuration is invalid -- user-provided or engine-declared.
+    """Raised when the CONFIGURATION -- supplied or ambient -- is invalid.
 
-    Two fault domains share this type: a value the **caller** can fix (a bad
-    init-config field, a ``default_language`` not in ``selectable_languages``)
-    and a declaration mistake the **engine author** must fix (a malformed
-    ``selectable_languages`` / ``detectable_languages`` tag, surfaced by the
-    standard layer at first transcribe). The latter is a plugin bug, not a
-    request error -- if it reaches you through an installed engine, report it to
-    the plugin author rather than changing your own configuration. The server
-    maps this to HTTP 422 (``ValueError`` subclass).
+    The type asserts fault ownership: the configuration's SUPPLIER can fix
+    it (a bad init-config field, a ``default_language`` not in
+    ``selectable_languages``, a malformed ``--config`` / ``--set``). Who
+    that supplier is depends on the surface, and each surface maps the SAME
+    error accordingly:
+
+    * **CLI**: the invoking user owns the config -- the flags AND the env
+      vars -- so every ``ConfigError`` is caller-actionable there: usage
+      exit 2, with the sanitized message naming the field to fix.
+    * **Reference server**: a wire client cannot supply engine config at
+      all (construction is zero-arg; options are the portable
+      ``WireRuntimeParams``), so a ``ConfigError`` reaching the server --
+      at construction, transcription, or session establishment -- is a
+      deployment-side fault and maps to a scrubbed 500 (WS
+      ``internal_error``); the client-fixable rejections have their own
+      types (:class:`UnsupportedFeatureError` -> 422, request validation ->
+      422). See :class:`ConfigurationRequiredError` for the absent-config
+      503 state.
+
+    Engine-DECLARATION defects (a malformed declared language tag, an
+    unsatisfiable ``prepare`` shape, an IC.6 violation) are NOT this type:
+    they raise :class:`EngineContractError`, because no configuration value
+    fixes them. An engine that raises ``ConfigError`` (or lets a
+    construction-time ``ValidationError``, which
+    ``ModelRegistry.create`` wraps into one, escape its factory) for a
+    fault that is NOT about the supplied configuration mis-asserts this
+    ownership contract -- the compliance suite's zero-arg construction
+    check fails such engines (``engine_construction_failed``); consumers do
+    not second-guess the type. The ``ValueError`` mixin serves IN-PROCESS
+    callers, who genuinely can pass a bad config value to a constructor.
+
+    The one machine-distinguishable sub-state is ABSENT required
+    configuration: raise (or catch) :class:`ConfigurationRequiredError` for
+    that -- consumers such as the compliance suite treat "config missing from
+    this environment" (skip) differently from "config invalid" (fail).
+    """
+
+    pass
+
+
+class ConfigurationRequiredError(ConfigError):
+    """Raised when required runtime configuration is ABSENT, not invalid.
+
+    The narrow, machine-distinguishable subtype of :class:`ConfigError` for
+    the one state that is a fact about the ENVIRONMENT rather than about any
+    code or declaration: a required config field (typically a credential) was
+    neither passed explicitly nor found in the environment. Consumers use the
+    distinction to keep two very different verdicts apart:
+
+    * the compliance suite SKIPS instantiation-level checks on this error (a
+      credentialed engine on a clean CI is behaving correctly; the verdict
+      must not depend on the runtime's credential state), while
+    * any other :class:`ConfigError` -- an invalid supplied value, an
+      internally inconsistent declaration, a factory contract bug -- stays a
+      compliance FAILURE (skipping those would let a broken plugin read as
+      green-with-warning).
+
+    :meth:`~standard_asr.runtime.config.BaseConfig.from_env` raises this
+    automatically when construction failed solely because required fields are
+    missing, so engines following the documented ``explicit > env > raise``
+    pattern get the classification for free. An engine building its config
+    another way should raise this type itself for the missing-credential
+    state.
+
+    Transport mapping: the reference server maps this state to HTTP **503**
+    (REST) / a ``service_unavailable`` frame (WS) with a stable generic
+    detail -- whether it surfaces at zero-arg engine construction or lazily
+    at transcription/session establishment (an engine deferring its
+    credential check past ``__init__``). An operator-side availability
+    state, never the caller's 422, and never the absent field names (those
+    are deployment detail, safe-logged for the operator only).
     """
 
     pass
@@ -185,6 +248,79 @@ class InvalidProviderParamError(StructuredError, ValueError):
     pass
 
 
+class EngineContractError(StandardASRError):
+    """Raised when a constructed engine breaks the protocol contract.
+
+    The runtime counterpart of a compliance failure, in two shapes:
+
+    * **Runtime behavior**: a SYNCHRONOUS ``StandardASR`` member
+      (``transcribe`` / ``start_transcription`` / ``supports`` /
+      ``recommended_wire_format`` / ``prepare``) returned an awaitable (an
+      ``async def`` implementation, or a sync wrapper delegating to one) or
+      a value outside its protocol-pinned return type. Raised by
+      :func:`standard_asr.runtime.protocol_boundary.require_sync_result` at
+      the consumer call sites (CLI, reference server) so the defect is loud
+      at the boundary instead of surfacing as a confusing secondary
+      ``AttributeError`` (or a silent misreading) deep inside another
+      subsystem.
+    * **Declaration shape**: the engine DECLARED something the contract
+      forbids -- a ``prepare`` that is a coroutine function, non-callable,
+      or parameter-requiring; a malformed ``selectable_languages`` /
+      ``detectable_languages`` tag; a language axis without the IC.6
+      ``default_language`` obligation. No caller-side value can fix these,
+      which is what separates them from :class:`ConfigError` (an invalid
+      configuration VALUE, fixable by whoever supplies the config).
+
+    An **engine/plugin fault, never a caller mistake** -- deliberately NOT a
+    :class:`ValueError`: transports and the CLI map the ``ValueError`` family
+    to caller-fixable surfaces (HTTP 422 / usage exit 2), while this must
+    land on the engine-fault surfaces (scrubbed HTTP 500 / ``internal_error``
+    frame / CLI exit 1). If you hit it as an application developer, report it
+    to the engine's author. Messages carry type names only, never the
+    offending value.
+    """
+
+    pass
+
+
+class SubtitleRenderingError(StandardASRError, ValueError):
+    """Raised by ``to_srt`` / ``to_vtt`` when segments cannot render as visible cues.
+
+    A subtitle cue is an interval claim -- "this text occurs at this time" --
+    and it must survive the output's millisecond grid to be seen at all. A
+    segment is therefore UNRENDERABLE in either of two ways: it lacks a
+    measured span (``Segment.timestamp_status`` is ``"start_only"`` or
+    ``"unavailable"``), or its measured span quantizes to zero milliseconds
+    on the output grid (``end`` and ``start`` format to the same timestamp
+    -- players silently drop such cues, so emitting one silently hides the
+    text while the render call reports success). Neither dropping the text
+    nor fabricating timing is the renderer's to choose silently: under the
+    default policy (``on_unrenderable="error"``) it raises this error, and
+    the caller picks the loss explicitly (``"omit"`` drops the unrenderable
+    segments' text from the timed cues; ``"collapse"`` renders one
+    whole-text cue with no real timeline). Mixes in :class:`ValueError`:
+    the caller can fix the call -- choose a policy, or supply renderable
+    segments.
+
+    Args:
+        message: Human-readable description of the rejection.
+        unrenderable: How many segments cannot render as visible cues, if
+            known.
+        total: How many segments the result carries, if known.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        unrenderable: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        self.unrenderable = unrenderable
+        self.total = total
+        super().__init__(message)
+
+
 class StreamClosedError(StandardASRError):
     """Raised when audio is delivered to a streaming session that is closed.
 
@@ -217,8 +353,9 @@ class InvalidSessionUseError(StandardASRError, ValueError):
     application used it. Catching :class:`StreamClosedError` here would lead an
     application to wrongly conclude the session terminated and rebuild it.
     Mixes in :class:`ValueError` (like :class:`ConfigError` /
-    :class:`InvalidProviderParamError`): it is a bad-call programming error, and
-    the server maps it to HTTP 422.
+    :class:`InvalidProviderParamError`): it is a bad-call programming error.
+    (It has no HTTP mapping: it fires only against an in-process session object,
+    and the server drives its own sessions correctly by construction.)
     """
 
     pass
@@ -257,7 +394,9 @@ class FactoryLoadError(DiscoveryError, ImportError):
 __all__ = [
     "AudioProcessingError",
     "ConfigError",
+    "ConfigurationRequiredError",
     "DiscoveryError",
+    "EngineContractError",
     "EntrypointValidationError",
     "FFmpegNotFoundError",
     "FFprobeNotFoundError",
@@ -268,6 +407,7 @@ __all__ = [
     "StandardASRError",
     "StreamClosedError",
     "StructuredError",
+    "SubtitleRenderingError",
     "TranscriptionError",
     "UnsupportedFeatureError",
 ]

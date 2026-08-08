@@ -445,6 +445,58 @@ def test_supports_fail_closed_on_unknown_non_extension_segment() -> None:
     assert {"batch.word_timestamps", "batch.x_acme_beam"} <= paths
 
 
+def test_iter_queryable_paths_covers_every_node_supported_or_not() -> None:
+    """The queryable-path set is the full NODE set, not the supported subset.
+
+    Unsupported leaves and their constraint submodels are yielded (a consumer
+    verifying fail-closed ``False`` answers needs them); scalar field
+    internals are not nodes; an absent (``None``) mode domain contributes
+    nothing; and every yielded path answers ``supports()`` with a real bool.
+    """
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False)),
+            guidance=GuidanceCaps(prompt=PromptCap(supported=False)),
+        )
+    )
+    paths = set(caps.iter_queryable_paths())
+    # Containers and supported/unsupported leaves are all nodes.
+    assert {"batch", "batch.language", "batch.guidance"} <= paths
+    assert "batch.language.candidate_languages" in paths  # unsupported leaf
+    assert "batch.guidance.prompt.constraints" in paths  # constraints submodel
+    # An absent mode domain (streaming=None) is not a node.
+    assert "streaming" not in paths
+    # Scalar internals never appear.
+    assert not any(p.rsplit(".", 1)[-1] in {"supported", "mode", "max"} for p in paths)
+    # Every queryable path is answerable, and the supported view is a subset.
+    assert all(isinstance(caps.supports(p), bool) for p in paths)
+    assert set(caps.iter_supported_paths()) <= paths
+
+
+def test_iter_queryable_paths_x_star_gate_matches_the_query_surface() -> None:
+    """x_* extras are nodes; non-extension unknown extras are not.
+
+    The enumeration must mirror ``supports()``'s resolution rules exactly: a
+    typo'd non-``x_*`` extra is fail-closed-absent (not queryable), while a
+    raw ``x_*`` subtree -- including a bare grouping dict and its nested
+    explicit capability -- is.
+    """
+    caps = DeclaredCapabilities.model_validate(
+        {
+            "batch": {
+                "x_container": {"nested": {"supported": True}},
+                "word_timestmaps": {"supported": True},  # typo'd non-extension extra
+            }
+        }
+    )
+    paths = set(caps.iter_queryable_paths())
+    assert "batch.x_container" in paths  # a bare grouping dict is a node (answers False)
+    assert "batch.x_container.nested" in paths
+    assert "batch.word_timestmaps" not in paths  # absent for supports(), absent here
+    assert caps.supports("batch.x_container") is False
+    assert caps.supports("batch.x_container.nested") is True
+
+
 def test_supports_descends_non_extension_keys_inside_x_star_subtree() -> None:
     # The x_* filter applies only to extra keys on typed standard nodes. Inside a
     # raw x_* subtree the vendor owns the whole structure, so non-x_* child keys
@@ -1129,3 +1181,153 @@ def test_diarization_survives_json_round_trip() -> None:
     assert node.always_on.is_supported is True
     assert node.constraints.max_speakers == 6
     assert restored.canonical_json() == wire
+
+
+def test_extension_extras_are_closed_to_the_json_value_space() -> None:
+    # G.5.2: the capability tree is the same protocol seen twice (Python tree
+    # and wire document). An extra accepted at CONSTRUCTION but with no JSON
+    # form broke that promise: it passed supports()/iteration and only failed
+    # the wire projection at the metadata endpoint. The value space is now
+    # closed at construction -- the review counterexamples (object, NaN)
+    # never leave the tree.
+    from pathlib import Path
+
+    from pydantic import ValidationError
+
+    # The review's headline shapes: an arbitrary object, and every non-JSON
+    # scalar/container flavor, fail AT CONSTRUCTION.
+
+    for bad in (
+        object(),
+        b"bytes",
+        Path("/tmp/x"),
+        {1, 2},
+        (1, 2),
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        {"nested": object()},
+        {"nested": [float("nan")]},
+    ):
+        with pytest.raises(ValidationError):
+            FlagCap(supported=True, x_vendor=bad)  # pyright: ignore[reportCallIssue]
+
+    # A nested mapping KEY that is not a string has no JSON object form.
+    with pytest.raises(ValidationError):
+        FlagCap(supported=True, x_vendor={"outer": {1: "#"}})  # pyright: ignore[reportCallIssue]
+
+    # A canonicalizable value (a str SUBCLASS -- display machinery aside,
+    # its content is plain text) settles to its canonical JSON form AT
+    # CONSTRUCTION: the stored tree and the wire document agree, rather
+    # than coercing only at dump time.
+    settled = FlagCap(supported=True, x_note=type("S", (str,), {})("plain"))  # pyright: ignore[reportCallIssue]
+    assert settled.model_extra is not None
+    assert settled.model_extra == {"x_note": "plain"}
+    assert type(settled.model_extra["x_note"]) is str
+
+    # The legal shapes keep working: a nested extension tree with every JSON
+    # scalar; and the two-layer view over it is identical by construction.
+    cap = FlagCap(
+        supported=True,
+        x_vendor={"supported": True, "limits": {"max": 8, "codecs": ["opus"], "note": None}},  # pyright: ignore[reportCallIssue]
+    )
+    canonical = cap_module._to_canonical(cap, inject_supported=False)  # pyright: ignore[reportPrivateUsage]
+    assert canonical["x_vendor"] == {
+        "supported": True,
+        "limits": {"max": 8, "codecs": ["opus"], "note": None},
+    }
+    import json
+
+    assert json.dumps(canonical, allow_nan=False)  # must not raise
+    # The round trip through the wire document is byte-identical.
+    doc = json.loads(json.dumps(canonical))
+    assert (
+        DeclaredCapabilities.model_validate(
+            {"batch": {"x_acme": doc["x_vendor"]}}
+        ).canonical_json()["batch"]["x_acme"]
+        == doc["x_vendor"]
+    )
+
+    # Constraint submodels share the closure.
+    with pytest.raises(ValidationError):
+        CandidateLanguagesConstraints(max=3, x_field=Path("/p"))  # pyright: ignore[reportCallIssue]
+
+    # Forward-compat tolerance is unchanged: unknown keys with JSON values
+    # still parse; typo'd non-extension keys stay fail-closed for queries.
+    tolerated = DeclaredCapabilities.model_validate({"batch": {"future_field": {"max": 5}}})
+    assert tolerated.batch is not None
+    assert tolerated.supports("batch.future_field") is False
+
+
+def test_extension_extras_key_domain_is_exact_str() -> None:
+    # The extras KEY domain closes with the same rule as the results-layer
+    # wire slots (require_json_string_keys): exact str at every depth. The
+    # counterexample this pins: the value adapter's lax dict[str, ...]
+    # validation DECODES a bytes key into its str spelling, and the merge
+    # then re-homed the laundered key -- {b"supported": True} silently
+    # overrode a declared supported=False (both insertion orders), and
+    # b"x_vendor" minted a canonical extension key the input never spelled.
+    from pydantic import ValidationError
+
+    def rejects_on_key(payload: dict[object, object]) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            FlagCap.model_validate(payload)
+        assert {e["type"] for e in excinfo.value.errors()} == {"standard_asr_json_object_key"}
+
+    # A bytes key can neither override a declared field (either insertion
+    # order) nor become an extension key.
+    rejects_on_key({b"supported": True})
+    rejects_on_key({"supported": False, b"supported": True})
+    rejects_on_key({b"supported": True, "supported": False})
+    rejects_on_key({"supported": True, b"x_vendor": {"a": 1}})
+    # The rule holds at every depth of an extra value, and for any non-str
+    # key flavor (a str SUBCLASS key changes type under canonicalization,
+    # so it is refused rather than silently settled).
+    rejects_on_key({"supported": True, "x_v": {b"k": 1}})
+    rejects_on_key({"supported": True, type("K", (str,), {})("x_note"): "v"})
+
+    # A nested capability node enforces the same rule through its own
+    # validator: the laundered key never reaches the tree.
+    with pytest.raises(ValidationError) as excinfo:
+        DeclaredCapabilities.model_validate({"batch": {b"future_field": {"max": 5}}})
+    assert {e["type"] for e in excinfo.value.errors()} == {"standard_asr_json_object_key"}
+
+
+def test_queryable_surface_keys_cannot_embed_the_path_separator() -> None:
+    # "." is the dot-path grammar's reserved separator: a queryable-surface
+    # key containing it minted a path that supports() could never resolve
+    # (iter_queryable_paths yielded 'x_vendor.a.b' for {'x_vendor': {'a.b':
+    # ...}}, supports() split it into segments the tree does not have, and
+    # the compliance sweep then failed a fully compliant plugin), and two
+    # DISTINCT trees ({'a.b': node} vs {'a': {'b': node}}) joined to the
+    # SAME path string, letting covers()'s set containment conflate them.
+    # A dotted key is legal JSON, so it must be rejected loudly at
+    # construction, naming the key -- never silently mis-resolved later.
+    from pydantic import ValidationError
+
+    for payload in (
+        {"x_vendor": {"a.b": {"supported": True}}},  # nested node key
+        {"x_ven.dor": {"supported": True}},  # the x_* key itself
+        {"x_vendor": {"a": {"b.c": {"supported": True}}}},  # any dict depth
+    ):
+        with pytest.raises(ValidationError, match="dot-path separator"):
+            DeclaredCapabilities.model_validate(payload)
+
+    # Outside the path space, dotted names remain representable: keys of
+    # dicts inside LISTS are field internals (never nodes), scalar values
+    # are values, and non-extension extras are not queryable.
+    caps = DeclaredCapabilities.model_validate(
+        {
+            "x_vendor": {
+                "models": ["v1.2"],
+                "aliases": [{"v1.2": "stable"}],
+                "supported": True,
+            },
+            "future_field": {"v1.2": "tolerated, not queryable"},
+        }
+    )
+    # And the surviving surface is a true bijection: every queryable path
+    # resolves through supports() (True or False, never an unresolvable
+    # spelling of a declared node).
+    resolved = {path: caps.supports(path) for path in caps.iter_queryable_paths()}
+    assert resolved["x_vendor"] is True

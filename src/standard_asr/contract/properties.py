@@ -186,7 +186,8 @@ class BaseProperties(BaseModel):
     """Base class for ASR engine static properties.
 
     Attributes:
-        engine_id: Engine identifier (PEP 503 normalized).
+        engine_id: Engine identifier (surface syntax checked here; PEP 503
+            canonicalization happens at discovery).
         model_name: Model preset name within the engine.
         protocol_version: Standard ASR protocol version supported by the engine.
         accepted_input: Audio shapes the engine accepts (MUST be non-empty).
@@ -229,7 +230,14 @@ class BaseProperties(BaseModel):
         protected_namespaces=(),
     )
 
-    engine_id: str = Field(..., description="Engine identifier (PEP 503 normalized).")
+    engine_id: str = Field(
+        ...,
+        description=(
+            "Engine identifier. Validated here for surface syntax (lowercase "
+            "alphanumerics plus '._-'); canonicalized to its PEP 503 routing "
+            "identity at discovery."
+        ),
+    )
     model_name: str = Field(..., description="Model preset name within the engine.")
     protocol_version: str = Field(
         ..., description="Standard ASR protocol version supported by the engine."

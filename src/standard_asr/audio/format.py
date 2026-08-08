@@ -14,6 +14,7 @@ not self-describing, so they MUST be declared up front.
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 
 class AudioFormat(BaseModel):
@@ -63,7 +64,7 @@ class AudioFormat(BaseModel):
         """
         cleaned = value.strip().lower()
         if not cleaned:
-            raise ValueError("encoding must not be blank.")
+            raise PydanticCustomError("standard_asr_encoding_blank", "encoding must not be blank.")
         return cleaned
 
 

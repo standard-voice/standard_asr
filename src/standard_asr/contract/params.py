@@ -24,6 +24,7 @@ from enum import Enum
 from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 from standard_asr.contract.capabilities import WordTimestampGranularityName
 from standard_asr.contract.language import AUTO, is_valid_bcp47, normalize_bcp47
@@ -275,10 +276,11 @@ class RuntimeParams(BaseModel):
                 concrete subclass.
         """
         if value is not None and type(value) is ProviderParams:
-            raise ValueError(
+            raise PydanticCustomError(
+                "standard_asr_provider_params_base",
                 "provider_params must be the engine's concrete ProviderParams "
                 "subclass, not the bare ProviderParams base (or a mapping coerced "
-                "into it). Pass an instance of the engine's published params type."
+                "into it). Pass an instance of the engine's published params type.",
             )
         return value
 
@@ -307,9 +309,10 @@ def _validate_language_tag(value: str | None) -> str | None:
         # unauthenticated 422 body, where validation errors never echo the
         # request input), and a mis-pasted secret sent as `language`
         # would otherwise be reflected back.
-        raise ValueError(
+        raise PydanticCustomError(
+            "standard_asr_language_tag",
             "language tag is not a well-formed BCP-47 language tag "
-            "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'."
+            "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'.",
         )
     return value
 
@@ -358,14 +361,16 @@ def _validate_candidate_language_list(value: list[str] | None) -> list[str] | No
             # The raw value MUST NOT be embedded in the message (same reasoning as
             # the scalar `language` validator: it is echoed verbatim by the
             # server's unauthenticated 422 body and logs).
-            raise ValueError(
+            raise PydanticCustomError(
+                "standard_asr_candidate_language_tag",
                 "candidate_languages contains an entry that is not a well-formed "
-                "BCP-47 language tag (e.g. 'en', 'en-US', 'zh-Hans')."
+                "BCP-47 language tag (e.g. 'en', 'en-US', 'zh-Hans').",
             )
         if normalize_bcp47(tag) == AUTO:
-            raise ValueError(
+            raise PydanticCustomError(
+                "standard_asr_candidate_language_auto",
                 "candidate_languages MUST NOT contain 'auto' (it is a directive, "
-                "not a candidate language)."
+                "not a candidate language).",
             )
     return value
 
@@ -402,9 +407,10 @@ def _validate_phrase_hints_list(value: list[str] | None) -> list[str] | None:
     if any(not term.strip() for term in value):
         # The raw values are not echoed (a phrase hint could carry sensitive
         # text); the message names the rule, not the offending entry.
-        raise ValueError(
+        raise PydanticCustomError(
+            "standard_asr_phrase_hint_blank",
             "phrase_hints must not contain empty or whitespace-only terms "
-            "(use [] to request no hints)."
+            "(use [] to request no hints).",
         )
     return value
 

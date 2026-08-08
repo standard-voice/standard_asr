@@ -298,7 +298,10 @@ jobs:
       - name: Run zizmor (SARIF)
         # zizmor exits non-zero on findings at/above its default (high) threshold,
         # so this step fails the job — and thus checks-complete — on a finding.
-        run: uvx zizmor@latest --format=sarif .github/workflows/ > results.sarif
+        # Pinned (not @latest) so the gate is reproducible: a scanner release must
+        # never be able to flip a previously-green PR red on its own schedule.
+        # Bump deliberately, like every other pinned tool here.
+        run: uvx zizmor@1.28.0 --format=sarif .github/workflows/ > results.sarif
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload SARIF to GitHub code scanning
@@ -312,12 +315,39 @@ jobs:
           sarif_file: results.sarif
           category: zizmor
 
+  docs:
+    # Docs are a load-bearing product surface (the spec and the app-dev guides
+    # are the contract's public face), and doc/code drift has repeatedly lived
+    # under a green CI — mkdocstrings warnings and stale API examples are
+    # invisible to lint/test. A strict build turns that whole drift class into
+    # a failing PR check.
+    name: Docs build (strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install dependencies (locked)
+        run: uv sync --locked --all-extras --all-groups
+      - name: Build docs (strict)
+        run: uv run --no-sync mkdocs build --strict
+
   checks-complete:
     # Single aggregate status required by branch protection (ADR D8). Adding a
     # new job above automatically tightens the gate via `needs`.
     name: checks-complete
     if: always()
-    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, actionlint, coverage, zizmor]
+    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, actionlint, coverage, zizmor, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

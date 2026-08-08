@@ -26,7 +26,7 @@ _ENGINE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*\Z")
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+%:-]*\Z")
 
 
-def _validate_engine_id(engine_id: str) -> None:
+def validate_engine_id(engine_id: str) -> None:
     """Validate the *declared* form of an engine identifier.
 
     This checks the surface syntax only. Canonicalisation to the PEP 503
@@ -43,7 +43,6 @@ def _validate_engine_id(engine_id: str) -> None:
     Raises:
         EntrypointValidationError: If the engine identifier is invalid.
     """
-
     if "/" in engine_id:
         raise EntrypointValidationError(f"engine_id must not contain '/' (got {engine_id!r})")
     if not _ENGINE_ID_RE.match(engine_id):
@@ -53,7 +52,7 @@ def _validate_engine_id(engine_id: str) -> None:
         )
 
 
-def _validate_model_name(model_name: str) -> None:
+def validate_model_name(model_name: str) -> None:
     """Validate and log guidance for a model name.
 
     Args:
@@ -65,7 +64,6 @@ def _validate_model_name(model_name: str) -> None:
     Raises:
         EntrypointValidationError: If the model name is invalid.
     """
-
     if model_name == "":
         logger.warning(
             "model_name is empty for a standard_asr.models entry point. "
@@ -79,33 +77,3 @@ def _validate_model_name(model_name: str) -> None:
             "model_name contains unsupported characters. Allowed characters: "
             "letters, digits, '.', '_', '+', '%', ':', '-'."
         )
-
-
-def validate_engine_id(engine_id: str) -> None:
-    """Validate an engine identifier.
-
-    Args:
-        engine_id: Engine identifier string.
-
-    Returns:
-        None.
-
-    Raises:
-        EntrypointValidationError: If the engine identifier is invalid.
-    """
-    _validate_engine_id(engine_id)
-
-
-def validate_model_name(model_name: str) -> None:
-    """Validate a model name.
-
-    Args:
-        model_name: Model name string (may be empty for defaults).
-
-    Returns:
-        None.
-
-    Raises:
-        EntrypointValidationError: If the model name is invalid.
-    """
-    _validate_model_name(model_name)

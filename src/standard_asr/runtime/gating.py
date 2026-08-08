@@ -21,19 +21,22 @@ rules:
 from __future__ import annotations
 
 import unicodedata
-from typing import Literal, cast
+from typing import cast
 
 from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
+    ModeName,
     PhraseHintsCap,
     PromptCap,
     WordTimestampsCap,
 )
 from standard_asr.contract.exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from standard_asr.contract.params import DiarizationRequest, ProviderParams, RuntimeParams
-from standard_asr.contract.results import Diagnostic
+from standard_asr.contract.results import Diagnostic, to_json_value
 
-Mode = Literal["batch", "streaming"]
+#: Alias of the contract-layer :data:`~standard_asr.contract.capabilities.ModeName`
+#: (kept under the runtime layer's established name; one Literal, one home).
+Mode = ModeName
 
 #: Diagnostic codes the gating layer emits. These strings are
 #: part of the standard's contract -- applications match on them and the
@@ -44,6 +47,9 @@ Mode = Literal["batch", "streaming"]
 DIAG_UNSUPPORTED_PARAMETER_IGNORED = "unsupported_parameter_ignored"
 DIAG_UNSUPPORTED_GRANULARITY_IGNORED = "unsupported_granularity_ignored"
 DIAG_PROMPT_TRUNCATED = "prompt_truncated"
+DIAG_PHRASE_HINTS_TRUNCATED = "phrase_hints_truncated"
+DIAG_GUIDANCE_DEGRADED_TO_PROMPT = "guidance_degraded_to_prompt"
+DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED = "guidance_degrade_phrase_hints_dropped"
 
 #: Portable standard-set fields and their capability dot-path suffixes.
 #:
@@ -238,7 +244,7 @@ def gate_params(
                     f"(capability {cap_path!r} not supported)."
                 ),
                 param=field_name,
-                provided=value,
+                provided=to_json_value(value),
                 effective=None,
             )
         )
@@ -667,11 +673,11 @@ def _enforce_phrase_hints_limits(
     diagnostics.append(
         Diagnostic(
             level="warning",
-            code="phrase_hints_truncated",
+            code=DIAG_PHRASE_HINTS_TRUNCATED,
             message=f"Truncated phrase_hints to declared limits in {mode} mode.",
             param="phrase_hints",
-            provided=hints,
-            effective=truncated,
+            provided=to_json_value(hints),
+            effective=to_json_value(truncated),
         )
     )
 
@@ -851,14 +857,14 @@ def _try_degrade_to_prompt(
             diagnostics.append(
                 Diagnostic(
                     level="warning",
-                    code="guidance_degrade_phrase_hints_dropped",
+                    code=DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED,
                     message=(
                         "phrase_hints unsupported; the synthesized prompt was truncated to "
                         f"the {max_tokens}-token budget before any phrase-hint term fit, so "
                         f"NO phrase-hint content reached the prompt in {mode} mode."
                     ),
                     param="phrase_hints",
-                    provided=hints,
+                    provided=to_json_value(hints),
                     effective=None,
                 )
             )
@@ -869,10 +875,10 @@ def _try_degrade_to_prompt(
     diagnostics.append(
         Diagnostic(
             level="warning",
-            code="guidance_degraded_to_prompt",
+            code=DIAG_GUIDANCE_DEGRADED_TO_PROMPT,
             message="phrase_hints unsupported; degraded into the prompt channel.",
             param="phrase_hints",
-            provided=hints,
+            provided=to_json_value(hints),
             effective="prompt",
         )
     )
@@ -880,6 +886,9 @@ def _try_degrade_to_prompt(
 
 
 __all__ = [
+    "DIAG_GUIDANCE_DEGRADED_TO_PROMPT",
+    "DIAG_GUIDANCE_DEGRADE_PHRASE_HINTS_DROPPED",
+    "DIAG_PHRASE_HINTS_TRUNCATED",
     "DIAG_PROMPT_TRUNCATED",
     "DIAG_UNSUPPORTED_GRANULARITY_IGNORED",
     "DIAG_UNSUPPORTED_PARAMETER_IGNORED",
