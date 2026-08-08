@@ -550,7 +550,7 @@ def test_validate_model_name_rejects_invalid_chars() -> None:
 
 
 def test_validate_engine_id_accepts_non_canonical() -> None:
-    # A non-canonical-but-valid id passes surface validation; canonicalisation
+    # A non-canonical-but-valid id passes surface validation; canonicalization
     # to the routing identity happens in parse_entrypoint_name / discover_models.
     validate_engine_id("my_engine")
     validate_model_name("model")

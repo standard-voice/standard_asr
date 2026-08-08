@@ -92,7 +92,7 @@ class DiarizationRequest(BaseModel):
     Presence enables diarization: ``RuntimeParams(diarization=DiarizationRequest())``
     (or the :data:`DIARIZE` convenience constant) requests speaker labels;
     ``diarization=None`` (the default) means not requested. There is **no**
-    ``[]``-analogue -- a "requested-but-empty" state is meaningless for an
+    ``[]``-analog -- a "requested-but-empty" state is meaningless for an
     on/off feature, so ``None`` vs an instance is the whole state space. On the
     wire the marker maps three ways: ``"diarization": {}``
     -> ``DiarizationRequest()``; ``"diarization": null`` -> ``None``; key

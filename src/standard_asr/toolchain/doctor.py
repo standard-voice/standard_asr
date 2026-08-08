@@ -328,7 +328,7 @@ def _emptiness_candidates(combined: SpecifierSet) -> set[str]:
             parsed = Version(edge)
         except Exception:  # noqa: BLE001 - a non-version edge (e.g. ``===`` URL) is just skipped
             continue
-        # Keep the edge verbatim (``str(Version(edge))`` canonicalises but
+        # Keep the edge verbatim (``str(Version(edge))`` canonicalizes but
         # preserves epoch/pre-release), so an epoch/pre-release pin witnesses
         # itself. A bare ``release`` candidate would silently drop those segments.
         candidates.add(str(parsed))

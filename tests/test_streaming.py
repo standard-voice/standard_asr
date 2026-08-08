@@ -1662,7 +1662,7 @@ class _ReconnectSession(TranscriptionSession):
         async for chunk in self.audio_chunks():
             chunks.append(chunk)
         # Simulate the adapter re-establishing, replaying the rolling buffer,
-        # and signalling the bridged gap after audio has been processed. The
+        # and signaling the bridged gap after audio has been processed. The
         # adapter explicitly decides whether content was lost.
         _ = self.replay_buffer()
         self.note_reconnect(self._gap[0], self._gap[1], content_lost=self._content_lost)
@@ -2388,7 +2388,7 @@ def test_forged_empty_old_ids_supersede_degrades_never_crashes() -> None:
 
 def test_guard_supersede_unknown_speakers_allowed() -> None:
     # Segments that never carried a speaker do not count as distinct: a merge
-    # of unlabelled segments (or one labelled + one unlabelled) is admitted.
+    # of unlabeled segments (or one labeled + one unlabeled) is admitted.
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.partial("s1", "hello"))
     guard.admit(TranscriptionEvent.partial("s2", "world"))
@@ -3909,7 +3909,7 @@ def test_deadline_drain_stops_at_real_buffered_terminal() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Closed finals fulfil supersede obligations (no lying diagnostic)
+# Closed finals fulfill supersede obligations (no lying diagnostic)
 # --------------------------------------------------------------------------- #
 def test_closed_final_fulfils_supersede_obligation() -> None:
     # A closed final that is a replacement group's only freeze MUST

@@ -5,7 +5,7 @@
 
 ``Properties`` carries an engine's *static identity* -- values that do not
 change with feature flags or runtime mode: its id, the audio shapes it accepts,
-its sample-rate boundaries, and the language axis it exposes. Behavioural
+its sample-rate boundaries, and the language axis it exposes. Behavioral
 support lives in :mod:`standard_asr.contract.capabilities`, not here (limits that
 only make sense when a feature is supported belong on that feature's capability
 node).

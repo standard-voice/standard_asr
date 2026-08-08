@@ -332,7 +332,7 @@ def effective_candidate_languages(
         # 'auto' is a directive, not a candidate; its presence is a caller bug,
         # so it ALWAYS raises -- independent of strict/best_effort -- mirroring
         # the provider_params "always-raise on a code bug" policy
-        # (candidate_languages MUST NOT contain 'auto').
+        # (candidate_languages cannot contain 'auto').
         # Compare AFTER normalization so 'AUTO'/'Auto'/'auto' are all rejected
         # with this explicit reason, not misreported as "not detectable".
         if norm == AUTO:

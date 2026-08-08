@@ -882,7 +882,7 @@ def create_app(
             # validated -- a bare ValidationError here is an ENGINE fault (a
             # structural engine's internals; EngineBase wraps this seam as
             # TranscriptionError, but the server cannot assume the base
-            # class). Labelling it "unsupported" misattributes the fault, and
+            # class). Labeling it "unsupported" misattributes the fault, and
             # ``str(exc)`` echoes pydantic's offending input_value -- a
             # mis-placed engine-side secret would cross the trust boundary.
             # Scrubbed internal_error, logged server-side. A dedicated arm

@@ -1831,7 +1831,7 @@ class _LifecycleGuard:
                 if is_closed_final and obligation is not None:
                     # Bookkeeping only: a closed final may legally rewrite frozen
                     # text (the divergence rejection below is exempted for it),
-                    # but its freeze still fulfils the segment's supersede
+                    # but its freeze still fulfills the segment's supersede
                     # obligation. Without recording it here -- the rejection
                     # path's _supersede_preserves_frozen is the ledger's only
                     # other writer -- a closed final that is a replacement
@@ -3308,7 +3308,7 @@ class SyncSession:
     def _shutdown(self) -> None:
         """Cancel pending tasks, stop the loop, join the thread, and close it.
 
-        Cancelling + awaiting outstanding tasks (e.g. a hung ``__aenter__``)
+        Canceling + awaiting outstanding tasks (e.g. a hung ``__aenter__``)
         before stopping avoids "Task was destroyed but it is pending" warnings,
         and closing the loop avoids the ``BaseEventLoop.__del__`` resource
         warning — both of which would otherwise surface (and fail ``-W error``).

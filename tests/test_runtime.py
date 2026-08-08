@@ -110,7 +110,7 @@ def test_cache_dir_windows_ignores_roaming_appdata(monkeypatch: pytest.MonkeyPat
 
 
 def test_cache_dir_xdg_cache_home_honored(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # On POSIX an absolute XDG_CACHE_HOME is honoured (parity with
+    # On POSIX an absolute XDG_CACHE_HOME is honored (parity with
     # HuggingFace hub / pip / uv), so weights follow a user's deliberately
     # relocated cache instead of always landing in ~/.cache.
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)

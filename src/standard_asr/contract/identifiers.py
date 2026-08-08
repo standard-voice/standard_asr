@@ -9,7 +9,7 @@ them as fields, and plugin discovery parses them out of entry-point names.
 Both need the same surface-syntax check, so the validators live here in the
 contract layer -- the lowest layer -- and both consumers depend downward on it.
 
-The checks are purely syntactic. Canonicalisation of an engine id to its
+The checks are purely syntactic. Canonicalization of an engine id to its
 routing identity (PEP 503 normalization) is a separate, discovery-layer step.
 """
 
@@ -29,7 +29,7 @@ _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+%:-]*\Z")
 def validate_engine_id(engine_id: str) -> None:
     """Validate the *declared* form of an engine identifier.
 
-    This checks the surface syntax only. Canonicalisation to the PEP 503
+    This checks the surface syntax only. Canonicalization to the PEP 503
     routing identity is performed by :func:`parse_entrypoint_name`; a
     non-canonical-but-valid id such as ``my_engine`` passes here and is folded
     to its canonical ``my-engine`` form downstream.

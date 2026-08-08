@@ -324,7 +324,7 @@ def test_diarization_wire_three_way_mapping(
 ) -> None:
     # The wire mapping: {} -> enable marker; null -> not requested;
     # absent key -> not requested. There is NO requested-but-empty third state
-    # (no []-analogue for an on/off feature).
+    # (no []-analog for an on/off feature).
     assert model.model_validate({"diarization": {}}).diarization == DiarizationRequest()
     assert model.model_validate({"diarization": None}).diarization is None
     assert model.model_validate({}).diarization is None

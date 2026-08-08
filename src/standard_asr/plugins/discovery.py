@@ -183,7 +183,7 @@ class ModelSpec:
         engine_id: PEP 503 canonical engine identifier and routing identity
             (e.g., ``faster-whisper``). This is the unique engine discriminator.
         declared_engine_id: The verbatim engine id as declared in the entry
-            point (e.g., ``faster_whisper``, which canonicalises to the
+            point (e.g., ``faster_whisper``, which canonicalizes to the
             ``faster-whisper`` routing ``engine_id``). Kept for diagnostics
             only; never used for routing. Equals ``engine_id`` when already
             canonical. Note an upper-case form such as ``Faster_Whisper`` can

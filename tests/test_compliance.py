@@ -2060,7 +2060,7 @@ def test_sync_bridge_async_supports_cannot_earn_not_applicable() -> None:
 
     ``bool(coroutine)`` is True: without the guard, the classification probe
     fabricated a "declares streaming_input" verdict from a modality defect
-    (mislabelling the failure a capability lie) and leaked the coroutine
+    (mislabeling the failure a capability lie) and leaked the coroutine
     unawaited into the run (warnings-as-errors is the leak oracle here).
     """
 

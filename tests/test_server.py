@@ -1380,7 +1380,7 @@ def test_ws_stream_engine_validation_error_is_internal_and_never_echoes() -> Non
 
     pydantic ``ValidationError`` subclasses ``ValueError``, so without a
     dedicated clause it fell into the ``(UnsupportedFeatureError, ValueError)``
-    handler -- labelled ``unsupported`` (misattributing an engine fault to the
+    handler -- labeled ``unsupported`` (misattributing an engine fault to the
     client's request) and echoed via ``str(exc)``, whose text includes
     pydantic's offending ``input_value`` (here an engine-side secret crossing
     the trust boundary). The dedicated clause must classify it as a scrubbed
@@ -1409,7 +1409,7 @@ def test_ws_stream_bare_value_error_is_internal_and_never_echoes() -> None:
     ``WireRuntimeParams``, ``AudioFormat``), and a compliant engine signals
     unsupported features with ``UnsupportedFeatureError`` -- so a surviving
     bare ``ValueError`` is an engine/adapter fault. The old
-    ``(UnsupportedFeatureError, ValueError)`` arm labelled it ``unsupported``
+    ``(UnsupportedFeatureError, ValueError)`` arm labeled it ``unsupported``
     (blaming the caller) and sent ``str(exc)`` -- engine-internal, possibly
     credential-bearing text -- to an unauthenticated client.
     """
@@ -2610,7 +2610,7 @@ def _stream_best_effort_factory() -> (  # pyright: ignore[reportUnusedFunction]
 
 
 class _SpeakerStreamSession(TranscriptionSession):
-    """Emits one speaker-labelled final per fed chunk."""
+    """Emits one speaker-labeled final per fed chunk."""
 
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
         index = 0
@@ -2671,7 +2671,7 @@ def test_ws_event_carries_speaker() -> None:
     # End-to-end diarization wire pin: {"diarization": {}} in the WS start
     # options passes gating (declared supported) and the event's speaker rides
     # the JSON payload; the constant event shape serializes speaker=null on
-    # unlabelled events (here: done).
+    # unlabeled events (here: done).
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 

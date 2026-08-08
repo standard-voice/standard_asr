@@ -610,7 +610,7 @@ def test_target_sample_rate_self_describing_returns_native() -> None:
 
 def test_target_sample_rate_falls_back_to_smallest_when_source_unknown() -> None:
     # Neither required nor native is accepted and the source rate is
-    # unknown -> deterministically pick the SMALLEST accepted rate (minimises
+    # unknown -> deterministically pick the SMALLEST accepted rate (minimizes
     # gratuitous upsampling), independent of declaration order.
     assert _target_array_sample_rate([44100, 22050], 16000, None) == 22050
     # A required rate the engine does not accept also falls through to the policy.

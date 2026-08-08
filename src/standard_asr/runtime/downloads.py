@@ -99,7 +99,7 @@ def resolve_cache_dir(
       as a fallback: model weights are multi-gigabyte and a roaming profile is
       synced across domain logins, which is the wrong storage class for them.
     - **macOS / Linux**: ``$XDG_CACHE_HOME/standard-asr`` when ``XDG_CACHE_HOME``
-      is set to an absolute path (honoured for parity with the wider ML cache
+      is set to an absolute path (honored for parity with the wider ML cache
       ecosystem -- HuggingFace hub, pip, uv), otherwise ``~/.cache/standard-asr``.
       Per the XDG Base Directory spec a non-absolute ``XDG_CACHE_HOME`` is
       ignored.

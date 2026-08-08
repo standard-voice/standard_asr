@@ -1146,7 +1146,7 @@ def test_renderers_default_omits_speakers() -> None:
 
 
 def test_include_speakers_skips_none_speaker_segments() -> None:
-    # Mixed result: only the labelled cue changes; a None speaker renders the
+    # Mixed result: only the labeled cue changes; a None speaker renders the
     # cue unchanged (no "[None]" fabrication).
     srt = to_srt(_speaker_result("Alice", None), include_speakers=True)
     assert "[Alice]: line 0" in srt
@@ -1154,7 +1154,7 @@ def test_include_speakers_skips_none_speaker_segments() -> None:
     assert "None" not in srt
     vtt = to_vtt(_speaker_result("Alice", None), include_speakers=True)
     assert "<v Alice>line 0" in vtt
-    # The unlabelled cue's payload starts directly after its timing line -- no
+    # The unlabeled cue's payload starts directly after its timing line -- no
     # voice tag was fabricated for it.
     assert "\nline 1" in vtt
 

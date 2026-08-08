@@ -492,7 +492,7 @@ class DiarizationCap(_FlagLikeNode):
     always_on: FlagCap = Field(
         default_factory=FlagCap,
         description=(
-            "Behavioural fact: whether diarization is architecturally "
+            "Behavioral fact: whether diarization is architecturally "
             "non-disableable. When supported, speaker labels may appear even "
             "when diarization is not requested."
         ),

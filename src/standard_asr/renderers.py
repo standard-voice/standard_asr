@@ -448,12 +448,12 @@ def to_srt(
     rendering. (WebVTT, which mandates escaping, is handled by :func:`to_vtt`.)
 
     Speaker rendering: SRT has no speaker syntax, so opting in
-    mutates the cue text itself -- each labelled cue is prefixed with
+    mutates the cue text itself -- each labeled cue is prefixed with
     ``[<label>]: ``. The default is ``False`` on text-purity grounds (the
     renderer is a projection of the transcript; injecting labels uninvited
     would surprise every consumer that treats the cue text as speech), not for
     backward compatibility. Cues whose ``speaker`` is ``None`` are rendered
-    unchanged; empty-text segments are skipped even when labelled (a label
+    unchanged; empty-text segments are skipped even when labeled (a label
     with no payload is not a cue).
 
     Unrenderable segments: a segment without a measured span, or whose
@@ -536,11 +536,11 @@ def to_vtt(
     collapsed, ``-->`` neutralized by the ``>`` escape).
 
     Speaker rendering: opting in wraps the whole cue body of each
-    labelled cue in WebVTT's native voice span, ``<v <label>>``. The default is
+    labeled cue in WebVTT's native voice span, ``<v <label>>``. The default is
     ``False`` on text-purity grounds (the renderer is a projection of the
     transcript), not for backward compatibility. Cues whose ``speaker`` is
     ``None`` are rendered unchanged; empty-text segments are skipped even when
-    labelled.
+    labeled.
 
     Unrenderable segments: identical policy contract to :func:`to_srt` -- a
     segment without a measured span, or whose span quantizes to zero

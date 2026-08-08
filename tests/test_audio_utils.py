@@ -314,21 +314,21 @@ def main():
     print("Running basic audio_utils tests...")
 
     test_audio_contract_dtype()
-    print("✓ Audio contract dtype test passed")
+    print("[OK]Audio contract dtype test passed")
 
     test_single_sample_not_scalar()
-    print("✓ Single sample regression test passed")
+    print("[OK]Single sample regression test passed")
 
     test_empty_audio_raises_error()
-    print("✓ Empty audio error test passed")
+    print("[OK]Empty audio error test passed")
 
     test_nan_inf_cleanup()
-    print("✓ NaN/Inf cleanup test passed")
+    print("[OK]NaN/Inf cleanup test passed")
 
     test_invalid_parameters()
-    print("✓ Invalid parameters test passed")
+    print("[OK]Invalid parameters test passed")
 
-    print("All basic tests passed! ✅")
+    print("All basic tests passed.")
 
 
 if __name__ == "__main__":
