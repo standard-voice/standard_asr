@@ -39,6 +39,7 @@ from typing import (
 )
 
 from pydantic import ValidationError
+from pydantic.errors import PydanticInvalidForJsonSchema
 
 from standard_asr.contract.exceptions import EntrypointValidationError, FactoryLoadError
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
@@ -581,8 +582,9 @@ class ModelRegistry:
         Raises:
             EntrypointValidationError: Model not found.
             FactoryLoadError: Entry point failed to load, the engine class
-                cannot be determined without calling the factory, or
-                ``config_type`` is not a ``BaseConfig`` subclass.
+                cannot be determined without calling the factory,
+                ``config_type`` is not a ``BaseConfig`` subclass, or its JSON
+                Schema cannot be generated.
         """
         engine_class = self.engine_class(name)
         config_type = getattr(engine_class, "config_type", None)
@@ -594,7 +596,20 @@ class ModelRegistry:
                 "which is not a BaseConfig subclass. Fix the engine's 'config_type' "
                 "ClassVar (it must reference the engine's init-config model)."
             )
-        return config_type.model_json_schema()
+        try:
+            return config_type.model_json_schema()
+        except PydanticInvalidForJsonSchema as exc:
+            # A legitimate BaseConfig subclass can still be un-schematizable
+            # (e.g. `arbitrary_types_allowed` with a client-handle field). Both
+            # consumers of this schema (`standard-asr show` and the server's
+            # config-schema route) must degrade loudly, not crash.
+            raise FactoryLoadError(
+                f"Engine class for {name!r} declares "
+                f"config_type={config_type.__name__}, whose JSON Schema cannot "
+                "be generated. Every config_type field must be JSON-Schema "
+                "representable (the schema feeds 'standard-asr show' and "
+                f"GET /v1/config-schema/...). Underlying error: {exc}"
+            ) from exc
 
     def create(self, name: str, /, *args: Any, **kwargs: Any) -> "StandardASR":
         """Create an ASR engine instance.

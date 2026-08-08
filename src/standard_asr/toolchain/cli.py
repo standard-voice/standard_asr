@@ -542,6 +542,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"  Attribute   : {spec.entry_point.attr}")
     print(f"  Value       : {spec.entry_point.value}")
     _print_declared_capabilities(spec)
+    _print_config_schema(registry, args.name)
     return 0
 
 
@@ -604,6 +605,37 @@ def _print_declared_capabilities(spec: Any) -> None:
         return
     print("  Capabilities:")
     rendered = json.dumps(_run_engine_call(canonical_json), indent=2, sort_keys=True)
+    for line in rendered.splitlines():
+        print(f"    {line}")
+
+
+def _print_config_schema(registry: ModelRegistry, name: str) -> None:
+    """Print an engine's init-config JSON Schema without instantiating it.
+
+    ``standard-asr show`` is a consumer of the same class-level ``config_type``
+    schema the server exposes at ``GET /v1/config-schema/...``: it lets an author
+    (or a settings UI) see an engine's init fields -- ``device``,
+    ``compute_type``, credentials -- **before** constructing it, since
+    construction may need the very values the schema describes. The schema is read
+    from the engine class, so no engine is built and no credentials are resolved.
+    An engine that declares no ``config_type`` gets an explicit "no init config"
+    line rather than silence, so a reader never mistakes an omission for an empty
+    schema.
+
+    Args:
+        registry: The discovered model registry.
+        name: Model key in ``<engine>/<model>`` format.
+    """
+    try:
+        schema = registry.config_schema(name)
+    except FactoryLoadError as exc:
+        print(f"  Config schema: <unavailable: {exc}>")
+        return
+    if schema is None:
+        print("  Config schema: <none: engine declares no init config (config_type)>")
+        return
+    print("  Config schema:")
+    rendered = json.dumps(schema, indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -800,10 +832,11 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
     check and -- for an engine that declares a streaming axis
     -- the streaming parameter-gating check. The sync-bridge check
     opens a real streaming session, so it is **opt-in** (``--include-bridge``) --
-    for a cloud engine that is a billable connection. The event-sequence check
-    needs a recorded event stream the CLI cannot synthesize, so it stays a library
-    API (``standard_asr.compliance.check_event_sequence``) and the output points
-    the author at it rather than silently omitting that dimension.
+    for a cloud engine that is a billable connection. Two checks stay library-only
+    because each needs recorded data the CLI cannot synthesize -- the
+    event-sequence check (``check_event_sequence``, a streaming event stream) and
+    the transcription-result check (``check_transcription_result``, a batch
+    result); the output names both rather than silently omitting those dimensions.
 
     Engines that require constructor arguments (e.g. credentials) are reported as
     skipped with the reason, not failed: their entry point metadata was already
@@ -890,12 +923,17 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
     for report in reports:
         _emit_issues(report.iter_level("error"), f"{_FAIL} Error")
 
-    # The streaming event-sequence dimension cannot be exercised from the CLI (it
-    # needs an author-recorded event stream); name it explicitly so the author
-    # does not read a green run as "all five dimensions covered".
+    # Two dimensions cannot be exercised from the CLI, because each needs
+    # author-recorded data the standard layer cannot synthesize: a streaming
+    # engine's event stream (check_event_sequence) and a batch result
+    # (check_transcription_result). Name both -- whatever the engine's shape -- so
+    # a green run is never read as "every dimension covered"; the second is the one
+    # a batch-only engine would otherwise never hear about.
     print(
-        f"{_INFO} Streaming event-sequence is not run here; cover it with "
-        "standard_asr.compliance.check_event_sequence in your tests "
+        f"{_INFO} Two checks are not run here (each needs recorded data the CLI "
+        "cannot synthesize): check_event_sequence for a streaming engine's event "
+        "stream, and check_transcription_result for a batch result. Cover them with "
+        "standard_asr.compliance in your tests "
         "(see docs/for_asr_dev/plugin_entrypoints.md)."
     )
 

@@ -40,8 +40,6 @@ from standard_asr.contract.results import TranscriptionResult
 from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
 from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
-    loc_is_credential,
-    loc_to_list,
     log_exception_safely,
     sanitize_validation_errors,
     sanitized_validation_message,
@@ -93,11 +91,9 @@ _ENGINE_CONFIG_ABSENT_DETAIL: str = (
 # The credential-scrubbing of pydantic validation errors is shared with the CLI
 # (and any other transport that surfaces an `options` validation error) so the
 # two cannot drift on the "never echo the request input" rule. The single owner
-# is :mod:`standard_asr.runtime.redaction`; these aliases
-# preserve the historical `server._sanitize_validation_errors` /
-# `server._loc_to_list` names used by call sites and tests.
-_loc_to_list = loc_to_list
-_loc_is_credential = loc_is_credential
+# is :mod:`standard_asr.runtime.redaction`; these aliases preserve the historical
+# `server._sanitize_validation_errors` / `server._sanitized_validation_message`
+# names used by call sites and tests.
 _sanitize_validation_errors = sanitize_validation_errors
 _sanitized_validation_message = sanitized_validation_message
 

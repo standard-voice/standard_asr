@@ -578,4 +578,9 @@ class BaseProperties(BaseModel):
         return f"{self.engine_id}/{self.model_name}"
 
 
-__all__ = ["BaseProperties", "SampleRateRange"]
+__all__ = [
+    "BaseProperties",
+    "SampleRateRange",
+    "nearest_accepted_sample_rate",
+    "sample_rate_accepted",
+]

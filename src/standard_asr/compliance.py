@@ -83,6 +83,7 @@ __all__ = [
     "check_streaming_param_gating",
     "check_sync_bridge",
     "check_transcription_result",
+    "prepare_requires_arguments",
     "validate_bridge_timeout",
 ]
 

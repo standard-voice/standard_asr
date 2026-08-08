@@ -220,6 +220,20 @@ def _no_instantiate_config_type_factory() -> (  # pyright: ignore[reportUnusedFu
     return _NoInstantiateConfigTypeASR()
 
 
+class _NotAConfigType:
+    """Deliberately not a BaseConfig subclass."""
+
+
+class _BrokenConfigTypeASR(_DummyASR):
+    """Engine whose config_type declaration is broken (not a BaseConfig)."""
+
+    config_type: ClassVar[Any] = _NotAConfigType
+
+
+def _broken_config_type_factory() -> _BrokenConfigTypeASR:  # pyright: ignore[reportUnusedFunction]
+    return _BrokenConfigTypeASR()
+
+
 class _ConfigErrorOnConstructASR(_DummyASR):
     """Construction raises a client-config error (e.g. missing credential)."""
 
@@ -2009,13 +2023,6 @@ def test_ws_rejects_provider_params_over_wire() -> None:
     assert "provider_params" in err["message"]
 
 
-def test_loc_to_list_wraps_a_scalar() -> None:
-    # Defensive: a scalar (non tuple/list) loc is wrapped into a single-element
-    # list so the redaction scan can iterate it uniformly.
-    assert server_module._loc_to_list("api_key") == ["api_key"]  # pyright: ignore[reportPrivateUsage]
-    assert server_module._loc_to_list(("a", 0)) == ["a", 0]  # pyright: ignore[reportPrivateUsage]
-
-
 def test_validation_error_with_non_string_loc_index_is_handled() -> None:
     # A bad element inside a list field yields a loc with an int index
     # (e.g. ["candidate_languages", 0]); the redaction scan must skip the
@@ -2208,6 +2215,37 @@ def test_config_schema_endpoint_unknown_model() -> None:
     client = TestClient(app)
     resp: httpx2.Response = client.get("/v1/config-schema/nope/missing")
     assert resp.status_code == 404
+
+
+def test_config_schema_endpoint_broken_config_type_is_scrubbed_500(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A broken ``config_type`` declaration is a scrubbed 500, never a crash.
+
+    Reading ``config_type`` and rendering its schema is plugin code, so it sits
+    inside the shared metadata fault boundary: the endpoint answers with the
+    documented scrubbed body instead of leaving through Starlette's unhandled
+    path, and the specifics reach the operator log via safe logging. The CLI's
+    ``show`` degrades on the same fault through
+    :meth:`ModelRegistry.config_schema`, which raises ``FactoryLoadError``.
+
+        Args:
+            caplog: Pytest fixture capturing log records.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_broken_config_type_factory"))
+    client = TestClient(app)
+    with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
+        resp: httpx.Response = client.get("/v1/config-schema/dummy/echo")
+
+    assert resp.status_code == 500
+    # The response stays generic; the internal type name never reaches the wire.
+    assert "_NotAConfigType" not in resp.text
+    assert "Traceback" not in resp.text
+    # The operator DOES get the specifics, in the log.
+    assert any("failed to produce its metadata" in r.getMessage() for r in caplog.records)
 
 
 def test_config_schema_no_instantiation() -> None:

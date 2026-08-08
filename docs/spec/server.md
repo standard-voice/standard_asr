@@ -381,13 +381,13 @@ Bridges a WebSocket to an engine streaming session (the incremental
      closes. (A conformant server does **not** parse a binary first frame as
      config; relying on that leniency breaks against strict implementations.)
 
-2. **Diagnostics frame (server → client).** Immediately after the session
-   starts — *before* any audio is sent — the server forwards the standard-layer
-   diagnostics attached at session establishment (best-effort parameter degrade,
-   language resolution, audio conversion), so the client learns **why** a
-   parameter was dropped or changed (the REST path returns these on the result).
-   Sent as a single JSON **text** frame, and **only when** the session has
-   diagnostics:
+2. **Initial diagnostics frame (server → client).** Immediately after the
+   session starts — *before* any audio is sent — the server forwards the
+   standard-layer diagnostics attached at session establishment (best-effort
+   parameter degrade, language resolution, audio conversion), so the client learns
+   **why** a parameter was dropped or changed (the REST path returns these on the
+   result). Sent as a single JSON **text** frame, and **only when** the session
+   has establishment-time diagnostics:
    ```json
    { "type": "diagnostics", "diagnostics": [ { "level": "...", "code": "...", "message": "...", "param": "...", "provided": ..., "effective": ... } ] }
    ```

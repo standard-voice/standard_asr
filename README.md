@@ -232,7 +232,7 @@ frozen and will never change.
 
 ```bash
 standard-asr list                                              # what's installed?
-standard-asr show faster-whisper/large-v3                      # properties & capabilities
+standard-asr show faster-whisper/large-v3                      # properties, capabilities, config schema
 standard-asr transcribe faster-whisper/large-v3 audio.wav      # quick transcription
 standard-asr serve                                             # expose engines over HTTP/WS
 standard-asr doctor                                            # diagnose plugin dependency conflicts
