@@ -1562,7 +1562,7 @@ def _check_streaming_wire_encodings_declared(
                     "'wire_encodings'; an audio_format session's wire encoding then "
                     "cannot be validated and a non-PCM (e.g. mulaw) frame would be "
                     "read as PCM -- a silent mistranscription. Declare wire_encodings "
-                    "(e.g. ['pcm_s16le']) unless the adapter self-manages its wire "
+                    "(e.g. ['pcm_s16le']) unless the engine self-manages its wire "
                     "format via bare start_transcription()."
                 ),
                 model=name,
@@ -1590,7 +1590,7 @@ def _check_streaming_axis_declared(
 _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on the
     silent side.
 
-    Unlike the ``wire_encodings`` nudge -- which a self-managing-wire adapter may
+    Unlike the ``wire_encodings`` nudge -- which a self-managing-wire engine may
     legitimately trip, so it is a *warning* -- there is NO legitimate engine with a
     streaming domain and neither axis (it cannot be opened at all), so this is an
     **error**: the compliance run MUST fail rather than soft-nudge a definitely
@@ -1868,7 +1868,7 @@ def check_event_sequence(
 ) -> ComplianceReport:
     """Validate a *recorded* streaming event sequence against the invariants.
 
-    Behavioral check for streaming adapters that is **pure**: it replays an
+    Behavioral check for streaming engines that is **pure**: it replays an
     already-captured event stream through the standard lifecycle/frontier guard
     and reports every invariant it violates, without ever instantiating or
     calling an engine. (Behavioral checks that would require *running* a model --
@@ -2124,7 +2124,7 @@ def check_transcription_result(
 ) -> ComplianceReport:
     """Cross-check a *recorded* batch result against the declared capabilities.
 
-    Behavioral check for batch adapters that is **pure**, mirroring
+    Behavioral check for batch engines that is **pure**, mirroring
     :func:`check_event_sequence`: it inspects a result the author already
     produced -- it never instantiates or calls an engine (invoking a cloud
     engine from a compliance run would be a billable side effect). Currently it
@@ -2878,7 +2878,7 @@ def check_sync_bridge(
     model: str | None = None,
     engine: SupportsCapabilities | None = None,
 ) -> ComplianceReport:
-    """Drive an async adapter's :class:`SyncSession` from an external thread.
+    """Drive an async engine's :class:`SyncSession` from an external thread.
 
     Implements the standard's sync-bridge mandate: a no-deadlock / no-leak
     test. A fresh session is created and driven synchronously from a *different*
@@ -2916,8 +2916,8 @@ def check_sync_bridge(
             each bridged lifecycle call (forwarded as the ``SyncSession``
             ``submit_timeout``), so granting a larger budget genuinely extends
             slow-but-compliant ``_open``/``_close`` phases. This
-            MUST exceed the adapter's real ``_open`` + ``_close`` cost: a slow but
-            compliant adapter (a cloud session doing a real network handshake) is
+            MUST exceed the engine's real ``_open`` + ``_close`` cost: a slow but
+            compliant engine (a cloud session doing a real network handshake) is
             *not* a deadlock, so when a run reports a timeout, re-run with a larger
             value to tell "slow" from "stuck". The driver thread is a daemon, so a
             false positive (or a real deadlock) never blocks interpreter exit --
@@ -2948,7 +2948,7 @@ def check_sync_bridge(
         by an engine KNOWN not to declare ``streaming_input``; reported as a
         ``sync_bridge_not_applicable`` warning, never as an engine failure).
         An ``UnsupportedFeatureError`` from anywhere PAST establishment (the
-        adapter's ``_open``, ``end_audio``, event drain, close) is always a
+        engine's ``_open``, ``end_audio``, event drain, close) is always a
         failing ``sync_bridge_raised`` -- the not-applicable carve-out is
         scoped to the factory call alone.
 
@@ -2965,7 +2965,7 @@ def check_sync_bridge(
     # plugin code is arbitrary -- is exactly the fault class this no-deadlock
     # check exists to diagnose, so the check must never itself hang on either.
     # Scoping establishment outside the DRIVE worker keeps the not-applicable
-    # carve-out surgical: an UnsupportedFeatureError from the adapter's own
+    # carve-out surgical: an UnsupportedFeatureError from the engine's own
     # lifecycle (_open, end_audio, drain, close) can then NEVER be mistaken
     # for "the check does not apply" -- it stays a failing sync_bridge_raised
     # like any other mid-bridge exception. Each phase (establishment; bridged
@@ -2986,7 +2986,7 @@ def check_sync_bridge(
             # Close-only drive: __exit__ without __enter__ is tolerated by the
             # base session (a never-entered session just awaits _close), so
             # the teardown NEVER opens the session -- driving _open here would
-            # initiate a fresh (for cloud adapters: billable) connection
+            # initiate a fresh (for cloud engines: billable) connection
             # purely to destroy it, the very cost that makes the bridge
             # opt-in.
             SyncSession(late_session, submit_timeout=timeout).__exit__(None, None, None)
@@ -3241,7 +3241,7 @@ def check_sync_bridge(
             # The user's timeout budget applies to the bridged lifecycle calls
             # too (submit_timeout), not only the outer join: otherwise a
             # --bridge-timeout above SyncSession's internal 30 s default was
-            # silently inert for open/close and a slow-but-compliant adapter
+            # silently inert for open/close and a slow-but-compliant engine
             # failed as "raised" no matter how much time the user granted.
             sync = SyncSession(session, submit_timeout=timeout)
             with sync:
@@ -3261,7 +3261,7 @@ def check_sync_bridge(
             outcome["error"] = exc
         finally:
             # Record the bridge's OWN loop-thread liveness so the leak check below
-            # asserts on this thread specifically. A compliant adapter may pull in a
+            # asserts on this thread specifically. A compliant engine may pull in a
             # dependency that spawns a benign daemon thread (e.g. tqdm's monitor, a
             # thread-pool worker) during the session; a process-wide thread diff
             # would mis-report that as a sync_bridge_thread_leak.
@@ -3283,12 +3283,12 @@ def check_sync_bridge(
                 code="sync_bridge_did_not_terminate",
                 message=(
                     f"SyncSession did not terminate within {timeout}s -- this may be a "
-                    "deadlock OR an adapter whose _open/_close legitimately takes "
+                    "deadlock OR an engine whose _open/_close legitimately takes "
                     f"longer than {timeout}s. Re-run with a larger timeout to "
                     "disambiguate (library: check_sync_bridge(..., timeout=...); "
                     "CLI: standard-asr compliance run --include-bridge "
                     "--bridge-timeout SECONDS). If it is a deadlock, check the "
-                    "sync-bridge adapter contract: bind loop resources in "
+                    "sync-bridge contract: bind loop resources in "
                     "__aenter__, never touch the ambient event loop."
                 ),
                 model=model,
@@ -3310,7 +3310,7 @@ def check_sync_bridge(
         )
     elif not outcome.get("terminal"):
         # A well-formed session always lands a terminal event (the base producer
-        # force-appends ``done``); reaching here means a non-compliant adapter
+        # force-appends ``done``); reaching here means a non-compliant engine
         # bypassed the base class and closed without one. This is exactly what the
         # compliance check exists to catch.
         issues.append(
@@ -3325,7 +3325,7 @@ def check_sync_bridge(
     # Leak check: the bridge owns a background loop thread that __exit__ (and a
     # failed __enter__) MUST tear down. Assert on the bridge's OWN thread (recorded
     # in _drive via is_loop_alive), not a process-wide thread diff -- a compliant
-    # adapter may spawn a benign daemon thread during the session, which a diff
+    # engine may spawn a benign daemon thread during the session, which a diff
     # would mis-flag as a sync_bridge_thread_leak.
     if outcome.get("loop_alive"):
         issues.append(

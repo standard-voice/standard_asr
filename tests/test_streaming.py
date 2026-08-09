@@ -540,7 +540,7 @@ def test_session_send_after_end_raises() -> None:
 def test_feed_rejects_str_with_actionable_typeerror() -> None:
     # A str satisfies Iterable[str]; passing a file path to feed is
     # a common slip that would otherwise be consumed character by character (or
-    # fail deep inside an adapter as a confusing engine_error). feed() MUST
+    # fail deep inside an engine as a confusing engine_error). feed() MUST
     # fail loudly at the call site with a TypeError pointing to the right API.
     session = _EchoSession()
     with pytest.raises(TypeError, match=r"start_transcription\(audio="):
@@ -1467,7 +1467,7 @@ class _RaiseOpenSession(TranscriptionSession):
 
 
 def test_sync_bridge_open_raise_tears_down_thread() -> None:
-    # A non-timeout raise from the adapter's _open: __enter__ must tear down its
+    # A non-timeout raise from the engine's _open: __enter__ must tear down its
     # owned loop thread before propagating (a context manager whose __enter__ raises
     # never receives __exit__), so the regular-exception path leaks nothing either.
     sync = SyncSession(_RaiseOpenSession(), submit_timeout=5.0)
@@ -1661,9 +1661,9 @@ class _ReconnectSession(TranscriptionSession):
         chunks: list[bytes] = []
         async for chunk in self.audio_chunks():
             chunks.append(chunk)
-        # Simulate the adapter re-establishing, replaying the rolling buffer,
+        # Simulate the engine re-establishing, replaying the rolling buffer,
         # and signaling the bridged gap after audio has been processed. The
-        # adapter explicitly decides whether content was lost.
+        # engine explicitly decides whether content was lost.
         _ = self.replay_buffer()
         self.note_reconnect(self._gap[0], self._gap[1], content_lost=self._content_lost)
         yield TranscriptionEvent.final("seg-0", b"".join(chunks).decode(), start=0.0)
@@ -1688,7 +1688,7 @@ def test_reconnect_emits_progress_replayable_no_content_lost() -> None:
 
 def test_reconnect_adapter_signals_content_lost_emits_progress_then_content_lost() -> None:
     async def run() -> list[TranscriptionEvent]:
-        # Async generator source -> non-replayable; adapter decides content was
+        # Async generator source -> non-replayable; engine decides content was
         # lost (the gap could not be replayed) and passes content_lost=True.
         async def gen() -> AsyncIterator[bytes]:
             for _ in range(5):
@@ -1838,7 +1838,7 @@ def test_reconnect_pair_survives_full_buffer_and_stays_adjacent() -> None:
         session = _ReconnectSession(
             (1.0, 2.0), content_lost=True, event_buffer_capacity=2, audio_history_maxlen=1
         )
-        session.feed(gen())  # adapter signals content_lost -> pair queued
+        session.feed(gen())  # engine signals content_lost -> pair queued
         # Saturate the bounded event buffer so a non-drop-proof drain of the
         # queued reconnect pair would overflow / split them.
         session._buffer.put(TranscriptionEvent.partial("p0", "x"))  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -2214,7 +2214,7 @@ def test_guard_frozen_speaker_retraction_suppressed() -> None:
 
 
 def test_guard_speaker_none_to_x_after_freeze_allowed() -> None:
-    # None->X after freezing is the recommended delay-speaker-to-final adapter
+    # None->X after freezing is the recommended delay-speaker-to-final engine
     # strategy and MUST be admitted.
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3))
@@ -2827,7 +2827,7 @@ def test_guard_closed_shrink_forwards_in_range_stable_until() -> None:
 
 
 def test_guard_closed_out_of_range_stable_until_is_repaired() -> None:
-    # A buggy adapter carrying the OLD frontier onto the shrunk closed text is
+    # A buggy engine carrying the OLD frontier onto the shrunk closed text is
     # still repaired to a structurally valid in-range boundary + diagnostic.
     # (Constructed via model_copy to bypass the construction-time bound, which
     # already rejects this shape -- the guard is defense-in-depth.)
@@ -3286,7 +3286,7 @@ def test_done_timeout_still_fires_on_total_silence() -> None:
 # --------------------------------------------------------------------------- #
 def test_silent_engine_survives_while_audio_is_consumed() -> None:
     # The scenario: a cloud-WS-style engine emits NOTHING while the
-    # user is silent, but the adapter keeps consuming fed audio. Consumption
+    # user is silent, but the engine keeps consuming fed audio. Consumption
     # advances the liveness anchor, so the session outlives done_timeout many
     # times over without a manufactured terminal; ending input then yields the
     # engine's own final + done.
@@ -3396,7 +3396,7 @@ def test_stream_deadlines_rejects_unknown_field() -> None:
     """An unknown StreamDeadlines field fails construction (``extra='forbid'``)."""
     # extra="forbid": a misspelled deadline is a silently-dropped SAFETY
     # parameter -- under pydantic's default extra="ignore" the typo below was
-    # swallowed and the session ran with max_idle at its adapter default, the
+    # swallowed and the session ran with max_idle at its engine default, the
     # exact opposite of what the caller wrote. It MUST fail at construction.
     with pytest.raises(ValidationError) as excinfo:
         StreamDeadlines(max_idle_seconds=5.0)  # type: ignore[call-arg]
@@ -3412,7 +3412,7 @@ def test_apply_deadline_overrides_touches_only_explicit_fields() -> None:
     session = _EchoSession(done_timeout=7.0, max_idle=9.0)
     overrides = StreamDeadlines(max_idle=0.5, max_session_seconds=11.0)
     session._apply_deadline_overrides(overrides)  # pyright: ignore[reportPrivateUsage]
-    assert session.done_timeout == 7.0  # adapter choice kept (field unset)
+    assert session.done_timeout == 7.0  # engine choice kept (field unset)
     assert session.max_idle == 0.5  # explicit override applied
     assert session.max_session_seconds == 11.0
     disable = StreamDeadlines(done_timeout=None)
@@ -4005,7 +4005,7 @@ def test_admitted_event_still_advances_audio_cursor() -> None:
 
 def test_recoverable_error_never_dropped_at_capacity() -> None:
     # The "never drop" rule does not distinguish recoverable from
-    # terminal errors. At capacity an adapter-yielded recoverable error must
+    # terminal errors. At capacity an engine-yielded recoverable error must
     # bypass the bound, not be replaced by a backpressure overflow error.
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer(capacity=2)
@@ -4020,7 +4020,7 @@ def test_recoverable_error_never_dropped_at_capacity() -> None:
 
 
 class _HangEndAudioSession(TranscriptionSession):
-    """Adapter whose end_audio hangs (simulates a stuck engine in the body)."""
+    """Engine whose end_audio hangs (simulates a stuck engine in the body)."""
 
     async def end_audio(self) -> None:
         await asyncio.sleep(100)
@@ -4055,7 +4055,7 @@ def test_sync_bridge_calls_after_teardown_raise_stream_closed() -> None:
 
 
 def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    # An adapter running blocking
+    # An engine running blocking
     # (non-async) code mid-session freezes the bridge loop while its thread
     # stays ALIVE; the in-loop deadlines cannot fire on a frozen loop, so the
     # pump's responsiveness probe is the only thing standing between the sync
@@ -4075,7 +4075,7 @@ def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -
     sync.__enter__()
     sync.feed([b"x"])
     events: list[TranscriptionEvent] = []
-    with pytest.raises(TimeoutError, match="frozen by blocking adapter code"):
+    with pytest.raises(TimeoutError, match="frozen by blocking engine code"):
         for ev in sync:
             events.append(ev)
     assert [e.type for e in events] == ["partial"]

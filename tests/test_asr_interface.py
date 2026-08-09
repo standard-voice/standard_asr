@@ -1677,7 +1677,7 @@ def test_streaming_gated_params_flow_to_hook() -> None:
 def test_start_transcription_applies_app_deadline_overrides() -> None:
     # The base template applies the application's deadline overrides AFTER the
     # hook constructed the session: explicitly-set fields win
-    # over the adapter's construction-time choices, unset fields keep them,
+    # over the engine's construction-time choices, unset fields keep them,
     # and omitting `deadlines` leaves the session untouched.
     class _DeadlineChoosingEngine(_StreamEngine):
         def _start_transcription(
@@ -1692,7 +1692,7 @@ def test_start_transcription_applies_app_deadline_overrides() -> None:
     overridden = _DeadlineChoosingEngine().start_transcription(
         deadlines=StreamDeadlines(max_idle=0.5)
     )
-    assert overridden.done_timeout == 7.0  # adapter choice kept (field unset)
+    assert overridden.done_timeout == 7.0  # engine choice kept (field unset)
     assert overridden.max_idle == 0.5  # application's explicit field wins
 
     untouched = _DeadlineChoosingEngine().start_transcription()
@@ -1821,7 +1821,7 @@ def test_transcribe_synthesizes_segment_speaker_from_words() -> None:
 
 
 def test_transcribe_keeps_adapter_populated_speaker() -> None:
-    # A pre-populated (adapter-native) Segment.speaker is authoritative: the
+    # A pre-populated (engine-native) Segment.speaker is authoritative: the
     # standard layer synthesizes ONLY when it is None, even when words disagree.
     canned = TranscriptionResult(text="w0 w1", segments=[_speaker_segment(["A", "A"], speaker="B")])
     result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))

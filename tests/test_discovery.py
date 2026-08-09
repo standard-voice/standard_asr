@@ -241,7 +241,7 @@ class _BridgeSession(TranscriptionSession):
 
 class _HangBridgeSession(TranscriptionSession):
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
-        # Never terminates and never yields: simulates a deadlocking adapter.
+        # Never terminates and never yields: simulates a deadlocking engine.
         await asyncio.Event().wait()
         yield TranscriptionEvent.done()  # pragma: no cover
 

@@ -178,7 +178,7 @@ class StandardASR(Protocol):
             params: Per-request runtime parameters.
             audio: A complete audio input for whole-input streaming output.
             deadlines: Application overrides for the session's termination
-                deadlines; explicitly-set fields win over the adapter's
+                deadlines; explicitly-set fields win over the engine's
                 construction-time choices.
 
         Returns:
@@ -784,7 +784,7 @@ class EngineBase(ABC):
         and MUST be a member of ``selectable_languages``; otherwise the
         fall-back-to-``default_language`` resolution step would yield an
         undefined result. This
-        runs in the standard layer so a forgetful adapter fails loudly instead of
+        runs in the standard layer so a forgetful engine fails loudly instead of
         silently transcribing in the wrong language.
 
         Raises:
@@ -1116,7 +1116,7 @@ class EngineBase(ABC):
         and silently mistranscribed. When ``wire_encodings`` is ``None``
         ("unconstrained") the encoding cannot be validated and the
         check is skipped -- the engine is then trusted to accept any encoding
-        (typically a self-managed-wire-format adapter). The compliance suite
+        (typically a self-managed-wire-format engine). The compliance suite
         emits a warning for a ``streaming_input`` engine that leaves
         ``wire_encodings`` unset, since that skip is where a forgotten
         declaration would let a non-PCM frame be misframed.
@@ -1254,8 +1254,8 @@ class EngineBase(ABC):
             deadlines: Application overrides for the session's termination
                 deadlines. Applied by this template *after* the
                 engine hook constructed the session, so explicitly-set fields
-                always win over the adapter's construction-time choices --
-                precedence: application explicit > adapter choice > standard
+                always win over the engine's construction-time choices --
+                precedence: application explicit > engine choice > standard
                 default. Unset fields are left untouched.
 
         Returns:

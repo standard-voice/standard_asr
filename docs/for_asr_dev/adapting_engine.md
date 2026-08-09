@@ -1,4 +1,4 @@
-# Adapting an ASR engine to Standard ASR (engine authors)
+# Adapting an ASR system to Standard ASR (engine authors)
 
 > Authoritative reference: [`docs/spec/specification.md`](../spec/specification.md).
 > Entry-point rules: [`plugin_entrypoints.md`](plugin_entrypoints.md).

@@ -406,7 +406,7 @@ def require_sync_result(
 ) -> None:
     """Enforce the sync-call boundary at a real consumer call site.
 
-    The raising adapter over :func:`sync_result_defect` for consumers outside
+    The raising wrapper over :func:`sync_result_defect` for consumers outside
     the compliance suite (the CLI's transcribe/prepare paths, the server's
     REST and WebSocket paths). A defect raises
     :class:`~standard_asr.contract.exceptions.EngineContractError` -- an

@@ -23,7 +23,7 @@ This module defines the streaming event model and session machinery:
   termination deadline, and result reduction.
 * :class:`SyncSession` -- the standard sync bridge (one background event loop in
   a thread, owned by the session), so authors only ever write async. Lifecycle
-  submits carry a timeout so a hanging adapter can never deadlock the caller.
+  submits carry a timeout so a hanging engine can never deadlock the caller.
 """
 
 from __future__ import annotations
@@ -70,9 +70,9 @@ EventType = Literal["partial", "final", "supersede", "progress", "done", "error"
 #: Default seconds of total pipeline inactivity -- no event arriving AND no fed
 #: audio being consumed via :meth:`TranscriptionSession.audio_chunks` -- before
 #: the session synthesizes a terminal ``done_timeout`` error. This is a hang
-#: backstop against stuck adapters, NOT engine-liveness detection: engines that
+#: backstop against stuck engines, NOT engine-liveness detection: engines that
 #: legitimately emit nothing during user silence stay alive for as long as the
-#: adapter keeps consuming audio (industry anchors stream liveness to audio
+#: engine keeps consuming audio (industry anchors stream liveness to audio
 #: flow, not result flow -- see docs/research/5). After ``end_audio()`` there is
 #: nothing left to consume, so this bounds the engine's flush-and-``done``
 #: window (``done`` MUST arrive, bounded by a timeout).
@@ -180,8 +180,8 @@ class StreamDeadlines(BaseModel):
     """Application-side overrides for a session's termination deadlines.
 
     Pass to ``StandardASR.start_transcription(deadlines=...)``. Only fields you
-    explicitly set are applied; unset fields keep whatever the adapter (or the
-    standard default) chose. Precedence: application explicit > adapter
+    explicitly set are applied; unset fields keep whatever the engine (or the
+    standard default) chose. Precedence: application explicit > engine
     construction choice > standard default.
 
     The fields mirror the :class:`TranscriptionSession` deadline parameters --
@@ -271,7 +271,7 @@ class TranscriptionEvent(BaseModel):
     """
 
     # allow_inf_nan=False matches Word/Segment: a NaN/Inf time is rejected at
-    # construction, so a malformed adapter timestamp fails loudly on the event
+    # construction, so a malformed engine timestamp fails loudly on the event
     # rather than silently flowing over the wire or deferring the crash to result
     # reduction (a silent wrong timestamp is the cardinal sin).
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -1331,7 +1331,7 @@ class _CoalescingBuffer:
             # error MUST never be dropped either (the never-drop rule does not
             # distinguish recoverable from terminal). Terminal error/done
             # normally arrive via put_forced; this branch covers
-            # adapter-yielded recoverable errors, which previously fell into
+            # engine-yielded recoverable errors, which previously fell into
             # the bounded path below and could be replaced by a backpressure
             # error on overflow -- losing the original error's semantics. No
             # stale-partial invalidation here: a recoverable error does not
@@ -1517,7 +1517,7 @@ class _LifecycleGuard:
     """Enforces segment lifecycle + ``stable_until`` invariants.
 
     Defense in depth: the spec assigns suppression of illegal transitions to the
-    adapter (MUST), but a wrong transcript is the cardinal sin, so the base
+    engine (MUST), but a wrong transcript is the cardinal sin, so the base
     independently guards. By default illegal events are SUPPRESSED and a
     structured :class:`Diagnostic` is recorded; in ``strict`` mode the guard
     raises instead. A ``stable_until`` decrease is CLAMPED to its prior value
@@ -1791,7 +1791,7 @@ class _LifecycleGuard:
             # accepted for the segment, the last accepted speaker is locked --
             # changing it (X->Y) or retracting it (X->None) is suppressed.
             # None->X after freezing stays legal (the recommended
-            # delay-speaker-to-final adapter strategy), and ``closed`` is the
+            # delay-speaker-to-final engine strategy), and ``closed`` is the
             # exempt terminal correction. Placement is load-bearing: this must
             # read the frontier BEFORE _clamp_stable_until below records this
             # event's own freeze, or a same-event freeze+speaker-set would
@@ -2145,17 +2145,17 @@ class TranscriptionSession(ABC):
     bounded backpressure, lifecycle enforcement, a bounded rolling audio buffer
     + reconnect scaffolding, termination deadlines, and result reduction.
 
-    Reconnect contract -- base vs adapter:
+    Reconnect contract -- base vs engine:
 
     * The **base** owns a bounded rolling audio buffer (the most recent fed
       chunks) and exposes :meth:`replay_buffer`, the source ``replayable``
       classification, and :meth:`note_reconnect`. It cannot detect a
       reconnect itself (it owns no network connection).
-    * The **adapter** detects the disconnect, re-establishes the connection,
+    * The **engine** detects the disconnect, re-establishes the connection,
       replays :meth:`replay_buffer` audio, keeps ``segment_id`` / timestamps /
       detected language / speaker-label mapping continuous, then calls
       :meth:`note_reconnect`. For speaker labels the safe default is
-      mint-fresh: the adapter MUST NOT reuse a pre-reconnect label for a
+      mint-fresh: the engine MUST NOT reuse a pre-reconnect label for a
       post-reconnect cluster without identity evidence (blind clustering
       restarts from zero after a reconnect) -- it MUST mint fresh labels
       (``speaker_2``, ``speaker_3``, ...) and emit a ``speaker_labels_reset``
@@ -2163,7 +2163,7 @@ class TranscriptionSession(ABC):
       while silently merging two people under one label is not.
       The base then emits the
       ``progress(reconnect=True, gap_start, gap_end)`` event and,
-      iff the adapter passed ``content_lost=True`` (its own determination that
+      iff the engine passed ``content_lost=True`` (its own determination that
       the reconnect + replay could not cover the gap), a trailing
       ``error(code="content_lost", recoverable=True)`` fidelity warning.
     """
@@ -2187,7 +2187,7 @@ class TranscriptionSession(ABC):
                 arriving AND no fed audio consumed via :meth:`audio_chunks` --
                 before synthesizing a ``done_timeout`` error. A hang backstop,
                 not engine-liveness detection: a silently-listening engine
-                stays alive while the adapter keeps consuming audio. After
+                stays alive while the engine keeps consuming audio. After
                 ``end_audio()`` it bounds the engine's flush-and-``done``
                 window. ``None`` disables (explicit opt-out of the backstop).
             max_idle: Seconds without a *content* event (``partial`` / ``final``
@@ -2266,7 +2266,7 @@ class TranscriptionSession(ABC):
         self._pending_reconnects: list[TranscriptionEvent] = []
         self._monotonic = time.monotonic
         #: Liveness anchor: advanced on every audio chunk the
-        #: adapter consumes via :meth:`audio_chunks`, so ``done_timeout``
+        #: engine consumes via :meth:`audio_chunks`, so ``done_timeout``
         #: measures pipeline inactivity rather than mere event silence.
         self._last_audio_activity: float = self._monotonic()
         #: Absolute wall-clock origin for ``max_session_seconds`` (an
@@ -2327,7 +2327,7 @@ class TranscriptionSession(ABC):
         override one afterwards: it updates the snapshot so the override is tracked
         rather than flagged. It exists for the library's own white-box tests (e.g.
         injecting a deterministic clock into ``_monotonic``); it is NOT part of the
-        engine-author contract -- adapters configure via the ``__init__`` bounds,
+        engine-author contract -- engines configure via the ``__init__`` bounds,
         and an accidental ``self._buffer = ...`` never routes through here, so the
         guard still catches it.
 
@@ -2377,10 +2377,10 @@ class TranscriptionSession(ABC):
     def _apply_deadline_overrides(self, deadlines: StreamDeadlines) -> None:
         """Apply application-chosen deadline overrides (friend API).
 
-        Called by the base ``start_transcription`` template after the adapter
+        Called by the base ``start_transcription`` template after the engine
         constructed the session, so the application's explicitly-set fields win
-        over the adapter's construction-time choices without relying on every
-        adapter to forward them (a forwarding obligation could be silently
+        over the engine's construction-time choices without relying on every
+        engine to forward them (a forwarding obligation could be silently
         missed). Only fields the application explicitly set are applied.
 
         Args:
@@ -2425,7 +2425,7 @@ class TranscriptionSession(ABC):
         Consuming from this iterator is the session's liveness anchor: every
         dequeue resets the ``done_timeout`` backstop, so an
         engine that legitimately emits no events during user silence stays
-        alive for as long as the adapter keeps reading audio here.
+        alive for as long as the engine keeps reading audio here.
 
         Yields:
             Raw audio chunks in the session's declared format.
@@ -2442,7 +2442,7 @@ class TranscriptionSession(ABC):
                 raise _InputSourceError(_INPUT_SOURCE_ERROR_DETAIL)
             # The bounded deque drops its oldest chunk when full: it is only the
             # most-recent-audio replay window for replay_buffer(). Whether a
-            # reconnect gap actually lost unreplayable audio is the adapter's
+            # reconnect gap actually lost unreplayable audio is the engine's
             # determination (passed to note_reconnect(content_lost=...)), not an
             # eviction count -- a live ring is always evicting, so eviction is
             # the wrong content-loss signal.
@@ -2536,7 +2536,7 @@ class TranscriptionSession(ABC):
     def replay_buffer(self) -> list[bytes]:
         """Return audio for re-feeding to a freshly re-established connection.
 
-        Adapters call this on reconnect to re-send audio. For a **replayable**
+        Engines call this on reconnect to re-send audio. For a **replayable**
         (list / tuple) source the COMPLETE source is returned -- replayability
         promises loss-free replay, so it must not be silently truncated to the
         rolling ring. For a **non-replayable** / live source only the bounded
@@ -2557,17 +2557,17 @@ class TranscriptionSession(ABC):
         *,
         content_lost: bool = False,
     ) -> None:
-        """Record that an internal reconnect bridged a gap (adapter-driven).
+        """Record that an internal reconnect bridged a gap (engine-driven).
 
         The base ALWAYS emits a ``progress(reconnect=True, gap_start, gap_end)``
         event in order with produced events, followed -- IMMEDIATELY -- by a
         trailing ``error(code="content_lost", recoverable=True,
-        gap_start, gap_end)`` IFF the adapter passes ``content_lost=True``.
+        gap_start, gap_end)`` IFF the engine passes ``content_lost=True``.
 
         The events are flushed **promptly**, the moment this is called, through
         the drop-proof path (:meth:`_CoalescingBuffer.put_forced`, the same sync
         primitive the base uses for synthesized terminals). This matters because
-        an adapter typically calls :meth:`note_reconnect` and then BLOCKS while
+        an engine typically calls :meth:`note_reconnect` and then BLOCKS while
         it re-establishes the connection without yielding another event; deferring
         the flush to the next produced event would leave the consumer staring at a
         timeout/silence during a slow reconnect -- the opposite of "transparent
@@ -2577,17 +2577,17 @@ class TranscriptionSession(ABC):
         before any subsequent one). The :meth:`_run_producer` / ``finally`` drains
         remain as a harmless safety net -- they will simply find nothing pending.
 
-        Content loss is an **explicit adapter determination**, not something the
+        Content loss is an **explicit engine determination**, not something the
         base infers from rolling-buffer eviction: a live ring is always evicting,
         so eviction is the wrong signal (it would falsely claim permanent loss on
-        every long live session). The adapter -- which alone knows whether its
+        every long live session). The engine -- which alone knows whether its
         reconnect + :meth:`replay_buffer` replay actually covered the gap -- sets
         ``content_lost=True`` only when audio the engine had not yet processed
         could not be replayed and is therefore truly lost. This mirrors the
         existing contract where ``segment_id`` / timestamps / detected language /
         speaker-label mapping continuity across the reconnect is likewise the
-        adapter's responsibility (the base never rewrites them). For speaker
-        labels the adapter MUST NOT reuse a pre-reconnect label without identity
+        engine's responsibility (the base never rewrites them). For speaker
+        labels the engine MUST NOT reuse a pre-reconnect label without identity
         evidence; the safe default is to mint fresh labels and emit a
         ``speaker_labels_reset`` fidelity warning.
 
@@ -2611,7 +2611,7 @@ class TranscriptionSession(ABC):
                 )
             )
         # Flush promptly (drop-proof, in order) so the notification reaches the
-        # consumer even if the adapter now blocks on a slow reconnect without
+        # consumer even if the engine now blocks on a slow reconnect without
         # yielding another event. The progress + content_lost pair is drained
         # together, preserving their required adjacency.
         self._drain_pending_reconnects()
@@ -2655,7 +2655,7 @@ class TranscriptionSession(ABC):
         Raises:
             TypeError: If ``source`` is a ``str``. A ``str`` satisfies
                 ``Iterable[str]`` and would be silently consumed one character
-                at a time (or fail deep inside an adapter as a confusing
+                at a time (or fail deep inside an engine as a confusing
                 ``engine_error``); passing a **file path** here is a common
                 slip. A whole audio file goes to ``start_transcription(audio=...)``
                 and incremental input is raw PCM byte chunks.
@@ -2862,7 +2862,7 @@ class TranscriptionSession(ABC):
         """Drive ``_produce``, appending a terminal ``done`` or ``error``.
 
         Enforces lifecycle invariants (suppressing illegal transitions), flushes
-        adapter-driven reconnect events in order, and converts a send-side
+        engine-driven reconnect events in order, and converts a send-side
         buffer overflow into a terminal ``backpressure`` error.
 
         **Event commit ordering** (the stream == result invariant's write
@@ -2880,7 +2880,7 @@ class TranscriptionSession(ABC):
         was the original overflow bug: the refused event was already part of
         ``result()`` -- state the consumer could never have seen.
 
-        Pending adapter reconnect events are drained drop-proof BEFORE every
+        Pending engine reconnect events are drained drop-proof BEFORE every
         terminal append (so a queued ``progress`` + ``content_lost`` precedes,
         and is delivered ahead of, the terminal) and once more in the ``finally``
         as a guard, so no exit path -- normal, early-terminal, exception, or
@@ -2993,7 +2993,7 @@ class TranscriptionSession(ABC):
           most recent *activity* = max(last event, last audio chunk consumed
           via :meth:`audio_chunks`), so a live session in a silent stretch
           (engine listening, emitting nothing) never trips it while the
-          adapter keeps consuming audio. A stuck adapter -- or an engine that
+          engine keeps consuming audio. A stuck engine -- or an engine that
           fails to deliver ``done`` after end-of-input, when no audio is left
           to consume -- does trip it.
         * ``max_idle`` -- max time without a *content* event (heartbeats and
@@ -3267,11 +3267,11 @@ class SyncSession:
     """Synchronous bridge over an async :class:`TranscriptionSession`.
 
     Runs a single background event loop in a dedicated thread (owned by this
-    object and torn down on close), so applications can drive an async adapter
+    object and torn down on close), so applications can drive an async engine
     synchronously and authors only ever write async code.
 
     Lifecycle submits (``__enter__`` / input calls / ``__exit__``) carry a
-    timeout: a hanging adapter ``_open`` / ``_close`` can never deadlock the
+    timeout: a hanging engine ``_open`` / ``_close`` can never deadlock the
     calling thread, and the background loop + thread are always torn down even on
     timeout (from an external thread, no deadlock, no leak).
     """
@@ -3327,7 +3327,7 @@ class SyncSession:
             return
         self._closed = True
         # Best-effort: cancel and await all outstanding tasks so nothing is
-        # destroyed while pending. A truly blocking (non-awaiting) adapter can't be
+        # destroyed while pending. A truly blocking (non-awaiting) engine can't be
         # canceled cooperatively; the join timeout is the backstop for that case.
         if self._loop.is_running():
             try:
@@ -3348,7 +3348,7 @@ class SyncSession:
             if not self._thread.is_alive():  # pragma: no branch
                 self._loop.run_until_complete(_cancel_all_tasks())
         # ``is_alive()`` is False on every non-pathological path (a cooperative
-        # adapter always returns within the 5s join); a truly blocking adapter
+        # engine always returns within the 5s join); a truly blocking engine
         # that never yields would leave the thread alive and the loop unclosed.
         if not self._thread.is_alive():  # pragma: no branch
             self._loop.close()
@@ -3390,7 +3390,7 @@ class SyncSession:
             self._shutdown()
             raise TimeoutError(
                 f"SyncSession lifecycle call timed out after {timeout}s; "
-                "the async adapter hung (no-hang contract)."
+                "the async engine hung (no-hang contract)."
             ) from exc
 
     def __enter__(self) -> SyncSession:
@@ -3398,7 +3398,7 @@ class SyncSession:
 
         Exception-safe: a context manager whose ``__enter__`` raises never
         receives ``__exit__``, so a failed enter MUST tear down the owned loop +
-        thread started in ``__init__`` itself -- otherwise an adapter whose
+        thread started in ``__init__`` itself -- otherwise an engine whose
         ``_open`` raises (bad credentials, unreachable host) would leak the
         bridge's background thread (no leak). The timeout path is
         already torn down inside :meth:`_submit`; the ``entered`` guard also
@@ -3408,7 +3408,7 @@ class SyncSession:
             The sync session.
 
         Raises:
-            TimeoutError: If the adapter ``_open`` hangs past ``submit_timeout``.
+            TimeoutError: If the engine ``_open`` hangs past ``submit_timeout``.
         """
         entered = False
         try:
@@ -3470,7 +3470,7 @@ class SyncSession:
         """Whether the owned loop can still schedule work.
 
         A dead thread is NOT the only way the bridge stops making progress: an
-        adapter that calls blocking (non-async) code mid-session freezes the
+        engine that calls blocking (non-async) code mid-session freezes the
         loop while its thread stays alive, and the in-loop deadlines
         cannot fire on a frozen loop. The pump must detect that
         out-of-band or the sync caller hangs forever (the no-hang
@@ -3497,7 +3497,7 @@ class SyncSession:
         deadlines. The pump waits in short slices purely to
         detect the two failures those in-loop deadlines cannot report: the
         owned event-loop thread dying, and the loop being frozen by an
-        adapter running blocking (non-async) code. Brief blocking stalls are
+        engine running blocking (non-async) code. Brief blocking stalls are
         tolerated (several consecutive unresponsive probes are required), so
         only a persistently frozen loop tears the bridge down.
 
@@ -3539,7 +3539,7 @@ class SyncSession:
                         continue
                     if self._thread.is_alive() and unresponsive_probes < 2:
                         # Tolerate a brief blocking stall (e.g. a sync model
-                        # load inside the adapter): require consecutive failed
+                        # load inside the engine): require consecutive failed
                         # probes before declaring the loop frozen.
                         unresponsive_probes += 1
                         continue
@@ -3551,7 +3551,7 @@ class SyncSession:
                     raise TimeoutError(
                         "SyncSession event pump aborted: the bridge's "
                         "event-loop thread "
-                        + ("is frozen by blocking adapter code" if frozen else "died")
+                        + ("is frozen by blocking engine code" if frozen else "died")
                         + ", so no further event or in-loop deadline can be "
                         "delivered."
                     ) from exc
@@ -3580,7 +3580,7 @@ class SyncSession:
 
         Raises:
             TimeoutError: If the live loop cannot run the reduction within
-                the submit timeout (frozen by blocking adapter code); the
+                the submit timeout (frozen by blocking engine code); the
                 bridge is torn down first (no-hang contract).
         """
         if self._closed:
@@ -3608,7 +3608,7 @@ class SyncSession:
 
         Raises:
             TimeoutError: If the live loop cannot run the snapshot within
-                the submit timeout (frozen by blocking adapter code); the
+                the submit timeout (frozen by blocking engine code); the
                 bridge is torn down first (no-hang contract).
         """
         if self._closed:

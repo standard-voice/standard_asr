@@ -149,7 +149,7 @@ def resolve_download_root(
     Implements the normative four-level chain engines MUST follow when picking
     where model artifacts land: **explicit** config (the engine's
     ``download_root`` field) > the ``STANDARD_ASR_MODEL_DIR`` environment
-    override > the engine library's **own default cache** (when it has one;
+    override > the underlying ASR library's **own default cache** (when it has one;
     expressed as a ``None`` passthrough, see below) > the shared Standard ASR
     cache directory (:func:`resolve_cache_dir`, ``~/.cache/standard-asr`` or
     the platform equivalent). The environment tier inherits
@@ -157,11 +157,11 @@ def resolve_download_root(
     value is unset and a relative value resolves against the current working
     directory at call time.
 
-    The library tier is a **passthrough**: engine libraries typically express
+    The library tier is a **passthrough**: ASR libraries typically express
     "use my own default cache" as an unset download path (e.g. faster-whisper's
     ``WhisperModel(download_root=None)`` resolves via the HuggingFace hub
     cache), so when the chain lands on that tier this returns ``None`` and the
-    adapter forwards it unchanged. Substituting a concrete directory here would
+    engine forwards it unchanged. Substituting a concrete directory here would
     delete the spec's third tier: every unconfigured install's models would
     relocate away from the library's existing cache, breaking offline loads of
     already-downloaded models and silently re-downloading them.
@@ -169,14 +169,14 @@ def resolve_download_root(
     Args:
         explicit: Explicitly configured download root (highest priority); a
             leading ``~`` is expanded.
-        has_library_default: Whether the engine library has its own default
+        has_library_default: Whether the underlying ASR library has its own default
             model cache (the spec's third tier). When ``True`` and neither an
             explicit value nor the environment override is present, ``None``
-            is returned for the adapter to forward; an adapter that knows the
+            is returned for the engine to forward; an engine that knows the
             library's concrete cache path may substitute it for the ``None``.
 
     Returns:
-        The resolved download root, or ``None`` when the engine library's own
+        The resolved download root, or ``None`` when the underlying ASR library's own
         default cache applies (only possible with ``has_library_default``).
     """
     if explicit is not None:

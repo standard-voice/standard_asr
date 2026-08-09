@@ -26,7 +26,7 @@ bare-frame session can be opened at all is a capability question -- gate on
 
 > **Known pre-1.0 limitation.** The recommendation is a format the engine's
 > session-establishment *validator* accepts -- for the rare self-managed-wire
-> adapter (an engine that manages its own wire format and opens sessions with
+> engine (an engine that manages its own wire format and opens sessions with
 > a bare `start_transcription()`, taking no `audio_format` at all), that is
 > not the same thing as the right way to open the session. How such engines
 > declare their transport is being settled in the capability-ontology ADR

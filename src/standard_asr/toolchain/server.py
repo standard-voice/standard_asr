@@ -953,9 +953,9 @@ def create_app(
             log_exception_safely(logger, "Stream diagnostics projection failed for model %r", model)
             # No session teardown on this return, deliberately: the session is
             # CONSTRUCTED but never entered (start_transcription does not open;
-            # the producer/feed tasks and the adapter's _open run inside
+            # the producer/feed tasks and the engine's _open run inside
             # _bridge_stream's `async with`), so the standard layer holds no
-            # live resources here, and __aexit__ would call the adapter's
+            # live resources here, and __aexit__ would call the engine's
             # _close without a matching _open -- an unspecified state. Same
             # stance as the compliance gating probe's constructed-not-entered
             # abandonment.

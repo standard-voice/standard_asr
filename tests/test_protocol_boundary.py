@@ -7,7 +7,7 @@
 detection rule for a synchronous protocol member returning an awaitable or a
 wrong-typed value (the compliance suite adapts its verdicts into issue codes;
 the CLI/server raise through it). These tests pin the detection semantics,
-the coroutine containment, the raising adapter's fault classification, and
+the coroutine containment, the raising wrapper's fault classification, and
 the no-value-repr message guarantee.
 """
 
@@ -154,7 +154,7 @@ def test_defect_message_never_embeds_the_value_repr() -> None:
 
 
 def test_require_sync_result_passes_conforming_values() -> None:
-    """The raising adapter is a no-op for a conforming value."""
+    """The raising wrapper is a no-op for a conforming value."""
     require_sync_result(True, "supports()", expected_type=bool)
     require_sync_result("anything", "transcribe()")
 
@@ -461,7 +461,7 @@ def test_hostile_type_metadata_cannot_displace_the_verdict() -> None:
     defect_typed = sync_result_defect(value, expected_type=bool)
     assert defect_typed is not None and defect_typed.kind == "unclassifiable"
 
-    # The raising adapter classifies it as an engine fault, never lets the
+    # The raising wrapper classifies it as an engine fault, never lets the
     # plugin's own RuntimeError escape.
     with pytest.raises(EngineContractError) as excinfo:
         require_sync_result(value, "transcribe()")

@@ -186,7 +186,7 @@ def test_download_root_library_default_passthrough_when_env_unset(
 ) -> None:
     # Unconfigured + env unset on an engine whose library has its own
     # default cache resolves to the LIBRARY tier -- a None passthrough the
-    # adapter forwards (e.g. WhisperModel(download_root=None) -> the HF hub
+    # engine forwards (e.g. WhisperModel(download_root=None) -> the HF hub
     # cache) -- never a forced concrete directory that would relocate every
     # unconfigured install's models.
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)

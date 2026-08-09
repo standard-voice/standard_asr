@@ -240,7 +240,7 @@ class Word(BaseModel):
         sample (audio time ``t=0``), the same origin as the streaming cursor.
         ``start`` / ``end`` are therefore non-negative finite
         floats and ``end >= start`` (a zero-duration span is allowed). NaN / Inf
-        are rejected (``allow_inf_nan=False``). Adapters convert ms /
+        are rejected (``allow_inf_nan=False``). Engines convert ms /
         protobuf-duration / ticks into this frame; a negative or inverted span is
         an adapter bug, so the model refuses to represent one rather than let it
         surface as a silent wrong timestamp downstream.
