@@ -1058,7 +1058,9 @@ def test_ffmpeg_native_probe_failure_with_ffprobe_present(
 
     monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe_none)
     monkeypatch.setattr(audio_loader.shutil, "which", _which_found)
-    with pytest.raises(audio_loader.AudioProcessingError, match="unreadable or carry no audio"):
+    with pytest.raises(
+        audio_loader.AudioProcessingError, match="Run ffprobe on the source directly"
+    ):
         audio_loader._decode_with_ffmpeg_native(b"xx", None)  # pyright: ignore[reportPrivateUsage]
 
 
@@ -1185,6 +1187,39 @@ def test_probe_sample_rate_delegates_to_stream_entry(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
     assert audio_loader._probe_sample_rate_with_ffprobe(b"data") == 48000  # pyright: ignore[reportPrivateUsage]
+
+
+def test_probe_stream_entry_swallows_spawn_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ffprobe vanished between the shutil.which probe and the spawn (a
+    # concurrent package upgrade): the probe must report "unknown" (None),
+    # never leak the OSError -- the wrappers promise Raises: None.
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError("ffprobe gone")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    assert audio_loader._probe_sample_rate_with_ffprobe(b"data") is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_probe_stream_entry_swallows_undecodable_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A broken stream can make ffprobe emit undecodable bytes; the decode
+    # failure is a probe failure (None), never an escaping UnicodeDecodeError.
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(["ffprobe"], 0, stdout=b"\xff\xfe\x00", stderr=b"")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    assert audio_loader._probe_channels_with_ffprobe(b"data") is None  # pyright: ignore[reportPrivateUsage]
 
 
 def test_probe_channels_ffprobe_missing(monkeypatch: pytest.MonkeyPatch) -> None:

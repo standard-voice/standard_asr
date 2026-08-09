@@ -19,7 +19,7 @@ Key points and contract:
   -- it does NOT fall back to FFmpeg for resampling.
 - Channel handling:
   - Downmix to mono uses arithmetic mean.
-  - Upmix replicates channels (e.g., 1 -> 2).
+  - Upmix replicates channels (for example, 1 -> 2).
   - Multi->fewer channels downmix by truncation (first N channels) unless
     loading is delegated to FFmpeg, which can provide higher-quality mixing.
 - NaN/Inf are sanitized to safe values (NaN->0.0, +Inf->1.0, -Inf->-1.0).
@@ -955,6 +955,8 @@ def load_audio(
         AudioProcessingError: Invalid parameters or decoding/processing failures,
             including missing or unreadable paths, or input exceeding ``max_bytes``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
         TypeError: Unsupported source type.
 
     Example:
@@ -1088,6 +1090,8 @@ def load_audio_from_path(
         AudioProcessingError: Decoding failed, including missing or unreadable
             files, or the file exceeds ``max_bytes``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
 
     Note:
         **Decoding priority:** stdlib ``wave`` (WAV) → ``soundfile`` → FFmpeg.
@@ -1187,6 +1191,8 @@ def load_audio_from_bytes(
         AudioProcessingError: Decoding failed, empty audio, or ``data`` exceeds
             ``max_bytes``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
 
     Note:
         **Decoding priority:** ``soundfile`` → FFmpeg. Install one for format support.
@@ -1252,6 +1258,8 @@ def decode_audio(
         AudioProcessingError: Decoding failed, the input is missing/oversize, or
             looks like an injected option.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
         TypeError: Unsupported source type.
     """
     _require_valid_target_channels(target_channels)
@@ -1317,6 +1325,8 @@ def decode_audio_from_data_uri(
             lacks the ``;base64,`` marker, the decoded size exceeds ``max_bytes``,
             or decoding failed.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
         TypeError: ``value`` is not a ``str``.
     """
     if not isinstance(value, str):  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -1347,6 +1357,8 @@ def _decode_path_native(
     Raises:
         AudioProcessingError: Decoding failed.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
     """
     # Layer 1: stdlib WAV via the shared helper (decode at the NATIVE rate, so
     # normalize_audio's target equals the source rate -- no resample here).
@@ -1378,6 +1390,8 @@ def _decode_bytes_native(
     Raises:
         AudioProcessingError: Decoding failed.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
     """
     decoded = _read_with_soundfile(io.BytesIO(data))
     if decoded is not None:
@@ -1414,8 +1428,9 @@ def _decode_with_ffmpeg_native(
                 "(soundfile) for native-rate decoding."
             )
         raise AudioProcessingError(
-            "Could not determine the native sample rate via ffprobe; the "
-            "source may be unreadable or carry no audio stream."
+            "Could not determine the native sample rate: ffprobe reported no "
+            "audio stream, could not read the source, or timed out. Run "
+            "ffprobe on the source directly to see why."
         )
     array = _load_with_ffmpeg(source, native_sr, target_channels)
     return array, native_sr
@@ -1665,6 +1680,16 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
     except subprocess.TimeoutExpired:
         return None
     except subprocess.CalledProcessError:
+        return None
+    except OSError:
+        # ffprobe vanished between the shutil.which probe and the spawn (for
+        # example, a concurrent package upgrade). A probe that cannot run is
+        # "unknown", never an escaping exception (the wrappers promise
+        # Raises: None).
+        return None
+    except UnicodeDecodeError:
+        # A broken stream can make ffprobe emit undecodable bytes; same
+        # fail-closed "unknown" as every other probe failure.
         return None
 
 

@@ -611,8 +611,10 @@ def test_target_sample_rate_self_describing_returns_native() -> None:
 def test_target_sample_rate_any_still_honors_required_rate() -> None:
     # "any" accepts every rate, so a hard-required wire rate wins there too
     # (the docstring's step 1; spec R7.2). The "any" fast path used to
-    # short-circuit before the required check and silently returned the
-    # native rate instead.
+    # short-circuit before the required check and returned the native rate --
+    # unreachable through _apply_sample_rate, which resolves required/
+    # passthrough first (test_array_required_rate_overrides_any pins that
+    # public path), but wrong for a direct caller of this helper.
     assert _target_array_sample_rate("any", 16000, 24000) == 24000
 
 

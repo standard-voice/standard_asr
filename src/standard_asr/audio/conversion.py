@@ -176,7 +176,10 @@ def _target_array_sample_rate(
         A sample rate the engine accepts.
     """
     # Step 1 must precede the "any" fast path: "any" accepts every rate, so a
-    # hard-required rate wins there too (spec R7.2, step 1).
+    # hard-required rate wins there too (spec R7.2, step 1). Consistency fix,
+    # not a reachable defect: the only caller (_apply_sample_rate) resolves
+    # the required-rate and passthrough cases before delegating here, so the
+    # old order was wrong solely for a direct caller of this helper.
     if required_input_sample_rate is not None and sample_rate_accepted(
         accepted, required_input_sample_rate
     ):
