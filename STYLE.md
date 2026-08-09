@@ -295,12 +295,17 @@ Three layers, weakest claim first:
   and the `StandardASR` style (the mechanizable subset of `TERMINOLOGY.md`).
   The full run, warnings and suggestions included, is kept at zero, and the
   CI gate enforces exactly that: `scripts/vale.sh --gate` fails on any alert
-  at any level, and `scripts/vale.sh --selfcheck` proves the extraction still
-  sees the surfaces the gate claims to cover. Two extraction gaps are known
-  and disclosed: Vale skips a module docstring that follows the SPDX header,
-  and it never reads Python string literals — so module docstrings and tier-3
-  runtime strings are enforced by review (both were swept manually when the
-  gate landed). Two detector gaps are accepted rather than worked around: the serial comma is required
+  at any level, and `scripts/vale.sh --selfcheck` proves the gate composition
+  (config, exemption glob, target list) still flags planted violations in
+  every directory target. Four extraction gaps are known and disclosed —
+  prose that Vale never sees and review must own. Vale skips a module
+  docstring that follows the SPDX header; it never reads Python string
+  literals; it skips attribute docstrings (the bare string under an
+  assignment, as on an enum member); and it skips the text of a tight list
+  item that owns a nested sub-list (put a blank line before the sub-list and
+  the parent is linted). Module docstrings, tier-3 runtime strings, and
+  attribute docstrings were each swept manually when the gate landed, and
+  the corpus was verified free of tight nested lists at the same time. Two detector gaps are accepted rather than worked around: the serial comma is required
   (the baseline agrees), but `Google.OxfordComma` is off because its pattern
   cannot tell a two-item pair or an appositive from a list; and
   `Google.Spacing` is off for Python files because a dotted exception name in
