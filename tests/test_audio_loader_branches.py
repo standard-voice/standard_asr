@@ -732,9 +732,16 @@ def test_load_with_ffmpeg_zero_samples(monkeypatch: pytest.MonkeyPatch) -> None:
         audio_loader._load_with_ffmpeg(b"data", 16000, 1)  # pyright: ignore[reportPrivateUsage]
 
 
-def test_load_with_ffmpeg_defaults_to_mono(monkeypatch: pytest.MonkeyPatch) -> None:
-    audio = np.array([0.0, np.nan, np.inf, -0.5], dtype=np.float32)
-    stdout = bytearray(audio.tobytes())
+def test_load_with_ffmpeg_unknown_channels_raises_not_mono(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed channel probe with ffprobe PRESENT must raise, never downmix.
+
+    The pre-fix behavior logged a warning and decoded a possibly multichannel
+    source to mono -- a silent wrong result. With ``target_channels=None``
+    ("preserve the source layout") an unknown source layout is a loud
+    ``AudioProcessingError`` that names the way out.
+    """
 
     def _which(_: str) -> str:
         return "/usr/bin/ffmpeg"
@@ -745,15 +752,37 @@ def test_load_with_ffmpeg_defaults_to_mono(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(audio_loader.shutil, "which", _which)
     monkeypatch.setattr(audio_loader, "_probe_channels_with_ffprobe", _probe)
 
-    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes | bytearray]:
-        return subprocess.CompletedProcess(["ffmpeg"], 0, stdout=stdout, stderr=b"")
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("ffmpeg must not run when the channel count is unknown")
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
-    out = audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(AudioProcessingError, match="Pass target_channels explicitly"):
+        audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
 
-    assert out.ndim == 1
-    assert np.all(np.isfinite(out))
+
+def test_load_with_ffmpeg_missing_ffprobe_raises_not_mono(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed channel probe with ffprobe ABSENT names the missing tool.
+
+    Same loud-failure contract as above, but the dedicated
+    ``FFprobeNotFoundError`` points at the install step -- this is the raise
+    the ``load_audio*`` docstrings promise, previously unreachable because
+    the loader downmixed to mono instead.
+    """
+
+    def _which(tool: str) -> str | None:
+        return None if tool == "ffprobe" else "/usr/bin/ffmpeg"
+
+    def _probe(_: object) -> int | None:
+        return None
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+    monkeypatch.setattr(audio_loader, "_probe_channels_with_ffprobe", _probe)
+
+    with pytest.raises(audio_loader.FFprobeNotFoundError, match="pass target_channels"):
+        audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_load_with_ffmpeg_multichannel_alignment(
@@ -1203,6 +1232,29 @@ def test_probe_stream_entry_swallows_spawn_oserror(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
     assert audio_loader._probe_sample_rate_with_ffprobe(b"data") is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_load_with_ffmpeg_probe_spawn_failure_is_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient spawn failure (EAGAIN) must surface, not downmix to mono.
+
+    End-to-end through the REAL probe: the fork fails with ``OSError``, the
+    probe reports "unknown" per its no-raise contract, and the loader -- asked
+    to preserve the source layout -- refuses to guess a channel count.
+    """
+
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise OSError("fork: Resource temporarily unavailable")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    with pytest.raises(AudioProcessingError, match="channel count"):
+        audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_probe_stream_entry_swallows_undecodable_output(

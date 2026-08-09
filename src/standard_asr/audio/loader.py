@@ -953,10 +953,13 @@ def load_audio(
 
     Raises:
         AudioProcessingError: Invalid parameters or decoding/processing failures,
-            including missing or unreadable paths, or input exceeding ``max_bytes``.
+            including missing or unreadable paths, input exceeding ``max_bytes``,
+            or a source channel count that ffprobe ran on but could not
+            determine with ``target_channels=None``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
-        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
-            installed.
+        FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
+            fallback, which needs ffprobe to preserve the source channel
+            layout, but ffprobe is not installed.
         TypeError: Unsupported source type.
 
     Example:
@@ -970,7 +973,7 @@ def load_audio(
         - Bytes/data URIs/BinaryIO: ``soundfile`` → FFmpeg subprocess.
 
         **Base64:** Only data URIs (``data:...;base64,...``) are auto-detected.
-        For raw base64 strings (eg. ``YmFT...Y0``), decode manually:
+        For raw base64 strings (for example, ``YmFT...Y0``), decode manually:
         ``load_audio(base64.b64decode(s))``.
 
         **BinaryIO:** Reads from the current stream position; does not seek to the beginning.
@@ -1088,10 +1091,13 @@ def load_audio_from_path(
 
     Raises:
         AudioProcessingError: Decoding failed, including missing or unreadable
-            files, or the file exceeds ``max_bytes``.
+            files, the file exceeding ``max_bytes``, or a source channel count
+            that ffprobe ran on but could not determine with
+            ``target_channels=None``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
-        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
-            installed.
+        FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
+            fallback, which needs ffprobe to preserve the source channel
+            layout, but ffprobe is not installed.
 
     Note:
         **Decoding priority:** stdlib ``wave`` (WAV) → ``soundfile`` → FFmpeg.
@@ -1188,11 +1194,13 @@ def load_audio_from_bytes(
         Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
-        AudioProcessingError: Decoding failed, empty audio, or ``data`` exceeds
-            ``max_bytes``.
+        AudioProcessingError: Decoding failed, empty audio, ``data`` exceeding
+            ``max_bytes``, or a source channel count that ffprobe ran on but
+            could not determine with ``target_channels=None``.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
-        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
-            installed.
+        FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
+            fallback, which needs ffprobe to preserve the source channel
+            layout, but ffprobe is not installed.
 
     Note:
         **Decoding priority:** ``soundfile`` → FFmpeg. Install one for format support.
@@ -1468,8 +1476,11 @@ def _load_with_ffmpeg(
 
     Raises:
         FFmpegNotFoundError: FFmpeg not in PATH.
-        AudioProcessingError: Decoding failed, timeout, empty output, or decoded
-            output exceeding ``max_output_bytes``.
+        FFprobeNotFoundError: ``target_channels=None`` but ffprobe, which
+            reports the source channel count, is not in PATH.
+        AudioProcessingError: Decoding failed, timeout, empty output, decoded
+            output exceeding ``max_output_bytes``, or a source channel count
+            that could not be determined with ``target_channels=None``.
     """
     # Security: a string source is a *local file* and
     # nothing else. Validate + absolutize it up front (before probing), and
@@ -1495,17 +1506,28 @@ def _load_with_ffmpeg(
             "'choco install ffmpeg' (Windows)."
         )
 
-    # If target_channels is None, attempt to preserve original channels via ffprobe.
+    # target_channels=None means "preserve the source channel layout", which
+    # needs ffprobe to report the source channel count. An unknown count MUST
+    # fail loudly here: downmixing a surround source to mono because a probe
+    # could not run is a silent wrong result (AGENTS.md, Philosophy), not a
+    # fallback.
     if target_channels is None:
         detected_channels = _probe_channels_with_ffprobe(probe_source)
         if detected_channels is None:
-            logger.warning(
-                "ffprobe not available or failed to detect channels. "
-                "Defaulting to mono (1 channel)."
+            if shutil.which("ffprobe") is None:
+                raise FFprobeNotFoundError(
+                    "ffprobe is required to preserve the source channel "
+                    "layout (target_channels=None) but is not in PATH; "
+                    "install the ffmpeg suite, or pass target_channels "
+                    "explicitly."
+                )
+            raise AudioProcessingError(
+                "Could not determine the source channel count: ffprobe "
+                "reported no audio stream, could not read the source, or "
+                "timed out. Pass target_channels explicitly, or run ffprobe "
+                "on the source directly to see why."
             )
-            final_target_channels = 1
-        else:
-            final_target_channels = detected_channels
+        final_target_channels = detected_channels
     else:
         final_target_channels = target_channels
 
