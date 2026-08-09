@@ -1187,23 +1187,29 @@ class _CoalescingBuffer:
     carried forward into the survivor when the survivor left them ``None``
     (semantic carry-forward).
 
-    The buffer bounds the **backpressure-eligible** events: at most ``capacity``
-    of them may be pending; the drop-proof kinds below bypass the bound.
-    Coalesced partials reuse their existing slot and never grow the
-    buffer. A NEW partial slot (a not-yet-pending segment) or a ``progress``
-    event may push past ``capacity`` and raise :class:`EventBufferOverflow`,
-    which the producer turns into a terminal ``backpressure`` error. ``final`` /
-    ``supersede`` (like ``done`` / ``error`` via :meth:`put_forced`) bypass the
-    bound and are appended drop-proof: they MUST never be dropped and are
-    bounded per segment, so only distinct-segment *partials* and ``progress``
-    heartbeats trigger backpressure.
+    ``capacity`` is a budget over ALL pending events, not only the
+    backpressure-eligible ones: every live slot consumes one unit, whatever
+    its kind, and a coalesced partial reuses its slot instead of consuming
+    another. The budget decides which puts are REFUSED, never which events
+    exist. A NEW partial slot (a not-yet-pending segment) or a ``progress``
+    heartbeat raises :class:`EventBufferOverflow` when the budget is spent,
+    and the producer turns that into a terminal ``backpressure`` error.
+    ``final`` / ``supersede`` (like ``done`` / ``error`` via
+    :meth:`put_forced`) MUST never be dropped, so they are appended even
+    past the budget -- but their slots still consume it, so a backlog of
+    drop-proof events alone can make the next eligible put overflow.
+    Finals and supersedes are bounded per segment (each invalidates its own
+    pending partial), so only distinct-segment *partials* and ``progress``
+    heartbeats can be refused.
     """
 
     def __init__(self, capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY) -> None:
         """Initialize the buffer.
 
         Args:
-            capacity: Maximum number of pending backpressure-eligible events.
+            capacity: Pending-event budget shared by every event kind; only
+                a backpressure-eligible put (a new partial slot or a
+                ``progress`` heartbeat) is refused once it is spent.
         """
         self._capacity = capacity
         # deque of (event, alive) where alive=False marks a coalesced partial
@@ -1227,9 +1233,10 @@ class _CoalescingBuffer:
     def put(self, event: TranscriptionEvent) -> TranscriptionEvent:
         """Add an event, coalescing superseded partials.
 
-        ``final`` / ``supersede`` / ``error`` / ``done`` are appended drop-proof
-        (bypassing the bound), so only a NEW partial slot for a
-        not-yet-pending segment or a ``progress`` event can overflow.
+        ``final`` / ``supersede`` / ``error`` / ``done`` are appended
+        drop-proof -- never refused, though their slots still consume the
+        budget -- so only a NEW partial slot for a not-yet-pending segment
+        or a ``progress`` event can overflow.
 
         **Exception-atomic**: the overflow check runs before ANY buffer
         state changes, so a raising ``put`` leaves the buffer exactly as it
@@ -1321,10 +1328,10 @@ class _CoalescingBuffer:
                 del self._partial_slot[sid]
                 stale.alive = False
                 self._live_count -= 1
-            # final / supersede MUST never be dropped: append
-            # drop-proof, bypassing the capacity bound. A NEW partial slot
-            # (which GROWS the buffer for a not-yet-pending segment) or a
-            # progress heartbeat may overflow -- finals/supersedes are bounded
+            # final / supersede MUST never be dropped: append drop-proof,
+            # never refused by the budget (the slot still consumes it). A NEW
+            # partial slot (which GROWS the buffer for a not-yet-pending
+            # segment) or a progress heartbeat may overflow -- finals/supersedes are bounded
             # per segment (each invalidates its own pending partial above), so
             # bypassing the bound is safe. The residual: a pathological flood of
             # distinct-segment finals can grow memory unboundedly -- accepted,
@@ -1357,7 +1364,7 @@ class _CoalescingBuffer:
         return event
 
     def put_forced(self, event: TranscriptionEvent) -> TranscriptionEvent:
-        """Append a drop-proof event bypassing the capacity bound.
+        """Append a drop-proof event that the capacity budget never refuses.
 
         Two kinds of event take this path. Terminal events (``done`` / ``error``)
         MUST never be dropped, even when the buffer overflowed because the
@@ -1369,7 +1376,7 @@ class _CoalescingBuffer:
         can reveal.
 
         Both are few (one terminal per session; a bounded pair per reconnect), so
-        bypassing the bound is safe, and -- crucially -- they go into the *same*
+        appending past the budget is safe, and -- crucially -- they go into the *same*
         buffer the iterator is already awaiting, so they are delivered promptly.
 
         Args:
@@ -2216,8 +2223,12 @@ class TranscriptionSession(ABC):
                 chats) without ever producing content. ``None`` (the default)
                 disables: silence is a normal state for a live session.
             max_session_seconds: Absolute wall-clock cap; ``None`` disables.
-            event_buffer_capacity: Max pending non-coalesced events before
-                overflow emits a ``backpressure`` error.
+            event_buffer_capacity: Pending-event budget shared by every
+                event kind -- drop-proof ``final`` / ``supersede`` /
+                ``error`` / ``done`` slots consume it too. A new-segment
+                partial or ``progress`` heartbeat arriving once it is spent
+                overflows, which the session reports as a terminal
+                ``backpressure`` error.
             audio_queue_maxsize: Max pending audio chunks; bounds ``feed`` /
                 ``send_audio`` so a slow engine exerts real backpressure.
             audio_history_maxlen: Capacity of the bounded rolling audio buffer

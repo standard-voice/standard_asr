@@ -1093,6 +1093,24 @@ def test_put_forced_bypasses_capacity() -> None:
     buf.put_forced(TranscriptionEvent.done())
 
 
+def test_drop_proof_slots_consume_the_shared_budget() -> None:
+    """Drop-proof events alone can spend the budget and starve the next partial.
+
+    Pins the semantics the class docstring states: ``capacity`` is a budget
+    over ALL pending events, and drop-proof finals -- never refused
+    themselves -- still consume it. Five pending finals in a capacity-4
+    buffer mean the FIRST backpressure-eligible put overflows, even though
+    zero backpressure-eligible events are pending. An engine author sizing
+    ``event_buffer_capacity`` for a final-heavy stream must budget for the
+    finals, not only for the partials.
+    """
+    buf = _CoalescingBuffer(capacity=4)
+    for i in range(5):
+        buf.put(TranscriptionEvent.final(f"s{i}", "x"))
+    with pytest.raises(EventBufferOverflow):
+        buf.put(TranscriptionEvent.partial("p0", "hi"))
+
+
 def test_final_supersede_never_dropped_at_capacity() -> None:
     # Fill the buffer to capacity with distinct-segment partials, then assert a
     # final and a supersede still land (drop-proof, not converted to overflow).
