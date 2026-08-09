@@ -28,17 +28,21 @@ This standard governs English **prose**:
 
 - docstrings (module, class, function, attribute), in `src/` and in `tests/`;
 - user-facing runtime strings (see the tier test below);
-- English Markdown under `docs/` that `mkdocs.yml` publishes;
+- English Markdown under `docs/`, published or not (`docs/legacy/` is
+  historical and exempt);
 - English Markdown at the repository root: `README.md`, `CONTRIBUTING.md`,
-  `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`;
+  `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`. Working notes
+  under `work/` are exempt;
 - internal `#` comments (clarity tier only — see below);
 - test prose: docstrings, comments, and assertion labels in `tests/`;
 - new `CHANGELOG.md` entries from now on.
 
-`README.md` is the project's marketing front door. It is governed for
-**accuracy and terminology** like everything else, but it may use a wider
-register than reference prose: a longer sentence and a rhetorical structure are
-acceptable there when they carry a true claim.
+`README.md`, `docs/index.md`, and the `AGENTS.md` preamble are the project's
+front door. They are governed for **accuracy and terminology** like everything
+else, but they may use a wider register than reference prose: a longer
+sentence, a rhetorical structure, or an established figure of speech ("USB-C
+for ASR", "the cardinal sin") is acceptable there when it carries a true claim.
+Reference prose keeps the no-idiom rule as written.
 
 This standard does **not** govern, and must never change:
 
@@ -48,8 +52,9 @@ This standard does **not** govern, and must never change:
   `CancelledError`).
 - **Chinese documents** — `docs/spec/specification.md` (the normative spec),
   `docs/design-notes/`, `docs/research/`, `docs/work_doc/`, and other Chinese
-  files. Do not translate or edit them. Read them as the source of truth (see
-  "Fact-check every meaning change" below).
+  files. Do not translate or edit them. Read `docs/spec/specification.md` as
+  the source of truth; the other Chinese documents are background context,
+  ranked by the authority order in "Fact-check every meaning change" below.
 - **reStructuredText roles and code spans** — `:class:`, `:func:`, `:meth:`,
   `:mod:`, `:data:`, double-backtick code spans, and `::` literal blocks stay
   verbatim. Never reflow or "simplify" the text inside them.
@@ -58,22 +63,23 @@ This standard does **not** govern, and must never change:
 ## The two tiers
 
 The standard has two tiers. Apply these three steps **in order** and stop at the
-first that matches. They are ordered because one string can satisfy more than
-one of them — a `#` comment inside a doctest inside a docstring matches all
-three — and the first match wins.
+first that matches. They are ordered because one string can satisfy the first
+two — a `#` comment inside a doctest matches both — and step 3's own list names
+text the first two steps already claim; the first match wins.
 
 1. **Verbatim (no tier applies).** Text inside a `:role:`, a `` `code span` ``,
-   a `::` literal block, or a `>>>` doctest is never rewritten. Work around it,
-   never through it.
-2. **Internal (clarity tier).** A `#` comment. The clarity tier keeps the full
-   standard's word and term rules but **drops the sentence-length limit**,
+   a `::` literal block, a Markdown fenced code block, or a doctest example —
+   its `>>>`/`...` lines and its expected output — is never rewritten. Work
+   around it, never through it.
+2. **Internal (clarity tier).** A `#` comment. The clarity tier is the **full
+   standard with only the sentence-length limit removed**,
    because a comment sometimes needs a long sentence to record a subtle reason.
    Do not shorten rationale to hit a word count. Keep the "why". A directive
    comment (`# noqa: ...`, `# pragma: no cover`, a section marker) is not prose
    and is governed by nothing here.
 3. **User-facing (full standard).** Everything else in scope. This is the
    default, so an unlisted case falls here rather than escaping the standard.
-   It includes:
+   Among what it covers:
    - every string that can reach a person who is not reading the source —
      whichever way it is written: an argument to `raise ...Error(...)`,
      `logger.*`, `warnings.warn`, or `print`; a `hint=` or `param=` field; and
@@ -81,8 +87,8 @@ three — and the first match wins.
    - `argparse` `help=`, `description=`, and `epilog=`;
    - FastAPI and Pydantic text: `Field(description=...)`, `FastAPI(title=...)`,
      route and OpenAPI docstrings, and WebSocket `{"message": ...}` frames;
-   - **every docstring**, public or private (mkdocstrings renders them, and
-     consumers read them);
+   - **every docstring**, public or private (mkdocstrings renders the public
+     ones, and consumers read them all in the source);
    - every governed Markdown file.
 
 **One length exception inside tier 3.** A docstring **body** paragraph that
@@ -132,9 +138,11 @@ Apply the resolution as written.
    "candidate_languages MUST NOT contain 'auto'" becomes "candidate_languages
    cannot contain 'auto'"). The rule: state a spec obligation to the party who
    can break the spec; speak plainly to the party who made a normal mistake.
-   Where a sentence addresses an **operator** or an **end user**, or has more
-   than one audience, use a plain verb — an uppercase keyword only helps a
-   reader who can act on the spec.
+   The audience is the party the **obligation addresses**, not everyone who may
+   read the sentence — a rendered docstring has many readers, and its MUST
+   still addresses the engine author. Where the obligation addresses an
+   **operator** or an **end user**, use a plain verb — an uppercase keyword
+   only helps a reader who can act on the spec.
 
 4. **A prose rule never changes an identifier.** American spelling and term
    rules apply to prose only. The prose says "canceled"; the symbol stays
@@ -165,8 +173,10 @@ is a gate you have not passed.
    original. If you cannot name a defect, do not change the meaning — a pure
    style pass keeps the meaning and needs no gate.
 2. **Authority.** Cite the source that establishes the new text, by path and
-   line. Use whichever applies, in this order: the normative spec
-   (`docs/spec/specification.md`) where it speaks; otherwise the code path, a
+   line. Use whichever applies, in this order: the normative spec documents
+   where they speak — `docs/spec/specification.md`, and the English
+   `docs/spec/` pages for the surfaces they contract (the server wire API, the
+   CLI, the download policy); otherwise the code path, a
    test that pins the behavior, or a design note. Much of the toolchain — an
    exit code, an `argparse` help string, a CLI marker — has no spec text; there
    the code and its tests are the authority.
@@ -184,7 +194,9 @@ Every domain term follows [`TERMINOLOGY.md`](TERMINOLOGY.md): one canonical term
 per concept, a short definition, the approved usage, and the forbidden synonyms.
 The controlled code vocabularies (the `DIAG_*` codes, the compliance codes, the
 enums, and the `Literal` sets) have a single source of truth in the code;
-`TERMINOLOGY.md` points to it and never copies it.
+`TERMINOLOGY.md` points to it and does not duplicate it (its one deliberate
+excerpt, the two `level` scales, is quoted for contrast and moves with the
+code).
 
 ## Checklist before you commit prose
 

@@ -192,8 +192,9 @@ line-length = 100
 # pydocstyle (Google convention) — it enforces the docstring structure that
 # STYLE.md requires.
 select = ["E", "F", "I", "W", "NPY201", "D"]
-# D105/D107: __init__ and dunder methods are documented in the class docstring
-# (mkdocstrings merge_init_into_class=true), so they need no separate docstring.
+# D107: __init__ is merged into the class page (mkdocstrings
+# merge_init_into_class=true), so it needs no separate docstring. D105: trivial
+# container dunders (__len__, __iter__, __repr__) need none either.
 ignore = ["D105", "D107"]
 
 [tool.ruff.lint.pydocstyle]
