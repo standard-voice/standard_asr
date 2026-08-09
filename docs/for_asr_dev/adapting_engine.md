@@ -125,10 +125,13 @@ calls your hook. Before your hook runs, the base has already:
   `ensure_stream_inputs_exclusive`;
 - validated the language config (LANG R1 / IC.6);
 - run the **fail-closed** wire-format check (`ensure_stream_format_supported`) on
-  both the encoding and the sample rate. It rejects an `audio_format.encoding` not
-  in your declared `wire_encodings`, so an undeclared encoding is not misframed as
-  PCM and silently mistranscribed. It also rejects a wire `sample_rate` you do not
-  accept. Per spec R7's v1 note, the standard does **not** resample streaming wire
+  the encoding, the channel count, and the sample rate. It rejects an
+  `audio_format.encoding` not in your declared `wire_encodings`, so an undeclared
+  encoding is not misframed as PCM and silently mistranscribed. It rejects an
+  `audio_format.channels` other than 1: v1 streaming wire input is mono-only,
+  because the standard layer does not downmix incremental frames the way the batch
+  path does. Downmix to mono before feeding. It also rejects a wire `sample_rate`
+  you do not accept. Per spec R7's v1 note, the standard does **not** resample streaming wire
   frames in v1 (only the batch `transcribe` path resamples), so an unreachable
   wire rate is a loud error. When `required_input_sample_rate` is set, the wire
   rate MUST equal it — even when another rate appears in `accepted_sample_rates`.

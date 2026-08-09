@@ -13,7 +13,8 @@ pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-fast
 ```
 
 The `[audio]` extra adds MP3/FLAC/OGG decoding and automatic resampling. Without
-it, only WAV files work.
+it, only WAV decodes with no extra setup. MP3, FLAC, and OGG then need either the
+extra or `ffmpeg` on your PATH.
 
 ## Discover installed engines
 

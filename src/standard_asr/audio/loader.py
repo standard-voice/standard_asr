@@ -20,7 +20,7 @@ Key points and contract:
 - Channel handling:
   - Downmix to mono uses arithmetic mean.
   - Upmix replicates channels (e.g., 1 -> 2).
-  - Multi->fewer channels down-mix by truncation (first N channels) unless
+  - Multi->fewer channels downmix by truncation (first N channels) unless
     loading is delegated to FFmpeg, which can provide higher-quality mixing.
 - NaN/Inf are sanitized to safe values (NaN->0.0, +Inf->1.0, -Inf->-1.0).
 
@@ -800,7 +800,7 @@ def normalize_audio(
 
         - Stereo → Mono: arithmetic mean of channels.
         - Mono → Stereo: channel replication.
-        - Multi-channel down-mix: truncates to first N channels (for better quality,
+        - Multi-channel downmix: truncates to first N channels (for better quality,
           use FFmpeg path via ``load_audio``).
 
         **Invalid values:** NaN/Inf are sanitized (NaN→0.0, ±Inf→±1.0) with a warning.
@@ -852,9 +852,9 @@ def normalize_audio(
             # Downmix to mono using average across channels
             processed_audio = processed_audio.mean(axis=1, dtype=np.float32)[:, np.newaxis]
         else:
-            # Note: For multi-to-multi down-mixing (e.g., 6->2), this implementation performs a
+            # Note: For multi-to-multi downmixing (e.g., 6->2), this implementation performs a
             # simple channel selection/truncation instead of a perceptually accurate mix.
-            # For higher quality down-mix, ensure FFmpeg is installed and prefer the FFmpeg path.
+            # For higher quality downmix, ensure FFmpeg is installed and prefer the FFmpeg path.
             if target_channels > current_channels:  # Upscale (e.g., mono to stereo)
                 reps = int(math.ceil(target_channels / current_channels))
                 processed_audio = np.tile(processed_audio, (1, reps))[:, :target_channels]

@@ -459,8 +459,8 @@ class BaseProperties(BaseModel):
         rates = self.accepted_sample_rates
         if req is not None and rates != "any" and not sample_rate_accepted(rates, req):
             raise ValueError(
-                f"required_input_sample_rate={req} must be accepted by accepted_sample_rates "
-                f"{rates!r} (the standard resamples to the required rate)."
+                f"accepted_sample_rates {rates!r} must include required_input_sample_rate={req} "
+                f"(the standard resamples to the required rate)."
             )
         return self
 

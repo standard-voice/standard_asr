@@ -200,8 +200,9 @@ ignore = ["D105", "D107"]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-# Two-tier standard: docstring clarity applies to the test prose that exists, but
-# we do not force a docstring onto every test function or fixture.
+# Two-tier standard: tests are exempt from all pydocstyle (D) rules. The clarity
+# tier for test prose is about wording, which the linter does not check; and we do
+# not force a docstring onto every test function or fixture.
 "tests/**" = ["D"]
 # Illustrative sample code under docs/ is not part of the shipped library.
 "docs/**" = ["D"]

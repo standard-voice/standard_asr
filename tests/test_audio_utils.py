@@ -155,7 +155,7 @@ def test_load_from_base64():
 
 
 def test_channel_downmix():
-    """Test channel down-mixing."""
+    """Test channel downmixing."""
     stereo = np.array([[0.6, 0.4], [0.8, 0.2]], dtype=np.float32)
 
     mono = normalize_audio(stereo, 16000, 16000, 1)
@@ -165,7 +165,7 @@ def test_channel_downmix():
 
 
 def test_channel_upmix():
-    """Test channel up-mixing."""
+    """Test channel upmixing."""
     mono = np.array([0.5, 0.3], dtype=np.float32)
 
     stereo = normalize_audio(mono, 16000, 16000, 2)
@@ -314,19 +314,19 @@ def main():
     print("Running basic audio_utils tests...")
 
     test_audio_contract_dtype()
-    print("[OK]Audio contract dtype test passed")
+    print("[OK] Audio contract dtype test passed")
 
     test_single_sample_not_scalar()
-    print("[OK]Single sample regression test passed")
+    print("[OK] Single sample regression test passed")
 
     test_empty_audio_raises_error()
-    print("[OK]Empty audio error test passed")
+    print("[OK] Empty audio error test passed")
 
     test_nan_inf_cleanup()
-    print("[OK]NaN/Inf cleanup test passed")
+    print("[OK] NaN/Inf cleanup test passed")
 
     test_invalid_parameters()
-    print("[OK]Invalid parameters test passed")
+    print("[OK] Invalid parameters test passed")
 
     print("All basic tests passed.")
 

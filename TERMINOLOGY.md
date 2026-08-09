@@ -70,7 +70,7 @@ copies them, so they cannot drift. Add or rename a member only at its source.
 - **Diagnostic codes** — the 33 `DIAG_*` module constants, in
   `contract/results.py`, `contract/language.py`, `runtime/gating.py`,
   `audio/conversion.py`, and `runtime/streaming.py`. The naming pattern is
-  `<subject>_<past-participle-verb>` (for example `language_fell_back`,
+  `<subject>_<past-tense-verb>` (for example `language_fell_back`,
   `prompt_truncated`, `frozen_prefix_rewritten`).
 - **Compliance codes** — the `ComplianceIssue(code=...)` string literals in
   `compliance.py`, same `snake_case` pattern.
