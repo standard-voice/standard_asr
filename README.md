@@ -207,9 +207,9 @@ Those branches (packaged as `standard_asr.runtime.streaming.reduce_event`) are t
 **complete core reduce** — handle them and your app is safe on
 every compliant engine, including ones that rewrite interim text or merge segments after the
 fact. Engines that never do these things simply never emit those events. Voice agents can go
-further and act on `event.stable_until`, the engine's guarantee of how much of the text
-recognition will not revise (a terminal `closed` restatement may still reformat it — see
-the streaming guide's "Finality" section).
+further and act on `event.stable_until`, the engine's guarantee of how much of the text is
+frozen against further recognition (a terminal `closed` restatement may still reformat it —
+see the streaming guide's "Finality" section).
 
 > Not async? `SyncSession` wraps any streaming session behind a blocking iterator.
 > See [`docs/spec/`](docs/spec/) for the full streaming contract — segment lifecycle,
