@@ -685,8 +685,12 @@ def _core_numpy_spec() -> str | None:
 def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
     """Diagnose numpy compatibility across installed plugins AND the core.
 
-    Two distinct conflict relations are analyzed, in order, because their
-    remediations are different and conflating them misdirects the user:
+    Four conflict sources are analyzed, because their remediations differ and
+    conflating them misdirects the user. First, a distribution whose OWN numpy
+    declaration is internally unsatisfiable gets its own conflict (fix the
+    plugin), and on Python 3.13+ a plugin requiring ``numpy<2`` gets a
+    no-wheel conflict (use an older-Python worker). Then the two relations
+    below, in order:
 
     1. **Plugin vs core** (see :func:`_core_numpy_spec`): core is in every
        process -- including any isolated worker -- so a plugin whose numpy

@@ -19,8 +19,9 @@ This module defines the streaming event model and session machinery:
   Authors implement the async ``_open`` / ``_produce`` / ``_close`` hooks; the
   base provides ``feed`` vs manual ``send_audio`` / ``end_audio`` single
   ownership, bounded backpressure-aware iteration, lifecycle enforcement, a
-  bounded rolling audio buffer + reconnect scaffolding, an overall idle/wall
-  termination deadline, and result reduction.
+  bounded rolling audio buffer + reconnect scaffolding, three termination
+  deadlines (a pipeline-inactivity backstop plus opt-in idle and wall-clock
+  caps), and result reduction.
 * :class:`SyncSession` -- the standard sync bridge (one background event loop in
   a thread, owned by the session), so authors only ever write async. Lifecycle
   submits carry a timeout so a hanging engine can never deadlock the caller.
@@ -566,8 +567,9 @@ class TranscriptionEvent(BaseModel):
             A ``supersede`` event.
 
         Raises:
-            ValueError: If ``old_ids`` and ``new_ids`` intersect, or if either
-                ``old_ids`` or ``new_ids`` repeats a segment id.
+            ValueError: If ``old_ids`` is empty (a supersede MUST retire at
+                least one segment), if ``old_ids`` and ``new_ids`` intersect,
+                or if either list repeats a segment id.
         """
         if len(set(old_ids)) != len(old_ids):
             raise ValueError(
@@ -1185,8 +1187,9 @@ class _CoalescingBuffer:
     carried forward into the survivor when the survivor left them ``None``
     (semantic carry-forward).
 
-    The buffer is **bounded**: at most ``capacity`` non-coalesced events may be
-    pending. Coalesced partials reuse their existing slot and never grow the
+    The buffer bounds the **backpressure-eligible** events: at most ``capacity``
+    of them may be pending; the drop-proof kinds below bypass the bound.
+    Coalesced partials reuse their existing slot and never grow the
     buffer. A NEW partial slot (a not-yet-pending segment) or a ``progress``
     event may push past ``capacity`` and raise :class:`EventBufferOverflow`,
     which the producer turns into a terminal ``backpressure`` error. ``final`` /
@@ -1200,7 +1203,7 @@ class _CoalescingBuffer:
         """Initialize the buffer.
 
         Args:
-            capacity: Maximum number of pending non-coalesced events.
+            capacity: Maximum number of pending backpressure-eligible events.
         """
         self._capacity = capacity
         # deque of (event, alive) where alive=False marks a coalesced partial
@@ -1358,11 +1361,12 @@ class _CoalescingBuffer:
 
         Two kinds of event take this path. Terminal events (``done`` / ``error``)
         MUST never be dropped, even when the buffer overflowed because the
-        consumer was slow. The reconnect pair a session announces through
+        consumer was slow. The reconnect events a session announces through
         :meth:`note_reconnect` -- a ``progress(reconnect=True)`` and, when the
-        engine reported it, a recoverable ``content_lost`` error -- must not be
-        dropped either, because they tell the consumer that the transcript has a
-        gap.
+        engine determined that unreplayable audio was lost, a recoverable
+        ``content_lost`` error -- must not be dropped either: they announce the
+        connection gap and, in the loss case, a transcript gap no later event
+        can reveal.
 
         Both are few (one terminal per session; a bounded pair per reconnect), so
         bypassing the bound is safe, and -- crucially -- they go into the *same*
@@ -2395,7 +2399,7 @@ class TranscriptionSession(ABC):
         Called by the base ``start_transcription`` template after the engine
         constructed the session, so the application's explicitly-set fields win
         over the engine's construction-time choices without relying on every
-        adapter to forward them (a forwarding obligation could be silently
+        engine to forward them (a forwarding obligation could be silently
         missed). Only fields the application explicitly set are applied.
 
         Args:
@@ -3017,9 +3021,11 @@ class TranscriptionSession(ABC):
         * ``max_session_seconds`` -- absolute wall-clock cap; opt-in.
 
         Termination guarantee: once input has ended (or the application stops
-        feeding), a terminal event is synthesized within ``done_timeout`` of
-        the last pipeline activity -- unless the application explicitly
-        disabled every deadline.
+        feeding), a terminal event is synthesized within the tightest enabled
+        deadline. The idle and wall-clock deadlines are disabled by default, so
+        the guarantee normally rests on ``done_timeout``: when it is disabled
+        too (by the application's override or the session's construction) and
+        no other deadline is enabled, no terminal is guaranteed.
 
         Yields:
             Events until a terminal event or a deadline fires.
@@ -3288,8 +3294,11 @@ class SyncSession:
 
     Lifecycle submits (``__enter__`` / input calls / ``__exit__``) carry a
     timeout: a hanging engine ``_open`` / ``_close`` can never deadlock the
-    calling thread, and the background loop + thread are always torn down even on
-    timeout (from an external thread, no deadlock, no leak).
+    calling thread, and on every cooperative path the background loop + thread
+    are torn down even on timeout (from an external thread, no deadlock). A
+    truly blocking, non-awaiting engine can survive the join and leave the
+    daemon thread alive with the loop unclosed -- see :meth:`_shutdown`; the
+    sync-bridge compliance check reports that state as a thread leak.
     """
 
     def __init__(
@@ -3437,7 +3446,7 @@ class SyncSession:
                 self._shutdown()
 
     def __exit__(self, *exc: object) -> None:
-        """Exit the async context and stop the owned loop (never leaks)."""
+        """Exit the async context and stop the owned loop."""
         if self._closed:
             # A prior lifecycle call timed out and already tore the loop down;
             # nothing is left that could run __aexit__. Returning here lets the
@@ -3642,7 +3651,7 @@ class SyncSession:
 
         The bridge starts a dedicated event-loop thread in ``__init__`` and MUST
         tear it down on close (``__exit__``) or on a failed ``__enter__`` (from
-        an external thread, no leak). After a clean lifecycle this
+        an external thread). After a clean lifecycle this
         returns ``False``; a ``True`` here once the session is closed is a leaked
         loop thread. Exposed so the sync-bridge compliance check can assert on
         *this* bridge's own thread rather than diffing the whole process thread

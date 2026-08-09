@@ -32,8 +32,9 @@ Dependencies and fallbacks:
 Decoding and resampling are independent fallbacks. A missing `scipy` only
 affects resampling quality -- the built-in numpy anti-aliasing fallback keeps
 resampling working, so the loader never falls back to FFmpeg merely
-because `scipy` is absent. FFmpeg is reached only when neither stdlib `wave` nor
-`soundfile` can decode the container.
+because `scipy` is absent. FFmpeg is reached only when the earlier decoders in
+the path's ladder cannot decode the container (stdlib `wave` is tried for file
+paths only; bytes go `soundfile` then FFmpeg).
 
 All functions emit clear exceptions with actionable messages and log helpful
 warnings when quality-affecting fallbacks are used.
@@ -83,8 +84,10 @@ def decode_base64_audio(value: str) -> bytes:
     """Decode a base64 audio payload, optionally wrapped in a ``data:`` URI.
 
     Single source of truth for the ``data:``-URI/base64 parse rules, shared by
-    the convenience loaders, :func:`decode_audio`, and the conversion layer so
-    every entry point accepts and rejects exactly the same forms.
+    the convenience loaders, :func:`decode_audio_from_data_uri`, and the
+    conversion layer so every entry point that parses base64 accepts and
+    rejects exactly the same forms. (:func:`decode_audio` never parses base64:
+    a bare ``str`` there is always a file path, by its no-sniffing contract.)
 
     Rules:
 
@@ -1663,10 +1666,12 @@ def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> i
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        Number of channels, or ``None`` if ffprobe unavailable or detection failed.
+        Number of channels, or ``None`` if ffprobe is unavailable, detection
+        failed, or a string source is not a readable local file (string
+        sources are forwarded verbatim; callers validate them first).
 
     Raises:
-        AudioProcessingError: If a string source is not a valid local file.
+        None.
     """
     return _probe_stream_entry(source, "channels", timeout)
 
@@ -1679,10 +1684,11 @@ def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        Native sample rate in Hz, or ``None`` if ffprobe unavailable or detection
-        failed.
+        Native sample rate in Hz, or ``None`` if ffprobe is unavailable,
+        detection failed, or a string source is not a readable local file
+        (string sources are forwarded verbatim; callers validate them first).
 
     Raises:
-        AudioProcessingError: If a string source is not a valid local file.
+        None.
     """
     return _probe_stream_entry(source, "sample_rate", timeout)

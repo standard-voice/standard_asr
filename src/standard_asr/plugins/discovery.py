@@ -661,7 +661,7 @@ class ModelRegistry:
             logger.warning(
                 "Creating model %r whose engine_id %r is provided by more than one "
                 "distribution; config.engine routing is ambiguous. Install only one "
-                "provider for this engine_id.",
+                "distribution that provides this engine_id.",
                 name,
                 engine_id,
             )

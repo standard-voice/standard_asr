@@ -30,8 +30,9 @@ def test_allow_downloads_unrecognized_value_warns_and_disables(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # A non-affirmative typo (e.g. ``on``) must fail closed to disabled
-    # AND log once -- the engine that later raises DiscoveryError only sees the
-    # boolean, so without this diagnostic the operator cannot trace the cause.
+    # AND log a warning on the read -- the engine that later raises
+    # DiscoveryError only sees the boolean, so without the logged explanation
+    # the operator cannot trace the cause.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "on")
     caplog.set_level("WARNING")
     assert allow_downloads() is False

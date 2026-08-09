@@ -1147,9 +1147,9 @@ def test_progress_heartbeats_also_trigger_backpressure() -> None:
     # A progress heartbeat takes the bounded path, exactly like a new partial
     # slot: put() special-cases partial (coalesce) and final/supersede/error/done
     # (drop-proof), then falls through to _reserve() for everything else. The
-    # spec has engines emit periodic progress during long silent work, so an
-    # engine that emits ONLY progress can still overflow a slow consumer's
-    # buffer -- the class docstring once claimed only partials could.
+    # spec lets (and during long silent work encourages) engines emit periodic
+    # progress, so an engine that emits ONLY progress can still overflow a slow
+    # consumer's buffer -- the class docstring once claimed only partials could.
     class _ProgressFloodSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             for _ in range(50):

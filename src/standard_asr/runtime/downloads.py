@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # The download-policy contract: the literal values that enable / disable
 # downloads. Anything else (including an empty string) is an unrecognized value
-# and falls back to disabled (fail-closed) with a one-line diagnostic.
+# and falls back to disabled (fail-closed) with a one-line log warning.
 _DOWNLOAD_ENABLE_VALUES = frozenset({"1", "true", "yes"})
 _DOWNLOAD_DISABLE_VALUES = frozenset({"0", "false", "no"})
 
@@ -51,8 +51,8 @@ def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
     Because the engine that later raises ``DiscoveryError`` cannot see that the
     toggle held an unrecognized value (it only sees this boolean), an
     unrecognized non-disable value is logged here on every read so the operator can trace
-    a surprising "downloads disabled" back to the real cause -- the explicit
-    diagnostic the philosophy requires instead of a silent degrade.
+    a surprising "downloads disabled" back to the real cause -- the explicit,
+    logged explanation the philosophy requires instead of a silent degrade.
 
     Note the empty-string asymmetry with :func:`_env_override` (used by the cache
     helpers) is deliberate: for a path override an empty value is *meaningless*

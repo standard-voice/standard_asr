@@ -389,7 +389,8 @@ class WordTimestampsCap(_FlagLikeNode):
     requested granularity is offered, and silently honoring an unlisted one is
     the cardinal sin. Requiring explicit enumeration makes the "supported but
     unenumerated" state unrepresentable, so gating always validates against a
-    real set. When ``supported=False`` the list stays empty (irrelevant).
+    real set. When ``supported=False`` the list is ignored (it defaults to
+    empty and carries no meaning).
 
     Attributes:
         supported: Whether word timestamps are supported.
@@ -848,9 +849,11 @@ class DeclaredCapabilities(_Container):
     def iter_supported_paths(self) -> Iterator[str]:
         """Yield every dot-path in the tree whose node is supported.
 
-        Only the children of a *supported* node are descended into, so an
+        Only the children of a *supported* typed node are descended into, so an
         unsupported feature's constraint sub-containers (which are always
-        present, never ``None``) do not appear. Used to verify the
+        present, never ``None``) do not appear. A raw ``x_*`` dict subtree is
+        walked unconditionally (see :meth:`_iter_paths`) so nested explicit
+        vendor capabilities stay discoverable. Used to verify the
         ``effective ⊆ declared`` invariant.
 
         Yields:

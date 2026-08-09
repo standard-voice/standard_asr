@@ -39,9 +39,11 @@ from standard_asr.contract.exceptions import IncompatibleAudioInputError
 class UnsafeAudioUrlError(IncompatibleAudioInputError):
     """An ``AudioUrl`` failed the SSRF security policy and MUST NOT be forwarded.
 
-    Raised before a URL is handed to an engine when the URL is not HTTPS, or
-    resolves (in whole or in part) to a private / loopback / link-local address
-    -- the classic SSRF target set. Subclasses
+    Raised before a URL is handed to an engine when the URL fails the SSRF
+    policy: a malformed URL or port, a non-HTTPS scheme, a missing or
+    unresolvable host, or any resolved address (in whole or in part) that is
+    not globally routable -- private / loopback / link-local and their
+    relatives. Subclasses
     :class:`~standard_asr.contract.exceptions.IncompatibleAudioInputError` so existing
     audio-input error handling catches it, while remaining distinguishable.
 
@@ -502,8 +504,9 @@ def _bytes_only_file_hint(accepted: frozenset[InputKind]) -> str:
     if InputKind.ENCODED_FILE in accepted:
         return (
             "This engine accepts only files on disk (encoded_file), not in-memory "
-            "bytes; the standard will not write a temporary file (SSRF/TOCTOU "
-            "safety). Pass the audio as AudioPath to a real local file."
+            "bytes; the standard will not write a temporary file (temp files "
+            "risk leaks, read-only-filesystem failures, and TOCTOU races). "
+            "Pass the audio as AudioPath to a real local file."
         )
     # Only remote kinds remain; AudioPath would be an equally dead end.
     return _remote_only_hint(accepted)

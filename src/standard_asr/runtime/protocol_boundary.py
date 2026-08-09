@@ -421,8 +421,9 @@ def require_sync_result(
             check only synchronicity.
 
     Raises:
-        EngineContractError: If the value is an awaitable or (when
-            ``expected_type`` is given) not an instance of the pinned type.
+        EngineContractError: If the value is an awaitable, (when
+            ``expected_type`` is given) not an instance of the pinned type, or
+            unclassifiable because its type metadata raised during inspection.
             The message names the member and type names only -- never the
             value itself.
     """

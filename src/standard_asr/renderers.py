@@ -491,6 +491,8 @@ def to_srt(
     Raises:
         SubtitleRenderingError: Under the default ``"error"`` policy, when any
             segment cannot render as a visible cue.
+        ValueError: If ``on_unrenderable`` is not one of the three policies
+            (see :func:`_cues`).
     """
     blocks: list[str] = []
     index = 1
@@ -567,7 +569,9 @@ def to_vtt(
 
     Raises:
         SubtitleRenderingError: Under the default ``"error"`` policy, when any
-            segment lacks a measured span.
+            segment cannot render as a visible cue.
+        ValueError: If ``on_unrenderable`` is not one of the three policies
+            (see :func:`_cues`).
     """
     blocks: list[str] = ["WEBVTT"]
     for cue in _cues(result, on_unrenderable=on_unrenderable):

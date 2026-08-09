@@ -1697,8 +1697,8 @@ def main(argv: list[str] | None = None) -> int:
 def _debug_traceback(args: argparse.Namespace) -> None:
     """Emit a stack trace to stderr when ``--debug`` is set.
 
-    ``--debug`` is documented as emitting "stack traces for unexpected
-    errors", but the trace was previously printed only in the final
+    ``--debug`` promises a stack trace on any error path, but the trace was
+    previously printed only in the final
     ``except Exception`` branch, so an error caught by a named branch (e.g. an
     engine-internal failure surfacing as a ``ValueError`` from ``_transcribe``)
     had no trace even with ``--debug``. Routing every branch through

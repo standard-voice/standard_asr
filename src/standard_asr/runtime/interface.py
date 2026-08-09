@@ -1031,7 +1031,9 @@ class EngineBase(ABC):
             EngineContractError: If :meth:`transcribe` (overridden by the
                 subclass) violated the synchronous protocol contract --
                 returned an awaitable (``async def``) or a value that is not
-                a :class:`~standard_asr.contract.results.TranscriptionResult`.
+                a :class:`~standard_asr.contract.results.TranscriptionResult`
+                -- or propagated a declaration defect from :meth:`transcribe`
+                (a missing IC.6 default, a malformed declared tag).
             Exception: The same exception set as :meth:`transcribe` (it runs that
                 method): ``ConfigError``, ``IncompatibleAudioInputError``,
                 ``UnsafeAudioUrlError``, ``AudioProcessingError``,
