@@ -3400,21 +3400,23 @@ class SyncSession:
             The coroutine's result.
 
         Raises:
-            StreamClosedError: If the bridge was already torn down (a prior
-                lifecycle call timed out); the coroutine cannot run anymore.
+            StreamClosedError: If the bridge was already torn down (its
+                ``with`` block exited, or a prior lifecycle call timed out);
+                the coroutine cannot run anymore.
             TimeoutError: If the coroutine does not complete within ``timeout``.
                 The background loop + thread are torn down before raising.
         """
         if self._closed:
-            # The owned loop is already stopped/closed (a prior submit timed
-            # out). Submitting would raise an unrelated RuntimeError("Event
-            # loop is closed") and leave the coroutine un-awaited (a
-            # RuntimeWarning under -W error). Close it and fail with the
-            # contracted error instead.
+            # The owned loop is already stopped/closed (normal exit, or a
+            # prior submit timed out). Submitting would raise an unrelated
+            # RuntimeError("Event loop is closed") and leave the coroutine
+            # un-awaited (a RuntimeWarning under -W error). Close it and fail
+            # with the contracted error instead.
             coro.close()
             raise StreamClosedError(
-                "SyncSession is already torn down (a prior lifecycle call "
-                "timed out and closed the bridge loop); this call cannot run."
+                "SyncSession is already torn down (its 'with' block exited, "
+                "or a prior lifecycle call timed out and closed the bridge "
+                "loop); this call cannot run."
             )
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
@@ -3557,8 +3559,9 @@ class SyncSession:
         while True:
             if self._closed:
                 raise StreamClosedError(
-                    "SyncSession is already torn down (a prior lifecycle call "
-                    "timed out and closed the bridge loop); cannot pump events."
+                    "SyncSession is already torn down (its 'with' block "
+                    "exited, or a prior lifecycle call timed out and closed "
+                    "the bridge loop); cannot pump events."
                 )
             # The session's __aiter__ is an async generator, so __anext__ IS a
             # coroutine; the AsyncIterator protocol only promises Awaitable.
