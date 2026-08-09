@@ -38,13 +38,16 @@ This standard governs English **prose**:
 - docstrings (module, class, function, attribute), in `src/` and in `tests/`;
 - user-facing runtime strings (see the tier test below);
 - English Markdown under `docs/`, published or not (`docs/legacy/` is
-  historical and exempt);
+  historical and `docs/feat_plan/` holds working feature plans; both are
+  exempt, like `work/`);
 - English Markdown at the repository root: `README.md`, `CONTRIBUTING.md`,
   `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`. Working notes
   under `work/` are exempt;
 - internal `#` comments (clarity tier only — see below);
 - test prose: docstrings, comments, and assertion labels in `tests/`;
-- new `CHANGELOG.md` entries from now on.
+- new `CHANGELOG.md` entries from now on (by review: the mechanical gate
+  cannot separate a new entry from the pre-standard history, so
+  `CHANGELOG.md` stays outside `scripts/vale.sh`).
 
 `README.md`, `docs/index.md`, and the `AGENTS.md` preamble are the project's
 front door. They are governed for **accuracy and terminology** like everything
@@ -60,8 +63,8 @@ This standard does **not** govern, and must never change:
   library name (write "the task is canceled" in prose; keep the symbol
   `CancelledError`).
 - **Chinese documents** — `docs/spec/specification.md` (the normative spec),
-  `docs/design-notes/`, `docs/research/`, `docs/work_doc/`, and other Chinese
-  files. Do not translate or edit them. Read `docs/spec/specification.md` as
+  `docs/design-notes/`, `docs/research/`, `docs/work_doc/`, `docs/misc.md`,
+  and other Chinese files. Do not translate or edit them. Read `docs/spec/specification.md` as
   the source of truth; the other Chinese documents are background context,
   ranked by the authority order in "Fact-check every meaning change" below.
 - **reStructuredText roles and code spans** — `:class:`, `:func:`, `:meth:`,
@@ -108,9 +111,16 @@ docstring **summary line** is never exempt.
 ## Deltas from the Google guide
 
 Each delta below overrides the baseline. The mechanically checkable ones map
-one-to-one to Google rules disabled in `.vale.ini`; do not re-enable a rule
-there without deleting its delta here, and do not add a delta here without
-tuning Vale to match.
+one-to-one to Google rules disabled in `.vale.ini`; do not re-enable such a
+rule there without deleting its delta here, and do not add a delta here
+without tuning Vale to match. `.vale.ini` also carries a second kind of
+disable that is NOT a style delta and is documented inline there instead:
+mechanical adaptations of the checker itself — document-shaped rules turned
+off for docstrings (`Google.Headings`, `Google.HeadingPunctuation`),
+extraction artifacts (`Vale.Repetition`, `Google.DateFormat`), the
+`Vale.Spelling` replacement (`StandardASR.Spelling`), and doctest syntax read
+as prose (`Google.Ellipses` for `plugins/discovery.py`). Those change how the
+tool reads the text, never what good prose is.
 
 ### Additions the baseline does not have
 
@@ -213,7 +223,9 @@ tuning Vale to match.
   that bracket the code under assertion (`# The invalid name was reported...`
   above it, `# ...and the valid engine's checks still ran` below), keeping
   each claim attached to the exact line it verifies. (Vale: `Google.Ellipses`
-  off in `tests/`; elided code in any comment still belongs in a code span.)
+  off in `tests/`; elided code in any comment still belongs in a code span.
+  The same rule is off for `plugins/discovery.py`, whose doctest `...` lines
+  are tier-1 verbatim syntax that Vale's docstring view reads as prose.)
 - **Numbered section headings.** Spec pages and step-by-step guides number
   their headings ("## 3. REST endpoints"); the number is a stable
   cross-reference anchor (§3, §4.2). (Vale: `Google.HeadingPunctuation` off
@@ -281,9 +293,14 @@ Three layers, weakest claim first:
 - **`scripts/vale.sh`** lints the prose itself — Markdown plus the comments
   and docstrings in `src/` and `tests/` — against the vendored Google package
   and the `StandardASR` style (the mechanizable subset of `TERMINOLOGY.md`).
-  CI gates on errors (`scripts/vale.sh --gate`); the full run, warnings and
-  suggestions included, is kept at zero — leave it that way. Two detector
-  gaps are accepted rather than worked around: the serial comma is required
+  The full run, warnings and suggestions included, is kept at zero, and the
+  CI gate enforces exactly that: `scripts/vale.sh --gate` fails on any alert
+  at any level, and `scripts/vale.sh --selfcheck` proves the extraction still
+  sees the surfaces the gate claims to cover. Two extraction gaps are known
+  and disclosed: Vale skips a module docstring that follows the SPDX header,
+  and it never reads Python string literals — so module docstrings and tier-3
+  runtime strings are enforced by review (both were swept manually when the
+  gate landed). Two detector gaps are accepted rather than worked around: the serial comma is required
   (the baseline agrees), but `Google.OxfordComma` is off because its pattern
   cannot tell a two-item pair or an appositive from a list; and
   `Google.Spacing` is off for Python files because a dotted exception name in
@@ -305,5 +322,4 @@ Three layers, weakest claim first:
 - Every claim about the code was checked against the code, not remembered.
 - Code spans, roles, and identifiers are unchanged.
 - `uv run ruff check` passes (pydocstyle included).
-- `scripts/vale.sh --gate` passes; you looked at what `scripts/vale.sh` says
-  about the files you touched.
+- `scripts/vale.sh --gate` passes (it fails on any alert at any level).

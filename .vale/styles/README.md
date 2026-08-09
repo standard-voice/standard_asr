@@ -1,9 +1,12 @@
 # Vale styles
 
 - `Google/` — the [errata-ai/Google](https://github.com/errata-ai/Google)
-  package (v0.7.1, MIT license): a Vale implementation of the
-  [Google developer documentation style guide](https://developers.google.com/style/)
-  (guide text CC BY 4.0). Vendored, not fetched at run time, so CI needs no
+  package (v0.7.1; MIT license, Copyright (c) 2018 - 2019 Joseph Kato — full
+  text in `Google/LICENSE`, attribution recorded in the repository `NOTICE`):
+  a Vale implementation of the
+  [Google developer documentation style guide](https://developers.google.com/style/),
+  whose guide text is CC BY 4.0 and is the source the rule messages derive
+  from. Vendored, not fetched at run time, so CI needs no
   network and the ruleset cannot drift under us. To upgrade: `vale sync` with
   `Packages = Google`, diff, and record the new version here. Do not edit the
   vendored files; tune rules from `.vale.ini`.

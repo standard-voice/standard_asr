@@ -80,8 +80,8 @@ and the repo's own terminology rules (`.vale.ini`, `.vale/styles/`). Run it
 through the wrapper, which owns the lint targets and exemptions:
 
 ```sh
-scripts/vale.sh          # the full run: warnings and suggestions too (keep at zero)
-scripts/vale.sh --gate   # what CI enforces: errors only
+scripts/vale.sh          # human view: pretty output, all levels (keep at zero)
+scripts/vale.sh --gate   # what CI enforces: fails on any alert at any level
 ```
 
 Like `actionlint`, Vale is not a Python dependency: CI downloads a pinned

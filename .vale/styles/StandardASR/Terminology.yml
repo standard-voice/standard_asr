@@ -5,8 +5,11 @@ level: error
 ignorecase: true
 action:
   name: replace
+# Only synonyms that are wrong in EVERY sense belong here: a substitution
+# cannot read context, and its quick-fix must never invert a sentence.
+# TERMINOLOGY.md also forbids calling the reference server a "web server",
+# but the bare phrase has a legitimate generic sense ("behind a web server
+# such as nginx"), so that half of the entry stays with review.
 swap:
   'Web API server': reference server
-  'web server': reference server
-  'knobs?': options
   'fail-?safe': fail-closed

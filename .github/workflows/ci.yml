@@ -233,9 +233,11 @@ jobs:
 
   vale:
     # Prose gate: Vale with the vendored Google baseline plus the StandardASR
-    # style (.vale.ini; the mechanizable subset of TERMINOLOGY.md). Gates on
-    # errors only -- warnings are the local backlog (`scripts/vale.sh`). Same
-    # pinned-binary-plus-digest pattern as actionlint.
+    # style (.vale.ini; the mechanizable subset of TERMINOLOGY.md). Fails on
+    # ANY alert at ANY level -- STYLE.md's "Enforcement" keeps the full run at
+    # zero. The selfcheck first proves extraction still covers the surfaces
+    # the gate claims (a green gate over a silently shrunken corpus is worse
+    # than no gate). Same pinned-binary-plus-digest pattern as actionlint.
     name: Run Vale (prose)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -254,7 +256,9 @@ jobs:
           echo "${VALE_SHA256}  ${archive}" | sha256sum -c -
           mkdir -p .tools/vale
           tar -xzf "${archive}" -C .tools/vale vale
-      - name: Run Vale (errors gate)
+      - name: Vale selfcheck (extraction coverage)
+        run: VALE=.tools/vale/vale scripts/vale.sh --selfcheck
+      - name: Run Vale (zero-alert gate)
         run: VALE=.tools/vale/vale scripts/vale.sh --gate
 
   coverage:

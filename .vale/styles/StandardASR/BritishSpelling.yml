@@ -5,32 +5,33 @@ level: error
 ignorecase: true
 action:
   name: replace
+# Each key captures the inflection and the replacement carries it ($1), so
+# the message and the editor quick-fix preserve tense and number
+# ("normalising" -> "normalizing", never "normalize").
 swap:
-  'behaviours?': behavior
-  'normalis(?:e|es|ed|ing|ation)': normalize
-  'initialis(?:e|es|ed|ing|ation)': initialize
-  'serialis(?:e|es|ed|ing|ation)': serialize
-  'canonicalis(?:e|es|ed|ing|ation)': canonicalize
-  'optimis(?:e|es|ed|ing|ation)': optimize
-  'organis(?:e|es|ed|ing|ation)': organize
-  'recognis(?:e|es|ed|ing|able)': recognize
-  'synchronis(?:e|es|ed|ing|ation)': synchronize
-  'analys(?:e|es|ed|ing)': analyze
-  'colours?': color
-  'cancell(?:ed|ing)': canceled
-  'labell(?:ed|ing)': labeled
+  'behaviour(s?)': 'behavior$1'
+  'normalis(e|es|ed|ing|ation)': 'normaliz$1'
+  'initialis(e|es|ed|ing|ation)': 'initializ$1'
+  'serialis(e|es|ed|ing|ation)': 'serializ$1'
+  'canonicalis(e|es|ed|ing|ation)': 'canonicaliz$1'
+  'optimis(e|es|ed|ing|ation)': 'optimiz$1'
+  'organis(e|es|ed|ing|ation)': 'organiz$1'
+  'recognis(e|es|ed|ing|able)': 'recogniz$1'
+  'synchronis(e|es|ed|ing|ation)': 'synchroniz$1'
+  'analys(e|es|ed|ing)': 'analyz$1'
+  'colour(s?)': 'color$1'
+  'cancell(ed|ing)': 'cancel$1'
+  'labell(ed|ing)': 'label$1'
   'unlabelled': unlabeled
-  'signall(?:ed|ing)': signaled
-  'modell(?:ed|ing)': modeled
-  'travell(?:ed|ing)': traveled
-  'honours?': honor
-  'honoured': honored
-  'honouring': honoring
-  'licence': license
-  'artefacts?': artifact
-  'catalogues?': catalog
+  'signall(ed|ing)': 'signal$1'
+  'modell(ed|ing)': 'model$1'
+  'travell(ed|ing)': 'travel$1'
+  'honour(s|ed|ing)?': 'honor$1'
+  'licence(s?)': 'license$1'
+  'artefact(s?)': 'artifact$1'
+  'catalogue(s?)': 'catalog$1'
   'whilst': while
   'grey': gray
-  'favours?': favor
-  'fulfils?\b': fulfill
-  'analogues?': analog
+  'favour(s|ed|ing)?': 'favor$1'
+  'fulfil(s?)\b': 'fulfill$1'
+  'analogue(s?)': 'analog$1'
