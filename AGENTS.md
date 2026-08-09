@@ -42,7 +42,8 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 - `ruff` rule `NPY201` enabled. CI tests against numpy 1.26 AND latest 2.x.
 - Google-style docstrings (English): summary, args, returns, raises.
 - English for all code, comments, logs. `logging` module — no `print`.
-- Prose follows [`STYLE.md`](STYLE.md) (adapted ASD-STE100) and
+- Prose follows [`STYLE.md`](STYLE.md) (the Google developer documentation
+  style guide as the baseline, plus this repo's deltas) and
   [`TERMINOLOGY.md`](TERMINOLOGY.md) (canonical terms, American spelling). **Read
   both before you edit a docstring, a user-facing string, or a Markdown file.**
   Tier: text inside a role, a code span, a `::` literal block, a fenced code

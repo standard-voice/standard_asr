@@ -206,6 +206,7 @@
 (?i)param
 (?i)parametrizations
 (?i)params
+(?i)parentheticals?
 (?i)parseable
 (?i)parser
 (?i)passthrough

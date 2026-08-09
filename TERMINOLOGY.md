@@ -27,7 +27,7 @@ Use **American English** in all prose: `normalize`, `behavior`, `initialize`,
 
 One exception: never re-spell a verbatim identifier. A prose sentence that names
 the standard library exception `CancelledError` keeps that spelling, even though
-the same sentence writes the verb "canceled". See `STYLE.md`, resolution 4.
+the same sentence writes the verb "canceled". See `STYLE.md`, "Spelling".
 
 ## Core terms
 

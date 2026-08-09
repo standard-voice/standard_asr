@@ -3,24 +3,33 @@
 
 # Writing standard
 
-This file defines how to write English prose in Standard ASR. It adapts
-[ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/) for a
-software project. Every contributor and every AI agent that works in this
-repository must follow it. `AGENTS.md` points here; the term rules live in
-[`TERMINOLOGY.md`](TERMINOLOGY.md).
+This file defines how to write English prose in Standard ASR. The baseline is
+the [Google developer documentation style guide](https://developers.google.com/style/);
+this file holds the scope, the tier system, the repo's deltas from that guide,
+and the fact-check gate for meaning changes. Every contributor and every AI
+agent that works in this repository must follow it. `AGENTS.md` points here;
+the term rules live in [`TERMINOLOGY.md`](TERMINOLOGY.md).
+
+Precedence: where this file speaks, it wins; where it is silent, the Google
+guide applies; where both are silent, match the surrounding prose. Where any
+prose rule conflicts with a code fact (an identifier, a domain term, a
+cross-reference role), the code fact wins.
 
 The goal is one thing: a reader understands the behavior from the prose alone,
 with the least possible room for misunderstanding. Prose is part of the
 contract, so we hold it to the same rigor as the code.
 
-## Why an adapted standard
+## Why this baseline
 
-ASD-STE100 was built for aircraft maintenance manuals. Most of its rules improve
-software prose too: short sentences, active voice, one word for one meaning, no
-idioms. A few rules do not fit software, so this file states, for each rule
-area, whether we **keep**, **adapt**, or **drop** it. Where a rule conflicts
-with a code fact (an identifier, a domain term, a cross-reference role), the code
-fact wins.
+The Google guide is written for developer documentation — API references,
+code samples, error messages — so it answers the questions this repo actually
+has (headings, lists, code font, link text, UI text). It is public under
+CC BY 4.0, so agents can read the rule they are asked to follow. And it has a
+maintained [Vale](https://vale.sh) implementation, so most of it is enforced
+mechanically rather than by review (see "Enforcement" below). A few rules of
+ASD-STE100, the standard this repo adapted first, survive as deltas because
+they serve a contract-grade voice better than the baseline does; they are
+listed below, not implied.
 
 ## Scope: what this governs
 
@@ -96,62 +105,95 @@ states a contract obligation, a precedence rule, or an error-ownership boundary
 is exempt from the sentence-length cap; nuance beats brevity there. The
 docstring **summary line** is never exempt.
 
-## The rules
+## Deltas from the Google guide
 
-Each rule area below is marked **KEEP** (apply as written), **ADAPT** (apply the
-changed form), or **DROP** (does not apply here).
+Each delta below overrides the baseline. The mechanically checkable ones map
+one-to-one to Google rules disabled in `.vale.ini`; do not re-enable a rule
+there without deleting its delta here, and do not add a delta here without
+tuning Vale to match.
 
-| Area | Ruling for this repo |
-| --- | --- |
-| **One word, one meaning** | **ADAPT.** Use the approved term for each concept from `TERMINOLOGY.md`, and never a forbidden synonym. A few words carry more than one meaning in this domain (*model*, *frame*, *adapter*, *provider*); `TERMINOLOGY.md` names every sense in use. Use a listed sense, make the sense clear from the sentence, and never introduce a sense the table does not list. |
-| **Approved technical names** | **ADAPT.** The domain's `-ing` names are approved names, not banned gerunds: *streaming, gating, negotiation, diarization, resampling, coalescing, superseding*. Use them. |
-| **Noun clusters ≤ 3 words** | **ADAPT (soft cap).** Keep new noun clusters to three words. Hyphenate a multi-word modifier so it reads as one unit ("frozen-prefix boundary"). Established compound API terms are exempt. Never break an identifier to meet the count. |
-| **Verb tense** | **ADAPT.** Prefer the simple present and the imperative. Use the past tense for a past event. Avoid the perfect and progressive tenses where the simple tense is clear. |
-| **Active voice** | **KEEP.** Write active voice. Use passive voice only when the actor is genuinely the runtime and naming it adds nothing ("The request is rejected with 422."). |
-| **Sentence length** | **ADAPT / tier-split.** Keep a user-facing sentence short — about 20 words for an instruction, about 25 for a description. Keep the docstring **summary line** short. For the dropped limits, see "The two tiers". |
-| **Imperative for instructions** | **KEEP.** Write instructions and `hint=` fields as commands ("Install the server extra: `pip install 'standard-asr[server]'`."). An instruction must name an action the reader can actually take: if the library offers no way to do the thing, say what happens instead. |
-| **Articles** | **KEEP.** Use *a*, *an*, and *the* in prose. A telegraphic one-liner is allowed only where the convention omits them: an `argparse` `help=` string and a pydantic `Field(description=...)` ("List discovered models."). |
-| **No slang or idioms** | **KEEP, with a carve-out.** Remove idioms and figurative phrases. Keep only a term of art the codebase already defines. |
-| **Warnings and cautions** | **KEEP.** State the hazard first, then the action. Keep the `level`/`code`/`message` shape for diagnostics. |
-| **Punctuation and symbols** | **KEEP.** No emoji or pictographs in any shipped text, ever. Typographic and mathematical symbols (→, ⇒, ⊆, §, ±) are allowed in docs, docstrings, and comments, but **not** in a runtime string: a message can be logged to a console that is not UTF-8, so keep `raise`, `logger.*`, and wire text ASCII. The CLI's status markers are ASCII for this reason (`[OK]`, `[FAIL]`, `[WARN]`, `[INFO]`). Keep code spans and roles verbatim. |
-| **American spelling** | **KEEP.** See `TERMINOLOGY.md`. |
+### Additions the baseline does not have
 
-## Five tension resolutions
+- **One word, one meaning.** Use the approved term for each concept from
+  `TERMINOLOGY.md`, and never a forbidden synonym. A few words carry more than
+  one meaning in this domain (*model*, *frame*, *adapter*, *provider*);
+  `TERMINOLOGY.md` names every sense in use. Use a listed sense, make the
+  sense clear from the sentence, and never introduce a sense the table does
+  not list.
+- **Sentence-length targets.** Keep a user-facing sentence short — about 20
+  words for an instruction, about 25 for a description. Keep the docstring
+  **summary line** short. The dropped limits are in "The two tiers" above. (A
+  numbered target is retained from ASD-STE100 because an agent can act on a
+  number; "keep it short" alone drifts.)
+- **Hazard first.** A warning or caution states the hazard, then the action.
+  Keep the `level`/`code`/`message` shape for diagnostics.
+- **Actionable instructions.** Instructions and `hint=` fields are imperative
+  and must name an action the reader can actually take: if the library offers
+  no way to do the thing, say what happens instead.
+- **Articles in prose.** Use *a*, *an*, and *the*. A telegraphic one-liner is
+  allowed only where the convention omits them: an `argparse` `help=` string
+  and a pydantic `Field(description=...)` ("List discovered models.").
+- **Noun clusters.** Keep new noun clusters to three words (soft cap).
+  Hyphenate a multi-word modifier so it reads as one unit ("frozen-prefix
+  boundary"). Established compound API terms are exempt. Never break an
+  identifier to meet the count.
+- **ASCII runtime strings.** No emoji or pictographs in any shipped text,
+  ever. Typographic and mathematical symbols (→, ⇒, ⊆, §, ±) are allowed in
+  docs, docstrings, and comments, but **not** in a runtime string: a message
+  can be logged to a console that is not UTF-8, so keep `raise`, `logger.*`,
+  and wire text ASCII. The CLI's status markers are ASCII for this reason
+  (`[OK]`, `[FAIL]`, `[WARN]`, `[INFO]`).
+- **RFC-2119 keywords by audience.** Keep "MUST", "MUST NOT", "SHOULD", and
+  "MAY" uppercase when the sentence states a rule to an **engine author** (for
+  example, a streaming event-construction error, or a docstring that cites the
+  spec); the Google guide's lowercase "must" applies everywhere else. Soften
+  to a plain verb when the sentence answers an **application developer** who
+  made an ordinary call mistake ("candidate_languages MUST NOT contain 'auto'"
+  becomes "candidate_languages cannot contain 'auto'"). The rule: state a spec
+  obligation to the party who can break the spec; speak plainly to the party
+  who made a normal mistake. The audience is the party the **obligation
+  addresses**, not everyone who may read the sentence — a rendered docstring
+  has many readers, and its MUST still addresses the engine author. Where the
+  obligation addresses an **operator** or an **end user**, use a plain verb.
 
-These are the points where a strict reading of ASD-STE100 meets a software fact.
-Apply the resolution as written.
+### Divergences where this repo overrides the baseline
 
-1. **`-ing` domain terms are approved names.** ASD-STE100 restricts most `-ing`
-   words. Our subsystem names (streaming, gating, negotiation, diarization,
-   resampling, coalescing, superseding) are approved technical names. They are
-   module names and spec terms. Use them without hesitation.
+- **Spaced em dashes.** Write `word — word`, not `word—word`. House style
+  throughout. (Vale: `Google.EmDash` off.)
+- **Logical quoting.** Punctuation goes outside the closing quote when the
+  quoted text is an exact string, value, or message — which in this repo is
+  nearly always. Never move a period inside quotes at the cost of misquoting a
+  literal. (Vale: `Google.Quotes` off.)
+- **Passive voice for the runtime actor.** Write active voice; use passive
+  only when the actor is genuinely the runtime and naming it adds nothing
+  ("The request is rejected with 422."). (Vale: `Google.Passive` off.)
+- **Semicolons and parentheticals.** A semicolon may join tightly coupled
+  clauses, and a parenthetical may carry contract nuance. Prefer short
+  sentences first; do not delete nuance to satisfy a rhythm rule. (Vale:
+  `Google.Semicolons`, `Google.Parens` off.)
+- **Uncontracted verbs.** Prefer "is not" over "isn't" in reference and
+  contract prose; the baseline prefers contractions for warmth, which is not
+  this repo's register. Front-door surfaces may contract. (Vale:
+  `Google.Contractions` off.)
+- **No first-use acronym expansion for ubiquitous terms.** API, CLI, HTTP,
+  JSON, PCM, URL, WAV, and peers need no expansion; `TERMINOLOGY.md` and the
+  controlled code vocabularies govern domain terms. Expand a genuinely obscure
+  acronym on first use. (Vale: `Google.Acronyms` off.)
+- **Project voice.** "We" is allowed in the project-voice files (`README.md`,
+  `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, mission/goals/advisories);
+  reference prose addresses the reader as "you" and avoids "we". (Vale:
+  `Google.We` off for those files.)
+- **Approved `-ing` names.** The domain's `-ing` subsystem names — *streaming,
+  gating, negotiation, diarization, resampling, coalescing, superseding* — are
+  approved technical names. Use them without hesitation; never "fix" them.
 
-2. **Cross-reference roles and code spans are verbatim.** Never reflow, reword,
-   or re-case text inside a `:role:` or a `` `code span` ``. A rewrite works
-   around them, never through them.
+### Spelling
 
-3. **RFC-2119 keywords depend on the reader.** Keep "MUST", "MUST NOT", "SHOULD",
-   and "MAY" in uppercase when the sentence states a rule to an **engine
-   author** (for example, a streaming event-construction error, or a docstring
-   that cites the spec). Soften to a plain verb when the sentence answers an
-   **application developer** who made an ordinary call mistake (for example,
-   "candidate_languages MUST NOT contain 'auto'" becomes "candidate_languages
-   cannot contain 'auto'"). The rule: state a spec obligation to the party who
-   can break the spec; speak plainly to the party who made a normal mistake.
-   The audience is the party the **obligation addresses**, not everyone who may
-   read the sentence — a rendered docstring has many readers, and its MUST
-   still addresses the engine author. Where the obligation addresses an
-   **operator** or an **end user**, use a plain verb — an uppercase keyword
-   only helps a reader who can act on the spec.
-
-4. **A prose rule never changes an identifier.** American spelling and term
-   rules apply to prose only. The prose says "canceled"; the symbol stays
-   `CancelledError`. The prose says "normalize"; a third-party symbol keeps its
-   own spelling.
-
-5. **American spelling.** Use `normalize`, `behavior`, `initialize`,
-   `serialize`, `analyze`, `color`, and `canceled`/`canceling` in prose. The
-   only exception is a verbatim identifier (resolution 4).
+Use American spelling in prose: `normalize`, `behavior`, `initialize`,
+`serialize`, `analyze`, `color`, `canceled`/`canceling` (see `TERMINOLOGY.md`,
+"Spelling"). The only exception is a verbatim identifier: the prose says
+"canceled"; the symbol stays `CancelledError`. A third-party symbol keeps its
+own spelling.
 
 ## Fact-check every meaning change
 
@@ -161,8 +203,8 @@ rewritten message.
 A rewrite is allowed to change what a text means, and it should where the
 original is wrong, ambiguous, or misleading. Removing wrong or confusing copy is
 a goal of this standard, not a risk to avoid. (The modal verbs in this section
-are ordinary English, not RFC-2119 keywords; resolution 3 reserves the uppercase
-forms for that.)
+are ordinary English, not RFC-2119 keywords; the delta above reserves the
+uppercase forms for that.)
 
 A change that alters the conveyed meaning is allowed only when both gates below
 hold, and **you state both in the commit message**. A gate you cannot write down
@@ -198,6 +240,21 @@ enums, and the `Literal` sets) have a single source of truth in the code;
 excerpt, the two `level` scales, is quoted for contrast and moves with the
 code).
 
+## Enforcement
+
+Three layers, weakest claim first:
+
+- **`uv run ruff check`** enforces docstring structure (pydocstyle, Google
+  convention).
+- **`scripts/vale.sh`** lints the prose itself — Markdown plus the comments
+  and docstrings in `src/` and `tests/` — against the vendored Google package
+  and the `StandardASR` style (the mechanizable subset of `TERMINOLOGY.md`).
+  CI gates on errors (`scripts/vale.sh --gate`); warnings are the visible
+  backlog, burned down file by file.
+- **Review** carries everything a regex cannot see: the right actor, a claim
+  matching the code, the meaning-change gate above. Vale passing is not prose
+  passing.
+
 ## Checklist before you commit prose
 
 - Each concept uses its canonical term from `TERMINOLOGY.md`.
@@ -209,3 +266,5 @@ code).
 - Every claim about the code was checked against the code, not remembered.
 - Code spans, roles, and identifiers are unchanged.
 - `uv run ruff check` passes (pydocstyle included).
+- `scripts/vale.sh --gate` passes; you looked at what `scripts/vale.sh` says
+  about the files you touched.
