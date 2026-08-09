@@ -180,12 +180,44 @@ tuning Vale to match.
   controlled code vocabularies govern domain terms. Expand a genuinely obscure
   acronym on first use. (Vale: `Google.Acronyms` off.)
 - **Project voice.** "We" is allowed in the project-voice files (`README.md`,
-  `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, mission/goals/advisories);
-  reference prose addresses the reader as "you" and avoids "we". (Vale:
-  `Google.We` off for those files.)
+  `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, `docs/index.md`,
+  mission/goals/advisories); reference prose addresses the reader as "you"
+  and avoids "we". (Vale: `Google.We` off for those files.)
 - **Approved `-ing` names.** The domain's `-ing` subsystem names — *streaming,
   gating, negotiation, diarization, resampling, coalescing, superseding* — are
   approved technical names. Use them without hesitation; never "fix" them.
+- **Precise terms kept against the Google word list.** The project vocabulary
+  (`.vale/styles/config/vocabularies/StandardASR/accept.txt`) exempts words
+  the baseline's word list would rewrite but that are precise or canonical
+  here: *application* (protocol vocabulary; "app" is not), *file path*
+  (distinct from a URL path and a `data:` URI), *disable/disabled* (a
+  mechanical state), *abort*, *terminate*, and *kill* (three distinct failure
+  semantics; "stop" is weaker than any of them), *above* (a position in a
+  source file, or a numeric comparison), *touch* (the file-system sense),
+  *cloud* (product names and "cloud storage"), *best* and *guarantee*
+  ("best-effort" is canonical vocabulary; a stability guarantee is a protocol
+  commitment, not marketing), *latest* ("latest wins" is exact coalescing
+  semantics), and *sees*/*tells* (information-flow verbs for a code actor).
+  Marketing puffery stays banned — by review, not by word list.
+- **First person inside quotation marks.** A quoted first-person clause
+  voices a stakeholder's perspective ("my code drove the session
+  incorrectly", "use my own default cache") and is allowed; the
+  documentation's own voice stays second person. (Vale: `Google.FirstPerson`
+  off — its `i` token also misreads a loop index.)
+- **Capitals after label colons.** A run-in bold label (`**Pre-1.0:** Minor
+  releases may ...`), a goal ID (`G.1: Establish a ...`), and a stakeholder
+  lead-in (`**Plugin authors**: Learn how ...`) capitalize the first word
+  after the colon; a colon inside an ordinary sentence still introduces a
+  lowercase word, by review. (Vale: `Google.Colons` off.)
+- **Split test comments.** In `tests/`, one sentence may span two comments
+  that bracket the code under assertion (`# The invalid name was reported...`
+  above it, `# ...and the valid engine's checks still ran` below), keeping
+  each claim attached to the exact line it verifies. (Vale: `Google.Ellipses`
+  off in `tests/`; elided code in any comment still belongs in a code span.)
+- **Numbered section headings.** Spec pages and step-by-step guides number
+  their headings ("## 3. REST endpoints"); the number is a stable
+  cross-reference anchor (§3, §4.2). (Vale: `Google.HeadingPunctuation` off
+  for those files.)
 
 ### Spelling
 
@@ -249,9 +281,16 @@ Three layers, weakest claim first:
 - **`scripts/vale.sh`** lints the prose itself — Markdown plus the comments
   and docstrings in `src/` and `tests/` — against the vendored Google package
   and the `StandardASR` style (the mechanizable subset of `TERMINOLOGY.md`).
-  CI gates on errors (`scripts/vale.sh --gate`); warnings are the visible
-  backlog, burned down file by file.
-- **Review** carries everything a regex cannot see: the right actor, a claim
+  CI gates on errors (`scripts/vale.sh --gate`); the full run, warnings and
+  suggestions included, is kept at zero — leave it that way. Two detector
+  gaps are accepted rather than worked around: the serial comma is required
+  (the baseline agrees), but `Google.OxfordComma` is off because its pattern
+  cannot tell a two-item pair or an appositive from a list; and
+  `Google.Spacing` is off for Python files because a dotted exception name in
+  a Google-style `Raises:` key (`pydantic.ValidationError:`) is bare by
+  docstring convention and reads to the rule as a missing sentence space.
+  Review owns both.
+- **Review** carries everything a regular expression cannot see: the right actor, a claim
   matching the code, the meaning-change gate above. Vale passing is not prose
   passing.
 
