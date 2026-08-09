@@ -7,7 +7,7 @@
 (spec, section "Runtime Parameters"). It carries the v1 portable standard set
 (``language``, ``candidate_languages``, ``word_timestamps``, ``diarization``,
 and the ``guidance`` family ``prompt`` / ``phrase_hints``) plus a single typed
-escape hatch, ``provider_params``, for engine-specific parameters. ASR authors MUST NOT
+escape hatch, ``provider_params``, for engine-specific parameters. Engine authors MUST NOT
 add top-level fields (``extra="forbid"``); engine-specific parameters go through a
 :class:`ProviderParams` subclass.
 
@@ -256,7 +256,7 @@ class RuntimeParams(BaseModel):
         ``provider_params`` is typed ``ProviderParams | None``, so pydantic would
         otherwise coerce an empty mapping (``provider_params={}``) into a bare
         ``ProviderParams()`` instance -- which then reaches the gate and trips the
-        swap-safety check with a misleading ``"(swapped engine?)"`` message about
+        swap-safety check with a misleading swapped-engine message about
         a wrong-engine model, when the real mistake was passing a dict (or the
         base class) instead of the engine's concrete params subclass. The bare
         base carries no fields and is never a valid concrete params model, so it

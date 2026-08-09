@@ -134,7 +134,7 @@ _INFO = "[INFO]"
 _EPILOG = """\
 Examples:
   standard-asr list                                   # what engines/models are installed
-  standard-asr show faster-whisper/large-v3           # properties, capabilities, config schema
+  standard-asr show faster-whisper/large-v3           # identity, capabilities, config schema
   standard-asr transcribe faster-whisper/tiny a.wav   # transcribe an audio file
   standard-asr prepare faster-whisper/tiny            # pre-download / warm up weights
   standard-asr serve --port 8000                      # expose every engine over HTTP + WebSocket
@@ -198,7 +198,7 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
 
     show_parser = subparsers.add_parser(
         "show",
-        help="Show a model's properties, capabilities, and config schema.",
+        help="Show a model's identity, capabilities, and config schema.",
         allow_abbrev=False,
     )
     show_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
@@ -337,7 +337,7 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
             "meaningful together with --include-bridge (passing it alone is a "
             "usage error, not a silent no-op). Raise it for engines with slow "
             "session setup or teardown. This flag is how you act on the check's "
-            "'re-run with a larger value' advice."
+            "'re-run with a larger timeout' advice."
         ),
     )
     run_parser.set_defaults(func=_cmd_compliance_run)
@@ -427,7 +427,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Show stack traces for unexpected errors.",
+        help=(
+            "Show a stack trace on any error path (a validation error prints a "
+            "scrubbed summary instead)."
+        ),
     )
     # required=False so a bare `standard-asr` prints help instead of an argparse
     # "arguments are required" error; main() routes the no-command case to

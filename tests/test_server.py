@@ -2387,7 +2387,7 @@ def test_body_size_middleware_within_cap_streamed_passes_through() -> None:
 
 def test_transcribe_file_over_limit_without_content_length() -> None:
     # A chunked upload (no Content-Length) bypasses the early middleware guard;
-    # the handler still rejects the materialised oversize body with 413.
+    # the handler still rejects the materialized oversize body with 413.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 

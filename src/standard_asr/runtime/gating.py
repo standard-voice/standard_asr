@@ -718,7 +718,7 @@ def _check_provider_params(
     if type(provided) is not expected:
         raise InvalidProviderParamError(
             f"provider_params must be exactly {expected.__name__}, "
-            f"got {type(provided).__name__} (a swapped engine, or a subclass whose "
+            f"got {type(provided).__name__} (usually a swapped engine, or a subclass whose "
             f"extra fields would be silently ignored)."
         )
 

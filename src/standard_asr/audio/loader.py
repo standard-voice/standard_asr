@@ -800,8 +800,8 @@ def normalize_audio(
 
         - Stereo → Mono: arithmetic mean of channels.
         - Mono → Stereo: channel replication.
-        - Multi-channel downmix: truncates to first N channels (for better quality,
-          use FFmpeg path via ``load_audio``).
+        - Multi-channel downmix: takes the first N channels; it does not mix them.
+          Produce a true mix yourself if you need one.
 
         **Invalid values:** NaN/Inf are sanitized (NaN→0.0, ±Inf→±1.0) with a warning.
     """
@@ -854,15 +854,19 @@ def normalize_audio(
         else:
             # Note: For multi-to-multi downmixing (e.g., 6->2), this implementation performs a
             # simple channel selection/truncation instead of a perceptually accurate mix.
-            # For higher quality downmix, ensure FFmpeg is installed and prefer the FFmpeg path.
+            # There is no way to ask this function for a mixed result: the decode ladder is
+            # fixed (stdlib wave -> soundfile -> FFmpeg on decode failure), and by this point
+            # the caller already holds an in-memory array, so no decode step is left to
+            # redirect. A caller who needs a true mix must produce it before calling.
             if target_channels > current_channels:  # Upscale (e.g., mono to stereo)
                 reps = int(math.ceil(target_channels / current_channels))
                 processed_audio = np.tile(processed_audio, (1, reps))[:, :target_channels]
             else:  # Downmix by truncation
                 logger.warning(
                     "Downmixing from %d to %d channels by taking the first %d channels. "
-                    "This may lose information. For high-quality downmixing, use the "
-                    "FFmpeg backend.",
+                    "This may lose information: the built-in path selects channels, it "
+                    "does not mix them. Downmix the audio yourself before this call if "
+                    "you need a mixed result.",
                     current_channels,
                     target_channels,
                     target_channels,

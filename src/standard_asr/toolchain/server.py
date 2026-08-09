@@ -497,7 +497,7 @@ def create_app(
         """
         # The request-body cap is enforced at the ASGI boundary by
         # _BodySizeLimitMiddleware (Content-Length *and* actual bytes), so the
-        # uploaded ``file`` is already bounded by the time it materialises here.
+        # uploaded ``file`` is already bounded by the time it materializes here.
         try:
             parsed_options = json.loads(options) if options else None
         except Exception as exc:  # noqa: BLE001
@@ -546,7 +546,7 @@ def create_app(
         """
         # The request-body cap is enforced at the ASGI boundary by
         # _BodySizeLimitMiddleware (Content-Length *and* actual bytes), so the
-        # encoded ``audio`` is already bounded by the time it materialises here.
+        # encoded ``audio`` is already bounded by the time it materializes here.
         try:
             # `payload.options` is already a parsed object, so the only failure
             # here is params validation (bad value, unknown key, or a non-portable

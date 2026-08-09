@@ -73,7 +73,7 @@ def test_provider_params_rejects_bare_base_instance() -> None:
     # The bare ProviderParams base carries no fields and is never a
     # valid concrete params model. Passing a bare instance is refused at
     # construction (so it never reaches the gate with a misleading
-    # "swapped engine?" message about a wrong-engine model).
+    # swapped-engine message about a wrong-engine model).
     with pytest.raises(ValidationError, match="concrete ProviderParams subclass"):
         RuntimeParams(provider_params=ProviderParams())
 

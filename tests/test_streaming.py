@@ -2920,7 +2920,7 @@ def test_event_explicit_none_detected_language_passes() -> None:
 
 def test_error_event_unset_recoverable_defaults_to_terminal() -> None:
     # recoverable=None would be an undefined third state that is_terminal
-    # silently reads as "recoverable"; unknown recoverability must fail safe
+    # silently reads as "recoverable"; unknown recoverability must fail closed
     # to terminal.
     event = TranscriptionEvent(type="error", code="boom")
     assert event.recoverable is False

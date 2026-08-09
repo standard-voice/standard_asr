@@ -27,7 +27,7 @@ and exits **1** (the installation is broken; the caller's key was fine, so it is
 neither 0 nor 2).
 
 The declared capabilities are rendered as **canonical JSON** — the same
-serialization the REST `GET /v1/.../capabilities` endpoint returns, with a
+serialization the REST `GET /v1/capabilities/...` endpoint returns, with a
 derived `supported` boolean at every node. CLI and wire output can therefore be
 compared field-for-field (spec §C R6; the two layers share one capability model).
 If an engine mis-declares its `declared_capabilities` (e.g. as a raw dict), the

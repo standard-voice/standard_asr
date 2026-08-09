@@ -347,7 +347,7 @@ class TranscriptionEvent(BaseModel):
         ``recoverable=None`` on an error would be an undefined third state:
         :attr:`is_terminal` checks ``recoverable is False``, so ``None`` would
         silently read as "recoverable" and leave consumers waiting on a stream
-        that may never continue. Unknown recoverability MUST fail safe to
+        that may never continue. Unknown recoverability MUST fail closed to
         terminal (the :meth:`make_error` factory already defaults ``False``;
         this covers direct construction).
 

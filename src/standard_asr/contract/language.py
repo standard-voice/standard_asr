@@ -21,7 +21,7 @@ AUTO = "auto"
 #: compliance suite, the server, applications) match on it, so it MUST have a
 #: single source of truth exported as a module constant -- a consumer
 #: hard-coding the literal would silently match (or log) the wrong contract
-#: after a rename. This mirrors the ``DIAG_*`` convention ``param_gating``
+#: after a rename. This mirrors the ``DIAG_*`` convention ``runtime.gating``
 #: established for its codes; keep the two modules consistent.
 DIAG_CANDIDATE_LANGUAGES_IGNORED = "candidate_languages_ignored"
 DIAG_CANDIDATE_LANGUAGE_DROPPED = "candidate_language_dropped"
@@ -315,7 +315,7 @@ def effective_candidate_languages(
     deduped_seen: set[str] = set()
     for tag in chosen:
         # A malformed tag is an invalid *value*, not an unsupported feature, so
-        # -- like the scalar `language` validator (runtime_params.py) and the
+        # -- like the scalar `language` validator (params.py) and the
         # 'auto' guard below -- it ALWAYS raises, independent of strict/
         # best_effort. Validating here keeps a common mistake ('english' instead
         # of 'en') from being silently dropped or misreported as "not detectable".

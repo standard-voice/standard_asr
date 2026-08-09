@@ -221,7 +221,7 @@ frozen and will never change.
 | You are…                                 | You get…                                                                                                                                                                     |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **An application developer**             | One integration that works with every compliant engine; zero vendor lock-in; automatic discovery of whatever the user installs.                                              |
-| **An ASR engine developer / researcher** | Focus on the model, not boilerplate. Implement one interface and get a CLI, a Web API server, and a compliance test suite **for free**. Reach the whole ecosystem instantly. |
+| **An ASR engine developer / researcher** | Focus on the model, not boilerplate. Implement one interface and get a CLI, a reference server, and a compliance test suite **for free**. Reach the whole ecosystem instantly. |
 | **An end user**                          | Access to cutting-edge models sooner, and the freedom to pick the engine that fits your language or domain — not whatever the app author happened to choose.                 |
 
 ---
@@ -274,8 +274,8 @@ This is how Standard ASR stays a clean protocol layer instead of a dependency mo
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
 | **(core)** | The protocol itself: engine discovery, capability/properties negotiation, input/output validation, and the `standard-asr` CLI. Decodes basic `.wav` with the standard library — no extra install.                  | `numpy`, `pydantic`                                                                               |
 | **audio**  | **Battery-included audio loading.** Hand over almost any audio — MP3, FLAC, OGG, M4A, raw bytes, base64 — and still drive engines that only accept NumPy arrays. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` _(plus optional system **FFmpeg** on `PATH` for the widest format coverage)_ |
-| **server** | A **FastAPI server** exposing any compliant engine over HTTP (and WebSocket for streaming), so non-Python apps can use the ecosystem too.                                                                          | `fastapi`, `python-multipart`, `uvicorn`, `websockets`                                            |
-| **docs**   | Builds the documentation site. _(For maintainers/contributors.)_                                                                                                                                                   | `mkdocs-material`                                                                                 |
+| **server** | A **FastAPI server** exposing any compliant engine over HTTP (and WebSocket for streaming), so non-Python apps can use the ecosystem too.                                                                          | `fastapi`, `starlette`, `python-multipart`, `uvicorn`, `websockets`                                            |
+| **docs**   | Builds the documentation site. _(For maintainers/contributors.)_                                                                                                                                                   | `mkdocs-material`, `mkdocstrings[python]`                                                                                 |
 
 > [!NOTE]
 > **Why the `audio` extra matters.** Audio wrangling — formats, sample rates, channels — is one

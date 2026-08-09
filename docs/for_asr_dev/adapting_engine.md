@@ -5,7 +5,7 @@
 
 You implement **one** class. The standard layer gives you audio-input
 negotiation, conversion, resampling, parameter gating, diagnostics, the CLI, the
-web server, and the compliance suite — for free.
+reference server, and the compliance suite — for free.
 
 ## The contract
 
@@ -327,7 +327,7 @@ rolling-buffer eviction (a live ring is always evicting, so that would falsely
 claim loss on every long session); you decide, because only you know whether the
 replay actually bridged the gap.
 
-**`error` events fail safe to terminal.** An `error` event with `recoverable`
+**`error` events fail closed to terminal.** An `error` event with `recoverable`
 unset is normalized to `recoverable=false` (terminal) at construction: unknown
 recoverability must not leave consumers waiting on a stream that may never
 continue. If you emit an advisory, non-fatal error (the session keeps going),

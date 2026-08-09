@@ -144,7 +144,7 @@ def granularity_offers_all(granularities: Sequence[str]) -> bool:
     untyped JSON-sourced nodes.
 
     This is deliberately NOT shared with runtime parameter gating:
-    ``param_gating._gate_granularity`` does not call this function and takes the
+    ``runtime.gating._gate_granularity`` does not call this function and takes the
     opposite stance (a supported ``WordTimestampsCap`` *always* enumerates its
     granularities, so a requested value MUST be one of them -- no "empty => honor
     anything"). The two modules agree because that typed-validator invariant

@@ -29,7 +29,7 @@ def test_allow_downloads_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_allow_downloads_unrecognized_value_warns_and_disables(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # A non-affirmative typo (e.g. ``on``) must fail safe to disabled
+    # A non-affirmative typo (e.g. ``on``) must fail closed to disabled
     # AND log once -- the engine that later raises DiscoveryError only sees the
     # boolean, so without this diagnostic the operator cannot trace the cause.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "on")
@@ -42,7 +42,7 @@ def test_allow_downloads_empty_value_warns_and_disables(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # An empty string (a common ``VAR=`` docker-compose artifact) is
-    # an unrecognized value -> fail safe to disabled, with a diagnostic. This is
+    # an unrecognized value -> fail closed to disabled, with a diagnostic. This is
     # the deliberate empty-string asymmetry with the cache path override.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "")
     caplog.set_level("WARNING")

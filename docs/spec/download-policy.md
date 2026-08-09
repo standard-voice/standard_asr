@@ -13,15 +13,15 @@ model weights at runtime. The table below is the **contract**
 - `0`, `false`, `no` → downloads disabled
 - unset → **allowed by default** (recommended for local/dev)
 - any other value, **including an empty string** (e.g. a `VAR=` line in
-  docker-compose) → **disabled** (fail-safe: an unrecognized value must not
-  silently enable downloads). The unrecognized value is **logged once** at
+  docker-compose) → **disabled** (fail-closed: an unrecognized value must not
+  silently enable downloads). The unrecognized value is logged at
   `WARNING` so the cause is traceable — the engine that later raises
   `DiscoveryError` only sees the resolved boolean, not the offending text.
 
   (The empty-string handling here is deliberately *not* the same as the cache
   path override `STANDARD_ASR_MODEL_DIR`, where an empty value is meaningless
   and treated as unset: for this safety toggle an empty value is an
-  unrecognized value and fails safe to disabled.)
+  unrecognized value and fails closed to disabled.)
 
 ## 2. Expected Engine Behavior
 

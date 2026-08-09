@@ -3603,7 +3603,7 @@ def test_pick_sub_constraint_probe_granularity_carries_its_code() -> None:
 
 def test_pick_sub_constraint_probe_none_without_streaming_domain() -> None:
     # No streaming domain -> no constrainable nodes resolve -> no probe. (The
-    # public check never reaches the helper in this state; it stays fail-safe.)
+    # public check never reaches the helper in this state; it stays fail-closed.)
     probe = compliance_module._pick_sub_constraint_probe(  # pyright: ignore[reportPrivateUsage]
         _BatchOnlyEngine()
     )

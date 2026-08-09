@@ -12,9 +12,11 @@ pip install "standard-asr[audio]"
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
 ```
 
-The `[audio]` extra adds MP3/FLAC/OGG decoding and automatic resampling. Without
-it, only WAV decodes with no extra setup. MP3, FLAC, and OGG then need either the
-extra or `ffmpeg` on your PATH.
+The `[audio]` extra adds MP3/FLAC/OGG decoding and higher-quality resampling.
+Resampling itself works without it, on a built-in numpy fallback. Without the
+extra, only an 8/16-bit PCM WAV *file path* decodes with no extra setup — WAV
+bytes go through the same path as MP3, FLAC, and OGG, which need either the
+extra or the ffmpeg suite (`ffmpeg` and `ffprobe`) on your PATH.
 
 ## Discover installed engines
 
