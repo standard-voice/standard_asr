@@ -59,8 +59,6 @@ one-line model-key change — not another adapter.
 
 ## "Nice idea — but how does a protocol with no adopters get adopted?"
 
-That's the right question to ask, so we answer it directly.
-
 **Standard ASR does not need any vendor's cooperation to be useful today.** For existing
 engines, compliance is a thin adapter — not a rewrite — and each adapter ships as an ordinary
 pip-installable plugin package that anyone can publish. An application developer gets the
