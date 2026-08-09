@@ -21,15 +21,15 @@
 | Component    | Allowed characters                                  | Notes |
 |--------------|------------------------------------------------------|-------|
 | `engine_id`  | `a-z`, `0-9`, `.`, `_`, `-`                          | Must start with `[a-z0-9]`; `/` is forbidden. **Upper case is rejected outright**, but a non-canonical lowercase form using `.`/`_` separators (e.g. `faster_whisper`) is *accepted and folded* to its PEP 503 routing identity (`faster-whisper`), with a normalization hint logged. The asymmetry is deliberate. Distribution names on PyPI are lowercase by convention, so an upper-case engine id is a mistake to fix at the source, not something to silently rewrite. The `.`/`_`↔`-` separator equivalence is a pure PEP 503 routing fold. The declared form is retained on `ModelSpec.declared_engine_id` for diagnostics. |
-| `model_name` | `A-Za-z0-9`, `.`, `_`, `+`, `%`, `:`, `-`            | `/` is forbidden. Empty string signals a default model and triggers a warning. |
+| `model_name` | `A-Za-z0-9`, `.`, `_`, `+`, `%`, `:`, `-`            | Must start with `[A-Za-z0-9]`; `/` is forbidden. Empty string signals a default model and triggers a warning. |
 
 Multiple models per engine are encouraged. Give each preset its own entry point. Presets include quantized variants, multilingual or monolingual builds, and device specializations. A separate entry point per preset lets downstream users request the exact behavior they need.
 
 ### Default Models
 
-Leaving `model_name` empty (key written as `engine_id/`) denotes the engine’s canonical default. The discovery API accepts empty names and logs a warning so authors remember to document what the default does. Supporting the default keeps today’s packages working while encouraging the new, explicit naming style.
+Leaving `model_name` empty (key written as `engine_id/`) denotes the engine’s canonical default. The discovery API accepts empty names and logs a warning so authors remember to document what the default does. An explicit default is allowed but discouraged; if you publish one, document what it selects.
 
-A plugin **key** must contain the `/`: only `<engine_id>/<model_name>` and the
+A plugin **key** MUST contain the `/`: only `<engine_id>/<model_name>` and the
 explicit default `<engine_id>/` are valid declaration forms. A slash-less key
 (e.g. `faster-whisper` instead of `faster-whisper/`) is **not** a third valid
 form — it is almost always a typo that dropped `/<model_name>`. Discovery
@@ -42,9 +42,14 @@ slash is required only on the *declaration*
 side; the *lookup* helpers below accept the bare engine id as a convenience
 alias for its default model.
 
-If you publish an explicit default (`engine_id/`), the factory **must** return an
+If you publish an explicit default (`engine_id/`), the factory MUST return an
 instance whose `properties.model_id` is exactly `engine_id/`. Compliance checks
-validate this invariant.
+this invariant (`properties_key_mismatch`).
+
+An `engine_id` MUST be unique across installed distributions: two
+distributions that provide the same id (even through PEP 503 folding, such as
+`my_engine` and `my-engine`) are an identity collision, reported as the
+compliance error `engine_id_collision` even on a default run.
 
 ## Declaring Entry Points
 
@@ -94,7 +99,7 @@ def create_turbo(**kwargs: Any) -> TurboASR:
 > factory `-> StandardASR` breaks instantiation-free discovery. The compliance
 > suite enforces this.
 
-The dispatcher performs thorough validation:
+Discovery validates each declaration:
 
 - Invalid names raise `EntrypointValidationError` in strict mode.
 - Duplicate keys can keep the first declaration or replace with the latest, depending on `on_conflict`.
@@ -119,7 +124,7 @@ Helper APIs:
 
 ## Required Metadata
 
-Your factory must return a compliant engine (typically an `EngineBase`
+Your factory MUST return a compliant engine (typically an `EngineBase`
 subclass) that exposes:
 
 - `properties`: a `BaseProperties` instance (class attribute / `ClassVar`).
@@ -138,7 +143,7 @@ These are validated by `standard-asr compliance entrypoints`.
 
 ## CLI Support
 
-Install your plugin in the same environment and use the new CLI. The
+Install your plugin in the same environment and use the CLI. The
 transcript below was captured live against
 [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper);
 nested JSON blocks are abridged with `...` — run the commands yourself for
@@ -256,7 +261,9 @@ Flags of interest:
 
 - `--strict-discovery` reports malformed entry points as `entrypoint_invalid`
   errors (non-zero exit; the report still covers the valid engines).
-- `--no-instantiate` skips smoke-instantiation (useful when a model needs mandatory credentials at runtime).
+- `--no-instantiate` skips smoke-instantiation. A missing credential already
+  downgrades to a graceful skip (`factory_requires_config`); use this flag to
+  avoid instantiation cost or side effects entirely.
 - `--on-conflict replace` helps debug when multiple packages expose the same model id.
 
 ## Compliance Testing
@@ -367,7 +374,8 @@ def test_batch_result_within_capabilities() -> None:
 
 - [ ] Choose a PEP 503–friendly engine id (ideally your package name).
 - [ ] List every shipped preset as `<engine_id>/<model_name>`.
-- [ ] Provide a default model only when backwards compatibility demands it.
+- [ ] Skip the explicit default (`engine_id/`) unless you need one; if you
+      publish it, document what it selects.
 - [ ] Ensure factories accept keyword arguments for configurable options.
 - [ ] Run `standard-asr compliance run` before publishing (and cover the
       recorded-data checks in your tests: `check_event_sequence` for a

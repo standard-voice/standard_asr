@@ -25,6 +25,6 @@ and reach every application. Think USB-C for ASR inference.
 - **[Installation](installation.md)** -- install options and optional extras.
 - **[Discover & Use](for_app_dev/discover_and_use.md)** -- the full
   app-developer guide.
-- **[Adapt an Engine](for_asr_dev/adapting_engine.md)** -- build a compliant
+- **[Adapt an ASR System](for_asr_dev/adapting_engine.md)** -- build a compliant
   plugin.
 - **[API Reference](reference/index.md)** -- the complete public surface.

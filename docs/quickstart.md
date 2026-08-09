@@ -77,5 +77,5 @@ reduce. Handle them and your app works on every compliant engine.
   guide (parameters, audio input types, rendering).
 - [Streaming](for_app_dev/streaming.md) -- deep dive into the streaming event
   protocol, stability guarantees, and the sync bridge.
-- [Adapt an Engine](for_asr_dev/adapting_engine.md) -- build a compliant plugin.
+- [Adapt an ASR System](for_asr_dev/adapting_engine.md) -- build a compliant plugin.
 - [API Reference](reference/index.md) -- the complete public surface.

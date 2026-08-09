@@ -22,20 +22,27 @@ import pytest
 _GUIDE = Path(__file__).resolve().parent.parent / "docs" / "for_asr_dev" / "adapting_engine.md"
 
 
-def _first_python_block(markdown: str) -> str:
-    """Return the first fenced ``python`` block of a Markdown document.
+def _python_block_under_heading(markdown: str, heading: str) -> str:
+    """Return the first fenced ``python`` block after a Markdown heading.
+
+    Anchoring on the heading instead of document position keeps the tests
+    aimed at the intended sample even when an unrelated fence is added
+    earlier in the document.
 
     Args:
         markdown: The full text of the Markdown file.
+        heading: The exact heading line, for example ``"## Minimal batch engine"``.
 
     Returns:
-        The source inside the first ```python fence.
+        The source inside the first ```python fence after ``heading``.
 
     Raises:
-        AssertionError: If the document contains no ```python fence.
+        AssertionError: If the heading or its ```python fence is missing.
     """
-    match = re.search(r"```python\n(.*?)```", markdown, re.DOTALL)
-    assert match is not None, "the guide must contain a python sample"
+    start = markdown.find(heading)
+    assert start != -1, f"the guide must contain the heading {heading!r}"
+    match = re.search(r"```python\n(.*?)```", markdown[start:], re.DOTALL)
+    assert match is not None, f"no python sample under {heading!r}"
     return match.group(1)
 
 
@@ -46,7 +53,9 @@ def minimal_engine_namespace() -> dict[str, Any]:
     Returns:
         The globals the sample defined, including ``MyEngine`` and ``MyConfig``.
     """
-    source = _first_python_block(_GUIDE.read_text(encoding="utf-8"))
+    source = _python_block_under_heading(
+        _GUIDE.read_text(encoding="utf-8"), "## Minimal batch engine"
+    )
 
     # The sample calls a placeholder for the author's own inference code.
     # __name__ lets pydantic resolve the sample's annotations, and
@@ -74,6 +83,36 @@ def test_guide_minimal_engine_transcribes(minimal_engine_namespace: dict[str, An
     result = engine.transcribe((np.zeros(16000, dtype=np.float32), 16000))
 
     assert result.text == "hello"
+
+
+def test_guide_minimal_engine_survives_auto_language(
+    minimal_engine_namespace: dict[str, Any],
+) -> None:
+    # The sample declares "auto" selectable, so language="auto" is a legal
+    # call. The sample previously echoed params.language into
+    # detected_language, and the reserved "auto" is rejected there -- every
+    # auto-detect request crashed as a misreported engine fault.
+    from standard_asr import RuntimeParams
+
+    engine = minimal_engine_namespace["MyEngine"]()
+    result = engine.transcribe(
+        (np.zeros(16000, dtype=np.float32), 16000), RuntimeParams(language="auto")
+    )
+
+    assert result.text == "hello"
+    assert result.detected_language != "auto"
+
+
+def test_guide_minimal_engine_rejects_unknown_init_option(
+    minimal_engine_namespace: dict[str, Any],
+) -> None:
+    # The sample previously accepted **kw and discarded it, so a mistyped
+    # option ran the engine on defaults -- a silent wrong result. The config
+    # is extra="forbid", so forwarding the kwargs makes the typo fail loudly.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        minimal_engine_namespace["MyEngine"](bogus_option=1)
 
 
 def test_guide_minimal_engine_exposes_config_schema(

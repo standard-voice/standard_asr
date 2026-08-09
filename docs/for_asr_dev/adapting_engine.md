@@ -17,7 +17,10 @@ Subclass `EngineBase` and provide:
 2. `declared_capabilities: ClassVar[DeclaredCapabilities]` — what you support,
    per mode (`batch` / `streaming`). Omit what you don't support (fail-closed).
 3. `provider_params_type: ClassVar[type[ProviderParams] | None]` — your typed
-   escape-hatch model, or `None`.
+   escape-hatch model, or `None`. Publish your own **terminal** subclass: the
+   bare `ProviderParams` base, a non-subclass, or a model that is not closed
+   (`extra="forbid"`) is a compliance error
+   (`provider_params_type_is_bare_base` / `_not_subclass` / `_not_closed`).
 4. `__init__` — capture config only. **Keep it pure**: no filesystem, GPU, or
    network (spec IC.9). Load weights lazily in `_ensure_model_loaded`.
 5. `_transcribe(prepared, params) -> TranscriptionResult` — run your model on
@@ -27,13 +30,20 @@ Subclass `EngineBase` and provide:
    returning a `TranscriptionSession` subclass.
 7. `config_type: ClassVar[type[BaseConfig]]` — your config class. It is read
    from the class, so a settings UI can render the schema without constructing
-   the engine. Without it, `registry.config_schema()`, `GET /v1/config-schema/`,
-   and the config-schema section of `standard-asr show` all go dark, and
-   compliance warns (`missing_config_type`).
+   the engine. Without it, `registry.config_schema()` returns `None`,
+   `GET /v1/config-schema/{model}` returns an empty schema, `standard-asr show`
+   reports no init config, and compliance warns (`missing_config_type`).
 8. If your `properties` declare `selectable_languages`, your config MUST carry a
    usable `default_language` (spec IC.6). Inherit `LanguageConfigMixin` to get
    the field. Without it, every `transcribe()` raises `EngineContractError` and
    compliance reports the error `language_config_invalid`.
+9. If you set `effective_capabilities`, it MUST narrow `declared_capabilities`,
+   never widen it. Compliance reports a widening as the error
+   `effective_widens_declared`.
+10. If your engine loads weights, override `prepare()` (spec IC.11). Keep it
+    synchronous and zero-argument, and apply the same `allow_downloads()` gate
+    as transcription. Compliance rejects a coroutine or an argument-taking hook
+    (`prepare_hook_is_coroutine` / `prepare_hook_requires_args`).
 
 ## Minimal batch engine
 
@@ -69,13 +79,16 @@ class MyEngine(EngineBase):
     )
 
     def __init__(self, **kw: object) -> None:
-        self.config = MyConfig()
+        self.config = MyConfig(**kw)      # extra="forbid": a mistyped option fails loudly
         self._model = None
 
     def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         audio = prepared.array            # 16 kHz float32 mono, per Properties
         text = my_model_infer(audio)      # your code
-        return TranscriptionResult(text=text, detected_language=params.language)
+        # Report what the recognizer actually decided. Never echo
+        # params.language: with "auto" selectable it can be the reserved
+        # "auto", which detected_language rejects.
+        return TranscriptionResult(text=text, detected_language="en")
 ```
 
 ## Map parameters
@@ -93,7 +106,10 @@ class MyEngine(EngineBase):
   silent wrong result.
 - Engine-specific parameters → a `ProviderParams` subclass set as
   `provider_params_type`. Wrong-engine params raise `InvalidProviderParamError`.
-- Resolve the language with `standard_asr.contract.language.effective_language(...)`.
+- The base resolves the language axis for you on both paths: the
+  `params.language` your `_transcribe` receives is already the effective value.
+  Only a structural engine that bypasses `EngineBase` calls
+  `standard_asr.contract.language.effective_language(...)` itself.
 - **`word_timestamps.granularities` declares what you can honestly *deliver*, not
   which native API switch exists.** Declare every granularity your engine can
   serve — including ones that come for free. If your model emits per-segment
@@ -101,7 +117,7 @@ class MyEngine(EngineBase):
   separate "segment mode" switch. Otherwise the standard layer rejects the
   cheapest, always-satisfiable request as a false incompatibility. Then map each
   granularity precisely (e.g. only `"word"` enables your forced-alignment pass; a
-  `"segment"` request must not back-fill word-level data — `words=None` means
+  `"segment"` request MUST NOT back-fill word-level data — `words=None` means
   "not requested").
 
 ## Audio you receive
@@ -112,6 +128,8 @@ class MyEngine(EngineBase):
 - `InputKind.ENCODED_FILE` → `prepared.path`
 - `InputKind.ENCODED_BYTES` → `prepared.data`
 - `InputKind.FETCHABLE_URL` → `prepared.url`
+- `InputKind.STORAGE_URI` → `prepared.storage_uri` (a provider storage URI
+  such as `s3://` or `gs://`, for engines that read from cloud storage)
 
 You never write decode/resample/encode glue — declare `accepted_input` and the
 standard layer delivers the right shape (and attaches conversion diagnostics).
@@ -178,7 +196,8 @@ calls your hook. Before your hook runs, the base has already:
   so `prepared_audio` is `None`.
 
 Your hook receives the **already-gated, frozen** `gated_params` (spec R5: streaming
-params are frozen at `start_transcription` and MUST NOT change mid-stream). Use them
+params are frozen at `start_transcription` and MUST NOT change mid-stream, except a
+guidance channel declared `mutable_mid_stream` — a reserved declaration in v1). Use them
 directly — do not re-gate or re-accept raw params. The signature is
 keyword-only: `gated_params`, `audio_format` (the wire format, or `None`), and
 `prepared_audio` (the negotiated whole input, or `None`).
@@ -359,11 +378,14 @@ also enforces two further per-stream invariants on every event you yield, so a
 slipped engine still cannot emit a wrong transcript:
 
 - **Monotonic audio cursor** — a decreasing `audio_processed_until` is clamped to
-  the prior value (the cursor never moves backwards; ST §4.1), with an
+  the prior value (the cursor never moves backwards; ST §4.4), with an
   `audio_cursor_decreased` diagnostic (or a raise in `strict_lifecycle`).
 - **Frozen-prefix immutability** — an event that rewrites a segment's
   already-frozen prefix (`text[:stable_until]` changed) is suppressed with a
-  `frozen_prefix_rewritten` diagnostic (the frozen prefix is immutable; ST §4.2).
+  `frozen_prefix_rewritten` diagnostic (ST §4.2). One exemption, from that same
+  section: a terminal `closed` final MAY restate frozen text once
+  (post-processing punctuation / ITN / casing) and MAY shrink `stable_until`;
+  the guard admits it and never clamps it back.
 
 The full set of standard-layer diagnostic codes the guard can emit (read them off
 the session with `session.diagnostics()`):
@@ -411,7 +433,7 @@ the session with `session.diagnostics()`):
 ### Declare what you emit (capability ⇄ stream consistency)
 
 Four streaming capabilities each gate one event field. Your declared
-`streaming` capabilities and the events you actually emit **must agree** — your
+`streaming` capabilities and the events you actually emit MUST agree — your
 stream may use *less* than you declare, but never *more*:
 
 | If you emit…                     | …declare                                            |
@@ -455,15 +477,15 @@ engine may surface five partials or none, purely by timing. A test asserting
 Register an entry point under `standard_asr.models` (see
 [`plugin_entrypoints.md`](plugin_entrypoints.md)).
 
-**The entry-point factory MUST return a concrete engine class** (annotate its
-return type as your engine class, e.g. `-> MyEngine`), **not** the `StandardASR`
-protocol. Capabilities and the params schema are read from class-level `ClassVar`s
+**The entry-point factory MUST be annotated with your concrete engine class**
+(return type `-> MyEngine`), **not** with the `StandardASR` protocol.
+Capabilities and the params schema are read from class-level `ClassVar`s
 *without instantiating or authenticating* the engine (CLI `show`, the registry,
-REST `GET /v1/capabilities` and `/v1/params-schema`). A Protocol return type has
-no readable `ClassVar`s, so it breaks instantiation-free discovery. The
-compliance suite enforces this.
+REST `GET /v1/capabilities/{model}` and `/v1/params-schema/{model}`). A Protocol
+return annotation has no readable `ClassVar`s, so it breaks instantiation-free
+discovery. The compliance suite enforces this.
 
-Validate with:
+Check with:
 
 ```bash
 standard-asr compliance run
