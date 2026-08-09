@@ -67,8 +67,8 @@ def resample_with_backend(
             resample_poly as _resample_poly,  # pyright: ignore[reportUnknownVariableType]
         )
     except Exception:
-        # ImportError when [audio] is absent; other import-time errors (e.g. a
-        # broken/partially-initialized scipy build) are also non-fatal here -- a
+        # ImportError when [audio] is absent; other import-time errors (for example, a
+        # broken or partially initialized scipy build) are also non-fatal here -- a
         # crashing optional dependency MUST degrade to the built-in fallback, not
         # propagate (battery-included DX).
         return resample(array, orig_sr, target_sample_rate), "fallback"
@@ -149,7 +149,7 @@ def _resample_fourier(x: NDArray[np.float64], num: int) -> NDArray[np.float64]:
     n = min(num, n_in)
     # Number of positive-frequency bins to copy, INCLUDING DC, EXCLUDING the
     # Nyquist bin. For even n this is n // 2; for odd n it is (n + 1) // 2 - 1,
-    # i.e. (n - 1) // 2, but copying through index n // 2 (inclusive) is correct
+    # that is, (n - 1) // 2, but copying through index n // 2 (inclusive) is correct
     # for both parities because of how the negative side is mirrored below.
     half = (n + 1) // 2
 

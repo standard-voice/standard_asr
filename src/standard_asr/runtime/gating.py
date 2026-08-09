@@ -119,7 +119,7 @@ assert {field for field, _ in _GATED_PARAMS} | _UNGATED_PORTABLE_FIELDS == set(
 #: Empty-marker drift guard (import-time, mirrored by a drift test): the
 #: diarization gate above is FEATURE-level only, which is sound solely because
 #: the v1 :class:`DiarizationRequest` marker carries no fields. The moment a
-#: field graduates onto it (e.g. a deferred ``num_speakers`` hint), a
+#: field graduates onto it (for example, a deferred ``num_speakers`` hint), a
 #: feature-level pass would let that field reach an engine that cannot honor it
 #: -- silently ignored, the cardinal sin. This assert fails the import until the
 #: author writes the sub-gating (the ``max_speakers`` constraint check et al.).
@@ -196,7 +196,7 @@ def gate_params(
             continue
         if capabilities.supports(f"{mode}.{cap_suffix}"):
             # Supported at the feature level; some features carry finer-grained
-            # sub-constraints that MUST also be satisfied (e.g. the requested
+            # sub-constraints that MUST also be satisfied (for example, the requested
             # word-timestamp granularity must be one the engine offers, or the
             # declared guidance limits). The sub-check handles its own drop/raise
             # / truncation; nothing else to do here.
@@ -220,7 +220,7 @@ def gate_params(
         # mechanically relate the rejection back to a capabilities.supports(path)
         # query (the spec requires the best_effort diagnostic to say WHICH
         # capability is unsupported -- and the field->path map is module-private,
-        # not something the caller can reconstruct: e.g. ``language`` gates on
+        # not something the caller can reconstruct: for example, ``language`` gates on
         # ``language.runtime_override``, not on the field name).
         cap_path = f"{mode}.{cap_suffix}"
         if strict:
@@ -291,9 +291,9 @@ def _gate_granularity(
     if requested is None:
         return False
     node = capabilities.node_at(f"{mode}.word_timestamps")
-    # A non-WordTimestampsCap node (e.g. an ``x_*`` override declared as a bare
+    # A non-WordTimestampsCap node (for example, an ``x_*`` override declared as a bare
     # flag) carries no granularity list; treat it as offering only the value it
-    # was queried as supporting -- i.e. do not over-constrain unknown shapes.
+    # was queried as supporting -- that is, do not over-constrain unknown shapes.
     if not isinstance(node, WordTimestampsCap):
         return False
     # A supported WordTimestampsCap always enumerates its granularities
@@ -335,7 +335,7 @@ def _gate_granularity(
 #: relative to whitespace + no-space-script tokenization", naming CJK / kana /
 #: Hangul / Thai). That lower bound is defined per **Unicode Script property**, so
 #: this table MUST cover *every* block whose script is one of those -- a missing
-#: block is a real under-count of a real writing form (e.g. half-width katakana
+#: block is a real under-count of a real writing form (for example, half-width katakana
 #: from legacy Japanese input, or NFD Korean decomposed into conjoining Jamo by
 #: some filesystems), not a long-tail edge. The set is therefore exhaustive for
 #: the named scripts, not just their "main" blocks:
@@ -366,7 +366,7 @@ def _gate_granularity(
 #: regression test pins coverage; extend the table AND that test together on a future
 #: UCD. Coarse block bounds may over-count unassigned/Common codepoints, which the
 #: spec's lower-bound guarantee explicitly permits (it forbids under-counting, not
-#: over-counting). Whitespace codepoints (e.g. the ideographic space U+3000) are
+#: over-counting). Whitespace codepoints (for example, the ideographic space U+3000) are
 #: excluded at the call site.
 _NO_SPACE_SCRIPT_RANGES: tuple[tuple[int, int], ...] = (
     (0x0E00, 0x0E7F),  # Thai
@@ -424,7 +424,7 @@ def _count_tokens(text: str) -> int:
     The standard layer has no engine tokenizer, so ``max_tokens`` is enforced
     against an engine-agnostic, deterministic approximation of "prompt length":
     the number of whitespace-delimited words **plus one unit for every space-less
-    (CJK / kana / Hangul / Thai / ...) codepoint**. The CJK term is essential --
+    (CJK, kana, Hangul, Thai, and so on) codepoint**. The CJK term is essential --
     a whitespace word count alone collapses a long no-space prompt (the spec's
     Qwen3 ``context`` -> ``prompt`` example) to ~1 token and would let it slip
     past a ``max_tokens`` limit it actually blows.
@@ -454,7 +454,7 @@ def _is_combining_mark(ch: str) -> bool:
     Unicode **general category** (``Mn`` / ``Mc`` / ``Me``) is the right test
     here, NOT ``unicodedata.combining`` (the canonical *combining class*): the
     latter is about normalization ordering and is ``0`` for many real combining
-    marks -- e.g. the Thai vowel sign U+0E31 (category ``Mn``) has combining
+    marks -- for example, the Thai vowel sign U+0E31 (category ``Mn``) has combining
     class ``0`` -- so a combining-class test would miss exactly the marks this
     guard exists to protect.
 
@@ -479,7 +479,7 @@ def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
     step function the search bisects.
 
     The cut point is then pulled back so it never lands **inside a combining
-    character sequence** (a base codepoint plus its following marks, e.g. a Thai
+    character sequence** (a base codepoint plus its following marks, for example, a Thai
     base consonant U+0E01 and its vowel sign U+0E31): if the first dropped
     codepoint is a combining mark, the whole partial last cluster is removed so
     the result never ends in a base whose marks were sliced off. This only ever
@@ -837,7 +837,7 @@ def _try_degrade_to_prompt(
         # ``rfind`` scan suffered: (a) a user prompt that literally contains
         # ``"Relevant terms: "`` (rfind could land on the user's text), and (b) a
         # hint term that is a substring of the marker text or of an original-prompt
-        # word (e.g. hint ``"cat"`` inside ``"categorize"``). A partial mid-term
+        # word (for example, hint ``"cat"`` inside ``"categorize"``). A partial mid-term
         # cut also reads as "not survived" because the full term no longer appears.
         # If the budget is so small that NO hint term survived, the degrade folded
         # no hint content into the prompt at all -- reporting a plain

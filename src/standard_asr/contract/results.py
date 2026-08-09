@@ -34,13 +34,13 @@ from pydantic_core import PydanticCustomError
 
 #: Diagnostic code attached to a :class:`TranscriptionResult` whose ``segments``
 #: include entries without a full measured span (``start`` and/or ``end`` is
-#: ``None`` -- i.e. :attr:`Segment.timestamp_status` is not ``"measured"``).
+#: ``None`` -- that is, :attr:`Segment.timestamp_status` is not ``"measured"``).
 #: The per-segment truth IS the nullable ``start``/``end`` values themselves;
 #: this result-level diagnostic is the aggregate disclosure ("N of M segments
 #: lack a usable span") consumers can surface without walking the list. It
 #: lives here -- not in the emitting reducer module -- because it describes a
-#: property of the RESULT; same family-home rationale as the language codes
-#: living in :mod:`standard_asr.contract.language`.
+#: property of the RESULT; the language codes live in
+#: :mod:`standard_asr.contract.language` for the same reason.
 DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
 
 
@@ -61,7 +61,7 @@ def to_json_value(value: object) -> JsonValue:
       ``DiarizationRequest``) has a JSON form but is not itself JSON, so it
       is dumped;
     * a **typed container** (``list[str]``, ``dict[str, int]``) IS JSON data,
-      but a type checker will not accept it where ``list[JsonValue]`` is
+      but a type checker does not accept it where ``list[JsonValue]`` is
       expected, because ``list`` is invariant. That is a static-analysis
       artifact, not a real mismatch, so it is absorbed here once instead of
       forcing a ``cast`` at every call site.
@@ -168,7 +168,7 @@ class Diagnostic(BaseModel):
 
     Attributes:
         level: Severity, ``"info"`` or ``"warning"``.
-        code: Stable machine-readable code (e.g. ``"audio_conversion"``).
+        code: Stable machine-readable code (for example, ``"audio_conversion"``).
         message: Human-readable explanation.
         param: The parameter the diagnostic concerns, if any.
         provided: The value the application provided, if relevant.
@@ -431,7 +431,7 @@ class Segment(BaseModel):
         shape invariants (see :attr:`timestamp_status`):
 
         * ``(float, float)`` with ``end >= start`` -- a measured span (equal
-          bounds, i.e. zero duration, allowed);
+          bounds, that is, zero duration, allowed);
         * ``(float, None)`` -- a measured onset with no span (start-only);
         * ``(None, None)`` -- timing unavailable;
         * ``(None, float)`` -- REJECTED: an end without a start is not a
@@ -665,7 +665,7 @@ class TranscriptionResult(BaseModel):
            present, the top-level fields are the time-merge of all channels. A
            result whose channel entries carry ``segments`` / ``words`` while the
            corresponding top-level field is ``None`` breaks that promise -- a
-           channel-agnostic consumer (e.g. the SRT/VTT renderers, built over the
+           channel-agnostic consumer (for example, the SRT/VTT renderers, built over the
            constant top-level ``segments``) would silently lose all per-channel
            detail. That shape is an engine bug, so the model refuses it.
 

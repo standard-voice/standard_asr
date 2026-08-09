@@ -78,7 +78,7 @@ class StandardASR(Protocol):
     the streaming entry point (:meth:`start_transcription`). ``start_transcription``
     is always present; streaming support itself is optional, so a batch-only
     engine raises :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` from
-    it. Because the surface is complete, callers (e.g. the server) can type an
+    it. Because the surface is complete, callers (for example, the server) can type an
     engine as ``StandardASR`` and call the streaming entry point without a cast.
     """
 
@@ -178,7 +178,7 @@ class StandardASR(Protocol):
             params: Per-request runtime parameters.
             audio: A complete audio input for whole-input streaming output.
             deadlines: Application overrides for the session's termination
-                deadlines; explicitly-set fields win over the engine's
+                deadlines; explicitly set fields win over the engine's
                 construction-time choices.
 
         Returns:
@@ -396,7 +396,7 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     this function instead of the ``EngineBase`` method keeps the check honest
     for structural (non-``EngineBase``) engines: the guard method is NOT a
     ``StandardASR`` protocol member, so calling it on a structural engine
-    raised ``AttributeError`` and mis-reported a fully-compliant engine as
+    raised ``AttributeError`` and mis-reported a fully compliant engine as
     self-inconsistent.
 
     See :meth:`EngineBase.ensure_stream_format_supported` for the full
@@ -583,7 +583,7 @@ class EngineBase(ABC):
         no-op: an engine with nothing to warm up inherits it unchanged and the
         toolchain reports a no-op rather than failing.
 
-        Engines that load weights MUST override this to materialize them (e.g.
+        Engines that load weights MUST override this to materialize them (for example,
         call ``_ensure_model_loaded``), and that path MUST honor the same
         download gate as transcription: check
         :func:`~standard_asr.runtime.downloads.allow_downloads` and raise
@@ -711,7 +711,7 @@ class EngineBase(ABC):
             # A pydantic ValidationError escaping _transcribe is an ENGINE
             # fault (params were validated before this point; the usual cause
             # is the engine constructing a TranscriptionResult/Segment the
-            # model rejects -- e.g. a field removed from the contract, or an
+            # model rejects -- for example, a field removed from the contract, or an
             # invalid timestamp). Without this wrap it masquerades as a
             # client-input validation error: the server's ValidationError
             # clause turned it into a 422 blaming the request's options.
@@ -754,7 +754,7 @@ class EngineBase(ABC):
         and can never silently diverge between the batch and streaming paths.
 
         Args:
-            audio: The caller's audio input (path, bytes, URL, array, ...).
+            audio: The caller's audio input (path, bytes, URL, array, and so on).
 
         Returns:
             The prepared audio (decoded / resampled per the engine's properties),
@@ -814,8 +814,8 @@ class EngineBase(ABC):
             )
         # Canonicalize BOTH sides: BCP-47 membership is case-insensitive, and
         # either default_language or the declared sets may be a non-canonical
-        # class-level default, so a raw "en-us" must still match a canonical
-        # "en-US" instead of spuriously failing the totality check and blocking
+        # class-level default, so a raw ``en-us`` must still match a canonical
+        # ``en-US`` instead of spuriously failing the totality check and blocking
         # the engine.
         # Canonicalization raises ValueError on an empty/whitespace tag; this
         # method promises ConfigError, so wrap it naming the malformed value (a
@@ -875,7 +875,7 @@ class EngineBase(ABC):
         # default_language is non-None here: _validate_language_config (always run
         # before this) enforces it whenever has_language_axis is True. Canonicalize
         # it up front so the best-effort fallback below (and the diagnostic it
-        # emits) carry a canonical tag, never a raw class-level default ("en-us").
+        # emits) carry a canonical tag, never a raw class-level default (``en-us``).
         default_language = _canonical_language(
             cast("str", getattr(self.config, "default_language", None))
         )
@@ -919,8 +919,8 @@ class EngineBase(ABC):
         # Both declared sets come canonical (and ConfigError-checked) from the
         # shared per-engine canonicalization, so a canonical eff_lang matches
         # case-insensitively. Membership uses RFC 4647 lookup so a
-        # region/script refinement of a selectable primary subtag (e.g. "en-US"
-        # against "en") is accepted and handed to the engine to reduce -- engines
+        # region/script refinement of a selectable primary subtag (for example, ``en-US``
+        # against ``en``) is accepted and handed to the engine to reduce -- engines
         # need not enumerate variants.
         selectable, detectable = self._canonical_language_sets()
         # eff_lang is non-None here: this method only runs when has_language_axis
@@ -1255,7 +1255,7 @@ class EngineBase(ABC):
             audio: A complete audio input for whole-input streaming output.
             deadlines: Application overrides for the session's termination
                 deadlines. Applied by this template *after* the
-                engine hook constructed the session, so explicitly-set fields
+                engine hook constructed the session, so explicitly set fields
                 always win over the engine's construction-time choices --
                 precedence: application explicit > engine choice > standard
                 default. Unset fields are left untouched.
@@ -1395,7 +1395,7 @@ class EngineBase(ABC):
         # Friend API: validate the reserved-attribute guard now, before the base
         # seeds diagnostics / applies deadline overrides below -- so the check sees
         # the pristine post-__init__ snapshot and a subclass that clobbered base
-        # state (e.g. its own self._buffer) fails loudly here, not as a
+        # state (for example, its own self._buffer) fails loudly here, not as a
         # cryptic crash deep in the producer.
         session._ensure_reserved_attrs_checked()  # pyright: ignore[reportPrivateUsage]
         # Friend API: the base engine seeds the session's standard-layer

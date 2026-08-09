@@ -148,7 +148,7 @@ def save_wav(
         audio: Waveform array to save. Mono can be 1D; multi-channel is
             ``(n_samples, n_channels)``.
         path: Destination path for the ``.wav`` file. Accepts ``str`` or any
-            ``os.PathLike`` (e.g. :class:`pathlib.Path`).
+            ``os.PathLike`` (for example, :class:`pathlib.Path`).
         sample_rate: Sample rate to write (Hz). MUST be ``> 0``. Defaults to
             ``16000``.
 

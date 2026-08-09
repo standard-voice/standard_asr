@@ -25,7 +25,7 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 > interface is functional and exercised by real engine plugins (interface-level
 > compliance; end-to-end runtime verification is still being built), but features like
 > hardware metadata and model cards are not yet part of the protocol.
-> Developer documentation and tooling are also incomplete. Breaking changes will happen.
+> Developer documentation and tooling are also incomplete. Expect breaking changes.
 > For production use, wait for a stable release. We follow semantic versioning.
 > See the [Roadmap](https://github.com/standard-voice/standard_asr/issues/27) for what's planned.
 
@@ -326,7 +326,7 @@ standard-asr compliance run
 - Different languages have different state-of-the-art models; Whisper is strong in some, weak
   in others.
 - GPU/hardware acceleration support varies across platforms.
-- The field moves fast — today's state-of-the-art model will be replaced. Write once against Standard ASR, and
+- The field moves fast — today's state-of-the-art model gets replaced. Write once against Standard ASR, and
   countless engines (present and future) are supported automatically.
 
 ---

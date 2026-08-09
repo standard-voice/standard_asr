@@ -1,9 +1,9 @@
-# Download & Lazy‑Loading Policy
+# Download & lazy-loading policy
 
 Standard ASR enforces a strict lazy‑loading policy to avoid surprise downloads
 and heavy startup costs. This is critical for server environments and CI.
 
-## 1. Environment Toggle
+## 1. Environment toggle
 
 `STANDARD_ASR_ALLOW_DOWNLOAD` controls whether plugins are allowed to download
 model weights at runtime. The list below is the **contract**
@@ -23,7 +23,7 @@ model weights at runtime. The list below is the **contract**
   and treated as unset: for this safety toggle an empty value is an
   unrecognized value and fails closed to disabled.)
 
-## 2. Expected Engine Behavior
+## 2. Expected engine behavior
 
 - **Constructor must be lazy**: do not download or load weights in `__init__`.
 - **Guard downloads**: check `standard_asr.runtime.downloads.allow_downloads()` before any
@@ -37,7 +37,7 @@ model weights at runtime. The list below is the **contract**
   raise `DiscoveryError` when downloads are disabled and weights are missing —
   and MUST keep it synchronous and idempotent (never `async def`).
 
-## 3. Cache Location
+## 3. Cache location
 
 Default cache directory is resolved by `standard_asr.runtime.downloads.resolve_cache_dir()`
 in this order:
@@ -56,7 +56,7 @@ in this order:
 
 Use `standard_asr.runtime.downloads.ensure_cache_dir()` to create it.
 
-## 4. Operational Guidance
+## 4. Operational guidance
 
 - In production or CI, set `STANDARD_ASR_ALLOW_DOWNLOAD=0`.
 - Use `standard-asr prepare <engine/model>` to pre‑warm caches.

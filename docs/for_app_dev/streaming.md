@@ -19,7 +19,7 @@ async with engine.start_transcription(audio_format=audio_format) as session:
 encoding as an `AudioFormat`, or `None` when the engine declares no usable
 positive sample rate (no bare-frame session can be opened then). If you need a
 specific format (for example, 8 kHz for telephony), construct one yourself -- the
-engine will raise `UnsupportedFeatureError` if it cannot accept it. The
+engine raises `UnsupportedFeatureError` if it cannot accept it. The
 recommendation is derived from the engine's static Properties; whether a
 bare-frame session can be opened at all is a capability question -- gate on
 `engine.supports("streaming_input")` first.
@@ -76,7 +76,7 @@ Every streaming session emits a sequence of `TranscriptionEvent` objects. The
 | `final` | This segment's text is **settled against new audio** -- more audio does not change it. It can still be replaced by a `supersede`, or restated once by a terminal `final` with `finality="closed"` (see "Finality" below). | Final text. | The segment that is now final. | Segment speaker label when diarized, else `None`. |
 | `supersede` | The engine re-segmented: one or more previously emitted segments are **replaced**. The replacement segments' own `partial`/`final` events arrive afterwards -- a `supersede` always precedes any event of its `new_ids`. | `None` | `None` (check `old_ids`). | `None` |
 | `progress` | A progress heartbeat (for example, audio position). No transcript content. | `None` | `None`, or the segment it reports on. | `None` |
-| `done` | The session is complete. No more events will follow. | `None` | `None` | `None` |
+| `done` | The session is complete. No more events follow. | `None` | `None` | `None` |
 | `error` | An engine error mid-stream. Machine-readable code in `event.code`; when the standard layer synthesized the error from an exception, human detail in `event.extra.get("detail")` (deadline and engine-authored errors may carry no detail); `event.recoverable` says whether the session may continue. | `None` | `None`, or the segment the error concerns. | `None` |
 
 Request diarization when opening the session (`RuntimeParams(diarization=DIARIZE)`,

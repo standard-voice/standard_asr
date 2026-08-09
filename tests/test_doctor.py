@@ -148,7 +148,7 @@ def test_classify_returns_neutral_for_unconstrained_or_invalid(
 
 
 def test_bounded_range_pin_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ``~=1.26.0`` pin vs ``>=2.1`` is a real conflict the old regex missed."""
+    """A ``~=1.26.0`` pin vs ``>=2.1`` is a real conflict the old pattern missed."""
     _patch_eps(
         monkeypatch,
         [
@@ -205,7 +205,7 @@ def test_disjoint_same_major_ranges_are_conflicting(
 def test_compatible_overlapping_ranges_not_flagged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Same-major ranges that DO overlap (e.g. share 2.3.x) are not conflicts."""
+    """Same-major ranges that DO overlap (for example, share 2.3.x) are not conflicts."""
     _patch_eps(
         monkeypatch,
         [
@@ -809,7 +809,7 @@ def test_py313_wheel_note_lists_each_distribution_once(
 def test_single_distribution_many_presets_unsatisfiable_is_one_offender(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """an internally-unsatisfiable declaration shipped across several
+    """an internally unsatisfiable declaration shipped across several
     presets of ONE distribution is a single self-contradiction. The single-vs-
     cross framing keys on distinct distributions, so it must read as one
     offender ('declares an internally unsatisfiable'), not a cross-plugin
@@ -1014,7 +1014,7 @@ def test_numpy_spec_display_fallback_when_packaging_missing(
         ],
     )
     report = doctor.diagnose()
-    # Display string is still rendered (best-effort regex).
+    # Display string is still rendered (best-effort pattern).
     assert report.plugins[0].numpy_spec == "<2"
     # But with packaging absent, the real numpy1-vs-2 conflict is NOT classified.
     assert report.has_conflict is False

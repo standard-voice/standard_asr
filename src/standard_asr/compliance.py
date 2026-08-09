@@ -92,7 +92,7 @@ __all__ = [
 #: capability the engine does NOT support, so it always exercises the gating
 #: drop/raise path; when every probe is supported it falls back to a
 #: sub-constraint probe (:func:`_pick_sub_constraint_probe`). The builder
-#: returns a fully-typed :class:`RuntimeParams`.
+#: returns a fully typed :class:`RuntimeParams`.
 _GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
     (
         "word_timestamps",
@@ -150,7 +150,7 @@ def _pick_sub_constraint_probe(engine: StandardASR) -> tuple[str, RuntimeParams,
         readable capability tree to derive one from).
     """
     # ``effective_capabilities`` is an EngineBase convenience, NOT a StandardASR
-    # protocol member: a fully-compliant structural engine may omit it, and
+    # protocol member: a fully compliant structural engine may omit it, and
     # reading it bare turned that omission into an AttributeError the caller
     # reported as gating_probe_selection_raised -- a false FAILURE of a
     # compliant engine. Fall back to the protocol's ``declared_capabilities``
@@ -214,7 +214,7 @@ class ComplianceIssue:
 
     Attributes:
         level: Issue severity (``"error"`` or ``"warning"``).
-        code: Stable machine-readable category identifier (e.g.
+        code: Stable machine-readable category identifier (for example,
             ``"entrypoint_factory_failed"``, ``"streaming_invariant:<guard_code>"``). Safe to
             match in CI; never reworded within a major version.
         message: Human-readable description (for display; MAY be reworded).
@@ -1214,8 +1214,8 @@ def _check_required_surface(
     # Presence is unconditional (checked above for every engine); what remains
     # is the streaming-declaration CONSISTENCY check. Read the declared axes
     # defensively: a malformed ``declared_capabilities`` (its own error is
-    # raised elsewhere) simply means we cannot assert anything here, so we do
-    # not over-report.
+    # raised elsewhere) simply means nothing can be asserted here, so the check
+    # does not over-report.
     declared = getattr(instance, "declared_capabilities", None)
     declares_streaming = isinstance(declared, DeclaredCapabilities) and (
         declared.supports("streaming_input") or declared.supports("streaming_output")
@@ -1224,7 +1224,7 @@ def _check_required_surface(
         if isinstance(declared, DeclaredCapabilities):
             # Presence alone does not verify the protocol's batch-only
             # promise; the refusal probe below does. Skipped when
-            # declared_capabilities is unreadable (we cannot know the engine
+            # declared_capabilities is unreadable (the check cannot know the engine
             # is batch-only, and its own error is reported elsewhere).
             _check_batch_only_streaming_refusal(instance, name, issues)
         return
@@ -1294,7 +1294,8 @@ def _sync_member_violation(
         member: Display name of the member (for the message).
         model: The model key to attribute the issue to, or ``None``.
         issues: The mutable issue list to append to.
-        expected_type: The member's pinned return type(s), or ``None`` to
+        expected_type: The member's pinned return type (or tuple of types),
+            or ``None`` to
             check only synchronicity.
 
     Returns:
@@ -1411,7 +1412,7 @@ def _check_batch_only_streaming_refusal(
         )
         return
     if _sync_member_violation(session, "start_transcription()", name, issues):
-        # A SYNC wrapper returning an awaitable (e.g. delegating to an
+        # A SYNC wrapper returning an awaitable (for example, delegating to an
         # internal `async def`) slips the iscoroutinefunction pre-checks; the
         # shared guard closed the stray coroutine and reported the modality
         # defect -- it must not additionally read as "returned a session".
@@ -1457,7 +1458,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
     try:
         signature = inspect.signature(prepare)
     except (TypeError, ValueError):
-        # A callable whose signature cannot be introspected (e.g. some C builtins)
+        # A callable whose signature cannot be introspected (for example, some C builtins)
         # cannot be proven to require arguments; treat it as zero-arg and let an
         # actual call surface any real arity error.
         return False
@@ -1909,7 +1910,7 @@ def check_event_sequence(
             event.
         capabilities: When provided, additionally cross-check each event against
             the engine's declared streaming capabilities: a stream MUST NOT
-            *exceed* what it declares -- e.g. emit a non-zero ``stable_until`` while
+            *exceed* what it declares -- for example, emit a non-zero ``stable_until`` while
             ``word_stability`` is unsupported, an ``audio_processed_until`` cursor
             while ``timestamps`` mode is ``none``, ``words`` while
             ``word_timestamps`` is unsupported, or a speaker label (event- or
@@ -2131,7 +2132,7 @@ def check_transcription_result(
     Behavioral check for batch engines that is **pure**, mirroring
     :func:`check_event_sequence`: it inspects a result the author already
     produced -- it never instantiates or calls an engine (invoking a cloud
-    engine from a compliance run would be a billable side effect). Currently it
+    engine from a compliance run would be a billable side effect). In v1 it
     verifies the diarization couple: a result carrying speaker labels anywhere
     (top-level ``segments[]`` / ``words[]``, a segment's ``words``, or any
     ``channels[i]`` view) while ``batch.diarization`` is unsupported (or the
@@ -2201,7 +2202,7 @@ def check_streaming_param_gating(engine: StandardASR) -> ComplianceReport:
       :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` whose ``param``
       identifies the gated field;
     * **best_effort** policy -- the call MUST succeed, drop (or degrade) the
-      parameter, and surface the probe's expected diagnostic (e.g.
+      parameter, and surface the probe's expected diagnostic (for example,
       ``unsupported_parameter_ignored``) via ``session.diagnostics()``.
 
     When the engine supports every probed parameter at the feature level, the
@@ -2671,7 +2672,7 @@ class SupportsWireRecommendation(Protocol):
     own promise -- and the previous ``EngineBase``-typed signature invited
     calling ``EngineBase``-only members on them (the check once called
     ``ensure_stream_format_supported``, not a ``StandardASR`` member, so a
-    fully-compliant structural engine failed with a false
+    fully compliant structural engine failed with a false
     ``recommended_wire_format_self_inconsistent`` verdict on an
     ``AttributeError``).
     """
@@ -2891,7 +2892,7 @@ def check_sync_bridge(
 
     Args:
         session_factory: A zero-argument callable returning a fresh async
-            :class:`TranscriptionSession` (e.g. ``engine.start_transcription``
+            :class:`TranscriptionSession` (for example, ``engine.start_transcription``
             bound with its arguments). The return crosses the same sync-call
             boundary as every protocol member: a factory handing back an
             awaitable (an ``async def`` ``start_transcription`` behind the
@@ -3264,7 +3265,7 @@ def check_sync_bridge(
         finally:
             # Record the bridge's OWN loop-thread liveness so the leak check below
             # asserts on this thread specifically. A compliant engine may pull in a
-            # dependency that spawns a benign daemon thread (e.g. tqdm's monitor, a
+            # dependency that spawns a benign daemon thread (for example, tqdm's monitor, a
             # thread-pool worker) during the session; a process-wide thread diff
             # would mis-report that as a sync_bridge_thread_leak.
             outcome["loop_alive"] = sync.is_loop_alive() if sync is not None else False
@@ -3272,7 +3273,7 @@ def check_sync_bridge(
     # daemon=True: this thread only *observes* the bridge; the leak check below is
     # responsible for catching a surviving loop thread. If the bridged session
     # genuinely deadlocks, a non-daemon worker would block interpreter shutdown for
-    # the full done_timeout (up to 300s), so the process that just reported the
+    # the full done_timeout (up to 300 s), so the process that just reported the
     # deadlock would itself hang on it -- the daemon flag prevents that.
     worker = threading.Thread(target=_drive, name=worker_name, daemon=True)
     worker.start()

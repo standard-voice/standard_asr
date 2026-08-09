@@ -265,7 +265,7 @@ class _StreamConfig(BaseConfig[Literal["stream"]]):
 
 class _StreamOkProps(BaseProperties):
     engine_id: str = "stream"
-    model_name: str = "ok"  # model_id == 'stream/ok'
+    model_name: str = "ok"  # model_id == ``stream/ok``
     protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
@@ -869,7 +869,7 @@ def test_cli_transcribe_unsupported_feature_is_usage_exit_2(
     ``UnsupportedFeatureError`` is a ``StructuredError`` -- NOT a ``ValueError``
     -- so without its explicit entry in ``main()``'s usage-error branch it fell
     into the generic runtime-failure branch (exit 1) and scripts misread a
-    caller mistake (e.g. a strict non-detectable candidate language) as an
+    caller mistake (for example, a strict non-detectable candidate language) as an
     internal failure.
 
         Args:
@@ -2229,7 +2229,7 @@ def test_ensure_utf8_stream_noop_on_utf8() -> None:
 
 
 def test_ensure_utf8_stream_tolerates_missing_reconfigure() -> None:
-    # A stream without reconfigure() (e.g. a plain StringIO) must not crash.
+    # A stream without reconfigure() (for example, a plain StringIO) must not crash.
     import io
 
     cli._ensure_utf8_stream(io.StringIO())  # pyright: ignore[reportPrivateUsage]
@@ -2433,7 +2433,7 @@ def test_cli_no_debug_no_traceback_for_named_branch(
 
 
 def _compliant_dummy_registry() -> ModelRegistry:
-    # _GatingStreamEngine is a fully-compliant EngineBase subclass (passes
+    # _GatingStreamEngine is a fully compliant EngineBase subclass (passes
     # check_entrypoints), unlike the minimal structural _dummy_factory.
     eps = [
         EntryPoint(
@@ -2571,7 +2571,7 @@ def test_parse_init_config_rejects_set_with_empty_key() -> None:
 def test_cli_compliance_run_skips_engine_needing_args(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # An engine whose factory needs arguments (e.g. credentials)
+    # An engine whose factory needs arguments (for example, credentials)
     # cannot be exercised for the streaming checks; the skip is reported (the
     # streaming checks cannot supply real credentials), not failed.
     registry = _compliant_dummy_registry()
@@ -2781,9 +2781,9 @@ def test_cli_bridge_timeout_rejects_nonpositive_and_nonfinite(bad: str) -> None:
     """--bridge-timeout must be finite, > 0, and within the platform's wait cap.
 
     A bare ``type=float`` would accept these; fed into ``Thread.join`` they
-    become an immediately-expiring timeout (a false "did not terminate"
+    become an immediately expiring timeout (a false "did not terminate"
     verdict blamed on the engine), a hang (``inf``), or an ``OverflowError``
-    mid-check (a finite value beyond ``threading.TIMEOUT_MAX``, e.g.
+    mid-check (a finite value beyond ``threading.TIMEOUT_MAX``, for example,
     ``1e300``). argparse rejects them as usage errors (exit 2) at parse time.
 
         Args:
@@ -3667,7 +3667,7 @@ def test_engine_supports_defensive() -> None:
 def test_ensure_utf8_stream_tolerates_reconfigure_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # _ensure_utf8_stream must not crash when reconfigure() raises (e.g. a
+    # _ensure_utf8_stream must not crash when reconfigure() raises (for example, a
     # detached buffer); it leaves the stream as-is.
     import io
 

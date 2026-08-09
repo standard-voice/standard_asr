@@ -289,7 +289,7 @@ def test_declared_engine_id_docstring_example_is_reachable() -> None:
     # (code is the contract): the ModelSpec.declared_engine_id
     # docstring example must be a value the field can actually hold. The lower-
     # case ``faster_whisper`` is accepted and folded to ``faster-whisper`` (so it
-    # is reachable), while the previously-documented upper-case ``Faster_Whisper``
+    # is reachable), while the previously documented upper-case ``Faster_Whisper``
     # is rejected at validation and can never appear -- the asymmetry the
     # docstring and plugin_entrypoints.md now spell out.
     eps = [
@@ -382,8 +382,8 @@ def test_discover_models_supports_multiple_entries() -> None:
 def test_discover_models_duplicate_strategy_replace() -> None:
     # ``replace`` is the same provider overriding its own registration, so both
     # entry points carry the SAME distribution identity -- otherwise this would
-    # (correctly) be a cross-distribution engine-identity collision. Distinct targets let
-    # us assert the latter factory wins.
+    # (correctly) be a cross-distribution engine-identity collision. Distinct targets
+    # let the test assert that the latter factory wins.
     ep_a = EntryPoint(
         name="alpha/only",
         value="tests.test_discovery:_dummy_factory",
@@ -588,7 +588,7 @@ def test_discover_canonicalizes_engine_id_and_logs(
 
 def test_by_engine_normalizes_non_canonical_argument() -> None:
     # Engine-identity consistency: keys_by_engine() must PEP 503-normalize its argument the same
-    # way spec()/create() do, so a non-canonical query form (e.g. "my_engine")
+    # way spec()/create() do, so a non-canonical query form (for example, "my_engine")
     # resolves to the same engine -- not an empty list while spec()/create()
     # still resolve it.
     eps = [
@@ -996,7 +996,7 @@ def test_config_schema_surfaces_unschematizable_config_type() -> None:
     # A legitimate BaseConfig subclass can still be un-schematizable
     # (arbitrary_types_allowed + an opaque handle field). pydantic's
     # PydanticInvalidForJsonSchema must surface as FactoryLoadError so both
-    # schema consumers (`show` and GET /v1/config-schema/...) degrade loudly
+    # schema consumers (`show` and ``GET /v1/config-schema/...``) degrade loudly
     # instead of crashing with a raw pydantic error.
     eps = [
         EntryPoint(
@@ -1025,7 +1025,7 @@ def test_engine_class_raises_when_annotation_not_concrete() -> None:
 
 def test_engine_class_rejects_look_alike_with_only_generic_markers() -> None:
     # A class exposing only generic names (properties/supports) but not the
-    # defining 'transcribe' method must be rejected -- the previous any(...)
+    # defining 'transcribe' method must be rejected -- the previous ``any(...)``
     # gate accepted it.
     eps = [
         EntryPoint(
@@ -1124,7 +1124,7 @@ def test_engine_class_resolves_live_class_return_annotation() -> None:
 
 
 def test_engine_class_raises_when_factory_has_no_signature() -> None:
-    # A callable factory whose signature cannot be introspected (e.g. an invalid
+    # A callable factory whose signature cannot be introspected (for example, an invalid
     # ``__signature__``) must surface a FactoryLoadError, not crash.
     class _NoSignatureFactory:
         __signature__ = "not a signature"  # makes inspect.signature raise

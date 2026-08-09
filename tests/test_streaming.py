@@ -143,7 +143,7 @@ def test_closed_finality() -> None:
 def test_event_speaker_field_and_validator() -> None:
     # speaker is validated ON THE EVENT (shared rule with Segment/Word): a
     # malformed label must fail here, not defer the crash to
-    # the reducer's Segment(...) or flow silently over the WS wire.
+    # the reducer's ``Segment(...)`` or flow silently over the WS wire.
     assert TranscriptionEvent.partial("s0", "hi", speaker="A").speaker == "A"
     assert TranscriptionEvent.final("s0", "hi", speaker="speaker_1").speaker == "speaker_1"
     assert TranscriptionEvent.partial("s0", "hi").speaker is None  # default
@@ -550,7 +550,7 @@ def test_feed_rejects_str_with_actionable_typeerror() -> None:
 def test_feed_str_rejection_does_not_claim_feed_mode() -> None:
     # Rejecting a str is a pure argument-type error and MUST NOT
     # mutate session state -- the caller can still drive the session correctly
-    # afterwards (e.g. via manual send_audio).
+    # afterwards (for example, via manual send_audio).
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession()
         with pytest.raises(TypeError):
@@ -821,7 +821,7 @@ def test_sync_bridge_manual() -> None:
 def test_sync_bridge_forwards_diagnostics() -> None:
     # The sync bridge must mirror the async session's diagnostics() surface (a
     # first-class, compliance-checked method), not just feed/result -- otherwise a
-    # synchronously-driven session silently loses the parameter-gating / language
+    # synchronously driven session silently loses the parameter-gating / language
     # diagnostics the async session exposes.
     from standard_asr.contract.results import Diagnostic
 
@@ -1012,7 +1012,7 @@ def test_coalescing_carries_forward_speaker() -> None:
     # partial speakers are non-actionable, so re-presenting a stale
     # provisional speaker cannot drive a wrong irreversible action, and it keeps
     # the buffer self-consistent with the guard, which -- should s0 later freeze
-    # -- locks the last-accepted non-None speaker, i.e. exactly this "A".
+    # -- locks the last-accepted non-None speaker, that is, exactly this "A".
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer()
         buf.put(TranscriptionEvent.partial("s0", "hel", speaker="A"))
@@ -1637,7 +1637,7 @@ def test_aexit_without_aenter_has_no_tasks_to_cancel() -> None:
 
 def test_iterate_stops_on_closed_empty_buffer() -> None:
     # Teardown race guard: if the event buffer is closed with no terminal event
-    # ever landing (e.g. the producer was canceled mid-flight), the iterator
+    # ever landing (for example, the producer was canceled mid-flight), the iterator
     # must end cleanly when get() returns None rather than hang.
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession(done_timeout=5.0)
@@ -1658,7 +1658,7 @@ def test_cancel_all_tasks_no_other_tasks_is_noop() -> None:
 
 def test_abstract_produce_raises_not_implemented() -> None:
     # The abstract base _produce body raises NotImplementedError when invoked
-    # directly (e.g. a subclass that delegates to super() instead of overriding).
+    # directly (for example, a subclass that delegates to super() instead of overriding).
     class _Concrete(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             yield TranscriptionEvent.done()  # pragma: no cover
@@ -2366,10 +2366,10 @@ def test_guard_supersede_duplicate_new_ids_evasion_still_suppressed() -> None:
     assert guard.admit(forged) is None
     diag = next(d for d in guard.diagnostics if d.code == "supersede_cross_speaker_merge")
     # The message must report the DISTINCT replacement count (1) the pigeonhole
-    # actually compared, not the raw forged length (2): "2 segment(s)" against
+    # actually compared, not the raw forged length (2): reporting 2 against
     # 2 distinct speakers would contradict the very rule the diagnostic cites
     # and read like a guard misfire.
-    assert "only 1 distinct segment(s)" in diag.message
+    assert "fewer distinct segments (1:" in diag.message
     assert "['s3', 's3']" in diag.message  # raw list keeps the forgery visible
     state = guard._state  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert "s3" not in state
@@ -2956,7 +2956,7 @@ def test_guard_supersede_out_of_order_diagnostic_names_both_causes() -> None:
 
 
 def test_session_constructor_rejects_degenerate_bounds() -> None:
-    # audio_queue_maxsize=0 would mean an UNBOUNDED asyncio.Queue (silently
+    # audio_queue_maxsize=0 would mean an UNBOUNDED ``asyncio.Queue`` (silently
     # disabling feed backpressure); zero/negative deadlines and buffer bounds
     # are configuration bugs, not no-ops.
     with pytest.raises(ValueError, match="audio_queue_maxsize"):
@@ -3132,7 +3132,7 @@ def test_max_session_seconds_caps_wall_time() -> None:
 
 def test_max_session_seconds_without_max_idle() -> None:
     # max_idle is None (1041 False branch); only the wall-clock cap terminates a
-    # continuously-chatty session.
+    # continuously chatty session.
     class _ChattySession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             i = 0
@@ -3158,7 +3158,7 @@ def test_max_session_seconds_anchored_at_session_start_not_iteration() -> None:
     #
     # The fake clock distinguishes the two anchorings: __aenter__ reads the
     # origin at t=0, and by the time _iterate reads the clock the session wall
-    # time is already 2.0s > the 1.0s budget. With the correct session anchor
+    # time is already 2.0 s > the 1.0 s budget. With the correct session anchor
     # (now - session_start = 2.0 > 1.0) the cap trips on the first loop
     # iteration. With the old iteration anchor (start = now = 2.0, so
     # now - start = 0) it would NOT trip and -- with every other deadline
@@ -3253,7 +3253,7 @@ def test_session_timeout_checked_at_loop_top_with_buffered_events() -> None:
 
     async def run() -> list[TranscriptionEvent]:
         session = _OneShotSession(done_timeout=5.0, max_idle=None, max_session_seconds=1.0)
-        # Deterministic clock: start at 0, then jump past the 1.0s budget so the
+        # Deterministic clock: start at 0, then jump past the 1.0 s budget so the
         # second loop iteration's top-of-loop check sees remaining <= 0.
         ticks = iter([0.0, 0.0, 2.0, 2.0, 2.0, 2.0])
 
@@ -3419,7 +3419,7 @@ def test_stream_deadlines_model_validates_and_tracks_explicit_fields() -> None:
 
 def test_stream_deadlines_rejects_unknown_field() -> None:
     """An unknown StreamDeadlines field fails construction (``extra='forbid'``)."""
-    # extra="forbid": a misspelled deadline is a silently-dropped SAFETY
+    # extra="forbid": a misspelled deadline is a silently dropped SAFETY
     # parameter -- under pydantic's default extra="ignore" the typo below was
     # swallowed and the session ran with max_idle at its engine default, the
     # exact opposite of what the caller wrote. It MUST fail at construction.
@@ -3429,7 +3429,7 @@ def test_stream_deadlines_rejects_unknown_field() -> None:
     errors = excinfo.value.errors()
     assert [e["type"] for e in errors] == ["extra_forbidden"]
     assert errors[0]["loc"] == ("max_idle_seconds",)
-    # The correctly-spelled field is still accepted (the guard is not blanket).
+    # The correctly spelled field is still accepted (the guard is not blanket).
     assert StreamDeadlines(max_idle=5.0).max_idle == 5.0
 
 
@@ -3644,7 +3644,7 @@ def test_event_end_before_start_is_rejected() -> None:
 
 
 def test_reducer_sorts_when_all_have_timestamps() -> None:
-    """Fully-timestamped finals sort by ``start`` with nothing to disclose."""
+    """Fully timestamped finals sort by ``start`` with nothing to disclose."""
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "second", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "first", start=1.0, end=2.0))
@@ -3939,7 +3939,7 @@ def test_deadline_drain_stops_at_real_buffered_terminal() -> None:
 def test_closed_final_fulfils_supersede_obligation() -> None:
     # A closed final that is a replacement group's only freeze MUST
     # register in the obligation ledger; finalize() must not emit a false
-    # supersede_obligation_unfulfilled for fully-preserved frozen text.
+    # supersede_obligation_unfulfilled for fully preserved frozen text.
     guard = _LifecycleGuard()
     assert guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11)) is not None
     assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None

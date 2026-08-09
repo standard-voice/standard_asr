@@ -1,12 +1,12 @@
-# Plugin Entry Points
+# Plugin entry points
 
-## Who Should Read This?
+## Who should read this?
 
 - **Plugin authors**: Learn how to expose your models to the Standard ASR runtime.
 - **Application developers**: Understand how to discover models that have been installed.
 - **Standard ASR maintainers**: Ensure the ecosystem follows the naming and compliance rules.
 
-## Quick Summary
+## Quick summary
 
 - New to Standard ASR? Read `docs/for_asr_dev/adapting_engine.md` first.
 - Entry point group: `standard_asr.models`.
@@ -16,7 +16,7 @@
 - Entry point value: a callable (function or class) that returns a `StandardASR` implementation.
 - You can test locally with any installed plugin (for example, [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)).
 
-## Naming Rules
+## Naming rules
 
 | Component    | Allowed characters                                  | Notes |
 |--------------|------------------------------------------------------|-------|
@@ -25,7 +25,7 @@
 
 Multiple models per engine are encouraged. Give each preset its own entry point. Presets include quantized variants, multilingual or monolingual builds, and device specializations. A separate entry point per preset lets downstream users request the exact behavior they need.
 
-### Default Models
+### Default models
 
 Leaving `model_name` empty (key written as `engine_id/`) denotes the engine’s canonical default. The discovery API accepts empty names and logs a warning so authors remember to document what the default does. An explicit default is allowed but discouraged; if you publish one, document what it selects.
 
@@ -51,7 +51,7 @@ distributions that provide the same id (even through PEP 503 folding, such as
 `my_engine` and `my-engine`) are an identity collision, reported as the
 compliance error `engine_id_collision` even on a default run.
 
-## Declaring Entry Points
+## Declaring entry points
 
 ```toml
 [project.entry-points."standard_asr.models"]
@@ -105,7 +105,7 @@ Discovery validates each declaration:
 - Duplicate keys can keep the first declaration or replace with the latest, depending on `on_conflict`.
 - Factories are loaded lazily; heavy dependencies stay unloaded until the model is requested.
 
-## Discovering Models Programmatically
+## Discovering models programmatically
 
 ```python
 from standard_asr import discover_models
@@ -122,7 +122,7 @@ Helper APIs:
 - `pep503_normalize()` lets authors compute the canonical engine id.
 - `ModelRegistry.keys_by_engine(engine_id)` lists all presets for a given engine.
 
-## Required Metadata
+## Required metadata
 
 Your factory MUST return a compliant engine (typically an `EngineBase`
 subclass) that exposes:
@@ -141,7 +141,7 @@ subclass) that exposes:
 
 These are validated by `standard-asr compliance entrypoints`.
 
-## CLI Support
+## CLI support
 
 Install your plugin in the same environment and use the CLI. The
 transcript below was captured live against
@@ -266,9 +266,9 @@ Flags of interest:
   avoid instantiation cost or side effects entirely.
 - `--on-conflict replace` helps debug when multiple packages expose the same model id.
 
-## Compliance Testing
+## Compliance testing
 
-The `standard_asr.compliance.check_entrypoints()` helper powers our compliance tests and the CLI. It guarantees:
+The `standard_asr.compliance.check_entrypoints()` helper powers the compliance suite and the CLI. It guarantees:
 
 1. Entry points exist (no silent typos).
 2. Factories load successfully.
@@ -287,7 +287,7 @@ if not report.passed:
     raise SystemExit(1)
 ```
 
-Our own compliance suite imports this helper to keep the ecosystem predictable. The checker already verifies capability declarations alongside entry-point metadata (see the full surface below), and grows additively as the metadata contract expands (supported locales, etc.) while keeping the API stable for you.
+The Standard ASR compliance suite imports this helper to keep the ecosystem predictable. The checker already verifies capability declarations alongside entry-point metadata (see the full surface below), and grows additively as the metadata contract expands (supported locales, etc.) while keeping the API stable for you.
 
 ### The full compliance surface
 
@@ -370,7 +370,7 @@ def test_batch_result_within_capabilities() -> None:
     assert report.passed, [i.message for i in report.issues]
 ```
 
-## Checklist for Plugin Authors
+## Checklist for plugin authors
 
 - [ ] Choose a PEP 503–friendly engine id (ideally your package name).
 - [ ] List every shipped preset as `<engine_id>/<model_name>`.

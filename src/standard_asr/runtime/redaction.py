@@ -57,7 +57,7 @@ from standard_asr.contract.exceptions import ConfigError
 
 #: Substring tokens that mark a field name as credential-like. A field whose
 #: name contains any of these (case-insensitive) has its value redacted from
-#: validation-error detail, so a mis-placed secret (e.g. an ``api_key`` put in a
+#: validation-error detail, so a mis-placed secret (for example, an ``api_key`` put in a
 #: request body / ``options`` / ``--options``) is never reflected back to the
 #: client / proxy / bug-report logs.
 _CREDENTIAL_FIELD_TOKENS: tuple[str, ...] = (
@@ -91,7 +91,7 @@ _REDACTED_KEY: str = "[redacted-key]"
 #: (see the module docstring).
 _FIELD_NAME_SHAPED_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]{0,31}")
 
-#: pydantic's own structural ``loc`` markers (e.g. ``[key]`` for a mapping-key
+#: pydantic's own structural ``loc`` markers (for example, ``[key]`` for a mapping-key
 #: error): schema machinery text, kept verbatim.
 _PYDANTIC_LOC_MARKER = re.compile(r"\[[a-z_]+\]")
 
@@ -167,11 +167,11 @@ def _msg_echoes_input(error: dict[str, Any]) -> bool:
     ``field_validator`` / ``model_validator`` raising ``ValueError(f"...{v}...")``
     (a cross-field model validator may echo any field's value, and its ``loc`` is
     empty so the credential-name check cannot catch it). Such a message would
-    reflect a mis-placed secret back to the (unauthenticated) caller. We detect it
+    reflect a mis-placed secret back to the (unauthenticated) caller. The check detects it
     by content: if the stringified input -- or, for a model-level error, any of
     the input mapping's values -- appears in the message, the message is echoing
     it. Value-free built-in messages (``missing``, ``int_parsing``,
-    ``extra_forbidden``, ...) do not match and are preserved.
+    ``extra_forbidden``, and so on) do not match and are preserved.
 
     Args:
         error: A single ``ValidationError.errors()`` entry.
@@ -205,7 +205,7 @@ def sanitize_validation_errors(
 
     FastAPI / pydantic's default error detail echoes the offending ``input``
     value verbatim (and may repeat it under ``ctx``). When a caller mis-places a
-    secret (e.g. an ``api_key`` in the JSON body or ``options``), that value is
+    secret (for example, an ``api_key`` in the JSON body or ``options``), that value is
     reflected back into the client / any intermediary proxy / a copied bug report
     -- a credential leak. This rebuilds each entry from only the safe structured
     fields (``type``, ``loc``, ``msg``), thereby dropping the ``input`` echo, the
@@ -219,9 +219,9 @@ def sanitize_validation_errors(
         errors: The raw ``ValidationError.errors()`` / ``RequestValidationError``
             error list.
         loc_prefix: Path components prepended to each entry's ``loc`` so a
-            standalone ``ValidationError`` (e.g. from an ``options`` build or
+            standalone ``ValidationError`` (for example, from an ``options`` build or
             engine construction, whose ``loc`` is relative to its own model) is
-            anchored under the request field it came from (e.g. ``["options"]`` /
+            anchored under the request field it came from (for example, ``["options"]`` /
             ``["config"]``). The prefix participates in credential-field
             detection so a prefixed credential path is still redacted; its own
             components are the standard layer's text and are kept verbatim.
@@ -240,7 +240,7 @@ def sanitize_validation_errors(
         # including cross-field model_validators whose loc is empty), which would
         # otherwise leak a mis-placed secret into the unauthenticated error
         # surface; value-free built-in messages (missing, int_parsing,
-        # extra_forbidden, ...) are kept for usefulness.
+        # extra_forbidden, and so on) are kept for usefulness.
         redact_msg = loc_is_credential(loc) or _msg_echoes_input(error)
         masked_loc = loc[: len(prefix)] + [
             _sanitize_loc_component(part) for part in loc[len(prefix) :]
@@ -260,12 +260,12 @@ def sanitized_validation_message(exc: ValidationError, *, prefix: str = "Invalid
     Used where a single ``detail`` string is expected (the ``options`` build
     path on the server and the CLI ``--options`` parser, engine-construction
     failures). Mirrors :func:`sanitize_validation_errors`: it names the offending
-    field(s) and the validator message but never echoes the submitted value, and
+    fields and the validator message but never echoes the submitted value, and
     redacts credential-like fields entirely.
 
     Args:
         exc: The pydantic validation error.
-        prefix: Leading label naming what failed validation (e.g.
+        prefix: Leading label naming what failed validation (for example,
             ``"Invalid configuration"`` for engine-construction errors).
 
     Returns:
@@ -298,7 +298,7 @@ def config_error_from_validation(
 
     Args:
         exc: The pydantic validation error raised at construction.
-        prefix: Leading label naming what failed (e.g. the engine / model).
+        prefix: Leading label naming what failed (for example, the engine / model).
 
     Returns:
         A :class:`ConfigError` carrying the scrubbed message and ``details``.

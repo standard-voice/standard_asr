@@ -44,7 +44,7 @@ from standard_asr.contract.results import Segment, TranscriptionResult
 UnrenderablePolicy = Literal["error", "omit", "collapse"]
 
 #: Matches runs of two-or-more newlines (optionally with intervening blank
-#: whitespace), i.e. the blank-line cue separator. Transcript text containing
+#: whitespace), that is, the blank-line cue separator. Transcript text containing
 #: such a run could otherwise forge or split cue blocks (cues are blank-line
 #: delimited in both SRT and WebVTT). Line terminators are normalized to ``\n``
 #: by :func:`_sanitize_cue_text` *before* this runs, so matching ``\n`` alone is
@@ -81,7 +81,7 @@ def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
     containing an interior blank line followed by an index and a timestamp line
     could forge a new cue. WebVTT additionally parses ``&`` and ``<`` as markup:
     a bare ``<`` opens a cue-span tag that the browser's WebVTT tokenizer
-    consumes up to the next ``>``, so unescaped ``<`` in cue text (e.g. an
+    consumes up to the next ``>``, so unescaped ``<`` in cue text (for example, an
     engine-leaked ``<unk>`` token, ``<i>``, or "a < b") makes the browser
     *silently drop* that span -- the cardinal silent-wrong-result sin. ``&``
     likewise begins a character reference. Per the W3C WebVTT cue-text grammar
@@ -318,7 +318,7 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
     The null rule distinguishes the two empty states: ``segments is None``
     means segmentation was *not requested / not applicable* -- the synthetic
     whole-text fallback applies -- whereas ``segments == []`` means it *was
-    requested but is empty* (e.g. confirmed silence): zero cues,
+    requested but is empty* (for example, confirmed silence): zero cues,
     unconditionally, never a fabricated full-span cue.
 
     Segments with no VISIBLE PAYLOAD are dropped first
@@ -470,7 +470,7 @@ def to_srt(
     milliseconds; the fallback exists for the same player behavior).
     ``result.segments is None`` (segmentation not requested/applicable) uses
     the same whole-text fallback under every policy; ``segments == []``
-    (requested but empty, e.g. silence) ALWAYS yields no cues. The synthetic
+    (requested but empty, for example, silence) ALWAYS yields no cues. The synthetic
     cue carries no speaker label -- a whole-text cue has no single
     attributable speaker -- so ``include_speakers`` has no effect on it.
     Pass a fully renderable result for time-accurate (and

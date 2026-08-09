@@ -28,7 +28,7 @@ class SampleRateRange(BaseModel):
 
     The third ``accepted_sample_rates`` variant (besides an explicit ``list[int]``
     and ``"any"``), for engines whose I/O boundary is a *range* rather than a
-    discrete set -- e.g. AWS Transcribe accepts any rate in ``[8000, 48000]``
+    discrete set -- for example, AWS Transcribe accepts any rate in ``[8000, 48000]``
     (research 4). Without it such an engine must either enumerate a few points
     (forcing the standard to needlessly resample an in-range rate it would accept,
     losing quality) or declare ``"any"`` (over-declaring, so an out-of-range rate
@@ -194,7 +194,7 @@ class BaseProperties(BaseModel):
         native_sample_rate: The model's native sample rate in Hz.
         accepted_sample_rates: Sample rates the engine accepts, or ``"any"``.
         required_input_sample_rate: Sample rate the wire protocol hard-requires
-            (e.g. 24000 for OpenAI Realtime), if any.
+            (for example, 24000 for OpenAI Realtime), if any.
         max_file_size: Maximum file/payload size in bytes, if any.
         max_audio_duration: Maximum audio duration in seconds, if any.
         wire_encodings: Wire encodings supported for streaming, if any.
@@ -226,7 +226,7 @@ class BaseProperties(BaseModel):
         validate_default=True,
         # `model_name` is a deliberate, central field of this protocol. Opt out of
         # pydantic's `model_` protected namespace so it does not warn (the warning
-        # fires on older pydantic, e.g. the lower-bounds lane's 2.5).
+        # fires on older pydantic, for example, the lower-bounds lane's 2.5).
         protected_namespaces=(),
     )
 
@@ -441,7 +441,7 @@ class BaseProperties(BaseModel):
         """Require ``required_input_sample_rate`` to be an accepted rate.
 
         The standard resamples wire/array input to ``required_input_sample_rate``
-        when set (e.g. ``required=24000`` with ``accepted=[24000]``). If a
+        when set (for example, ``required=24000`` with ``accepted=[24000]``). If a
         concrete ``accepted_sample_rates`` (a list OR a range) does not admit the
         required rate, the engine's own contract is contradictory (the resample
         target is unreachable), so this fails loudly at declaration time rather
@@ -472,7 +472,7 @@ class BaseProperties(BaseModel):
         ``accepted_sample_rates`` (list or range) is self-contradictory: an 8 kHz
         telephony model that declares ``native_sample_rate=8000`` but excludes
         8000 from ``accepted_sample_rates`` would have its own native input
-        silently upsampled (e.g. to 16 kHz), degrading quality. An
+        silently upsampled (for example, to 16 kHz), degrading quality. An
         8 kHz model is a distinct native model, not a low-rate variant. Mirror the
         ``required_input_sample_rate`` reachability invariant and fail loudly at
         declaration time. ``"any"`` accepts every rate and so skips the check.

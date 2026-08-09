@@ -39,7 +39,7 @@ DIAG_LANGUAGE_REFINEMENT_ACCEPTED = "language_refinement_accepted"
 _BCP47_RE = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 _PRIVATE_USE_RE = re.compile(r"^(?:x|i)(?:-[A-Za-z0-9]{1,8})+$", re.IGNORECASE)
 
-#: A BCP-47 *primary* language subtag is 2-3 alpha (ISO 639-1/-2/-3, e.g. ``en``,
+#: A BCP-47 *primary* language subtag is 2-3 alpha (ISO 639-1/-2/-3, for example, ``en``,
 #: ``yue``) or 4 alpha (reserved) -- never a free-form word. Registered 5-8 long
 #: primary subtags exist but are vanishingly rare in ASR; rejecting bare long
 #: words (``"Chinese"``, ``"English"``) catches the common native-name
@@ -71,11 +71,11 @@ def _canonical_case_subtag(index: int, subtag: str) -> str:
     if index == 0:
         return lower
     if len(subtag) == 4 and subtag.isalpha():
-        return lower.capitalize()  # script subtag -> Titlecase (e.g. "Hans")
+        return lower.capitalize()  # script subtag -> Titlecase (for example, ``Hans``)
     if subtag.isalpha() and len(subtag) == 2:
-        return subtag.upper()  # alpha-2 region -> UPPERCASE (e.g. "US")
+        return subtag.upper()  # alpha-2 region -> UPPERCASE (for example, ``US``)
     if subtag.isdigit() and len(subtag) == 3:
-        return subtag  # numeric-3 region (e.g. "001") -> unchanged
+        return subtag  # numeric-3 region (for example, ``001``) -> unchanged
     return lower
 
 
@@ -84,7 +84,7 @@ def normalize_bcp47(tag: str) -> str:
 
     Trims/replaces separators, then applies BCP-47 canonical casing
     (language lowercase, script Titlecase, region UPPERCASE) so values echoed
-    back to applications -- e.g. ``detected_language`` and diagnostic
+    back to applications -- for example, ``detected_language`` and diagnostic
     ``provided``/``effective`` fields -- read canonically (``zh-Hans``, not
     ``zh-hans``). Per RFC 5646 §2.1.1 the script/region conventions apply only
     before the first singleton (a 1-char subtag); every subtag after it --
@@ -284,7 +284,7 @@ def effective_candidate_languages(
     # asserts that something *was* ignored, so it MUST NOT fire when nothing was
     # provided: with no list there is nothing to ignore, and emitting a warning
     # anyway injects a false diagnostic into the most common path (an
-    # ``auto`` engine that does not support candidate languages -- e.g. most
+    # ``auto`` engine that does not support candidate languages -- for example, most
     # local Whisper-family engines -- gets this warning on every ordinary
     # request). The spec carve-out still holds: a list that *was* provided but is
     # unsupported is reported (never raised), independent of strict/best_effort.

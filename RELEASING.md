@@ -26,16 +26,16 @@ After the one-time setup exists, every release is:
 There are no long-lived PyPI API tokens. Production PyPI publishing is only
 triggered by a GitHub Release; manual dispatch publishes only to TestPyPI.
 
-## Release Architecture
+## Release architecture
 
-### What Publishes
+### What publishes
 
 This repo publishes exactly one distribution: **`standard-asr`**. Engine plugins
 live in their own repositories (for example, `std-faster-whisper`, `std-mlx-audio`),
 each with its own PyPI project, trusted publisher, and release cadence. That
 keeps engine dependencies and licenses isolated from the core package.
 
-### Toolchain Choices
+### Toolchain choices
 
 - **Build frontend:** `uv build --package standard-asr --no-sources --out-dir
   dist --clear`. `--no-sources` is intentional: it proves the package builds
@@ -51,7 +51,7 @@ keeps engine dependencies and licenses isolated from the core package.
 - **Version source:** static `project.version` in `pyproject.toml`. The git tag
   mirrors it as `vX.Y.Z`; the workflow fails if they differ.
 
-### Trust Boundaries
+### Trust boundaries
 
 The workflow separates build and publish:
 
@@ -79,7 +79,7 @@ package) with PEP 740 attestations; the GitHub Release carries the notes and
 GitHub's auto-generated source archives. The workflow never uploads wheels or
 sdists to the Release, so it stays compatible with immutable releases.
 
-## One-Time Setup
+## One-time setup
 
 Do this once per index. These are external settings and cannot be committed to
 the repo.
@@ -87,14 +87,14 @@ the repo.
 ### 1. Prerequisites
 
 - PyPI and TestPyPI accounts with 2FA enabled.
-- Admin access to `standard-voice/standard_asr`.
+- Administrator access to `standard-voice/standard_asr`.
 - The workflow file committed at `.github/workflows/release.yml`.
 
 Use pending publishers if the `standard-asr` project does not exist yet. A
 pending publisher creates the project on first successful upload, but it does
 not reserve the name before that first upload.
 
-### 2. Configure PyPI Trusted Publisher
+### 2. Configure the PyPI trusted publisher
 
 On <https://pypi.org/manage/account/publishing/> add a pending GitHub publisher:
 
@@ -109,7 +109,7 @@ On <https://pypi.org/manage/account/publishing/> add a pending GitHub publisher:
 If the project already exists, add the same publisher under the project's
 settings instead of the account-level pending publisher page.
 
-### 3. Configure TestPyPI Trusted Publisher
+### 3. Configure the TestPyPI trusted publisher
 
 Repeat the same setup on <https://test.pypi.org/manage/account/publishing/>,
 but set:
@@ -120,7 +120,7 @@ but set:
 
 PyPI and TestPyPI are separate services. Configure both.
 
-### 4. Create GitHub Environments
+### 4. Create the GitHub environments
 
 In GitHub: **Settings -> Environments**.
 
@@ -137,9 +137,9 @@ Branch protection for `main` should require exactly the aggregate
 `checks-complete` status. The release workflow uses that same status to prove a
 release candidate is CI-green.
 
-## How The Workflow Runs
+## How the workflow runs
 
-### Manual Dry-Run To TestPyPI
+### Manual dry run to TestPyPI
 
 `workflow_dispatch` runs from the default branch and publishes to TestPyPI only:
 
@@ -148,7 +148,7 @@ release candidate is CI-green.
 
 No production PyPI path exists for manual dispatch.
 
-### Production Release To PyPI
+### Production release to PyPI
 
 `release: published` runs when a maintainer publishes a GitHub Release:
 
@@ -157,15 +157,15 @@ No production PyPI path exists for manual dispatch.
 
 The `pypi` environment approval happens immediately before upload to PyPI.
 
-## Cutting A Release
+## Cutting a release
 
-### Step 1 - Pre-Flight
+### Step 1 - pre-flight checks
 
 - `main` contains exactly what you want to ship.
 - `checks-complete` is green on the release commit.
 - Decide the version using the policy below.
 
-### Step 2 - Bump Version And Changelog
+### Step 2 - bump version and changelog
 
 1. Set `version = "X.Y.Z"` in `pyproject.toml`.
 2. Move `CHANGELOG.md` `[Unreleased]` content into `[X.Y.Z] - YYYY-MM-DD`.
@@ -182,7 +182,7 @@ uv build --package standard-asr --no-sources --out-dir dist --clear
 
 The printed version must match the tag you plan to publish.
 
-### Step 3 - Land The Release Commit
+### Step 3 - land the release commit
 
 Open a PR or push a single release commit:
 
@@ -192,7 +192,7 @@ chore(release): vX.Y.Z
 
 Wait for `checks-complete` to pass on `main`.
 
-### Step 4 - Dry-Run To TestPyPI
+### Step 4 - dry run to TestPyPI
 
 The manual dispatch runs the same CI-green guard as a real release, so
 `checks-complete` must already be green on the `main` commit (Step 3) -- the
@@ -203,12 +203,12 @@ build job fails fast otherwise.
 3. Approve the `testpypi` environment if it is protected.
 4. Watch the workflow upload to <https://test.pypi.org/project/standard-asr/>.
 
-### Step 5 - Verify TestPyPI
+### Step 5 - verify TestPyPI
 
 TestPyPI does not mirror all dependencies, so let TestPyPI provide
 `standard-asr` while real PyPI provides the dependencies. uv defaults to a
 `first-index` strategy (a dependency-confusion safeguard): when a dependency such
-as `numpy` also exists on TestPyPI at an incompatible version, uv will not fall
+as `numpy` also exists on TestPyPI at an incompatible version, uv does not fall
 back to PyPI and resolution fails loudly. Pass `--index-strategy
 unsafe-best-match` so uv considers every index -- safe here because both indexes
 are trusted:
@@ -242,7 +242,7 @@ pip install \
 Confirm the TestPyPI page renders the README, classifiers, project URLs, and
 metadata correctly.
 
-### Step 6 - Publish To PyPI
+### Step 6 - publish to PyPI
 
 1. GitHub -> **Releases** -> **Draft a new release**.
 2. Choose/create tag `vX.Y.Z` at the release commit on `main`.
@@ -256,7 +256,7 @@ The workflow then uploads the verified sdist/wheel to PyPI with PEP 740
 attestations. Artifacts are not attached to the GitHub Release -- PyPI is the
 canonical distribution channel for the package.
 
-### Step 7 - Verify PyPI
+### Step 7 - verify PyPI
 
 ```bash
 uv venv /tmp/standard-asr-pypi
@@ -272,7 +272,7 @@ Then verify:
 - The built wheel and sdist are on PyPI (they are not attached to the GitHub Release).
 - The release notes match `CHANGELOG.md`.
 
-## Versioning Policy
+## Versioning policy
 
 `pyproject.toml` is the single source of truth. Tags mirror it as `vX.Y.Z`.
 
@@ -285,7 +285,7 @@ Then verify:
 - **Yanking:** If a release is broken, yank it on PyPI and ship a new patch.
   Never reuse a version number.
 
-## First Release (`v0.1.0`)
+## First release (`v0.1.0`)
 
 The changelog already contains a drafted `0.1.0` section, but there is no
 published GitHub Release or PyPI upload yet. For the first release:
@@ -306,10 +306,10 @@ published GitHub Release or PyPI upload yet. For the first release:
 | Trusted publisher 403 | PyPI/TestPyPI publisher fields do not exactly match owner, repo, workflow filename, and environment. |
 | Job waits before publish | The GitHub Environment requires approval. Review and approve the deployment. |
 | Upload says file already exists | PyPI/TestPyPI versions are immutable. Bump to a new version or pre-release. |
-| TestPyPI install cannot resolve a dependency | uv's default first-index strategy will not fall back to PyPI for a package TestPyPI also hosts (for example, `numpy`). Add `--index-strategy unsafe-best-match` (both indexes are trusted). |
+| TestPyPI install cannot resolve a dependency | uv's default first-index strategy does not fall back to PyPI for a package TestPyPI also hosts (for example, `numpy`). Add `--index-strategy unsafe-best-match` (both indexes are trusted). |
 | No PyPI attestations | Confirm the upload used Trusted Publishing with `id-token: write` and the PyPA publish action. |
 
-## Future Plugin Releases
+## Future plugin releases
 
 When adding a new engine plugin, do not add it to this release workflow. Create
 a separate plugin repository and copy this pattern:

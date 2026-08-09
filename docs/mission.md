@@ -1,4 +1,4 @@
-# Mission & Philosophy
+# Mission & philosophy
 
 ## Why Standard ASR?
 
@@ -10,7 +10,7 @@ and their users are limited to whatever languages and domains those engines
 cover.
 
 Meanwhile, the model that would serve them best already exists -- as an
-open-source checkpoint, a cloud endpoint, or a research prototype. The problem is
+open source checkpoint, a cloud endpoint, or a research prototype. The problem is
 not a lack of good ASR; it is the absence of a shared protocol that lets
 applications and engines meet without per-pair integration work.
 

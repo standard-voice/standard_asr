@@ -40,10 +40,10 @@ class InputKind(str, Enum):
 
     Attributes:
         ARRAY: An already-decoded waveform (NumPy array).
-        ENCODED_BYTES: Encoded audio held in memory (e.g. MP3/WAV bytes).
+        ENCODED_BYTES: Encoded audio held in memory (for example, MP3/WAV bytes).
         ENCODED_FILE: An encoded audio file on disk.
         FETCHABLE_URL: A URL the engine/cloud service fetches server-side.
-        STORAGE_URI: A provider cloud-storage URI (e.g. ``s3://``, ``gs://``)
+        STORAGE_URI: A provider cloud-storage URI (for example, ``s3://``, ``gs://``)
             the engine resolves with its own cloud-SDK credentials. Distinct
             from :data:`FETCHABLE_URL`: it is not an HTTPS-fetchable public URL
             and never passes through the standard's SSRF validator.
@@ -76,8 +76,8 @@ class AudioBytes:
     The sample rate is self-describing via the file header.
 
     Args:
-        data: Encoded audio bytes (e.g. the contents of an MP3/WAV file).
-        container: Optional container/format hint (e.g. ``"wav"``, ``"mp3"``).
+        data: Encoded audio bytes (for example, the contents of an MP3/WAV file).
+        container: Optional container/format hint (for example, ``"wav"``, ``"mp3"``).
     """
 
     data: bytes
@@ -109,7 +109,7 @@ class AudioArray:
 
         Both downstream paths assume floating samples in ``[-1, 1]``: array
         passthrough delivers them unscaled, and WAV encoding scales by full
-        int16 range. An integer array (e.g. ``int16`` PCM) would be silently
+        int16 range. An integer array (for example, ``int16`` PCM) would be silently
         mis-scaled by either path -- a wrong-audio result, the cardinal sin --
         so it is rejected at construction with an actionable message.
 
@@ -205,7 +205,7 @@ class AudioStorageUri:
     scheme is rejected with a clear error.
 
     Args:
-        value: The storage URI, e.g. ``"s3://bucket/key.wav"`` or
+        value: The storage URI, for example, ``"s3://bucket/key.wav"`` or
             ``"gs://bucket/key.flac"``. The sample rate is self-describing at
             the remote/server side once the engine resolves it.
 
@@ -323,7 +323,7 @@ def _coerce_array_tuple(value: Sequence[object]) -> AudioArray:
     samples, sample_rate = value
     if not isinstance(samples, np.ndarray):
         raise TypeError("First element of the audio tuple must be a NumPy ndarray.")
-    # Accept both a builtin ``int`` and a NumPy integer scalar (e.g. the
+    # Accept both a builtin ``int`` and a NumPy integer scalar (for example, the
     # ``np.int64`` a caller gets from ``array.shape`` or ``soundfile.read``);
     # ``bool`` is an ``int`` subclass and is excluded. The rate is normalized to
     # a builtin ``int`` so downstream code never sees a NumPy scalar.

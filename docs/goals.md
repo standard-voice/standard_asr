@@ -1,8 +1,8 @@
-# Project Goals
+# Project goals
 
 Concrete, executable goals that deliver on the [mission](mission.md).
 
-## G.1: Establish a Universal Interface
+## G.1: Establish a universal interface
 
 - **G.1.1: Standardize the core interface.** Define a near-zero-dependency core
   protocol (`StandardASR`) that normalizes `transcribe` / `transcribe_async`
@@ -25,16 +25,16 @@ Concrete, executable goals that deliver on the [mission](mission.md).
   streaming behavior -- from rewriting interims to append-only token streams to
   two-pass rescoring.
 
-## G.2: Provide a Developer Toolkit
+## G.2: Provide a developer toolkit
 
 - **G.2.1: One-command compliance.** A compliance test suite that engine authors
   run with `standard-asr compliance run` to verify their implementation.
-- **G.2.2: Out-of-the-box tooling.** A CLI for discovery and quick transcription,
+- **G.2.2: Ready-to-use tooling.** A CLI for discovery and quick transcription,
   a FastAPI server that exposes any engine over HTTP/WebSocket, and a dependency
   conflict doctor.
 - **G.2.3: Boilerplate templates.** A reference plugin template for quick starts.
 
-## G.3: Zero-Config Operation
+## G.3: Zero-config operation
 
 - **G.3.1: Dynamic config generation.** All engine parameters are Pydantic models
   with JSON Schema output and secret-field marking, so UIs can render config
@@ -42,7 +42,7 @@ Concrete, executable goals that deliver on the [mission](mission.md).
 - **G.3.2: Plugin auto-discovery.** Entry-point-based discovery: install a plugin,
   and it appears in `discover_models()` with no application-side configuration.
 
-## G.4: Extensible Plugin Ecosystem
+## G.4: Extensible plugin ecosystem
 
 - **G.4.1: Core and implementation separated.** The core package is a near-zero-
   dependency protocol (`numpy` + `pydantic`). Each engine lives in its own
@@ -54,7 +54,7 @@ Concrete, executable goals that deliver on the [mission](mission.md).
 - **G.4.3: Plugin catalog.** A public directory of compliant engines (known
   plugins, capability summaries, licenses).
 
-## G.5: Cross-Language Wire Protocol
+## G.5: Cross-language wire protocol
 
 - **G.5.1: Wire contract as first-class spec.** The HTTP/WebSocket contract
   evolves into an independently versioned, language-neutral specification. The

@@ -93,13 +93,13 @@ def decode_base64_audio(value: str) -> bytes:
     Rules:
 
     * A ``data:`` URI MUST carry the explicit ``;base64,`` marker; the bytes
-      after it are base64-decoded. A ``data:`` URI without ``;base64,`` (e.g. a
+      after it are base64-decoded. A ``data:`` URI without ``;base64,`` (for example, a
       percent-encoded ``data:audio/wav,...``) is rejected rather than silently
       treated as base64.
     * Any other string is treated as a bare base64 payload.
 
     The ``data:`` scheme is detected case-insensitively (``data:``, ``DATA:``,
-    ``Data:`` ...) so this matches the case-insensitive dispatch in
+    ``Data:``, and so on) so this matches the case-insensitive dispatch in
     :func:`load_audio` / :func:`decode_audio`; an upper/mixed-case ``DATA:`` URI
     decodes correctly instead of being mis-parsed as raw base64.
 
@@ -662,7 +662,8 @@ def ensure_datatype(audio: NDArray[Any], data_type: DTypeLike = np.float32) -> N
 
     Args:
         audio: Input NumPy array of any dtype.
-        data_type: Target dtype (e.g., ``"float32"``, ``np.float32``). Default: ``np.float32``.
+        data_type: Target dtype (for example, ``"float32"``, ``np.float32``).
+            Default: ``np.float32``.
 
     Returns:
         NumPy array with the requested dtype. Returns a view (no copy) if already matching.
@@ -688,16 +689,16 @@ def _to_normalized_float32(audio: NDArray[Any]) -> NDArray[np.float32]:
 
     Integer PCM stores samples as raw codes, not amplitudes in ``[-1, 1]``, so a
     bare ``astype(float32)`` followed by a ``[-1, 1]`` clip silently corrupts the
-    waveform (e.g. ``int16`` ``32767`` would clip to ``1.0`` and ``1000`` would
+    waveform (for example, ``int16`` ``32767`` would clip to ``1.0`` and ``1000`` would
     clip to ``1.0`` as well -- a silent-wrong-result). This rescales by the
     dtype's full-scale magnitude instead:
 
     * **Signed integers** (``int8``/``int16``/``int32``/``int64``) divide by
-      ``2**(bits-1)`` (e.g. ``int16`` -> ``/32768``), so ``-min`` maps to exactly
+      ``2**(bits-1)`` (for example, ``int16`` -> ``/32768``), so ``-min`` maps to exactly
       ``-1.0`` and ``+max`` to just under ``+1.0`` (the standard asymmetric PCM
       convention).
     * **Unsigned integers** (``uint8``/``uint16``/``uint32``/``uint64``) are
-      midpoint-centered then scaled: ``(x - 2**(bits-1)) / 2**(bits-1)`` (e.g.
+      midpoint-centered then scaled: ``(x - 2**(bits-1)) / 2**(bits-1)`` (for example,
       ``uint8`` centers at ``128`` then divides by ``128``).
     * **Floating** dtypes are taken as already-normalized amplitudes and only
       cast to ``float32`` (the caller still clips for safety).
@@ -727,7 +728,7 @@ def _to_normalized_float32(audio: NDArray[Any]) -> NDArray[np.float32]:
             # most-negative code maps to exactly -1.0.
             scaled = audio.astype(np.float64) / float(-int(info.min))
         return np.asarray(scaled, dtype=np.float32)
-    # Anything exotic (e.g. bool, complex) is handled by a plain cast; clipping by
+    # Anything exotic (for example, bool, complex) is handled by a plain cast; clipping by
     # the caller keeps the contract range. This mirrors the historical behavior
     # for non-PCM dtypes rather than failing the rare caller.
     return ensure_datatype(audio, "float32")
@@ -778,7 +779,7 @@ def normalize_audio(
     Args:
         audio: Input waveform, 1D ``(n_samples,)`` or 2D ``(n_samples, n_channels)``.
             Signed/unsigned PCM **integer** dtypes are rescaled to ``[-1, 1]`` by
-            their full-scale magnitude (e.g. ``int16`` is divided by ``32768``,
+            their full-scale magnitude (for example, ``int16`` is divided by ``32768``,
             ``uint8`` is centered at ``128`` then divided by ``128``); **floating**
             dtypes are taken as already-normalized amplitudes (and clipped for
             safety). All inputs become ``float32``.
@@ -811,7 +812,7 @@ def normalize_audio(
     """
     # Scale integer PCM to [-1, 1] by its full-scale magnitude before any
     # processing; a bare float cast + clip would corrupt integer samples
-    # (e.g. int16 32767 -> 1.0 AND 1000 -> 1.0). Floats pass through unscaled.
+    # (for example, int16 32767 -> 1.0 AND 1000 -> 1.0). Floats pass through unscaled.
     processed_audio: NDArray[np.float32] = _to_normalized_float32(audio)
     # Basic parameter validation
 
@@ -828,7 +829,7 @@ def normalize_audio(
     #    (resampling.resample_with_backend) -- it prefers scipy's polyphase
     #    resampler (the [audio] extra) and degrades to the core numpy-only
     #    anti-aliasing Fourier resampler, treating ANY scipy import-time failure
-    #    (not just a plain ImportError -- e.g. a broken/partial build) as a
+    #    (not just a plain ImportError -- for example, a broken/partial build) as a
     #    non-fatal fall to the built-in. Warn only when the fallback
     #    actually ran.
     if original_sr != target_sample_rate:
@@ -847,7 +848,7 @@ def normalize_audio(
     if processed_audio.ndim == 1:
         processed_audio = processed_audio[:, np.newaxis]
 
-    # Help static type checker with tuple[int, ...] for shape
+    # Help the static type checker with ``tuple[int, ...]`` for shape
     current_channels = int(processed_audio.shape[1])
 
     # 2. Channel conversion
@@ -856,13 +857,14 @@ def normalize_audio(
             # Downmix to mono using average across channels
             processed_audio = processed_audio.mean(axis=1, dtype=np.float32)[:, np.newaxis]
         else:
-            # Note: For multi-to-multi downmixing (e.g., 6->2), this implementation performs a
-            # simple channel selection/truncation instead of a perceptually accurate mix.
+            # Note: For multi-to-multi downmixing (for example, 6->2), this implementation
+            # performs a simple channel selection/truncation instead of a perceptually
+            # accurate mix.
             # There is no way to ask this function for a mixed result: the decode ladder is
             # fixed (stdlib wave -> soundfile -> FFmpeg on decode failure), and by this point
             # the caller already holds an in-memory array, so no decode step is left to
             # redirect. A caller who needs a true mix must produce it before calling.
-            if target_channels > current_channels:  # Upscale (e.g., mono to stereo)
+            if target_channels > current_channels:  # Upscale (for example, mono to stereo)
                 reps = int(math.ceil(target_channels / current_channels))
                 processed_audio = np.tile(processed_audio, (1, reps))[:, :target_channels]
             else:  # Downmix by truncation
@@ -909,7 +911,7 @@ def load_audio(
     **Returns:** ``np.float32`` array, 16kHz mono by default, values in ``[-1.0, 1.0]``.
 
     Convenience loader for application code that wants a decoded array directly
-    (e.g. to plot or pre-process audio). It handles format detection, decoding,
+    (for example, to plot or pre-process audio). It handles format detection, decoding,
     resampling, and channel conversion automatically, and for a ``str`` it
     auto-detects a base64 ``data:`` URI.
 
@@ -999,10 +1001,10 @@ def load_audio(
             # Path operations failed, continue to treat as file path anyway
             pass
 
-        # Default: treat as file path (will raise FileNotFoundError if not found)
+        # Default: treat as file path (raises FileNotFoundError if not found)
         return load_audio_from_path(s, target_sample_rate, target_channels, max_bytes=max_bytes)
 
-    # Handle pathlib.Path by converting to string
+    # Handle ``pathlib.Path`` by converting to string
     if isinstance(source, pathlib.Path):
         return load_audio_from_path(
             str(source), target_sample_rate, target_channels, max_bytes=max_bytes
@@ -1043,9 +1045,9 @@ def _is_binary_io(obj: Any) -> TypeGuard[BinaryIO]:
         read_attr = getattr(obj, "read", None)
         if not callable(read_attr):
             return False
-        # Probe a zero-length read without consuming data. We avoid peek/read1/seek
+        # Probe a zero-length read without consuming data. Avoid peek/read1/seek
         # for broad compatibility and to not alter stream position/state. Some custom
-        # streams may not support read(0); in such case we return False.
+        # streams may not support read(0); in that case report False.
         sample = read_attr(0)  # pyright: ignore[reportCallIssue]
         return isinstance(sample, (bytes, bytearray, memoryview))
     except Exception:
@@ -1061,7 +1063,7 @@ def load_audio_from_path(
 ) -> NDArray[np.float32]:
     """Load audio from a file path and convert to Standard ASR format.
 
-    **Accepts:** File path as string (e.g., ``"speech.mp3"``, ``"~/audio.wav"``).
+    **Accepts:** File path as string (for example, ``"speech.mp3"``, ``"~/audio.wav"``).
 
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
@@ -1104,14 +1106,14 @@ def load_audio_from_path(
     # Reject an EXISTING non-regular file (FIFO, device, directory) up front:
     # stdlib `wave`/`soundfile` would otherwise block forever on a FIFO with no
     # timeout (a hang/DoS vector), and only the FFmpeg layer's
-    # _validate_local_source_path currently rejects it. A genuinely MISSING path
+    # _validate_local_source_path rejects it. A genuinely MISSING path
     # is deliberately left to fall through so the decoders surface their clear
     # "not found" error (preserving the convenience-loader semantics).
     #
     # The probe syscalls (exists/is_file/stat) are wrapped in
     # OSError -> AudioProcessingError, mirroring _validate_local_source_path: a bare
-    # str is never sniffed, so a pathologically long path string (e.g. a real-sized
-    # data:/base64 URI mistakenly passed as a path, > ~1024 chars) makes the first
+    # str is never sniffed, so a pathologically long path string (for example, a
+    # real-sized data:/base64 URI mistakenly passed as a path, > ~1024 chars) makes the first
     # probe raise OSError(ENAMETOOLONG), which must surface as the contracted
     # AudioProcessingError rather than leak through the documented contract.
     try:
@@ -1160,7 +1162,7 @@ def load_audio_from_bytes(
 ) -> NDArray[np.float32]:
     """Load audio from raw bytes and convert to Standard ASR format.
 
-    **Accepts:** Audio file content as ``bytes`` (e.g., from ``file.read()``, HTTP response).
+    **Accepts:** Audio file content as ``bytes`` (for example, from ``file.read()``, HTTP response).
 
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
@@ -1257,7 +1259,7 @@ def decode_audio(
     if isinstance(source, str):
         # A bare str is ALWAYS a local file path -- never content-sniffed for a
         # data: URI. Sniffing here would let a pathological
-        # filename literally named "data:audio/...;base64,..." be decoded as
+        # filename literally named ``data:audio/...;base64,...`` be decoded as
         # inline base64 instead of opened as a file, silently overriding the
         # explicit AudioPath type tag the conversion layer relies on. No
         # strip(): a path with surrounding whitespace is a legitimate (if
@@ -1457,8 +1459,8 @@ def _load_with_ffmpeg(
     # Security: a string source is a *local file* and
     # nothing else. Validate + absolutize it up front (before probing), and
     # constrain ffmpeg/ffprobe to the file/pipe protocols so they can never be
-    # coerced into fetching http(s)://, tcp://, concat:, data:, etc. via a
-    # crafted input string.
+    # coerced into fetching ``http(s)://``, ``tcp://``, ``concat:``, ``data:``,
+    # etc. via a crafted input string.
     #
     # Validate BEFORE the ffmpeg-presence check: a missing or
     # mistyped path must surface the decoders' clear "not found" error even when
@@ -1580,7 +1582,7 @@ def _load_with_ffmpeg(
 
         # Respect contract: mono->1D, multi->2D even if n_samples==1
         if final_target_channels == 1:
-            # Ensure we return 1D array (n_samples,) not scalar for single sample
+            # Return a 1D array (n_samples,), not a scalar, for a single sample
             return audio.reshape(-1)
         return audio
 
@@ -1612,7 +1614,7 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
 
     Args:
         source: A local file path, or raw bytes.
-        entry: The ``stream=`` field to read (e.g. ``"channels"``,
+        entry: The ``stream=`` field to read (for example, ``"channels"``,
             ``"sample_rate"``).
         timeout: Max seconds to wait. Default: ``5.0``.
 

@@ -112,7 +112,7 @@ DEFAULT_AUDIO_HISTORY_MAXLEN = 256
 #: session's :class:`_LifecycleGuard` retains. Like every other session
 #: resource (event buffer, audio queue, audio history -- all bounded), the
 #: diagnostic channel is bounded so a misbehaving-but-usable engine that trips a
-#: clamp on (nearly) every event -- e.g. a perpetually jittering audio cursor --
+#: clamp on (nearly) every event -- for example, a perpetually jittering audio cursor --
 #: cannot grow the list without limit over a multi-hour live session and slowly
 #: exhaust memory (every session buffer is bounded). On overflow the guard
 #: stops retaining individual entries and instead keeps a single aggregated
@@ -141,7 +141,7 @@ _SYNC_PUMP_POLL_SECONDS = 5.0
 #: bridge owns exactly one background loop thread whose teardown the sync-bridge
 #: compliance check asserts on directly (via ``is_loop_alive``) rather than by
 #: diffing the whole process thread set -- a diff would mis-flag a dependency's
-#: benign daemon thread (e.g. tqdm's monitor) as a bridge leak.
+#: benign daemon thread (for example, tqdm's monitor) as a bridge leak.
 _SYNC_BRIDGE_LOOP_THREAD_NAME = "standard-asr-sync-bridge-loop"
 
 _INPUT_SOURCE_ERROR_DETAIL = "Audio input source failed during streaming."
@@ -194,10 +194,10 @@ class StreamDeadlines(BaseModel):
     """
 
     # extra="forbid" like every other application-input model (RuntimeParams,
-    # AudioFormat, ...): a misspelled deadline field (e.g. ``max_idle_seconds``)
+    # AudioFormat, and so on): a misspelled deadline field (for example, ``max_idle_seconds``)
     # MUST fail at construction. Under pydantic's default extra="ignore" the
     # typo'd override silently vanished and the session ran with the deadline
-    # disabled -- a silently-dropped safety parameter.
+    # disabled -- a silently dropped safety parameter.
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     done_timeout: float | None = Field(default=DEFAULT_DONE_TIMEOUT, gt=0.0)
@@ -223,7 +223,7 @@ def validate_stable_until(text: str, stable_until: int) -> bool:
     """Return whether ``stable_until`` is a valid frozen-prefix boundary.
 
     ``stable_until`` is a codepoint count; ``text[:stable_until]`` is the frozen
-    prefix. It MUST NOT split a Unicode combining sequence -- i.e. the codepoint
+    prefix. It MUST NOT split a Unicode combining sequence -- that is, the codepoint
     at the cut (if any) must not be a combining mark. Validated
     with stdlib ``unicodedata`` only.
 
@@ -590,7 +590,7 @@ class TranscriptionEvent(BaseModel):
         """Build a ``progress`` event (heartbeat / cursor / reconnect notice).
 
         Args:
-            **kw: Event fields (e.g. ``audio_processed_until``, ``reconnect``).
+            **kw: Event fields (for example, ``audio_processed_until``, ``reconnect``).
 
         Returns:
             A ``progress`` event.
@@ -645,7 +645,7 @@ class _ReadingOrderLedger:
         self._order: list[str] = []
 
     def __contains__(self, segment_id: str) -> bool:
-        """Return whether ``segment_id`` currently holds a live position.
+        """Return whether ``segment_id`` still holds a live position.
 
         Args:
             segment_id: The id to look up.
@@ -913,7 +913,7 @@ class StreamReducer:
     :class:`TranscriptionSession` are already guard-filtered, so these
     checks fire only for raw non-compliant streams.
 
-    Timestamp handling: many engines (e.g. Qwen3 streaming) emit no timestamps.
+    Timestamp handling: many engines (for example, Qwen3 streaming) emit no timestamps.
     The engine's measurement is stored VERBATIM -- a missing ``start``/``end``
     stays ``None`` on the reduced :class:`~standard_asr.contract.results.Segment`
     (``timestamp_status`` derives from the values; nothing is fabricated and
@@ -1064,7 +1064,7 @@ class StreamReducer:
         The last non-``None`` ``detected_language`` carried by an ADMITTED
         event (a suppressed event never commits one). This is the same value
         :meth:`result` reports; exposed separately so a caller holding a
-        live reducer (e.g. the session's terminal-event funnel) can read it
+        live reducer (for example, the session's terminal-event funnel) can read it
         without building a full intermediate result.
 
         Returns:
@@ -1207,8 +1207,8 @@ class _CoalescingBuffer:
         """
         self._capacity = capacity
         # deque of (event, alive) where alive=False marks a coalesced partial
-        # that was invalidated in place (lazily skipped on get) so we keep O(1)
-        # amortized put/get without an O(n) reindex.
+        # that was invalidated in place (lazily skipped on get) so put/get stay
+        # amortized O(1) without an O(n) reindex.
         self._items: deque[_Slot] = deque()
         self._partial_slot: dict[str, _Slot] = {}
         self._live_count = 0
@@ -1244,7 +1244,7 @@ class _CoalescingBuffer:
             itself, or (for a coalesced partial) the survivor carrying any
             carried-forward ``speaker`` / ``detected_language``. The
             producer hands exactly this value to the reducer, so the
-            reduction consumes what the consumer will actually see.
+            reduction consumes what the consumer actually sees.
 
         Raises:
             EventBufferOverflow: If the buffer is at capacity and the event is a
@@ -1292,7 +1292,7 @@ class _CoalescingBuffer:
             return event
 
         # A terminal-for-segment event invalidates and DROPS any pending
-        # partial for that/those segment(s) so a dead segment never revives --
+        # partial for those segments so a dead segment never revives --
         # UNLESS that partial is the consumer's only mention of the segment.
         if event.type in ("final", "supersede"):
             targets = [event.segment_id, *event.old_ids]
@@ -1395,7 +1395,7 @@ class _CoalescingBuffer:
             raise EventBufferOverflow
 
     def close(self) -> None:
-        """Signal that no further events will be added."""
+        """Signal that no further events are coming."""
         self._closed = True
         self._event.set()
 
@@ -1705,7 +1705,7 @@ class _LifecycleGuard:
             # merge is unavoidable by pigeonhole (the canonical case is
             # many->1) and someone's words would be silently mis-attributed --
             # the merged segment has a single ``speaker`` field. Set-to-set
-            # lineage cannot prove anything finer (e.g. an equal-cardinality
+            # lineage cannot prove anything finer (for example, an equal-cardinality
             # reshuffle), so this pigeonhole check is best-effort defense; the
             # normative MUST NOT in the spec covers the rest. Runs before any
             # state mutation of this branch, so no rollback is needed.
@@ -1727,8 +1727,8 @@ class _LifecycleGuard:
                     # (raw len would contradict the rule on forged duplicate
                     # new_ids); the raw list stays printed so the forged
                     # duplication remains visible in the diagnostic.
-                    f"with only {len(set(event.new_ids))} distinct segment(s) "
-                    f"{event.new_ids!r}; "
+                    f"with fewer distinct segments "
+                    f"({len(set(event.new_ids))}: {event.new_ids!r}); "
                     "suppressed (segments carrying different speakers "
                     "MUST NOT be merged into a single segment). Side effect of "
                     "suppression: the retired segments stay alive downstream while "
@@ -1861,7 +1861,7 @@ class _LifecycleGuard:
                     # Capture the diverging comparison BEFORE the rollback below
                     # restores ``obligation.frozen[sid]``. The contradiction is a
                     # property of the supersede GROUP, not of ``sid`` alone: a
-                    # later (e.g. out-of-order) freeze on ``sid`` can simply
+                    # later (for example, out-of-order) freeze on ``sid`` can simply
                     # complete the contiguous run and expose an EARLIER new id's
                     # divergence, so blaming ``sid`` mis-attributes the rewrite.
                     # Report the group and the F_old-vs-F_new comparison instead.
@@ -1920,7 +1920,7 @@ class _LifecycleGuard:
 
         With ``allow_decrease`` (the terminal ``closed`` event), a *smaller*
         ``stable_until`` is spec-legal: the post-processing rewrite (ITN /
-        punctuation / casing) may shorten the text -- e.g.
+        punctuation / casing) may shorten the text -- for example,
         "twenty twenty" -> "2020" -- so the monotonic-increase rule MUST NOT
         clamp it back up above the new text. Only the structural bounds
         (``0 <= stable_until <= len(text)``, non-combining cut) are repaired,
@@ -1950,7 +1950,7 @@ class _LifecycleGuard:
             reason = f"stable_until decreased {su} -> clamped to {prior} (MUST only increase)"
         if not validate_stable_until(text, clamped):
             # Fall back to the largest valid boundary <= clamped without moving
-            # below the previously-published frozen frontier (for a closed
+            # below the previously published frozen frontier (for a closed
             # event the frontier constraint is void, so the floor is 0).
             floor = 0 if allow_decrease else prior
             safe = min(clamped, len(text))
@@ -1981,7 +1981,7 @@ class _LifecycleGuard:
             sid: The segment id.
 
         Returns:
-            ``True`` if the previously-frozen prefix would change.
+            ``True`` if the previously frozen prefix would change.
         """
         prior_su = self._stable_until.get(sid, 0)
         if prior_su <= 0 or event.text is None:
@@ -2023,7 +2023,7 @@ class _LifecycleGuard:
         *contradiction* direction is rejected eagerly in :meth:`admit`, but the
         *conservative* direction -- the replacement's concatenated frozen prefix
         ``F_new`` remaining strictly SHORTER than the retired ``F_old`` -- is
-        permitted to stay pending, on the bet that later events will re-freeze the
+        permitted to stay pending, on the bet that later events re-freeze the
         rest. If the session ends with that bet unsettled, frozen text the user
         saw was effectively dropped from the lineage; the spec allows it but
         wants it reported "at most with a soft diagnostic". This emits exactly
@@ -2121,7 +2121,7 @@ class _LifecycleGuard:
 
 #: Private attribute names owned by :class:`TranscriptionSession`'s base machinery
 #: (input ownership, backpressure buffer, lifecycle guard, deadlines, reconnect
-#: scaffolding, ...). A subclass that rebinds any of these clobbers base state and
+#: scaffolding, and so on). A subclass that rebinds any of these clobbers base state and
 #: would otherwise crash deep in the producer with a cryptic error far from the
 #: cause; the reserved-attribute guard (snapshotted in ``__init__``, validated in
 #: ``__aenter__``) turns that into a loud, named error at session open. Kept
@@ -2175,7 +2175,7 @@ class TranscriptionSession(ABC):
       mint-fresh: the engine MUST NOT reuse a pre-reconnect label for a
       post-reconnect cluster without identity evidence (blind clustering
       restarts from zero after a reconnect) -- it MUST mint fresh labels
-      (``speaker_2``, ``speaker_3``, ...) and emit a ``speaker_labels_reset``
+      (``speaker_2``, ``speaker_3``, and so on) and emit a ``speaker_labels_reset``
       diagnostic via :meth:`emit_diagnostic` -- the fidelity-warning counterpart
       of ``content_lost``, which is an error event -- because over-counting
       speakers is the safe direction
@@ -2205,7 +2205,7 @@ class TranscriptionSession(ABC):
             done_timeout: Seconds of total pipeline inactivity -- no event
                 arriving AND no fed audio consumed via :meth:`audio_chunks` --
                 before synthesizing a ``done_timeout`` error. A hang backstop,
-                not engine-liveness detection: a silently-listening engine
+                not engine-liveness detection: a silently listening engine
                 stays alive while it keeps consuming audio. After
                 ``end_audio()`` it bounds the engine's flush-and-``done``
                 window. ``None`` disables (explicit opt-out of the backstop).
@@ -2307,7 +2307,7 @@ class TranscriptionSession(ABC):
         self._initial_diagnostics: list[Diagnostic] = []
         # Reserved-attribute guard: snapshot the base-owned objects now, so
         # the guard can fail loudly if a subclass rebinds one of these reserved
-        # private names (almost always by accident -- e.g. using ``self._buffer``
+        # private names (almost always by accident -- for example, using ``self._buffer``
         # for its own state) and silently clobbers base machinery. References (not
         # ``id``) compared with ``is`` so a recycled id cannot fake a match; the
         # store + the once-flag are name-mangled so they cannot themselves be the
@@ -2344,7 +2344,7 @@ class TranscriptionSession(ABC):
         The reserved-attribute guard treats any post-``__init__`` rebind of a
         reserved name as a subclass clobber. This is the one supported way to
         override one afterwards: it updates the snapshot so the override is tracked
-        rather than flagged. It exists for the library's own white-box tests (e.g.
+        rather than flagged. It exists for the library's own white-box tests (for example,
         injecting a deterministic clock into ``_monotonic``); it is NOT part of the
         engine-author contract -- engine authors configure via the ``__init__`` bounds,
         and an accidental ``self._buffer = ...`` never routes through here, so the
@@ -2368,7 +2368,7 @@ class TranscriptionSession(ABC):
 
         Compares the current reserved attributes against the snapshot taken in
         ``__init__``. A subclass that assigns one of :data:`_RESERVED_SESSION_ATTRS`
-        (e.g. its own ``self._buffer``) corrupts the base session machinery and
+        (for example, its own ``self._buffer``) corrupts the base session machinery and
         would otherwise surface only as a cryptic crash deep inside the producer,
         far from the cause. Turning that into a named error at session start is the
         explicit-over-silent contract (a loud error the author can fix beats a
@@ -2376,7 +2376,7 @@ class TranscriptionSession(ABC):
 
         Raises:
             TypeError: If any reserved base attribute was rebound (or removed) by a
-                subclass, naming the offending attribute(s).
+                subclass, naming the offending attributes.
         """
         missing = object()
         clobbered = sorted(
@@ -2397,7 +2397,7 @@ class TranscriptionSession(ABC):
         """Apply application-chosen deadline overrides (friend API).
 
         Called by the base ``start_transcription`` template after the engine
-        constructed the session, so the application's explicitly-set fields win
+        constructed the session, so the application's explicitly set fields win
         over the engine's construction-time choices without relying on every
         engine to forward them (a forwarding obligation could be silently
         missed). Only fields the application explicitly set are applied.
@@ -2462,7 +2462,7 @@ class TranscriptionSession(ABC):
             # The bounded deque drops its oldest chunk when full: it is only the
             # most-recent-audio replay window for replay_buffer(). Whether a
             # reconnect gap actually lost unreplayable audio is the engine's
-            # determination (passed to note_reconnect(content_lost=...)), not an
+            # determination (passed to ``note_reconnect(content_lost=...)``), not an
             # eviction count -- a live ring is always evicting, so eviction is
             # the wrong content-loss signal.
             self._audio_history.append(chunk)
@@ -2508,7 +2508,7 @@ class TranscriptionSession(ABC):
         you own its safety.)
 
         Args:
-            code: Stable, machine-readable diagnostic code (e.g. ``"vad_fallback"``).
+            code: Stable, machine-readable diagnostic code (for example, ``"vad_fallback"``).
             message: Human-readable explanation (client-facing; no secrets).
             level: ``"info"`` or ``"warning"`` (default ``"info"``).
             param: The parameter the diagnostic concerns, if any.
@@ -2523,7 +2523,7 @@ class TranscriptionSession(ABC):
 
         Raises:
             pydantic.ValidationError: If ``provided`` / ``effective`` has no
-                JSON form even after projection (e.g. an arbitrary in-process
+                JSON form even after projection (for example, an arbitrary in-process
                 object) -- an engine bug surfaced loudly at the call site,
                 naming the field, instead of failing later in the transport.
                 Raising from ``_produce`` terminates the session, so keep
@@ -2594,7 +2594,7 @@ class TranscriptionSession(ABC):
         producer-task coroutine on the session loop, so a synchronous flush is
         correct and ordered (the events land after already-emitted events and
         before any subsequent one). The :meth:`_run_producer` / ``finally`` drains
-        remain as a harmless safety net -- they will simply find nothing pending.
+        remain as a harmless safety net -- they simply find nothing pending.
 
         Content loss is an **explicit engine determination**, not something the
         base infers from rolling-buffer eviction: a live ring is always evicting,
@@ -2862,7 +2862,7 @@ class TranscriptionSession(ABC):
 
         Reconnect events are appended drop-proof (bypassing the capacity bound,
         like ``final`` / terminal events) so a ``progress(reconnect=True)`` can
-        neither be dropped nor split from its immediately-following
+        neither be dropped nor split from its immediately following
         ``content_lost`` error under backpressure (the protocol requires the
         ``content_lost`` to IMMEDIATELY follow the ``progress`` and forbids
         dropping ``error``). They are few and bounded per reconnect, so
@@ -2889,7 +2889,7 @@ class TranscriptionSession(ABC):
         side): every admitted event is committed to the buffer FIRST and the
         CANONICAL committed value -- ``put``'s return, carrying any
         coalescing carry-forward -- is then handed to the reducer, so the
-        reduction consumes exactly what the consumer will see. The pair is
+        reduction consumes exactly what the consumer sees. The pair is
         atomic to every observer: ``put`` raises overflow *before any
         mutation* (an overflowing event is refused entirely -- neither
         delivered nor reduced, so it cannot pollute ``result()``), the
@@ -2903,7 +2903,7 @@ class TranscriptionSession(ABC):
         Pending engine reconnect events are drained drop-proof BEFORE every
         terminal append (so a queued ``progress`` + ``content_lost`` precedes,
         and is delivered ahead of, the terminal) and once more in the ``finally``
-        as a guard, so no exit path -- normal, early-terminal, exception, or
+        as a guard, so no exit path -- normal, early terminal, exception, or
         overflow -- can lose them.
         """
         try:
@@ -2946,7 +2946,7 @@ class TranscriptionSession(ABC):
             # later redaction layer can recognize.
             self._force_error("engine_error", safe_exception_summary(exc))
         finally:
-            # Guard: any path that skipped the drains above (e.g. an early
+            # Guard: any path that skipped the drains above (for example, an early
             # terminal return while reconnects were still queued) still flushes
             # them before the buffer closes -- queued reconnect events MUST never
             # be silently lost.
@@ -3080,8 +3080,8 @@ class TranscriptionSession(ABC):
                 ):
                     code = "done_timeout"
                 else:
-                    # Audio consumption advanced the done anchor while we
-                    # waited (live session in a silent stretch): nothing has
+                    # Audio consumption advanced the done anchor while this
+                    # watchdog waited (live session in a silent stretch): nothing has
                     # actually expired -- re-arm against the fresh anchor.
                     continue
                 for tail in self._deadline_events(code):
@@ -3333,7 +3333,7 @@ class SyncSession:
     def _shutdown(self) -> None:
         """Cancel pending tasks, stop the loop, join the thread, and close it.
 
-        Canceling + awaiting outstanding tasks (e.g. a hung ``__aenter__``)
+        Canceling + awaiting outstanding tasks (for example, a hung ``__aenter__``)
         before stopping avoids "Task was destroyed but it is pending" warnings,
         and closing the loop avoids the ``BaseEventLoop.__del__`` resource
         warning — both of which would otherwise surface (and fail ``-W error``).
@@ -3373,7 +3373,7 @@ class SyncSession:
             if not self._thread.is_alive():  # pragma: no branch
                 self._loop.run_until_complete(_cancel_all_tasks())
         # ``is_alive()`` is False on every non-pathological path (a cooperative
-        # engine always returns within the 5s join); a truly blocking engine
+        # engine always returns within the 5-second join); a truly blocking engine
         # that never yields would leave the thread alive and the loop unclosed.
         if not self._thread.is_alive():  # pragma: no branch
             self._loop.close()
@@ -3409,7 +3409,7 @@ class SyncSession:
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError as exc:
-            # On Python 3.10 concurrent.futures.TimeoutError is distinct from the
+            # On Python 3.10 ``concurrent.futures.TimeoutError`` is distinct from the
             # builtin TimeoutError; re-raise as the builtin for a stable API.
             future.cancel()
             self._shutdown()
@@ -3563,7 +3563,7 @@ class SyncSession:
                         unresponsive_probes = 0
                         continue
                     if self._thread.is_alive() and unresponsive_probes < 2:
-                        # Tolerate a brief blocking stall (e.g. a synchronous
+                        # Tolerate a brief blocking stall (for example, a synchronous
                         # weights load inside the engine): require consecutive failed
                         # probes before declaring the loop frozen.
                         unresponsive_probes += 1

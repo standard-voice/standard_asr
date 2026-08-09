@@ -46,7 +46,7 @@ WordTimestampGranularityName = Literal["word", "segment", "char"]
 
 #: The closed set of mode-domain names (spec: the capability tree's top-level
 #: partitions). Homed here -- the module that DEFINES the mode domains -- so
-#: contract-layer signatures (e.g. ``effective_candidate_languages``'s
+#: contract-layer signatures (for example, ``effective_candidate_languages``'s
 #: ``mode``) can use the precise type without importing upward from
 #: ``runtime.gating`` (which re-exports it as ``Mode``).
 ModeName = Literal["batch", "streaming"]
@@ -70,7 +70,7 @@ def _is_extension_key(key: object) -> bool:
     capability. Every other unknown key MUST be fail-closed when probed via
     :meth:`DeclaredCapabilities.supports` / excluded from
     :meth:`DeclaredCapabilities.iter_supported_paths`, so a typo'd path segment
-    (e.g. ``"word_timestmaps"``) never reads as a supported capability and
+    (for example, ``"word_timestmaps"``) never reads as a supported capability and
     weakens the gating contract. Serialization (:meth:`canonical_json`) is
     separate and still round-trips every extra.
 
@@ -103,8 +103,8 @@ def _reject_separator_keys_on_node_surface(extras: Mapping[str, object]) -> None
     :func:`_children` / :func:`_get_child` walk: ``x_*`` extension keys and
     every key of a dict reachable by dict nesting from one. Dicts inside
     lists are field internals (never nodes), and non-extension extras are
-    not queryable; their keys stay free, so value data keyed by e.g.
-    ``"v1.2"`` remains representable outside the path space.
+    not queryable; their keys stay free, so value data keyed by a string such
+    as ``"v1.2"`` remains representable outside the path space.
 
     Args:
         extras: A model's extra keys (values already key-vetted as exact
@@ -210,7 +210,7 @@ class _JsonExtraModel(BaseModel):
 
         The canonicalized adapter output is stored, not just checked, so the
         in-process tree and any later ``model_validate`` of the wire
-        document agree byte-for-byte (e.g. a str-subclass value settles to a
+        document agree byte-for-byte (for example, a str-subclass value settles to a
         plain ``str`` here rather than at dump time).
 
         Args:
@@ -312,7 +312,7 @@ class PromptConstraints(_JsonExtraModel):
         max_tokens: Optional maximum prompt length in tokens. The standard layer
             has no engine tokenizer, so it enforces this bound against a
             **conservative, script-aware approximation** -- whitespace-delimited
-            words plus one unit per space-less (CJK / kana / Hangul / Thai / ...)
+            words plus one unit per space-less (CJK, kana, Hangul, Thai, and so on)
             codepoint -- not the engine's exact token count. Honest scope of the
             guarantee: the approximation never under-counts relative to that
             whitespace + no-space-script tokenization, but it MAY under-count an
@@ -320,7 +320,7 @@ class PromptConstraints(_JsonExtraModel):
             digit runs (counted as 1 here, often 6-17 BPE tokens), so such a
             prompt can exceed the engine's true budget despite passing the gate.
             Declare ``max_tokens`` with headroom below the engine's hard limit
-            rather than at it; the standard will not exceed the declared value.
+            rather than at it; the standard never exceeds the declared value.
     """
 
     max_tokens: int | None = Field(
@@ -374,7 +374,7 @@ class CandidateLanguagesCap(_FlagLikeNode):
 
     Attributes:
         supported: Whether candidate languages are supported.
-        constraints: Limits (e.g. ``max``) when supported.
+        constraints: Limits (for example, ``max``) when supported.
     """
 
     constraints: CandidateLanguagesConstraints | None = None
@@ -814,7 +814,7 @@ class DeclaredCapabilities(_Container):
 
         Args:
             dot_path: Dotted capability path without the ``capabilities.``
-                prefix (e.g. ``"batch.word_timestamps"``,
+                prefix (for example, ``"batch.word_timestamps"``,
                 ``"streaming.guidance.phrase_hints"``, ``"streaming_input"``).
 
         Returns:
@@ -831,14 +831,14 @@ class DeclaredCapabilities(_Container):
         """Return the typed capability *node* at ``dot_path``, or ``None``.
 
         Unlike :meth:`supports` (which returns a bool), this returns the leaf
-        node object itself so callers can inspect its constraints / enums (e.g.
+        node object itself so callers can inspect its constraints / enums (for example,
         a ``WordTimestampsCap`` to validate a requested granularity against
         :attr:`WordTimestampsCap.granularities`). Returns ``None`` if the path
         is absent or does not resolve to a capability leaf node.
 
         Args:
             dot_path: Dotted capability path without the ``capabilities.``
-                prefix (e.g. ``"batch.word_timestamps"``).
+                prefix (for example, ``"batch.word_timestamps"``).
 
         Returns:
             The capability leaf node, or ``None``.
@@ -878,7 +878,7 @@ class DeclaredCapabilities(_Container):
         Unlike :meth:`iter_supported_paths` (the supported-only view behind
         ``effective ⊆ declared``), UNSUPPORTED nodes are yielded and
         descended, so a consumer can verify the fail-closed ``False`` answers
-        too -- e.g. an unsupported feature's ``constraints`` submodel MUST
+        too -- for example, an unsupported feature's ``constraints`` submodel MUST
         probe ``False``. The compliance suite sweeps this set to assert a
         hand-written ``supports()`` agrees with the tree on every node.
 
@@ -899,7 +899,7 @@ class DeclaredCapabilities(_Container):
           supported here (no feature is enabled that this tree did not declare).
         * **Constraint narrowing** -- where both trees support a bounded or
           enum/mode node, ``other``'s limits MUST be no looser than this tree's
-          (e.g. a smaller-or-equal ``max``, a subset of ``granularities``, a
+          (for example, a smaller-or-equal ``max``, a subset of ``granularities``, a
           ``mode`` that is the same or a reduction). A widening (declared
           ``max=2`` -> effective ``max=999``) is rejected.
 
@@ -975,7 +975,7 @@ def _get_child(node: object, part: str) -> object:
         if part in type(node).model_fields:
             return getattr(node, part)
         # An extra key on a typed node resolves only inside the ``x_*`` extension
-        # namespace. A non-extension unknown segment (e.g. a typo of
+        # namespace. A non-extension unknown segment (for example, a typo of
         # a real field) is fail-closed -- treated as absent -- so it never reads
         # as a supported capability. Keys *inside* a raw ``x_*`` subtree (the dict
         # branch below) are the vendor's own and are not filtered.
@@ -1012,7 +1012,7 @@ def _derive_supported(node: object) -> bool:
         mapping = cast("dict[str, object]", node)
         # An explicit `supported` is the authoritative flag for a flag/bounded
         # archetype and is read as a STRICT boolean: only a real ``True`` counts
-        # as supported. A non-bool (e.g. the STRING "false", truthy in Python, or
+        # as supported. A non-bool (for example, the STRING "false", truthy in Python, or
         # a number) is a malformed declaration and is fail-closed to ``False`` --
         # never silently promoted to supported. An explicit `supported` is also
         # checked BEFORE `mode`: a `mode` sub-key on the same node MUST NOT raise
@@ -1022,7 +1022,7 @@ def _derive_supported(node: object) -> bool:
         if "mode" in mapping:
             mode = mapping["mode"]
             # A `mode` value MUST be a string archetype token. A non-string (bool,
-            # number, None, ...) is a malformed declaration and is fail-CLOSED to
+            # number, None, and so on) is a malformed declaration and is fail-CLOSED to
             # ``False`` -- never silently promoted to supported --
             # mirroring the strict-boolean reading of `supported` above. Without
             # the ``isinstance`` guard, ``True``/``1`` would pass ``not in`` (a
@@ -1081,7 +1081,7 @@ def _to_canonical(node: object, *, inject_supported: bool) -> Any:
         # typed _CapNode). Inject the derived `supported` so cross-language
         # clients get the same uniform probe the typed path provides.
         # A dict is a capability node iff it carries `mode` or `supported`; a bare
-        # `constraints` dict (e.g. {"max": 5}) has neither and is left untouched.
+        # `constraints` dict (for example, {"max": 5}) has neither and is left untouched.
         if inject_supported and ("mode" in mapping or "supported" in mapping):
             out_dict["supported"] = _derive_supported(mapping)
         return out_dict
@@ -1196,12 +1196,12 @@ _MAX_CONSTRAINT_FIELDS = frozenset(
 
 #: enum/mode reductions: declared mode -> the set of modes that are no looser.
 #: A mapping value is the set of effective modes accepted for that declared mode
-#: (always includes the declared mode itself plus any strictly-weaker mode).
+#: (always includes the declared mode itself plus any strictly weaker mode).
 #:
 #: GLOBAL-TOKEN INVARIANT: reductions are keyed by the *bare* token,
 #: not by node type, so this is sound ONLY while the standard enum/mode families
 #: have **disjoint** token sets (they do today). A future enum node that reuses an
-#: existing token (e.g. ``none`` / ``final``) with a *different* strength order
+#: existing token (for example, ``none`` / ``final``) with a *different* strength order
 #: would silently inherit the order below. A new standard enum node therefore MUST
 #: NOT reuse an existing token with a different order; the guard
 #: ``test_mode_reduction_tokens_are_globally_unique_per_enum_family`` enforces
@@ -1246,7 +1246,7 @@ def _node_narrows(declared: object, effective: object) -> bool:
         and declared_mode != effective_mode
     ):
         # An identical mode is trivially a non-widening; a CHANGE must be a
-        # provably-weaker mode. Tokens outside _MODE_REDUCTIONS (an x_*
+        # provably weaker mode. Tokens outside _MODE_REDUCTIONS (an x_*
         # experimental enum node, or an unknown future token) have no known
         # strength order, so a change between them is fail-CLOSED: it MUST NOT
         # silently pass as a legal narrowing.
@@ -1291,7 +1291,7 @@ def _node_narrows(declared: object, effective: object) -> bool:
         # widening and MUST be rejected, otherwise `effective ⊆ declared` is
         # bypassable through compliance (which
         # enforces the invariant via covers()). A declared constraints submodel
-        # that carries no finite bound (e.g. an all-None PromptConstraints) is
+        # that carries no finite bound (for example, an all-None PromptConstraints) is
         # genuinely unbounded, so losing it widens nothing -- fall through to True.
         if any(isinstance(_read_attr(declared_c, field), int) for field in _MAX_CONSTRAINT_FIELDS):
             return False

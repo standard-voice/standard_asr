@@ -13,7 +13,7 @@ and reach every application. Think USB-C for ASR inference.
 
 ## Who is this for?
 
-| You are... | You get... |
+| Who you are | What you get |
 | ---------- | ---------- |
 | **An application developer** | One integration that works with every compliant engine. Zero vendor lock-in. Automatic discovery of whatever the user installs. |
 | **An ASR engine developer** | Focus on the model. Implement one interface and get a CLI, a reference server, and a compliance test suite for free. |

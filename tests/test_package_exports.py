@@ -80,7 +80,7 @@ def test_capability_vocabulary_is_on_the_engine_facade() -> None:
         facade_name = _FACADE_ALIASES.get(name, name)
         assert getattr(engine_facade, facade_name) is getattr(caps_module, name), name
 
-    # Every alias must be a real alias -- i.e. the contract name it stands in for
+    # Every alias must be a real alias -- that is, the contract name it stands in for
     # is genuinely absent from the facade, so this table can never be used to
     # excuse a name the facade actually forgot.
     for name in _FACADE_ALIASES:
@@ -91,7 +91,7 @@ def test_mode_is_one_literal_with_one_home() -> None:
     """The mode domain is ONE Literal with one defining home.
 
     ``runtime.gating.Mode`` is an ALIAS of the contract-layer ``ModeName``, not
-    a second Literal: two independently-declared mode domains would let the
+    a second Literal: two independently declared mode domains would let the
     gating layer and the capability tree drift apart on what a mode even is.
     """
     caps_module = importlib.import_module("standard_asr.contract.capabilities")

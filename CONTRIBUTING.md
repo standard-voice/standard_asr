@@ -61,7 +61,7 @@ uv run standard-asr doctor     # diagnose plugin numpy conflicts
 If you run a type checker yourself, run it via **`uv run pyright`** from the repo
 root so it uses the project venv and the `[tool.pyright]` scope (which excludes
 vendored `reference/` and sample code). Running a bare `pyright`/IDE checker with
-a different interpreter will report spurious unresolved-import errors.
+a different interpreter reports spurious unresolved-import errors.
 
 `actionlint` is not a Python dependency. CI downloads a pinned binary and
 verifies its checksum; for local use, install it with your system package
@@ -80,7 +80,7 @@ and the repo's own terminology rules (`.vale.ini`, `.vale/styles/`). Run it
 through the wrapper, which owns the lint targets and exemptions:
 
 ```sh
-scripts/vale.sh          # full backlog: warnings and suggestions too
+scripts/vale.sh          # the full run: warnings and suggestions too (keep at zero)
 scripts/vale.sh --gate   # what CI enforces: errors only
 ```
 
@@ -98,7 +98,7 @@ Standard ASR is infrastructure others build on, so we manage dependencies around
    satisfy. It is intentionally permissive: each direct dependency declares a
    **meaningful, verified lower bound and no speculative upper cap**. A lower
    bound is a promise ("we use an API introduced here"); an upper cap is a
-   promise we usually cannot keep ("nothing newer will ever work") and it
+   promise we usually cannot keep ("no newer release can ever work") and it
    fragments the ecosystem by making us incompatible with everyone who moved on.
    Caps are allowed **only** for a known, real incompatibility, and each must
    link an upstream issue and a revisit date — see
@@ -182,5 +182,5 @@ triggered only by a published GitHub Release whose tag matches
 By submitting a pull request to the Standard ASR project, you agree to license
 your contribution under the project's Apache 2.0 License. You certify that you
 have the right to submit this contribution and that it does not violate any
-third-party rights. Your contribution will be attributed to you in the git
-history, and you will become part of "The Standard ASR Authors".
+third-party rights. Your contribution is attributed to you in the git
+history, and you become part of "The Standard ASR Authors".

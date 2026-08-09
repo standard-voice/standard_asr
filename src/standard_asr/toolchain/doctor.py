@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 # Display-only fallback for the packaging-absent path. ``packaging`` is the
 # authoritative parser (it evaluates environment markers and the legacy
-# parenthesized form ``numpy (>=1.26)``); this regex is used solely to render a
+# parenthesized form ``numpy (>=1.26)``); this pattern is used solely to render a
 # best-effort specifier string when ``packaging`` cannot be imported, in which
 # case doctor degrades to listing-without-classifying, never reports a conflict
 # it could not verify, and marks the report ``analysis_unavailable`` (a
@@ -66,7 +66,7 @@ _NUMPY2_RANGE = ">=2.0,<3.0"
 _OPEN_UPPER_SENTINEL = "100000.0.0"
 
 # A large component value used to construct a version that sits *just below* a
-# boundary at a given release position (e.g. just under ``2.1`` -> ``2.0.<big>``).
+# boundary at a given release position (for example, just under ``2.1`` -> ``2.0.<big>``).
 _JUST_BELOW_FILL = 99999
 
 
@@ -95,7 +95,7 @@ class PluginNumpy:
     Args:
         entrypoint: The plugin entry-point name.
         distribution: The distribution package name.
-        numpy_spec: The raw numpy version specifier (e.g. ``"<2"``), or ``None``.
+        numpy_spec: The raw numpy version specifier (for example, ``"<2"``), or ``None``.
     """
 
     entrypoint: str
@@ -221,7 +221,7 @@ def _classify_numpy(numpy_spec: str | None) -> _NumpyMajorSplit:
     the classifier conservatively returns the all-``False`` split.
 
     Args:
-        numpy_spec: The raw numpy specifier (e.g. ``"<2"``, ``"~=1.26.0"``,
+        numpy_spec: The raw numpy specifier (for example, ``"<2"``, ``"~=1.26.0"``,
             ``"(any)"``), or ``None`` when numpy is not required.
 
     Returns:
@@ -248,7 +248,7 @@ def _specset(numpy_spec: str | None) -> SpecifierSet | None:
     """Parse a numpy specifier string into a ``SpecifierSet``.
 
     Args:
-        numpy_spec: The effective numpy specifier (e.g. ``"<2"``, ``"~=1.26.0"``,
+        numpy_spec: The effective numpy specifier (for example, ``"<2"``, ``"~=1.26.0"``,
             ``"(any)"``), or ``None`` when numpy is not required.
 
     Returns:
@@ -290,7 +290,7 @@ def _emptiness_candidates(combined: SpecifierSet) -> set[str]:
 
     Coverage is **approximate, not total**: PEP 440 release tuples have
     unbounded length, so no finite candidate set finds a witness for every
-    conceivable interval (e.g. ``>2.0,<2.0.0.0.1`` needs a five-component
+    conceivable interval (for example, ``>2.0,<2.0.0.0.1`` needs a five-component
     witness). The candidate set covers release- and
     one-sub-release-granularity intervals -- with each edge's EPOCH preserved
     on every release-derived candidate, so an epoch interval such as
@@ -326,7 +326,7 @@ def _emptiness_candidates(combined: SpecifierSet) -> set[str]:
         edge = spec.version[:-2] if spec.version.endswith(".*") else spec.version
         try:
             parsed = Version(edge)
-        except Exception:  # noqa: BLE001 - a non-version edge (e.g. ``===`` URL) is just skipped
+        except Exception:  # noqa: BLE001 - skip a non-version edge (for example, a ``===`` URL)
             continue
         # Keep the edge verbatim (``str(Version(edge))`` canonicalizes but
         # preserves epoch/pre-release), so an epoch/pre-release pin witnesses
@@ -360,7 +360,7 @@ def _emptiness_candidates(combined: SpecifierSet) -> set[str]:
         release = parsed.release
         candidates.add(epoch + (".".join(str(r) for r in release) or "0"))
         # One level deeper than the edge: ``release + (1,)`` sits inside the open
-        # interval immediately above ``release`` (e.g. ``2.0`` -> ``2.0.1``),
+        # interval immediately above ``release`` (for example, ``2.0`` -> ``2.0.1``),
         # witnessing strict-lower-bound / next-edge pairs like ``>2.0,<2.1``.
         deeper_above = (*release, 1)
         candidates.add(epoch + ".".join(str(r) for r in deeper_above))
@@ -386,7 +386,7 @@ def _segment_neighbor_candidates(parsed: "Version") -> set[str]:
 
     For an edge version carrying a pre-release, development, or post-release
     segment, return the versions one step above and below within that SAME
-    segment (e.g. ``2.0rc1`` -> ``2.0rc0`` / ``2.0rc2``;
+    segment (for example, ``2.0rc1`` -> ``2.0rc0`` / ``2.0rc2``;
     ``2.0rc1.dev3`` -> ``2.0rc1.dev2`` / ``2.0rc1.dev4``), preserving the
     epoch and every outer segment. These witness sub-release-width intervals
     such as ``>2.0rc1,<2.0rc3`` that the release-position candidates cannot
@@ -492,7 +492,7 @@ def _intersection_satisfiability(specs: list[SpecifierSet]) -> Satisfiability:
         specs: The :class:`packaging.specifiers.SpecifierSet`s to intersect
             (per-plugin specs, or a spec paired with a major range for
             classification). Must be non-empty and contain only real specifier
-            sets. A single internally-unsatisfiable set (e.g. ``<2`` and
+            sets. A single internally unsatisfiable set (for example, ``<2`` and
             ``>=2.1`` declared by one plugin) is a valid input.
 
     Returns:
@@ -536,7 +536,7 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
     interpreter-conditional dual-line declaration resolves to the
     one line that actually applies here. Multiple applicable lines are
     intersected. When ``packaging`` is absent doctor degrades to a display-only
-    regex extraction (no marker evaluation, no conflict classification).
+    regular-expression extraction (no marker evaluation, no conflict classification).
 
     Args:
         requires: The distribution's ``Requires-Dist`` entries.
@@ -557,7 +557,7 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
     # Evaluate markers against an environment derived from sys.version_info rather
     # than packaging's default (which reads the real interpreter via
     # platform.python_version()). This keeps marker resolution consistent with the
-    # python_version doctor reports and makes it overridable -- e.g. a test that
+    # python_version doctor reports and makes it overridable -- for example, a test that
     # simulates another interpreter by patching sys.version_info, or any caller
     # that wants the canonical interpreter-conditional dual line resolved
     # for a specific Python.
@@ -647,11 +647,11 @@ _CORE_DISTRIBUTION = "standard-asr"
 def _core_numpy_spec() -> str | None:
     """Return the core's effective numpy specifier for the running interpreter.
 
-    The core declares an interpreter-conditional numpy floor (e.g.
+    The core declares an interpreter-conditional numpy floor (for example,
     ``numpy>=1.26`` below Python 3.13, ``numpy>=2.1`` at 3.13+), and the core is
     in EVERY process that runs standard_asr -- including any isolated worker a
     plugin would be moved into. Its requirement therefore belongs in the same
-    intersection as the plugins': without it, a plugin declaring e.g.
+    intersection as the plugins': without it, a plugin declaring, for example,
     ``numpy<1.26`` read as conflict-free while resolution against core is
     impossible on this interpreter.
 
@@ -698,7 +698,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
        standard-asr on this interpreter AT ALL. Each such distribution gets
        its own dedicated conflict, and is then EXCLUDED from the
        environment-level analysis below: it cannot run in any process layout,
-       so letting it participate would pollute the isolation advice (e.g. a
+       so letting it participate would pollute the isolation advice (for example, a
        plugin-vs-plugin message telling the user to isolate a plugin that is
        equally dead in the isolated worker).
     2. **Environment level** among the remaining (core-compatible) plugins,
@@ -744,7 +744,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             report.core = PluginNumpy("(core)", _CORE_DISTRIBUTION, core_spec)
         elif packaging_available() and not report.analysis_unavailable:
             # Readable metadata, no numpy line applicable to this interpreter
-            # (e.g. a repackaged/vendored core with rewritten requirements):
+            # (for example, a repackaged/vendored core with rewritten requirements):
             # a fact about the declaration, NOT an unreadable-metadata
             # failure -- claiming "unreadable" here false-alarmed CI gates on
             # working environments. There is no core constraint to intersect,
@@ -776,7 +776,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
     undecided_events: set[str] = set()
 
     # Relation 0 -- a distribution whose OWN numpy declaration is internally
-    # unsatisfiable (e.g. ``<2`` AND ``>=2.1``). It gets its dedicated
+    # unsatisfiable (for example, ``<2`` AND ``>=2.1``). It gets its dedicated
     # self-contradiction conflict PER DISTRIBUTION and is excluded from every
     # later relation: no numpy exists for it anywhere, so keeping it in the
     # joint analysis co-blamed innocent plugins and advised isolation --
@@ -904,7 +904,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         joint_sat = _intersection_satisfiability(spec_sets)
         if joint_sat is Satisfiability.UNSAT:
             # Real-intersection conflict that the 1.x/2.x classification alone
-            # misses -- e.g. disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``)
+            # misses -- for example, disjoint same-major ranges (``==2.0.*`` vs ``>=2.3``)
             # that share no satisfying numpy release. Self-contradictory
             # distributions were already reported and excluded in relation 0, so
             # every participant here is individually satisfiable and attribution
@@ -959,7 +959,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
         # UNKNOWN is a non-clean, non-conflict state: witness probing found no
         # satisfying version for these relations but (without packaging's
         # exact oracle) cannot prove emptiness either. Reporting them as
-        # conflicts would condemn possibly-runnable environments; staying
+        # conflicts would condemn possibly runnable environments; staying
         # silent would let an unproven environment read as clean. One
         # aggregated note, honest about both directions.
         report.analysis_unavailable = True

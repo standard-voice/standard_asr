@@ -140,7 +140,7 @@ def test_negotiate_or_raise_raises() -> None:
 
 def test_bytes_to_file_only_engine_no_viable_path() -> None:
     # In-memory bytes cannot be delivered to an engine that accepts only files on
-    # disk (the standard will not write a temp file). Must be NoViablePath, not a
+    # disk (the standard never writes a temp file). Must be NoViablePath, not a
     # wrong-shape ENCODED_BYTES payload.
     result = negotiate(AudioBytes(b"x"), {FILE})
     assert isinstance(result, NoViablePath)

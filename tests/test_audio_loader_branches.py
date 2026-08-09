@@ -638,7 +638,7 @@ def test_load_with_ffmpeg_block_aligned_truncation_is_rejected(
     # the ``>`` backstop rejects it. This mock derives its emitted byte count from
     # the ACTUAL ``-fs`` value in the command, so reverting the headroom (``-fs`` ==
     # cap) makes emitted == cap, the strict-greater check does not fire, and this
-    # test fails -- i.e. it genuinely guards the headroom (the old fixed-buffer mock
+    # test fails -- that is, it genuinely guards the headroom (the old fixed-buffer mock
     # ignored ``-fs`` and passed even on the pre-fix code).
     def _which(_: str) -> str:
         return "/usr/bin/ffmpeg"
@@ -873,7 +873,7 @@ def test_decode_audio_rejects_nonpositive_channels() -> None:
 
 def test_decode_audio_does_not_sniff_data_uri() -> None:
     # Decode_audio never content-sniffs a bare str.
-    # A "data:...;base64,..." string is opened as a local file path (and fails
+    # A ``data:...;base64,...`` string is opened as a local file path (and fails
     # "not found"), NOT decoded as base64 -- so a malformed-base64 data: URI no
     # longer surfaces "Invalid base64 audio payload" from this entry point.
     with pytest.raises(AudioProcessingError, match="not found or not a regular file"):
@@ -898,7 +898,7 @@ def test_decode_audio_does_not_sniff_real_sized_data_uri() -> None:
 
 def test_load_audio_from_path_wraps_enametoolong_oserror() -> None:
     # RR-007: load_audio_from_path probes the path via exists()/is_file()/stat().
-    # A pathologically long path string (e.g. a real-sized data:/base64 URI
+    # A pathologically long path string (for example, a real-sized data:/base64 URI
     # mistakenly passed as a path) makes the first probe raise OSError(ENAMETOOLONG).
     # It MUST surface as the documented AudioProcessingError, not leak the raw
     # OSError -- the d785dfc seam fixed decode_audio's path but left these

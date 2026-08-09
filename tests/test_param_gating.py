@@ -112,7 +112,7 @@ def test_unsupported_best_effort_drops() -> None:
 def test_unsupported_diagnostic_carries_capability_dot_path() -> None:
     # The best_effort diagnostic must say WHICH capability is
     # unsupported (the spec requires a "why"), and the field->path map is
-    # module-private -- e.g. ``language`` gates on ``language.runtime_override``,
+    # module-private -- for example, ``language`` gates on ``language.runtime_override``,
     # which a caller cannot reconstruct from the field name. The full dot-path
     # lets a caller relate the drop back to a capabilities.supports(path) query.
     _, diags = gate_params(RuntimeParams(language="en"), _caps(), "batch", strict=False)
@@ -1081,6 +1081,6 @@ def test_diarization_streaming_mode_gates_independently() -> None:
 def test_diarization_marker_has_no_fields_drift_guard() -> None:
     # Mirror of the import-time assert in param_gating: the diarization gate is
     # feature-level ONLY because the marker is empty. The moment a field
-    # graduates onto DiarizationRequest (e.g. num_speakers), sub-gating must be
+    # graduates onto DiarizationRequest (for example, num_speakers), sub-gating must be
     # written -- this pin fails alongside the import-time assert until it is.
     assert not DiarizationRequest.model_fields

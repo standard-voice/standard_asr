@@ -146,7 +146,7 @@ _CLEANUP_FAILED = " (its cleanup also raised)"
 #: disagree with the first classification, or crash the error path).
 #:
 #: * ``"awaitable"`` -- the value is an awaitable (modality defect).
-#: * ``"wrong_type"`` -- the value is not an instance of the pinned type(s).
+#: * ``"wrong_type"`` -- the value is not an instance of any pinned type.
 #: * ``"unclassifiable"`` -- the classification itself could not be carried
 #:   out (hostile or broken type metadata made the introspection raise). A
 #:   value no consumer can safely classify cannot satisfy the contract, so
@@ -169,7 +169,7 @@ class SyncResultDefect:
 
     Attributes:
         kind: The classification (see :data:`SyncDefectKind`).
-        clause: The human-readable defect clause (e.g. ``"returned an
+        clause: The human-readable defect clause (for example, ``"returned an
             awaitable (async def?)"``), for embedding directly.
     """
 
@@ -301,7 +301,7 @@ def _close_coroutine(value: object) -> bool:
 
 
 def _pinned_names(expected_type: type | tuple[type, ...]) -> str:
-    """Render the pinned return type(s) for an error message.
+    """Render the pinned return type names for an error message.
 
     Args:
         expected_type: The pinned type, or a tuple of acceptable types.
@@ -328,7 +328,7 @@ def sync_result_defect(
       coroutine is CLOSED before returning so nothing leaks as a
       never-awaited ``RuntimeWarning``.
     * **Wrong type** (when ``expected_type`` is given): strict ``isinstance``
-      against the protocol-pinned return type(s) -- quacking is not
+      against the protocol-pinned return types -- quacking is not
       compliance (a ``numpy.bool_`` is NOT a ``bool``).
     * **Unclassifiable**: the classification's own introspection raised. A
       value's type can fight inspection through its metaclass or a
@@ -346,7 +346,8 @@ def sync_result_defect(
 
     Args:
         value: The call's return value.
-        expected_type: The pinned return type(s), or ``None`` to check only
+        expected_type: The pinned return type (or tuple of types), or
+            ``None`` to check only
             synchronicity. ``type(None)`` is accepted (and rendered as
             ``"None"``) for members pinned to return nothing.
 
@@ -388,7 +389,7 @@ def sync_result_defect(
             pinned = _pinned_names(expected_type)
             actual = safe_type_name(value)
             if actual in pinned.split(" / "):
-                # A bare-name collision (e.g. numpy 2.x's ``bool_`` displays
+                # A bare-name collision (for example, numpy 2.x's ``bool_`` displays
                 # as "bool") would render the self-contradictory "returned
                 # bool, not bool"; qualify the actual type so the clause
                 # stays explicit. The qualification reads can fail too --
@@ -416,8 +417,9 @@ def require_sync_result(
 
     Args:
         value: The member's return value (any bare coroutine is closed).
-        member: Display name of the member (e.g. ``"transcribe()"``).
-        expected_type: The member's pinned return type(s), or ``None`` to
+        member: Display name of the member (for example, ``"transcribe()"``).
+        expected_type: The member's pinned return type (or tuple of types),
+            or ``None`` to
             check only synchronicity.
 
     Raises:

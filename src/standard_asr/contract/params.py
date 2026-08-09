@@ -64,7 +64,7 @@ assert {g.value for g in WordTimestampGranularity} == set(get_args(WordTimestamp
 class ProviderParams(BaseModel):
     """Base class for an engine's typed, non-portable parameter model.
 
-    Engines publish a subclass (e.g. ``OpenAIParams``) and declare it as their
+    Engines publish a subclass (for example, ``OpenAIParams``) and declare it as their
     expected ``provider_params`` type. Passing one engine's params model to a
     different engine is a validation error (swap-safe), raised as
     :class:`~standard_asr.contract.exceptions.InvalidProviderParamError` by the engine
@@ -82,7 +82,7 @@ class ProviderParams(BaseModel):
 
     # Engine params subclasses may carry `model_*` fields; opt out of pydantic's
     # `model_` protected namespace so they do not warn (the warning fires on
-    # older pydantic, e.g. the lower-bounds 2.5).
+    # older pydantic, for example, the lower-bounds 2.5).
     model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
 
 
@@ -103,7 +103,7 @@ class DiarizationRequest(BaseModel):
     deferred because today's engine landscape cannot honor them portably --
     they graduate additively onto this model once support is broad enough.
     ``extra="forbid"`` keeps that
-    evolution honest: an unknown key (e.g. a client guessing
+    evolution honest: an unknown key (for example, a client guessing
     ``num_speakers``) fails loudly (a 422 on the wire) instead of being
     silently ignored. An import-time assert in
     :mod:`standard_asr.runtime.gating` additionally forces sub-gating to be
@@ -379,7 +379,7 @@ def _validate_phrase_hints_list(value: list[str] | None) -> list[str] | None:
     """Reject empty / whitespace-only phrase-hint terms at construction.
 
     A blank term (``""`` or all whitespace) carries no boost signal and is a
-    caller mistake (e.g. a stray trailing element from a form). Worse, it breaks
+    caller mistake (for example, a stray trailing element from a form). Worse, it breaks
     downstream invariants: the opt-in ``phrase_hints -> prompt`` degrade checks
     whether any term *survived* truncation with ``term in surviving_frame``, and
     ``"" in anything`` is always ``True`` -- so a single ``""`` term would make
@@ -446,7 +446,7 @@ class WireRuntimeParams(BaseModel):
         on_unsupported: See :class:`RuntimeParams`.
 
     Raises:
-        ValueError: If field validation fails, or a non-portable key (e.g.
+        ValueError: If field validation fails, or a non-portable key (for example,
             ``provider_params``) is supplied.
     """
 
@@ -547,7 +547,7 @@ class WireRuntimeParams(BaseModel):
         return RuntimeParams.model_validate(self.model_dump())
 
 
-# D5 drift guard: the wire view is exactly the portable set, i.e. RuntimeParams
+# D5 drift guard: the wire view is exactly the portable set, that is, RuntimeParams
 # minus the discover-only ``provider_params`` escape hatch. Defining the two
 # field sets independently risks them desyncing as the portable set evolves; this
 # import-time invariant (and a drift test) makes such a desync a hard failure.

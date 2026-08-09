@@ -61,7 +61,7 @@ def test_normalize_bcp47_lowercases_after_singleton() -> None:
 
 
 def test_normalize_bcp47_membership_is_case_insensitive_in_effect() -> None:
-    # Two differently-cased spellings canonicalize to the same value, so
+    # Two differently cased spellings canonicalize to the same value, so
     # membership comparisons remain exact regardless of input casing.
     assert normalize_bcp47("zh-Hans") == normalize_bcp47("ZH-HANS") == "zh-Hans"
 

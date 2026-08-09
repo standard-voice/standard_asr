@@ -152,7 +152,7 @@ class _GoodASR:
         (non-``EngineBase``) engine MUST implement itself now that the member is
         part of the ``StandardASR`` protocol. Deriving it -- rather than
         returning a constant -- keeps every subclass fixture below honest: one
-        that narrows ``properties`` (e.g. declares ``wire_encodings``)
+        that narrows ``properties`` (for example, declares ``wire_encodings``)
         automatically reports a format its own declaration admits.
 
         Returns:
@@ -1662,7 +1662,7 @@ def test_sync_bridge_factory_raising_reports_error() -> None:
 
 def test_sync_bridge_ignores_benign_daemon_thread() -> None:
     """Regression: a compliant engine may pull in a dependency that spawns a
-    benign background daemon thread (e.g. tqdm's monitor, a thread-pool worker)
+    benign background daemon thread (for example, tqdm's monitor, a thread-pool worker)
     that is still alive when the bridge closes. The leak check MUST assert on the
     bridge's OWN loop thread, not a process-wide thread diff -- otherwise such a
     benign thread is mis-reported as a sync_bridge_thread_leak, failing a
@@ -1731,7 +1731,7 @@ def test_sync_bridge_no_terminal_event_reports_error() -> None:
 
 def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """A factory whose driver thread never returns within the timeout surfaces as
-    a deadlock error. We simulate by making the driver block on a factory that
+    a deadlock error. The test simulates this by making the driver block on a factory that
     spins past the (tiny) timeout.
 
         Args:
@@ -1779,7 +1779,7 @@ def test_sync_bridge_late_session_after_timeout_is_torn_down_not_leaked() -> Non
     assert report.passed is False
     assert [i.code for i in report.issues] == ["sync_bridge_did_not_terminate"]
     assert "establishment" in report.issues[0].message
-    # The worker completes ~0.3s later and must tear the late session down.
+    # The worker completes ~0.3 s later and must tear the late session down.
     assert closed.wait(timeout=10.0), "late session was never closed (leaked)"
 
 
@@ -1827,7 +1827,7 @@ def test_sync_bridge_hanging_supports_probe_is_reported_not_misclassified() -> N
     exception it was classifying is still un-classified, so the check must
     report did-not-terminate (whose message names the probe) -- never fall
     through to the fail-closed branch and tell a caller who DID pass
-    ``engine=`` to "Pass engine=...".
+    ``engine=`` to ``Pass engine=...``.
     """
     release = threading.Event()
 
@@ -2413,7 +2413,7 @@ def test_recommended_wire_format_structural_engine_passes() -> None:
 
     Regression: the check used to call ``engine.ensure_stream_format_supported``
     -- an ``EngineBase`` method that is NOT a ``StandardASR`` protocol member --
-    so a fully-compliant structural engine (this very fixture) failed with an
+    so a fully compliant structural engine (this very fixture) failed with an
     ``AttributeError`` mis-reported as
     ``recommended_wire_format_self_inconsistent``. The check now validates the
     recommendation through the pure ``ensure_wire_format_supported(properties,
@@ -3434,7 +3434,7 @@ def test_streaming_gating_structural_engine_without_effective_caps_not_failed() 
     ``StandardASR`` member. A structural engine that supports every top-level
     probe used to send the check into ``_pick_sub_constraint_probe``, whose
     bare attribute read raised ``AttributeError`` -- reported as a
-    ``gating_probe_selection_raised`` ERROR against a fully-compliant engine.
+    ``gating_probe_selection_raised`` ERROR against a fully compliant engine.
     The probe now falls back to the protocol's ``declared_capabilities``
     (exactly what EngineBase's ``effective_capabilities`` defaults to); with
     no violable sub-constraint declared there, the check is a no-op pass.
@@ -4087,7 +4087,7 @@ def compliant_streaming_factory() -> _CompliantStreamingEngine:  # pyright: igno
 def test_required_surface_streaming_enginebase_with_hook_passes() -> None:
     # The other side of the _overrides_streaming() branch: a streaming EngineBase
     # that implements the hook passes the required-surface check. The entry-point
-    # key must match the engine's declared model_id ("streamer-ok/demo").
+    # key must match the engine's declared model_id (``streamer-ok/demo``).
     report = check_entrypoints(
         registry=_registry("compliant_streaming_factory", "streamer-ok/demo")
     )

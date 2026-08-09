@@ -1,4 +1,4 @@
-# Server Specification (HTTP / WebSocket API)
+# Server specification (HTTP / WebSocket API)
 
 Standard ASR ships an optional FastAPI server (`standard-asr[server]`) that
 exposes any discovered, compliant engine over HTTP, plus a WebSocket endpoint
@@ -8,7 +8,7 @@ divergence is a bug in the implementation, not the spec).
 
 Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
 
-## 1. Security & Limits
+## 1. Security & limits
 
 - **No per-endpoint authentication.** v1 targets localhost / trusted-LAN use.
   Transcription is CPU/GPU-expensive and there is no quota or rate limiting.
@@ -91,7 +91,7 @@ Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
     `ws_max_size=max_ws_frame_bytes` so the app cap and transport cap match;
     behind another ASGI server the config-frame check still enforces the app cap.
 
-## 2. Audio is NOT pre-decoded
+## 2. Audio is **not** pre-decoded
 
 The server **does not decode audio**. The upload is forwarded as an
 `AudioInput` (`AudioBytes` for multipart, `AudioBase64` for JSON) directly into
@@ -128,7 +128,7 @@ sendable**:
 > the discovered schema) is **deferred**; for v1 the escape hatch is in-process
 > only (pass it to `transcribe(...)` / `start_transcription(...)` directly).
 
-## 3. REST Endpoints
+## 3. REST endpoints
 
 ### 3.1 `GET /v1/health`
 Returns `{"status": "ok"}`.
@@ -190,7 +190,7 @@ engine/deployment fault → scrubbed **500** (§3.7), never a caller-blaming 404
 Returns the JSON Schema of the engine's `provider_params` (read from the engine
 class, for discovery / UI generation), or `{}` if the engine declares none.
 **404** if the model key is unknown (a plugin that fails to load → scrubbed
-**500**, §3.7). Note these params cannot currently be sent over the transcribe
+**500**, §3.7). Note these params cannot yet be sent over the transcribe
 endpoints (§2).
 
 ### 3.6.1 `GET /v1/config-schema/{model}`
@@ -345,7 +345,7 @@ in practice, the answer is a targeted rule in `runtime.redaction`, not a
 prover. This is the operator-log half of IC.3's "plaintext credentials
 MUST NEVER be logged".
 
-## 4. WebSocket Endpoint `/v1/stream/{model}`
+## 4. WebSocket endpoint `/v1/stream/{model}`
 
 Bridges a WebSocket to an engine streaming session (the incremental
 `audio_format` path). The `{model}` segment is the full `engine/model` key.

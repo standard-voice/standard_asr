@@ -405,7 +405,7 @@ def test_decode_base64_to_array() -> None:
 
 
 def test_path_passthrough_stat_oserror_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A file whose size cannot be stat'd (e.g. it vanished mid-flight) must fail
+    # A file whose size cannot be stat'd (for example, it vanished mid-flight) must fail
     # loud, not silently bypass the payload-size guard.
     def _boom(_self: object, *args: object, **kwargs: object) -> object:
         raise OSError("gone")

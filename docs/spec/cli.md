@@ -1,4 +1,4 @@
-# CLI Specification
+# CLI specification
 
 Standard ASR provides a built-in CLI for discovery, compliance checks, and
 quick transcription.
@@ -233,13 +233,13 @@ relations were undecidable) — the environment cannot then be proven
 conflict-free; else `0` (including when no plugins are installed, since there
 is nothing to analyze). Does not resolve or install anything.
 
-### Global Flags
+### Global flags
 
 - `--debug`: emit stack traces for unexpected errors. The trace is printed for
   every error path (not only the final generic handler), so a named error (for example,
   an engine-internal failure) is debuggable too.
 
-## 2. Output Conventions
+## 2. Output conventions
 
 - Human‑readable console output by default; ASCII status markers
   (`[OK]`/`[FAIL]`/`[WARN]`/`[INFO]`) so a redirected/piped stream never crashes

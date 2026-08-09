@@ -1,4 +1,4 @@
-# Errors & Diagnostics
+# Errors & diagnostics
 
 Standard ASR follows "explicit > implicit": when something goes wrong, you get a
 specific exception with machine-readable context -- never silent degradation.
@@ -45,7 +45,7 @@ StandardASRError
 | `IncompatibleAudioInputError` | `transcribe()` / `start_transcription(audio=...)` | Passed a URL to an engine that only accepts arrays, and no conversion path exists. |
 | `UnsafeAudioUrlError` | `transcribe()` / `start_transcription(audio=...)` | An `AudioUrl` failed the SSRF policy (non-HTTPS, private IP, etc.). |
 | `SubtitleRenderingError` | `to_srt()` / `to_vtt()` | A segment cannot render as a visible cue — no measured `start`/`end` span, or a span that quantizes to zero milliseconds on the output grid (players silently drop `T --> T` cues) — and `on_unrenderable` is the default `"error"`. Choose the loss explicitly: `"omit"` (renderable cues only) or `"collapse"` (one whole-text cue). Carries `.unrenderable` / `.total` counts. |
-| `EngineContractError` | any synchronous protocol member, or `transcribe()` / `start_transcription()` on a language-declaration defect | The engine returned an awaitable (an `async def` implementation) or a wrong-typed value from a sync member (`transcribe()`, `start_transcription()`, `supports()`, ...), declared a language axis without a `default_language` (IC.6), or declared a malformed selectable/detectable tag. An engine/plugin bug — report it to the engine's author; nothing in your code is wrong. |
+| `EngineContractError` | any synchronous protocol member, or `transcribe()` / `start_transcription()` on a language-declaration defect | The engine returned an awaitable (an `async def` implementation) or a wrong-typed value from a sync member (`transcribe()`, `start_transcription()`, `supports()`, and so on), declared a language axis without a `default_language` (IC.6), or declared a malformed selectable/detectable tag. An engine/plugin bug — report it to the engine's author; nothing in your code is wrong. |
 | `StreamClosedError` | `session.send_audio()` | Sending audio manually after `end_audio()` or after the session delivered a terminal event. (`feed()` never raises it: a managed source's post-terminal chunks are discarded by design.) |
 | `InvalidSessionUseError` | `session.feed()` / `session.send_audio()` / iterating the session | Driving a still-live session incorrectly: mixing managed `feed()` with manual `send_audio()`/`end_audio()`, calling `feed()` twice, or iterating the event stream twice. The session is NOT closed — fix the calling code; do not rebuild the session. |
 | `EntrypointValidationError` | `discover_models()` (strict mode); `registry.spec()` / `create()` on an unknown or malformed key | A plugin's entry-point name is malformed, or a lookup key does not resolve. |

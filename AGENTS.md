@@ -9,7 +9,7 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 
 **What this repo does NOT contain:** speech recognition code, model weights, or training. We build the bridge, not the endpoints.
 
-**We are currently in pre-release stage.** Always choose the long-term optimal design over backwards compatibility.
+**We are in the pre-release stage.** Always choose the long-term optimal design over backwards compatibility.
 
 ## Stakeholders — consider all three in every decision
 
@@ -35,8 +35,8 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
   `typing.Optional` / `typing.List`. PEP 8 naming: `snake_case` functions and
   variables, `PascalCase` classes, descriptive names.
 - `uv` for deps. Pydantic v2 for data models. FastAPI for server. A new
-  dependency needs a compatible license, active maintenance, and supply-chain
-  scrutiny; prefer the standard library and existing dependencies
+  dependency needs a compatible license, active maintenance, and scrutiny of
+  its supply chain; prefer the standard library and existing dependencies
   (`CONTRIBUTING.md`, "Dependency policy").
 - `ruff` + `pyright` strict + `pytest` with 100% coverage target.
 - `ruff` rule `NPY201` enabled. CI tests against numpy 1.26 AND latest 2.x.

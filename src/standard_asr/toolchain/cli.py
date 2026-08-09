@@ -593,10 +593,10 @@ def _print_declared_capabilities(spec: Any) -> None:
     # sentinels.
     canonical_json = _run_engine_call(lambda: getattr(caps, "canonical_json", None))
     if not callable(canonical_json):
-        # `declared_capabilities` is not a DeclaredCapabilities model (e.g. an
+        # `declared_capabilities` is not a DeclaredCapabilities model (for example, an
         # engine mis-declared it as a dict). discovery.py consumes metadata
         # defensively via getattr; mirror that here so the rest of `show`
-        # (Engine ID, Module, ...) still renders and the author is pointed at the
+        # (Engine ID, Module, and so on) still renders and the author is pointed at the
         # precise diagnostic instead of an opaque AttributeError.
         type_name = safe_type_name(caps)
         print(
@@ -840,7 +840,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
     the transcription-result check (``check_transcription_result``, a batch
     result); the output names both rather than silently omitting those dimensions.
 
-    Engines that require constructor arguments (e.g. credentials) are reported as
+    Engines that require constructor arguments (for example, credentials) are reported as
     skipped with the reason, not failed: their entry point metadata was already
     validated, and the standard layer cannot supply real credentials.
 
@@ -1045,7 +1045,7 @@ def _run_instance_checks(
         # deliberately NOT caught: KeyboardInterrupt and SystemExit are the
         # operator's own control flow, not a plugin verdict.
         # safe_exception_summary, not str(exc): an engine-authored wrapper
-        # (e.g. `raise ConfigError(f"bad: {ve}") from ve`) may embed a chained
+        # (for example, `raise ConfigError(f"bad: {ve}") from ve`) may embed a chained
         # ValidationError's input echo, and this message lands in the report.
         return [
             _single_error_report(
@@ -1122,7 +1122,7 @@ def _run_sync_bridge(
     format_defect = sync_result_defect(audio_format, expected_type=(AudioFormat, type(None)))
     if format_defect is not None:
         # This is a REAL consumer: the value flows into
-        # start_transcription(audio_format=...) below, so EVERY defect shape
+        # ``start_transcription(audio_format=...)`` below, so EVERY defect shape
         # must stop here, not just the awaitable. An `async def`
         # recommendation hands back an awaitable (the shared boundary has
         # already CLOSED the stray coroutine); a wrong-typed value (a str, a
@@ -1339,7 +1339,7 @@ def _single_error_report(name: str, code: str, message: str) -> ComplianceReport
 def _add_init_config_args(parser: argparse.ArgumentParser) -> None:
     """Add the shared ``--config`` / ``--set`` engine init-config flags.
 
-    These let the CLI supply an engine's *init* configuration (e.g. ``device``,
+    These let the CLI supply an engine's *init* configuration (for example, ``device``,
     ``compute_type``) -- previously reachable only through
     ``STANDARD_ASR_<ENGINE>__<FIELD>`` env vars, which were undiscoverable from
     ``--help``. ``--options`` is separate: it carries *runtime* params, not init
@@ -1486,7 +1486,7 @@ def _render_diagnostics(diagnostics: Iterable[Diagnostic]) -> None:
 
     The runtime attaches a structured :class:`~standard_asr.contract.results.Diagnostic`
     for every lossy step (an ad-hoc resample, a bare-array sample-rate
-    assumption, a guidance degrade, ...). The default text output prints only the
+    assumption, a guidance degrade, and so on). The default text output prints only the
     transcript, so without this the provenance warnings vanish on the surface
     end users reach most -- a silent degrade, which the project forbids.
     They go to **stderr** so stdout stays a clean, pipeable
@@ -1547,7 +1547,7 @@ def _parse_options(raw: str | None) -> RuntimeParams | None:
 
     The pydantic ``ValidationError`` raised by an invalid options object is
     **not** surfaced verbatim: ``str(ValidationError)`` echoes the offending
-    ``input`` value, so a secret mis-pasted into ``--options`` (e.g.
+    ``input`` value, so a secret mis-pasted into ``--options`` (for example,
     ``{"api_key": "sk-..."}``, rejected by ``extra="forbid"``) would otherwise be
     reflected to stderr and bleed into CI logs / bug reports. It is re-raised as
     a ``ValueError`` carrying the shared sanitized message (the same scrub the
@@ -1699,7 +1699,7 @@ def _debug_traceback(args: argparse.Namespace) -> None:
 
     ``--debug`` promises a stack trace on any error path, but the trace was
     previously printed only in the final
-    ``except Exception`` branch, so an error caught by a named branch (e.g. an
+    ``except Exception`` branch, so an error caught by a named branch (for example, an
     engine-internal failure surfacing as a ``ValueError`` from ``_transcribe``)
     had no trace even with ``--debug``. Routing every branch through
     this helper makes the flag uniform. ``getattr`` keeps it safe for the
@@ -1736,7 +1736,7 @@ def _ensure_utf8_stream(stream: IO[str]) -> None:
     """Reconfigure a text stream to UTF-8 when it is not already UTF-8.
 
     On Windows a stdout/stderr redirected to a file or pipe defaults to the
-    process ANSI code page (e.g. cp1252) with ``errors="strict"``; printing a
+    process ANSI code page (for example, cp1252) with ``errors="strict"``; printing a
     non-ASCII transcript then raises ``UnicodeEncodeError`` and crashes the CLI
     (PEP 686's UTF-8 default only lands in Python 3.15, but this project targets
     3.10+). Forcing UTF-8 -- never ``errors="replace"`` -- keeps the transcript

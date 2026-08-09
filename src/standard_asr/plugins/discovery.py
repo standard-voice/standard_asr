@@ -181,9 +181,9 @@ class ModelSpec:
         model_id: Full routing key (``engine_id/model_name``), built from the
             **canonical** engine id.
         engine_id: PEP 503 canonical engine identifier and routing identity
-            (e.g., ``faster-whisper``). This is the unique engine discriminator.
+            (for example, ``faster-whisper``). This is the unique engine discriminator.
         declared_engine_id: The verbatim engine id as declared in the entry
-            point (e.g., ``faster_whisper``, which canonicalizes to the
+            point (for example, ``faster_whisper``, which canonicalizes to the
             ``faster-whisper`` routing ``engine_id``). Kept for diagnostics
             only; never used for routing. Equals ``engine_id`` when already
             canonical. Note an upper-case form such as ``Faster_Whisper`` can
@@ -191,7 +191,7 @@ class ModelSpec:
             and rejects upper case outright (``plugin_entrypoints.md`` naming
             table), unlike the non-canonical-but-valid ``_``/``.`` separators
             which are folded.
-        model_name: Model preset name (e.g., ``large-v3``), or empty for default.
+        model_name: Model preset name (for example, ``large-v3``), or empty for default.
         entry_point: The underlying ``importlib.metadata.EntryPoint`` object.
 
     Note:
@@ -249,8 +249,8 @@ class ModelSpec:
         - If the target is itself a class, it is returned directly.
         - If the target is a function (the common factory pattern), **only its
           return annotation** is resolved and, if it names a concrete class,
-          that class is returned. We deliberately do not evaluate the whole
-          annotation namespace (e.g. via :func:`typing.get_type_hints`): an
+          that class is returned. The resolver deliberately does not evaluate the whole
+          annotation namespace (for example, via :func:`typing.get_type_hints`): an
           unrelated parameter carrying an unresolvable forward reference must
           not turn a static metadata read into a ``FactoryLoadError``
           (metadata must stay readable without instantiation).
@@ -260,7 +260,7 @@ class ModelSpec:
 
         Raises:
             FactoryLoadError: The target failed to load, or the class cannot be
-                determined without calling the factory (e.g. a factory with no
+                determined without calling the factory (for example, a factory with no
                 concrete return annotation). Callers SHOULD fall back to
                 instantiation only when they explicitly accept that cost.
         """
@@ -287,7 +287,7 @@ class ModelSpec:
         Unlike :func:`typing.get_type_hints`, this never evaluates parameter
         annotations, so an unrelated unresolvable forward reference on a
         parameter does not block reading the engine class. A string return
-        annotation (e.g. under ``from __future__ import annotations``) is
+        annotation (for example, under ``from __future__ import annotations``) is
         resolved by a bounded attribute walk over the factory's own module
         globals -- never ``eval`` -- so only a plain name or dotted name is
         accepted and an annotation string cannot execute arbitrary code.
@@ -325,7 +325,7 @@ class ModelSpec:
         # Resolve the (string) return annotation WITHOUT eval. A factory's return
         # type is a concrete engine class -- a plain name or a dotted name -- so a
         # bounded attribute walk over the factory module's globals covers every
-        # legitimate case while refusing to execute arbitrary expressions (e.g. a
+        # legitimate case while refusing to execute arbitrary expressions (for example, a
         # malicious ``__import__(...)`` or ``os.system(...)`` annotation string).
         # Anything that is not a plain/dotted name is an authoring error, reported
         # the same way as a name that fails to resolve.
@@ -356,11 +356,11 @@ class ModelSpec:
         ``StandardASR`` is a ``runtime_checkable`` :class:`typing.Protocol` with
         non-method (``ClassVar``) members, so ``issubclass`` against it raises
         ``TypeError``; engines are also structural and need not subclass
-        :class:`~standard_asr.runtime.interface.EngineBase`. We therefore duck-type
+        :class:`~standard_asr.runtime.interface.EngineBase`. The check therefore duck-types
         on the **unambiguous** engine marker: ``transcribe``, the always-present
         defining method of every engine. This converts
         a misconfigured entry point that resolves to a wholly unrelated class
-        (e.g. one pointed at the engine's ``Config`` object, which commonly
+        (for example, one pointed at the engine's ``Config`` object, which commonly
         exposes generic names like ``properties`` / ``supports``) into a clear
         :class:`~standard_asr.contract.exceptions.FactoryLoadError` instead of a later
         ``AttributeError``.
@@ -370,7 +370,7 @@ class ModelSpec:
         ``properties``) is the job of the compliance suite, which emits precise
         diagnostics; and metadata readers consume those attributes defensively
         via ``getattr``, so a degenerate-but-intentional engine is still
-        tolerated. We only reject classes that lack the defining engine method,
+        tolerated. The check rejects only classes that lack the defining engine method,
         plus the one machine-identifiable always-wrong case below.
 
         The :class:`~standard_asr.runtime.interface.StandardASR` protocol is rejected
@@ -390,7 +390,7 @@ class ModelSpec:
             ``cls``, typed as a Standard ASR engine class.
 
         Raises:
-            FactoryLoadError: If ``cls`` is a ``typing.Protocol`` (e.g. the
+            FactoryLoadError: If ``cls`` is a ``typing.Protocol`` (for example, the
                 ``StandardASR`` protocol itself) or does not expose
                 ``transcribe``.
         """
@@ -476,7 +476,7 @@ class ModelRegistry:
         """List all discovered model keys, sorted alphabetically.
 
         Returns:
-            List of model keys (e.g., ``['faster-whisper/large-v3', 'whisper/base']``).
+            List of model keys (for example, ``['faster-whisper/large-v3', 'whisper/base']``).
         """
         return sorted(self._specs.keys())
 
@@ -484,12 +484,12 @@ class ModelRegistry:
         """List all model keys for a specific engine.
 
         The argument is PEP 503-normalized to the canonical routing identity
-        before matching, so a non-canonical form (e.g. ``my_engine``)
+        before matching, so a non-canonical form (for example, ``my_engine``)
         resolves to the same engine as :meth:`spec` / :meth:`create` -- the
         stored ``engine_id`` is already canonical.
 
         Args:
-            engine_id: Engine identifier (e.g., ``faster-whisper``). Any PEP 503
+            engine_id: Engine identifier (for example, ``faster-whisper``). Any PEP 503
                 equivalent form (``Faster_Whisper``, ``faster.whisper``) matches.
 
         Returns:
@@ -599,7 +599,7 @@ class ModelRegistry:
             return config_type.model_json_schema()
         except PydanticInvalidForJsonSchema as exc:
             # A legitimate BaseConfig subclass can still be un-schematizable
-            # (e.g. `arbitrary_types_allowed` with a client-handle field). Both
+            # (for example, `arbitrary_types_allowed` with a client-handle field). Both
             # consumers of this schema (`standard-asr show` and the server's
             # config-schema route) must degrade loudly, not crash.
             raise FactoryLoadError(
@@ -617,9 +617,9 @@ class ModelRegistry:
         factory and invokes it with the provided arguments.
 
         Args:
-            name: Model key (e.g., ``"faster-whisper/large-v3"``).
+            name: Model key (for example, ``"faster-whisper/large-v3"``).
             *args: Positional arguments passed to the factory.
-            **kwargs: Keyword arguments passed to the factory (e.g., ``device="cuda"``).
+            **kwargs: Keyword arguments passed to the factory (for example, ``device="cuda"``).
 
         Returns:
             ``StandardASR`` instance ready for transcription.
@@ -628,7 +628,7 @@ class ModelRegistry:
             EntrypointValidationError: Model not found.
             FactoryLoadError: Entry point failed to load or is not callable.
             ConfigError: The model needs configuration that was missing or
-                invalid (a required credential, a bad ``default_language``, ...).
+                invalid (a required credential, a bad ``default_language``, and so on).
                 A construction-time pydantic ``ValidationError`` -- whether from
                 the bare constructor or an engine's own validator -- is wrapped
                 into ``ConfigError`` with the offending input scrubbed, so a
@@ -737,7 +737,7 @@ def discover_models(
     specs: MutableMapping[str, ModelSpec] = {}
     errors: list[str] = []
     # Engine-identity collision: the same engine_id MUST come from a single
-    # distribution. Accumulated over every legally-named entry point -- *before*
+    # distribution. Accumulated over every legally named entry point -- *before*
     # ``on_conflict`` may drop a duplicate model key -- so that two distributions
     # providing the same model name (the more common collision) are still both
     # counted. The set semantics dedupe a single distribution's many models.
@@ -757,7 +757,7 @@ def discover_models(
             # (``parse_entrypoint_name`` / ``spec`` / ``keys_by_engine``).
             declared_id, engine_id, model_name = _parse_entrypoint_name(ep.name, declaration=True)
             # Route on the PEP 503 canonical id. A non-canonical declared
-            # id (e.g. ``my_engine``) is folded to its canonical form so it
+            # id (for example, ``my_engine``) is folded to its canonical form so it
             # cannot masquerade as a distinct engine, and so it collides with
             # ``my-engine`` here exactly as it already does in env routing.
             key = f"{engine_id}/{model_name}"
@@ -842,10 +842,10 @@ def _dist_identity(ep: EntryPoint) -> str:
     """Return a provider identity for *ep* used in engine-identity collision detection.
 
     Normally this is the PEP 503-normalized distribution name. When the entry
-    point carries no distribution metadata (e.g. the ``eps=`` test-injection /
+    point carries no distribution metadata (for example, the ``eps=`` test-injection /
     custom-registry path), every such entry point would otherwise collapse to a
     single ``"<unknown>"`` sentinel, hiding a real collision between two
-    distinct providers of the same engine id. We instead fall back to the entry
+    distinct providers of the same engine id. Discovery instead falls back to the entry
     point's ``module:attr`` target so two genuinely different dist-less
     providers still register as distinct identities.
 

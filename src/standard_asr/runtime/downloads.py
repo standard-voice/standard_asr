@@ -45,7 +45,7 @@ def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
     Implements the download-policy contract: ``1``/``true``/``yes``
     enable downloads, ``0``/``false``/``no`` disable them, an **unset** variable
     defaults to enabled, and **any other value** (including an empty string,
-    e.g. a ``VAR=`` line in docker-compose, or a typo like ``on``) disables them
+    for example, a ``VAR=`` line in docker-compose, or a typo like ``on``) disables them
     fail-closed -- an unrecognized value must never silently enable downloads.
 
     Because the engine that later raises ``DiscoveryError`` cannot see that the
@@ -158,7 +158,7 @@ def resolve_download_root(
     directory at call time.
 
     The library tier is a **passthrough**: ASR libraries typically express
-    "use my own default cache" as an unset download path (e.g. faster-whisper's
+    "use my own default cache" as an unset download path (for example, faster-whisper's
     ``WhisperModel(download_root=None)`` resolves via the HuggingFace hub
     cache), so when the chain lands on that tier this returns ``None`` and the
     engine forwards it unchanged. Substituting a concrete directory here would

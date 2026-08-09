@@ -235,7 +235,7 @@ def _broken_config_type_factory() -> _BrokenConfigTypeASR:  # pyright: ignore[re
 
 
 class _ConfigErrorOnConstructASR(_DummyASR):
-    """Construction raises a client-config error (e.g. missing credential)."""
+    """Construction raises a client-config error (for example, missing credential)."""
 
     def __init__(self) -> None:
         from standard_asr.contract.exceptions import ConfigError
@@ -577,7 +577,7 @@ def test_create_app_missing_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_create_app_empty_registry_exposes_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
-    # An explicitly-passed empty ModelRegistry must expose ZERO models and MUST
+    # An explicitly passed empty ModelRegistry must expose ZERO models and MUST
     # NOT fall back to plugin discovery (a bare `registry or discover_models()`
     # would treat the len-0 registry as falsy and expose every installed
     # plugin instead -- the opposite of the operator's intent).
@@ -1511,7 +1511,7 @@ class _HostileCapsMeta(type):
 
     @property
     def declared_capabilities(cls) -> Any:
-        """Fail the way a plugin's lazily-built capability tree can.
+        """Fail the way a plugin's lazily built capability tree can.
 
         Returns:
             Never returns.
@@ -1703,7 +1703,7 @@ def test_transcribe_options_accept_diarization_marker() -> None:
 
 def test_transcribe_options_diarization_unknown_key_maps_to_422() -> None:
     # The marker is a closed type (extra="forbid"): an unknown nested key --
-    # e.g. a not-yet-graduated num_speakers -- is rejected, never silently
+    # for example, a not-yet-graduated num_speakers -- is rejected, never silently
     # dropped (it would otherwise read as a satisfied request).
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -2025,7 +2025,7 @@ def test_ws_rejects_provider_params_over_wire() -> None:
 
 def test_validation_error_with_non_string_loc_index_is_handled() -> None:
     # A bad element inside a list field yields a loc with an int index
-    # (e.g. ["candidate_languages", 0]); the redaction scan must skip the
+    # (for example, ["candidate_languages", 0]); the redaction scan must skip the
     # non-string component without error.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -2041,7 +2041,7 @@ def test_validation_error_with_non_string_loc_index_is_handled() -> None:
     resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
     # Structured list; the loc carries the int index
-    # (e.g. ["options", "candidate_languages", 0]) without error.
+    # (for example, ["options", "candidate_languages", 0]) without error.
     detail = resp.json()["detail"]
     assert any("candidate_languages" in entry["loc"] for entry in detail)
 
@@ -2129,7 +2129,7 @@ def test_ws_config_frame_invalid_json_is_bad_request_without_document_echo() -> 
 def test_ws_handshake_internal_fault_is_internal_error_not_bad_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A server-side handshake bug is OUR fault: scrubbed internal_error.
+    """A server-side handshake bug is the SERVER's fault: scrubbed internal_error.
 
     The old catch-all mapped ANY exception to ``bad_request`` and sent raw
     ``str(exc)`` -- blaming the caller for internal faults and leaking
@@ -3269,7 +3269,7 @@ def test_ws_stream_cumulative_cap_rejected() -> None:
     client = TestClient(app)
     with client.websocket_connect("/v1/stream/dummy/echo") as ws:
         ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
-        ws.send_bytes(b"abc")  # 3 bytes (ok)
+        ws.send_bytes(b"abc")  # 3 bytes (OK)
         ws.send_bytes(b"def")  # cumulative 6 > 5-byte session cap
         events: list[dict[str, Any]] = []
         while True:
@@ -3366,7 +3366,7 @@ def test_create_app_rejects_nonpositive_ws_caps(kwargs: dict[str, int]) -> None:
 def test_bridge_stream_pump_failure_is_logged_and_signalled(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # A protocol violation on the pump side (send_audio raising, e.g.
+    # A protocol violation on the pump side (send_audio raising, for example,
     # StreamClosedError) must NOT be silently swallowed: it is logged
     # server-side and surfaced to the client as a single generic, non-leaking
     # error frame.
@@ -3604,7 +3604,7 @@ def _broken_load_registry() -> ModelRegistry:
 
 
 def test_rest_registered_model_load_failure_is_scrubbed_500_not_404() -> None:
-    """REST transcribe: a broken plugin is OUR fault, not the caller's.
+    """REST transcribe: a broken plugin is the SERVER's fault, not the caller's.
 
     The old joint `(EntrypointValidationError, FactoryLoadError)` arm
     returned 404 "unknown model" with the raw plugin-fault text: the caller
@@ -3688,7 +3688,7 @@ def test_metadata_endpoints_contain_plugin_faults_and_never_leak(
 
     caplog.set_level(logging.ERROR)
 
-    # (1) a metaclass property (the shape a lazily-built capability tree takes)
+    # (1) a metaclass property (the shape a lazily built capability tree takes)
     app = server_module.create_app(registry=_registry_for("_hostile_caps_factory"))
     resp: httpx2.Response = TestClient(app).get("/v1/capabilities/dummy/echo")
     assert resp.status_code == 500
@@ -3767,8 +3767,8 @@ def test_bridge_forwards_final_diagnostics_delta_on_cap_violation() -> None:
     # A byte-cap violation breaks out of the forward loop BEFORE the
     # per-event delta take, so diagnostics accrued since the last delivered
     # event (an engine note, a guard suppression) were silently dropped: the
-    # capped client ended the session never learning e.g. that a parameter
-    # was degraded, while the REST path returns every diagnostic on the
+    # capped client ended the session never learning, for example, that a
+    # parameter was degraded, while the REST path returns every diagnostic on the
     # result. The bridge must take one final delta before the terminal
     # policy frame.
     import asyncio

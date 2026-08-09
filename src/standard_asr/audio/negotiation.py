@@ -75,7 +75,7 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     fc00::/7 (and their relatives, plus reserved/unspecified) -- including
     IPv4-mapped IPv6 addresses, which are unwrapped first. As a hardening layer
     beyond those mandatory ranges, any address that is not globally routable is also
-    rejected (``not is_global``), which covers e.g. CGNAT 100.64.0.0/10
+    rejected (``not is_global``), which covers, for example, CGNAT 100.64.0.0/10
     (RFC 6598) and the documentation/TEST-NET ranges.
 
     Args:
@@ -87,7 +87,7 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
     # ``is_global`` classification of a few exotic ranges shifted slightly across
-    # Python 3.10-3.13 (e.g. 192.0.0.9/32 PCP anycast became global in 3.12's
+    # Python 3.10-3.13 (for example, 192.0.0.9/32 PCP anycast became global in 3.12's
     # IANA-registry alignment); the explicit predicates above it are the stable
     # baseline, so version drift can only make the check stricter, never weaker.
     return (
@@ -105,7 +105,7 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     """Validate an ``AudioUrl`` against the SSRF policy before forwarding.
 
     The standard never fetches the URL itself in v1; this only
-    validates the literal that will be passed to the engine. The check is:
+    validates the literal that is passed to the engine. The check is:
     HTTPS-only, a parseable host, and -- unless opted out -- every address the
     host resolves to must be public.
 
@@ -129,9 +129,9 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         UnsafeAudioUrlError: If the URL is malformed, not HTTPS, has no host,
             has a malformed port, fails to resolve, or resolves to a disallowed
             address. This is the only exception type the validator raises, so a
-            caller (e.g. the server) can map it to a single contracted response.
+            caller (for example, the server) can map it to a single contracted response.
     """
-    # urlsplit raises a bare ValueError for some malformed URLs (e.g. an
+    # urlsplit raises a bare ValueError for some malformed URLs (for example, an
     # unbalanced IPv6 bracket); re-raise as the contracted error type so the
     # validator's single-exception contract holds for every malformed input.
     try:
@@ -180,7 +180,7 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         raise UnsafeAudioUrlError(url, f"host {host!r} did not resolve ({exc})") from exc
     except UnicodeError as exc:
         # getaddrinfo IDNA-encodes the host name first; an unencodable name
-        # (e.g. an over-long label) raises UnicodeError there, not gaierror.
+        # (for example, an over-long label) raises UnicodeError there, not gaierror.
         # Wrap it so the validator keeps its single-exception contract.
         raise UnsafeAudioUrlError(url, f"host {host!r} cannot be encoded ({exc})") from exc
     if not infos:
@@ -234,13 +234,13 @@ class ConversionPlan:
     ``execute_plan`` dispatches on the ``(source variant, target_kind)`` pair and
     *membership-tests* ``operations`` -- it does not iterate them in order -- so
     in the current matrix every ``(source, target)`` cell maps to a unique step
-    set and the order is descriptive only. A future multi-step plan (e.g. a v2
+    set and the order is descriptive only. A future multi-step plan (for example, a v2
     ``fetch -> decode``) MUST either keep this 1:1 mapping or switch execution to
     an ordered op-dispatcher; do not assume appending an op to this tuple changes
     execution.
 
     Args:
-        source_type: Name of the provided variant (e.g. ``"AudioPath"``).
+        source_type: Name of the provided variant (for example, ``"AudioPath"``).
         target_kind: The :class:`InputKind` the engine receives.
         operations: The plan's conversion steps as a declarative description (see
             above -- execution dispatches on source/target, not this order).
@@ -292,7 +292,7 @@ def _remote_only_hint(accepted: frozenset[InputKind]) -> str:
         accepted: Engine-accepted input kinds (no local kind present).
 
     Returns:
-        An actionable hint naming the remote variant(s) the engine accepts.
+        An actionable hint naming the remote variants the engine accepts.
     """
     options: list[str] = []
     if InputKind.FETCHABLE_URL in accepted:
@@ -327,7 +327,7 @@ def negotiate(
 
     Raises:
         TypeError: If ``provided`` is not one of the six :data:`AudioInput`
-            variants (e.g. an un-coerced bare ``str``). Call
+            variants (for example, an un-coerced bare ``str``). Call
             :func:`~standard_asr.audio.input.coerce_audio_input` first.
     """
     accepted = frozenset(accepted)
@@ -345,7 +345,7 @@ def negotiate(
         return _negotiate_storage_uri(source, accepted)
     # Match AudioUrl explicitly rather than falling through: this is a public API
     # whose static type cannot stop a dynamic/REST caller from passing a non-
-    # AudioInput object (e.g. an un-coerced bare str), and a silent fallthrough
+    # AudioInput object (for example, an un-coerced bare str), and a silent fallthrough
     # would mis-negotiate it as a URL. Reject loudly with the same boundary
     # discipline as coerce_audio_input, and keep the isinstance chain total so a
     # future seventh variant cannot be silently absorbed here. (pyright sees the
@@ -552,7 +552,7 @@ def _negotiate_storage_uri(
 ) -> ConversionPlan | NoViablePath:
     """Negotiate a path for an :class:`AudioStorageUri` source.
 
-    A provider storage URI (``s3://``, ``gs://``, ...) is resolvable only by an
+    A provider storage URI (``s3://``, ``gs://``, and so on) is resolvable only by an
     engine that authenticates it with its own cloud-SDK credentials, so it is
     viable solely as a zero-conversion passthrough to a ``storage_uri`` engine.
     The standard is not an upload-broker and cannot fetch from cloud storage

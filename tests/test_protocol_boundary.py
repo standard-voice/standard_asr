@@ -32,7 +32,7 @@ async def _async_result() -> str:
 
 
 class _NonCoroutineAwaitable:
-    """An awaitable that is not a coroutine (e.g. a custom future type)."""
+    """An awaitable that is not a coroutine (for example, a custom future type)."""
 
     def __await__(self) -> Generator[Any, None, str]:
         """Make the object awaitable.

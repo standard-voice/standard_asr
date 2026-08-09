@@ -302,7 +302,7 @@ def test_covers_rejects_timestamps_mode_widening() -> None:
 
 
 def test_covers_allows_standard_mode_reduction_between_supported_modes() -> None:
-    # A change to a provably-weaker (but still supported) standard mode is a
+    # A change to a provably weaker (but still supported) standard mode is a
     # legal narrowing: the fail-closed guard must fall through, not reject it.
     declared = DeclaredCapabilities(
         streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="seamless"))
@@ -317,7 +317,7 @@ def test_covers_unknown_mode_change_is_fail_closed() -> None:
     # Tokens outside the standard reduction map (an x_* experimental
     # enum node) have no provable strength order, so a mode CHANGE between them
     # MUST NOT pass as a legal narrowing (fail-closed); an identical mode is a
-    # trivially-valid non-widening.
+    # trivially valid non-widening.
     declared = _x_caps({"x_acme_decode": {"mode": "alpha"}})
     changed = _x_caps({"x_acme_decode": {"mode": "beta"}})
     unchanged = _x_caps({"x_acme_decode": {"mode": "alpha"}})
@@ -500,7 +500,7 @@ def test_iter_queryable_paths_x_star_gate_matches_the_query_surface() -> None:
 def test_supports_descends_non_extension_keys_inside_x_star_subtree() -> None:
     # The x_* filter applies only to extra keys on typed standard nodes. Inside a
     # raw x_* subtree the vendor owns the whole structure, so non-x_* child keys
-    # (e.g. "nested") still resolve and appear as supported paths.
+    # (for example, "nested") still resolve and appear as supported paths.
     caps = DeclaredCapabilities.model_validate(
         {"batch": {"x_container": {"nested": {"supported": True}}}}
     )
@@ -947,7 +947,7 @@ def test_covers_continues_past_unresolvable_node() -> None:
     # (declared_node is None), the per-node narrowing check is skipped (continue)
     # but set-containment still governs the result.
     declared = _x_caps({"x_feat": {"supported": True}})
-    # `other` supports the same path; declared._resolve finds it, but we also add
+    # `other` supports the same path; declared._resolve finds it, but the fixture also adds
     # a present container whose effective node differs in shape.
     same = _x_caps({"x_feat": {"supported": True}})
     assert declared.covers(same) is True
@@ -1011,7 +1011,7 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
     # _MODE_REDUCTIONS keys an enum/mode strength order by the BARE
     # token, globally (not per node type). That is only sound while the standard
     # enum families have disjoint token sets -- otherwise a future enum node that
-    # reuses an existing token (e.g. 'none'/'final') would silently inherit another
+    # reuses an existing token (for example, 'none'/'final') would silently inherit another
     # family's reduction order. Guard the invariant: collect the Literal tokens of
     # every standard enum/mode Cap and assert no token is shared across families,
     # and that every reduction-map key/value is one of those declared tokens.
@@ -1262,7 +1262,7 @@ def test_extension_extras_are_closed_to_the_json_value_space() -> None:
 def test_extension_extras_key_domain_is_exact_str() -> None:
     # The extras KEY domain closes with the same rule as the results-layer
     # wire slots (require_json_string_keys): exact str at every depth. The
-    # counterexample this pins: the value adapter's lax dict[str, ...]
+    # counterexample this pins: the value adapter's lax ``dict[str, ...]``
     # validation DECODES a bytes key into its str spelling, and the merge
     # then re-homed the laundered key -- {b"supported": True} silently
     # overrode a declared supported=False (both insertion orders), and
@@ -1296,8 +1296,9 @@ def test_extension_extras_key_domain_is_exact_str() -> None:
 def test_queryable_surface_keys_cannot_embed_the_path_separator() -> None:
     # "." is the dot-path grammar's reserved separator: a queryable-surface
     # key containing it minted a path that supports() could never resolve
-    # (iter_queryable_paths yielded 'x_vendor.a.b' for {'x_vendor': {'a.b':
-    # ...}}, supports() split it into segments the tree does not have, and
+    # (iter_queryable_paths yielded 'x_vendor.a.b' for
+    # ``{'x_vendor': {'a.b': ...}}``, supports() split it into segments the
+    # tree does not have, and
     # the compliance sweep then failed a fully compliant plugin), and two
     # DISTINCT trees ({'a.b': node} vs {'a': {'b': node}}) joined to the
     # SAME path string, letting covers()'s set containment conflate them.

@@ -159,7 +159,7 @@ def _target_array_sample_rate(
        distance to ``source_sample_rate``, preferring -- to honor the
        anti-upsampling spirit -- a rate that does **not** upsample (``<= source``)
        over one that does when both are equally near (deterministic and
-       order-independent; the old ``accepted[0]`` could silently upsample, e.g.
+       order-independent; the old ``accepted[0]`` could silently upsample, for example,
        ``[48000, 16000]`` for 22050 Hz input picked 48000); for a
        ``SampleRateRange``, the source clamped into ``[min, max]``. When the
        source rate is unknown the smallest accepted rate (list) / the range
@@ -187,7 +187,7 @@ def _target_array_sample_rate(
         return native_sample_rate
     if source_sample_rate is None:
         # No source reference: pick the smallest reachable rate to minimize
-        # gratuitous upsampling, deterministically. (For "any" we returned native
+        # gratuitous upsampling, deterministically. (The "any" arm returned native
         # above; here ``accepted`` is a list or range.)
         return min(accepted) if isinstance(accepted, list) else accepted.min
     # Nearest reachable (list: nearest member preferring not to upsample; range:
@@ -605,7 +605,7 @@ def _prepare_array(
         # branch: no data:-URI content sniffing and no leading/trailing strip()
         # of the path (discrimination MUST NOT sniff string content,
         # and a bare path is ALWAYS a local file). Passing str() would route an
-        # AudioPath("data:audio/wav;base64,...") into base64 decoding (a silent
+        # ``AudioPath("data:audio/wav;base64,...")`` into base64 decoding (a silent
         # wrong result that fails loudly on an encoded-bytes engine instead) and
         # would strip a real "/tmp/x.wav " path down to a different file. The
         # Path branch raises an actionable "wrap base64 in AudioBase64" error.

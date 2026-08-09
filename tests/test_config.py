@@ -297,7 +297,7 @@ def test_secret_marked_field_in_nested_submodel_rejected_at_definition() -> None
 
 def test_secret_marked_field_nested_in_container_rejected_at_definition() -> None:
     # The nested-secret guard unwraps containers too: a submodel carrying a
-    # secret reached through list[...] / dict[...] is just as unprotected.
+    # secret reached through ``list[...]`` / ``dict[...]`` is just as unprotected.
     class _Auth(BaseModel):
         token: SecretStr | None = secret_field()
 
@@ -342,7 +342,7 @@ def test_top_level_carrier_without_marker_rejected_at_definition() -> None:
             api_key: SecretStr | None = None
 
     # Carriers hidden inside a container annotation are caught the same way
-    # (marking them then routes into guard 1's exactly-one-carrier rule).
+    # (marking them then routes into guard 1: exactly one carrier per secret).
     with pytest.raises(TypeError, match="not marked secret"):
 
         class _ListCarrierCfg(BaseConfig[Literal["ulc"]]):  # pyright: ignore[reportUnusedClass]
@@ -453,7 +453,7 @@ def test_inherited_serialization_hook_rejected_at_definition() -> None:
 
 
 def test_annotated_serializer_metadata_rejected_at_definition() -> None:
-    # Annotated[..., PlainSerializer(...)] is the same open lane in field
+    # ``Annotated[..., PlainSerializer(...)]`` is the same open lane in field
     # metadata form: on a secret field the serializer receives the UNWRAPPED
     # carrier value; on any field it silently diverges the dump from the
     # declared input. Both variants are rejected at definition.
@@ -685,7 +685,7 @@ def test_public_dump_ignores_a_post_definition_model_dump_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The RUNTIME half of the defense: even if an override is installed AFTER
-    # definition (bypassing Guard 8, e.g. by monkeypatch or a metaclass trick),
+    # definition (bypassing Guard 8, for example, by monkeypatch or a metaclass trick),
     # public_dump calls BaseModel.model_dump UNBOUND and never dispatches to it.
     cfg = _CloudConfig(api_key=SecretStr("sk-RUNTIME-VERIFY"))
 
@@ -997,7 +997,7 @@ def test_env_fallback_scalar_string_not_json_decoded() -> None:
 
 
 def test_env_fallback_literal_field_not_json_decoded() -> None:
-    # A non-union, non-container, non-model annotation (e.g. Literal) is scalar:
+    # A non-union, non-container, non-model annotation (for example, Literal) is scalar:
     # its env value passes through verbatim, never JSON-decoded. A
     # bare token like "fast" is not valid JSON, so JSON-decoding it would drop
     # the value; it must reach the field unchanged.
@@ -1053,7 +1053,7 @@ def test_from_env_explicit_wins_over_env() -> None:
 
 
 def test_from_env_explicit_none_overrides_env() -> None:
-    # minor: "explicit > env" treats an explicitly-passed None as a
+    # minor: "explicit > env" treats an explicitly passed None as a
     # value (the key IS present), so it wins over env -- the rule is "explicit
     # wins", not "explicit-non-None wins". This locks the documented semantics so
     # a wrapper forwarding optional None kwargs gets predictable behavior.
@@ -1072,7 +1072,7 @@ def test_from_env_omitted_key_still_falls_back_to_env() -> None:
 
 def test_env_fallback_covers_engine_declared_field() -> None:
     # minor: env fallback covers the FULL config surface, not just the
-    # standard mixin fields -- an engine-declared field (e.g. beam_size) gets a
+    # standard mixin fields -- an engine-declared field (for example, beam_size) gets a
     # STANDARD_ASR_<ENGINE>_<FIELD> entry too (intentional DX, documented on
     # the _ENV_EXCLUDED_FIELDS comment).
     class _EngineCfg(BaseConfig[Literal["eng"]]):
@@ -1121,7 +1121,7 @@ def test_from_env_does_not_downgrade_strict_policy() -> None:
 
 
 def test_from_env_loads_aliased_credential(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A credential declaring a provider-native alias (e.g. ElevenLabs
+    # A credential declaring a provider-native alias (for example, ElevenLabs
     # `xi-api-key`) must still load from its STANDARD_ASR_<ENGINE>_<FIELD> env var
     # (keyed by attribute name), even under extra="forbid".
     from pydantic import Field
@@ -1384,7 +1384,7 @@ def test_secret_whitespace_survives_every_alias_input_key() -> None:
     The whitespace-preserving pre-validator used to wrap only the canonical
     name (or, failing that, `alias`); a raw credential passed under a string
     `validation_alias` or an `AliasChoices` choice fell through to
-    ``str_strip_whitespace``'s silent trim -- a silently-wrong secret, the
+    ``str_strip_whitespace``'s silent trim -- a silently wrong secret, the
     exact state the wrapper exists to prevent. All flat input keys now share
     one vocabulary (`_flat_input_keys`) with the absence classifier.
     """
@@ -1511,7 +1511,7 @@ def test_absence_classifier_rejects_supplied_and_unknown_names() -> None:
     """Direct unit coverage of the classifier's remaining conservative
     rejections: a field reported missing DESPITE appearing in the merged
     input (an alias/population mismatch) and a loc naming no own field
-    (e.g. an alias string) are both defects, never absence.
+    (for example, an alias string) are both defects, never absence.
     """
     from pydantic import ValidationError as PydanticValidationError
 
@@ -1772,7 +1772,7 @@ def test_input_key_vocabulary_is_validation_only() -> None:
     ``validation_alias`` overrides it; from then on ``alias`` is
     serialization-only and pydantic REJECTS it on input. Treating it as an
     input key made all three consumers of this vocabulary believe a key
-    could populate a field that pydantic will never accept from it.
+    could populate a field that pydantic never accepts from it.
     """
     from pydantic import Field
 
@@ -2228,7 +2228,7 @@ def test_nested_input_container_must_forbid_undeclared_keys() -> None:
 
     # The walk is over the SCHEMA, so depth and containers cannot hide the
     # open leaf: a closed middle model with an open inner one, and a leaf
-    # reached only through dict[str, ...], are both found.
+    # reached only through ``dict[str, ...]``, are both found.
     class _OpenLeaf(BaseModel):
         rate: int = 16000
 
@@ -2361,7 +2361,7 @@ def test_nested_typed_dict_and_dataclass_input_surfaces_must_be_closed() -> None
 def test_env_codec_covers_every_shape_the_definition_guards_admit() -> None:
     # The origin whitelist was fail-open in the DX direction: a Mapping, a
     # Sequence, a TypedDict and a dataclass all pass every class-definition
-    # guard -- they are ordinary, fully-declared config shapes -- yet had no
+    # guard -- they are ordinary, fully declared config shapes -- yet had no
     # origin entry, so each was unreachable through its own documented env
     # convention (the bare string hit the container validator and raised).
     # The codec now reads the core schema, so what the guards admit, the env

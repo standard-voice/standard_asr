@@ -179,7 +179,7 @@ def test_backend_falls_back_when_scipy_import_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # A broken / absent scipy must degrade to the built-in resampler,
-    # never propagate. We fail ONLY the in-method ``scipy.signal`` import and
+    # never propagate. The test fails ONLY the in-method ``scipy.signal`` import and
     # restore immediately, avoiding the numpy-reload artifact that purging scipy
     # from sys.modules would cause.
     import builtins
@@ -198,6 +198,6 @@ def test_backend_falls_back_when_scipy_import_fails(
 
 
 # Note: the scipy-absent fallback branch of resample_with_backend is exercised by
-# the no-[audio] CI lane (where scipy is not importable). We deliberately do NOT
+# the no-[audio] CI lane (where scipy is not importable). This suite deliberately does NOT
 # break the scipy import in-process here: purging scipy from sys.modules forces a
 # numpy reload that corrupts scipy state for sibling tests under coverage.

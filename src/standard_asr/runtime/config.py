@@ -97,7 +97,7 @@ def secret_field(default: Any = None, *, description: str = "") -> Any:
     Args:
         default: Field default. ``None`` for an optional credential (the
             annotation must union ``None``), ``...`` (Ellipsis) for a
-            required one, or a carrier instance (e.g.
+            required one, or a carrier instance (for example,
             ``SecretStr("preset")``) -- a plain string is rejected at class
             definition (defaults are not validated, so it would leak
             plaintext).
@@ -158,7 +158,7 @@ def _secret_carrier(annotation: Any) -> type[SecretStr] | type[SecretBytes] | No
     """
     if annotation is SecretStr or annotation is SecretBytes:
         return annotation
-    # Only union members are unwrapped (both typing.Union and the PEP 604
+    # Only union members are unwrapped (both ``typing.Union`` and the PEP 604
     # ``X | Y`` form). Any other parametrized origin is a generic container and
     # MUST NOT satisfy the requirement.
     origin = get_origin(annotation)
@@ -204,7 +204,7 @@ def _annotation_serialization_gap(annotation: Any) -> str | None:
     if annotation is dict or annotation is list:
         return "an undeclared value shape (a bare, unparametrized container)"
     # Gate on get_origin BEFORE any issubclass, exactly like
-    # _nested_models_in_annotation: a parametrized generic (list[X], ...)
+    # _nested_models_in_annotation: a parametrized generic (``list[X]`` and so on)
     # satisfies isinstance(_, type) on Python 3.10 (but not 3.11+), so an
     # isinstance-first branch hands list[X] to issubclass -- a TypeError
     # that fired at every config class definition on the 3.10 floor.
@@ -286,7 +286,7 @@ def _annotation_has_unresolved_ref(annotation: Any) -> bool:
     nested-secret guard must therefore fail **closed** on such an annotation rather
     than pass it unchecked: a credential buried in a define-after submodel would
     otherwise slip the scan. A resolved or imported submodel never survives as a
-    ``ForwardRef``, so this never rejects a legitimately-resolvable annotation.
+    ``ForwardRef``, so this never rejects a legitimately resolvable annotation.
 
     Args:
         annotation: The field's annotation.
@@ -298,7 +298,7 @@ def _annotation_has_unresolved_ref(annotation: Any) -> bool:
     if isinstance(annotation, ForwardRef):
         return True
     if get_origin(annotation) is Literal:
-        # Literal arguments are *values* (e.g. strings), not type annotations, so
+        # Literal arguments are *values* (for example, strings), not type annotations, so
         # they must not be recursed into (a Literal["x"] arg is not a ForwardRef).
         return False
     return any(_annotation_has_unresolved_ref(arg) for arg in get_args(annotation))
@@ -309,7 +309,7 @@ def _nested_models_in_annotation(annotation: Any) -> list[type[BaseModel]]:
 
     Walks unions (``X | Y``) and generic containers (``list[...]``,
     ``dict[str, ...]``, ``tuple[..., ...]``, ``Optional[...]`` etc.) so a
-    submodel nested anywhere in the annotation is found, e.g. the ``Auth`` in
+    submodel nested anywhere in the annotation is found, for example, the ``Auth`` in
     ``Auth``, ``Auth | None``, ``list[Auth]``, or ``dict[str, Auth]``. Scalar
     secret types (``SecretStr`` / ``SecretBytes``) are intentionally **not**
     returned: they are the legitimate top-level secret carriers and the
@@ -323,7 +323,7 @@ def _nested_models_in_annotation(annotation: Any) -> list[type[BaseModel]]:
         possible -- the caller deduplicates via a visited set).
     """
     # Gate on get_origin, NOT isinstance(annotation, type): a parametrized generic
-    # (list[X], dict[str, X], ...) satisfies isinstance(_, type) on Python 3.10
+    # (``list[X]``, ``dict[str, X]``, and so on) satisfies isinstance(_, type) on Python 3.10
     # (but not 3.11+), so an isinstance-first walk would treat list[Auth] as a leaf
     # and never reach the nested Auth -- silently disabling the secret guard on 3.10.
     # A real class has get_origin() is None; a generic/union has a non-None origin.
@@ -392,7 +392,7 @@ def _nested_credential_path(
 
     Returns:
         ``(dotted_path, description)`` for the first credential-shaped
-        field found (e.g. ``("auth.token", "is marked secret
+        field found (for example, ``("auth.token", "is marked secret
         (secret_field)")``), or ``None`` if the model graph carries none.
     """
     visited: set[type[BaseModel]] = _visited if _visited is not None else set()
@@ -504,7 +504,7 @@ def _nested_input_surface_gap(cls: type[BaseModel]) -> str | None:
 #: than by annotation ORIGIN because the origin whitelist was demonstrably
 #: partial: ``Mapping[str, int]``, ``Sequence[str]``, a ``TypedDict`` and a
 #: dataclass all pass every class-definition guard (they are ordinary,
-#: fully-declared config shapes) yet had no origin entry, so each was
+#: fully declared config shapes) yet had no origin entry, so each was
 #: unreachable through its own documented env convention. Widening the
 #: whitelist would only postpone the next miss -- named tuples, type
 #: aliases, a future pydantic kind -- which is the same fail-open pattern
@@ -573,7 +573,7 @@ def _env_codec(field_schema: object) -> Literal["raw", "json", "ambiguous"]:
 
     An environment variable is always a bare string, so each field is either
     ``"raw"`` (the string IS the value: ``str``, ``int``, ``SecretStr``,
-    ``Path``, an enum...) or ``"json"`` (the string is a JSON document to
+    ``Path``, an enum, and so on) or ``"json"`` (the string is a JSON document to
     decode first: a list, a mapping, a submodel, a ``TypedDict``, a
     dataclass). A ``Json[T]`` field is RAW even though it names a structured
     shape: the annotation's own contract is that the input IS the JSON
@@ -715,7 +715,7 @@ def _normalize_segment(value: str) -> str:
     one ``_`` per char). This keeps a segment free of ``__``, so the ``__``
     double-underscore engine/field separator (:func:`env_var_name`) stays
     unambiguously parseable: a segment can never itself contain the separator
-    sequence (e.g. ``"openai--api"`` -> ``"OPENAI_API"``, never ``"OPENAI__API"``).
+    sequence (for example, ``"openai--api"`` -> ``"OPENAI_API"``, never ``"OPENAI__API"``).
 
     Args:
         value: Engine id or field name segment.
@@ -844,15 +844,15 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         extra="forbid",
         str_strip_whitespace=True,
         # Accept fields by their attribute name as well as their alias:
-        # env fallback keys by attribute name (e.g. ``api_key``), but a credential
-        # may declare a provider-native alias (e.g. ElevenLabs ``xi-api-key``).
+        # env fallback keys by attribute name (for example, ``api_key``), but a credential
+        # may declare a provider-native alias (for example, ElevenLabs ``xi-api-key``).
         # Without this, loading such a field from env trips ``extra="forbid"``.
         # ``populate_by_name`` (not the newer ``validate_by_name``) is used for
         # pydantic >= 2.5 compatibility (the lower-bounds CI lane).
         populate_by_name=True,
-        # Engine configs commonly carry `model_*` fields (e.g. `model_path`).
+        # Engine configs commonly carry `model_*` fields (for example, `model_path`).
         # Opt out of pydantic's `model_` protected namespace so subclasses do not
-        # warn (the warning fires on older pydantic, e.g. the lower-bounds 2.5).
+        # warn (the warning fires on older pydantic, for example, the lower-bounds 2.5).
         protected_namespaces=(),
     )
 
@@ -875,7 +875,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
     #: Base fields that MUST NOT be sourced from the environment. Env
     #: fallback covers **every other field** -- the standard config fields
     #: (credentials, endpoint routing, device, language, download root) AND any
-    #: engine-declared field (e.g. ``beam_size``, ``model_path``), each gaining a
+    #: engine-declared field (for example, ``beam_size``, ``model_path``), each gaining a
     #: ``STANDARD_ASR_<ENGINE>__<FIELD>`` entry: env coverage of the
     #: full config surface is intentional DX, not just the mixin fields. Excluded
     #: are only the three fields where an env override would be a silent
@@ -917,7 +917,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
            plaintext union member (``SecretStr | int``) would be hidden from
            REST/auto-UI while leaking plaintext in ``repr``/``str``/
            ``model_dump``/:meth:`public_dump`; two carriers make raw-string
-           wrapping ambiguous; a container of secrets (e.g.
+           wrapping ambiguous; a container of secrets (for example,
            ``list[SecretStr]``) is only half-protected.
         1b. The field's DEFAULT must uphold the same contract (pydantic does
            not validate defaults): required, ``None`` (only when the
@@ -957,7 +957,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
            serialization hooks -- ``@computed_field``, ``@model_serializer``,
            ``@field_serializer`` (declared here or inherited), and
            ``PlainSerializer``/``WrapSerializer`` metadata on a field --
-           are rejected outright. They run INSIDE ``model_dump``, i.e.
+           are rejected outright. They run INSIDE ``model_dump``, that is,
            inside :meth:`public_dump`'s "masked" serialization, where they
            can rematerialize a sibling secret in plaintext (a computed
            ``authorization`` property, a ``field_serializer`` reading
@@ -1069,7 +1069,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                     f"drop the serializer -- model_dump(mode='json') already "
                     f"renders every supported input type."
                 )
-            # Guard 5d (enumerated, accident-grade -- the trust-model
+            # Guard ``5d`` (enumerated, accident-grade -- the trust-model
             # replacement for the deleted core-schema closure proof): the
             # DECLARED annotation must not carry an undeclared value shape,
             # a SerializeAsAny marker, or a nested submodel with its own
@@ -1145,7 +1145,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                 # in repr/model_dump, and a crash in model_dump_json /
                 # public_dump when the secret serializer calls
                 # get_secret_value() on it. Legal defaults: required
-                # (secret_field(default=...)), None (when the annotation
+                # (``secret_field(default=...)``), None (when the annotation
                 # admits it), or an instance of the carrier itself.
                 if field.default_factory is not None:
                     raise TypeError(
@@ -1297,7 +1297,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
             )
         # Guard 8: the SECURITY-OWNED serialization methods keep their identity.
         # Guards 5/5b/5c close the pydantic serializer SCHEMA (decorators,
-        # Annotated serializers, SerializeAsAny, ...), but public_dump's "safe
+        # Annotated serializers, SerializeAsAny, and so on), but public_dump's "safe
         # for /v1/models" contract also rests on the DISPATCH: an ordinary
         # Python override of model_dump / model_dump_json (or __iter__, which
         # reveal_dump once walked) is the SAME "customization rematerializes a
@@ -1322,7 +1322,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         including a raw credential passed via ``from_env`` (which hands the
         constructor a plain ``str`` that pydantic strips *before* coercing it
         to the secret type). Trimming a credential can mask a paste error and
-        produce a silently-wrong secret. Running before field validation, this
+        produce a silently wrong secret. Running before field validation, this
         wraps any raw ``str`` destined for a secret-marked field into the
         field's own carrier first (``SecretStr``, or ``SecretBytes`` via
         UTF-8 -- mirroring pydantic's lax ``str -> bytes`` coercion), so its
@@ -1373,12 +1373,12 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                 "be silently trimmed. Pass a dict (or any Mapping) instead.",
             )
         # Operate on a shallow copy so a caller's input mapping is never
-        # mutated (no spooky action at a distance): e.g.
+        # mutated (no spooky action at a distance): for example,
         # ``Cloud.model_validate(d)`` must leave ``d['api_key']`` the plain
         # str the caller passed, not silently swap it for a SecretStr in
         # their mapping (a read-only Mapping also becomes writable this
-        # way). A shallow copy is sufficient: we only rebind whole values
-        # (str -> SecretStr), never mutate nested objects.
+        # way). A shallow copy is sufficient: only whole values are rebound
+        # (str -> SecretStr); nested objects are never mutated.
         mapping = dict(cast("Mapping[Any, Any]", data))
         for name, field in cls.model_fields.items():
             if not _is_secret_marked(field):
@@ -1472,7 +1472,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                 of the parsed document.
             context: Validation context, forwarded unchanged.
             **kwargs: Any further ``model_validate`` keyword arguments a
-                newer pydantic accepts (e.g. ``by_alias``), forwarded
+                newer pydantic accepts (for example, ``by_alias``), forwarded
                 unchanged.
 
         Returns:
@@ -1648,7 +1648,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
 
         This is the **reveal** half of the secret-serialization contract: the
         explicit, named counterpart to :meth:`public_dump`. Use it **only** for
-        in-process calls into an engine SDK that needs the raw credential (e.g.
+        in-process calls into an engine SDK that needs the raw credential (for example,
         an ``Authorization`` header). The result contains plaintext secrets and
         MUST NEVER be logged, persisted, sent to ``/v1/models``, or emitted as
         telemetry -- those paths use :meth:`public_dump`.
@@ -1762,7 +1762,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
             if cls._failure_is_absent_env_config(exc, merged):
                 # EVERY failure is an absent, ENVIRONMENT-FILLABLE required
                 # field: nothing was supplied and nothing was invalid -- a
-                # fact about the environment (e.g. a credential not set on
+                # fact about the environment (for example, a credential not set on
                 # this machine), not about any value or declaration. Raise
                 # the narrow subtype so consumers (the compliance suite's
                 # skip) can distinguish it from a real configuration defect.
@@ -1806,7 +1806,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
 
         Returns:
             ``True`` when EVERY error is a top-level ``missing`` on an
-            environment-fillable, genuinely-unsupplied own field.
+            environment-fillable, genuinely unsupplied own field.
         """
         for entry in exc.errors():
             loc = entry.get("loc", ())
@@ -1831,7 +1831,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
 
         THE single alias vocabulary, shared by the three surfaces that must
         agree on it or drift into silent bugs: the secret
-        whitespace-preserving pre-validator (which key(s) to wrap), the
+        whitespace-preserving pre-validator (which keys to wrap), the
         absence classifier's supplied-input check, and
         :meth:`_canonical_field_name`'s loc-token resolution. All three ask
         the same question -- "can this key populate this field?" -- so the
@@ -1849,8 +1849,8 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
           rejected on input (verified: with ``alias="a",
           validation_alias="b"``, ``{"a": ...}`` yields ``extra_forbidden``
           on ``a`` AND ``missing`` on ``b``). Including it made all three
-          surfaces believe a key could populate a field that pydantic will
-          never accept from it -- and made the definition-time collision
+          surfaces believe a key could populate a field that pydantic
+          never accepts from it -- and made the definition-time collision
           guard reject a legal declaration whose serialization alias merely
           spelled another field's name.
 
@@ -1973,7 +1973,7 @@ class DeviceConfigMixin(BaseModel):
     """Applicability mixin: compute-device selection.
 
     Attributes:
-        device: Compute device (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
+        device: Compute device (for example, ``"cpu"``, ``"cuda"``, ``"mps"``).
     """
 
     device: str | None = Field(default=None, description="Compute device.")
