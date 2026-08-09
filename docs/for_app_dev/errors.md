@@ -5,8 +5,8 @@ specific exception with machine-readable context -- never silent degradation.
 
 ## Exception hierarchy
 
-Every exception inherits from `StandardASRError`, so a single
-`except StandardASRError` catches anything the framework throws:
+Every *domain* exception inherits from `StandardASRError`, so a single
+`except StandardASRError` catches anything the runtime itself reports:
 
 ```
 StandardASRError
@@ -48,6 +48,27 @@ StandardASRError
 | `InvalidSessionUseError` | `session.feed()` / `session.send_audio()` / iterating the session | Driving a still-live session incorrectly: mixing managed `feed()` with manual `send_audio()`/`end_audio()`, calling `feed()` twice, or iterating the event stream twice. The session is NOT closed — fix the calling code; do not rebuild the session. |
 | `EntrypointValidationError` | `discover_models()` (strict mode) | A plugin's entry-point name is malformed. |
 | `FactoryLoadError` | `registry.engine_class()` / `registry.create()` | Plugin's entry point cannot be imported or the factory is misconfigured. |
+
+## What `StandardASRError` does not catch
+
+Building a model is pydantic's job, not the runtime's. A malformed field raises
+`pydantic.ValidationError`, which is a `ValueError` and **not** a
+`StandardASRError`:
+
+```python
+RuntimeParams(language="english")        # ValidationError: not a BCP-47 tag
+RuntimeParams(candidate_languages=["auto"])
+```
+
+Plain caller misuse raises the built-in `ValueError` or `TypeError` the same
+way — passing both `audio` and `audio_format` to `start_transcription()`, or an
+unsupported input type to `transcribe()`. Catch both families when you want
+everything:
+
+```python
+except (StandardASRError, ValueError):   # ValidationError is a ValueError
+    ...
+```
 
 ## Structured error context
 
