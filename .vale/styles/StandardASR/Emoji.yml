@@ -3,8 +3,18 @@ message: "No emoji or pictographs in shipped text (STYLE.md, punctuation and sym
 link: https://github.com/standard-voice/standard_asr/blob/main/STYLE.md
 level: error
 nonword: true
+# Blocks: emoji proper (1F000-1FAFF), letterlike symbols (2100-214F, e.g. the
+# bare information sign), miscellaneous technical (2300-23FF, e.g. watch and
+# hourglass), enclosed alphanumerics (2460-24FF), miscellaneous symbols and
+# dingbats (2600-27BF), supplemental arrows and symbols (2B00-2BFF), and the
+# emoji variation selector (FE0F). The plain arrows block (2190-21FF) is
+# deliberately absent: a spaced '->'-style arrow written as U+2192 appears in
+# governed Markdown tables and is typography, not emoji.
 tokens:
   - '[\x{1F000}-\x{1FAFF}]'
+  - '[\x{2100}-\x{214F}]'
+  - '[\x{2300}-\x{23FF}]'
+  - '[\x{2460}-\x{24FF}]'
   - '[\x{2600}-\x{27BF}]'
   - '[\x{2B00}-\x{2BFF}]'
   - '\x{FE0F}'

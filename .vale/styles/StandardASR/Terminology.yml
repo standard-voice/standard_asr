@@ -3,8 +3,9 @@ message: "Use '%s' instead of '%s' (TERMINOLOGY.md, forbidden synonym)."
 link: https://github.com/standard-voice/standard_asr/blob/main/TERMINOLOGY.md
 level: error
 ignorecase: true
-action:
-  name: replace
+# No action block: the match is case-insensitive but the replacement is
+# lowercase, so a machine-applied quick-fix would decapitalize a
+# sentence-initial match ("Fail-safe ..." -> "fail-closed ...").
 # Only synonyms that are wrong in EVERY sense belong here: a substitution
 # cannot read context, and its quick-fix must never invert a sentence.
 # TERMINOLOGY.md also forbids calling the reference server a "web server",

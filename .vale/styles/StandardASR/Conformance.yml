@@ -1,7 +1,14 @@
-extends: existence
-message: "Prefer 'compliance' for the engine test surface. 'Conformance' stays approved only for cross-language wire conformance (TERMINOLOGY.md, compliance row)."
+extends: substitution
+message: "Prefer '%s' over '%s' for the engine test surface. 'Conformance' stays approved only for cross-language wire conformance (TERMINOLOGY.md, compliance row)."
 link: https://github.com/standard-voice/standard_asr/blob/main/TERMINOLOGY.md
 level: warning
 ignorecase: true
-tokens:
-  - conformance
+# RE2 has no lookbehind, so the token consumes an optional 'wire ' prefix and
+# the exception then filters the matched text: 'wire conformance' (spaced,
+# hyphenated, or wrapped across a line break) is the sanctioned phrase and
+# passes; every bare 'conformance' is flagged. No action block: this is a
+# judgment call, not a mechanical 1:1 replacement.
+exceptions:
+  - 'wire[-\s]conformance'
+swap:
+  '(?:wire[-\s])?conformance': compliance
