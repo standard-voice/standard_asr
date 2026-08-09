@@ -25,6 +25,15 @@ Subclass `EngineBase` and provide:
 6. (Streaming) override
    `_start_transcription(*, gated_params, audio_format, prepared_audio)`
    returning a `TranscriptionSession` subclass.
+7. `config_type: ClassVar[type[BaseConfig]]` — your config class. It is read
+   from the class, so a settings UI can render the schema without constructing
+   the engine. Without it, `registry.config_schema()`, `GET /v1/config-schema/`,
+   and the config-schema section of `standard-asr show` all go dark, and
+   compliance warns (`missing_config_type`).
+8. If your `properties` declare `selectable_languages`, your config MUST carry a
+   usable `default_language` (spec IC.6). Inherit `LanguageConfigMixin` to get
+   the field. Without it, every `transcribe()` raises `EngineContractError` and
+   compliance reports the error `language_config_invalid`.
 
 ## Minimal batch engine
 
@@ -32,12 +41,13 @@ Subclass `EngineBase` and provide:
 from typing import ClassVar, Literal
 from standard_asr.engine import (
     BaseConfig, BaseProperties, BatchCapabilities, DeclaredCapabilities,
-    EngineBase, FlagCap, InputKind, LanguageCaps, PreparedAudio,
-    RuntimeParams, TranscriptionResult,
+    EngineBase, FlagCap, InputKind, LanguageCaps, LanguageConfigMixin,
+    PreparedAudio, RuntimeParams, TranscriptionResult,
 )
 
-class MyConfig(BaseConfig[Literal["my-engine"]]):
+class MyConfig(LanguageConfigMixin, BaseConfig[Literal["my-engine"]]):
     engine: Literal["my-engine"] = "my-engine"
+    default_language: str = "en"   # IC.6: required once you declare a language axis
 
 class MyProps(BaseProperties):
     engine_id: str = "my-engine"
@@ -51,6 +61,7 @@ class MyProps(BaseProperties):
 
 class MyEngine(EngineBase):
     properties: ClassVar[BaseProperties] = MyProps()
+    config_type: ClassVar[type[BaseConfig]] = MyConfig   # schema without instantiation
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         batch=BatchCapabilities(
             language=LanguageCaps(runtime_override=FlagCap(supported=True)),
@@ -107,6 +118,14 @@ standard layer delivers the right shape (and attaches conversion diagnostics).
 
 ## Streaming
 
+**Declare the transport axis first.** Set `streaming_input=FlagCap(supported=True)`
+if you accept incremental PCM frames, `streaming_output=FlagCap(supported=True)`
+if you return results incrementally, or both. These are engine-global flags, and
+either one may be supported only when you also declare a `streaming` domain. A
+`streaming` domain with neither axis is a streaming engine nobody can call: every
+`start_transcription()` raises `UnsupportedFeatureError`, and compliance reports
+the error `streaming_domain_without_axis`.
+
 Subclass `TranscriptionSession`, implement async `_produce()` (read fed audio via
 `self.audio_chunks()`, yield `TranscriptionEvent` objects). The base provides
 `feed`/`send_audio`/`end_audio`, backpressure, the done-timeout, and the sync
@@ -127,7 +146,11 @@ calls your hook. Before your hook runs, the base has already:
 - run the **fail-closed** wire-format check (`ensure_stream_format_supported`) on
   the encoding, the channel count, and the sample rate. It rejects an
   `audio_format.encoding` not in your declared `wire_encodings`, so an undeclared
-  encoding is not misframed as PCM and silently mistranscribed. It rejects an
+  encoding is not misframed as PCM and silently mistranscribed. **Declare
+  `wire_encodings`**: leaving it unset means "unconstrained", and the encoding
+  check is then skipped, so an encoding you never declared reaches you unchecked.
+  This is the one fail-open concession in the check; compliance warns about it
+  (`streaming_input_without_wire_encodings`). It rejects an
   `audio_format.channels` other than 1: v1 streaming wire input is mono-only,
   because the standard layer does not downmix incremental frames the way the batch
   path does. Downmix to mono before feeding. It also rejects a wire `sample_rate`
@@ -380,6 +403,10 @@ the session with `session.diagnostics()`):
   was suppressed.
 - `supersede_obligation_unfulfilled` — soft end-of-session note: a replacement
   group ended with less frozen text than the retired segments it replaced.
+- `diagnostics_truncated` — the bounded diagnostic channel overflowed, so one
+  aggregated summary entry replaces the excess. It is rewritten in place as more
+  overflow arrives, so a consumer must treat a later occurrence as superseding
+  the earlier one.
 
 ### Declare what you emit (capability ⇄ stream consistency)
 
