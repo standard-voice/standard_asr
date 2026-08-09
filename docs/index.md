@@ -17,7 +17,7 @@ and reach every application. Think USB-C for ASR inference.
 | ---------- | ---------- |
 | **An application developer** | One integration that works with every compliant engine. Zero vendor lock-in. Automatic discovery of whatever the user installs. |
 | **An ASR engine developer** | Focus on the model. Implement one interface and get a CLI, a reference server, and a compliance test suite for free. |
-| **An end user** | Install the engine that fits your language or domain and use it immediately, without waiting for the app author to add support. |
+| **An end user** | Install the plugin whose engine fits your language or domain and use it immediately, without waiting for the app author to add support. |
 
 ## Start here
 

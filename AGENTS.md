@@ -14,7 +14,7 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 ## Stakeholders — consider all three in every decision
 
 - **App developers** (primary users): one stable interface for all engines. No vendor lock-in. Zero-config discovery.
-- **ASR engine authors**: low barrier to publish a compliant plugin. Implement one interface → get CLI, Web API, compliance tests for free — and your engine is instantly compatible with every Standard ASR application, no per-app integration needed. Focus on models, not plumbing.
+- **ASR engine authors**: low barrier to publish a compliant plugin. Implement one interface → get CLI, reference server, compliance tests for free — and your engine is instantly compatible with every Standard ASR application, no per-app integration needed. Focus on models, not plumbing.
 - **End users**: choose the best ASR for their language or domain — install a plugin, use it immediately, no app changes needed.
 
 ## Philosophy

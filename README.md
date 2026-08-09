@@ -34,9 +34,9 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 **A preview of the current state.**
 [standard-asr-live](https://github.com/standard-voice/standard-asr-live) is an experimental
 terminal app written against Standard ASR alone — it never imports a concrete engine. In the
-clip below it starts with no engines installed, so it has nothing to transcribe. One
+clip below it starts with no engines installed, so it has nothing to transcribe with. One
 `pip install std-mlx-audio` later, the same command offers every model that plugin ships, and
-picking one streams live speech onto the screen. Nothing about the app changed — installing
+picking one streams live transcription onto the screen. Nothing about the app changed — installing
 the engine _was_ the integration.
 
 https://github.com/user-attachments/assets/528f5545-4c79-4a5b-a7fd-562cbf833938
@@ -60,10 +60,10 @@ one-line model-key change — not another adapter.
 ## "Nice idea — but how does a protocol with no adopters get adopted?"
 
 **Standard ASR does not need any vendor's cooperation to be useful today.** For existing
-engines, compliance is a thin adapter — not a rewrite — and each adapter ships as an ordinary
+engines, compliance is a thin adapter — not a rewrite — and the result ships as an ordinary
 pip-installable plugin package that anyone can publish. An application developer gets the
-payoff — one interface, swappable engines — from day one, with zero engines officially
-adopted. If the protocol earns an ecosystem, engine authors gain an organic incentive to ship
+payoff — one interface, swappable engines — from day one, before any engine vendor
+officially adopts the protocol. If the protocol earns an ecosystem, engine authors gain an organic incentive to ship
 native compliance: one interface implemented means every Standard ASR application is a
 potential user, plus a CLI, an HTTP/WebSocket server, and a compliance test suite for free.
 But nothing waits on that flywheel to start turning.
@@ -272,8 +272,8 @@ This is how Standard ASR stays a clean protocol layer instead of a dependency mo
 
 | Extra      | What it adds                                                                                                                                                                                                       | Pulls in                                                                                          |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| **(core)** | The protocol itself: engine discovery, capability/properties negotiation, input/output validation, and the `standard-asr` CLI. Decodes basic `.wav` with the standard library — no extra install.                  | `numpy`, `pydantic`                                                                               |
-| **audio**  | **Battery-included audio loading.** Hand over almost any audio — MP3, FLAC, OGG, M4A, raw bytes, base64 — and still drive engines that only accept NumPy arrays. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` _(plus optional system **FFmpeg** on `PATH` for the widest format coverage)_ |
+| **(core)** | The protocol itself: engine discovery, capability discovery and gating, audio negotiation, input and result validation, and the `standard-asr` CLI. Decodes basic `.wav` with the standard library — no extra install.                  | `numpy`, `pydantic`                                                                               |
+| **audio**  | **Battery-included audio loading.** Hand over almost any audio — MP3, FLAC, OGG, raw bytes, base64 — and still drive engines that only accept NumPy arrays. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` _(plus optional system **FFmpeg** on `PATH` for M4A and the widest format coverage)_ |
 | **server** | A **FastAPI server** exposing any compliant engine over HTTP (and WebSocket for streaming), so non-Python apps can use the ecosystem too.                                                                          | `fastapi`, `starlette`, `python-multipart`, `uvicorn`, `websockets`                                            |
 | **docs**   | Builds the documentation site. _(For maintainers/contributors.)_                                                                                                                                                   | `mkdocs-material`, `mkdocstrings[python]`                                                                                 |
 
@@ -309,11 +309,11 @@ supports), and **config** (its typed, UI-discoverable settings model), and regis
 gating, language resolution, and the sync/async bridge — you implement the model call, and
 the CLI, the HTTP/WebSocket server, and the compliance checks come for free.
 
-See [`docs/for_asr_dev/`](docs/for_asr_dev/) for the plugin authoring guide, then validate
-your implementation with:
+See [`docs/for_asr_dev/`](docs/for_asr_dev/) for the plugin authoring guide, then check
+your implementation with the full suite:
 
 ```bash
-standard-asr compliance entrypoints
+standard-asr compliance run
 ```
 
 ---
@@ -334,7 +334,7 @@ standard-asr compliance entrypoints
 
 **Alpha.** The core protocol — engine interface, audio negotiation, capability discovery,
 streaming events, plugin system — is shipped and exercised by four engine plugins; the
-compliance suite verifies interface-level conformance (runtime inference verification is
+compliance suite checks the interface contract (runtime inference verification is
 tracked separately). The toolchain (CLI, FastAPI server, compliance suite) works. What's
 missing: features like hardware metadata and model cards are not yet part of the protocol.
 Developer documentation, a richer CLI, and a plugin starter template are also not done yet.
