@@ -247,8 +247,12 @@ class TranscriptionEvent(BaseModel):
         type: The event type.
         segment_id: Stable id of the segment this event concerns.
         text: The segment's complete current text (cumulative/replace).
-        stable_until: Frozen-prefix length in codepoints (monotonic per segment).
-        finality: For ``final`` events, ``"final"`` or ``"closed"``.
+        stable_until: Frozen-prefix length in codepoints (monotonic per
+            segment while recognition is in progress; a terminal ``closed``
+            restatement may shrink it).
+        finality: For ``final`` events, ``"final"`` or ``"closed"`` (a
+            ``closed`` final is the terminal restatement and may rewrite
+            frozen text once).
         words: Optional word-level detail (shares the batch ``Word`` model).
         speaker: Segment-level speaker label, with the same
             inheritance rule as ``Segment.speaker`` (a non-``None``
@@ -1528,7 +1532,9 @@ class _LifecycleGuard:
     independently guards. By default illegal events are SUPPRESSED and a
     structured :class:`Diagnostic` is recorded; in ``strict`` mode the guard
     raises instead. A ``stable_until`` decrease is CLAMPED to its prior value
-    (it MUST only increase) with a diagnostic. Diarization gets
+    (it MUST only increase while recognition is in progress; the terminal
+    ``closed`` restatement is the spec's sole exemption and may shrink it)
+    with a diagnostic. Diarization gets
     the same defense: a frozen segment's accepted speaker MUST NOT change or
     be retracted (``frozen_speaker_rewritten``), and a supersede
     MUST NOT merge segments carrying distinct speakers into fewer segments

@@ -6,7 +6,9 @@ specific exception with machine-readable context -- never silent degradation.
 ## Exception hierarchy
 
 Every *domain* exception inherits from `StandardASRError`, so a single
-`except StandardASRError` catches anything the runtime itself reports:
+`except StandardASRError` catches every domain error the runtime raises.
+Plain caller misuse and pydantic validation sit outside the hierarchy --
+see the section after the table.
 
 ```
 StandardASRError
@@ -14,7 +16,7 @@ StandardASRError
 |   +-- ConfigError            invalid config (bad language, bad value, ...)
 |   |   +-- ConfigurationRequiredError  required config ABSENT (e.g. credential not set)
 |   +-- TranscriptionError     engine failed during transcription
-|   +-- UnsupportedFeatureError  unsupported parameter in strict mode
+|   +-- UnsupportedFeatureError  unsupported feature (always) or parameter (strict mode)
 |   +-- InvalidProviderParamError  wrong engine's provider_params passed
 +-- AudioProcessingError       audio decode / size / sample-rate failure
 |   +-- IncompatibleAudioInputError  no conversion path exists
@@ -34,19 +36,19 @@ StandardASRError
 
 | Exception | When | Typical cause |
 | --------- | ---- | ------------- |
-| `ConfigError` | `create()` or `start_transcription()` | Invalid config value — bad pydantic validation, or a `default_language` that is malformed / not selectable. Fixable by whoever supplies the config. |
-| `ConfigurationRequiredError` | `create()` / `from_env()` | A required field (e.g. an API key) is absent from both explicit config and the environment — set it and retry; compliance treats this as a skip, not a failure. |
-| `TranscriptionError` | `transcribe()` | Engine crashed or returned an invalid result. |
-| `UnsupportedFeatureError` | `start_transcription()` or `transcribe()` (strict mode) | Requested word timestamps on an engine that does not support them. |
+| `ConfigError` | `create()`, `transcribe()`, or `start_transcription()` | Invalid config value — bad pydantic validation, or a `default_language` that is malformed / not selectable. Fixable by whoever supplies the config. |
+| `ConfigurationRequiredError` | `create()` / `from_env()`, or lazily at the first `transcribe()` / session when the engine defers its credential check | A required field (e.g. an API key) is absent from both explicit config and the environment — set it and retry; compliance treats this as a skip, not a failure. |
+| `TranscriptionError` | `transcribe()` / `start_transcription()` | Engine crashed or returned an invalid result. |
+| `UnsupportedFeatureError` | `start_transcription()` always for an unsupported streaming axis or wire format; `transcribe()` / `start_transcription()` in strict mode for an unsupported parameter | Requested streaming on a batch-only engine, or word timestamps (strict) on an engine that does not support them. |
 | `InvalidProviderParamError` | `transcribe()` or `start_transcription()` | Passed faster-whisper's `provider_params` to an OpenAI engine (swap-safety). |
-| `AudioProcessingError` | `transcribe()` | Corrupt audio file, missing sample rate, unsupported format without `[audio]` extra. |
-| `IncompatibleAudioInputError` | `transcribe()` | Passed a URL to an engine that only accepts arrays, and no conversion path exists. |
-| `UnsafeAudioUrlError` | `transcribe()` | An `AudioUrl` failed the SSRF policy (non-HTTPS, private IP, etc.). |
+| `AudioProcessingError` | `transcribe()` / `start_transcription(audio=...)` | Corrupt audio file, missing sample rate, unsupported format without `[audio]` extra. |
+| `IncompatibleAudioInputError` | `transcribe()` / `start_transcription(audio=...)` | Passed a URL to an engine that only accepts arrays, and no conversion path exists. |
+| `UnsafeAudioUrlError` | `transcribe()` / `start_transcription(audio=...)` | An `AudioUrl` failed the SSRF policy (non-HTTPS, private IP, etc.). |
 | `SubtitleRenderingError` | `to_srt()` / `to_vtt()` | A segment cannot render as a visible cue — no measured `start`/`end` span, or a span that quantizes to zero milliseconds on the output grid (players silently drop `T --> T` cues) — and `on_unrenderable` is the default `"error"`. Choose the loss explicitly: `"omit"` (renderable cues only) or `"collapse"` (one whole-text cue). Carries `.unrenderable` / `.total` counts. |
 | `EngineContractError` | any synchronous protocol member, or `transcribe()` / `start_transcription()` on a language-declaration defect | The engine returned an awaitable (an `async def` implementation) or a wrong-typed value from a sync member (`transcribe()`, `start_transcription()`, `supports()`, ...), declared a language axis without a `default_language` (IC.6), or declared a malformed selectable/detectable tag. An engine/plugin bug — report it to the engine's author; nothing in your code is wrong. |
 | `StreamClosedError` | `session.send_audio()` | Sending audio manually after `end_audio()` or after the session delivered a terminal event. (`feed()` never raises it: a managed source's post-terminal chunks are discarded by design.) |
 | `InvalidSessionUseError` | `session.feed()` / `session.send_audio()` / iterating the session | Driving a still-live session incorrectly: mixing managed `feed()` with manual `send_audio()`/`end_audio()`, calling `feed()` twice, or iterating the event stream twice. The session is NOT closed — fix the calling code; do not rebuild the session. |
-| `EntrypointValidationError` | `discover_models()` (strict mode) | A plugin's entry-point name is malformed. |
+| `EntrypointValidationError` | `discover_models()` (strict mode); `registry.spec()` / `create()` on an unknown or malformed key | A plugin's entry-point name is malformed, or a lookup key does not resolve. |
 | `FactoryLoadError` | `registry.engine_class()` / `registry.create()` | Plugin's entry point cannot be imported or the factory is misconfigured. |
 
 ## What `StandardASRError` does not catch
@@ -60,15 +62,19 @@ RuntimeParams(language="english")        # ValidationError: not a BCP-47 tag
 RuntimeParams(candidate_languages=["auto"])
 ```
 
-Plain caller misuse raises the built-in `ValueError` or `TypeError` the same
-way — passing both `audio` and `audio_format` to `start_transcription()`, or an
-unsupported input type to `transcribe()`. Catch both families when you want
-everything:
+Plain caller misuse raises a built-in the same way: `ValueError` for a bad
+value (passing both `audio` and `audio_format` to `start_transcription()`),
+`TypeError` for a wrong type (an unsupported input type to `transcribe()`).
+Catch the domain errors and the value mistakes together:
 
 ```python
 except (StandardASRError, ValueError):   # ValidationError is a ValueError
     ...
 ```
+
+A `TypeError` stays outside both families on purpose: a wrong input type is a
+code bug to fix, not a state to handle. The sync bridge's no-hang contract can
+also raise the built-in `TimeoutError` for a hung engine.
 
 ## Structured error context
 

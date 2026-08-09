@@ -20,14 +20,16 @@ from typing import Any
 class StandardASRError(Exception):
     """Base class for every domain error the Standard ASR runtime raises.
 
-    It does not cover model construction, which is pydantic's: a malformed field
-    on :class:`~standard_asr.contract.params.RuntimeParams`, on a result model,
-    or on a config raises ``pydantic.ValidationError``. That is a ``ValueError``,
-    not a ``StandardASRError``. Plain caller misuse (two mutually exclusive
-    arguments, an unsupported input type) likewise raises the built-in
-    ``ValueError`` or ``TypeError``.
+    It does not cover data-model construction, which is pydantic's: a malformed
+    field on :class:`~standard_asr.contract.params.RuntimeParams`, on a result
+    model, or on a config raises ``pydantic.ValidationError``. That is a
+    ``ValueError``, not a ``StandardASRError``. Plain caller misuse likewise
+    raises a built-in: ``ValueError`` for a bad value (two mutually exclusive
+    arguments), ``TypeError`` for a wrong type (an unsupported input type).
 
-    To catch both families, write ``except (StandardASRError, ValueError)``.
+    ``except (StandardASRError, ValueError)`` catches the domain errors and the
+    value mistakes. A ``TypeError`` stays outside both on purpose -- a wrong
+    input type is a code bug to fix, not a state to handle.
     """
 
     pass
