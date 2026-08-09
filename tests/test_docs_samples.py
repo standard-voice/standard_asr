@@ -5,7 +5,7 @@
 
 The guide's "Minimal batch engine" block is the first code an engine author
 copies. A sample that does not run is the most expensive documentation defect
-we can ship, and prose review cannot catch it -- only execution can. These
+this repo can ship, and prose review cannot catch it -- only execution can. These
 tests extract the sample from the Markdown and run it, so the guide cannot
 drift away from the library without a red test.
 """

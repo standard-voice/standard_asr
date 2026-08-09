@@ -951,7 +951,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
                 "On Python 3.13+ there is no numpy<2 wheel: "
                 + ", ".join(_unique_distributions(numpy1_declared))
                 + " cannot be installed on this interpreter in any process. Run "
-                "that plugin under Python <3.13 (e.g. an isolated older-Python "
+                "that plugin under Python <3.13 (for example, an isolated older-Python "
                 "worker)."
             )
 

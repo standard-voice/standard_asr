@@ -143,7 +143,7 @@ class AudioArray:
             raise ValueError(
                 "AudioArray.sample_rate must be a positive number of Hz or None "
                 f"(unknown); got {self.sample_rate}. A sample rate cannot be zero "
-                "or negative -- check for a unit/shape mix-up (e.g. passing a "
+                "or negative -- check for a unit/shape mix-up (for example, passing a "
                 "sample count or a difference instead of the rate)."
             )
 
@@ -228,7 +228,7 @@ class AudioStorageUri:
             raise ValueError(
                 f"AudioStorageUri requires a 'scheme://...' provider storage URI; "
                 f"got {self.value!r}. Use one of "
-                f"{sorted(STORAGE_URI_SCHEMES)} (e.g. 's3://bucket/key.wav')."
+                f"{sorted(STORAGE_URI_SCHEMES)} (for example, 's3://bucket/key.wav')."
             )
         normalized = scheme.lower()
         if normalized not in STORAGE_URI_SCHEMES:

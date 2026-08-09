@@ -122,7 +122,7 @@ def _reject_separator_keys_on_node_surface(extras: Mapping[str, object]) -> None
             raise ValueError(
                 f"capability key {key!r} contains '.', the dot-path separator: "
                 "its path could never resolve via supports() and would collide "
-                "with a genuinely nested spelling. Rename the key (e.g. use "
+                "with a genuinely nested spelling. Rename the key (for example, use "
                 "'_'), or move dotted-name data into a list or scalar value, "
                 "which is outside the queryable path space."
             )
@@ -756,7 +756,7 @@ class DeclaredCapabilities(_Container):
             It is **purely informational**: ``accepted_sample_rates`` remains
             authoritative for every resampling decision, so this
             flag has no decision power and does NOT change whether the standard
-            resamples. It lets a client-side resampling engine (e.g.
+            resamples. It lets a client-side resampling engine (for example,
             faster-whisper, which declares ``accepted_sample_rates="any"``)
             advertise that incoming audio is downsampled inside the engine
             rather than by the standard. Absent ⇒ ``False`` (fail-closed).

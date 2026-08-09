@@ -76,7 +76,7 @@ def require_float_waveform(audio: NDArray[np.floating]) -> NDArray[np.floating]:
         raise AudioProcessingError(
             f"Audio must be a floating-point waveform in [-1, 1], got dtype "
             f"{array.dtype}. Integer PCM is not an amplitude: convert it first, "
-            "e.g. samples.astype(np.float32) / 32768.0 for int16."
+            "for example, samples.astype(np.float32) / 32768.0 for int16."
         )
     return array
 

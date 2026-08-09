@@ -11,7 +11,7 @@ shared between batch results and streaming events.
 Null rules (disambiguation):
 
 * A field is ``None`` -> the data was **not requested / not applicable**.
-* A field is ``[]`` -> it **was requested but is empty** (e.g. silence).
+* A field is ``[]`` -> it **was requested but is empty** (for example, silence).
 * Whether a feature is *supported* is answered by capabilities, never by a
   field being ``None``.
 """

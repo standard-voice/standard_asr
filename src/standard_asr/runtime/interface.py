@@ -723,7 +723,7 @@ class EngineBase(ABC):
                 "Engine produced an invalid result (or raised an unwrapped "
                 "validation error) inside _transcribe -- an engine/plugin "
                 "fault, not a request error. See the chained ValidationError "
-                "for the offending fields (e.g. a field the result model no "
+                "for the offending fields (for example, a field the result model no "
                 "longer accepts).",
                 hint=(
                     "Report this to the engine plugin's author; a core/plugin "

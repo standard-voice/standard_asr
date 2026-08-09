@@ -125,7 +125,7 @@ assert {field for field, _ in _GATED_PARAMS} | _UNGATED_PORTABLE_FIELDS == set(
 #: author writes the sub-gating (the ``max_speakers`` constraint check et al.).
 assert not DiarizationRequest.model_fields, (
     "DiarizationRequest gained fields but the diarization gate is feature-level "
-    "only -- add sub-gating (e.g. the num_speakers graduation against "
+    "only -- add sub-gating (for example, the num_speakers graduation against "
     "DiarizationConstraints) before shipping."
 )
 

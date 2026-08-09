@@ -2389,7 +2389,7 @@ class TranscriptionSession(ABC):
                 f"{type(self).__name__} overwrote reserved TranscriptionSession "
                 f"attribute(s) {clobbered}: these private names belong to the base "
                 "session machinery and rebinding one corrupts it. Rename your own "
-                "attributes (e.g. prefix them with your engine name) so they do not "
+                "attributes (for example, prefix them with your engine name) so they do not "
                 "collide with the reserved set."
             )
 
@@ -2693,7 +2693,7 @@ class TranscriptionSession(ABC):
             raise TypeError(
                 "feed() takes byte chunks, not a str. To transcribe a whole "
                 "file pass start_transcription(audio=...); to stream incrementally "
-                "feed raw PCM bytes (e.g. bytes chunks or an iterator of them)."
+                "feed raw PCM bytes (for example, bytes chunks or an iterator of them)."
             )
         self._claim_mode("feed")
         if self._feed_task is not None:

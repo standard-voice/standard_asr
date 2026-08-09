@@ -540,7 +540,7 @@ def _check_engine_unguarded(
                     f"present in this environment ({safe_exception_summary(exc)}). "
                     "Set the engine's "
                     "STANDARD_ASR_<ENGINE>__<FIELD> environment variable (double "
-                    "underscore between engine and field, per env_var_name; e.g. an "
+                    "underscore between engine and field, per env_var_name; for example, an "
                     "API key) or pass an explicit config to run the full instance "
                     "checks."
                 ),
@@ -580,7 +580,7 @@ def _check_engine_unguarded(
                 message=(
                     f"Factory invocation failed with a configuration/validation "
                     f"defect ({defect}). If this state is actually 'required "
-                    "configuration absent from the environment' (e.g. a missing "
+                    "configuration absent from the environment' (for example, a missing "
                     "credential), raise ConfigurationRequiredError instead "
                     "(BaseConfig.from_env does so automatically); compliance "
                     "skips that state rather than failing it."
@@ -1346,7 +1346,7 @@ def _sync_member_violation(
                 f"{member} returned {safe_type_name(value)!r}, not the "
                 "protocol-pinned return type; consumers negotiating "
                 "capabilities on truthiness would silently misread it "
-                "(e.g. a non-empty string reads as 'supported'). Return "
+                "(for example, a non-empty string reads as 'supported'). Return "
                 "a real value of the pinned type (for supports(): a bool)."
             ),
             model=model,
@@ -1565,9 +1565,9 @@ def _check_streaming_wire_encodings_declared(
                 message=(
                     "Engine declares 'streaming_input' but does not declare "
                     "'wire_encodings'; an audio_format session's wire encoding then "
-                    "cannot be validated and a non-PCM (e.g. mulaw) frame would be "
+                    "cannot be validated and a non-PCM (for example, mulaw) frame would be "
                     "read as PCM -- a silent mistranscription. Declare wire_encodings "
-                    "(e.g. ['pcm_s16le']) unless the engine self-manages its wire "
+                    "(for example, ['pcm_s16le']) unless the engine self-manages its wire "
                     "format via bare start_transcription()."
                 ),
                 model=name,

@@ -695,7 +695,7 @@ def _env_codecs(cls: type[BaseModel]) -> dict[str, Literal["raw", "json"]]:
         if codec == "ambiguous":
             raise TypeError(
                 f"{cls.__name__}.{name} accepts BOTH a scalar and a structured "
-                f"shape (e.g. str | list[str]), so its "
+                f"shape (for example, str | list[str]), so its "
                 f"STANDARD_ASR_<ENGINE>__{name.upper()} value has no defined "
                 f"reading. An env string is always a string, so no rule can "
                 f"tell whether '123' is that string or that JSON number. "
@@ -1046,7 +1046,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
             raise TypeError(
                 f"{cls.__name__} declares (or inherits) author serialization "
                 f"hooks: {', '.join(sorted(hooks))}. A config's serialization "
-                f"surface is closed: these hooks run inside model_dump -- i.e. "
+                f"surface is closed: these hooks run inside model_dump -- that is, "
                 f"inside public_dump's masked serialization for /v1/models, "
                 f"persistence, and telemetry -- where they can rematerialize a "
                 f"sibling secret in plaintext under keys the by-name mask never "
@@ -1130,11 +1130,11 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                         f"{cls.__name__}.{name} is marked secret (secret_field) but its "
                         f"annotation {field.annotation!r} is not exactly SecretStr or "
                         f"SecretBytes (optionally unioned with None, and with nothing "
-                        f"else). A plaintext union member (e.g. SecretStr | int) lets a "
+                        f"else). A plaintext union member (for example, SecretStr | int) lets a "
                         f"constructed value bypass masking -- schema says password, "
                         f"repr/model_dump emit plaintext; two carriers "
                         f"(SecretStr | SecretBytes) make raw-string wrapping ambiguous; "
-                        f"containers of secrets (e.g. list[SecretStr]) are not masked "
+                        f"containers of secrets (for example, list[SecretStr]) are not masked "
                         f"by the secret pipeline; model multiple credentials as "
                         f"separate scalar fields."
                     )
@@ -1226,7 +1226,7 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
                     continue
                 raise TypeError(
                     f"{cls.__name__}.{name}: AliasChoices with a non-string entry "
-                    "(e.g. AliasPath) is unsupported on BaseConfig -- the flat "
+                    "(for example, AliasPath) is unsupported on BaseConfig -- the flat "
                     "STANDARD_ASR_<ENGINE>__<FIELD> env mapping (spec IC.4) and "
                     "the absent-vs-invalid config classifier resolve every "
                     "failure to a single string token, which a path choice "

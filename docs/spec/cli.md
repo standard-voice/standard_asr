@@ -235,9 +235,13 @@ is nothing to analyze). Does not resolve or install anything.
 
 ### Global flags
 
-- `--debug`: emit stack traces for unexpected errors. The trace is printed for
+- `--debug`: emit stack traces for unexpected errors. The trace is printed on
   every error path (not only the final generic handler), so a named error (for example,
-  an engine-internal failure) is debuggable too.
+  an engine-internal failure) is debuggable too — with one exception: when the
+  exception chain carries a pydantic `ValidationError`, the CLI prints a
+  scrubbed one-line summary instead of a trace, because the native traceback
+  would re-echo the rejected input (`input_value=...`), which may be a
+  mis-pasted secret.
 
 ## 2. Output conventions
 

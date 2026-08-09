@@ -312,7 +312,7 @@ def _validate_language_tag(value: str | None) -> str | None:
         raise PydanticCustomError(
             "standard_asr_language_tag",
             "language tag is not a well-formed BCP-47 language tag "
-            "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'.",
+            "(for example, 'en', 'en-US', 'zh-Hans') or 'auto'.",
         )
     return value
 
@@ -364,7 +364,7 @@ def _validate_candidate_language_list(value: list[str] | None) -> list[str] | No
             raise PydanticCustomError(
                 "standard_asr_candidate_language_tag",
                 "candidate_languages contains an entry that is not a well-formed "
-                "BCP-47 language tag (e.g. 'en', 'en-US', 'zh-Hans').",
+                "BCP-47 language tag (for example, 'en', 'en-US', 'zh-Hans').",
             )
         if normalize_bcp47(tag) == AUTO:
             raise PydanticCustomError(

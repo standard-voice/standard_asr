@@ -1003,7 +1003,7 @@ def _run_instance_checks(
     if not _spec_is_zero_arg(spec):
         print(
             f"{_INFO} {name}: skipped streaming checks "
-            "(engine requires constructor arguments, e.g. credentials)."
+            "(engine requires constructor arguments, for example, credentials)."
         )
         return []
 
@@ -1358,7 +1358,7 @@ def _add_init_config_args(parser: argparse.ArgumentParser) -> None:
         "--config",
         metavar="JSON",
         help=(
-            "Engine init-config as a JSON object, e.g. "
+            "Engine init-config as a JSON object, for example, "
             '--config \'{"device": "cpu"}\'. Merged under --set. Run '
             "'standard-asr show <model>' to see the config schema."
         ),
@@ -1369,7 +1369,7 @@ def _add_init_config_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         metavar="KEY=VALUE",
         help=(
-            "Set one init-config field (repeatable), e.g. "
+            "Set one init-config field (repeatable), for example, "
             "--set device=cpu --set compute_type=int8. Overrides --config. For "
             "secrets (api_key, tokens) prefer the STANDARD_ASR_<ENGINE>__<FIELD> "
             "env vars -- command-line values are visible in shell history."
@@ -1405,7 +1405,7 @@ def _parse_init_config(args: argparse.Namespace) -> dict[str, Any]:
             raise ConfigError(f"--config must be a JSON object: {exc}.") from exc
         if not isinstance(parsed, dict):
             raise ConfigError(
-                '--config must be a JSON object, e.g. --config \'{"device": "cpu"}\'.'
+                '--config must be a JSON object, for example, --config \'{"device": "cpu"}\'.'
             )
         config.update(cast("dict[str, Any]", parsed))
     for item in getattr(args, "set_", None) or ():
@@ -1413,7 +1413,7 @@ def _parse_init_config(args: argparse.Namespace) -> dict[str, Any]:
         field = field.strip()
         if not sep or not field:
             raise ConfigError(
-                "Each --set must be KEY=VALUE with a non-empty key, e.g. --set device=cpu."
+                "Each --set must be KEY=VALUE with a non-empty key, for example, --set device=cpu."
             )
         config[field] = value
     return config

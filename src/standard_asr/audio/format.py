@@ -34,7 +34,7 @@ class AudioFormat(BaseModel):
 
     encoding: str = Field(
         ...,
-        description="Wire encoding of the PCM frames (e.g. 'pcm_s16le', 'mulaw').",
+        description="Wire encoding of the PCM frames (for example, 'pcm_s16le', 'mulaw').",
     )
     sample_rate: int = Field(..., gt=0, description="Sample rate in Hz.")
     channels: int = Field(default=1, gt=0, description="Number of channels.")

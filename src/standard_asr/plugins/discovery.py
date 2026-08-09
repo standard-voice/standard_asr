@@ -12,7 +12,7 @@
 **Key Concepts:**
 
 - **Entry Point Group:** ``standard_asr.models``
-- **Entry Point Name:** ``<engine_id>/<model_name>`` (e.g., ``faster-whisper/large-v3``)
+- **Entry Point Name:** ``<engine_id>/<model_name>`` (for example, ``faster-whisper/large-v3``)
 - **ModelRegistry:** Container of all discovered ASR engine factories.
 - **ModelSpec:** Metadata for a single entry point.
 
@@ -400,7 +400,7 @@ class ModelSpec:
                 "Protocol, not a concrete engine class. A protocol exposes no "
                 "class-level metadata (declared_capabilities / properties / "
                 "config_type), so discovery cannot read it. Annotate the factory "
-                "with your concrete engine class (e.g. '-> FasterWhisperASR'), "
+                "with your concrete engine class (for example, '-> FasterWhisperASR'), "
                 "not the StandardASR protocol (see plugin_entrypoints.md)."
             )
         if not callable(getattr(cls, "transcribe", None)):

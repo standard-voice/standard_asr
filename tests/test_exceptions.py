@@ -3,8 +3,8 @@
 
 """Tests for the StructuredError contract (EC-2: param / hint / details / retriable).
 
-These pin the new exported exception surface so a regression -- e.g. defaulting
-``retriable`` to ``False``, dropping a structured field, or rejecting the new
+These pin the new exported exception surface so a regression -- for example,
+defaulting ``retriable`` to ``False``, dropping a structured field, or rejecting the new
 keywords -- fails loudly (the constructor lines reach 100% line coverage via
 default-message construction elsewhere, but the keyword paths and resulting
 attribute values were otherwise unasserted).

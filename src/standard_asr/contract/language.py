@@ -179,7 +179,7 @@ def validate_detected_language(value: str | None) -> str | None:
     if not is_valid_bcp47(value):
         raise ValueError(
             f"detected_language is not a well-formed BCP-47 tag: {value!r} "
-            "(e.g. 'en', 'en-US', 'zh-Hans')."
+            "(for example, 'en', 'en-US', 'zh-Hans')."
         )
     normalized = normalize_bcp47(value)
     if normalized == AUTO:
@@ -326,7 +326,7 @@ def effective_candidate_languages(
         if not is_valid_bcp47(tag):
             raise ValueError(
                 f"candidate_languages contains a malformed BCP-47 tag {tag!r} "
-                "(e.g. 'en', 'en-US', 'zh-Hans')."
+                "(for example, 'en', 'en-US', 'zh-Hans')."
             )
         norm = normalize_bcp47(tag)
         # 'auto' is a directive, not a candidate; its presence is a caller bug,
