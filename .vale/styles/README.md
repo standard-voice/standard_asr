@@ -9,7 +9,11 @@
   vendored files; tune rules from `.vale.ini`.
 - `StandardASR/` — this repo's own rules: the mechanizable subset of
   [`TERMINOLOGY.md`](../../TERMINOLOGY.md) (forbidden synonyms, American
-  spelling, the emoji ban).
+  spelling, the emoji ban), plus `Spelling.yml`, which replaces
+  `Vale.Spelling` with token-level filters for identifier-shaped words
+  (snake_case, CamelCase, `OSError`-style leading caps, dotted paths). The
+  filters exist because the `TokenIgnores` alternative rewrites text before
+  parsing and corrupts code-span shielding and position mapping.
 - `config/vocabularies/StandardASR/` — the accept list: domain terms and
   code-adjacent words the spelling rules must not flag. Entries are
   case-insensitive regexes (`(?i)word`); keep them sorted.

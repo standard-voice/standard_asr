@@ -1,15 +1,21 @@
 (?i)a
+(?i)abort
+(?i)above
 (?i)absolutized
 (?i)accessor
 (?i)actionlint
 (?i)aenter
+(?i)aexit
+(?i)aiter
 (?i)alibaba
 (?i)allowlist
 (?i)allowlisted
 (?i)anchorings
+(?i)anext
 (?i)another
 (?i)anycast
 (?i)apis
+(?i)application
 (?i)arg
 (?i)argparse
 (?i)args
@@ -27,12 +33,14 @@
 (?i)backports
 (?i)backpressure
 (?i)baem
+(?i)best
 (?i)best_effort
 (?i)bool
 (?i)bool_
 (?i)boolean
 (?i)bools
 (?i)builtins
+(?i)bypassable
 (?i)c
 (?i)callables
 (?i)callsites
@@ -50,6 +58,7 @@
 (?i)classmethod
 (?i)cli
 (?i)closedness
+(?i)cloud
 (?i)cls
 (?i)codec
 (?i)codecov
@@ -92,6 +101,7 @@
 (?i)diarized
 (?i)dict
 (?i)dicts
+(?i)disabled?
 (?i)disjointness
 (?i)docstring
 (?i)docstrings
@@ -120,6 +130,7 @@
 (?i)fetchable
 (?i)ffmpeg
 (?i)ffprobe
+(?i)file ?path
 (?i)footgun
 (?i)frombuffer
 (?i)frozenset
@@ -131,6 +142,7 @@
 (?i)getset
 (?i)globals
 (?i)granularities
+(?i)guarantees?
 (?i)guardless
 (?i)hardcoding
 (?i)hasattr
@@ -153,8 +165,10 @@
 (?i)jittering
 (?i)json
 (?i)kangxi
+(?i)kill
 (?i)kwarg
 (?i)kwargs
+(?i)latest
 (?i)len
 (?i)liveness
 (?i)llms
@@ -167,6 +181,7 @@
 (?i)lossy
 (?i)lowercased
 (?i)lowercases
+(?i)mapping's
 (?i)memoized
 (?i)metacharacters
 (?i)metaclass
@@ -190,6 +205,7 @@
 (?i)namespace
 (?i)namespaced
 (?i)ndarray
+(?i)neither's
 (?i)nframes
 (?i)nonspacing
 (?i)noqa
@@ -216,7 +232,9 @@
 (?i)polyphase
 (?i)pragma
 (?i)precheck
+(?i)prechecked
 (?i)prek
+(?i)prepended
 (?i)projectability
 (?i)provider_params
 (?i)pydantic
@@ -259,6 +277,7 @@
 (?i)resamples
 (?i)resampling
 (?i)rescoring
+(?i)rest
 (?i)retriable
 (?i)retryable
 (?i)revalidating
@@ -274,6 +293,7 @@
 (?i)scipy
 (?i)sdist
 (?i)sdists
+(?i)sees
 (?i)selectability
 (?i)sendable
 (?i)serializable
@@ -300,6 +320,7 @@
 (?i)stringification
 (?i)stringified
 (?i)stringify
+(?i)stringly
 (?i)subclass
 (?i)subclassing
 (?i)subcommand
@@ -323,12 +344,15 @@
 (?i)sys
 (?i)syscalls
 (?i)teardown
+(?i)tells
+(?i)terminate
 (?i)threadsafe
 (?i)titlecase
 (?i)tokenization
 (?i)tokenizer
 (?i)tokenless
 (?i)toolchain
+(?i)touch
 (?i)tqdm
 (?i)traceback
 (?i)truthy
@@ -339,12 +363,14 @@
 (?i)unawaited
 (?i)unboundedly
 (?i)unbounding
+(?i)unbuffered
 (?i)uncallable
 (?i)unclosable
 (?i)unconfigured
 (?i)uncontracted
 (?i)undecodable
 (?i)undercount
+(?i)undiscoverable
 (?i)unencodable
 (?i)unenumerated
 (?i)unescaped
@@ -369,6 +395,7 @@
 (?i)unsanitized
 (?i)unschema
 (?i)unspoofable
+(?i)unsupplied
 (?i)untimed
 (?i)untimestamped
 (?i)untrusted

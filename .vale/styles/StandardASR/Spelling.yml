@@ -1,0 +1,21 @@
+extends: spelling
+message: "Did you really mean '%s'?"
+level: error
+# Replaces Vale.Spelling (disabled in .vale.ini). The filters skip
+# identifier-shaped tokens -- bare code names in prose (Args/Raises names,
+# snake_case, CamelCase, OSError-style leading caps, dotted paths) that no
+# dictionary should judge. Token-level filters are the safe mechanism for
+# this: a TokenIgnores pattern rewrites the text before parsing, and a
+# rewrite that lands inside an inline code span corrupts Vale's span
+# shielding and position mapping for the rest of the paragraph.
+# Ordinary misspelled words never fit these shapes, so the dictionary
+# still checks all real prose; the project vocabulary
+# (config/vocabularies/StandardASR) applies on top.
+filters:
+  - '_?_?[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+_?_?'
+  - '__?[A-Za-z0-9]+_?_?'
+  - '[A-Za-z][a-z0-9]+[A-Z][A-Za-z0-9]*'
+  - '[A-Z][A-Z0-9]+[a-z][A-Za-z0-9]*'
+  - '[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*'
+  - '[A-Z][A-Z0-9][A-Z0-9]+'
+  - '[A-Za-z_][A-Za-z0-9_]+(?:\.[A-Za-z_][A-Za-z0-9_]+)+'
