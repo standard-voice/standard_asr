@@ -215,7 +215,7 @@ class ComplianceIssue:
     Attributes:
         level: Issue severity (``"error"`` or ``"warning"``).
         code: Stable machine-readable category identifier (e.g.
-            ``"entrypoint_factory_failed"``, ``"streaming_invariant"``). Safe to
+            ``"entrypoint_factory_failed"``, ``"streaming_invariant:<guard_code>"``). Safe to
             match in CI; never reworded within a major version.
         message: Human-readable description (for display; MAY be reworded).
         model: The model key the issue is attributed to, or ``None`` for
@@ -401,7 +401,7 @@ def check_entrypoints(
                 message=(
                     f"engine_id {engine_id!r} is provided by more than one "
                     "distribution (an identity collision); config.engine routing "
-                    "is ambiguous. Install only one provider for this engine_id, or "
+                    "is ambiguous. Install only one distribution that provides this engine_id, or "
                     "have the authors choose distinct engine_ids."
                 ),
                 model=engine_id,
@@ -1042,8 +1042,8 @@ def _check_instance_capabilities(
                 message=(
                     "effective_capabilities is not a DeclaredCapabilities "
                     f"(got {safe_type_name(effective)!r}); it MUST be a "
-                    "DeclaredCapabilities (or None) so the effective ⊆ "
-                    "declared invariant can be verified."
+                    "DeclaredCapabilities (or None) so the effective-narrows-declared "
+                    "invariant can be verified."
                 ),
                 model=name,
             )
@@ -1059,8 +1059,10 @@ def _check_language_axis_config(
 
     An engine whose properties expose a language axis but whose config lacks a
     valid ``default_language`` passes construction (the standard keeps ``__init__``
-    pure) and then raises ``ConfigError`` on the **user's first transcribe** --
-    the worst place for an engine-author bug to surface. Catch it at compliance
+    pure) and then fails on the **user's first transcribe** -- the worst place for
+    an engine-author bug to surface. The exception depends on the defect:
+    ``EngineContractError`` when ``default_language`` is unset (IC.6),
+    ``ConfigError`` when its value is malformed or not selectable. Catch it at compliance
     time instead. For :class:`EngineBase` engines this reuses the exact runtime
     validation (presence, selectable-membership, canonicalization), so the
     compliance verdict cannot drift from runtime behavior; for structural
@@ -1108,8 +1110,10 @@ def _check_language_axis_config(
                 code="language_axis_without_default",
                 message=(
                     "Engine exposes a language axis (selectable_languages is non-empty) "
-                    "but its config does not set default_language; every transcribe "
-                    "will raise ConfigError."
+                    "but its config does not set default_language; IC.6 requires the "
+                    "field to be required or defaulted once the axis is declared. An "
+                    "EngineBase engine raises EngineContractError on the first "
+                    "transcribe; a structural engine has no standard-layer guard here."
                 ),
                 model=name,
             )
@@ -2754,9 +2758,7 @@ def _wire_format_round_trip_issues(
             ComplianceIssue(
                 level="error",
                 code="recommended_wire_format_raised",
-                message=(
-                    f"EngineBase.recommended_wire_format() raised: {safe_exception_summary(exc)}."
-                ),
+                message=(f"recommended_wire_format() raised: {safe_exception_summary(exc)}."),
                 model=model,
             )
         )

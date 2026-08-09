@@ -500,8 +500,9 @@ def test_check_entrypoints_config_not_instance_of_config_type_errors() -> None:
 
 def test_check_entrypoints_language_axis_without_default_enginebase_errors() -> None:
     # An EngineBase engine with a language axis but no default_language would
-    # raise ConfigError on the user's FIRST transcribe; compliance must catch it
-    # at author time, reusing the exact runtime validation.
+    # raise EngineContractError on the user's FIRST transcribe (IC.6 -- it is an
+    # engine-author defect, not a caller config mistake); compliance must catch
+    # it at author time, reusing the exact runtime validation.
     report = check_entrypoints(registry=_registry("axis_no_default_factory"))
     assert report.passed is False
     assert any("every transcribe will fail" in i.message for i in report.issues)
@@ -1705,7 +1706,7 @@ def test_sync_bridge_flags_genuine_loop_thread_leak(monkeypatch: pytest.MonkeyPa
 
 
 class _NoTerminalSession(TranscriptionSession):
-    """Non-compliant engine: closes the stream WITHOUT a terminal event.
+    """Non-compliant session: closes the stream WITHOUT a terminal event.
 
     Overrides ``_run_producer`` to bypass the base class's force-appended
     ``done``, emitting a single non-terminal event and closing. This is the
@@ -1786,9 +1787,10 @@ def test_sync_bridge_late_session_teardown_failure_is_swallowed() -> None:
     """A late session whose own teardown raises must not poison anything.
 
     The teardown is best-effort on a daemon thread AFTER the check already
-    reported the establishment timeout: an engine whose ``_open`` raises
+    reported the establishment timeout: an engine whose ``_close`` raises
     during that teardown attempt must neither propagate nor change the
-    already-returned verdict.
+    already-returned verdict. The teardown is close-only, so ``_open`` must
+    never run.
     """
     attempted = threading.Event()
 

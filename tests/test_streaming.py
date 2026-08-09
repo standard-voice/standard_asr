@@ -1143,6 +1143,31 @@ def test_session_backpressure_overflow_emits_error() -> None:
     assert events[-1].recoverable is False
 
 
+def test_progress_heartbeats_also_trigger_backpressure() -> None:
+    # A progress heartbeat takes the bounded path, exactly like a new partial
+    # slot: put() special-cases partial (coalesce) and final/supersede/error/done
+    # (drop-proof), then falls through to _reserve() for everything else. The
+    # spec has engines emit periodic progress during long silent work, so an
+    # engine that emits ONLY progress can still overflow a slow consumer's
+    # buffer -- the class docstring once claimed only partials could.
+    class _ProgressFloodSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            for _ in range(50):
+                yield TranscriptionEvent.progress()
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _ProgressFloodSession(event_buffer_capacity=4)
+        session.feed([])
+        async with session:
+            await asyncio.sleep(0.05)  # let the producer run ahead and overflow
+            return [e async for e in session]
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "backpressure"
+    assert events[-1].recoverable is False
+
+
 def test_adapter_terminal_error_bypasses_backpressure_overflow() -> None:
     async def run() -> list[TranscriptionEvent]:
         session = _FloodThenEventSession(

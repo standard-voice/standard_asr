@@ -1183,13 +1183,13 @@ class _CoalescingBuffer:
 
     The buffer is **bounded**: at most ``capacity`` non-coalesced events may be
     pending. Coalesced partials reuse their existing slot and never grow the
-    buffer. Only a NEW partial slot (a not-yet-pending segment) may push past
-    ``capacity`` and raise :class:`EventBufferOverflow`, which the producer turns
-    into a terminal ``backpressure`` error. ``final`` / ``supersede`` (like
-    ``done`` / ``error`` via :meth:`put_forced`) bypass the bound and are
-    appended drop-proof: they MUST never be dropped and are
-    bounded per segment, so only distinct-segment *partials* trigger
-    backpressure.
+    buffer. A NEW partial slot (a not-yet-pending segment) or a ``progress``
+    event may push past ``capacity`` and raise :class:`EventBufferOverflow`,
+    which the producer turns into a terminal ``backpressure`` error. ``final`` /
+    ``supersede`` (like ``done`` / ``error`` via :meth:`put_forced`) bypass the
+    bound and are appended drop-proof: they MUST never be dropped and are
+    bounded per segment, so only distinct-segment *partials* and ``progress``
+    heartbeats trigger backpressure.
     """
 
     def __init__(self, capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY) -> None:
@@ -1315,13 +1315,14 @@ class _CoalescingBuffer:
                 stale.alive = False
                 self._live_count -= 1
             # final / supersede MUST never be dropped: append
-            # drop-proof, bypassing the capacity bound. Only a NEW partial slot
-            # (which GROWS the buffer for a not-yet-pending segment) may overflow
-            # -- finals/supersedes are bounded per segment (each invalidates its
-            # own pending partial above), so bypassing the bound is safe. The
-            # residual: a pathological flood of distinct-segment finals can grow
-            # memory unboundedly -- accepted, because the spec forbids dropping
-            # them; only distinct-segment *partials* trigger backpressure.
+            # drop-proof, bypassing the capacity bound. A NEW partial slot
+            # (which GROWS the buffer for a not-yet-pending segment) or a
+            # progress heartbeat may overflow -- finals/supersedes are bounded
+            # per segment (each invalidates its own pending partial above), so
+            # bypassing the bound is safe. The residual: a pathological flood of
+            # distinct-segment finals can grow memory unboundedly -- accepted,
+            # because the spec forbids dropping them; only distinct-segment
+            # *partials* and progress heartbeats trigger backpressure.
             self._items.append(_Slot(event))
             self._live_count += 1
             self._event.set()
@@ -1349,16 +1350,22 @@ class _CoalescingBuffer:
         return event
 
     def put_forced(self, event: TranscriptionEvent) -> TranscriptionEvent:
-        """Append a terminal event bypassing the capacity bound.
+        """Append a drop-proof event bypassing the capacity bound.
 
-        Terminal events (``done`` / ``error``) MUST never be dropped, even when
-        the buffer overflowed because the consumer was slow.
-        They are few (the producer stops after one) so bypassing the bound is
-        safe, and -- crucially -- they go into the *same* buffer the iterator is
-        already awaiting, so the terminal event is delivered promptly.
+        Two kinds of event take this path. Terminal events (``done`` / ``error``)
+        MUST never be dropped, even when the buffer overflowed because the
+        consumer was slow. The reconnect pair a session announces through
+        :meth:`note_reconnect` -- a ``progress(reconnect=True)`` and, when the
+        engine reported it, a recoverable ``content_lost`` error -- must not be
+        dropped either, because they tell the consumer that the transcript has a
+        gap.
+
+        Both are few (one terminal per session; a bounded pair per reconnect), so
+        bypassing the bound is safe, and -- crucially -- they go into the *same*
+        buffer the iterator is already awaiting, so they are delivered promptly.
 
         Args:
-            event: The terminal event to append.
+            event: The drop-proof event to append.
 
         Returns:
             ``event`` itself (the canonical committed value, mirroring
