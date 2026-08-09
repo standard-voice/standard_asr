@@ -549,6 +549,34 @@ def test_validate_model_name_rejects_invalid_chars() -> None:
         parse_entrypoint_name("engine/bad*name")
 
 
+def test_validate_model_name_position_defect_names_the_rule_and_value() -> None:
+    """A leading '.', ':', or '-' fails on POSITION, not on the character set.
+
+    The rejection message once listed the offending character as *allowed*
+    ("Allowed characters: letters, digits, '.', ...") and never echoed the
+    value -- pointing a plugin author away from the only thing wrong with
+    ``.v1``. The message must state the leading-character rule from
+    ``docs/for_asr_dev/plugin_entrypoints.md`` and echo the rejected value.
+    """
+    for bad in (".v1", "-int8", ":cpu"):
+        with pytest.raises(EntrypointValidationError, match="must start with") as exc_info:
+            validate_model_name(bad)
+        assert repr(bad) in str(exc_info.value)
+
+
+def test_validate_engine_id_position_defect_names_the_rule_and_value() -> None:
+    with pytest.raises(EntrypointValidationError, match="must start with") as exc_info:
+        validate_engine_id(".dotted")
+    assert repr(".dotted") in str(exc_info.value)
+
+
+def test_validate_engine_id_rejects_empty_with_a_plain_message() -> None:
+    # An empty id used to land on "contains unsupported characters" -- there
+    # is no character in an empty string; the defect is emptiness itself.
+    with pytest.raises(EntrypointValidationError, match="must not be empty"):
+        validate_engine_id("")
+
+
 def test_validate_engine_id_accepts_non_canonical() -> None:
     # A non-canonical-but-valid id passes surface validation; canonicalization
     # to the routing identity happens in parse_entrypoint_name / discover_models.

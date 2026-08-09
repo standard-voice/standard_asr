@@ -43,12 +43,15 @@ def validate_engine_id(engine_id: str) -> None:
     Raises:
         EntrypointValidationError: If the engine identifier is invalid.
     """
+    if engine_id == "":
+        raise EntrypointValidationError("engine_id must not be empty.")
     if "/" in engine_id:
         raise EntrypointValidationError(f"engine_id must not contain '/' (got {engine_id!r})")
     if not _ENGINE_ID_RE.match(engine_id):
         raise EntrypointValidationError(
-            "engine_id contains unsupported characters. Allowed: lowercase ASCII "
-            "letters, digits, '.', '_' and '-'."
+            f"engine_id {engine_id!r} is invalid: it must start with a "
+            "lowercase ASCII letter or digit and may continue with lowercase "
+            "ASCII letters, digits, '.', '_', and '-'."
         )
 
 
@@ -74,6 +77,7 @@ def validate_model_name(model_name: str) -> None:
         raise EntrypointValidationError(f"model_name must not contain '/' (got {model_name!r})")
     if not _MODEL_NAME_RE.match(model_name):
         raise EntrypointValidationError(
-            "model_name contains unsupported characters. Allowed characters: "
-            "letters, digits, '.', '_', '+', '%', ':', '-'."
+            f"model_name {model_name!r} is invalid: it must start with an "
+            "ASCII letter or digit and may continue with ASCII letters, "
+            "digits, '.', '_', '+', '%', ':', and '-'."
         )
