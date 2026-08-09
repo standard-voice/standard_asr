@@ -7,10 +7,10 @@ Concrete, executable goals that deliver on the [mission](mission.md).
 - **G.1.1: Standardize the core interface.** Define a near-zero-dependency core
   protocol (`StandardASR`) that normalizes `transcribe` / `transcribe_async`
   (batch) and `start_transcription` (streaming).
-- **G.1.2: Audio input negotiation and constant output.** A unified audio-input
+- **G.1.2: Audio input negotiation and a constant result.** A unified audio-input
   type system (`AudioInput` discriminated union) with deterministic negotiation.
   Lossy steps surface as structured diagnostics; impossible conversions fail
-  loudly. Output is a constant-schema `TranscriptionResult` whose shape never
+  loudly. The result is a constant-schema `TranscriptionResult` whose shape never
   changes with parameters.
 - **G.1.3: Properties, capabilities, and config declarations.** Engines declare
   three machine-readable metadata surfaces: *Properties* (static I/O identity),

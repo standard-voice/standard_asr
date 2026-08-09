@@ -21,9 +21,9 @@ an opt-in extra.
 
 | Extra      | What it adds | Pulls in |
 | ---------- | ------------ | -------- |
-| **(core)** | The protocol, engine discovery, audio negotiation, and the CLI. Decodes WAV with the standard library. | `numpy`, `pydantic` |
-| **audio**  | Battery-included audio loading: MP3, FLAC, OGG, M4A, raw bytes, base64. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` (+ optional system FFmpeg) |
-| **server** | FastAPI server exposing any compliant engine over HTTP and WebSocket. | `fastapi`, `python-multipart`, `uvicorn`, `websockets` |
+| **(core)** | The protocol, engine discovery, audio negotiation, and the CLI. Decodes basic 8/16-bit PCM WAV files with the standard library. | `numpy`, `pydantic` |
+| **audio**  | Battery-included audio loading: MP3, FLAC, OGG, raw bytes, base64. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` (+ optional system FFmpeg for M4A and more) |
+| **server** | FastAPI server exposing any compliant engine over HTTP and WebSocket. | `fastapi`, `starlette`, `python-multipart`, `uvicorn`, `websockets` |
 
 ```bash
 pip install "standard-asr[audio]"
