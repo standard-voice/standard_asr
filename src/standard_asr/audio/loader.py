@@ -57,6 +57,7 @@ from standard_asr.audio.wire import pcm16_decode
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
     FFmpegNotFoundError,
+    FFprobeNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -1397,15 +1398,22 @@ def _decode_with_ffmpeg_native(
         The decoded ``float32`` waveform and its native sample rate.
 
     Raises:
-        AudioProcessingError: If the native rate cannot be determined or decoding
-            fails.
+        AudioProcessingError: If ffprobe ran but the native rate could not be
+            determined (an unreadable file, or no audio stream).
+        FFprobeNotFoundError: ffprobe not in PATH.
         FFmpegNotFoundError: FFmpeg not in PATH.
     """
     native_sr = _probe_sample_rate_with_ffprobe(source)
     if native_sr is None:
+        if shutil.which("ffprobe") is None:
+            raise FFprobeNotFoundError(
+                "ffprobe is required to determine the native sample rate but "
+                "is not in PATH; install the ffmpeg suite or the [audio] extra "
+                "(soundfile) for native-rate decoding."
+            )
         raise AudioProcessingError(
-            "Could not determine the native sample rate via ffprobe; install "
-            "ffprobe or the [audio] extra (soundfile) for native-rate decoding."
+            "Could not determine the native sample rate via ffprobe; the "
+            "source may be unreadable or carry no audio stream."
         )
     array = _load_with_ffmpeg(source, native_sr, target_channels)
     return array, native_sr

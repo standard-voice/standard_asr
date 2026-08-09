@@ -1027,6 +1027,41 @@ def test_decode_path_native_wav_unsupported_sampwidth_falls_back(
     assert sr == 16000
 
 
+def test_ffmpeg_native_missing_ffprobe_raises_ffprobe_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The probe returned None and ffprobe is absent from PATH: the missing
+    # tool is the failure, and the dedicated FFprobeNotFoundError names it
+    # (the class was previously documented but raised nowhere).
+    def _probe_none(_source: str | bytes, timeout: float = 5.0) -> int | None:
+        return None
+
+    def _which_none(_name: str) -> str | None:
+        return None
+
+    monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe_none)
+    monkeypatch.setattr(audio_loader.shutil, "which", _which_none)
+    with pytest.raises(audio_loader.FFprobeNotFoundError, match="not in PATH"):
+        audio_loader._decode_with_ffmpeg_native(b"xx", None)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_ffmpeg_native_probe_failure_with_ffprobe_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ffprobe exists but the probe still failed: the source is the problem,
+    # not the tool, so the plain AudioProcessingError arm fires.
+    def _probe_none(_source: str | bytes, timeout: float = 5.0) -> int | None:
+        return None
+
+    def _which_found(_name: str) -> str | None:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe_none)
+    monkeypatch.setattr(audio_loader.shutil, "which", _which_found)
+    with pytest.raises(audio_loader.AudioProcessingError, match="unreadable or carry no audio"):
+        audio_loader._decode_with_ffmpeg_native(b"xx", None)  # pyright: ignore[reportPrivateUsage]
+
+
 def test_decode_path_native_soundfile_success(monkeypatch: pytest.MonkeyPatch) -> None:
     # A non-WAV path decodes via soundfile, preserving the native rate.
     module = types.ModuleType("soundfile")

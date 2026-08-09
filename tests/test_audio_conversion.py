@@ -608,6 +608,14 @@ def test_target_sample_rate_self_describing_returns_native() -> None:
     assert _target_array_sample_rate("any", 16000, None) == 16000
 
 
+def test_target_sample_rate_any_still_honors_required_rate() -> None:
+    # "any" accepts every rate, so a hard-required wire rate wins there too
+    # (the docstring's step 1; spec R7.2). The "any" fast path used to
+    # short-circuit before the required check and silently returned the
+    # native rate instead.
+    assert _target_array_sample_rate("any", 16000, 24000) == 24000
+
+
 def test_target_sample_rate_falls_back_to_smallest_when_source_unknown() -> None:
     # Neither required nor native is accepted and the source rate is
     # unknown -> deterministically pick the SMALLEST accepted rate (minimizes

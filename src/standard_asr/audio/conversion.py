@@ -175,12 +175,14 @@ def _target_array_sample_rate(
     Returns:
         A sample rate the engine accepts.
     """
-    if accepted == "any":
-        return native_sample_rate
+    # Step 1 must precede the "any" fast path: "any" accepts every rate, so a
+    # hard-required rate wins there too (spec R7.2, step 1).
     if required_input_sample_rate is not None and sample_rate_accepted(
         accepted, required_input_sample_rate
     ):
         return required_input_sample_rate
+    if accepted == "any":
+        return native_sample_rate
     if sample_rate_accepted(accepted, native_sample_rate):
         return native_sample_rate
     if source_sample_rate is None:

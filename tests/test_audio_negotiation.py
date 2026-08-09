@@ -374,6 +374,16 @@ def test_validate_url_malformed_url_raises_unsafe() -> None:
         validate_fetchable_url("https://[::1/a.wav")
 
 
+def test_validate_url_unencodable_host_raises_unsafe() -> None:
+    # getaddrinfo IDNA-encodes the host name before resolving; an over-long
+    # label raises UnicodeError there, not gaierror, and needs no network to
+    # do so. The validator's contract is that UnsafeAudioUrlError is its only
+    # exception type, so the encoding failure must be wrapped, never escape
+    # as a bare UnicodeEncodeError.
+    with pytest.raises(UnsafeAudioUrlError, match="cannot be encoded"):
+        validate_fetchable_url("https://" + "a" * 300 + ".example.com/a.wav")
+
+
 def test_validate_url_opt_in_allows_private() -> None:
     # The opt-in relaxes the private-address rejection (still HTTPS-only).
     validate_fetchable_url("https://127.0.0.1/a.wav", allow_private_addresses=True)

@@ -178,6 +178,11 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise UnsafeAudioUrlError(url, f"host {host!r} did not resolve ({exc})") from exc
+    except UnicodeError as exc:
+        # getaddrinfo IDNA-encodes the host name first; an unencodable name
+        # (e.g. an over-long label) raises UnicodeError there, not gaierror.
+        # Wrap it so the validator keeps its single-exception contract.
+        raise UnsafeAudioUrlError(url, f"host {host!r} cannot be encoded ({exc})") from exc
     if not infos:
         raise UnsafeAudioUrlError(url, f"host {host!r} resolved to no addresses")
     for info in infos:
