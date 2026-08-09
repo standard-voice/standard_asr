@@ -4045,7 +4045,7 @@ def test_recoverable_error_never_dropped_at_capacity() -> None:
 
 
 class _HangEndAudioSession(TranscriptionSession):
-    """Engine whose end_audio hangs (simulates a stuck engine in the body)."""
+    """Session whose ``end_audio`` hangs (simulates a stuck engine in the body)."""
 
     async def end_audio(self) -> None:
         await asyncio.sleep(100)

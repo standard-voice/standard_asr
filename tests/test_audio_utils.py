@@ -311,7 +311,7 @@ def test_invalid_base64_data_uri():
 
 def main():
     """Run basic tests manually if pytest not available."""
-    print("Running basic audio_utils tests...")
+    print("Running the basic audio-utility tests...")
 
     test_audio_contract_dtype()
     print("[OK] Audio contract dtype test passed")

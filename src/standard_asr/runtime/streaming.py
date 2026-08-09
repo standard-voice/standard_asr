@@ -70,9 +70,9 @@ EventType = Literal["partial", "final", "supersede", "progress", "done", "error"
 #: Default seconds of total pipeline inactivity -- no event arriving AND no fed
 #: audio being consumed via :meth:`TranscriptionSession.audio_chunks` -- before
 #: the session synthesizes a terminal ``done_timeout`` error. This is a hang
-#: backstop against stuck engines, NOT engine-liveness detection: engines that
-#: legitimately emit nothing during user silence stay alive for as long as the
-#: engine keeps consuming audio (industry anchors stream liveness to audio
+#: backstop for a stuck pipeline, NOT engine-liveness detection: an engine that
+#: legitimately emits nothing during user silence stays alive for as long as it
+#: keeps consuming audio (industry anchors stream liveness to audio
 #: flow, not result flow -- see docs/research/5). After ``end_audio()`` there is
 #: nothing left to consume, so this bounds the engine's flush-and-``done``
 #: window (``done`` MUST arrive, bounded by a timeout).
@@ -2166,7 +2166,9 @@ class TranscriptionSession(ABC):
       post-reconnect cluster without identity evidence (blind clustering
       restarts from zero after a reconnect) -- it MUST mint fresh labels
       (``speaker_2``, ``speaker_3``, ...) and emit a ``speaker_labels_reset``
-      fidelity warning, because over-counting speakers is the safe direction
+      diagnostic via :meth:`emit_diagnostic` -- the fidelity-warning counterpart
+      of ``content_lost``, which is an error event -- because over-counting
+      speakers is the safe direction
       while silently merging two people under one label is not.
       The base then emits the
       ``progress(reconnect=True, gap_start, gap_end)`` event and,
@@ -2194,7 +2196,7 @@ class TranscriptionSession(ABC):
                 arriving AND no fed audio consumed via :meth:`audio_chunks` --
                 before synthesizing a ``done_timeout`` error. A hang backstop,
                 not engine-liveness detection: a silently-listening engine
-                stays alive while the engine keeps consuming audio. After
+                stays alive while it keeps consuming audio. After
                 ``end_audio()`` it bounds the engine's flush-and-``done``
                 window. ``None`` disables (explicit opt-out of the backstop).
             max_idle: Seconds without a *content* event (``partial`` / ``final``
@@ -2334,7 +2336,7 @@ class TranscriptionSession(ABC):
         override one afterwards: it updates the snapshot so the override is tracked
         rather than flagged. It exists for the library's own white-box tests (e.g.
         injecting a deterministic clock into ``_monotonic``); it is NOT part of the
-        engine-author contract -- engines configure via the ``__init__`` bounds,
+        engine-author contract -- engine authors configure via the ``__init__`` bounds,
         and an accidental ``self._buffer = ...`` never routes through here, so the
         guard still catches it.
 
@@ -2387,7 +2389,7 @@ class TranscriptionSession(ABC):
         Called by the base ``start_transcription`` template after the engine
         constructed the session, so the application's explicitly-set fields win
         over the engine's construction-time choices without relying on every
-        engine to forward them (a forwarding obligation could be silently
+        adapter to forward them (a forwarding obligation could be silently
         missed). Only fields the application explicitly set are applied.
 
         Args:
@@ -2432,7 +2434,7 @@ class TranscriptionSession(ABC):
         Consuming from this iterator is the session's liveness anchor: every
         dequeue resets the ``done_timeout`` backstop, so an
         engine that legitimately emits no events during user silence stays
-        alive for as long as the engine keeps reading audio here.
+        alive for as long as it keeps reading audio here.
 
         Yields:
             Raw audio chunks in the session's declared format.
@@ -2596,7 +2598,8 @@ class TranscriptionSession(ABC):
         engine's responsibility (the base never rewrites them). For speaker
         labels the engine MUST NOT reuse a pre-reconnect label without identity
         evidence; the safe default is to mint fresh labels and emit a
-        ``speaker_labels_reset`` fidelity warning.
+        ``speaker_labels_reset`` diagnostic via :meth:`emit_diagnostic` (the
+        fidelity-warning counterpart of the ``content_lost`` error event).
 
         Args:
             gap_start: Start time (seconds) of the lossy gap, if known.
@@ -3545,8 +3548,8 @@ class SyncSession:
                         unresponsive_probes = 0
                         continue
                     if self._thread.is_alive() and unresponsive_probes < 2:
-                        # Tolerate a brief blocking stall (e.g. a sync model
-                        # load inside the engine): require consecutive failed
+                        # Tolerate a brief blocking stall (e.g. a synchronous
+                        # weights load inside the engine): require consecutive failed
                         # probes before declaring the loop frozen.
                         unresponsive_probes += 1
                         continue

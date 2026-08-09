@@ -198,7 +198,7 @@ def validate_speaker_label(value: str | None) -> str | None:
     (no attribution) and a real label; edge whitespace (``"A "`` vs ``"A"``)
     silently breaks within-result label consistency -- two strings = two
     speakers -- so both are **rejected, never normalized** (normalizing would
-    hide an adapter bug behind a silently rewritten value; the same stance as
+    hide an engine bug behind a silently rewritten value; the same stance as
     ``phrase_hints``). ``None`` (no attribution) passes through.
 
     Args:
@@ -242,7 +242,7 @@ class Word(BaseModel):
         floats and ``end >= start`` (a zero-duration span is allowed). NaN / Inf
         are rejected (``allow_inf_nan=False``). Engines convert ms /
         protobuf-duration / ticks into this frame; a negative or inverted span is
-        an adapter bug, so the model refuses to represent one rather than let it
+        an engine bug, so the model refuses to represent one rather than let it
         surface as a silent wrong timestamp downstream.
 
     Attributes:
