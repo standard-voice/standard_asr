@@ -26,11 +26,19 @@ fact wins.
 
 This standard governs English **prose**:
 
-- docstrings (module, class, function, attribute);
+- docstrings (module, class, function, attribute), in `src/` and in `tests/`;
 - user-facing runtime strings (see the tier test below);
-- English Markdown docs listed in the `mkdocs.yml` `nav`;
+- English Markdown under `docs/` that `mkdocs.yml` publishes;
+- English Markdown at the repository root: `README.md`, `CONTRIBUTING.md`,
+  `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`;
 - internal `#` comments (clarity tier only — see below);
+- test prose: docstrings, comments, and assertion labels in `tests/`;
 - new `CHANGELOG.md` entries from now on.
+
+`README.md` is the project's marketing front door. It is governed for
+**accuracy and terminology** like everything else, but it may use a wider
+register than reference prose: a longer sentence and a rhetorical structure are
+acceptable there when they carry a true claim.
 
 This standard does **not** govern, and must never change:
 
@@ -49,25 +57,38 @@ This standard does **not** govern, and must never change:
 
 ## The two tiers
 
-The standard has two tiers. Use one mechanical test to pick the tier.
+The standard has two tiers. Apply these three steps **in order** and stop at the
+first that matches. They are ordered because one string can satisfy more than
+one of them — a `#` comment inside a doctest inside a docstring matches all
+three — and the first match wins.
 
-A text is **user-facing (full standard)** if it can reach a person who does not
-read the source at that moment. This includes:
+1. **Verbatim (no tier applies).** Text inside a `:role:`, a `` `code span` ``,
+   a `::` literal block, or a `>>>` doctest is never rewritten. Work around it,
+   never through it.
+2. **Internal (clarity tier).** A `#` comment. The clarity tier keeps the full
+   standard's word and term rules but **drops the sentence-length limit**,
+   because a comment sometimes needs a long sentence to record a subtle reason.
+   Do not shorten rationale to hit a word count. Keep the "why". A directive
+   comment (`# noqa: ...`, `# pragma: no cover`, a section marker) is not prose
+   and is governed by nothing here.
+3. **User-facing (full standard).** Everything else in scope. This is the
+   default, so an unlisted case falls here rather than escaping the standard.
+   It includes:
+   - every string that can reach a person who is not reading the source —
+     whichever way it is written: an argument to `raise ...Error(...)`,
+     `logger.*`, `warnings.warn`, or `print`; a `hint=` or `param=` field; and
+     a module-level constant that such a call later emits;
+   - `argparse` `help=`, `description=`, and `epilog=`;
+   - FastAPI and Pydantic text: `Field(description=...)`, `FastAPI(title=...)`,
+     route and OpenAPI docstrings, and WebSocket `{"message": ...}` frames;
+   - **every docstring**, public or private (mkdocstrings renders them, and
+     consumers read them);
+   - every governed Markdown file.
 
-- the string argument to `raise ...Error(...)`, `logger.*`, `warnings.warn`,
-  and `print`;
-- `argparse` `help=`, `description=`, and `epilog=`;
-- FastAPI and Pydantic text: `Field(description=...)`, `FastAPI(title=...)`,
-  route and OpenAPI docstrings, and WebSocket `{"message": ...}` frames;
-- **every docstring**, public or private (mkdocstrings renders them, and
-  consumers read them);
-- Markdown docs in the `mkdocs.yml` `nav`.
-
-A text is **internal (clarity tier)** if it is a `#` comment that explains
-rationale to a maintainer. The clarity tier keeps the full standard's word and
-term rules but **drops the sentence-length limit**, because a comment sometimes
-needs a long sentence to record a subtle reason. Do not shorten rationale to hit
-a word count. Keep the "why".
+**One length exception inside tier 3.** A docstring **body** paragraph that
+states a contract obligation, a precedence rule, or an error-ownership boundary
+is exempt from the sentence-length cap; nuance beats brevity there. The
+docstring **summary line** is never exempt.
 
 ## The rules
 
@@ -76,17 +97,17 @@ changed form), or **DROP** (does not apply here).
 
 | Area | Ruling for this repo |
 | --- | --- |
-| **One word, one meaning** | **ADAPT.** Use the approved term for each concept from `TERMINOLOGY.md`. Do not use a forbidden synonym. Do not use one word for two meanings. |
+| **One word, one meaning** | **ADAPT.** Use the approved term for each concept from `TERMINOLOGY.md`, and never a forbidden synonym. A few words carry more than one meaning in this domain (*model*, *frame*, *adapter*, *provider*); `TERMINOLOGY.md` names every sense in use. Use a listed sense, make the sense clear from the sentence, and never introduce a sense the table does not list. |
 | **Approved technical names** | **ADAPT.** The domain's `-ing` names are approved names, not banned gerunds: *streaming, gating, negotiation, diarization, resampling, coalescing, superseding*. Use them. |
 | **Noun clusters ≤ 3 words** | **ADAPT (soft cap).** Keep new noun clusters to three words. Hyphenate a multi-word modifier so it reads as one unit ("frozen-prefix boundary"). Established compound API terms are exempt. Never break an identifier to meet the count. |
 | **Verb tense** | **ADAPT.** Prefer the simple present and the imperative. Use the past tense for a past event. Avoid the perfect and progressive tenses where the simple tense is clear. |
 | **Active voice** | **KEEP.** Write active voice. Use passive voice only when the actor is genuinely the runtime and naming it adds nothing ("The request is rejected with 422."). |
-| **Sentence length** | **ADAPT / tier-split.** Keep a user-facing sentence short — about 20 words for an instruction, about 25 for a description. Keep the docstring **summary line** short. **DROP the hard limit** for `#` comments and for docstring body paragraphs that carry contract nuance. |
-| **Imperative for instructions** | **KEEP.** Write instructions and `hint=` fields as commands ("Install the server extra: `pip install 'standard-asr[server]'`."). |
-| **Articles** | **KEEP.** Use *a*, *an*, and *the* in prose. A telegraphic one-liner is allowed only in an `argparse` `help=` string, where the convention omits them ("List discovered models."). |
+| **Sentence length** | **ADAPT / tier-split.** Keep a user-facing sentence short — about 20 words for an instruction, about 25 for a description. Keep the docstring **summary line** short. For the dropped limits, see "The two tiers". |
+| **Imperative for instructions** | **KEEP.** Write instructions and `hint=` fields as commands ("Install the server extra: `pip install 'standard-asr[server]'`."). An instruction must name an action the reader can actually take: if the library offers no way to do the thing, say what happens instead. |
+| **Articles** | **KEEP.** Use *a*, *an*, and *the* in prose. A telegraphic one-liner is allowed only where the convention omits them: an `argparse` `help=` string and a pydantic `Field(description=...)` ("List discovered models."). |
 | **No slang or idioms** | **KEEP, with a carve-out.** Remove idioms and figurative phrases. Keep only a term of art the codebase already defines. |
 | **Warnings and cautions** | **KEEP.** State the hazard first, then the action. Keep the `level`/`code`/`message` shape for diagnostics. |
-| **Punctuation and symbols** | **KEEP.** No emoji in any shipped text, ever. The CLI uses ASCII markers (`[OK]`, `[FAIL]`, `[WARN]`, `[INFO]`) for this reason. Keep code spans and roles verbatim. |
+| **Punctuation and symbols** | **KEEP.** No emoji or pictographs in any shipped text, ever. Typographic and mathematical symbols (→, ⇒, ⊆, §, ±) are allowed in docs, docstrings, and comments, but **not** in a runtime string: a message can be logged to a console that is not UTF-8, so keep `raise`, `logger.*`, and wire text ASCII. The CLI's status markers are ASCII for this reason (`[OK]`, `[FAIL]`, `[WARN]`, `[INFO]`). Keep code spans and roles verbatim. |
 | **American spelling** | **KEEP.** See `TERMINOLOGY.md`. |
 
 ## Five tension resolutions
@@ -111,6 +132,9 @@ Apply the resolution as written.
    "candidate_languages MUST NOT contain 'auto'" becomes "candidate_languages
    cannot contain 'auto'"). The rule: state a spec obligation to the party who
    can break the spec; speak plainly to the party who made a normal mistake.
+   Where a sentence addresses an **operator** or an **end user**, or has more
+   than one audience, use a plain verb — an uppercase keyword only helps a
+   reader who can act on the spec.
 
 4. **A prose rule never changes an identifier.** American spelling and term
    rules apply to prose only. The prose says "canceled"; the symbol stays
@@ -126,23 +150,33 @@ Apply the resolution as written.
 This is the core rule for correctness. It applies to a rename **and** to a
 rewritten message.
 
-A rewrite **may** change what a text means. It **should**, where the original is
-wrong, ambiguous, or misleading. Removing wrong or confusing copy is a goal of
-this standard, not a risk to avoid. But any change that alters the conveyed
-meaning must pass two gates, and you confirm both with more investigation than
-feels necessary:
+A rewrite is allowed to change what a text means, and it should where the
+original is wrong, ambiguous, or misleading. Removing wrong or confusing copy is
+a goal of this standard, not a risk to avoid. (The modal verbs in this section
+are ordinary English, not RFC-2119 keywords; resolution 3 reserves the uppercase
+forms for that.)
 
-1. **Necessity.** There is a real reason to change. The original is wrong,
-   ambiguous, or misleading. A pure style pass that keeps a correct meaning
-   needs no such reason.
-2. **Correctness.** The new text is accurate. You checked it against the
-   authoritative spec (`docs/spec/specification.md`) and the real context: the
-   surrounding code, the actual runtime behavior, and the related design notes.
+A change that alters the conveyed meaning is allowed only when both gates below
+hold, and **you state both in the commit message**. A gate you cannot write down
+is a gate you have not passed.
+
+1. **Defect.** Name what is wrong with the original: it states a fact the code
+   contradicts, it reads two ways, or it misleads about behavior. Quote the
+   original. If you cannot name a defect, do not change the meaning — a pure
+   style pass keeps the meaning and needs no gate.
+2. **Authority.** Cite the source that establishes the new text, by path and
+   line. Use whichever applies, in this order: the normative spec
+   (`docs/spec/specification.md`) where it speaks; otherwise the code path, a
+   test that pins the behavior, or a design note. Much of the toolchain — an
+   exit code, an `argparse` help string, a CLI marker — has no spec text; there
+   the code and its tests are the authority.
 
 Where the original is ambiguous, find the true intended meaning first, then
 write it. Never guess. Never encode a wrong meaning to gain a shorter sentence.
 Many names and statements are intentional and correct — prefer to clarify them
-rather than change them.
+rather than change them. When no authority settles the point, leave the text
+alone and open an issue: an unresolved question is cheaper than a confident
+error.
 
 ## Terminology
 
@@ -156,9 +190,10 @@ enums, and the `Literal` sets) have a single source of truth in the code;
 
 - Each concept uses its canonical term from `TERMINOLOGY.md`.
 - Spelling is American; no British forms in prose.
-- No emoji anywhere.
+- No emoji anywhere; no non-ASCII symbol in a runtime string.
 - User-facing sentences are short and active.
-- Instructions and hints are imperative.
-- Every meaning change is necessary and fact-checked against the spec.
+- Instructions and hints are imperative, and name an action the reader can take.
+- Every meaning change states its defect and its authority in the commit message.
+- Every claim about the code was checked against the code, not remembered.
 - Code spans, roles, and identifiers are unchanged.
 - `uv run ruff check` passes (pydocstyle included).

@@ -34,7 +34,17 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 - `ruff` rule `NPY201` enabled. CI tests against numpy 1.26 AND latest 2.x.
 - Google-style docstrings (English): summary, args, returns, raises.
 - English for all code, comments, logs. `logging` module — no `print`.
-- Prose follows [`STYLE.md`](STYLE.md) (adapted ASD-STE100, two-tier) and [`TERMINOLOGY.md`](TERMINOLOGY.md) (canonical terms, American spelling). No emoji in shipped text. A meaning change (a rename or a reworded message) must be necessary and fact-checked against the spec; prefer clarifying an intentional name over changing it.
+- Prose follows [`STYLE.md`](STYLE.md) (adapted ASD-STE100) and
+  [`TERMINOLOGY.md`](TERMINOLOGY.md) (canonical terms, American spelling). **Read
+  both before you edit a docstring, a user-facing string, or a Markdown file.**
+  Tier: text inside a role, a code span, or a doctest is verbatim; a `#` comment
+  is the clarity tier (no length cap); **everything else is the full standard** —
+  every docstring, every string that can reach a user, and every English Markdown
+  file including this one and the repository root. No emoji, and no non-ASCII
+  symbol in a runtime string. A meaning change must state its **defect** and its
+  **authority** (spec section, code path, or test — by path and line) in the
+  commit message; prefer clarifying an intentional name over changing it. Check
+  every claim about the code against the code — a remembered fact is not a fact.
 - SPDX license header on every `.py` file:
   ```python
   # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
