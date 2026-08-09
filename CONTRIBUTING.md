@@ -70,9 +70,23 @@ manager or run the equivalent check in CI.
 ## Writing prose and docs
 
 Prose is part of the contract. Follow the writing standard in
-[`STYLE.md`](STYLE.md) (an adapted ASD-STE100) and the canonical terms in
+[`STYLE.md`](STYLE.md) and the canonical terms in
 [`TERMINOLOGY.md`](TERMINOLOGY.md). `uv run ruff check` runs pydocstyle, so
 docstring structure is checked with the rest of the lint.
+
+[Vale](https://vale.sh) lints the prose itself — Markdown plus the comments
+and docstrings in `src/` and `tests/` — against the vendored Google baseline
+and the repo's own terminology rules (`.vale.ini`, `.vale/styles/`). Run it
+through the wrapper, which owns the lint targets and exemptions:
+
+```sh
+scripts/vale.sh          # full backlog: warnings and suggestions too
+scripts/vale.sh --gate   # what CI enforces: errors only
+```
+
+Like `actionlint`, Vale is not a Python dependency: CI downloads a pinned
+binary and verifies its checksum; for local use, install it with your system
+package manager (or set `VALE=/path/to/vale`).
 
 ## Dependency policy
 

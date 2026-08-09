@@ -18,7 +18,7 @@ async with engine.start_transcription(audio_format=audio_format) as session:
 `recommended_wire_format()` returns the engine's preferred sample rate and
 encoding as an `AudioFormat`, or `None` when the engine declares no usable
 positive sample rate (no bare-frame session can be opened then). If you need a
-specific format (e.g. 8 kHz for telephony), construct one yourself -- the
+specific format (for example, 8 kHz for telephony), construct one yourself -- the
 engine will raise `UnsupportedFeatureError` if it cannot accept it. The
 recommendation is derived from the engine's static Properties; whether a
 bare-frame session can be opened at all is a capability question -- gate on
@@ -74,8 +74,8 @@ Every streaming session emits a sequence of `TranscriptionEvent` objects. The
 | ---- | ------- | ------ | ------------- | --------- |
 | `partial` | Interim text that **may change** with the next event on this segment. | Current best guess. | The segment this partial belongs to. | Segment speaker label when diarized, else `None`. |
 | `final` | This segment's text is **settled against new audio** -- more audio does not change it. It can still be replaced by a `supersede`, or restated once by a terminal `final` with `finality="closed"` (see "Finality" below). | Final text. | The segment that is now final. | Segment speaker label when diarized, else `None`. |
-| `supersede` | The engine re-segmented: one or more previously-emitted segments are **replaced**. The replacement segments' own `partial`/`final` events arrive afterwards -- a `supersede` always precedes any event of its `new_ids`. | `None` | `None` (check `old_ids`). | `None` |
-| `progress` | A progress heartbeat (e.g. audio position). No transcript content. | `None` | `None`, or the segment it reports on. | `None` |
+| `supersede` | The engine re-segmented: one or more previously emitted segments are **replaced**. The replacement segments' own `partial`/`final` events arrive afterwards -- a `supersede` always precedes any event of its `new_ids`. | `None` | `None` (check `old_ids`). | `None` |
+| `progress` | A progress heartbeat (for example, audio position). No transcript content. | `None` | `None`, or the segment it reports on. | `None` |
 | `done` | The session is complete. No more events will follow. | `None` | `None` | `None` |
 | `error` | An engine error mid-stream. Machine-readable code in `event.code`; when the standard layer synthesized the error from an exception, human detail in `event.extra.get("detail")` (deadline and engine-authored errors may carry no detail); `event.recoverable` says whether the session may continue. | `None` | `None`, or the segment the error concerns. | `None` |
 
@@ -131,7 +131,7 @@ if event.type == "partial" and event.stable_until is not None:
     tentative = event.text[event.stable_until:]
 ```
 
-Voice agents can act on `frozen` immediately (e.g. start intent recognition)
+Voice agents can act on `frozen` immediately (for example, start intent recognition)
 without waiting for a `final` -- act on its meaning, not its exact spelling
 (see "Finality": a terminal `closed` restatement may still reformat it).
 
@@ -228,9 +228,9 @@ completion. Handle the `error` event's `code` to distinguish the cases.
 ## Diagnostics mid-stream
 
 The standard layer attaches parameter-gating and language-resolution
-diagnostics to the session at `start_transcription` (e.g. a best-effort drop of
+diagnostics to the session at `start_transcription` (for example, a best-effort drop of
 an unsupported feature -- always disclosed, never silent). Engines add their
-own mid-stream notes via `session.emit_diagnostic()` (e.g. a lossy fallback).
+own mid-stream notes via `session.emit_diagnostic()` (for example, a lossy fallback).
 Both arrive through `session.diagnostics()`, without interrupting the event
 flow.
 

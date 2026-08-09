@@ -116,7 +116,7 @@ class MyEngine(EngineBase):
   start/end on every run (most do), declare `"segment"` even when there is no
   separate "segment mode" switch. Otherwise the standard layer rejects the
   cheapest, always-satisfiable request as a false incompatibility. Then map each
-  granularity precisely (e.g. only `"word"` enables your forced-alignment pass; a
+  granularity precisely (for example, only `"word"` enables your forced-alignment pass; a
   `"segment"` request MUST NOT back-fill word-level data — `words=None` means
   "not requested").
 
@@ -187,7 +187,7 @@ calls your hook. Before your hook runs, the base has already:
   `InvalidProviderParamError`), capability gating (R2), and guidance degradation
   (R4). The base attaches the gating and language **diagnostics** to the returned
   session; they surface through `session.diagnostics()`.
-- for the **whole-input** path (`audio=...`, e.g. OpenAI-style streaming output),
+- for the **whole-input** path (`audio=...`, for example, OpenAI-style streaming output),
   run that complete input through the **same** audio negotiation/conversion
   pipeline as batch `transcribe`, and hand your hook the result as
   `prepared_audio`. The `prepared_audio` is a `PreparedAudio` already in one of
@@ -446,7 +446,7 @@ stream may use *less* than you declare, but never *more*:
 The coherent **no-timestamp streaming profile** is the all-defaults combination:
 leave `word_stability`, `timestamps` (mode `"none"`), `word_timestamps`, and
 `diarization` unsupported, and emit none of those fields (use `stable_until=0`,
-omit `audio_processed_until`, `words`, and `speaker`). A mismatch — e.g.
+omit `audio_processed_until`, `words`, and `speaker`). A mismatch — for example,
 declaring `word_stability` unsupported while emitting `stable_until>0` — is a
 capability⇄stream desync a client trusting your capabilities would mishandle.
 Record a real session and assert it with

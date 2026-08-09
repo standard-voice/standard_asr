@@ -1,0 +1,36 @@
+extends: substitution
+message: "Use the American spelling '%s' instead of '%s' (TERMINOLOGY.md, Spelling). Never re-spell an identifier."
+link: https://github.com/standard-voice/standard_asr/blob/main/TERMINOLOGY.md
+level: error
+ignorecase: true
+action:
+  name: replace
+swap:
+  'behaviours?': behavior
+  'normalis(?:e|es|ed|ing|ation)': normalize
+  'initialis(?:e|es|ed|ing|ation)': initialize
+  'serialis(?:e|es|ed|ing|ation)': serialize
+  'canonicalis(?:e|es|ed|ing|ation)': canonicalize
+  'optimis(?:e|es|ed|ing|ation)': optimize
+  'organis(?:e|es|ed|ing|ation)': organize
+  'recognis(?:e|es|ed|ing|able)': recognize
+  'synchronis(?:e|es|ed|ing|ation)': synchronize
+  'analys(?:e|es|ed|ing)': analyze
+  'colours?': color
+  'cancell(?:ed|ing)': canceled
+  'labell(?:ed|ing)': labeled
+  'unlabelled': unlabeled
+  'signall(?:ed|ing)': signaled
+  'modell(?:ed|ing)': modeled
+  'travell(?:ed|ing)': traveled
+  'honours?': honor
+  'honoured': honored
+  'honouring': honoring
+  'licence': license
+  'artefacts?': artifact
+  'catalogues?': catalog
+  'whilst': while
+  'grey': gray
+  'favours?': favor
+  'fulfils?\b': fulfill
+  'analogues?': analog

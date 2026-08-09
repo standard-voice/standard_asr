@@ -405,7 +405,7 @@ def create_app(
     app = FastAPI(title="Standard ASR")
     # Use the caller's registry when one is given -- even an empty one. A bare
     # ``registry or discover_models()`` would treat an explicitly-passed empty
-    # ``ModelRegistry({})`` as falsey (it is len 0) and silently fall back to
+    # ``ModelRegistry({})`` as falsy (it is len 0) and silently fall back to
     # full plugin discovery, so an operator who wants to expose ZERO models would
     # instead expose every installed plugin. ``is not None`` honors the intent.
     model_registry = registry if registry is not None else discover_models()

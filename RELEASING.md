@@ -9,7 +9,7 @@ defaults, and a low-surprise developer experience. Releases are built with
 Astral uv, published with PyPI Trusted Publishing, and guarded so a bad tag or a
 non-green commit fails loudly before anything reaches PyPI.
 
-## TL;DR
+## Summary
 
 After the one-time setup exists, every release is:
 
@@ -31,7 +31,7 @@ triggered by a GitHub Release; manual dispatch publishes only to TestPyPI.
 ### What Publishes
 
 This repo publishes exactly one distribution: **`standard-asr`**. Engine plugins
-live in their own repositories (e.g. `std-faster-whisper`, `std-mlx-audio`),
+live in their own repositories (for example, `std-faster-whisper`, `std-mlx-audio`),
 each with its own PyPI project, trusted publisher, and release cadence. That
 keeps engine dependencies and licenses isolated from the core package.
 
@@ -306,7 +306,7 @@ published GitHub Release or PyPI upload yet. For the first release:
 | Trusted publisher 403 | PyPI/TestPyPI publisher fields do not exactly match owner, repo, workflow filename, and environment. |
 | Job waits before publish | The GitHub Environment requires approval. Review and approve the deployment. |
 | Upload says file already exists | PyPI/TestPyPI versions are immutable. Bump to a new version or pre-release. |
-| TestPyPI install cannot resolve a dependency | uv's default first-index strategy will not fall back to PyPI for a package TestPyPI also hosts (e.g. `numpy`). Add `--index-strategy unsafe-best-match` (both indexes are trusted). |
+| TestPyPI install cannot resolve a dependency | uv's default first-index strategy will not fall back to PyPI for a package TestPyPI also hosts (for example, `numpy`). Add `--index-strategy unsafe-best-match` (both indexes are trusted). |
 | No PyPI attestations | Confirm the upload used Trusted Publishing with `id-token: write` and the PyPA publish action. |
 
 ## Future Plugin Releases

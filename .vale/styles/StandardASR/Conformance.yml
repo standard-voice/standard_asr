@@ -1,0 +1,7 @@
+extends: existence
+message: "Prefer 'compliance' for the engine test surface. 'Conformance' stays approved only for cross-language wire conformance (TERMINOLOGY.md, compliance row)."
+link: https://github.com/standard-voice/standard_asr/blob/main/TERMINOLOGY.md
+level: warning
+ignorecase: true
+tokens:
+  - conformance

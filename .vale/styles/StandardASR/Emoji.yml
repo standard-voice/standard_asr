@@ -1,0 +1,10 @@
+extends: existence
+message: "No emoji or pictographs in shipped text (STYLE.md, punctuation and symbols)."
+link: https://github.com/standard-voice/standard_asr/blob/main/STYLE.md
+level: error
+nonword: true
+tokens:
+  - '[\x{1F000}-\x{1FAFF}]'
+  - '[\x{2600}-\x{27BF}]'
+  - '[\x{2B00}-\x{2BFF}]'
+  - '\x{FE0F}'

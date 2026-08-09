@@ -53,7 +53,7 @@ and domains those engines handle well, and wait for an "official support" releas
 never comes. Meanwhile the model that would serve them best already exists.
 
 **Standard ASR** removes that tax: one vendor-neutral interface that both sides implement.
-Applications code against the protocol and gain every compliant engine, cloud API or local
+Applications code against the protocol and gain every compliant engine, cloud API, or local
 model. Engines implement it once and reach every application. Switching engines becomes a
 one-line model-key change — not another adapter.
 
@@ -75,7 +75,7 @@ single team), a dependency minefield (engines pin conflicting numpy/torch versio
 process), and a licensing trap (GPL/AGPL engines can't be bundled with permissive ones).
 Model creators won't open pull requests against someone else's mega-repo. Standard ASR
 inverts the structure: the core defines the protocol and toolchain; every engine lives in
-its own independently-maintained, independently-licensed package. Maintenance stays with
+its own independently maintained, independently licensed package. Maintenance stays with
 the people who know each engine best, and the core never becomes the bottleneck.
 
 ## Why build on Standard ASR?
@@ -93,7 +93,7 @@ the people who know each engine best, and the core never becomes the bottleneck.
   the engine accepts, loudly reporting anything lossy. No more sample-rate guesswork.
 - **No dependency hell, no licensing traps.** Each engine is its own pip-installable
   plugin, so restrictive licenses and heavy dependencies stay in the packages that carry
-  them. Hard dependency conflicts (e.g. numpy 1.x vs 2.x) cannot share one environment —
+  them. Hard dependency conflicts (for example, numpy 1.x vs 2.x) cannot share one environment —
   `standard-asr doctor` surfaces them instead of letting them hide. Process isolation is
   the escape hatch for plugin-vs-plugin conflicts; a plugin incompatible with the core's
   own numpy floor cannot run anywhere, and doctor reports that as its own conflict.

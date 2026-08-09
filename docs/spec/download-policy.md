@@ -12,7 +12,7 @@ model weights at runtime. The list below is the **contract**
 - `1`, `true`, `yes` → downloads allowed
 - `0`, `false`, `no` → downloads disabled
 - unset → **allowed by default** (recommended for local/dev)
-- any other value, **including an empty string** (e.g. a `VAR=` line in
+- any other value, **including an empty string** (for example, a `VAR=` line in
   docker-compose) → **disabled** (fail-closed: an unrecognized value must not
   silently enable downloads). The unrecognized value is logged at
   `WARNING` so the cause is traceable — the engine that later raises

@@ -49,7 +49,7 @@ Concrete, executable goals that deliver on the [mission](mission.md).
   independently maintained, independently licensed package.
 - **G.4.2: Dependency and license isolation.** Plugin architecture keeps
   conflicting dependencies and restrictive licenses contained. For hard conflicts
-  (e.g. numpy 1.x vs 2.x), `standard-asr doctor` diagnoses and process isolation
+  (for example, numpy 1.x vs 2.x), `standard-asr doctor` diagnoses and process isolation
   is the escape hatch.
 - **G.4.3: Plugin catalog.** A public directory of compliant engines (known
   plugins, capability summaries, licenses).

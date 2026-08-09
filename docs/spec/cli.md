@@ -30,7 +30,7 @@ The declared capabilities are rendered as **canonical JSON** — the same
 serialization the REST `GET /v1/capabilities/...` endpoint returns, with a
 derived `supported` boolean at every node. CLI and wire output can therefore be
 compared field-for-field (spec §C R6; the two layers share one capability model).
-If an engine mis-declares its `declared_capabilities` (e.g. as a raw dict), the
+If an engine mis-declares its `declared_capabilities` (for example, as a raw dict), the
 capabilities line reports the problem and the rest of the metadata still renders.
 
 The config schema is the JSON Schema of the engine's class-level `config_type` —
@@ -76,17 +76,17 @@ is engine code too: `prepare` may be a property, so a descriptor that raises is
 classified at the same seam as the call itself.
 
 Engine **init-config** flags (also on `transcribe`):
-- `--config JSON`: the engine's init configuration as a JSON object, e.g.
+- `--config JSON`: the engine's init configuration as a JSON object, for example,
   `--config '{"device": "cpu"}'`. This is the same configuration otherwise
   supplied via `STANDARD_ASR_<ENGINE>__<FIELD>` env vars, now discoverable from
   `--help`. Run `standard-asr show <engine/model>` to see the config schema.
-- `--set KEY=VALUE` (repeatable): set one init-config field, e.g.
+- `--set KEY=VALUE` (repeatable): set one init-config field, for example,
   `--set device=cpu --set compute_type=int8`.
 - **Precedence / merge:** `--config` supplies the base object; each `--set` then
   overrides or adds a field, so `--set` **wins** over `--config` for the same key.
   `--set` values are strings — the engine's pydantic config coerces them (`"5"` →
   `5`). Scalars behave exactly like the env-var path; composite fields do
-  **not**: the env-var path JSON-decodes a composite value (e.g.
+  **not**: the env-var path JSON-decodes a composite value (for example,
   `'["en","zh"]'` for a `list[str]` field) before validation, while `--set`
   passes the raw string through, so a composite `--set` value fails validation
   loudly — use `--config` for composite fields. For secrets (`api_key`, tokens) prefer the
@@ -117,7 +117,7 @@ constructs without arguments and declares a streaming axis, the streaming
 **parameter-gating** check — so a streaming engine that bypassed the gating
 template is caught here, not just at the entry-point level (delivers G.2.1's
 "one command validates compliance"). An engine that requires constructor
-arguments (e.g. credentials) is reported as *skipped*, not failed — the same
+arguments (for example, credentials) is reported as *skipped*, not failed — the same
 verdict whether the requirement shows up in the factory signature or as a
 `ConfigurationRequiredError` from a zero-arg factory whose credential is
 absent from the environment (`BaseConfig.from_env` raises that subtype
@@ -139,7 +139,7 @@ on your plugin". Both fail the run's exit code. `KeyboardInterrupt` and
 control flow.
 
 **Probe honesty**: the default run's behavioral checks call public engine
-entry points with deliberately-rejectable inputs. The provider-params
+entry points with deliberately rejectable inputs. The provider-params
 swap-safety check invokes `transcribe()` with a one-sample silent probe and a
 foreign engine's `provider_params`; the streaming gating check invokes
 `start_transcription()` with an unsupported parameter (the session is
@@ -170,7 +170,7 @@ Flags:
   a silent no-op. The check's remediation advice ("re-run with a larger
   timeout") is actionable through this flag; library callers pass
   `check_sync_bridge(..., timeout=...)` (finite, `> 0`; validated). An engine
-  that refuses session establishment as unsupported (e.g. output-only, no
+  that refuses session establishment as unsupported (for example, output-only, no
   `streaming_input`) is reported as a passing `sync_bridge_not_applicable`
   warning in the report set -- structured and `--quiet`-respecting; there is
   deliberately no CLI-side pre-gate, so machine consumers of the reports see
@@ -194,7 +194,7 @@ Flags:
   two policies invited silent misconfiguration.
 
 Transcribe an audio file and print text or JSON output. `--options` accepts a
-JSON object mapping onto the portable standard set (`WireRuntimeParams`, e.g.
+JSON object mapping onto the portable standard set (`WireRuntimeParams`, for example,
 `'{"language": "en"}'`). The engine-specific `provider_params` escape hatch is
 not constructible from untyped JSON and is rejected as a validation error. A
 validation error **never echoes the submitted value** (a mis-pasted secret is
@@ -236,7 +236,7 @@ is nothing to analyze). Does not resolve or install anything.
 ### Global Flags
 
 - `--debug`: emit stack traces for unexpected errors. The trace is printed for
-  every error path (not only the final generic handler), so a named error (e.g.
+  every error path (not only the final generic handler), so a named error (for example,
   an engine-internal failure) is debuggable too.
 
 ## 2. Output Conventions
@@ -244,7 +244,7 @@ is nothing to analyze). Does not resolve or install anything.
 - Human‑readable console output by default; ASCII status markers
   (`[OK]`/`[FAIL]`/`[WARN]`/`[INFO]`) so a redirected/piped stream never crashes
   on a decorative character.
-- The output streams are forced to UTF‑8 when not already UTF‑8 (e.g. a Windows
+- The output streams are forced to UTF‑8 when not already UTF‑8 (for example, a Windows
   redirect defaulting to the ANSI code page), so non‑Latin transcripts print
   losslessly rather than raising `UnicodeEncodeError`. Transcript text is never
   silently replaced.

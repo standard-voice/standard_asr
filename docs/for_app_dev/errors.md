@@ -14,7 +14,7 @@ see the section after the table.
 StandardASRError
 +-- StructuredError (adds .param / .hint / .details)
 |   +-- ConfigError            invalid config (bad language, bad value, ...)
-|   |   +-- ConfigurationRequiredError  required config ABSENT (e.g. credential not set)
+|   |   +-- ConfigurationRequiredError  required config ABSENT (for example, credential not set)
 |   +-- TranscriptionError     engine failed during transcription
 |   +-- UnsupportedFeatureError  unsupported feature (always) or parameter (strict mode)
 |   +-- InvalidProviderParamError  wrong engine's provider_params passed
@@ -26,7 +26,7 @@ StandardASRError
 +-- EngineContractError        engine broke the protocol contract (async transcribe, bad declaration)
 +-- SubtitleRenderingError     to_srt/to_vtt: segments lack measured timing (choose a policy)
 +-- StreamClosedError          audio delivered to a closed session
-+-- InvalidSessionUseError     session driven incorrectly (e.g. mixing feed() with send_audio())
++-- InvalidSessionUseError     session driven incorrectly (for example, mixing feed() with send_audio())
 +-- DiscoveryError             plugin discovery problem
     +-- EntrypointValidationError  bad entry-point name or metadata
     +-- FactoryLoadError          entry point failed to import / not callable
@@ -37,7 +37,7 @@ StandardASRError
 | Exception | When | Typical cause |
 | --------- | ---- | ------------- |
 | `ConfigError` | `create()`, `transcribe()`, or `start_transcription()` | Invalid config value — bad pydantic validation, or a `default_language` that is malformed / not selectable. Fixable by whoever supplies the config. |
-| `ConfigurationRequiredError` | `create()` / `from_env()`, or lazily at the first `transcribe()` / session when the engine defers its credential check | A required field (e.g. an API key) is absent from both explicit config and the environment — set it and retry; compliance treats this as a skip, not a failure. |
+| `ConfigurationRequiredError` | `create()` / `from_env()`, or lazily at the first `transcribe()` / session when the engine defers its credential check | A required field (for example, an API key) is absent from both explicit config and the environment — set it and retry; compliance treats this as a skip, not a failure. |
 | `TranscriptionError` | `transcribe()` / `start_transcription()` | Engine crashed or returned an invalid result. |
 | `UnsupportedFeatureError` | `start_transcription()` always for an unsupported streaming axis or wire format; `transcribe()` / `start_transcription()` in strict mode for an unsupported parameter | Requested streaming on a batch-only engine, or word timestamps (strict) on an engine that does not support them. |
 | `InvalidProviderParamError` | `transcribe()` or `start_transcription()` | Passed faster-whisper's `provider_params` to an OpenAI engine (swap-safety). |
@@ -95,7 +95,7 @@ except ConfigError as exc:
     print(exc.details)  # sanitized [{"type", "loc", "msg"}, ...] entries
 ```
 
-These fields let you build programmatic error handling (e.g. fall back to another
+These fields let you build programmatic error handling (for example, fall back to another
 engine when a feature is unsupported) without parsing message strings. Every
 `StructuredError` also carries `.details`, populated where structured context
 exists — `ConfigError`, for example, puts the sanitized pydantic validation

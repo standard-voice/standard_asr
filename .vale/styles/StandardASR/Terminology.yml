@@ -1,0 +1,12 @@
+extends: substitution
+message: "Use '%s' instead of '%s' (TERMINOLOGY.md, forbidden synonym)."
+link: https://github.com/standard-voice/standard_asr/blob/main/TERMINOLOGY.md
+level: error
+ignorecase: true
+action:
+  name: replace
+swap:
+  'Web API server': reference server
+  'web server': reference server
+  'knobs?': options
+  'fail-?safe': fail-closed

@@ -14,13 +14,13 @@
 - `engine_id` should match your distribution name after [PEP 503](https://peps.python.org/pep-0503/) normalization.
 - `model_name` identifies a preset within that engine. Use an empty string for a default model *only when truly necessary*.
 - Entry point value: a callable (function or class) that returns a `StandardASR` implementation.
-- You can test locally with any installed plugin (e.g. [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)).
+- You can test locally with any installed plugin (for example, [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)).
 
 ## Naming Rules
 
 | Component    | Allowed characters                                  | Notes |
 |--------------|------------------------------------------------------|-------|
-| `engine_id`  | `a-z`, `0-9`, `.`, `_`, `-`                          | Must start with `[a-z0-9]`; `/` is forbidden. **Upper case is rejected outright**, but a non-canonical lowercase form using `.`/`_` separators (e.g. `faster_whisper`) is *accepted and folded* to its PEP 503 routing identity (`faster-whisper`), with a normalization hint logged. The asymmetry is deliberate. Distribution names on PyPI are lowercase by convention, so an upper-case engine id is a mistake to fix at the source, not something to silently rewrite. The `.`/`_`↔`-` separator equivalence is a pure PEP 503 routing fold. The declared form is retained on `ModelSpec.declared_engine_id` for diagnostics. |
+| `engine_id`  | `a-z`, `0-9`, `.`, `_`, `-`                          | Must start with `[a-z0-9]`; `/` is forbidden. **Upper case is rejected outright**, but a non-canonical lowercase form using `.`/`_` separators (for example, `faster_whisper`) is *accepted and folded* to its PEP 503 routing identity (`faster-whisper`), with a normalization hint logged. The asymmetry is deliberate. Distribution names on PyPI are lowercase by convention, so an upper-case engine id is a mistake to fix at the source, not something to silently rewrite. The `.`/`_`↔`-` separator equivalence is a pure PEP 503 routing fold. The declared form is retained on `ModelSpec.declared_engine_id` for diagnostics. |
 | `model_name` | `A-Za-z0-9`, `.`, `_`, `+`, `%`, `:`, `-`            | Must start with `[A-Za-z0-9]`; `/` is forbidden. Empty string signals a default model and triggers a warning. |
 
 Multiple models per engine are encouraged. Give each preset its own entry point. Presets include quantized variants, multilingual or monolingual builds, and device specializations. A separate entry point per preset lets downstream users request the exact behavior they need.
@@ -31,7 +31,7 @@ Leaving `model_name` empty (key written as `engine_id/`) denotes the engine’s 
 
 A plugin **key** MUST contain the `/`: only `<engine_id>/<model_name>` and the
 explicit default `<engine_id>/` are valid declaration forms. A slash-less key
-(e.g. `faster-whisper` instead of `faster-whisper/`) is **not** a third valid
+(for example, `faster-whisper` instead of `faster-whisper/`) is **not** a third valid
 form — it is almost always a typo that dropped `/<model_name>`. Discovery
 rejects it. The library call `discover_models(strict=True)` **raises**
 `EntrypointValidationError`. `standard-asr compliance entrypoints
@@ -247,7 +247,7 @@ $ standard-asr compliance run faster-whisper/large-v3
 
 ### Local testing with a plugin
 
-Install a plugin (e.g.
+Install a plugin (for example,
 [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)) and
 run the checks end‑to‑end:
 

@@ -24,7 +24,7 @@ Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
   **same** structured body and strips the offending
   `input` value (which FastAPI / pydantic echo by default) and **redacts
   credential-looking fields** (`api_key`, `token`, `secret`, `password`,
-  `authorization`, …). This prevents a mis-placed secret (e.g. an API key put in
+  `authorization`, …). This prevents a mis-placed secret (for example, an API key put in
   the JSON body or `options`) from being reflected back into the client, an
   intermediary proxy, or a copied bug report. **`loc` carries caller text
   too** — a rejected `extra_forbidden` key, a `dict[str, T]` field's mapping
@@ -47,7 +47,7 @@ Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
   ```
 
   The safe structured fields (`type`, `loc`, `msg`) are preserved so the caller
-  can still fix the request (and branch on the machine-readable `type`, e.g.
+  can still fix the request (and branch on the machine-readable `type`, for example,
   `extra_forbidden` for a rejected `provider_params` key). A standalone error's
   `loc` is anchored under the request field it came from (`["options", ...]`
   for the wire options). Keeping **one body shape per validation 422** means a
@@ -208,7 +208,7 @@ markers, so schema-driven UIs render them safely. The schema describes field
 params-schema — it is deliberately readable without authentication. Note that
 the server itself does not accept engine construction over the wire in v1; the
 collected config is consumed by the operator-side process that constructs the
-engine (e.g. `registry.create(key, **values)`).
+engine (for example, `registry.create(key, **values)`).
 
 > The `{model}` path segment matches the full `engine/model` key (it may contain
 > a slash).
@@ -222,9 +222,9 @@ The transcribe endpoints map errors from **both** engine construction
 |---|---|
 | Unknown / unparseable model key (`EntrypointValidationError` — the caller's key does not exist or is malformed) | **404** (authored detail: the caller's own key + available keys) |
 | Registered model whose plugin fails to load/resolve (`FactoryLoadError` — the key resolved, a server-installed plugin is broken) | **500** (scrubbed generic detail; plugin import/annotation internals are safe-logged only — a 404 would blame the caller for a fault it cannot fix) |
-| Required configuration absent from the SERVER environment (`ConfigurationRequiredError` — e.g. a credential env var not set), at construction OR discovered lazily at call time | **503** (stable generic detail; the absent field names are deployment detail, safe-logged only) |
+| Required configuration absent from the SERVER environment (`ConfigurationRequiredError` — for example, a credential env var not set), at construction OR discovered lazily at call time | **503** (stable generic detail; the absent field names are deployment detail, safe-logged only) |
 | Any other construction failure (`ConfigError`, `InvalidProviderParamError`, `ValidationError`, anything unexpected) | **500** (scrubbed) |
-| Engine config/contract fault during transcription (`ConfigError` — e.g. a bad `default_language` value; `EngineContractError` — e.g. a malformed declared language tag or a missing IC.6 `default_language`; `InvalidProviderParamError`; a bare engine-side `ValidationError`) | **500** (scrubbed) |
+| Engine config/contract fault during transcription (`ConfigError` — for example, a bad `default_language` value; `EngineContractError` — for example, a malformed declared language tag or a missing IC.6 `default_language`; `InvalidProviderParamError`; a bare engine-side `ValidationError`) | **500** (scrubbed) |
 | Unsupported standard feature / non-selectable language requested, strict mode (`UnsupportedFeatureError`) | **422** |
 | Audio decode/processing failure (`AudioProcessingError`) | **400** |
 | Un-parseable `options` JSON syntax (multipart, before transcription) | **400** |
@@ -286,7 +286,7 @@ undocumented plain 500 **and** — the reason this is a security rule —
 bypasses the operator-log redaction below, letting the server's native
 traceback logger render a `ValidationError`'s input echo. Mapping: an
 unknown/unparseable model key → **404**; the endpoint's own deliberate
-verdict (e.g. "no capabilities declared") → passed through unchanged;
+verdict (for example, "no capabilities declared") → passed through unchanged;
 everything else → safe-logged scrubbed **500**. `BaseException` is not
 caught. The projection MUST also be completed inside the boundary
 (encoded eagerly, non-finite numbers rejected — they are not JSON), so a
@@ -303,7 +303,7 @@ echo is **NEVER** logged — not as the active exception, and not through
 the `__cause__`/`__context__` chain: a plain `logger.exception` traceback
 re-renders every link's raw message, `input_value=...` echo included, and
 the standard layer deliberately chains the raw error under sanitized
-wrappers (e.g. `raise TranscriptionError(...) from exc`), so the chain is
+wrappers (for example, `raise TranscriptionError(...) from exc`), so the chain is
 the echo's normal road into the log.
 
 The rule (reference implementation
@@ -441,7 +441,7 @@ Client authors MUST handle **both**:
   { "type": "error", "code": "bad_request" | "unknown_model" | "service_unavailable" | "unsupported" | "internal_error", "message": "..." }
   ```
   - `bad_request`: malformed config frame / invalid `audio_format` / invalid
-    `options` — i.e. the client's own request material failed validation.
+    `options` — that is, the client's own request material failed validation.
   - `unknown_model`: the caller's model key does not exist or is malformed
     (`EntrypointValidationError` only — a registered model whose plugin
     fails to LOAD is an engine/deployment fault and maps to the scrubbed
@@ -457,8 +457,8 @@ Client authors MUST handle **both**:
     a bare `ValueError` is never mapped here).
   - `internal_error`: an engine/deployment fault — any other construction
     failure, an engine config/contract fault at establishment
-    (`ConfigError`, e.g. a bad `default_language` value;
-    `EngineContractError`, e.g. a missing IC.6 `default_language`;
+    (`ConfigError`, for example, a bad `default_language` value;
+    `EngineContractError`, for example, a missing IC.6 `default_language`;
     `InvalidProviderParamError`, which no wire client can legally cause; an
     engine-side `ValidationError`; a bare `ValueError` surviving past
     request validation), or an unexpected establishment fault.
@@ -542,7 +542,7 @@ contains no internal/engine detail). The effective per-frame bound is
 `min(max_ws_frame_bytes, transport ws_max_size)`; `run()` wires
 `ws_max_size=max_ws_frame_bytes` so they coincide (§1).
 
-A failure on the audio-input pump (e.g. a client protocol violation such as
+A failure on the audio-input pump (for example, a client protocol violation such as
 sending audio after the session ended) is likewise never swallowed silently: it
 is logged server-side and surfaced as a single generic, **non-leaking** frame
 before teardown:

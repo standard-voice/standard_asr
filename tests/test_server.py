@@ -579,7 +579,7 @@ def test_create_app_missing_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_create_app_empty_registry_exposes_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
     # An explicitly-passed empty ModelRegistry must expose ZERO models and MUST
     # NOT fall back to plugin discovery (a bare `registry or discover_models()`
-    # would treat the len-0 registry as falsey and expose every installed
+    # would treat the len-0 registry as falsy and expose every installed
     # plugin instead -- the opposite of the operator's intent).
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
