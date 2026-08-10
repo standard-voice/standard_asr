@@ -40,10 +40,13 @@ class UnsafeAudioUrlError(IncompatibleAudioInputError):
     """An ``AudioUrl`` failed the SSRF security policy and MUST NOT be forwarded.
 
     Raised before a URL is handed to an engine when the URL fails the SSRF
-    policy: a malformed URL or port, a non-HTTPS scheme, a missing or
-    unresolvable host, or any resolved address (in whole or in part) that is
+    policy: a malformed URL or port, a non-HTTPS scheme, or a missing host.
+    Unless ``allow_private_addresses`` opts out, it also covers a host that
+    does not resolve, and any resolved address (in whole or in part) that is
     not globally routable -- private / loopback / link-local and their
-    relatives. Subclasses
+    relatives. Under that opt-in the validator returns after the structural
+    checks and never resolves the host, so an unresolvable name reaches the
+    engine and fails there instead. Subclasses
     :class:`~standard_asr.contract.exceptions.IncompatibleAudioInputError` so existing
     audio-input error handling catches it, while remaining distinguishable.
 
@@ -121,13 +124,17 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
 
     Args:
         url: The URL to validate.
-        allow_private_addresses: If ``True``, skip the private/loopback/
-            link-local rejection (opt-in for trusted internal endpoints). HTTPS
-            is still required.
+        allow_private_addresses: If ``True``, skip the address stage entirely
+            (opt-in for trusted internal endpoints): the private/loopback/
+            link-local rejection AND the DNS resolvability check, since an
+            internal name may not resolve from wherever validation runs. The
+            structural checks -- HTTPS, a host, a well-formed port -- still
+            apply.
 
     Raises:
         UnsafeAudioUrlError: If the URL is malformed, not HTTPS, has no host,
-            has a malformed port, fails to resolve, or resolves to a disallowed
+            or has a malformed port -- and, unless ``allow_private_addresses``
+            is set, if the host fails to resolve or resolves to a disallowed
             address. This is the only exception type the validator raises, so a
             caller (for example, the server) can map it to a single contracted response.
     """
@@ -145,11 +152,12 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         raise UnsafeAudioUrlError(url, "the URL has no host component")
 
     # Parse + validate the port BEFORE the allow_private_addresses opt-out and
-    # before the IP-vs-name branch. The opt-in relaxes ONLY the private/loopback
-    # address policy; a malformed port is a STRUCTURAL defect, not a private-
-    # address concern, so it MUST be rejected in both modes (the opt-in
-    # exempts the private-IP rejection, not the HTTPS/structure checks; the
-    # Raises contract lists malformed port unconditionally). ``parts.port`` is
+    # before the IP-vs-name branch. The opt-in skips the whole ADDRESS stage --
+    # the private/loopback rejection and the DNS resolution it needs -- but a
+    # malformed port is a STRUCTURAL defect, not an address concern, so it MUST
+    # be rejected in both modes (the opt-in exempts the address policy, not the
+    # HTTPS/structure checks; the Raises contract lists malformed port
+    # unconditionally). ``parts.port`` is
     # lazy in urlsplit and raises a bare ValueError for a malformed port
     # (":99999" out of range, ":notaport" non-numeric) -- catching it here keeps
     # the validator's single-exception contract (otherwise it surfaces as an
@@ -161,6 +169,13 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         raise UnsafeAudioUrlError(url, f"the URL has a malformed port ({exc})") from exc
 
     if allow_private_addresses:
+        # Everything below is the address stage, and resolution exists only to
+        # feed it. With the policy opted out there is nothing to decide, so the
+        # lookup is skipped rather than performed and discarded: an internal
+        # name that this host cannot resolve is not the validator's business,
+        # and a network round trip per validation would be pure cost. The
+        # contract says so explicitly -- an unresolvable host is NOT rejected
+        # in this mode.
         return
 
     # An IP literal host is checked directly; a name is resolved and ALL

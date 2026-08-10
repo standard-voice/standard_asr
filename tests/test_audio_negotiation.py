@@ -394,6 +394,24 @@ def test_validate_url_opt_in_still_requires_https() -> None:
         validate_fetchable_url("http://127.0.0.1/a.wav", allow_private_addresses=True)
 
 
+def test_validate_url_opt_in_skips_the_resolvability_check() -> None:
+    """The opt-in skips the whole address stage, DNS resolution included.
+
+    Documented deliberately: resolution exists only to feed the private-address
+    policy, so with that policy opted out an internal name this host cannot
+    resolve is not the validator's business. The class docstring once said the
+    error covers an "unresolvable host" without qualification, which this case
+    disproves -- keep the contract and the code saying the same thing.
+    """
+    validate_fetchable_url("https://does-not-resolve.invalid/a.wav", allow_private_addresses=True)
+
+
+def test_validate_url_opt_in_still_rejects_a_malformed_port() -> None:
+    # Structure is checked in both modes; only the address stage is opted out.
+    with pytest.raises(UnsafeAudioUrlError, match="malformed port"):
+        validate_fetchable_url("https://10.0.0.1:99999/a.wav", allow_private_addresses=True)
+
+
 def test_validate_url_unresolvable_host_rejected() -> None:
     with pytest.raises(UnsafeAudioUrlError):
         validate_fetchable_url("https://nonexistent.invalid./a.wav")
