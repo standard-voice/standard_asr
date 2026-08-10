@@ -3748,16 +3748,67 @@ class SyncSession:
                 self._shutdown()
 
     def __exit__(self, *exc: object) -> None:
-        """Exit the async context and stop the owned loop."""
+        """Exit the async session's context and tear down the owned loop.
+
+        The bridge never replaces an exception that is already propagating
+        with an error of its own:
+
+        - If an earlier call (a lifecycle call or the event pump) timed out,
+          that call already tore the loop down. This method returns at once,
+          and whatever the body raised propagates.
+        - If the ``with`` body raised and the session's ``__aexit__`` (task
+          cancellation, then the engine's ``_close``) runs past
+          ``submit_timeout``, this method logs the timeout at warning level
+          and suppresses it, so the body's exception propagates. Raising the
+          timeout here would replace that exception with a report that blames
+          a hung engine for a failure the application caused.
+
+        Any error that ``__aexit__`` raises itself, a ``TimeoutError``
+        included, propagates. If the body raised, its exception is that
+        error's ``__context__``.
+        The owned loop and thread are torn down on every cooperative path; see
+        :meth:`_shutdown` for an engine that blocks without awaiting.
+
+        Args:
+            *exc: The ``(exc_type, exc_value, traceback)`` triple that the
+                ``with`` statement passes. It goes to the async session
+                unchanged.
+
+        Raises:
+            TimeoutError: If ``__aexit__`` runs past ``submit_timeout`` and the
+                ``with`` body raised nothing. The timeout is then the only
+                report that the engine hung.
+            Exception: Any error that ``__aexit__`` raises itself, a
+                ``TimeoutError`` included, unchanged.
+        """
         if self._closed:
-            # A prior lifecycle call timed out and already tore the loop down;
-            # nothing is left that could run __aexit__. Returning here lets the
-            # ORIGINAL TimeoutError propagate out of the ``with`` block instead
-            # of masking it with an unrelated "Event loop is closed" error
-            # (and avoids creating a never-awaited __aexit__ coroutine).
+            # A prior lifecycle call or the event pump timed out and already
+            # tore the loop down, so nothing is left that could run __aexit__.
+            # Returning here lets the body's exception (usually that timeout)
+            # propagate instead of an unrelated "Event loop is closed" error,
+            # and creates no never-awaited __aexit__ coroutine.
             return
+        body_failed = bool(exc) and exc[0] is not None
         try:
             self._submit(self._session.__aexit__(*exc), timeout=self._submit_timeout)
+        except TimeoutError:
+            # _submit tears the bridge down only when the deadline passes, so a
+            # torn-down bridge tells a missed deadline from a TimeoutError that
+            # __aexit__ raised itself, which propagates. Suppressing the
+            # deadline's TimeoutError skips no cleanup, because _submit already
+            # tore the bridge down, and the warning below keeps the report. A
+            # clean body keeps the TimeoutError: nothing else reports the hang.
+            if not (body_failed and self._closed):
+                raise
+            LOGGER.warning(
+                "SyncSession teardown timed out after %ss: the async session's "
+                "__aexit__ did not finish. The 'with' block had raised, so its "
+                "exception propagates in place of this timeout. The bridge is torn "
+                "down. Resources that the engine's _close releases may still be "
+                "held. If the engine needs longer to close, pass a larger "
+                "submit_timeout to SyncSession.",
+                self._submit_timeout,
+            )
         finally:
             self._shutdown()
 

@@ -378,6 +378,7 @@ releases may include breaking changes.
 
 ### Fixed
 
+- **`SyncSession` keeps the `with` block's exception when its exit misses the deadline.** When the block raised and the async session's `__aexit__` then ran past `submit_timeout`, the bridge's `TimeoutError` replaced the block's exception, and its message blamed a hung engine for a failure the application caused. `__exit__` now logs that timeout at warning level and lets the block's exception propagate. When the block raised nothing, the timeout still propagates. (#62)
 - **`SyncSession` forwards a `TimeoutError` that the engine raises itself.** From Python 3.11, the bridge read any `TimeoutError` from a call it ran on its event loop as its own missed deadline. An engine whose `_open` raised a connection timeout at once was reported as "SyncSession lifecycle call timed out after 30.0s; the async engine hung (no-hang contract)", with the engine's error only as the cause. The bridge now reports a missed deadline only when the call did not finish in time, and the engine's `TimeoutError` propagates unchanged. On Python 3.10 the engine's error already propagated.
 - **Security: a WS error event's detail is never repr'd into the operator
   log without shape vetting** (`toolchain.server`). The bridge logged

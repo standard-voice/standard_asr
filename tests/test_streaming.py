@@ -4982,6 +4982,86 @@ def test_sync_bridge_body_timeout_propagates_unmasked() -> None:
             sync.end_audio()
 
 
+class _HangCloseSession(TranscriptionSession):
+    """Session whose ``_close`` hangs (simulates a stuck engine teardown)."""
+
+    async def _close(self) -> None:
+        await asyncio.sleep(100)
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.done()
+
+
+class _RecordingCloseSession(_EchoSession):
+    """Echo session that records whether the engine ``_close`` ran."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_ran = False
+
+    async def _close(self) -> None:
+        self.close_ran = True
+
+
+def test_sync_bridge_exit_timeout_never_masks_the_body_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A TimeoutError raised by __exit__ would replace the body's exception, and
+    # its message blames a hung engine for the application's own failure. The
+    # body's ValueError propagates, and the warning log keeps the timeout.
+    caplog.set_level("WARNING")
+    with pytest.raises(ValueError, match="bad chunk size"):
+        with SyncSession(_HangCloseSession(), submit_timeout=0.1):
+            raise ValueError("bad chunk size")
+    assert any(
+        record.levelname == "WARNING" and "SyncSession teardown timed out" in record.message
+        for record in caplog.records
+    )
+
+
+class _CloseRaisesTimeoutSession(TranscriptionSession):
+    """Session whose ``_close`` raises its own ``TimeoutError`` at once."""
+
+    async def _close(self) -> None:
+        raise TimeoutError("engine close RPC timed out")
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.done()
+
+
+@pytest.mark.parametrize("submit_timeout", [30.0, None])
+def test_sync_bridge_exit_forwards_an_engine_timeout_when_the_body_raises(
+    submit_timeout: float | None, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Only a missed deadline is suppressed. A TimeoutError that _close raises
+    # itself is the engine's report, so it propagates with the body's exception
+    # as its __context__, and no teardown warning claims a deadline passed.
+    caplog.set_level("WARNING")
+    with pytest.raises(TimeoutError, match="engine close RPC timed out") as info:
+        with SyncSession(_CloseRaisesTimeoutSession(), submit_timeout=submit_timeout):
+            raise ValueError("bad chunk size")
+    assert isinstance(info.value.__context__, ValueError)
+    assert not any("SyncSession teardown timed out" in r.message for r in caplog.records)
+
+
+def test_sync_bridge_exit_timeout_propagates_when_the_body_is_clean() -> None:
+    # With no body exception to protect, the timeout is the only report that the
+    # engine hung, so it reaches the caller unchanged.
+    with pytest.raises(TimeoutError, match="lifecycle call timed out"):
+        with SyncSession(_HangCloseSession(), submit_timeout=0.1):
+            pass
+
+
+def test_sync_bridge_exit_still_closes_the_engine_when_the_body_raises() -> None:
+    # A body exception does not skip the teardown: an engine whose _close
+    # returns in time still has it awaited.
+    session = _RecordingCloseSession()
+    with pytest.raises(ValueError, match="bad chunk size"):
+        with SyncSession(session, submit_timeout=5.0):
+            raise ValueError("bad chunk size")
+    assert session.close_ran is True
+
+
 def test_sync_bridge_calls_after_teardown_raise_stream_closed() -> None:
     # Lifecycle calls after the teardown must fail with the
     # contracted StreamClosedError, not an unrelated loop RuntimeError.
