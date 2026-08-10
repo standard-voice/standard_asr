@@ -72,7 +72,9 @@ manager or run the equivalent check in CI.
 Prose is part of the contract. Follow the writing standard in
 [`STYLE.md`](STYLE.md) and the canonical terms in
 [`TERMINOLOGY.md`](TERMINOLOGY.md). `uv run ruff check` runs pydocstyle, so
-docstring structure is checked with the rest of the lint.
+docstring structure in `src/` is checked with the rest of the lint (tests
+and docs sample code are exempt from the structure rules; their prose is
+still governed).
 
 [Vale](https://vale.sh) lints the prose itself — Markdown plus the comments
 and docstrings in `src/` and `tests/` — against the vendored Google baseline

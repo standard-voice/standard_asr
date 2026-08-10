@@ -289,7 +289,10 @@ code).
 Three layers, weakest claim first:
 
 - **`uv run ruff check`** enforces docstring structure (pydocstyle, Google
-  convention).
+  convention) in `src/`. Tests and docs sample code are exempt from the
+  structure rules (`pyproject.toml` per-file-ignores: a docstring is not
+  forced onto every test function); their prose stays governed by this
+  standard, checked by Vale and review like everything else.
 - **`scripts/vale.sh`** lints the prose itself — Markdown plus the comments
   and docstrings in `src/` and `tests/` — against the vendored Google package
   and the `StandardASR` style (the mechanizable subset of `TERMINOLOGY.md`).
@@ -298,15 +301,13 @@ Three layers, weakest claim first:
   at any level, and `scripts/vale.sh --selfcheck` proves the gate composition
   (config, exemption glob, target list) still flags a planted violation in
   every target, root documents included, by mirroring the target layout into
-  a temporary directory rather than writing to the working tree. Four extraction gaps are known and disclosed —
+  a temporary directory rather than writing to the working tree. Three extraction gaps are known and disclosed —
   prose that Vale never sees and review must own. Vale skips a module
   docstring that follows the SPDX header; it never reads Python string
-  literals; it skips attribute docstrings (the bare string under an
-  assignment, as on an enum member); and it skips the text of a tight list
-  item that owns a nested sub-list (put a blank line before the sub-list and
-  the parent is linted). Module docstrings, tier-3 runtime strings, and
-  attribute docstrings were each swept manually when the gate landed, and
-  the corpus was verified free of tight nested lists at the same time. Two detector gaps are accepted rather than worked around: the serial comma is required
+  literals; and it skips attribute docstrings (the bare string under an
+  assignment, as on an enum member). Module docstrings, tier-3 runtime
+  strings, and attribute docstrings were each swept manually when the gate
+  landed. Two detector gaps are accepted rather than worked around: the serial comma is required
   (the baseline agrees), but `Google.OxfordComma` is off because its pattern
   cannot tell a two-item pair or an appositive from a list; and
   `Google.Spacing` is off for Python files because a dotted exception name in
