@@ -3,18 +3,30 @@ message: "No emoji or pictographs in shipped text (STYLE.md, punctuation and sym
 link: https://github.com/standard-voice/standard_asr/blob/main/STYLE.md
 level: error
 nonword: true
-# Blocks: emoji proper (1F000-1FAFF), letterlike symbols (2100-214F, e.g. the
-# bare information sign), miscellaneous technical (2300-23FF, e.g. watch and
-# hourglass), enclosed alphanumerics (2460-24FF), miscellaneous symbols and
-# dingbats (2600-27BF), supplemental arrows and symbols (2B00-2BFF), and the
-# emoji variation selector (FE0F). The plain arrows block (2190-21FF) is
-# deliberately absent: a spaced '->'-style arrow written as U+2192 appears in
-# governed Markdown tables and is typography, not emoji.
+# STYLE.md bans emoji and pictographs but ALLOWS typographic and mathematical
+# symbols, so this rule must not blanket whole Unicode blocks that mix the
+# two. Letterlike Symbols and Miscellaneous Technical are exactly such blocks:
+# they hold set symbols and bracket notation the standard permits alongside a
+# handful of characters that are only ever emoji. Those few are named
+# individually below; the blocks are not banned wholesale.
+#
+# Dual-use characters (arrows, check marks, trademark signs) stay legal as
+# typography and are caught in their EMOJI form by the U+FE0F
+# variation-selector token, which is what makes a character render as emoji.
 tokens:
+  # Emoji planes: unambiguous.
   - '[\x{1F000}-\x{1FAFF}]'
-  - '[\x{2100}-\x{214F}]'
-  - '[\x{2300}-\x{23FF}]'
-  - '[\x{2460}-\x{24FF}]'
+  # Miscellaneous Symbols and Dingbats: pictographs.
   - '[\x{2600}-\x{27BF}]'
+  # Supplemental symbols and shapes: pictographs.
   - '[\x{2B00}-\x{2BFF}]'
+  # Emoji inside otherwise-typographic blocks, named one by one: information
+  # source; watch, hourglass, keyboard, eject; the media-control run; the
+  # circled M.
+  - '\x{2139}'
+  - '[\x{231A}\x{231B}\x{2328}\x{23CF}]'
+  - '[\x{23E9}-\x{23F3}]'
+  - '[\x{23F8}-\x{23FA}]'
+  - '\x{24C2}'
+  # The emoji variation selector: turns any dual-use character into emoji.
   - '\x{FE0F}'
