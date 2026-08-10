@@ -10,8 +10,8 @@ on:
       - 'src/standard_asr/**'
       # The deploy builds from the LOCKED environment, so its output depends on
       # these too: a mkdocs-material/mkdocstrings bump in uv.lock (or a docs
-      # dependency change in pyproject.toml, or an edit to this workflow, e.g.
-      # the UV_VERSION pin) must redeploy, or the published site silently
+      # dependency change in pyproject.toml, or an edit to this workflow, for
+      # example the UV_VERSION pin) must redeploy, or the published site silently
       # diverges from the environment the CI docs gate validated.
       - 'uv.lock'
       - 'pyproject.toml'

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Run Vale on every governed prose surface (STYLE.md, "Scope").
+# Run Vale on the MECHANIZED prose surfaces (STYLE.md, "Enforcement"): the
+# governed Markdown, plus the docstrings and comments in src/ and tests/.
+# STYLE.md governs more prose than this -- shell, workflow, and config
+# comments are in its scope but stay with review, because Vale has no comment
+# extractor for those formats and reads their code as prose (verified: `esac`,
+# `fi`, and `printf` come back as misspellings). STYLE.md, "Enforcement",
+# names that boundary; do not widen this claim without widening the corpus.
 #
 # This script is the single source of truth for WHAT gets linted; .vale.ini
 # holds the rules. The --glob exemption exists because Vale cannot exempt

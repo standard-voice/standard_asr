@@ -43,11 +43,20 @@ This standard governs English **prose**:
 - English Markdown at the repository root: `README.md`, `CONTRIBUTING.md`,
   `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`. Working notes
   under `work/` are exempt;
-- internal `#` comments (clarity tier only — see below);
+- internal `#` comments (clarity tier only — see below), in any language the
+  repository uses. The Python ones are linted; the shell, workflow, and
+  config ones are review-owned (see "Enforcement" for why the gate cannot
+  read them);
 - test prose: docstrings, comments, and assertion labels in `tests/`;
 - new `CHANGELOG.md` entries from now on (by review: the mechanical gate
   cannot separate a new entry from the pre-standard history, so
   `CHANGELOG.md` stays outside `scripts/vale.sh`).
+
+Scope is not coverage. This standard governs every item above; the mechanical
+gate reaches a subset of them, and "Enforcement" states exactly which. Prose
+outside the gate's reach is not less governed — it is governed by review, and
+a reviewer is owed a precise list of what they own rather than a false sense
+that a green gate covered it.
 
 `README.md`, `docs/index.md`, and the `AGENTS.md` preamble are the project's
 front door. They are governed for **accuracy and terminology** like everything
@@ -307,7 +316,17 @@ Three layers, weakest claim first:
   literals; and it skips attribute docstrings (the bare string under an
   assignment, as on an enum member). Module docstrings, tier-3 runtime
   strings, and attribute docstrings were each swept manually when the gate
-  landed. Two detector gaps are accepted rather than worked around: the serial comma is required
+  landed.
+
+  The gate's corpus is Markdown plus `src/` and `tests/` Python
+  (`scripts/vale.sh`, `TARGETS`). Prose in **shell, workflow, and config
+  comments is in scope and review-owned**, not linted: Vale ships a comment
+  extractor for Python but not for those formats, so mapping them would read
+  their code as prose (measured on this repo: `esac`, `fi`, `printf`, and
+  `pipefail` come back as misspellings, drowning the two real defects in the
+  same run). Widening the corpus therefore waits for real extractor support;
+  until then a reviewer owns those comments, and the sweep that landed this
+  gate covered them once by hand. Two detector gaps are accepted rather than worked around: the serial comma is required
   (the baseline agrees), but `Google.OxfordComma` is off because its pattern
   cannot tell a two-item pair or an appositive from a list; and
   `Google.Spacing` is off for Python files because a dotted exception name in
