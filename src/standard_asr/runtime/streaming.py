@@ -3459,7 +3459,32 @@ class SyncSession:
                 self._shutdown()
 
     def __exit__(self, *exc: object) -> None:
-        """Exit the async context and stop the owned loop."""
+        """Exit the async context and stop the owned loop.
+
+        Teardown never replaces a live failure with a report of its own, which
+        gives two masking rules. A prior lifecycle call that timed out already
+        tore the loop down, so this call returns at once and that original
+        ``TimeoutError`` propagates. And when the ``with`` body raised, a
+        ``TimeoutError`` from the session's ``__aexit__`` (task cancellation
+        plus the engine ``_close``) is logged at warning level and suppressed,
+        so the body's exception propagates instead: an exception raised here
+        would replace it -- the body's would survive only as ``__context__`` --
+        and this one reports a hung engine for a failure the application
+        caused. Any other error from ``__aexit__`` propagates as usual, chained
+        to the body's exception. The owned loop and thread are torn down on
+        every path.
+
+        Args:
+            *exc: The ``(exc_type, exc_value, traceback)`` triple the ``with``
+                statement passes, forwarded to the async session unchanged.
+
+        Raises:
+            TimeoutError: If ``__aexit__`` hangs past ``submit_timeout`` and
+                the ``with`` body raised nothing; the timeout is then the only
+                report of the hang.
+            Exception: Any other error the engine raises from ``__aexit__``,
+                forwarded unchanged.
+        """
         if self._closed:
             # A prior lifecycle call timed out and already tore the loop down;
             # nothing is left that could run __aexit__. Returning here lets the
@@ -3467,8 +3492,25 @@ class SyncSession:
             # of masking it with an unrelated "Event loop is closed" error
             # (and avoids creating a never-awaited __aexit__ coroutine).
             return
+        body_failed = bool(exc) and exc[0] is not None
         try:
             self._submit(self._session.__aexit__(*exc), timeout=self._submit_timeout)
+        except TimeoutError:
+            # The same masking discipline as the _closed guard above, one level
+            # out: a raise HERE would replace the body's exception (which then
+            # survives only as __context__) with a message that blames a hung
+            # engine for the application's own failure. _submit already tore the
+            # bridge down before raising, so suppressing costs no cleanup -- only
+            # the report, which the log now carries. A clean body keeps the
+            # timeout: it is the only signal that the engine hung.
+            if not body_failed:
+                raise
+            LOGGER.warning(
+                "The engine close timed out after %ss during teardown of a failing "
+                "'with' block. The sync bridge is torn down; this timeout is "
+                "suppressed so the block's own exception reaches the caller.",
+                self._submit_timeout,
+            )
         finally:
             self._shutdown()
 

@@ -4083,6 +4083,60 @@ def test_sync_bridge_body_timeout_propagates_unmasked() -> None:
             sync.end_audio()
 
 
+class _HangCloseSession(TranscriptionSession):
+    """Session whose ``_close`` hangs (simulates a stuck engine teardown)."""
+
+    async def _close(self) -> None:
+        await asyncio.sleep(100)
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.done()
+
+
+class _RecordingCloseSession(_EchoSession):
+    """Echo session that records whether the engine ``_close`` ran."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_ran = False
+
+    async def _close(self) -> None:
+        self.close_ran = True
+
+
+def test_sync_bridge_exit_timeout_never_masks_the_body_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An engine whose close hangs must not rewrite the application's own bug into
+    # a phantom "the async engine hung" report: a TimeoutError raised by __exit__
+    # REPLACES the body's exception (which survives only as __context__), so the
+    # operator would file the failure against the plugin author. The body's
+    # ValueError propagates, and the suppressed timeout is logged instead.
+    caplog.set_level("WARNING")
+    with pytest.raises(ValueError, match="bad chunk size"):
+        with SyncSession(_HangCloseSession(), submit_timeout=0.1):
+            raise ValueError("bad chunk size")
+    assert any("The engine close timed out" in record.message for record in caplog.records)
+
+
+def test_sync_bridge_exit_timeout_propagates_when_the_body_is_clean() -> None:
+    # No body exception to protect: the timeout is the ONLY report that the
+    # engine hung, so it must reach the caller unchanged.
+    with pytest.raises(TimeoutError, match="lifecycle call timed out"):
+        with SyncSession(_HangCloseSession(), submit_timeout=0.1):
+            pass
+
+
+def test_sync_bridge_exit_still_closes_the_engine_when_the_body_raises() -> None:
+    # Suppression is scoped to the hung-close path: a healthy engine still gets
+    # its _close awaited while the body's exception propagates.
+    session = _RecordingCloseSession()
+    with pytest.raises(ValueError, match="bad chunk size"):
+        with SyncSession(session, submit_timeout=5.0):
+            raise ValueError("bad chunk size")
+    assert session.close_ran is True
+
+
 def test_sync_bridge_calls_after_teardown_raise_stream_closed() -> None:
     # Lifecycle calls after the teardown must fail with the
     # contracted StreamClosedError, not an unrelated loop RuntimeError.
