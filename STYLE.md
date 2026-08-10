@@ -172,11 +172,24 @@ tool reads the text, never what good prose is.
   boundary"). Established compound API terms are exempt. Never break an
   identifier to meet the count.
 - **ASCII runtime strings.** No emoji or pictographs in any shipped text,
-  ever. Typographic and mathematical symbols (→, ⇒, ⊆, §, ±) are allowed in
+  ever. Typographic and mathematical symbols (→, ⇒, ⊆, §, ±, ×) are allowed in
   docs, docstrings, and comments, but **not** in a runtime string: a message
   can be logged to a console that is not UTF-8, so keep `raise`, `logger.*`,
   and wire text ASCII. The CLI's status markers are ASCII for this reason
   (`[OK]`, `[FAIL]`, `[WARN]`, `[INFO]`).
+
+  "Pictograph" is drawn by block, not by taste, and the **whole dingbats and
+  miscellaneous-symbols range is banned** — check marks, ballot marks, stars,
+  and the dingbat multiplication marks included. Several of those are not
+  emoji by Unicode's own property, so the ban is deliberately wider than
+  "emoji": a dingbat imitation of an operator has a real counterpart, and the
+  real one is the correct character anyway. Write × (U+00D7), never the
+  dingbat multiplication mark at U+2715; for a status column, use the ASCII
+  markers above rather than a check-and-cross pair. The permitted symbols
+  live in the arrow, math, and general-punctuation ranges, which the rule
+  leaves alone. (This paragraph names the banned characters by code point
+  for the same reason: the rule stays live here, so quoting one literally
+  would fail the gate.)
 - **RFC-2119 keywords by audience.** Keep "MUST", "MUST NOT", "SHOULD", and
   "MAY" uppercase when the sentence states a rule to an **engine author** (for
   example, a streaming event-construction error, or a docstring that cites the

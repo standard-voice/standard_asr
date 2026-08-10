@@ -11,12 +11,16 @@ nonword: true
 # individually below; the blocks are not banned wholesale.
 #
 # The pictograph blocks (2600-27BF, 2B00-2BFF, 1F000-1FAFF) ARE banned
-# wholesale: everything in them -- the check marks and heavy arrows included
-# -- is a picture, not one of STYLE.md's permitted typographic symbols
-# (arrows, set notation, reference marks). Symbols outside those blocks (the
-# plain arrows at 2190-21FF, the trademark sign) stay legal as typography;
-# the U+FE0F token catches the EMOJI presentation of any such character,
-# which is what makes it render as emoji.
+# wholesale, and deliberately wider than Unicode's Emoji property: the plain
+# dingbats in that range (CHECK MARK 2713, MULTIPLICATION X 2715, BALLOT X
+# 2717) carry Emoji=No, but they are dingbat imitations of marks that already
+# have correct counterparts -- write the real MULTIPLICATION SIGN (00D7), and
+# use the ASCII status markers for a check-and-cross column. STYLE.md,
+# "ASCII runtime strings", states the same boundary in prose; the two must
+# not drift apart. Symbols outside these blocks (the plain arrows at
+# 2190-21FF, the math operators, the trademark sign) stay legal as
+# typography, and the U+FE0F token still catches the EMOJI presentation of
+# any of them.
 tokens:
   # Emoji planes: unambiguous.
   - '[\x{1F000}-\x{1FAFF}]'
