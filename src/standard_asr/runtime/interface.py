@@ -17,7 +17,7 @@ engine contract. Two complementary forms are provided:
   authors subclass it and implement only the model-specific bits.
 
 The negotiation / conversion / gating pipeline runs in the standard layer
-(:class:`EngineBase`), so authors get consistent, correct behaviour for free.
+(:class:`EngineBase`), so authors get consistent, correct behavior for free.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ class StandardASR(Protocol):
     the streaming entry point (:meth:`start_transcription`). ``start_transcription``
     is always present; streaming support itself is optional, so a batch-only
     engine raises :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` from
-    it. Because the surface is complete, callers (e.g. the server) can type an
+    it. Because the surface is complete, callers (for example, the server) can type an
     engine as ``StandardASR`` and call the streaming entry point without a cast.
     """
 
@@ -178,7 +178,7 @@ class StandardASR(Protocol):
             params: Per-request runtime parameters.
             audio: A complete audio input for whole-input streaming output.
             deadlines: Application overrides for the session's termination
-                deadlines; explicitly-set fields win over the adapter's
+                deadlines; explicitly set fields win over the engine's
                 construction-time choices.
 
         Returns:
@@ -396,7 +396,7 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     this function instead of the ``EngineBase`` method keeps the check honest
     for structural (non-``EngineBase``) engines: the guard method is NOT a
     ``StandardASR`` protocol member, so calling it on a structural engine
-    raised ``AttributeError`` and mis-reported a fully-compliant engine as
+    raised ``AttributeError`` and mis-reported a fully compliant engine as
     self-inconsistent.
 
     See :meth:`EngineBase.ensure_stream_format_supported` for the full
@@ -583,8 +583,8 @@ class EngineBase(ABC):
         no-op: an engine with nothing to warm up inherits it unchanged and the
         toolchain reports a no-op rather than failing.
 
-        Engines that load weights MUST override this to materialize them (e.g.
-        call ``_ensure_model_loaded``), and that path MUST honour the same
+        Engines that load weights MUST override this to materialize them (for example,
+        call ``_ensure_model_loaded``), and that path MUST honor the same
         download gate as transcription: check
         :func:`~standard_asr.runtime.downloads.allow_downloads` and raise
         :class:`~standard_asr.contract.exceptions.DiscoveryError` when downloads are
@@ -711,7 +711,7 @@ class EngineBase(ABC):
             # A pydantic ValidationError escaping _transcribe is an ENGINE
             # fault (params were validated before this point; the usual cause
             # is the engine constructing a TranscriptionResult/Segment the
-            # model rejects -- e.g. a field removed from the contract, or an
+            # model rejects -- for example, a field removed from the contract, or an
             # invalid timestamp). Without this wrap it masquerades as a
             # client-input validation error: the server's ValidationError
             # clause turned it into a 422 blaming the request's options.
@@ -723,7 +723,7 @@ class EngineBase(ABC):
                 "Engine produced an invalid result (or raised an unwrapped "
                 "validation error) inside _transcribe -- an engine/plugin "
                 "fault, not a request error. See the chained ValidationError "
-                "for the offending fields (e.g. a field the result model no "
+                "for the offending fields (for example, a field the result model no "
                 "longer accepts).",
                 hint=(
                     "Report this to the engine plugin's author; a core/plugin "
@@ -754,7 +754,7 @@ class EngineBase(ABC):
         and can never silently diverge between the batch and streaming paths.
 
         Args:
-            audio: The caller's audio input (path, bytes, URL, array, ...).
+            audio: The caller's audio input (path, bytes, URL, array, and so on).
 
         Returns:
             The prepared audio (decoded / resampled per the engine's properties),
@@ -784,7 +784,7 @@ class EngineBase(ABC):
         and MUST be a member of ``selectable_languages``; otherwise the
         fall-back-to-``default_language`` resolution step would yield an
         undefined result. This
-        runs in the standard layer so a forgetful adapter fails loudly instead of
+        runs in the standard layer so a forgetful engine fails loudly instead of
         silently transcribing in the wrong language.
 
         Raises:
@@ -814,8 +814,8 @@ class EngineBase(ABC):
             )
         # Canonicalize BOTH sides: BCP-47 membership is case-insensitive, and
         # either default_language or the declared sets may be a non-canonical
-        # class-level default, so a raw "en-us" must still match a canonical
-        # "en-US" instead of spuriously failing the totality check and blocking
+        # class-level default, so a raw ``en-us`` must still match a canonical
+        # ``en-US`` instead of spuriously failing the totality check and blocking
         # the engine.
         # Canonicalization raises ValueError on an empty/whitespace tag; this
         # method promises ConfigError, so wrap it naming the malformed value (a
@@ -875,7 +875,7 @@ class EngineBase(ABC):
         # default_language is non-None here: _validate_language_config (always run
         # before this) enforces it whenever has_language_axis is True. Canonicalize
         # it up front so the best-effort fallback below (and the diagnostic it
-        # emits) carry a canonical tag, never a raw class-level default ("en-us").
+        # emits) carry a canonical tag, never a raw class-level default (``en-us``).
         default_language = _canonical_language(
             cast("str", getattr(self.config, "default_language", None))
         )
@@ -919,8 +919,8 @@ class EngineBase(ABC):
         # Both declared sets come canonical (and ConfigError-checked) from the
         # shared per-engine canonicalization, so a canonical eff_lang matches
         # case-insensitively. Membership uses RFC 4647 lookup so a
-        # region/script refinement of a selectable primary subtag (e.g. "en-US"
-        # against "en") is accepted and handed to the engine to reduce -- engines
+        # region/script refinement of a selectable primary subtag (for example, ``en-US``
+        # against ``en``) is accepted and handed to the engine to reduce -- engines
         # need not enumerate variants.
         selectable, detectable = self._canonical_language_sets()
         # eff_lang is non-None here: this method only runs when has_language_axis
@@ -1031,7 +1031,9 @@ class EngineBase(ABC):
             EngineContractError: If :meth:`transcribe` (overridden by the
                 subclass) violated the synchronous protocol contract --
                 returned an awaitable (``async def``) or a value that is not
-                a :class:`~standard_asr.contract.results.TranscriptionResult`.
+                a :class:`~standard_asr.contract.results.TranscriptionResult`
+                -- or propagated a declaration defect from :meth:`transcribe`
+                (a missing IC.6 default, a malformed declared tag).
             Exception: The same exception set as :meth:`transcribe` (it runs that
                 method): ``ConfigError``, ``IncompatibleAudioInputError``,
                 ``UnsafeAudioUrlError``, ``AudioProcessingError``,
@@ -1116,7 +1118,7 @@ class EngineBase(ABC):
         and silently mistranscribed. When ``wire_encodings`` is ``None``
         ("unconstrained") the encoding cannot be validated and the
         check is skipped -- the engine is then trusted to accept any encoding
-        (typically a self-managed-wire-format adapter). The compliance suite
+        (typically a self-managed-wire-format engine). The compliance suite
         emits a warning for a ``streaming_input`` engine that leaves
         ``wire_encodings`` unset, since that skip is where a forgotten
         declaration would let a non-PCM frame be misframed.
@@ -1231,7 +1233,7 @@ class EngineBase(ABC):
         swap-safety is enforced on the streaming path too: a swapped-engine
         ``provider_params`` type-mismatch always raises
         :class:`~standard_asr.contract.exceptions.InvalidProviderParamError` (no longer
-        undefined behaviour), and an unsupported standard parameter is rejected
+        undefined behavior), and an unsupported standard parameter is rejected
         (strict) or dropped + diagnosed (best_effort) exactly as for batch.
 
         The streaming input/output capability axis is checked before the hook
@@ -1253,9 +1255,9 @@ class EngineBase(ABC):
             audio: A complete audio input for whole-input streaming output.
             deadlines: Application overrides for the session's termination
                 deadlines. Applied by this template *after* the
-                engine hook constructed the session, so explicitly-set fields
-                always win over the adapter's construction-time choices --
-                precedence: application explicit > adapter choice > standard
+                engine hook constructed the session, so explicitly set fields
+                always win over the engine's construction-time choices --
+                precedence: application explicit > engine choice > standard
                 default. Unset fields are left untouched.
 
         Returns:
@@ -1325,7 +1327,7 @@ class EngineBase(ABC):
         # the streaming-input axis. Gate it on the same 'streaming_input' capability
         # as the audio_format path; otherwise a streaming_output-only engine that
         # implements the hook would hand back an incremental session it cannot feed
-        # (audio_format=None, prepared_audio=None) -- undefined behaviour instead of
+        # (audio_format=None, prepared_audio=None) -- undefined behavior instead of
         # the fail-closed UnsupportedFeatureError. Placed AFTER the hook-override
         # defense so a batch-only engine still reports the clearer "does not support
         # streaming" rather than this capability-specific message.
@@ -1393,7 +1395,7 @@ class EngineBase(ABC):
         # Friend API: validate the reserved-attribute guard now, before the base
         # seeds diagnostics / applies deadline overrides below -- so the check sees
         # the pristine post-__init__ snapshot and a subclass that clobbered base
-        # state (e.g. its own self._buffer) fails loudly here, not as a
+        # state (for example, its own self._buffer) fails loudly here, not as a
         # cryptic crash deep in the producer.
         session._ensure_reserved_attrs_checked()  # pyright: ignore[reportPrivateUsage]
         # Friend API: the base engine seeds the session's standard-layer

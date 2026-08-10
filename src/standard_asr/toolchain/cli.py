@@ -134,7 +134,7 @@ _INFO = "[INFO]"
 _EPILOG = """\
 Examples:
   standard-asr list                                   # what engines/models are installed
-  standard-asr show faster-whisper/large-v3           # properties, capabilities, config schema
+  standard-asr show faster-whisper/large-v3           # identity, capabilities, config schema
   standard-asr transcribe faster-whisper/tiny a.wav   # transcribe an audio file
   standard-asr prepare faster-whisper/tiny            # pre-download / warm up weights
   standard-asr serve --port 8000                      # expose every engine over HTTP + WebSocket
@@ -163,9 +163,9 @@ def _add_strict_discovery_flag(parser: Any) -> None:
         action="store_true",
         help=(
             "Fail on invalid plugin entry points during discovery. (Named "
-            "--strict-discovery, not --strict: 'strict' alone is the engine's "
-            "strict/best_effort PARAMETER-gating policy, an init-config field "
-            "set via --set strict=... -- a different knob.)"
+            "--strict-discovery, not --strict. 'strict' alone is the engine's "
+            "strict/best_effort parameter-gating policy -- an init-config field "
+            "set via --set strict=..., a different setting.)"
         ),
     )
 
@@ -198,7 +198,7 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
 
     show_parser = subparsers.add_parser(
         "show",
-        help="Show a model's properties, capabilities, and config schema.",
+        help="Show a model's identity, capabilities, and config schema.",
         allow_abbrev=False,
     )
     show_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
@@ -273,14 +273,14 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
     """
     compliance_parser = subparsers.add_parser(
         "compliance",
-        help="Run compliance helpers to validate plugin behaviour.",
+        help="Run compliance helpers to validate plugin behavior.",
         allow_abbrev=False,
     )
     compliance_sub = compliance_parser.add_subparsers(dest="compliance_command", required=True)
 
     ep_parser = compliance_sub.add_parser(
         "entrypoints",
-        help="Verify entry point visibility and basic factory behaviour.",
+        help="Verify entry point visibility and basic factory behavior.",
         allow_abbrev=False,
     )
     _add_strict_discovery_flag(ep_parser)
@@ -335,10 +335,9 @@ def _add_compliance_subcommands(subparsers: Any) -> None:
             "-- session establishment, then the bridged open/end-of-audio/"
             f"drain/close (default: {DEFAULT_SYNC_BRIDGE_TIMEOUT}). Only "
             "meaningful together with --include-bridge (passing it alone is a "
-            "usage error, not a silent no-op). Raise it for engines whose "
-            "session setup or teardown is slow; the check's own remediation "
-            "advice ('re-run with a larger value') is actionable through this "
-            "flag."
+            "usage error, not a silent no-op). Raise it for engines with slow "
+            "session setup or teardown. This flag is how you act on the check's "
+            "'re-run with a larger timeout' advice."
         ),
     )
     run_parser.set_defaults(func=_cmd_compliance_run)
@@ -428,7 +427,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Show stack traces for unexpected errors.",
+        help=(
+            "Show a stack trace when a command fails (a validation error prints "
+            "a scrubbed summary instead). Argument errors are reported by the "
+            "parser before a command runs, so they print usage, not a trace."
+        ),
     )
     # required=False so a bare `standard-asr` prints help instead of an argparse
     # "arguments are required" error; main() routes the no-command case to
@@ -591,10 +594,10 @@ def _print_declared_capabilities(spec: Any) -> None:
     # sentinels.
     canonical_json = _run_engine_call(lambda: getattr(caps, "canonical_json", None))
     if not callable(canonical_json):
-        # `declared_capabilities` is not a DeclaredCapabilities model (e.g. an
+        # `declared_capabilities` is not a DeclaredCapabilities model (for example, an
         # engine mis-declared it as a dict). discovery.py consumes metadata
         # defensively via getattr; mirror that here so the rest of `show`
-        # (Engine ID, Module, ...) still renders and the author is pointed at the
+        # (Engine ID, Module, and so on) still renders and the author is pointed at the
         # precise diagnostic instead of an opaque AttributeError.
         type_name = safe_type_name(caps)
         print(
@@ -838,7 +841,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
     the transcription-result check (``check_transcription_result``, a batch
     result); the output names both rather than silently omitting those dimensions.
 
-    Engines that require constructor arguments (e.g. credentials) are reported as
+    Engines that require constructor arguments (for example, credentials) are reported as
     skipped with the reason, not failed: their entry point metadata was already
     validated, and the standard layer cannot supply real credentials.
 
@@ -909,6 +912,9 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
             # construction, compliance_check_crashed is the suite itself
             # falling over. Both fail the run. BaseException is not caught:
             # KeyboardInterrupt/SystemExit are the operator's control flow.
+            # --debug still owes the operator the crash's trace (the report
+            # carries only the scrubbed summary).
+            _debug_traceback(args)
             reports.append(
                 _single_error_report(
                     name,
@@ -1001,7 +1007,7 @@ def _run_instance_checks(
     if not _spec_is_zero_arg(spec):
         print(
             f"{_INFO} {name}: skipped streaming checks "
-            "(engine requires constructor arguments, e.g. credentials)."
+            "(engine requires constructor arguments, for example, credentials)."
         )
         return []
 
@@ -1043,7 +1049,7 @@ def _run_instance_checks(
         # deliberately NOT caught: KeyboardInterrupt and SystemExit are the
         # operator's own control flow, not a plugin verdict.
         # safe_exception_summary, not str(exc): an engine-authored wrapper
-        # (e.g. `raise ConfigError(f"bad: {ve}") from ve`) may embed a chained
+        # (for example, `raise ConfigError(f"bad: {ve}") from ve`) may embed a chained
         # ValidationError's input echo, and this message lands in the report.
         return [
             _single_error_report(
@@ -1120,7 +1126,7 @@ def _run_sync_bridge(
     format_defect = sync_result_defect(audio_format, expected_type=(AudioFormat, type(None)))
     if format_defect is not None:
         # This is a REAL consumer: the value flows into
-        # start_transcription(audio_format=...) below, so EVERY defect shape
+        # ``start_transcription(audio_format=...)`` below, so EVERY defect shape
         # must stop here, not just the awaitable. An `async def`
         # recommendation hands back an awaitable (the shared boundary has
         # already CLOSED the stray coroutine); a wrong-typed value (a str, a
@@ -1337,7 +1343,7 @@ def _single_error_report(name: str, code: str, message: str) -> ComplianceReport
 def _add_init_config_args(parser: argparse.ArgumentParser) -> None:
     """Add the shared ``--config`` / ``--set`` engine init-config flags.
 
-    These let the CLI supply an engine's *init* configuration (e.g. ``device``,
+    These let the CLI supply an engine's *init* configuration (for example, ``device``,
     ``compute_type``) -- previously reachable only through
     ``STANDARD_ASR_<ENGINE>__<FIELD>`` env vars, which were undiscoverable from
     ``--help``. ``--options`` is separate: it carries *runtime* params, not init
@@ -1356,7 +1362,7 @@ def _add_init_config_args(parser: argparse.ArgumentParser) -> None:
         "--config",
         metavar="JSON",
         help=(
-            "Engine init-config as a JSON object, e.g. "
+            "Engine init-config as a JSON object, for example, "
             '--config \'{"device": "cpu"}\'. Merged under --set. Run '
             "'standard-asr show <model>' to see the config schema."
         ),
@@ -1367,7 +1373,7 @@ def _add_init_config_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         metavar="KEY=VALUE",
         help=(
-            "Set one init-config field (repeatable), e.g. "
+            "Set one init-config field (repeatable), for example, "
             "--set device=cpu --set compute_type=int8. Overrides --config. For "
             "secrets (api_key, tokens) prefer the STANDARD_ASR_<ENGINE>__<FIELD> "
             "env vars -- command-line values are visible in shell history."
@@ -1403,7 +1409,7 @@ def _parse_init_config(args: argparse.Namespace) -> dict[str, Any]:
             raise ConfigError(f"--config must be a JSON object: {exc}.") from exc
         if not isinstance(parsed, dict):
             raise ConfigError(
-                '--config must be a JSON object, e.g. --config \'{"device": "cpu"}\'.'
+                '--config must be a JSON object, for example, --config \'{"device": "cpu"}\'.'
             )
         config.update(cast("dict[str, Any]", parsed))
     for item in getattr(args, "set_", None) or ():
@@ -1411,7 +1417,7 @@ def _parse_init_config(args: argparse.Namespace) -> dict[str, Any]:
         field = field.strip()
         if not sep or not field:
             raise ConfigError(
-                "Each --set must be KEY=VALUE with a non-empty key, e.g. --set device=cpu."
+                "Each --set must be KEY=VALUE with a non-empty key, for example, --set device=cpu."
             )
         config[field] = value
     return config
@@ -1484,7 +1490,7 @@ def _render_diagnostics(diagnostics: Iterable[Diagnostic]) -> None:
 
     The runtime attaches a structured :class:`~standard_asr.contract.results.Diagnostic`
     for every lossy step (an ad-hoc resample, a bare-array sample-rate
-    assumption, a guidance degrade, ...). The default text output prints only the
+    assumption, a guidance degrade, and so on). The default text output prints only the
     transcript, so without this the provenance warnings vanish on the surface
     end users reach most -- a silent degrade, which the project forbids.
     They go to **stderr** so stdout stays a clean, pipeable
@@ -1519,6 +1525,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         from standard_asr.toolchain.server import run
     except ImportError:
+        # A handler-caught error is still an error path: --debug promises a
+        # trace on every one of them, not only main()'s named arms.
+        _debug_traceback(args)
         _print_error(
             "FastAPI server dependencies are missing. Install with: "
             "pip install 'standard-asr[server]'."
@@ -1528,6 +1537,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         run(host=args.host, port=args.port, log_level=args.log_level)
     except ImportError as exc:
+        _debug_traceback(args)
         _print_error(str(exc))
         return 1
     return 0
@@ -1545,7 +1555,7 @@ def _parse_options(raw: str | None) -> RuntimeParams | None:
 
     The pydantic ``ValidationError`` raised by an invalid options object is
     **not** surfaced verbatim: ``str(ValidationError)`` echoes the offending
-    ``input`` value, so a secret mis-pasted into ``--options`` (e.g.
+    ``input`` value, so a secret mis-pasted into ``--options`` (for example,
     ``{"api_key": "sk-..."}``, rejected by ``extra="forbid"``) would otherwise be
     reflected to stderr and bleed into CI logs / bug reports. It is re-raised as
     a ``ValueError`` carrying the shared sanitized message (the same scrub the
@@ -1695,9 +1705,10 @@ def main(argv: list[str] | None = None) -> int:
 def _debug_traceback(args: argparse.Namespace) -> None:
     """Emit a stack trace to stderr when ``--debug`` is set.
 
-    ``--debug`` is documented as emitting "stack traces for unexpected
-    errors", but the trace was previously printed only in the final
-    ``except Exception`` branch, so an error caught by a named branch (e.g. an
+    ``--debug`` promises a stack trace on every error path a command reaches
+    (argument errors end in the parser, before any command runs), but the trace was
+    previously printed only in the final
+    ``except Exception`` branch, so an error caught by a named branch (for example, an
     engine-internal failure surfacing as a ``ValueError`` from ``_transcribe``)
     had no trace even with ``--debug``. Routing every branch through
     this helper makes the flag uniform. ``getattr`` keeps it safe for the
@@ -1734,7 +1745,7 @@ def _ensure_utf8_stream(stream: IO[str]) -> None:
     """Reconfigure a text stream to UTF-8 when it is not already UTF-8.
 
     On Windows a stdout/stderr redirected to a file or pipe defaults to the
-    process ANSI code page (e.g. cp1252) with ``errors="strict"``; printing a
+    process ANSI code page (for example, cp1252) with ``errors="strict"``; printing a
     non-ASCII transcript then raises ``UnicodeEncodeError`` and crashes the CLI
     (PEP 686's UTF-8 default only lands in Python 3.15, but this project targets
     3.10+). Forcing UTF-8 -- never ``errors="replace"`` -- keeps the transcript

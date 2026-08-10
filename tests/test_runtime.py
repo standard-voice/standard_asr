@@ -29,9 +29,10 @@ def test_allow_downloads_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_allow_downloads_unrecognized_value_warns_and_disables(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # A non-affirmative typo (e.g. ``on``) must fail safe to disabled
-    # AND log once -- the engine that later raises DiscoveryError only sees the
-    # boolean, so without this diagnostic the operator cannot trace the cause.
+    # A non-affirmative typo (for example, ``on``) must fail closed to disabled
+    # AND log a warning on the read -- the engine that later raises
+    # DiscoveryError only sees the boolean, so without the logged explanation
+    # the operator cannot trace the cause.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "on")
     caplog.set_level("WARNING")
     assert allow_downloads() is False
@@ -42,7 +43,7 @@ def test_allow_downloads_empty_value_warns_and_disables(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # An empty string (a common ``VAR=`` docker-compose artifact) is
-    # an unrecognized value -> fail safe to disabled, with a diagnostic. This is
+    # an unrecognized value -> fail closed to disabled, with a diagnostic. This is
     # the deliberate empty-string asymmetry with the cache path override.
     monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "")
     caplog.set_level("WARNING")
@@ -110,7 +111,7 @@ def test_cache_dir_windows_ignores_roaming_appdata(monkeypatch: pytest.MonkeyPat
 
 
 def test_cache_dir_xdg_cache_home_honored(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # On POSIX an absolute XDG_CACHE_HOME is honoured (parity with
+    # On POSIX an absolute XDG_CACHE_HOME is honored (parity with
     # HuggingFace hub / pip / uv), so weights follow a user's deliberately
     # relocated cache instead of always landing in ~/.cache.
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)
@@ -186,7 +187,7 @@ def test_download_root_library_default_passthrough_when_env_unset(
 ) -> None:
     # Unconfigured + env unset on an engine whose library has its own
     # default cache resolves to the LIBRARY tier -- a None passthrough the
-    # adapter forwards (e.g. WhisperModel(download_root=None) -> the HF hub
+    # engine forwards (for example, WhisperModel(download_root=None) -> the HF hub
     # cache) -- never a forced concrete directory that would relocate every
     # unconfigured install's models.
     monkeypatch.delenv("STANDARD_ASR_MODEL_DIR", raising=False)

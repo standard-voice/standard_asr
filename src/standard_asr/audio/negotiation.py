@@ -39,9 +39,14 @@ from standard_asr.contract.exceptions import IncompatibleAudioInputError
 class UnsafeAudioUrlError(IncompatibleAudioInputError):
     """An ``AudioUrl`` failed the SSRF security policy and MUST NOT be forwarded.
 
-    Raised before a URL is handed to an engine when the URL is not HTTPS, or
-    resolves (in whole or in part) to a private / loopback / link-local address
-    -- the classic SSRF target set. Subclasses
+    Raised before a URL is handed to an engine when the URL fails the SSRF
+    policy: a malformed URL or port, a non-HTTPS scheme, or a missing host.
+    Unless ``allow_private_addresses`` opts out, it also covers a host that
+    does not resolve, and any resolved address (in whole or in part) that is
+    not globally routable -- private / loopback / link-local and their
+    relatives. Under that opt-in the validator returns after the structural
+    checks and never resolves the host, so an unresolvable name reaches the
+    engine and fails there instead. Subclasses
     :class:`~standard_asr.contract.exceptions.IncompatibleAudioInputError` so existing
     audio-input error handling catches it, while remaining distinguishable.
 
@@ -57,8 +62,8 @@ class UnsafeAudioUrlError(IncompatibleAudioInputError):
             provided="AudioUrl",
             accepted=["fetchable_url"],
             hint=(
-                f"Refusing to forward {url!r}: {reason}. URLs MUST be HTTPS and "
-                "MUST NOT target private/loopback/link-local addresses (SSRF "
+                f"Refusing to forward {url!r}: {reason}. URLs must be HTTPS and "
+                "must not target private/loopback/link-local addresses (SSRF "
                 "defense). To allow a trusted internal endpoint, set "
                 "allow_private_urls=True in the engine's init config (HTTPS is "
                 "still required)."
@@ -73,7 +78,7 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     fc00::/7 (and their relatives, plus reserved/unspecified) -- including
     IPv4-mapped IPv6 addresses, which are unwrapped first. As a hardening layer
     beyond those mandatory ranges, any address that is not globally routable is also
-    rejected (``not is_global``), which covers e.g. CGNAT 100.64.0.0/10
+    rejected (``not is_global``), which covers, for example, CGNAT 100.64.0.0/10
     (RFC 6598) and the documentation/TEST-NET ranges.
 
     Args:
@@ -85,7 +90,7 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
     # ``is_global`` classification of a few exotic ranges shifted slightly across
-    # Python 3.10-3.13 (e.g. 192.0.0.9/32 PCP anycast became global in 3.12's
+    # Python 3.10-3.13 (for example, 192.0.0.9/32 PCP anycast became global in 3.12's
     # IANA-registry alignment); the explicit predicates above it are the stable
     # baseline, so version drift can only make the check stricter, never weaker.
     return (
@@ -103,7 +108,7 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     """Validate an ``AudioUrl`` against the SSRF policy before forwarding.
 
     The standard never fetches the URL itself in v1; this only
-    validates the literal that will be passed to the engine. The check is:
+    validates the literal that is passed to the engine. The check is:
     HTTPS-only, a parseable host, and -- unless opted out -- every address the
     host resolves to must be public.
 
@@ -115,21 +120,25 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     engine (classic TOCTOU/DNS-rebinding). Pinning the validated address for the
     engine's subsequent fetch (DNS-pin) is a documented v1 limitation and a v2
     requirement. Strong SSRF defense for engine-fetched URLs requires
-    the engine to honour a pinned address.
+    the engine to honor a pinned address.
 
     Args:
         url: The URL to validate.
-        allow_private_addresses: If ``True``, skip the private/loopback/
-            link-local rejection (opt-in for trusted internal endpoints). HTTPS
-            is still required.
+        allow_private_addresses: If ``True``, skip the address stage entirely
+            (opt-in for trusted internal endpoints): the private/loopback/
+            link-local rejection AND the DNS resolvability check, since an
+            internal name may not resolve from wherever validation runs. The
+            structural checks -- HTTPS, a host, a well-formed port -- still
+            apply.
 
     Raises:
         UnsafeAudioUrlError: If the URL is malformed, not HTTPS, has no host,
-            has a malformed port, fails to resolve, or resolves to a disallowed
+            or has a malformed port -- and, unless ``allow_private_addresses``
+            is set, if the host fails to resolve or resolves to a disallowed
             address. This is the only exception type the validator raises, so a
-            caller (e.g. the server) can map it to a single contracted response.
+            caller (for example, the server) can map it to a single contracted response.
     """
-    # urlsplit raises a bare ValueError for some malformed URLs (e.g. an
+    # urlsplit raises a bare ValueError for some malformed URLs (for example, an
     # unbalanced IPv6 bracket); re-raise as the contracted error type so the
     # validator's single-exception contract holds for every malformed input.
     try:
@@ -143,11 +152,12 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         raise UnsafeAudioUrlError(url, "the URL has no host component")
 
     # Parse + validate the port BEFORE the allow_private_addresses opt-out and
-    # before the IP-vs-name branch. The opt-in relaxes ONLY the private/loopback
-    # address policy; a malformed port is a STRUCTURAL defect, not a private-
-    # address concern, so it MUST be rejected in both modes (the opt-in
-    # exempts the private-IP rejection, not the HTTPS/structure checks; the
-    # Raises contract lists malformed port unconditionally). ``parts.port`` is
+    # before the IP-vs-name branch. The opt-in skips the whole ADDRESS stage --
+    # the private/loopback rejection and the DNS resolution it needs -- but a
+    # malformed port is a STRUCTURAL defect, not an address concern, so it MUST
+    # be rejected in both modes (the opt-in exempts the address policy, not the
+    # HTTPS/structure checks; the Raises contract lists malformed port
+    # unconditionally). ``parts.port`` is
     # lazy in urlsplit and raises a bare ValueError for a malformed port
     # (":99999" out of range, ":notaport" non-numeric) -- catching it here keeps
     # the validator's single-exception contract (otherwise it surfaces as an
@@ -159,6 +169,13 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         raise UnsafeAudioUrlError(url, f"the URL has a malformed port ({exc})") from exc
 
     if allow_private_addresses:
+        # Everything below is the address stage, and resolution exists only to
+        # feed it. With the policy opted out there is nothing to decide, so the
+        # lookup is skipped rather than performed and discarded: an internal
+        # name that this host cannot resolve is not the validator's business,
+        # and a network round trip per validation would be pure cost. The
+        # contract says so explicitly -- an unresolvable host is NOT rejected
+        # in this mode.
         return
 
     # An IP literal host is checked directly; a name is resolved and ALL
@@ -176,6 +193,11 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise UnsafeAudioUrlError(url, f"host {host!r} did not resolve ({exc})") from exc
+    except UnicodeError as exc:
+        # getaddrinfo IDNA-encodes the host name first; an unencodable name
+        # (for example, an over-long label) raises UnicodeError there, not gaierror.
+        # Wrap it so the validator keeps its single-exception contract.
+        raise UnsafeAudioUrlError(url, f"host {host!r} cannot be encoded ({exc})") from exc
     if not infos:
         raise UnsafeAudioUrlError(url, f"host {host!r} resolved to no addresses")
     for info in infos:
@@ -227,13 +249,13 @@ class ConversionPlan:
     ``execute_plan`` dispatches on the ``(source variant, target_kind)`` pair and
     *membership-tests* ``operations`` -- it does not iterate them in order -- so
     in the current matrix every ``(source, target)`` cell maps to a unique step
-    set and the order is descriptive only. A future multi-step plan (e.g. a v2
+    set and the order is descriptive only. A future multi-step plan (for example, a v2
     ``fetch -> decode``) MUST either keep this 1:1 mapping or switch execution to
     an ordered op-dispatcher; do not assume appending an op to this tuple changes
     execution.
 
     Args:
-        source_type: Name of the provided variant (e.g. ``"AudioPath"``).
+        source_type: Name of the provided variant (for example, ``"AudioPath"``).
         target_kind: The :class:`InputKind` the engine receives.
         operations: The plan's conversion steps as a declarative description (see
             above -- execution dispatches on source/target, not this order).
@@ -285,7 +307,7 @@ def _remote_only_hint(accepted: frozenset[InputKind]) -> str:
         accepted: Engine-accepted input kinds (no local kind present).
 
     Returns:
-        An actionable hint naming the remote variant(s) the engine accepts.
+        An actionable hint naming the remote variants the engine accepts.
     """
     options: list[str] = []
     if InputKind.FETCHABLE_URL in accepted:
@@ -320,7 +342,7 @@ def negotiate(
 
     Raises:
         TypeError: If ``provided`` is not one of the six :data:`AudioInput`
-            variants (e.g. an un-coerced bare ``str``). Call
+            variants (for example, an un-coerced bare ``str``). Call
             :func:`~standard_asr.audio.input.coerce_audio_input` first.
     """
     accepted = frozenset(accepted)
@@ -338,7 +360,7 @@ def negotiate(
         return _negotiate_storage_uri(source, accepted)
     # Match AudioUrl explicitly rather than falling through: this is a public API
     # whose static type cannot stop a dynamic/REST caller from passing a non-
-    # AudioInput object (e.g. an un-coerced bare str), and a silent fallthrough
+    # AudioInput object (for example, an un-coerced bare str), and a silent fallthrough
     # would mis-negotiate it as a URL. Reject loudly with the same boundary
     # discipline as coerce_audio_input, and keep the isinstance chain total so a
     # future seventh variant cannot be silently absorbed here. (pyright sees the
@@ -502,8 +524,9 @@ def _bytes_only_file_hint(accepted: frozenset[InputKind]) -> str:
     if InputKind.ENCODED_FILE in accepted:
         return (
             "This engine accepts only files on disk (encoded_file), not in-memory "
-            "bytes; the standard will not write a temporary file (SSRF/TOCTOU "
-            "safety). Pass the audio as AudioPath to a real local file."
+            "bytes; the standard will not write a temporary file (temp files "
+            "risk leaks, read-only-filesystem failures, and TOCTOU races). "
+            "Pass the audio as AudioPath to a real local file."
         )
     # Only remote kinds remain; AudioPath would be an equally dead end.
     return _remote_only_hint(accepted)
@@ -544,7 +567,7 @@ def _negotiate_storage_uri(
 ) -> ConversionPlan | NoViablePath:
     """Negotiate a path for an :class:`AudioStorageUri` source.
 
-    A provider storage URI (``s3://``, ``gs://``, ...) is resolvable only by an
+    A provider storage URI (``s3://``, ``gs://``, and so on) is resolvable only by an
     engine that authenticates it with its own cloud-SDK credentials, so it is
     viable solely as a zero-conversion passthrough to a ``storage_uri`` engine.
     The standard is not an upload-broker and cannot fetch from cloud storage

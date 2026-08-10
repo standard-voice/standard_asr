@@ -159,7 +159,7 @@ def test_normalize_audio_truncates_channels(caplog: pytest.LogCaptureFixture) ->
     out = audio_loader.normalize_audio(audio, 16000, 16000, 2)
 
     assert out.shape[1] == 2
-    assert any("Down-mixing" in record.message for record in caplog.records)
+    assert any("Downmixing" in record.message for record in caplog.records)
 
 
 def test_load_audio_invalid_params() -> None:
@@ -638,7 +638,7 @@ def test_load_with_ffmpeg_block_aligned_truncation_is_rejected(
     # the ``>`` backstop rejects it. This mock derives its emitted byte count from
     # the ACTUAL ``-fs`` value in the command, so reverting the headroom (``-fs`` ==
     # cap) makes emitted == cap, the strict-greater check does not fire, and this
-    # test fails -- i.e. it genuinely guards the headroom (the old fixed-buffer mock
+    # test fails -- that is, it genuinely guards the headroom (the old fixed-buffer mock
     # ignored ``-fs`` and passed even on the pre-fix code).
     def _which(_: str) -> str:
         return "/usr/bin/ffmpeg"
@@ -732,28 +732,57 @@ def test_load_with_ffmpeg_zero_samples(monkeypatch: pytest.MonkeyPatch) -> None:
         audio_loader._load_with_ffmpeg(b"data", 16000, 1)  # pyright: ignore[reportPrivateUsage]
 
 
-def test_load_with_ffmpeg_defaults_to_mono(monkeypatch: pytest.MonkeyPatch) -> None:
-    audio = np.array([0.0, np.nan, np.inf, -0.5], dtype=np.float32)
-    stdout = bytearray(audio.tobytes())
+def test_load_with_ffmpeg_unknown_channels_raises_not_mono(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed channel probe with ffprobe PRESENT must raise, never downmix.
+
+    The pre-fix behavior logged a warning and decoded a possibly multichannel
+    source to mono -- a silent wrong result. With ``target_channels=None``
+    ("preserve the source layout") an unknown source layout is a loud
+    ``AudioProcessingError`` that names the way out.
+    """
 
     def _which(_: str) -> str:
         return "/usr/bin/ffmpeg"
 
-    def _probe(_: object) -> int | None:
-        return None
+    def _probe(_: object) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
+        return audio_loader._ProbeOutcome(None, "no-value", "no audio stream")  # pyright: ignore[reportPrivateUsage]
 
     monkeypatch.setattr(audio_loader.shutil, "which", _which)
     monkeypatch.setattr(audio_loader, "_probe_channels_with_ffprobe", _probe)
 
-    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes | bytearray]:
-        return subprocess.CompletedProcess(["ffmpeg"], 0, stdout=stdout, stderr=b"")
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("ffmpeg must not run when the channel count is unknown")
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
-    out = audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(AudioProcessingError, match="Pass target_channels explicitly"):
+        audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
 
-    assert out.ndim == 1
-    assert np.all(np.isfinite(out))
+
+def test_load_with_ffmpeg_missing_ffprobe_raises_not_mono(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed channel probe with ffprobe ABSENT names the missing tool.
+
+    Same loud-failure contract as above, but the dedicated
+    ``FFprobeNotFoundError`` points at the install step -- this is the raise
+    the ``load_audio*`` docstrings promise, previously unreachable because
+    the loader downmixed to mono instead.
+    """
+
+    def _which(tool: str) -> str | None:
+        return None if tool == "ffprobe" else "/usr/bin/ffmpeg"
+
+    def _probe(_: object) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
+        return audio_loader._ProbeOutcome(None, "tool-missing")  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+    monkeypatch.setattr(audio_loader, "_probe_channels_with_ffprobe", _probe)
+
+    with pytest.raises(audio_loader.FFprobeNotFoundError, match="pass target_channels"):
+        audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_load_with_ffmpeg_multichannel_alignment(
@@ -765,8 +794,8 @@ def test_load_with_ffmpeg_multichannel_alignment(
     def _which(_: str) -> str:
         return "/usr/bin/ffmpeg"
 
-    def _probe(_: object) -> int | None:
-        return 2
+    def _probe(_: object) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
+        return audio_loader._ProbeOutcome(2)  # pyright: ignore[reportPrivateUsage]
 
     monkeypatch.setattr(audio_loader.shutil, "which", _which)
     monkeypatch.setattr(audio_loader, "_probe_channels_with_ffprobe", _probe)
@@ -873,7 +902,7 @@ def test_decode_audio_rejects_nonpositive_channels() -> None:
 
 def test_decode_audio_does_not_sniff_data_uri() -> None:
     # Decode_audio never content-sniffs a bare str.
-    # A "data:...;base64,..." string is opened as a local file path (and fails
+    # A ``data:...;base64,...`` string is opened as a local file path (and fails
     # "not found"), NOT decoded as base64 -- so a malformed-base64 data: URI no
     # longer surfaces "Invalid base64 audio payload" from this entry point.
     with pytest.raises(AudioProcessingError, match="not found or not a regular file"):
@@ -898,7 +927,7 @@ def test_decode_audio_does_not_sniff_real_sized_data_uri() -> None:
 
 def test_load_audio_from_path_wraps_enametoolong_oserror() -> None:
     # RR-007: load_audio_from_path probes the path via exists()/is_file()/stat().
-    # A pathologically long path string (e.g. a real-sized data:/base64 URI
+    # A pathologically long path string (for example, a real-sized data:/base64 URI
     # mistakenly passed as a path) makes the first probe raise OSError(ENAMETOOLONG).
     # It MUST surface as the documented AudioProcessingError, not leak the raw
     # OSError -- the d785dfc seam fixed decode_audio's path but left these
@@ -1027,6 +1056,35 @@ def test_decode_path_native_wav_unsupported_sampwidth_falls_back(
     assert sr == 16000
 
 
+def test_ffmpeg_native_missing_ffprobe_raises_ffprobe_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The probe reported the tool itself missing: the dedicated
+    # FFprobeNotFoundError names it (the class was previously documented but
+    # raised nowhere).
+    def _probe_none(_source: str | bytes, timeout: float = 5.0) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
+        return audio_loader._ProbeOutcome(None, "tool-missing")  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe_none)
+    with pytest.raises(audio_loader.FFprobeNotFoundError, match="not found on PATH"):
+        audio_loader._decode_with_ffmpeg_native(b"xx", None)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_ffmpeg_native_probe_failure_with_ffprobe_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ffprobe ran and answered, but reported nothing usable: the source is
+    # the problem, not the tool, so the source-blaming arm fires.
+    def _probe_none(_source: str | bytes, timeout: float = 5.0) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
+        return audio_loader._ProbeOutcome(None, "no-value", "no audio stream")  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe_none)
+    with pytest.raises(
+        audio_loader.AudioProcessingError, match="Run ffprobe on the source directly"
+    ):
+        audio_loader._decode_with_ffmpeg_native(b"xx", None)  # pyright: ignore[reportPrivateUsage]
+
+
 def test_decode_path_native_soundfile_success(monkeypatch: pytest.MonkeyPatch) -> None:
     # A non-WAV path decodes via soundfile, preserving the native rate.
     module = types.ModuleType("soundfile")
@@ -1117,8 +1175,8 @@ def test_decode_bytes_native_soundfile_failure_falls_back(
 
 def test_decode_with_ffmpeg_native_success(monkeypatch: pytest.MonkeyPatch) -> None:
     # The native ffmpeg decode probes the rate then decodes at that rate.
-    def _probe(_source: str | bytes) -> int | None:
-        return 32000
+    def _probe(_source: str | bytes) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
+        return audio_loader._ProbeOutcome(32000)  # pyright: ignore[reportPrivateUsage]
 
     def _load(_source: str | bytes, _sr: int, _ch: int | None) -> NDArray[np.float32]:
         return np.zeros(5, dtype=np.float32)
@@ -1131,11 +1189,59 @@ def test_decode_with_ffmpeg_native_success(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_decode_with_ffmpeg_native_no_rate_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _probe(_source: str | bytes) -> int | None:
-        return None
+    def _probe(_source: str | bytes) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
+        return audio_loader._ProbeOutcome(None, "no-value", "no audio stream")  # pyright: ignore[reportPrivateUsage]
 
     monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe)
     with pytest.raises(AudioProcessingError, match="native sample rate"):
+        audio_loader._decode_with_ffmpeg_native(b"data", 1)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_decode_with_ffmpeg_native_probe_could_not_run_names_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient spawn failure must not be blamed on the user's audio.
+
+    This is the DEFAULT decode path (``conversion.execute_plan`` calls
+    ``decode_audio(..., target_channels=1)``), so on an ffmpeg-only host a
+    REST client hits it with no opt-in. The old single message told that
+    client its file had "no audio stream ... or timed out" during an
+    fd-exhaustion spike; the message must instead name the environment and
+    keep the cause chained.
+    """
+
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise OSError(11, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    with pytest.raises(AudioProcessingError, match="could not run") as exc_info:
+        audio_loader._decode_with_ffmpeg_native(b"data", 1)  # pyright: ignore[reportPrivateUsage]
+    assert "not evidence about the audio" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_decode_with_ffmpeg_native_rejected_source_carries_ffprobe_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ffprobe ran and rejected the source: the message blames the source and
+    # carries ffprobe's own first stderr line so the user sees why.
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.CalledProcessError(
+            1, "ffprobe", output=b"", stderr=b"Invalid data found when processing input\nmore"
+        )
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    with pytest.raises(AudioProcessingError, match="Invalid data found"):
         audio_loader._decode_with_ffmpeg_native(b"data", 1)  # pyright: ignore[reportPrivateUsage]
 
 
@@ -1149,7 +1255,116 @@ def test_probe_sample_rate_delegates_to_stream_entry(monkeypatch: pytest.MonkeyP
         return subprocess.CompletedProcess(["ffprobe"], 0, stdout=b"48000\n", stderr=b"")
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
-    assert audio_loader._probe_sample_rate_with_ffprobe(b"data") == 48000  # pyright: ignore[reportPrivateUsage]
+    assert audio_loader._probe_sample_rate_with_ffprobe(b"data").value == 48000  # pyright: ignore[reportPrivateUsage]
+
+
+def test_probe_stream_entry_swallows_spawn_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ffprobe vanished between the shutil.which probe and the spawn (a
+    # concurrent package upgrade): the probe must report the tool missing,
+    # never leak the FileNotFoundError -- the wrappers promise Raises: None.
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError("ffprobe gone")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    outcome = audio_loader._probe_sample_rate_with_ffprobe(b"data")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "tool-missing"
+
+
+def test_probe_stream_entry_unicode_digit_is_no_value_not_a_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Unicode digit that int() rejects must stay inside the no-raise contract.
+
+    ``"\\u00b2".isdigit()`` is True while ``int("\\u00b2")`` raises ValueError,
+    so an isdigit() pre-check would let a bare ValueError escape the probe.
+    The guard is ``int()`` itself; the outcome is "no-value".
+    """
+
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(["ffprobe"], 0, stdout="²\n".encode(), stderr=b"")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    outcome = audio_loader._probe_channels_with_ffprobe(b"data")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "no-value"
+
+
+def test_load_with_ffmpeg_probe_spawn_failure_is_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient spawn failure (EAGAIN) must surface, not downmix to mono.
+
+    End-to-end through the REAL probe: the fork fails with ``OSError``, the
+    probe reports "unknown" per its no-raise contract, and the loader -- asked
+    to preserve the source layout -- refuses to guess a channel count.
+    """
+
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise OSError("fork: Resource temporarily unavailable")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    with pytest.raises(AudioProcessingError, match="could not run") as exc_info:
+        audio_loader._load_with_ffmpeg(b"data", 16000, None)  # pyright: ignore[reportPrivateUsage]
+    # The message must name the environment, not the audio, and chain the
+    # real cause.
+    assert "not evidence about the audio" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_probe_stream_entry_swallows_undecodable_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A broken stream can make ffprobe emit undecodable bytes; the decode
+    # failure is a probe failure (None), never an escaping UnicodeDecodeError.
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(["ffprobe"], 0, stdout=b"\xff\xfe\x00", stderr=b"")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    outcome = audio_loader._probe_channels_with_ffprobe(b"data")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "no-value"
+
+
+def test_probe_stream_entry_non_positive_value_is_no_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ffprobe can report 0 for a hostile/broken stream; a non-positive count
+    # or rate is "unknown" (never forwarded: `-ar 0` silently skips
+    # resampling on some ffmpeg builds).
+    def _which(_: str) -> str:
+        return "/usr/bin/ffprobe"
+
+    monkeypatch.setattr(audio_loader.shutil, "which", _which)
+
+    def _run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(["ffprobe"], 0, stdout=b"0\n", stderr=b"")
+
+    monkeypatch.setattr(audio_loader.subprocess, "run", _run)
+    outcome = audio_loader._probe_channels_with_ffprobe(b"data")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "no-value"
+    assert outcome.detail == "non-positive field value 0"
 
 
 def test_probe_channels_ffprobe_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1158,7 +1373,9 @@ def test_probe_channels_ffprobe_missing(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(audio_loader.shutil, "which", _which)
 
-    assert audio_loader._probe_channels_with_ffprobe(b"data") is None  # pyright: ignore[reportPrivateUsage]
+    outcome = audio_loader._probe_channels_with_ffprobe(b"data")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "tool-missing"
 
 
 def test_probe_channels_ffprobe_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1172,7 +1389,7 @@ def test_probe_channels_ffprobe_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
-    assert audio_loader._probe_channels_with_ffprobe(b"data") == 2  # pyright: ignore[reportPrivateUsage]
+    assert audio_loader._probe_channels_with_ffprobe(b"data").value == 2  # pyright: ignore[reportPrivateUsage]
 
 
 def test_probe_channels_ffprobe_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1186,7 +1403,10 @@ def test_probe_channels_ffprobe_timeout(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
-    assert audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav") is None  # pyright: ignore[reportPrivateUsage]
+    outcome = audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "could-not-run"
+    assert outcome.detail is not None and "timed out" in outcome.detail
 
 
 def test_probe_channels_ffprobe_path_non_digit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1200,7 +1420,9 @@ def test_probe_channels_ffprobe_path_non_digit(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
-    assert audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav") is None  # pyright: ignore[reportPrivateUsage]
+    outcome = audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "no-value"
 
 
 def test_probe_channels_ffprobe_called_process_error(
@@ -1216,7 +1438,11 @@ def test_probe_channels_ffprobe_called_process_error(
 
     monkeypatch.setattr(audio_loader.subprocess, "run", _run)
 
-    assert audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav") is None  # pyright: ignore[reportPrivateUsage]
+    outcome = audio_loader._probe_channels_with_ffprobe("/tmp/audio.wav")  # pyright: ignore[reportPrivateUsage]
+    assert outcome.value is None
+    assert outcome.failure == "no-value"
+    # Empty stderr still yields an actionable detail (the exit status).
+    assert outcome.detail == "ffprobe exited 1"
 
 
 # --------------------------------------------------------------------------- #

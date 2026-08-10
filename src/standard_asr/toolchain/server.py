@@ -88,6 +88,25 @@ _ENGINE_CONFIG_ABSENT_DETAIL: str = (
     "variable). This is an operator-side state, not a request error."
 )
 
+
+def _internal_error_message(stage: str) -> str:
+    """Build the scrubbed internal-error message for a failed server stage.
+
+    The message names the stage and points the caller to the server logs. It
+    carries no internal detail, so it is safe to send to an unauthenticated
+    client. Every stage shares one format, so the client-facing wording cannot
+    drift between the REST and WebSocket paths.
+
+    Args:
+        stage: The stage that failed (for example ``"model construction"``).
+
+    Returns:
+        A client-safe message of the form ``"Internal <stage> error. See
+        server logs for details."``.
+    """
+    return f"Internal {stage} error. See server logs for details."
+
+
 # The credential-scrubbing of pydantic validation errors is shared with the CLI
 # (and any other transport that surfaces an `options` validation error) so the
 # two cannot drift on the "never echo the request input" rule. The single owner
@@ -109,16 +128,16 @@ def _sanitized_validation_detail(
     the **same** machine-readable shape: a list of ``{type, loc, msg}`` entries
     (the input is never echoed back). Keeping one body shape per status code means a
     cross-language client parses a single structure (and can branch on ``type``,
-    e.g. ``extra_forbidden`` for a rejected ``provider_params`` key) rather than
+    for example, ``extra_forbidden`` for a rejected ``provider_params`` key) rather than
     discriminating string-vs-list per code. The ``loc_prefix`` anchors a
     standalone error's model-relative ``loc`` under the request field it came
-    from (e.g. ``["options"]`` / ``["config"]``), replacing the prose label the
+    from (for example, ``["options"]`` / ``["config"]``), replacing the prose label the
     old flat-string form used. Never echoes the submitted value and redacts
     credential-like fields (mirrors the shared ``sanitize_validation_errors``).
 
     Args:
         exc: The pydantic validation error.
-        loc_prefix: Path components naming where the error originated (e.g.
+        loc_prefix: Path components naming where the error originated (for example,
             ``["options"]`` for the wire-options build, ``["config"]`` for
             engine construction).
 
@@ -212,7 +231,7 @@ class _BodySizeLimitMiddleware:
                 return message
             # Cap breached. Emit the 413 directly (once), then hand the app a
             # disconnect so its body read unwinds promptly. ``send_capped`` drops
-            # the app's subsequent (now-moot) response so it cannot clobber ours.
+            # the app's subsequent (now-moot) response so it cannot clobber the 413.
             if not state["rejected"]:
                 state["rejected"] = True
                 await JSONResponse(
@@ -226,7 +245,7 @@ class _BodySizeLimitMiddleware:
             return {"type": "http.disconnect"}
 
         async def send_capped(message: Any) -> None:
-            # Suppress the app's response once we've committed our own 413 (its
+            # Suppress the app's response once the wrapper has committed its 413 (its
             # body read raised on the injected disconnect).
             if state["rejected"]:
                 return
@@ -249,7 +268,7 @@ class ModelInfo(BaseModel):
 
     # `model_name` is a deliberate API field; opt out of pydantic's `model_`
     # protected namespace so it does not warn (the warning fires on older
-    # pydantic, e.g. the lower-bounds lane's 2.5).
+    # pydantic, for example, the lower-bounds lane's 2.5).
     model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
 
     key: str = Field(..., description="Model key in 'engine/model' format.")
@@ -336,7 +355,7 @@ def create_app(
     Args:
         registry: Pre-discovered registry to expose. When ``None`` (the
             default), plugins are auto-discovered via ``discover_models()``. An
-            explicitly-passed registry is used as-is **even when empty** (an
+            explicitly passed registry is used as-is **even when empty** (an
             empty ``ModelRegistry({})`` exposes zero models; it does *not* fall
             back to discovery).
         max_body_bytes: Maximum accepted request-body size in bytes. Requests
@@ -385,8 +404,8 @@ def create_app(
 
     app = FastAPI(title="Standard ASR")
     # Use the caller's registry when one is given -- even an empty one. A bare
-    # ``registry or discover_models()`` would treat an explicitly-passed empty
-    # ``ModelRegistry({})`` as falsey (it is len 0) and silently fall back to
+    # ``registry or discover_models()`` would treat an explicitly passed empty
+    # ``ModelRegistry({})`` as falsy (it is len 0) and silently fall back to
     # full plugin discovery, so an operator who wants to expose ZERO models would
     # instead expose every installed plugin. ``is not None`` honors the intent.
     model_registry = registry if registry is not None else discover_models()
@@ -402,10 +421,10 @@ def create_app(
         """Return a 422 that never echoes the offending request ``input``.
 
         FastAPI's default handler reflects each error's ``input`` value verbatim.
-        A caller who mis-places a secret (e.g. an ``api_key`` in the JSON body or
+        A caller who mis-places a secret (for example, an ``api_key`` in the JSON body or
         ``options``) would have it bounced back into the client / any proxy / a
-        copied bug report. We strip the ``input`` echo (and the ``url``) and
-        redact credential-like fields (see :func:`_sanitize_validation_errors`),
+        copied bug report. The handler strips the ``input`` echo (and the ``url``) and
+        redacts credential-like fields (see :func:`_sanitize_validation_errors`),
         preserving the safe structured fields so the caller can still fix the
         request.
 
@@ -478,7 +497,7 @@ def create_app(
         """
         # The request-body cap is enforced at the ASGI boundary by
         # _BodySizeLimitMiddleware (Content-Length *and* actual bytes), so the
-        # uploaded ``file`` is already bounded by the time it materialises here.
+        # uploaded ``file`` is already bounded by the time it materializes here.
         try:
             parsed_options = json.loads(options) if options else None
         except Exception as exc:  # noqa: BLE001
@@ -527,7 +546,7 @@ def create_app(
         """
         # The request-body cap is enforced at the ASGI boundary by
         # _BodySizeLimitMiddleware (Content-Length *and* actual bytes), so the
-        # encoded ``audio`` is already bounded by the time it materialises here.
+        # encoded ``audio`` is already bounded by the time it materializes here.
         try:
             # `payload.options` is already a parsed object, so the only failure
             # here is params validation (bad value, unknown key, or a non-portable
@@ -584,7 +603,7 @@ def create_app(
         """Return the JSON Schema for an engine's ``provider_params``.
 
         Read from the engine **class** without instantiating it.
-        Note that ``provider_params`` cannot currently be *sent* over the wire
+        Note that ``provider_params`` cannot yet be *sent* over the wire
         (the JSON/multipart transcribe endpoints accept only the portable
         standard set); this schema is published for discovery and UI generation.
 
@@ -713,7 +732,7 @@ def create_app(
             await websocket.close()
             return
         except Exception:  # noqa: BLE001
-            # Anything else here is OUR fault (the receive machinery, an
+            # Anything else here is the SERVER's fault (the receive machinery, an
             # internal bug), not the caller's: the old catch-all mapped it to
             # `bad_request` AND sent raw str(exc) -- misattributing the fault
             # and leaking internal text to an unauthenticated client. Scrubbed
@@ -723,7 +742,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal handshake error. See server logs for details.",
+                    "message": _internal_error_message("handshake"),
                 }
             )
             await websocket.close()
@@ -752,7 +771,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal model construction error. See server logs for details.",
+                    "message": _internal_error_message("model construction"),
                 }
             )
             await websocket.close()
@@ -790,7 +809,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal model construction error. See server logs for details.",
+                    "message": _internal_error_message("model construction"),
                 }
             )
             await websocket.close()
@@ -838,7 +857,7 @@ def create_app(
             # rejections have their own types (UnsupportedFeatureError ->
             # `unsupported`; frame/options ValidationError -> `bad_request`
             # at parse time). A ConfigError here is an engine
-            # declaration/config defect (e.g. a missing `default_language`)
+            # declaration/config defect (for example, a missing `default_language`)
             # whose authored message may carry server-side config detail --
             # the old `bad_request` frame blamed the caller AND surfaced that
             # text. Scrubbed internal_error, specifics safe-logged. NOTE:
@@ -853,7 +872,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream establishment error. See server logs for details.",
+                    "message": _internal_error_message("stream establishment"),
                 }
             )
             await websocket.close()
@@ -863,7 +882,7 @@ def create_app(
             # validated -- a bare ValidationError here is an ENGINE fault (a
             # structural engine's internals; EngineBase wraps this seam as
             # TranscriptionError, but the server cannot assume the base
-            # class). Labelling it "unsupported" misattributes the fault, and
+            # class). Labeling it "unsupported" misattributes the fault, and
             # ``str(exc)`` echoes pydantic's offending input_value -- a
             # mis-placed engine-side secret would cross the trust boundary.
             # Scrubbed internal_error, logged server-side. A dedicated arm
@@ -875,7 +894,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream establishment error. See server logs for details.",
+                    "message": _internal_error_message("stream establishment"),
                 }
             )
             await websocket.close()
@@ -897,7 +916,7 @@ def create_app(
             await websocket.close()
             return
         except Exception:  # noqa: BLE001
-            # Internal/unexpected session-establishment fault (e.g. a fault in the
+            # Internal/unexpected session-establishment fault (for example, a fault in the
             # engine's own _start_transcription hook, or a bare ValueError from
             # engine internals): never crash the route or leak detail. Log
             # server-side; send a single generic, non-leaking frame (mirrors
@@ -907,7 +926,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream establishment error. See server logs for details.",
+                    "message": _internal_error_message("stream establishment"),
                 }
             )
             await websocket.close()
@@ -934,9 +953,9 @@ def create_app(
             log_exception_safely(logger, "Stream diagnostics projection failed for model %r", model)
             # No session teardown on this return, deliberately: the session is
             # CONSTRUCTED but never entered (start_transcription does not open;
-            # the producer/feed tasks and the adapter's _open run inside
+            # the producer/feed tasks and the engine's _open run inside
             # _bridge_stream's `async with`), so the standard layer holds no
-            # live resources here, and __aexit__ would call the adapter's
+            # live resources here, and __aexit__ would call the engine's
             # _close without a matching _open -- an unspecified state. Same
             # stance as the compliance gating probe's constructed-not-entered
             # abandonment.
@@ -944,7 +963,7 @@ def create_app(
                 {
                     "type": "error",
                     "code": "internal_error",
-                    "message": "Internal stream diagnostics error. See server logs for details.",
+                    "message": _internal_error_message("stream diagnostics"),
                 }
             )
             await websocket.close()
@@ -998,7 +1017,7 @@ async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> A
 
     Raises:
         _ConfigFrameTooLarge: If the raw config frame exceeds ``max_frame_bytes``.
-        _ConfigFrameNotText: If the first frame is not a text frame (e.g. a
+        _ConfigFrameNotText: If the first frame is not a text frame (for example, a
             binary frame); surfaced as ``bad_request`` by the caller.
         json.JSONDecodeError: If the text frame is not parseable JSON
             (surfaced as ``bad_request`` by the caller -- its message is
@@ -1036,7 +1055,7 @@ _DiagnosticsCursor = tuple[int, str | None]
 
 
 def _initial_diagnostics_frame(session: TranscriptionSession) -> dict[str, Any] | None:
-    """Build the standard-layer diagnostics frame for a freshly-started session.
+    """Build the standard-layer diagnostics frame for a freshly started session.
 
     The base ``start_transcription`` template attaches the parameter-gating and
     language-axis diagnostics (best-effort degrade, language resolution, audio
@@ -1255,7 +1274,7 @@ async def _bridge_stream(
                     break
             await session.end_audio()
         except Exception:
-            # A client protocol violation (e.g. send_audio after the session
+            # A client protocol violation (for example, send_audio after the session
             # ended -> StreamClosedError) or any feed failure MUST NOT be
             # silently swallowed by the gather's return_exceptions
             # (explicit > implicit / fail-loud). Log the full detail server-side
@@ -1266,7 +1285,7 @@ async def _bridge_stream(
             pump_failed = True
             # Best-effort end the input so the session drains and the forward
             # loop wakes to deliver the generic error frame (rather than blocking
-            # on a session that will never produce a terminal event). end_audio
+            # on a session that never produces a terminal event). end_audio
             # is idempotent and does not raise on the StreamClosedError path, so
             # no further guard is needed here.
             await session.end_audio()
@@ -1331,8 +1350,8 @@ async def _bridge_stream(
                 # diagnostics accrued since the last delivered event (an
                 # engine note, a guard suppression, an updated overflow
                 # summary) BEFORE the terminal policy frame -- otherwise the
-                # capped/failed session ends with the client never learning
-                # e.g. that a parameter was degraded, while the REST path
+                # capped/failed session ends with the client never learning,
+                # for example, that a parameter was degraded, while the REST path
                 # returns every diagnostic on the result (the two-layer drift
                 # the delta forwarder exists to prevent). Best-effort by
                 # construction: the abandoned iteration is not drained, so a
@@ -1374,7 +1393,7 @@ async def _bridge_stream(
                     {
                         "type": "error",
                         "code": "internal_error",
-                        "message": "Internal streaming error. See server logs for details.",
+                        "message": _internal_error_message("streaming"),
                     }
                 )
             except Exception:  # noqa: BLE001
@@ -1402,11 +1421,11 @@ async def _create_engine_or_http_error(
       routing problem the caller can fix -> ``404``;
     - a key that RESOLVED to a registered model whose server-installed plugin
       then failed to load (``FactoryLoadError``) is a deployment fault, not a
-      routing one: the caller's key was right and nothing they can send will
+      routing one: the caller's key was right and nothing they can send can
       change the outcome -> scrubbed ``500`` (``str(exc)`` also carries
       plugin import internals, which §3.7 keeps off client surfaces);
     - required configuration ABSENT from the server environment
-      (``ConfigurationRequiredError`` -- e.g. a credential env var not set) is
+      (``ConfigurationRequiredError`` -- for example, a credential env var not set) is
       the OPERATOR's to fix, not the caller's: the model exists but is not
       available on this deployment -> ``503`` with a stable generic detail
       (never the field names; the specifics are safe-logged for the
@@ -1442,11 +1461,11 @@ async def _create_engine_or_http_error(
         # cannot fix, and str(exc) carries plugin import/annotation
         # internals. Scrubbed 500, specifics safe-logged (§3.7).
         log_exception_safely(logger, "Registered model %r failed to load", model)
-        detail = "Internal model construction error. See server logs for details."
+        detail = _internal_error_message("model construction")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     except ConfigurationRequiredError as exc:
         # MUST precede any broader arm: ConfigurationRequiredError subclasses
-        # ConfigError. The absent-config message names the missing field(s) --
+        # ConfigError. The absent-config message names the missing fields --
         # deployment detail an unauthenticated caller has no business seeing.
         log_exception_safely(
             logger, "Engine %r requires configuration absent from the server environment", model
@@ -1457,9 +1476,9 @@ async def _create_engine_or_http_error(
         # Internal/unexpected construction fault (incl. ConfigError /
         # ValidationError from the zero-arg factory: a deployment or plugin
         # defect, never the caller's): log details, return a stable generic
-        # message so we never leak internal paths or credential text.
+        # message so the response never leaks internal paths or credential text.
         log_exception_safely(logger, "Engine construction failed for model %r", model)
-        detail = "Internal model construction error. See server logs for details."
+        detail = _internal_error_message("model construction")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
 
@@ -1503,7 +1522,7 @@ async def _run_transcription(
         # coroutine object that to_thread never drives. Enforce the sync-call
         # boundary here, and build the response INSIDE the fault-mapping
         # region -- a malformed result would otherwise raise a bare pydantic
-        # ValidationError out of TranscribeResponse(...) past every arm below
+        # ValidationError out of ``TranscribeResponse(...)`` past every arm below
         # (echoing engine input text past the scrubbed-500 contract).
         require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
         response = TranscribeResponse(model=model, result=result)
@@ -1536,7 +1555,7 @@ async def _run_transcription(
         # options were already validated (WireRuntimeParams at the route) and
         # promoted to a typed RuntimeParams, so a bare pydantic
         # ValidationError escaping transcribe() can only come from the
-        # engine's own internals (e.g. a structural engine constructing an
+        # engine's own internals (for example, a structural engine constructing an
         # invalid TranscriptionResult -- EngineBase wraps that seam as
         # TranscriptionError, but the server cannot assume the base class).
         # Mapping it to 422 blamed the client's options for a plugin bug;
@@ -1545,7 +1564,7 @@ async def _run_transcription(
         # and the LOG record is scrubbed the same way (the echo must not land
         # in operator/CI logs either).
         log_exception_safely(logger, "Engine-side validation failure for model %r", model)
-        detail = "Internal transcription error. See server logs for details."
+        detail = _internal_error_message("transcription")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     except ConfigurationRequiredError as exc:
         # Required config absent, discovered lazily at CALL time (an engine
@@ -1565,11 +1584,11 @@ async def _run_transcription(
         # by WireRuntimeParams before transcription, and every client-fixable
         # rejection has its own type (UnsupportedFeatureError below; request
         # ValidationError at the route). A ConfigError here is an engine
-        # declaration/config defect (e.g. a bad `default_language`) whose
+        # declaration/config defect (for example, a bad `default_language`) whose
         # authored message may carry server-side config detail. Scrubbed 500,
         # specifics safe-logged for the operator.
         log_exception_safely(logger, "Engine-side configuration/contract fault for model %r", model)
-        detail = "Internal transcription error. See server logs for details."
+        detail = _internal_error_message("transcription")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     except UnsupportedFeatureError as exc:
         # Client-caused: the request asked for a feature/language the engine
@@ -1580,10 +1599,10 @@ async def _run_transcription(
         raise http_exception(status_code=400, detail=str(exc)) from exc  # type: ignore[call-arg]
     except Exception as exc:  # noqa: BLE001
         # Internal/unexpected (including EngineContractError from the sync-call
-        # boundary above): log details, return a stable generic message so we
-        # never leak internal paths or upstream/credential text to the client.
+        # boundary above): log details, return a stable generic message so the
+        # client never sees internal paths or upstream/credential text.
         log_exception_safely(logger, "Transcription failed for model %r", model)
-        detail = "Internal transcription error. See server logs for details."
+        detail = _internal_error_message("transcription")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
 
@@ -1640,7 +1659,7 @@ def _engine_class_or_http_error(
         # endpoints must not blame the caller for a broken plugin nor leak
         # its import/annotation internals.
         log_exception_safely(logger, "Registered model %r failed to load its class", model)
-        detail = "Internal model metadata error. See server logs for details."
+        detail = _internal_error_message("model metadata")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
 
@@ -1711,7 +1730,7 @@ def _metadata_or_http_error(
         http_exception: The ``HTTPException`` class to raise.
         project: Reads the metadata off the engine class and returns the
             JSON-ready payload. It may raise ``http_exception`` itself for
-            a DELIBERATE verdict (e.g. 404 "no capabilities declared"),
+            a DELIBERATE verdict (for example, 404 "no capabilities declared"),
             which passes through unchanged.
 
     Returns:
@@ -1741,7 +1760,7 @@ def _metadata_or_http_error(
         raise
     except Exception as exc:  # noqa: BLE001 - a plugin fault is a scrubbed 500
         log_exception_safely(logger, "Model %r failed to produce its metadata", model)
-        detail = "Internal model metadata error. See server logs for details."
+        detail = _internal_error_message("model metadata")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
     return payload
 

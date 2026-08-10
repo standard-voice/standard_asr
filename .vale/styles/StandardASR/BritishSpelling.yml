@@ -1,0 +1,98 @@
+extends: substitution
+message: "Use the American spelling '%s' instead of '%s' (TERMINOLOGY.md, Spelling). Never re-spell an identifier."
+link: https://github.com/standard-voice/standard_asr/blob/main/TERMINOLOGY.md
+level: error
+ignorecase: true
+# No action block: the match is case-insensitive but the replacement is
+# lowercase, so a machine-applied quick-fix would decapitalize a
+# sentence-initial word ("Behaviour is ..." -> "behaviour is ..."). The
+# message names the fix; a human applies it with the right case.
+#
+# Each key captures the inflection and the replacement carries it ($1), so
+# the message preserves tense and number ("normalising" -> "normalizing",
+# never "normalize"). The list enumerates stems instead of using a generic
+# '\w+is(e|es|...)' pattern because that pattern also matches correct
+# American words (raise, noise, promise, otherwise, exercise, advertise);
+# a false positive here blocks CI, so precision wins and unlisted stems
+# stay with review. 'analyses' (the plural of 'analysis') and 'dialogue'
+# (Merriam-Webster's primary American form) are correct American English,
+# so 'analys...' omits the 'es' inflection and 'dialogue' has no entry.
+# Keys carry only inflections whose AMERICAN form is a real word
+# ('unauthorised' -> 'unauthorized', never 'unauthorize'), and every
+# prescribed replacement must be accepted by StandardASR.Spelling -- the
+# accept list carries the technical -ize families the stock dictionary
+# lacks, so obeying this rule can never trip the other one.
+swap:
+  'analogue(s?)': 'analog$1'
+  'analys(e|ed|ing|er|ers)': 'analyz$1'
+  'artefact(s?)': 'artifact$1'
+  'authoris(e|es|ed|ing|ation)': 'authoriz$1'
+  'behaviour(ally|al|s)?': 'behavior$1'
+  'calibre(s?)': 'caliber$1'
+  'cancell(ed|ing)': 'cancel$1'
+  'canonicalis(e|es|ed|ing|ation)': 'canonicaliz$1'
+  'capitalis(e|es|ed|ing|ation)': 'capitaliz$1'
+  'catalogue(s?)': 'catalog$1'
+  'categoris(e|es|ed|ing|ation)': 'categoriz$1'
+  'centralis(e|es|ed|ing|ation)': 'centraliz$1'
+  'centred': centered
+  'centre(s?)': 'center$1'
+  'colour(less|ful|ed|ing|s)?': 'color$1'
+  'customis(e|es|ed|ing|ation)': 'customiz$1'
+  'defence(s?)': 'defense$1'
+  'deserialis(e|es|ed|ing|ation|er|ers)': 'deserializ$1'
+  'digitis(e|es|ed|ing|ation)': 'digitiz$1'
+  'emphasis(e|es|ed|ing)': 'emphasiz$1'
+  'endeavour(s|ed|ing)?': 'endeavor$1'
+  'equalis(e|es|ed|ing|ation|er|ers)': 'equaliz$1'
+  'favour(s|ed|ing)?': 'favor$1'
+  'fibre(s?)': 'fiber$1'
+  'finalis(e|es|ed|ing|ation)': 'finaliz$1'
+  'flavour(s|ed|ing)?': 'flavor$1'
+  'fulfil(s?)\b': 'fulfill$1'
+  'generalis(e|es|ed|ing|ation)': 'generaliz$1'
+  'grey': gray
+  'honour(s|ed|ing)?': 'honor$1'
+  'initialis(e|es|ed|ing|ation|er|ers)': 'initializ$1'
+  'labell(ed|ing)': 'label$1'
+  'learnt': learned
+  'licence(s?)': 'license$1'
+  'litre(s?)': 'liter$1'
+  'localis(e|es|ed|ing|ation)': 'localiz$1'
+  'maximis(e|es|ed|ing|ation|er|ers)': 'maximiz$1'
+  'metre(s?)': 'meter$1'
+  'minimis(e|es|ed|ing|ation|er|ers)': 'minimiz$1'
+  'modell(ed|ing)': 'model$1'
+  'modularis(e|es|ed|ing|ation)': 'modulariz$1'
+  'neighbour(hoods|hood|ing|s)?': 'neighbor$1'
+  'normalis(e|es|ed|ing|ation|er|ers)': 'normaliz$1'
+  'offence(s?)': 'offense$1'
+  'optimis(e|es|ed|ing|ation|er|ers)': 'optimiz$1'
+  'organis(e|es|ed|ing|ation|er|ers)': 'organiz$1'
+  'parameteris(e|es|ed|ing|ation)': 'parameteriz$1'
+  'parametris(e|es|ed|ing|ation)': 'parametriz$1'
+  'practis(e|es|ed|ing)': 'practic$1'
+  'pretence(s?)': 'pretense$1'
+  'prioritis(e|es|ed|ing|ation)': 'prioritiz$1'
+  'programme(s?)': 'program$1'
+  'quantis(e|es|ed|ing|ation|er|ers)': 'quantiz$1'
+  'randomis(e|es|ed|ing|ation)': 'randomiz$1'
+  'recognis(e|es|ed|ing|able|er|ers)': 'recogniz$1'
+  'sanitis(e|es|ed|ing|ation)': 'sanitiz$1'
+  'serialis(e|es|ed|ing|ation|er|ers)': 'serializ$1'
+  'signall(ed|ing)': 'signal$1'
+  'specialis(e|es|ed|ing|ation)': 'specializ$1'
+  'standardis(e|es|ed|ing|ation)': 'standardiz$1'
+  'summaris(e|es|ed|ing|ation|er|ers)': 'summariz$1'
+  'synchronis(e|es|ed|ing|ation|er|ers)': 'synchroniz$1'
+  'synthesis(e|es|ed|ing|er|ers)': 'synthesiz$1'
+  'tokenis(e|es|ed|ing|ation|er|ers)': 'tokeniz$1'
+  'travell(ed|ing|er|ers)': 'travel$1'
+  'unauthorised': unauthorized
+  'unlabelled': unlabeled
+  'unrecognis(ed|able|ably)': 'unrecogniz$1'
+  'utilis(e|es|ed|ing|ation)': 'utiliz$1'
+  'vectoris(e|es|ed|ing|ation)': 'vectoriz$1'
+  'virtualis(e|es|ed|ing|ation)': 'virtualiz$1'
+  'visualis(e|es|ed|ing|ation|er|ers)': 'visualiz$1'
+  'whilst': while

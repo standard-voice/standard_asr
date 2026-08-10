@@ -6,7 +6,7 @@
 The core library renders the constant :class:`~standard_asr.contract.results.TranscriptionResult`
 into SRT and VTT, so every compliant engine gets subtitle output for free
 (spec, section "Transcription Result"). This replaces the old
-``response_format`` knob: rendering is a post-hoc transformation, not a request
+``response_format`` option: rendering is a post-hoc transformation, not a request
 parameter. Provider-rendered high-fidelity formats remain available only via
 ``result.extra["provider_formats"]``. Speaker labels are rendered only on
 explicit opt-in (``include_speakers=True``): SRT prefixes the cue
@@ -44,7 +44,7 @@ from standard_asr.contract.results import Segment, TranscriptionResult
 UnrenderablePolicy = Literal["error", "omit", "collapse"]
 
 #: Matches runs of two-or-more newlines (optionally with intervening blank
-#: whitespace), i.e. the blank-line cue separator. Transcript text containing
+#: whitespace), that is, the blank-line cue separator. Transcript text containing
 #: such a run could otherwise forge or split cue blocks (cues are blank-line
 #: delimited in both SRT and WebVTT). Line terminators are normalized to ``\n``
 #: by :func:`_sanitize_cue_text` *before* this runs, so matching ``\n`` alone is
@@ -75,13 +75,13 @@ class _TimedCue(NamedTuple):
 
 
 def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
-    """Sanitize segment text so it cannot forge or break cue structure.
+    r"""Sanitize segment text so it cannot forge or break cue structure.
 
     Cue blocks in SRT and WebVTT are separated by blank lines, so a transcript
     containing an interior blank line followed by an index and a timestamp line
     could forge a new cue. WebVTT additionally parses ``&`` and ``<`` as markup:
     a bare ``<`` opens a cue-span tag that the browser's WebVTT tokenizer
-    consumes up to the next ``>``, so unescaped ``<`` in cue text (e.g. an
+    consumes up to the next ``>``, so unescaped ``<`` in cue text (for example, an
     engine-leaked ``<unk>`` token, ``<i>``, or "a < b") makes the browser
     *silently drop* that span -- the cardinal silent-wrong-result sin. ``&``
     likewise begins a character reference. Per the W3C WebVTT cue-text grammar
@@ -95,9 +95,9 @@ def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
     viewer. (Angle-bracket text is passed through verbatim in SRT; see
     :func:`to_srt`.)
 
-    Line terminators are normalized to ``\\n`` first so a lone ``\\r`` -- a
+    Line terminators are normalized to ``\n`` first so a lone ``\r`` -- a
     valid line terminator in WebVTT and many SRT parsers -- cannot slip past the
-    blank-line collapse and forge a cue via ``\\r\\r``.
+    blank-line collapse and forge a cue via ``\r\r``.
 
     Args:
         text: Raw segment text.
@@ -119,11 +119,11 @@ def _sanitize_cue_text(text: str, *, escape_markup: bool) -> str:
 
 
 def _sanitize_speaker_label(label: str, *, escape_markup: bool) -> str:
-    """Sanitize a speaker label for interpolation into a cue block.
+    r"""Sanitize a speaker label for interpolation into a cue block.
 
     The model validators (:func:`~standard_asr.contract.results.validate_speaker_label`)
     reject empty, whitespace-only, and edge-whitespace labels, but NOT interior
-    line terminators: ``"A\\nB"`` is a construction-valid label that, spliced
+    line terminators: ``"A\nB"`` is a construction-valid label that, spliced
     verbatim into a cue, would introduce a line break -- and a line break in the
     SRT ``[<label>]: `` prefix or the WebVTT ``<v <label>>`` annotation can
     forge or split cue structure exactly like unsanitized cue text. Every line
@@ -318,7 +318,7 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
     The null rule distinguishes the two empty states: ``segments is None``
     means segmentation was *not requested / not applicable* -- the synthetic
     whole-text fallback applies -- whereas ``segments == []`` means it *was
-    requested but is empty* (e.g. confirmed silence): zero cues,
+    requested but is empty* (for example, confirmed silence): zero cues,
     unconditionally, never a fabricated full-span cue.
 
     Segments with no VISIBLE PAYLOAD are dropped first
@@ -398,9 +398,10 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
         if on_unrenderable == "error":
             raise SubtitleRenderingError(
                 f"{len(unrenderable)} of {len(payload)} segments cannot "
-                "render as visible subtitle cues: the span is unmeasured (start "
-                "and/or end is None), or it quantizes to zero milliseconds on the "
-                "output grid (players silently drop a 'T --> T' cue). Rendering "
+                "render as visible subtitle cues. A segment is unrenderable when "
+                "its span is unmeasured (start and/or end is None), or when it "
+                "quantizes to zero milliseconds on the output grid (players "
+                "silently drop a 'T --> T' cue). Rendering "
                 "anyway would drop text or fabricate timing. Choose explicitly: "
                 "on_unrenderable='omit' keeps only the renderable cues (their "
                 "text alone reaches the file), or 'collapse' renders one "
@@ -448,12 +449,12 @@ def to_srt(
     rendering. (WebVTT, which mandates escaping, is handled by :func:`to_vtt`.)
 
     Speaker rendering: SRT has no speaker syntax, so opting in
-    mutates the cue text itself -- each labelled cue is prefixed with
+    mutates the cue text itself -- each labeled cue is prefixed with
     ``[<label>]: ``. The default is ``False`` on text-purity grounds (the
     renderer is a projection of the transcript; injecting labels uninvited
     would surprise every consumer that treats the cue text as speech), not for
     backward compatibility. Cues whose ``speaker`` is ``None`` are rendered
-    unchanged; empty-text segments are skipped even when labelled (a label
+    unchanged; empty-text segments are skipped even when labeled (a label
     with no payload is not a cue).
 
     Unrenderable segments: a segment without a measured span, or whose
@@ -469,7 +470,7 @@ def to_srt(
     milliseconds; the fallback exists for the same player behavior).
     ``result.segments is None`` (segmentation not requested/applicable) uses
     the same whole-text fallback under every policy; ``segments == []``
-    (requested but empty, e.g. silence) ALWAYS yields no cues. The synthetic
+    (requested but empty, for example, silence) ALWAYS yields no cues. The synthetic
     cue carries no speaker label -- a whole-text cue has no single
     attributable speaker -- so ``include_speakers`` has no effect on it.
     Pass a fully renderable result for time-accurate (and
@@ -490,6 +491,8 @@ def to_srt(
     Raises:
         SubtitleRenderingError: Under the default ``"error"`` policy, when any
             segment cannot render as a visible cue.
+        ValueError: If ``on_unrenderable`` is not one of the three policies
+            (see :func:`_cues`).
     """
     blocks: list[str] = []
     index = 1
@@ -536,11 +539,11 @@ def to_vtt(
     collapsed, ``-->`` neutralized by the ``>`` escape).
 
     Speaker rendering: opting in wraps the whole cue body of each
-    labelled cue in WebVTT's native voice span, ``<v <label>>``. The default is
+    labeled cue in WebVTT's native voice span, ``<v <label>>``. The default is
     ``False`` on text-purity grounds (the renderer is a projection of the
     transcript), not for backward compatibility. Cues whose ``speaker`` is
     ``None`` are rendered unchanged; empty-text segments are skipped even when
-    labelled.
+    labeled.
 
     Unrenderable segments: identical policy contract to :func:`to_srt` -- a
     segment without a measured span, or whose span quantizes to zero
@@ -566,7 +569,9 @@ def to_vtt(
 
     Raises:
         SubtitleRenderingError: Under the default ``"error"`` policy, when any
-            segment lacks a measured span.
+            segment cannot render as a visible cue.
+        ValueError: If ``on_unrenderable`` is not one of the three policies
+            (see :func:`_cues`).
     """
     blocks: list[str] = ["WEBVTT"]
     for cue in _cues(result, on_unrenderable=on_unrenderable):

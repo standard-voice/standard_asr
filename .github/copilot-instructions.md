@@ -1,80 +1,16 @@
-`version: 2025.09.1-1`
+# Copilot instructions
 
-# standard asr
+The contributor rules for this repository live in
+[`AGENTS.md`](../AGENTS.md). Read it first and follow it in full: it defines
+the project's purpose, the stakeholders every change must serve, the coding
+rules, and the prose standard.
 
-## 1. Core Project Context
+Before you edit a docstring, a user-facing string, or a Markdown file, also
+read [`STYLE.md`](../STYLE.md) and [`TERMINOLOGY.md`](../TERMINOLOGY.md). A
+prose gate (`scripts/vale.sh`) enforces the mechanizable part of both in CI,
+and it fails on any alert at any level.
 
-This is a standard ASR (Automatic Speech Recognition) library that provides a simple interface for interacting with various ASR models. It supports many popular ASR models and allows developers to easily transcribe audio into text.
-
-This project supports Python 3.10 and above. It is designed to be easy to use and integrate into existing applications.
-
-
-  - **Key Principles:**
-      - **Clean code:** Clean, testable, maintainable code, follows best practices of python 3.10+ and does not write deprecated code.
-
-Some key files and directories:
-
-```
-docs/                   # Documentation files
-.github/               # GitHub configuration files, inlcuding workflows
-src/standard_asr/          # Core library code
-pyproject.toml       # Project metadata and dependencies
-README.md            # Project overview and instructions
-```
-
-
-## 1. Overarching Coding Philosophy
-
-  - **Simplicity and Readability:** Write code that is simple, clear, and easy to understand. Avoid unnecessary complexity or premature optimization. Follow the Zen of Python.
-  - **Single Responsibility:** Each function, class, and module should do one thing and do it well.
-  - **Adherence to Best Practices**: Write clean, testable, and robust code that follows modern Python 3.10+ idioms. Adhere to the best practices of our core libraries (FastAPI, Pydantic v2).
-
-## C. Code Style
-
-### C.1. Formatting & Linting (Ruff)
-
-  - All Python code **MUST** be formatted with `uv run ruff format`.
-  - All Python code **MUST** pass `uv run ruff check` without errors.
-  - Import statements should be grouped by standard library, third-party, and local modules and sorted alphabetically (PEP 8).
-
-### C.2. Naming Conventions (PEP 8)
-
-  - Use `snake_case` for all variables, functions, methods, and module names.
-  - Use `PascalCase` for class names.
-  - Choose descriptive names. Avoid single-letter names except for loop counters or well-known initialisms.
-
-### C.3. Type Hints (CRITICAL)
-
-  - Target Python 3.10+. Use modern type hint syntax.
-  - **DO:** Use `|` for unions (e.g., `str | None`).
-  - **DON'T:** Use `Optional` from `typing` (e.g., `Optional[str]`).
-  - **DO:** Use built-in generics (e.g., `list[int]`, `dict[str, float]`).
-  - **DON'T:** Use capitalized types from `typing` (e.g., `List[int]`, `Dict[str, float]`).
-  - All function and method signatures (arguments and return values) **MUST** have accurate type hints. If third party libraries made it impossible to fix type errors, suppress the type checker.
-
-### C.4. Docstrings & Comments (CRITICAL)
-
-  - All public modules, functions, classes, and methods **MUST** have a docstring in English.
-  - Use the **Google Python Style** for docstrings.
-  - Docstrings **MUST** include:
-    1.  Summary.
-    2.  `Args:` section describing each parameter, its type, and its purpose.
-    3.  `Returns:` section describing the return value, its type, and its meaning.
-    4.  (Optional but encouraged) `Raises:` section for any exceptions thrown.
-  - All other code comments must also be in English.
-
-### C.5. Logging
-
-  - Use `logging` module for all informational or error output.
-  - Log messages should be in English, clear, and informative. Use emoji when appropriate.
-
-### C.6. Dependency Management
-
-  - First, try to solve the problem using the Python standard library or existing project dependencies defined in `pyproject.toml`.
-  - If a new dependency is required, it must have a compatible license and be well-maintained. We must minimize the risks for supply chain attacks.
-  - Use `uv add`, `uv remove`, `uv run` instead of pip to manage dependencies. If user uses conda, install uv with pip then.
-
-### C.7. Cross-Platform Compatibility
-
-  - All core logic **MUST** run on at least macOS, Windows, and Linux.
-  - If a feature is platform-specific (e.g., uses a Windows-only API) or hardware-specific (e.g., CUDA), it **MUST** be an optional component. The application should start and run core features even if that component is not available. Use graceful fallbacks or clear error messages.
+This file exists only as a pointer. GitHub.com Copilot Chat does not read
+`AGENTS.md` (the Copilot coding agent does), so without it that surface would
+get no repository instructions at all. Do not copy rules here: duplicated
+rules drift, and `AGENTS.md` is the single source of truth.

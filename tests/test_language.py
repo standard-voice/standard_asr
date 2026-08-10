@@ -61,7 +61,7 @@ def test_normalize_bcp47_lowercases_after_singleton() -> None:
 
 
 def test_normalize_bcp47_membership_is_case_insensitive_in_effect() -> None:
-    # Two differently-cased spellings canonicalize to the same value, so
+    # Two differently cased spellings canonicalize to the same value, so
     # membership comparisons remain exact regardless of input casing.
     assert normalize_bcp47("zh-Hans") == normalize_bcp47("ZH-HANS") == "zh-Hans"
 
@@ -338,7 +338,7 @@ def test_detectable_membership_canonicalizes_declared_side() -> None:
 def test_effective_candidates_strict_over_max_raises() -> None:
     """Strict mode rejects an over-``max`` candidate list as UnsupportedFeatureError."""
     # Over-``max`` is the same class of rejection as non-detectable: a list the
-    # engine cannot honour, not a malformed value -> UnsupportedFeatureError.
+    # engine cannot honor, not a malformed value -> UnsupportedFeatureError.
     with pytest.raises(UnsupportedFeatureError) as excinfo:
         effective_candidate_languages(
             AUTO,
@@ -448,7 +448,7 @@ def test_reserved_auto_token_matched_case_insensitively(candidates: list[str]) -
     # The reserved 'auto' token is matched case-insensitively (after
     # normalization), so 'AUTO' / 'Auto' / 'auto' all hit the explicit
     # reserved-word error rather than being misreported as "not detectable".
-    with pytest.raises(ValueError, match="MUST NOT contain 'auto'"):
+    with pytest.raises(ValueError, match="cannot contain 'auto'"):
         effective_candidate_languages(
             AUTO,
             candidates,

@@ -302,7 +302,7 @@ def test_covers_rejects_timestamps_mode_widening() -> None:
 
 
 def test_covers_allows_standard_mode_reduction_between_supported_modes() -> None:
-    # A change to a provably-weaker (but still supported) standard mode is a
+    # A change to a provably weaker (but still supported) standard mode is a
     # legal narrowing: the fail-closed guard must fall through, not reject it.
     declared = DeclaredCapabilities(
         streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="seamless"))
@@ -317,7 +317,7 @@ def test_covers_unknown_mode_change_is_fail_closed() -> None:
     # Tokens outside the standard reduction map (an x_* experimental
     # enum node) have no provable strength order, so a mode CHANGE between them
     # MUST NOT pass as a legal narrowing (fail-closed); an identical mode is a
-    # trivially-valid non-widening.
+    # trivially valid non-widening.
     declared = _x_caps({"x_acme_decode": {"mode": "alpha"}})
     changed = _x_caps({"x_acme_decode": {"mode": "beta"}})
     unchanged = _x_caps({"x_acme_decode": {"mode": "alpha"}})
@@ -500,7 +500,7 @@ def test_iter_queryable_paths_x_star_gate_matches_the_query_surface() -> None:
 def test_supports_descends_non_extension_keys_inside_x_star_subtree() -> None:
     # The x_* filter applies only to extra keys on typed standard nodes. Inside a
     # raw x_* subtree the vendor owns the whole structure, so non-x_* child keys
-    # (e.g. "nested") still resolve and appear as supported paths.
+    # (for example, "nested") still resolve and appear as supported paths.
     caps = DeclaredCapabilities.model_validate(
         {"batch": {"x_container": {"nested": {"supported": True}}}}
     )
@@ -789,7 +789,7 @@ def test_bare_x_star_dict_is_fail_closed_and_two_layer_consistent() -> None:
 
 
 def test_self_resamples_is_declarable_engine_global_flag() -> None:
-    # `self_resamples` is the one behavioural capability the spec places
+    # `self_resamples` is the one behavioral capability the spec places
     # in Capabilities. It is engine-global, queried via
     # `supports("self_resamples")` like streaming_input/streaming_output, and is
     # informational only -- it does not change any resampling decision.
@@ -838,7 +838,7 @@ def test_mutable_mid_stream_absent_on_batch_guidance() -> None:
 
 
 def test_mutable_mid_stream_covers_rejects_widening() -> None:
-    # Modelled as a FlagCap, so the effective <= declared invariant is
+    # Modeled as a FlagCap, so the effective <= declared invariant is
     # enforced by covers() set-containment with no special-casing -- declared
     # false -> effective true is a widening and is rejected; the reverse narrows.
     declared_false = DeclaredCapabilities(streaming=StreamingCapabilities())
@@ -854,7 +854,7 @@ def test_mutable_mid_stream_covers_rejects_widening() -> None:
 def test_streaming_capabilities_accepts_plain_guidance_caps() -> None:
     # backward tolerance: the streaming guidance field is typed as the
     # base GuidanceCaps, so an engine that declares a plain GuidanceCaps still
-    # validates. The before-validator normalises it to the streaming subtype, so
+    # validates. The before-validator normalizes it to the streaming subtype, so
     # ``mutable_mid_stream`` is a real (fail-closed) node rather than an invisible
     # extra -- keeping the typed Python and canonical-JSON layers in agreement.
     streaming = StreamingCapabilities(guidance=GuidanceCaps())
@@ -905,7 +905,7 @@ def test_mutable_mid_stream_covers_rejects_widening_on_json_path() -> None:
 
 
 def test_streaming_guidance_rejects_non_coercible_value() -> None:
-    # The before-validator only normalises recognised inputs (subtype, base, dict);
+    # The before-validator only normalizes recognized inputs (subtype, base, dict);
     # anything else falls through to pydantic, which rejects it natively.
     from pydantic import ValidationError
 
@@ -947,7 +947,7 @@ def test_covers_continues_past_unresolvable_node() -> None:
     # (declared_node is None), the per-node narrowing check is skipped (continue)
     # but set-containment still governs the result.
     declared = _x_caps({"x_feat": {"supported": True}})
-    # `other` supports the same path; declared._resolve finds it, but we also add
+    # `other` supports the same path; declared._resolve finds it, but the fixture also adds
     # a present container whose effective node differs in shape.
     same = _x_caps({"x_feat": {"supported": True}})
     assert declared.covers(same) is True
@@ -1011,7 +1011,7 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
     # _MODE_REDUCTIONS keys an enum/mode strength order by the BARE
     # token, globally (not per node type). That is only sound while the standard
     # enum families have disjoint token sets -- otherwise a future enum node that
-    # reuses an existing token (e.g. 'none'/'final') would silently inherit another
+    # reuses an existing token (for example, 'none'/'final') would silently inherit another
     # family's reduction order. Guard the invariant: collect the Literal tokens of
     # every standard enum/mode Cap and assert no token is shared across families,
     # and that every reduction-map key/value is one of those declared tokens.
@@ -1048,7 +1048,7 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Diarization capability: streaming node + always_on behavioural flag.
+# Diarization capability: streaming node + always_on behavioral flag.
 # --------------------------------------------------------------------------- #
 def test_streaming_diarization_defaults_fail_closed() -> None:
     # StreamingCapabilities gains a diarization node with the same fail-closed
@@ -1080,7 +1080,7 @@ def test_always_on_requires_supported() -> None:
 
 
 def test_always_on_is_a_queryable_flag_node() -> None:
-    # always_on is a behavioural fact in the same family as self_resamples, but
+    # always_on is a behavioral fact in the same family as self_resamples, but
     # it IS a regular queryable FlagCap node: supports() resolves it, it appears
     # in iter_supported_paths() when supported, and canonical_json injects a
     # uniform `supported` boolean. The semantic inversion (True = imposed, not
@@ -1262,7 +1262,7 @@ def test_extension_extras_are_closed_to_the_json_value_space() -> None:
 def test_extension_extras_key_domain_is_exact_str() -> None:
     # The extras KEY domain closes with the same rule as the results-layer
     # wire slots (require_json_string_keys): exact str at every depth. The
-    # counterexample this pins: the value adapter's lax dict[str, ...]
+    # counterexample this pins: the value adapter's lax ``dict[str, ...]``
     # validation DECODES a bytes key into its str spelling, and the merge
     # then re-homed the laundered key -- {b"supported": True} silently
     # overrode a declared supported=False (both insertion orders), and
@@ -1296,8 +1296,9 @@ def test_extension_extras_key_domain_is_exact_str() -> None:
 def test_queryable_surface_keys_cannot_embed_the_path_separator() -> None:
     # "." is the dot-path grammar's reserved separator: a queryable-surface
     # key containing it minted a path that supports() could never resolve
-    # (iter_queryable_paths yielded 'x_vendor.a.b' for {'x_vendor': {'a.b':
-    # ...}}, supports() split it into segments the tree does not have, and
+    # (iter_queryable_paths yielded 'x_vendor.a.b' for
+    # ``{'x_vendor': {'a.b': ...}}``, supports() split it into segments the
+    # tree does not have, and
     # the compliance sweep then failed a fully compliant plugin), and two
     # DISTINCT trees ({'a.b': node} vs {'a': {'b': node}}) joined to the
     # SAME path string, letting covers()'s set containment conflate them.

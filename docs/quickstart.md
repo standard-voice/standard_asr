@@ -12,8 +12,11 @@ pip install "standard-asr[audio]"
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
 ```
 
-The `[audio]` extra adds MP3/FLAC/OGG decoding and automatic resampling. Without
-it, only WAV files work out of the box.
+The `[audio]` extra adds MP3/FLAC/OGG decoding and higher-quality resampling.
+Resampling itself works without it, on a built-in numpy fallback. Without the
+extra, only an 8/16-bit PCM WAV *file path* decodes with no extra setup — WAV
+bytes go through the same path as MP3, FLAC, and OGG, which need either the
+extra or the ffmpeg suite (`ffmpeg` and `ffprobe`) on your PATH.
 
 ## Discover installed engines
 
@@ -65,8 +68,11 @@ async with engine.start_transcription(audio_format=audio_format) as session:
                 remove(old)                        # engine re-segmented
 ```
 
-Those three branches (`partial` / `final` / `supersede`) are the complete core
-reduce. Handle them and your app works on every compliant engine.
+Those three event types (`partial` / `final` / `supersede`) are the core set
+every app handles. This sketch keys display by `segment_id` only; an app that
+renders joined text must also keep the reading order across a `supersede` --
+use `standard_asr.runtime.streaming.reduce_event`, or see the full reduce in
+the [Streaming guide](for_app_dev/streaming.md).
 
 ## Next steps
 
@@ -74,5 +80,5 @@ reduce. Handle them and your app works on every compliant engine.
   guide (parameters, audio input types, rendering).
 - [Streaming](for_app_dev/streaming.md) -- deep dive into the streaming event
   protocol, stability guarantees, and the sync bridge.
-- [Adapt an Engine](for_asr_dev/adapting_engine.md) -- build a compliant plugin.
+- [Adapt an ASR System](for_asr_dev/adapting_engine.md) -- build a compliant plugin.
 - [API Reference](reference/index.md) -- the complete public surface.

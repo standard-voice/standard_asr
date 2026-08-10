@@ -143,7 +143,7 @@ def test_closed_finality() -> None:
 def test_event_speaker_field_and_validator() -> None:
     # speaker is validated ON THE EVENT (shared rule with Segment/Word): a
     # malformed label must fail here, not defer the crash to
-    # the reducer's Segment(...) or flow silently over the WS wire.
+    # the reducer's ``Segment(...)`` or flow silently over the WS wire.
     assert TranscriptionEvent.partial("s0", "hi", speaker="A").speaker == "A"
     assert TranscriptionEvent.final("s0", "hi", speaker="speaker_1").speaker == "speaker_1"
     assert TranscriptionEvent.partial("s0", "hi").speaker is None  # default
@@ -540,7 +540,7 @@ def test_session_send_after_end_raises() -> None:
 def test_feed_rejects_str_with_actionable_typeerror() -> None:
     # A str satisfies Iterable[str]; passing a file path to feed is
     # a common slip that would otherwise be consumed character by character (or
-    # fail deep inside an adapter as a confusing engine_error). feed() MUST
+    # fail deep inside an engine as a confusing engine_error). feed() MUST
     # fail loudly at the call site with a TypeError pointing to the right API.
     session = _EchoSession()
     with pytest.raises(TypeError, match=r"start_transcription\(audio="):
@@ -550,7 +550,7 @@ def test_feed_rejects_str_with_actionable_typeerror() -> None:
 def test_feed_str_rejection_does_not_claim_feed_mode() -> None:
     # Rejecting a str is a pure argument-type error and MUST NOT
     # mutate session state -- the caller can still drive the session correctly
-    # afterwards (e.g. via manual send_audio).
+    # afterwards (for example, via manual send_audio).
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession()
         with pytest.raises(TypeError):
@@ -821,7 +821,7 @@ def test_sync_bridge_manual() -> None:
 def test_sync_bridge_forwards_diagnostics() -> None:
     # The sync bridge must mirror the async session's diagnostics() surface (a
     # first-class, compliance-checked method), not just feed/result -- otherwise a
-    # synchronously-driven session silently loses the parameter-gating / language
+    # synchronously driven session silently loses the parameter-gating / language
     # diagnostics the async session exposes.
     from standard_asr.contract.results import Diagnostic
 
@@ -1012,7 +1012,7 @@ def test_coalescing_carries_forward_speaker() -> None:
     # partial speakers are non-actionable, so re-presenting a stale
     # provisional speaker cannot drive a wrong irreversible action, and it keeps
     # the buffer self-consistent with the guard, which -- should s0 later freeze
-    # -- locks the last-accepted non-None speaker, i.e. exactly this "A".
+    # -- locks the last-accepted non-None speaker, that is, exactly this "A".
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer()
         buf.put(TranscriptionEvent.partial("s0", "hel", speaker="A"))
@@ -1093,6 +1093,43 @@ def test_put_forced_bypasses_capacity() -> None:
     buf.put_forced(TranscriptionEvent.done())
 
 
+def test_drop_proof_slots_consume_the_shared_budget() -> None:
+    """Drop-proof events alone can spend the budget and starve the next partial.
+
+    Pins the semantics the class docstring states: ``capacity`` is a budget
+    over ALL pending events, and drop-proof finals -- never refused
+    themselves -- still consume it. Five pending finals in a capacity-4
+    buffer mean the FIRST backpressure-eligible put overflows, even though
+    zero backpressure-eligible events are pending. An engine author sizing
+    ``event_buffer_capacity`` for a final-heavy stream must budget for the
+    finals, not only for the partials.
+    """
+    buf = _CoalescingBuffer(capacity=4)
+    for i in range(5):
+        buf.put(TranscriptionEvent.final(f"s{i}", "x"))
+    with pytest.raises(EventBufferOverflow):
+        buf.put(TranscriptionEvent.partial("p0", "hi"))
+
+
+def test_undelivered_segment_holds_two_slots() -> None:
+    """A never-delivered segment costs a partial slot AND a final slot.
+
+    The sole-mention carve-out keeps the declaration partial alive when its
+    final arrives before the consumer ever saw the segment, so under a slow
+    consumer each in-flight segment holds two budget slots. Pins the sizing
+    rule the class docstring states: capacity 4 fits TWO undelivered
+    segments, and the third segment's partial -- not some later event -- is
+    the one refused.
+    """
+    buf = _CoalescingBuffer(capacity=4)
+    buf.put(TranscriptionEvent.partial("s1", "a"))
+    buf.put(TranscriptionEvent.final("s1", "aa"))  # partial kept: s1 undeclared
+    buf.put(TranscriptionEvent.partial("s2", "b"))
+    buf.put(TranscriptionEvent.final("s2", "bb"))  # budget now fully spent
+    with pytest.raises(EventBufferOverflow):
+        buf.put(TranscriptionEvent.partial("s3", "c"))
+
+
 def test_final_supersede_never_dropped_at_capacity() -> None:
     # Fill the buffer to capacity with distinct-segment partials, then assert a
     # final and a supersede still land (drop-proof, not converted to overflow).
@@ -1135,6 +1172,31 @@ def test_session_backpressure_overflow_emits_error() -> None:
         session.feed([])
         async with session:
             await asyncio.sleep(0.05)  # let producer run ahead and overflow
+            return [e async for e in session]
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "backpressure"
+    assert events[-1].recoverable is False
+
+
+def test_progress_heartbeats_also_trigger_backpressure() -> None:
+    # A progress heartbeat takes the bounded path, exactly like a new partial
+    # slot: put() special-cases partial (coalesce) and final/supersede/error/done
+    # (drop-proof), then falls through to _reserve() for everything else. The
+    # spec lets (and during long silent work encourages) engines emit periodic
+    # progress, so an engine that emits ONLY progress can still overflow a slow
+    # consumer's buffer -- the class docstring once claimed only partials could.
+    class _ProgressFloodSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            for _ in range(50):
+                yield TranscriptionEvent.progress()
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _ProgressFloodSession(event_buffer_capacity=4)
+        session.feed([])
+        async with session:
+            await asyncio.sleep(0.05)  # let the producer run ahead and overflow
             return [e async for e in session]
 
     events = asyncio.run(run())
@@ -1467,7 +1529,7 @@ class _RaiseOpenSession(TranscriptionSession):
 
 
 def test_sync_bridge_open_raise_tears_down_thread() -> None:
-    # A non-timeout raise from the adapter's _open: __enter__ must tear down its
+    # A non-timeout raise from the engine's _open: __enter__ must tear down its
     # owned loop thread before propagating (a context manager whose __enter__ raises
     # never receives __exit__), so the regular-exception path leaks nothing either.
     sync = SyncSession(_RaiseOpenSession(), submit_timeout=5.0)
@@ -1612,7 +1674,7 @@ def test_aexit_without_aenter_has_no_tasks_to_cancel() -> None:
 
 def test_iterate_stops_on_closed_empty_buffer() -> None:
     # Teardown race guard: if the event buffer is closed with no terminal event
-    # ever landing (e.g. the producer was cancelled mid-flight), the iterator
+    # ever landing (for example, the producer was canceled mid-flight), the iterator
     # must end cleanly when get() returns None rather than hang.
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession(done_timeout=5.0)
@@ -1633,7 +1695,7 @@ def test_cancel_all_tasks_no_other_tasks_is_noop() -> None:
 
 def test_abstract_produce_raises_not_implemented() -> None:
     # The abstract base _produce body raises NotImplementedError when invoked
-    # directly (e.g. a subclass that delegates to super() instead of overriding).
+    # directly (for example, a subclass that delegates to super() instead of overriding).
     class _Concrete(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             yield TranscriptionEvent.done()  # pragma: no cover
@@ -1661,9 +1723,9 @@ class _ReconnectSession(TranscriptionSession):
         chunks: list[bytes] = []
         async for chunk in self.audio_chunks():
             chunks.append(chunk)
-        # Simulate the adapter re-establishing, replaying the rolling buffer,
-        # and signalling the bridged gap after audio has been processed. The
-        # adapter explicitly decides whether content was lost.
+        # Simulate the engine re-establishing, replaying the rolling buffer,
+        # and signaling the bridged gap after audio has been processed. The
+        # engine explicitly decides whether content was lost.
         _ = self.replay_buffer()
         self.note_reconnect(self._gap[0], self._gap[1], content_lost=self._content_lost)
         yield TranscriptionEvent.final("seg-0", b"".join(chunks).decode(), start=0.0)
@@ -1688,7 +1750,7 @@ def test_reconnect_emits_progress_replayable_no_content_lost() -> None:
 
 def test_reconnect_adapter_signals_content_lost_emits_progress_then_content_lost() -> None:
     async def run() -> list[TranscriptionEvent]:
-        # Async generator source -> non-replayable; adapter decides content was
+        # Async generator source -> non-replayable; engine decides content was
         # lost (the gap could not be replayed) and passes content_lost=True.
         async def gen() -> AsyncIterator[bytes]:
             for _ in range(5):
@@ -1838,7 +1900,7 @@ def test_reconnect_pair_survives_full_buffer_and_stays_adjacent() -> None:
         session = _ReconnectSession(
             (1.0, 2.0), content_lost=True, event_buffer_capacity=2, audio_history_maxlen=1
         )
-        session.feed(gen())  # adapter signals content_lost -> pair queued
+        session.feed(gen())  # engine signals content_lost -> pair queued
         # Saturate the bounded event buffer so a non-drop-proof drain of the
         # queued reconnect pair would overflow / split them.
         session._buffer.put(TranscriptionEvent.partial("p0", "x"))  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -2214,7 +2276,7 @@ def test_guard_frozen_speaker_retraction_suppressed() -> None:
 
 
 def test_guard_speaker_none_to_x_after_freeze_allowed() -> None:
-    # None->X after freezing is the recommended delay-speaker-to-final adapter
+    # None->X after freezing is the recommended delay-speaker-to-final engine
     # strategy and MUST be admitted.
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3))
@@ -2341,10 +2403,10 @@ def test_guard_supersede_duplicate_new_ids_evasion_still_suppressed() -> None:
     assert guard.admit(forged) is None
     diag = next(d for d in guard.diagnostics if d.code == "supersede_cross_speaker_merge")
     # The message must report the DISTINCT replacement count (1) the pigeonhole
-    # actually compared, not the raw forged length (2): "2 segment(s)" against
+    # actually compared, not the raw forged length (2): reporting 2 against
     # 2 distinct speakers would contradict the very rule the diagnostic cites
     # and read like a guard misfire.
-    assert "only 1 distinct segment(s)" in diag.message
+    assert "fewer distinct segments (1:" in diag.message
     assert "['s3', 's3']" in diag.message  # raw list keeps the forgery visible
     state = guard._state  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert "s3" not in state
@@ -2388,7 +2450,7 @@ def test_forged_empty_old_ids_supersede_degrades_never_crashes() -> None:
 
 def test_guard_supersede_unknown_speakers_allowed() -> None:
     # Segments that never carried a speaker do not count as distinct: a merge
-    # of unlabelled segments (or one labelled + one unlabelled) is admitted.
+    # of unlabeled segments (or one labeled + one unlabeled) is admitted.
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.partial("s1", "hello"))
     guard.admit(TranscriptionEvent.partial("s2", "world"))
@@ -2827,7 +2889,7 @@ def test_guard_closed_shrink_forwards_in_range_stable_until() -> None:
 
 
 def test_guard_closed_out_of_range_stable_until_is_repaired() -> None:
-    # A buggy adapter carrying the OLD frontier onto the shrunk closed text is
+    # A buggy engine carrying the OLD frontier onto the shrunk closed text is
     # still repaired to a structurally valid in-range boundary + diagnostic.
     # (Constructed via model_copy to bypass the construction-time bound, which
     # already rejects this shape -- the guard is defense-in-depth.)
@@ -2895,7 +2957,7 @@ def test_event_explicit_none_detected_language_passes() -> None:
 
 def test_error_event_unset_recoverable_defaults_to_terminal() -> None:
     # recoverable=None would be an undefined third state that is_terminal
-    # silently reads as "recoverable"; unknown recoverability must fail safe
+    # silently reads as "recoverable"; unknown recoverability must fail closed
     # to terminal.
     event = TranscriptionEvent(type="error", code="boom")
     assert event.recoverable is False
@@ -2931,7 +2993,7 @@ def test_guard_supersede_out_of_order_diagnostic_names_both_causes() -> None:
 
 
 def test_session_constructor_rejects_degenerate_bounds() -> None:
-    # audio_queue_maxsize=0 would mean an UNBOUNDED asyncio.Queue (silently
+    # audio_queue_maxsize=0 would mean an UNBOUNDED ``asyncio.Queue`` (silently
     # disabling feed backpressure); zero/negative deadlines and buffer bounds
     # are configuration bugs, not no-ops.
     with pytest.raises(ValueError, match="audio_queue_maxsize"):
@@ -2986,7 +3048,7 @@ def test_deadline_terminal_stops_producer_so_result_matches_stream() -> None:
             session.feed([])
             async for event in session:
                 events.append(event)
-            # Give a not-cancelled producer ample time to emit the late final
+            # Give a not-canceled producer ample time to emit the late final
             # before reducing -- without the fix this makes result() diverge.
             await asyncio.sleep(0.3)
         return events, session.result().text
@@ -3107,7 +3169,7 @@ def test_max_session_seconds_caps_wall_time() -> None:
 
 def test_max_session_seconds_without_max_idle() -> None:
     # max_idle is None (1041 False branch); only the wall-clock cap terminates a
-    # continuously-chatty session.
+    # continuously chatty session.
     class _ChattySession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             i = 0
@@ -3133,7 +3195,7 @@ def test_max_session_seconds_anchored_at_session_start_not_iteration() -> None:
     #
     # The fake clock distinguishes the two anchorings: __aenter__ reads the
     # origin at t=0, and by the time _iterate reads the clock the session wall
-    # time is already 2.0s > the 1.0s budget. With the correct session anchor
+    # time is already 2.0 s > the 1.0 s budget. With the correct session anchor
     # (now - session_start = 2.0 > 1.0) the cap trips on the first loop
     # iteration. With the old iteration anchor (start = now = 2.0, so
     # now - start = 0) it would NOT trip and -- with every other deadline
@@ -3228,7 +3290,7 @@ def test_session_timeout_checked_at_loop_top_with_buffered_events() -> None:
 
     async def run() -> list[TranscriptionEvent]:
         session = _OneShotSession(done_timeout=5.0, max_idle=None, max_session_seconds=1.0)
-        # Deterministic clock: start at 0, then jump past the 1.0s budget so the
+        # Deterministic clock: start at 0, then jump past the 1.0 s budget so the
         # second loop iteration's top-of-loop check sees remaining <= 0.
         ticks = iter([0.0, 0.0, 2.0, 2.0, 2.0, 2.0])
 
@@ -3286,7 +3348,7 @@ def test_done_timeout_still_fires_on_total_silence() -> None:
 # --------------------------------------------------------------------------- #
 def test_silent_engine_survives_while_audio_is_consumed() -> None:
     # The scenario: a cloud-WS-style engine emits NOTHING while the
-    # user is silent, but the adapter keeps consuming fed audio. Consumption
+    # user is silent, but the engine keeps consuming fed audio. Consumption
     # advances the liveness anchor, so the session outlives done_timeout many
     # times over without a manufactured terminal; ending input then yields the
     # engine's own final + done.
@@ -3394,9 +3456,9 @@ def test_stream_deadlines_model_validates_and_tracks_explicit_fields() -> None:
 
 def test_stream_deadlines_rejects_unknown_field() -> None:
     """An unknown StreamDeadlines field fails construction (``extra='forbid'``)."""
-    # extra="forbid": a misspelled deadline is a silently-dropped SAFETY
+    # extra="forbid": a misspelled deadline is a silently dropped SAFETY
     # parameter -- under pydantic's default extra="ignore" the typo below was
-    # swallowed and the session ran with max_idle at its adapter default, the
+    # swallowed and the session ran with max_idle at its engine default, the
     # exact opposite of what the caller wrote. It MUST fail at construction.
     with pytest.raises(ValidationError) as excinfo:
         StreamDeadlines(max_idle_seconds=5.0)  # type: ignore[call-arg]
@@ -3404,7 +3466,7 @@ def test_stream_deadlines_rejects_unknown_field() -> None:
     errors = excinfo.value.errors()
     assert [e["type"] for e in errors] == ["extra_forbidden"]
     assert errors[0]["loc"] == ("max_idle_seconds",)
-    # The correctly-spelled field is still accepted (the guard is not blanket).
+    # The correctly spelled field is still accepted (the guard is not blanket).
     assert StreamDeadlines(max_idle=5.0).max_idle == 5.0
 
 
@@ -3412,7 +3474,7 @@ def test_apply_deadline_overrides_touches_only_explicit_fields() -> None:
     session = _EchoSession(done_timeout=7.0, max_idle=9.0)
     overrides = StreamDeadlines(max_idle=0.5, max_session_seconds=11.0)
     session._apply_deadline_overrides(overrides)  # pyright: ignore[reportPrivateUsage]
-    assert session.done_timeout == 7.0  # adapter choice kept (field unset)
+    assert session.done_timeout == 7.0  # engine choice kept (field unset)
     assert session.max_idle == 0.5  # explicit override applied
     assert session.max_session_seconds == 11.0
     disable = StreamDeadlines(done_timeout=None)
@@ -3619,7 +3681,7 @@ def test_event_end_before_start_is_rejected() -> None:
 
 
 def test_reducer_sorts_when_all_have_timestamps() -> None:
-    """Fully-timestamped finals sort by ``start`` with nothing to disclose."""
+    """Fully timestamped finals sort by ``start`` with nothing to disclose."""
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "second", start=5.0, end=6.0))
     reducer.add(TranscriptionEvent.final("s2", "first", start=1.0, end=2.0))
@@ -3909,12 +3971,12 @@ def test_deadline_drain_stops_at_real_buffered_terminal() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Closed finals fulfil supersede obligations (no lying diagnostic)
+# Closed finals fulfill supersede obligations (no lying diagnostic)
 # --------------------------------------------------------------------------- #
 def test_closed_final_fulfils_supersede_obligation() -> None:
     # A closed final that is a replacement group's only freeze MUST
     # register in the obligation ledger; finalize() must not emit a false
-    # supersede_obligation_unfulfilled for fully-preserved frozen text.
+    # supersede_obligation_unfulfilled for fully preserved frozen text.
     guard = _LifecycleGuard()
     assert guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11)) is not None
     assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None
@@ -4005,7 +4067,7 @@ def test_admitted_event_still_advances_audio_cursor() -> None:
 
 def test_recoverable_error_never_dropped_at_capacity() -> None:
     # The "never drop" rule does not distinguish recoverable from
-    # terminal errors. At capacity an adapter-yielded recoverable error must
+    # terminal errors. At capacity an engine-yielded recoverable error must
     # bypass the bound, not be replaced by a backpressure overflow error.
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer(capacity=2)
@@ -4020,7 +4082,7 @@ def test_recoverable_error_never_dropped_at_capacity() -> None:
 
 
 class _HangEndAudioSession(TranscriptionSession):
-    """Adapter whose end_audio hangs (simulates a stuck engine in the body)."""
+    """Session whose ``end_audio`` hangs (simulates a stuck engine in the body)."""
 
     async def end_audio(self) -> None:
         await asyncio.sleep(100)
@@ -4055,7 +4117,7 @@ def test_sync_bridge_calls_after_teardown_raise_stream_closed() -> None:
 
 
 def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    # An adapter running blocking
+    # An engine running blocking
     # (non-async) code mid-session freezes the bridge loop while its thread
     # stays ALIVE; the in-loop deadlines cannot fire on a frozen loop, so the
     # pump's responsiveness probe is the only thing standing between the sync
@@ -4075,7 +4137,7 @@ def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -
     sync.__enter__()
     sync.feed([b"x"])
     events: list[TranscriptionEvent] = []
-    with pytest.raises(TimeoutError, match="frozen by blocking adapter code"):
+    with pytest.raises(TimeoutError, match="frozen by blocking engine code"):
         for ev in sync:
             events.append(ev)
     assert [e.type for e in events] == ["partial"]

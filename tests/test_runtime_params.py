@@ -73,7 +73,7 @@ def test_provider_params_rejects_bare_base_instance() -> None:
     # The bare ProviderParams base carries no fields and is never a
     # valid concrete params model. Passing a bare instance is refused at
     # construction (so it never reaches the gate with a misleading
-    # "swapped engine?" message about a wrong-engine model).
+    # swapped-engine message about a wrong-engine model).
     with pytest.raises(ValidationError, match="concrete ProviderParams subclass"):
         RuntimeParams(provider_params=ProviderParams())
 
@@ -134,7 +134,7 @@ def test_candidate_languages_rejects_auto(
 ) -> None:
     # 'auto' is a directive, never a candidate; its presence is a caller bug and
     # always raises (mirrors language.effective_candidate_languages, case-folded).
-    with pytest.raises(ValidationError, match="MUST NOT contain 'auto'"):
+    with pytest.raises(ValidationError, match="cannot contain 'auto'"):
         model(candidate_languages=value)
 
 
@@ -297,7 +297,7 @@ def test_diarization_request_is_empty_frozen_marker() -> None:
     # Frozen: even a never-declared attribute cannot be attached.
     with pytest.raises(ValidationError):
         marker.num_speakers = 3  # type: ignore[attr-defined]
-    # extra="forbid": a guessed future knob (num_speakers graduates additively
+    # extra="forbid": a guessed future parameter (num_speakers graduates additively
     # once portable) fails loudly instead of being silently ignored.
     with pytest.raises(ValidationError):
         DiarizationRequest(num_speakers=3)  # type: ignore[call-arg]
@@ -324,7 +324,7 @@ def test_diarization_wire_three_way_mapping(
 ) -> None:
     # The wire mapping: {} -> enable marker; null -> not requested;
     # absent key -> not requested. There is NO requested-but-empty third state
-    # (no []-analogue for an on/off feature).
+    # (no []-analog for an on/off feature).
     assert model.model_validate({"diarization": {}}).diarization == DiarizationRequest()
     assert model.model_validate({"diarization": None}).diarization is None
     assert model.model_validate({}).diarization is None

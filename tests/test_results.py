@@ -37,7 +37,7 @@ def test_minimal_result() -> None:
 
 def test_no_blanket_metadata_pocket_on_the_result() -> None:
     """The blanket `metadata: dict[str, Any]` field was removed: a "standardized
-    engine-agnostic metadata" dict with no standardized keys, no writer and no
+    engine-agnostic metadata" dict with no standardized keys, no writer, and no
     reader is the same unstructured-data disease the spec dropped from
     Properties and Capabilities. Standardized result data earns a real field;
     everything engine-specific goes in `extra`. The model is extra="forbid",
@@ -164,7 +164,7 @@ def test_channels_field() -> None:
 def test_channel_segments_require_top_level_segments() -> None:
     # Ignoring `channels` must be lossless. A channel entry carrying
     # segments while the top level has none would make channel-agnostic
-    # consumers (e.g. the renderers) silently drop all per-channel timing, so
+    # consumers (for example, the renderers) silently drop all per-channel timing, so
     # the shape is rejected at construction.
     chan = ChannelResult(channel=0, text="hi", segments=[Segment(start=0.0, end=1.0, text="hi")])
     with pytest.raises(ValueError, match="time-merged union"):
@@ -282,7 +282,7 @@ def test_to_srt_empty_text_no_duration() -> None:
 
 
 def test_empty_segments_list_yields_no_cues() -> None:
-    # segments=[] means segmentation ran and found nothing (e.g. silence). Per
+    # segments=[] means segmentation ran and found nothing (for example, silence). Per
     # the null rule this must NOT fabricate a full-span cue from text.
     result = TranscriptionResult(text="some text", segments=[], duration=5.0)
     assert to_srt(result) == ""
@@ -299,7 +299,7 @@ def test_none_segments_with_text_synthesizes_one_cue() -> None:
 
 
 def test_synthetic_cue_without_duration_has_visible_span() -> None:
-    # segments=None + unknown duration (e.g. a reduced stream): the synthetic
+    # segments=None + unknown duration (for example, a reduced stream): the synthetic
     # cue must not be zero-duration -- ffmpeg / VLC / browser WebVTT silently
     # drop zero-duration cues, hiding the only transcript content. The
     # renderer falls back to a fixed 3 s span.
@@ -406,7 +406,7 @@ def _unavailable_segment(text: str, **kwargs: object) -> Segment:
 
     Args:
         text: The segment text.
-        **kwargs: Extra :class:`Segment` fields (e.g. ``speaker``).
+        **kwargs: Extra :class:`Segment` fields (for example, ``speaker``).
 
     Returns:
         A ``start=None, end=None`` segment (``timestamp_status="unavailable"``).
@@ -707,7 +707,7 @@ def test_stale_diagnostic_on_fully_measured_result_is_ignored() -> None:
 
     Under the retired marker design a result-level diagnostic ALONE collapsed
     a fully measured timeline into one synthetic cue. Timing now lives only
-    in the nullable values, so a stale/wrong diagnostic (e.g. surviving a
+    in the nullable values, so a stale/wrong diagnostic (for example, surviving a
     model_copy that replaced the segments) changes nothing: every measured
     cue renders faithfully under the default policy.
     """
@@ -790,7 +790,7 @@ def test_synthetic_cue_visibility_is_decided_on_the_millisecond_grid() -> None:
     """A sub-millisecond ``duration`` is as invisible as an exact ``0.0``.
 
     ``duration=0.0005`` passes a raw ``> 0`` float check yet formats to
-    ``00:00:00,000 --> 00:00:00,000`` -- the same silently-dropped cue.
+    ``00:00:00,000 --> 00:00:00,000`` -- the same silently dropped cue.
     The fallback decision must consult the SAME quantization the timestamp
     formatter renders (``int(round(s * 1000))``, ties-to-even), so the
     boundary cases pin the actual output grid:
@@ -932,7 +932,7 @@ def test_vtt_escapes_markup_metacharacters() -> None:
 
 
 def test_vtt_escapes_engine_leaked_special_tokens() -> None:
-    # The realistic input: a Whisper-family engine leaks "<unk>" / "<|...|>"
+    # The realistic input: a Whisper-family engine leaks ``<unk>`` / ``<|...|>``
     # special tokens. They must be shown verbatim (escaped), not eaten as tags.
     seg = Segment(start=0.0, end=1.0, text="<unk> hi <|endoftext|>")
     vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]))
@@ -1146,7 +1146,7 @@ def test_renderers_default_omits_speakers() -> None:
 
 
 def test_include_speakers_skips_none_speaker_segments() -> None:
-    # Mixed result: only the labelled cue changes; a None speaker renders the
+    # Mixed result: only the labeled cue changes; a None speaker renders the
     # cue unchanged (no "[None]" fabrication).
     srt = to_srt(_speaker_result("Alice", None), include_speakers=True)
     assert "[Alice]: line 0" in srt
@@ -1154,7 +1154,7 @@ def test_include_speakers_skips_none_speaker_segments() -> None:
     assert "None" not in srt
     vtt = to_vtt(_speaker_result("Alice", None), include_speakers=True)
     assert "<v Alice>line 0" in vtt
-    # The unlabelled cue's payload starts directly after its timing line -- no
+    # The unlabeled cue's payload starts directly after its timing line -- no
     # voice tag was fabricated for it.
     assert "\nline 1" in vtt
 
@@ -1407,7 +1407,7 @@ def test_extra_rejects_int_object_keys() -> None:
     assert exc_info.value.errors()[0]["type"] in (
         "standard_asr_json_object_key",
         # pydantic's own int-key rejection is also acceptable; the point is a
-        # loud failure, never a coercion. (Our before-validator fires first.)
+        # loud failure, never a coercion. (The contract's before-validator fires first.)
         "invalid_key",
     )
 

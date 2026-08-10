@@ -156,14 +156,14 @@ def _target_array_sample_rate(
        ``execute_plan`` directly with declarations that violate the invariants.
        It then picks an **explicit nearest-reachable** rate relative to the
        source: for a discrete list, the accepted rate closest in absolute
-       distance to ``source_sample_rate``, preferring -- to honour the
+       distance to ``source_sample_rate``, preferring -- to honor the
        anti-upsampling spirit -- a rate that does **not** upsample (``<= source``)
        over one that does when both are equally near (deterministic and
-       order-independent; the old ``accepted[0]`` could silently upsample, e.g.
+       order-independent; the old ``accepted[0]`` could silently upsample, for example,
        ``[48000, 16000]`` for 22050 Hz input picked 48000); for a
        ``SampleRateRange``, the source clamped into ``[min, max]``. When the
        source rate is unknown the smallest accepted rate (list) / the range
-       minimum is chosen (minimises gratuitous upsampling).
+       minimum is chosen (minimizes gratuitous upsampling).
 
     Args:
         accepted: The engine's accepted sample rates (list, range, or ``"any"``).
@@ -175,17 +175,22 @@ def _target_array_sample_rate(
     Returns:
         A sample rate the engine accepts.
     """
-    if accepted == "any":
-        return native_sample_rate
+    # Step 1 must precede the "any" fast path: "any" accepts every rate, so a
+    # hard-required rate wins there too (spec R7.2, step 1). Consistency fix,
+    # not a reachable defect: the only caller (_apply_sample_rate) resolves
+    # the required-rate and passthrough cases before delegating here, so the
+    # old order was wrong solely for a direct caller of this helper.
     if required_input_sample_rate is not None and sample_rate_accepted(
         accepted, required_input_sample_rate
     ):
         return required_input_sample_rate
+    if accepted == "any":
+        return native_sample_rate
     if sample_rate_accepted(accepted, native_sample_rate):
         return native_sample_rate
     if source_sample_rate is None:
-        # No source reference: pick the smallest reachable rate to minimise
-        # gratuitous upsampling, deterministically. (For "any" we returned native
+        # No source reference: pick the smallest reachable rate to minimize
+        # gratuitous upsampling, deterministically. (The "any" arm returned native
         # above; here ``accepted`` is a list or range.)
         return min(accepted) if isinstance(accepted, list) else accepted.min
     # Nearest reachable (list: nearest member preferring not to upsample; range:
@@ -603,7 +608,7 @@ def _prepare_array(
         # branch: no data:-URI content sniffing and no leading/trailing strip()
         # of the path (discrimination MUST NOT sniff string content,
         # and a bare path is ALWAYS a local file). Passing str() would route an
-        # AudioPath("data:audio/wav;base64,...") into base64 decoding (a silent
+        # ``AudioPath("data:audio/wav;base64,...")`` into base64 decoding (a silent
         # wrong result that fails loudly on an encoded-bytes engine instead) and
         # would strip a real "/tmp/x.wav " path down to a different file. The
         # Path branch raises an actionable "wrap base64 in AudioBase64" error.

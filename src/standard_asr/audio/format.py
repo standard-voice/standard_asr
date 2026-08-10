@@ -21,7 +21,7 @@ class AudioFormat(BaseModel):
     """Declared wire format for raw PCM frames fed to a streaming session.
 
     Attributes:
-        encoding: Wire encoding of the PCM frames (e.g. ``"pcm_s16le"``,
+        encoding: Wire encoding of the PCM frames (for example, ``"pcm_s16le"``,
             ``"mulaw"``). MUST be one of the engine's ``wire_encodings``.
         sample_rate: Sample rate of the frames in Hz.
         channels: Number of interleaved channels. Defaults to ``1`` (mono).
@@ -34,7 +34,7 @@ class AudioFormat(BaseModel):
 
     encoding: str = Field(
         ...,
-        description="Wire encoding of the PCM frames (e.g. 'pcm_s16le', 'mulaw').",
+        description="Wire encoding of the PCM frames (for example, 'pcm_s16le', 'mulaw').",
     )
     sample_rate: int = Field(..., gt=0, description="Sample rate in Hz.")
     channels: int = Field(default=1, gt=0, description="Number of channels.")

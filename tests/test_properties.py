@@ -82,7 +82,7 @@ def test_detectable_rejects_auto_token() -> None:
 
 @pytest.mark.parametrize("spelling", ["AUTO", "Auto", "aUtO"])
 def test_detectable_rejects_case_variant_auto(spelling: str) -> None:
-    # The reserved token must be recognised AFTER normalization. An
+    # The reserved token must be recognized AFTER normalization. An
     # upper/mixed-case "AUTO" validates as a 4-letter BCP-47 primary subtag and
     # normalizes to "auto", so a pre-normalization literal `== "auto"` guard let
     # it slip into detectable_languages despite the reserved-token ban.
@@ -106,7 +106,7 @@ def test_selectable_case_variant_auto_normalized_and_allowed(spelling: str) -> N
 
 
 def test_selectable_rejects_case_only_duplicate() -> None:
-    # "en-US" and "EN-US" collapse to the same canonical tag; a
+    # ``en-US`` and ``EN-US`` collapse to the same canonical tag; a
     # post-normalization duplicate is a declaration error (mirrors wire_encodings).
     data = _base_kwargs()
     data["selectable_languages"] = ["en-US", "EN-US"]

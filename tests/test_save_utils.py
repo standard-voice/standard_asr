@@ -29,7 +29,7 @@ def test_save_wav_writes_multichannel(tmp_path: Path) -> None:
 
 
 def test_save_wav_accepts_pathlike(tmp_path: Path) -> None:
-    # Save_wav accepts os.PathLike (a Path), not only str.
+    # ``save_wav`` accepts ``os.PathLike`` (a ``Path``), not only ``str``.
     audio = np.zeros(8, dtype=np.float32)
     path = tmp_path / "pathlike.wav"
     save_wav(audio, path, sample_rate=16000)  # pass the Path directly

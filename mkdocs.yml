@@ -83,7 +83,7 @@ nav:
       - Streaming: for_app_dev/streaming.md
       - Errors & Diagnostics: for_app_dev/errors.md
   - For Engine Authors:
-      - Adapt an Engine: for_asr_dev/adapting_engine.md
+      - Adapt an ASR System: for_asr_dev/adapting_engine.md
       - Plugin Entrypoints: for_asr_dev/plugin_entrypoints.md
   - API Reference:
       - standard_asr: reference/index.md

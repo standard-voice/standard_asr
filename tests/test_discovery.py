@@ -241,7 +241,7 @@ class _BridgeSession(TranscriptionSession):
 
 class _HangBridgeSession(TranscriptionSession):
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
-        # Never terminates and never yields: simulates a deadlocking adapter.
+        # Never terminates and never yields: simulates a deadlocking engine.
         await asyncio.Event().wait()
         yield TranscriptionEvent.done()  # pragma: no cover
 
@@ -289,7 +289,7 @@ def test_declared_engine_id_docstring_example_is_reachable() -> None:
     # (code is the contract): the ModelSpec.declared_engine_id
     # docstring example must be a value the field can actually hold. The lower-
     # case ``faster_whisper`` is accepted and folded to ``faster-whisper`` (so it
-    # is reachable), while the previously-documented upper-case ``Faster_Whisper``
+    # is reachable), while the previously documented upper-case ``Faster_Whisper``
     # is rejected at validation and can never appear -- the asymmetry the
     # docstring and plugin_entrypoints.md now spell out.
     eps = [
@@ -382,8 +382,8 @@ def test_discover_models_supports_multiple_entries() -> None:
 def test_discover_models_duplicate_strategy_replace() -> None:
     # ``replace`` is the same provider overriding its own registration, so both
     # entry points carry the SAME distribution identity -- otherwise this would
-    # (correctly) be a cross-distribution engine-identity collision. Distinct targets let
-    # us assert the latter factory wins.
+    # (correctly) be a cross-distribution engine-identity collision. Distinct targets
+    # let the test assert that the latter factory wins.
     ep_a = EntryPoint(
         name="alpha/only",
         value="tests.test_discovery:_dummy_factory",
@@ -549,8 +549,36 @@ def test_validate_model_name_rejects_invalid_chars() -> None:
         parse_entrypoint_name("engine/bad*name")
 
 
+def test_validate_model_name_position_defect_names_the_rule_and_value() -> None:
+    """A leading '.', ':', or '-' fails on POSITION, not on the character set.
+
+    The rejection message once listed the offending character as *allowed*
+    ("Allowed characters: letters, digits, '.', ...") and never echoed the
+    value -- pointing a plugin author away from the only thing wrong with
+    ``.v1``. The message must state the leading-character rule from
+    ``docs/for_asr_dev/plugin_entrypoints.md`` and echo the rejected value.
+    """
+    for bad in (".v1", "-int8", ":cpu"):
+        with pytest.raises(EntrypointValidationError, match="must start with") as exc_info:
+            validate_model_name(bad)
+        assert repr(bad) in str(exc_info.value)
+
+
+def test_validate_engine_id_position_defect_names_the_rule_and_value() -> None:
+    with pytest.raises(EntrypointValidationError, match="must start with") as exc_info:
+        validate_engine_id(".dotted")
+    assert repr(".dotted") in str(exc_info.value)
+
+
+def test_validate_engine_id_rejects_empty_with_a_plain_message() -> None:
+    # An empty id used to land on "contains unsupported characters" -- there
+    # is no character in an empty string; the defect is emptiness itself.
+    with pytest.raises(EntrypointValidationError, match="must not be empty"):
+        validate_engine_id("")
+
+
 def test_validate_engine_id_accepts_non_canonical() -> None:
-    # A non-canonical-but-valid id passes surface validation; canonicalisation
+    # A non-canonical-but-valid id passes surface validation; canonicalization
     # to the routing identity happens in parse_entrypoint_name / discover_models.
     validate_engine_id("my_engine")
     validate_model_name("model")
@@ -588,7 +616,7 @@ def test_discover_canonicalizes_engine_id_and_logs(
 
 def test_by_engine_normalizes_non_canonical_argument() -> None:
     # Engine-identity consistency: keys_by_engine() must PEP 503-normalize its argument the same
-    # way spec()/create() do, so a non-canonical query form (e.g. "my_engine")
+    # way spec()/create() do, so a non-canonical query form (for example, "my_engine")
     # resolves to the same engine -- not an empty list while spec()/create()
     # still resolve it.
     eps = [
@@ -859,6 +887,16 @@ def test_engine_class_resolves_from_factory_return_annotation() -> None:
 
 
 def test_engine_class_resolves_when_entrypoint_is_a_class() -> None:
+    """A directly exposed engine class needs no factory return annotation.
+
+    Both engine-author guides once carried a blanket "the entry-point factory
+    MUST be annotated with your concrete engine class", which would tell a
+    plugin author that this -- registering the class with no factory at all --
+    is noncompliant. It is not: ``engine_class`` returns a class target
+    directly, and compliance only reports ``class_metadata_unreadable`` when
+    NEITHER form resolves. Keep this test as the contract the guides
+    (``adapting_engine.md``, ``plugin_entrypoints.md``) must match.
+    """
     eps = [
         EntryPoint(
             name="alpha/first",
@@ -996,7 +1034,7 @@ def test_config_schema_surfaces_unschematizable_config_type() -> None:
     # A legitimate BaseConfig subclass can still be un-schematizable
     # (arbitrary_types_allowed + an opaque handle field). pydantic's
     # PydanticInvalidForJsonSchema must surface as FactoryLoadError so both
-    # schema consumers (`show` and GET /v1/config-schema/...) degrade loudly
+    # schema consumers (`show` and ``GET /v1/config-schema/...``) degrade loudly
     # instead of crashing with a raw pydantic error.
     eps = [
         EntryPoint(
@@ -1025,7 +1063,7 @@ def test_engine_class_raises_when_annotation_not_concrete() -> None:
 
 def test_engine_class_rejects_look_alike_with_only_generic_markers() -> None:
     # A class exposing only generic names (properties/supports) but not the
-    # defining 'transcribe' method must be rejected -- the previous any(...)
+    # defining 'transcribe' method must be rejected -- the previous ``any(...)``
     # gate accepted it.
     eps = [
         EntryPoint(
@@ -1124,7 +1162,7 @@ def test_engine_class_resolves_live_class_return_annotation() -> None:
 
 
 def test_engine_class_raises_when_factory_has_no_signature() -> None:
-    # A callable factory whose signature cannot be introspected (e.g. an invalid
+    # A callable factory whose signature cannot be introspected (for example, an invalid
     # ``__signature__``) must surface a FactoryLoadError, not crash.
     class _NoSignatureFactory:
         __signature__ = "not a signature"  # makes inspect.signature raise
@@ -1231,7 +1269,7 @@ def test_single_dist_many_models_is_not_a_collision() -> None:
 def test_normalized_engine_id_collision_across_dists_is_shadowed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # Two distributions whose engine_ids only differ by PEP 503 normalisation
+    # Two distributions whose engine_ids only differ by PEP 503 normalization
     # (``my_engine`` vs ``my-engine``) route to the same canonical id and the
     # same env-var prefix, so they MUST be flagged as a collision.
     ep_a = _ep_with_dist("my_engine/a", "dist-one")

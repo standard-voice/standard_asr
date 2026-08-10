@@ -18,7 +18,19 @@ from typing import Any
 
 
 class StandardASRError(Exception):
-    """Base exception class for all errors raised by the standard_asr library."""
+    """Base class for every domain error the Standard ASR runtime raises.
+
+    It does not cover data-model construction, which is pydantic's: a malformed
+    field on :class:`~standard_asr.contract.params.RuntimeParams`, on a result
+    model, or on a config raises ``pydantic.ValidationError``. That is a
+    ``ValueError``, not a ``StandardASRError``. Plain caller misuse likewise
+    raises a built-in: ``ValueError`` for a bad value (two mutually exclusive
+    arguments), ``TypeError`` for a wrong type (an unsupported input type).
+
+    ``except (StandardASRError, ValueError)`` catches the domain errors and the
+    value mistakes. A ``TypeError`` stays outside both on purpose -- a wrong
+    input type is a code bug to fix, not a state to handle.
+    """
 
     pass
 
@@ -29,18 +41,18 @@ class StructuredError(StandardASRError):
     Gives the error half of the contract the same "don't make me parse the
     message" property the diagnostics have: an application can read ``.param``
     (the offending field/parameter), ``.hint`` (actionable guidance), and
-    ``.details`` (structured context -- e.g. the sanitized pydantic error entries
+    ``.details`` (structured context -- for example, the sanitized pydantic error entries
     behind a wrapped config failure) without scraping ``str(exc)``. Every context
     field is optional and keyword-only, so ``Error("message")`` keeps working
     while ``Error("message", param="base_url", hint="use https")`` is now valid
     too -- removing the asymmetry where only some exceptions accepted structured
-    fields (spec: explicit > implicit; structured over stringly-typed).
+    fields (spec: explicit > implicit; structured over stringly typed).
 
     Args:
         message: Human-readable description of the error.
         param: The offending field / parameter name, if applicable.
         hint: Actionable guidance for resolving the error, if any.
-        details: Optional machine-readable context (e.g. the sanitized
+        details: Optional machine-readable context (for example, the sanitized
             validation-error entries from a wrapped pydantic ``ValidationError``).
     """
 
@@ -145,7 +157,7 @@ class TranscriptionError(StructuredError):
     the failure MUST surface as a ``TranscriptionError`` (with the original
     exception preserved as ``__cause__`` via ``raise ... from``) so an
     application can catch one type across every engine instead of each engine's
-    native exception (``RuntimeError``, an SDK error, ``requests.HTTPError`` ...).
+    native exception (``RuntimeError``, an SDK error, ``requests.HTTPError``, and so on).
     It is the batch counterpart of the streaming ``error`` event's
     ``engine_error`` code. It denotes an engine/runtime fault, not
     a caller mistake (those raise :class:`ConfigError` /
@@ -181,9 +193,10 @@ class TranscriptionError(StructuredError):
 
 
 class AudioProcessingError(StandardASRError):
-    """
-    Raised when an error occurs during audio loading or processing.
-    This is typically raised by functions in the audio_loader module.
+    """Raised when an error occurs during audio loading or processing.
+
+    The audio loading and conversion functions in :mod:`standard_asr.audio`
+    raise this.
     """
 
     pass
@@ -193,7 +206,7 @@ class IncompatibleAudioInputError(AudioProcessingError):
     """Raised when no viable conversion path exists for the provided audio.
 
     This happens when the shape an application provides cannot be negotiated
-    into any shape the engine accepts (e.g. a local array given to an engine
+    into any shape the engine accepts (for example, a local array given to an engine
     that only accepts a server-fetchable URL).
 
     Args:

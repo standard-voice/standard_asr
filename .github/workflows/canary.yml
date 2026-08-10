@@ -62,7 +62,7 @@ jobs:
       - name: Run tests
         run: uv run --no-sync pytest
 
-  # Newest including PRE-RELEASES: breakage about to ship (e.g. numpy NEP 50 /
+  # Newest including PRE-RELEASES: breakage about to ship (for example, numpy NEP 50 /
   # pydantic majors). This is the numpy-nightly successor and a SOFT signal — it
   # reports red on its own for visibility but does NOT file an issue (pre-release
   # churn would otherwise keep a tracking issue permanently open). continue-on-

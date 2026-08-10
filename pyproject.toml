@@ -188,5 +188,22 @@ line-length = 100
 
 [tool.ruff.lint]
 # NPY201 flags numpy 2.0 removed/renamed APIs so the core stays compatible with
-# both numpy 1.x and 2.x. E/F/I/W are baseline lint + import order.
-select = ["E", "F", "I", "W", "NPY201"]
+# both numpy 1.x and 2.x. E/F/I/W are baseline lint + import order. D is
+# pydocstyle (Google convention) — it enforces the docstring structure that
+# STYLE.md requires.
+select = ["E", "F", "I", "W", "NPY201", "D"]
+# D107: __init__ is merged into the class page (mkdocstrings
+# merge_init_into_class=true), so it needs no separate docstring. D105: trivial
+# container dunders (__len__, __iter__, __repr__) need none either.
+ignore = ["D105", "D107"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are exempt from pydocstyle (D) STRUCTURE rules only: we do not force a
+# docstring onto every test function or fixture. Test prose itself is still
+# governed by STYLE.md (wording, terms, spelling), which the linter cannot check.
+"tests/**" = ["D"]
+# Illustrative sample code under docs/ is not part of the shipped library.
+"docs/**" = ["D"]

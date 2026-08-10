@@ -152,7 +152,7 @@ class _GoodASR:
         (non-``EngineBase``) engine MUST implement itself now that the member is
         part of the ``StandardASR`` protocol. Deriving it -- rather than
         returning a constant -- keeps every subclass fixture below honest: one
-        that narrows ``properties`` (e.g. declares ``wire_encodings``)
+        that narrows ``properties`` (for example, declares ``wire_encodings``)
         automatically reports a format its own declaration admits.
 
         Returns:
@@ -500,8 +500,9 @@ def test_check_entrypoints_config_not_instance_of_config_type_errors() -> None:
 
 def test_check_entrypoints_language_axis_without_default_enginebase_errors() -> None:
     # An EngineBase engine with a language axis but no default_language would
-    # raise ConfigError on the user's FIRST transcribe; compliance must catch it
-    # at author time, reusing the exact runtime validation.
+    # raise EngineContractError on the user's FIRST transcribe (IC.6 -- it is an
+    # engine-author defect, not a caller config mistake); compliance must catch
+    # it at author time, reusing the exact runtime validation.
     report = check_entrypoints(registry=_registry("axis_no_default_factory"))
     assert report.passed is False
     assert any("every transcribe will fail" in i.message for i in report.issues)
@@ -639,7 +640,7 @@ def batch_only_no_start_factory() -> _BatchOnlyNoStartASR:  # pyright: ignore[re
 # A streaming_input engine that omits wire_encodings opens a silent
 # wire-mistranscription window on an audio_format session, so the compliance
 # suite nudges it with a WARNING (not an error -- a self-managed-wire-format
-# adapter legitimately leaves it unset). Declaring wire_encodings clears it.
+# engine legitimately leaves it unset). Declaring wire_encodings clears it.
 _STREAMING_INPUT_CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(),
     streaming=StreamingCapabilities(),
@@ -1476,7 +1477,7 @@ def test_check_entrypoints_streaming_input_without_wire_encodings_warns_but_pass
     """A streaming_input engine that omits wire_encodings cannot have
     an audio_format session's encoding validated -- a silent-mistranscription
     window. The compliance suite flags it as a WARNING (DX nudge), not an
-    error: a self-managed-wire-format adapter may legitimately leave it unset.
+    error: a self-managed-wire-format engine may legitimately leave it unset.
     """
     report = check_entrypoints(registry=_registry("streaming_input_no_wire_factory"))
     warnings = [i for i in report.issues if i.level == "warning"]
@@ -1628,11 +1629,11 @@ def test_sync_bridge_hostile_repr_is_still_a_contained_raise_verdict() -> None:
 
 
 def test_sync_bridge_raising_session_reports_error() -> None:
-    """An adapter whose ``_open`` raises is a contained bridge error, not a crash."""
+    """An engine whose ``_open`` raises is a contained bridge error, not a crash."""
     report = check_sync_bridge(_RaisingSession, timeout=5.0)
     assert report.passed is False
     assert any("raised while bridging" in i.message for i in report.issues)
-    # The adapter's _open raised, so __enter__ raises -- but an exception-safe
+    # The engine's _open raised, so __enter__ raises -- but an exception-safe
     # __enter__ tears down its own loop thread before propagating. The failure must
     # be attributed to the raise alone, NOT also mis-reported as a thread leak.
     assert not any(i.code == "sync_bridge_thread_leak" for i in report.issues), [
@@ -1660,8 +1661,8 @@ def test_sync_bridge_factory_raising_reports_error() -> None:
 
 
 def test_sync_bridge_ignores_benign_daemon_thread() -> None:
-    """Regression: a compliant adapter may pull in a dependency that spawns a
-    benign background daemon thread (e.g. tqdm's monitor, a thread-pool worker)
+    """Regression: a compliant engine may pull in a dependency that spawns a
+    benign background daemon thread (for example, tqdm's monitor, a thread-pool worker)
     that is still alive when the bridge closes. The leak check MUST assert on the
     bridge's OWN loop thread, not a process-wide thread diff -- otherwise such a
     benign thread is mis-reported as a sync_bridge_thread_leak, failing a
@@ -1705,7 +1706,7 @@ def test_sync_bridge_flags_genuine_loop_thread_leak(monkeypatch: pytest.MonkeyPa
 
 
 class _NoTerminalSession(TranscriptionSession):
-    """Non-compliant adapter: closes the stream WITHOUT a terminal event.
+    """Non-compliant session: closes the stream WITHOUT a terminal event.
 
     Overrides ``_run_producer`` to bypass the base class's force-appended
     ``done``, emitting a single non-terminal event and closing. This is the
@@ -1730,7 +1731,7 @@ def test_sync_bridge_no_terminal_event_reports_error() -> None:
 
 def test_sync_bridge_deadlock_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """A factory whose driver thread never returns within the timeout surfaces as
-    a deadlock error. We simulate by making the driver block on a factory that
+    a deadlock error. The test simulates this by making the driver block on a factory that
     spins past the (tiny) timeout.
 
         Args:
@@ -1756,7 +1757,7 @@ def test_sync_bridge_late_session_after_timeout_is_torn_down_not_leaked() -> Non
 
     The check returns promptly with sync_bridge_did_not_terminate, but the
     bounded establish worker may still complete afterwards; the session it
-    builds (which for real adapters can hold connections/state) must be torn
+    builds (which for a real engine can hold connections and state) must be torn
     down best-effort, never silently leaked in a long-running host process.
     """
     closed = threading.Event()
@@ -1778,7 +1779,7 @@ def test_sync_bridge_late_session_after_timeout_is_torn_down_not_leaked() -> Non
     assert report.passed is False
     assert [i.code for i in report.issues] == ["sync_bridge_did_not_terminate"]
     assert "establishment" in report.issues[0].message
-    # The worker completes ~0.3s later and must tear the late session down.
+    # The worker completes ~0.3 s later and must tear the late session down.
     assert closed.wait(timeout=10.0), "late session was never closed (leaked)"
 
 
@@ -1786,9 +1787,10 @@ def test_sync_bridge_late_session_teardown_failure_is_swallowed() -> None:
     """A late session whose own teardown raises must not poison anything.
 
     The teardown is best-effort on a daemon thread AFTER the check already
-    reported the establishment timeout: an adapter whose ``_open`` raises
+    reported the establishment timeout: an engine whose ``_close`` raises
     during that teardown attempt must neither propagate nor change the
-    already-returned verdict.
+    already-returned verdict. The teardown is close-only, so ``_open`` must
+    never run.
     """
     attempted = threading.Event()
 
@@ -1825,7 +1827,7 @@ def test_sync_bridge_hanging_supports_probe_is_reported_not_misclassified() -> N
     exception it was classifying is still un-classified, so the check must
     report did-not-terminate (whose message names the probe) -- never fall
     through to the fail-closed branch and tell a caller who DID pass
-    ``engine=`` to "Pass engine=...".
+    ``engine=`` to ``Pass engine=...``.
     """
     release = threading.Event()
 
@@ -1911,7 +1913,7 @@ def test_sync_bridge_forwards_the_timeout_as_the_sync_session_submit_timeout(
 
     ``SyncSession``'s own ``submit_timeout`` default is 30 s, so before this
     forwarding a ``--bridge-timeout`` above 30 s was silently inert for
-    ``_open``/``_close``: a slow-but-compliant adapter failed as
+    ``_open``/``_close``: a slow-but-compliant engine failed as
     ``sync_bridge_raised`` (TimeoutError) no matter how much time the user
     granted, and the check's own "re-run with a larger value" advice could not
     work. Captured at the construction site so the kwarg cannot be dropped.
@@ -2060,7 +2062,7 @@ def test_sync_bridge_async_supports_cannot_earn_not_applicable() -> None:
 
     ``bool(coroutine)`` is True: without the guard, the classification probe
     fabricated a "declares streaming_input" verdict from a modality defect
-    (mislabelling the failure a capability lie) and leaked the coroutine
+    (mislabeling the failure a capability lie) and leaked the coroutine
     unawaited into the run (warnings-as-errors is the leak oracle here).
     """
 
@@ -2200,10 +2202,10 @@ class _UnsupportedOnEndAudioSession(TranscriptionSession):
 def test_sync_bridge_unsupported_past_establishment_is_always_a_failure(
     session_factory: Any,
 ) -> None:
-    """``UnsupportedFeatureError`` from the adapter's LIFECYCLE is a plain failure.
+    """``UnsupportedFeatureError`` from the engine's LIFECYCLE is a plain failure.
 
     Regression: the not-applicable carve-out used to span the whole bridged
-    lifecycle, so an adapter that raised ``UnsupportedFeatureError`` from
+    lifecycle, so an engine that raised ``UnsupportedFeatureError`` from
     ``_open`` / ``end_audio`` / the drain -- a real, declared-but-unimplemented
     fault -- was reported as a PASSING "check not applicable". The carve-out is
     now scoped to the factory call alone, so every post-establishment refusal
@@ -2239,7 +2241,7 @@ def test_sync_bridge_leak_check_still_runs_past_establishment(
     """A session that WAS constructed is still leak-checked when it then fails.
 
     The lifecycle failure must not short-circuit the owned-loop-thread
-    assertion: an adapter that both refuses mid-bridge AND strands its loop
+    assertion: an engine that both refuses mid-bridge AND strands its loop
     thread has two faults, and reporting only the first would let the leak ship.
 
         Args:
@@ -2411,7 +2413,7 @@ def test_recommended_wire_format_structural_engine_passes() -> None:
 
     Regression: the check used to call ``engine.ensure_stream_format_supported``
     -- an ``EngineBase`` method that is NOT a ``StandardASR`` protocol member --
-    so a fully-compliant structural engine (this very fixture) failed with an
+    so a fully compliant structural engine (this very fixture) failed with an
     ``AttributeError`` mis-reported as
     ``recommended_wire_format_self_inconsistent``. The check now validates the
     recommendation through the pure ``ensure_wire_format_supported(properties,
@@ -3432,7 +3434,7 @@ def test_streaming_gating_structural_engine_without_effective_caps_not_failed() 
     ``StandardASR`` member. A structural engine that supports every top-level
     probe used to send the check into ``_pick_sub_constraint_probe``, whose
     bare attribute read raised ``AttributeError`` -- reported as a
-    ``gating_probe_selection_raised`` ERROR against a fully-compliant engine.
+    ``gating_probe_selection_raised`` ERROR against a fully compliant engine.
     The probe now falls back to the protocol's ``declared_capabilities``
     (exactly what EngineBase's ``effective_capabilities`` defaults to); with
     no violable sub-constraint declared there, the check is a no-op pass.
@@ -3601,7 +3603,7 @@ def test_pick_sub_constraint_probe_granularity_carries_its_code() -> None:
 
 def test_pick_sub_constraint_probe_none_without_streaming_domain() -> None:
     # No streaming domain -> no constrainable nodes resolve -> no probe. (The
-    # public check never reaches the helper in this state; it stays fail-safe.)
+    # public check never reaches the helper in this state; it stays fail-closed.)
     probe = compliance_module._pick_sub_constraint_probe(  # pyright: ignore[reportPrivateUsage]
         _BatchOnlyEngine()
     )
@@ -4085,7 +4087,7 @@ def compliant_streaming_factory() -> _CompliantStreamingEngine:  # pyright: igno
 def test_required_surface_streaming_enginebase_with_hook_passes() -> None:
     # The other side of the _overrides_streaming() branch: a streaming EngineBase
     # that implements the hook passes the required-surface check. The entry-point
-    # key must match the engine's declared model_id ("streamer-ok/demo").
+    # key must match the engine's declared model_id (``streamer-ok/demo``).
     report = check_entrypoints(
         registry=_registry("compliant_streaming_factory", "streamer-ok/demo")
     )
@@ -4449,7 +4451,7 @@ def test_sync_bridge_timeout_message_disambiguates_slow_vs_deadlock() -> None:
     msg = next(i.message for i in report.issues if i.code == "sync_bridge_did_not_terminate")
     assert "deadlock OR" in msg
     assert "larger timeout" in msg
-    # The advice must be ACTIONABLE: name both knobs that raise the timeout --
+    # The advice must be ACTIONABLE: name both settings that raise the timeout --
     # the library keyword and the CLI flag that now threads it through.
     assert "check_sync_bridge(..., timeout=...)" in msg
     assert "--bridge-timeout" in msg
@@ -4556,7 +4558,7 @@ class _CancelledOpenSession(TranscriptionSession):
 
     ``CancelledError`` is a ``BaseException`` on 3.8+, and it is the one
     that genuinely crosses the bridge into the DRIVE thread: the task
-    machinery marks the task cancelled and ``future.result()`` re-raises
+    machinery marks the task canceled and ``future.result()`` re-raises
     ``CancelledError`` in the calling thread (a ``SystemExit`` instead
     kills the loop thread itself -- a different containment layer).
     """

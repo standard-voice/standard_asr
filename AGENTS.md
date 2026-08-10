@@ -5,16 +5,16 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 **What this repo contains:**
 - A **runtime library** (`standard-asr`): audio input negotiation & conversion, capability discovery & gating, structured diagnostics, streaming session management, plugin discovery via entry points.
 - A **toolchain**: CLI, FastAPI server (expose any engine over HTTP/WS), compliance test suite.
-- **No ASR models.** Each engine is a separate pip-installable plugin package (e.g. `std-faster-whisper`, `std-openai`) that implements the standard interface. Standard ASR discovers installed plugins automatically.
+- **No ASR models.** Each engine is a separate pip-installable plugin package (for example, `std-faster-whisper`, `std-openai`) that implements the standard interface. Standard ASR discovers installed plugins automatically.
 
 **What this repo does NOT contain:** speech recognition code, model weights, or training. We build the bridge, not the endpoints.
 
-**We are currently in pre-release stage.** Always choose the long-term optimal design over backwards compatibility.
+**We are in the pre-release stage.** Always choose the long-term optimal design over backwards compatibility.
 
 ## Stakeholders — consider all three in every decision
 
 - **App developers** (primary users): one stable interface for all engines. No vendor lock-in. Zero-config discovery.
-- **ASR engine authors**: low barrier to publish a compliant plugin. Implement one interface → get CLI, Web API, compliance tests for free — and your engine is instantly compatible with every Standard ASR application, no per-app integration needed. Focus on models, not plumbing.
+- **ASR engine authors**: low barrier to publish a compliant plugin. Implement one interface → get CLI, reference server, compliance tests for free — and your engine is instantly compatible with every Standard ASR application, no per-app integration needed. Focus on models, not plumbing.
 - **End users**: choose the best ASR for their language or domain — install a plugin, use it immediately, no app changes needed.
 
 ## Philosophy
@@ -28,12 +28,34 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 
 ## Rules
 
-- Python 3.10+. Cross-platform (macOS, Windows, Linux).
-- `uv` for deps. Pydantic v2 for data models. FastAPI for server.
+- Python 3.10+. Cross-platform (macOS, Windows, Linux). A platform- or
+  hardware-specific feature must be optional: the core runs everywhere, with a
+  graceful fallback or a clear error where the extra is absent.
+- Modern typing syntax: `str | None` and built-in generics (`list[int]`), never
+  `typing.Optional` / `typing.List`. PEP 8 naming: `snake_case` functions and
+  variables, `PascalCase` classes, descriptive names.
+- `uv` for deps. Pydantic v2 for data models. FastAPI for server. A new
+  dependency needs a compatible license, active maintenance, and scrutiny of
+  its supply chain; prefer the standard library and existing dependencies
+  (`CONTRIBUTING.md`, "Dependency policy").
 - `ruff` + `pyright` strict + `pytest` with 100% coverage target.
 - `ruff` rule `NPY201` enabled. CI tests against numpy 1.26 AND latest 2.x.
 - Google-style docstrings (English): summary, args, returns, raises.
 - English for all code, comments, logs. `logging` module — no `print`.
+- Prose follows [`STYLE.md`](STYLE.md) (the Google developer documentation
+  style guide as the baseline, plus this repo's deltas) and
+  [`TERMINOLOGY.md`](TERMINOLOGY.md) (canonical terms, American spelling). **Read
+  both before you edit a docstring, a user-facing string, or a Markdown file.**
+  Tier: text inside a role, a code span, a `::` literal block, a fenced code
+  block, or a doctest is verbatim; a `#` comment is the clarity tier (the full
+  standard minus the sentence-length cap); **everything else is the full
+  standard** — every docstring, every string that can reach a user, and every
+  governed Markdown file (`STYLE.md` defines the scope; this file is in it). No
+  emoji, and no non-ASCII symbol in a runtime string. A meaning change must
+  state its **defect** and its **authority** (spec section, code path, test, or
+  design note — by path and line) in the commit message; prefer clarifying an
+  intentional name over changing it. Check every claim about the code against
+  the code — a remembered fact is not a fact.
 - SPDX license header on every `.py` file:
   ```python
   # SPDX-FileCopyrightText: 2026 Standard Voice Contributors

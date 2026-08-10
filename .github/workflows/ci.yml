@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pin uv so resolution/lock behaviour is reproducible across runs and matches
+  # Pin uv so resolution/lock behavior is reproducible across runs and matches
   # the [tool.uv] required-version floor. Bump deliberately.
   UV_VERSION: "0.11.21"
 
@@ -231,6 +231,37 @@ jobs:
       - name: Run actionlint
         run: .tools/actionlint/actionlint -color
 
+  vale:
+    # Prose gate: Vale with the vendored Google baseline plus the StandardASR
+    # style (.vale.ini; the mechanizable subset of TERMINOLOGY.md). Fails on
+    # ANY alert at ANY level -- STYLE.md's "Enforcement" keeps the full run at
+    # zero. The selfcheck first proves the gate composition (config, glob,
+    # targets) still flags planted violations in every directory target (a
+    # green gate over a silently shrunken corpus is worse than no gate).
+    # Same pinned-binary-plus-digest pattern as actionlint.
+    name: Run Vale (prose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install vale
+        env:
+          VALE_VERSION: "3.17.1"
+          VALE_SHA256: "db947f89f2292e6a0381a61de155f6a5f5cb4cb460ca178ea412ef605559cefd"
+        run: |
+          set -euo pipefail
+          archive="vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          curl -fsSLo "${archive}" "https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}/${archive}"
+          echo "${VALE_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p .tools/vale
+          tar -xzf "${archive}" -C .tools/vale vale
+      - name: Vale selfcheck (gate coverage)
+        run: VALE=.tools/vale/vale scripts/vale.sh --selfcheck
+      - name: Run Vale (zero-alert gate)
+        run: VALE=.tools/vale/vale scripts/vale.sh --gate
+
   coverage:
     # Dedicated 100%-coverage gate. The matrix `test` lanes stay correctness-only
     # (and lower-bounds/numpy-floor may skip optional-dep paths), so the strict
@@ -347,7 +378,7 @@ jobs:
     # new job above automatically tightens the gate via `needs`.
     name: checks-complete
     if: always()
-    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, actionlint, coverage, zizmor, docs]
+    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, actionlint, vale, coverage, zizmor, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

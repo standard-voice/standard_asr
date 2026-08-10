@@ -60,7 +60,7 @@ result = engine.transcribe(
 `DiarizationRequest()`) to enable it, leave it `None` to skip it. Gate it first
 with `engine.supports("batch.diarization")`.
 
-Engine-specific knobs go through `provider_params` (typed, swap-safe — passing
+Engine-specific options go through `provider_params` (typed, swap-safe — passing
 the wrong engine's params raises `InvalidProviderParamError`).
 
 ## 5. Check capabilities before relying on a feature
@@ -81,16 +81,19 @@ for seg in result.segments or []:
     print(seg.start, seg.end, seg.speaker, seg.text)   # speaker: label when diarized, else None
 
 from standard_asr import to_srt, to_vtt
-open("out.srt", "w").write(to_srt(result))
+
+with open("out.srt", "w", encoding="utf-8") as f:
+    f.write(to_srt(result))
 ```
 
-If any segment cannot render as a *visible* cue — it lacks a measured
-`start`/`end` span (some engines omit timestamps — check
-`seg.timestamp_status`), or its span quantizes to zero milliseconds on the
-output grid (players silently drop `T --> T` cues) — the renderers raise
-`SubtitleRenderingError` rather than silently dropping or hiding text or
-fabricating timing; pass `on_unrenderable="omit"` (keep only renderable
-cues) or `"collapse"` (one whole-text cue) to choose the loss explicitly.
+A segment renders as a *visible* cue only if it carries a measured `start`/`end`
+span. Some engines omit timestamps — check `seg.timestamp_status`. The span must
+also survive the output grid: a span that quantizes to zero milliseconds fails,
+because players silently drop `T --> T` cues. When a segment cannot render, the
+renderers raise `SubtitleRenderingError`. They do not silently drop text, hide
+text, or fabricate timing. To choose the loss yourself, pass
+`on_unrenderable="omit"` to keep only the renderable cues, or `"collapse"` for
+one whole-text cue.
 
 `segment.speaker` carries the speaker label when diarization was requested and
 supported (`word.speaker` gives the same detail at word level). Engines whose
@@ -113,4 +116,4 @@ async with engine.start_transcription(audio_format=fmt) as session:
                 remove(old)
 ```
 
-A synchronous bridge (`SyncSession`) is available if you can't use `async`.
+A synchronous bridge (`SyncSession`) is available if you cannot use `async`.

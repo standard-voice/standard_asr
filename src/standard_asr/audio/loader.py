@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-"""
-Audio loading and normalization utilities for the Standard ASR audio contract.
+"""Audio loading and normalization utilities for the Standard ASR audio contract.
 
 This module focuses on turning a wide range of audio inputs into a normalized
 NumPy array suitable for ASR models. It deliberately prefers light-weight,
@@ -20,8 +19,8 @@ Key points and contract:
   -- it does NOT fall back to FFmpeg for resampling.
 - Channel handling:
   - Downmix to mono uses arithmetic mean.
-  - Upmix replicates channels (e.g., 1 -> 2).
-  - Multi->fewer channels down-mix by truncation (first N channels) unless
+  - Upmix replicates channels (for example, 1 -> 2).
+  - Multi->fewer channels downmix by truncation (first N channels) unless
     loading is delegated to FFmpeg, which can provide higher-quality mixing.
 - NaN/Inf are sanitized to safe values (NaN->0.0, +Inf->1.0, -Inf->-1.0).
 
@@ -33,8 +32,9 @@ Dependencies and fallbacks:
 Decoding and resampling are independent fallbacks. A missing `scipy` only
 affects resampling quality -- the built-in numpy anti-aliasing fallback keeps
 resampling working, so the loader never falls back to FFmpeg merely
-because `scipy` is absent. FFmpeg is reached only when neither stdlib `wave` nor
-`soundfile` can decode the container.
+because `scipy` is absent. FFmpeg is reached only when the earlier decoders in
+the path's ladder cannot decode the container (stdlib `wave` is tried for file
+paths only; bytes go `soundfile` then FFmpeg).
 
 All functions emit clear exceptions with actionable messages and log helpful
 warnings when quality-affecting fallbacks are used.
@@ -48,7 +48,7 @@ import pathlib
 import shutil
 import subprocess
 import wave
-from typing import Any, BinaryIO, Literal, TypeGuard, cast, overload
+from typing import Any, BinaryIO, Literal, NamedTuple, TypeGuard, cast, overload
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
@@ -57,6 +57,7 @@ from standard_asr.audio.wire import pcm16_decode
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
     FFmpegNotFoundError,
+    FFprobeNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,19 +85,21 @@ def decode_base64_audio(value: str) -> bytes:
     """Decode a base64 audio payload, optionally wrapped in a ``data:`` URI.
 
     Single source of truth for the ``data:``-URI/base64 parse rules, shared by
-    the convenience loaders, :func:`decode_audio`, and the conversion layer so
-    every entry point accepts and rejects exactly the same forms.
+    the convenience loaders, :func:`decode_audio_from_data_uri`, and the
+    conversion layer so every entry point that parses base64 accepts and
+    rejects exactly the same forms. (:func:`decode_audio` never parses base64:
+    a bare ``str`` there is always a file path, by its no-sniffing contract.)
 
     Rules:
 
     * A ``data:`` URI MUST carry the explicit ``;base64,`` marker; the bytes
-      after it are base64-decoded. A ``data:`` URI without ``;base64,`` (e.g. a
+      after it are base64-decoded. A ``data:`` URI without ``;base64,`` (for example, a
       percent-encoded ``data:audio/wav,...``) is rejected rather than silently
       treated as base64.
     * Any other string is treated as a bare base64 payload.
 
     The ``data:`` scheme is detected case-insensitively (``data:``, ``DATA:``,
-    ``Data:`` ...) so this matches the case-insensitive dispatch in
+    ``Data:``, and so on) so this matches the case-insensitive dispatch in
     :func:`load_audio` / :func:`decode_audio`; an upper/mixed-case ``DATA:`` URI
     decodes correctly instead of being mis-parsed as raw base64.
 
@@ -659,7 +662,8 @@ def ensure_datatype(audio: NDArray[Any], data_type: DTypeLike = np.float32) -> N
 
     Args:
         audio: Input NumPy array of any dtype.
-        data_type: Target dtype (e.g., ``"float32"``, ``np.float32``). Default: ``np.float32``.
+        data_type: Target dtype (for example, ``"float32"``, ``np.float32``).
+            Default: ``np.float32``.
 
     Returns:
         NumPy array with the requested dtype. Returns a view (no copy) if already matching.
@@ -685,16 +689,16 @@ def _to_normalized_float32(audio: NDArray[Any]) -> NDArray[np.float32]:
 
     Integer PCM stores samples as raw codes, not amplitudes in ``[-1, 1]``, so a
     bare ``astype(float32)`` followed by a ``[-1, 1]`` clip silently corrupts the
-    waveform (e.g. ``int16`` ``32767`` would clip to ``1.0`` and ``1000`` would
+    waveform (for example, ``int16`` ``32767`` would clip to ``1.0`` and ``1000`` would
     clip to ``1.0`` as well -- a silent-wrong-result). This rescales by the
     dtype's full-scale magnitude instead:
 
     * **Signed integers** (``int8``/``int16``/``int32``/``int64``) divide by
-      ``2**(bits-1)`` (e.g. ``int16`` -> ``/32768``), so ``-min`` maps to exactly
+      ``2**(bits-1)`` (for example, ``int16`` -> ``/32768``), so ``-min`` maps to exactly
       ``-1.0`` and ``+max`` to just under ``+1.0`` (the standard asymmetric PCM
       convention).
     * **Unsigned integers** (``uint8``/``uint16``/``uint32``/``uint64``) are
-      midpoint-centered then scaled: ``(x - 2**(bits-1)) / 2**(bits-1)`` (e.g.
+      midpoint-centered then scaled: ``(x - 2**(bits-1)) / 2**(bits-1)`` (for example,
       ``uint8`` centers at ``128`` then divides by ``128``).
     * **Floating** dtypes are taken as already-normalized amplitudes and only
       cast to ``float32`` (the caller still clips for safety).
@@ -724,10 +728,37 @@ def _to_normalized_float32(audio: NDArray[Any]) -> NDArray[np.float32]:
             # most-negative code maps to exactly -1.0.
             scaled = audio.astype(np.float64) / float(-int(info.min))
         return np.asarray(scaled, dtype=np.float32)
-    # Anything exotic (e.g. bool, complex) is handled by a plain cast; clipping by
+    # Anything exotic (for example, bool, complex) is handled by a plain cast; clipping by
     # the caller keeps the contract range. This mirrors the historical behavior
     # for non-PCM dtypes rather than failing the rare caller.
     return ensure_datatype(audio, "float32")
+
+
+def _require_positive_sample_rate(name: str, value: int) -> None:
+    """Reject a sample rate that is not greater than 0.
+
+    Args:
+        name: The parameter name to report in the error message.
+        value: The sample rate to check, in Hz.
+
+    Raises:
+        AudioProcessingError: If ``value`` is not greater than 0.
+    """
+    if value <= 0:
+        raise AudioProcessingError(f"{name} must be > 0, got {value}")
+
+
+def _require_valid_target_channels(value: int | None) -> None:
+    """Reject a target channel count that is set and not greater than 0.
+
+    Args:
+        value: The requested channel count, or ``None`` to keep the source count.
+
+    Raises:
+        AudioProcessingError: If ``value`` is not ``None`` and not greater than 0.
+    """
+    if value is not None and value <= 0:
+        raise AudioProcessingError(f"target_channels must be None or > 0, got {value}")
 
 
 def normalize_audio(
@@ -748,7 +779,7 @@ def normalize_audio(
     Args:
         audio: Input waveform, 1D ``(n_samples,)`` or 2D ``(n_samples, n_channels)``.
             Signed/unsigned PCM **integer** dtypes are rescaled to ``[-1, 1]`` by
-            their full-scale magnitude (e.g. ``int16`` is divided by ``32768``,
+            their full-scale magnitude (for example, ``int16`` is divided by ``32768``,
             ``uint8`` is centered at ``128`` then divided by ``128``); **floating**
             dtypes are taken as already-normalized amplitudes (and clipped for
             safety). All inputs become ``float32``.
@@ -774,23 +805,20 @@ def normalize_audio(
 
         - Stereo → Mono: arithmetic mean of channels.
         - Mono → Stereo: channel replication.
-        - Multi-channel down-mix: truncates to first N channels (for better quality,
-          use FFmpeg path via ``load_audio``).
+        - Multi-channel downmix: takes the first N channels; it does not mix them.
+          Produce a true mix yourself if you need one.
 
         **Invalid values:** NaN/Inf are sanitized (NaN→0.0, ±Inf→±1.0) with a warning.
     """
     # Scale integer PCM to [-1, 1] by its full-scale magnitude before any
     # processing; a bare float cast + clip would corrupt integer samples
-    # (e.g. int16 32767 -> 1.0 AND 1000 -> 1.0). Floats pass through unscaled.
+    # (for example, int16 32767 -> 1.0 AND 1000 -> 1.0). Floats pass through unscaled.
     processed_audio: NDArray[np.float32] = _to_normalized_float32(audio)
     # Basic parameter validation
 
-    if original_sr <= 0:
-        raise AudioProcessingError(f"original_sr must be > 0, got {original_sr}")
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("original_sr", original_sr)
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
 
     # Check for empty audio
     if processed_audio.size == 0:
@@ -801,7 +829,7 @@ def normalize_audio(
     #    (resampling.resample_with_backend) -- it prefers scipy's polyphase
     #    resampler (the [audio] extra) and degrades to the core numpy-only
     #    anti-aliasing Fourier resampler, treating ANY scipy import-time failure
-    #    (not just a plain ImportError -- e.g. a broken/partial build) as a
+    #    (not just a plain ImportError -- for example, a broken/partial build) as a
     #    non-fatal fall to the built-in. Warn only when the fallback
     #    actually ran.
     if original_sr != target_sample_rate:
@@ -820,7 +848,7 @@ def normalize_audio(
     if processed_audio.ndim == 1:
         processed_audio = processed_audio[:, np.newaxis]
 
-    # Help static type checker with tuple[int, ...] for shape
+    # Help the static type checker with ``tuple[int, ...]`` for shape
     current_channels = int(processed_audio.shape[1])
 
     # 2. Channel conversion
@@ -829,17 +857,22 @@ def normalize_audio(
             # Downmix to mono using average across channels
             processed_audio = processed_audio.mean(axis=1, dtype=np.float32)[:, np.newaxis]
         else:
-            # Note: For multi-to-multi down-mixing (e.g., 6->2), this implementation performs a
-            # simple channel selection/truncation instead of a perceptually accurate mix.
-            # For higher quality down-mix, ensure FFmpeg is installed and prefer the FFmpeg path.
-            if target_channels > current_channels:  # Upscale (e.g., mono to stereo)
+            # Note: For multi-to-multi downmixing (for example, 6->2), this implementation
+            # performs a simple channel selection/truncation instead of a perceptually
+            # accurate mix.
+            # There is no way to ask this function for a mixed result: the decode ladder is
+            # fixed (stdlib wave -> soundfile -> FFmpeg on decode failure), and by this point
+            # the caller already holds an in-memory array, so no decode step is left to
+            # redirect. A caller who needs a true mix must produce it before calling.
+            if target_channels > current_channels:  # Upscale (for example, mono to stereo)
                 reps = int(math.ceil(target_channels / current_channels))
                 processed_audio = np.tile(processed_audio, (1, reps))[:, :target_channels]
-            else:  # Down-mix by truncation
+            else:  # Downmix by truncation
                 logger.warning(
-                    "Down-mixing from %d to %d channels by taking the first %d channels. "
-                    "This may result in information loss. For high-quality down-mixing, "
-                    "ensure your audio is processed via the FFmpeg backend.",
+                    "Downmixing from %d to %d channels by taking the first %d channels. "
+                    "This may lose information: the built-in path selects channels, it "
+                    "does not mix them. Downmix the audio yourself before this call if "
+                    "you need a mixed result.",
                     current_channels,
                     target_channels,
                     target_channels,
@@ -878,7 +911,7 @@ def load_audio(
     **Returns:** ``np.float32`` array, 16kHz mono by default, values in ``[-1.0, 1.0]``.
 
     Convenience loader for application code that wants a decoded array directly
-    (e.g. to plot or pre-process audio). It handles format detection, decoding,
+    (for example, to plot or pre-process audio). It handles format detection, decoding,
     resampling, and channel conversion automatically, and for a ``str`` it
     auto-detects a base64 ``data:`` URI.
 
@@ -920,8 +953,14 @@ def load_audio(
 
     Raises:
         AudioProcessingError: Invalid parameters or decoding/processing failures,
-            including missing or unreadable paths, or input exceeding ``max_bytes``.
+            including missing or unreadable paths, input exceeding ``max_bytes``,
+            or a source channel count that could not be determined with
+            ``target_channels=None`` (the message says whether the source or
+            the environment is at fault).
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
+            fallback, which needs ffprobe to preserve the source channel
+            layout, but ffprobe is not installed.
         TypeError: Unsupported source type.
 
     Example:
@@ -935,17 +974,15 @@ def load_audio(
         - Bytes/data URIs/BinaryIO: ``soundfile`` → FFmpeg subprocess.
 
         **Base64:** Only data URIs (``data:...;base64,...``) are auto-detected.
-        For raw base64 strings (eg. ``YmFT...Y0``), decode manually:
+        For raw base64 strings (for example, ``YmFT...Y0``), decode manually:
         ``load_audio(base64.b64decode(s))``.
 
         **BinaryIO:** Reads from the current stream position; does not seek to the beginning.
 
         **Formats:** WAV, MP3, FLAC, OGG, and any format supported by FFmpeg.
     """
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
     if isinstance(source, str):
         # Improved base64 detection logic to avoid false positives
         s = source.strip()
@@ -970,10 +1007,10 @@ def load_audio(
             # Path operations failed, continue to treat as file path anyway
             pass
 
-        # Default: treat as file path (will raise FileNotFoundError if not found)
+        # Default: treat as file path (raises FileNotFoundError if not found)
         return load_audio_from_path(s, target_sample_rate, target_channels, max_bytes=max_bytes)
 
-    # Handle pathlib.Path by converting to string
+    # Handle ``pathlib.Path`` by converting to string
     if isinstance(source, pathlib.Path):
         return load_audio_from_path(
             str(source), target_sample_rate, target_channels, max_bytes=max_bytes
@@ -1014,9 +1051,9 @@ def _is_binary_io(obj: Any) -> TypeGuard[BinaryIO]:
         read_attr = getattr(obj, "read", None)
         if not callable(read_attr):
             return False
-        # Probe a zero-length read without consuming data. We avoid peek/read1/seek
+        # Probe a zero-length read without consuming data. Avoid peek/read1/seek
         # for broad compatibility and to not alter stream position/state. Some custom
-        # streams may not support read(0); in such case we return False.
+        # streams may not support read(0); in that case report False.
         sample = read_attr(0)  # pyright: ignore[reportCallIssue]
         return isinstance(sample, (bytes, bytearray, memoryview))
     except Exception:
@@ -1032,7 +1069,7 @@ def load_audio_from_path(
 ) -> NDArray[np.float32]:
     """Load audio from a file path and convert to Standard ASR format.
 
-    **Accepts:** File path as string (e.g., ``"speech.mp3"``, ``"~/audio.wav"``).
+    **Accepts:** File path as string (for example, ``"speech.mp3"``, ``"~/audio.wav"``).
 
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
@@ -1055,8 +1092,13 @@ def load_audio_from_path(
 
     Raises:
         AudioProcessingError: Decoding failed, including missing or unreadable
-            files, or the file exceeds ``max_bytes``.
+            files, the file exceeding ``max_bytes``, or a source channel count
+            that could not be determined with ``target_channels=None`` (the
+            message says whether the source or the environment is at fault).
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
+            fallback, which needs ffprobe to preserve the source channel
+            layout, but ffprobe is not installed.
 
     Note:
         **Decoding priority:** stdlib ``wave`` (WAV) → ``soundfile`` → FFmpeg.
@@ -1064,10 +1106,8 @@ def load_audio_from_path(
         For broader format support, install ``soundfile`` or ensure FFmpeg is in PATH.
     """
     # Basic parameter validation
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
 
     # Expand user (~) to avoid surprises across platforms
     from os import fspath
@@ -1077,14 +1117,14 @@ def load_audio_from_path(
     # Reject an EXISTING non-regular file (FIFO, device, directory) up front:
     # stdlib `wave`/`soundfile` would otherwise block forever on a FIFO with no
     # timeout (a hang/DoS vector), and only the FFmpeg layer's
-    # _validate_local_source_path currently rejects it. A genuinely MISSING path
+    # _validate_local_source_path rejects it. A genuinely MISSING path
     # is deliberately left to fall through so the decoders surface their clear
     # "not found" error (preserving the convenience-loader semantics).
     #
     # The probe syscalls (exists/is_file/stat) are wrapped in
     # OSError -> AudioProcessingError, mirroring _validate_local_source_path: a bare
-    # str is never sniffed, so a pathologically long path string (e.g. a real-sized
-    # data:/base64 URI mistakenly passed as a path, > ~1024 chars) makes the first
+    # str is never sniffed, so a pathologically long path string (for example, a
+    # real-sized data:/base64 URI mistakenly passed as a path, > ~1024 chars) makes the first
     # probe raise OSError(ENAMETOOLONG), which must surface as the contracted
     # AudioProcessingError rather than leak through the documented contract.
     try:
@@ -1133,7 +1173,7 @@ def load_audio_from_bytes(
 ) -> NDArray[np.float32]:
     """Load audio from raw bytes and convert to Standard ASR format.
 
-    **Accepts:** Audio file content as ``bytes`` (e.g., from ``file.read()``, HTTP response).
+    **Accepts:** Audio file content as ``bytes`` (for example, from ``file.read()``, HTTP response).
 
     **Returns:** ``np.float32`` array, resampled and channel-converted.
 
@@ -1155,18 +1195,21 @@ def load_audio_from_bytes(
         Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
 
     Raises:
-        AudioProcessingError: Decoding failed, empty audio, or ``data`` exceeds
-            ``max_bytes``.
+        AudioProcessingError: Decoding failed, empty audio, ``data`` exceeding
+            ``max_bytes``, or a source channel count that could not be
+            determined with ``target_channels=None`` (the message says whether
+            the source or the environment is at fault).
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
+            fallback, which needs ffprobe to preserve the source channel
+            layout, but ffprobe is not installed.
 
     Note:
         **Decoding priority:** ``soundfile`` → FFmpeg. Install one for format support.
     """
     # Basic parameter validation
-    if target_sample_rate <= 0:
-        raise AudioProcessingError(f"target_sample_rate must be > 0, got {target_sample_rate}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_positive_sample_rate("target_sample_rate", target_sample_rate)
+    _require_valid_target_channels(target_channels)
     _enforce_decode_size(len(data), max_bytes)
     # Layer 2: `soundfile` is the best primary method for bytes (the shared
     # attempt owns the fall-back-vs-hard-reject exception discipline).
@@ -1192,7 +1235,7 @@ def decode_audio(
     Unlike :func:`load_audio`, this primitive does **not** resample: it returns
     the decoded waveform together with the source's original sample rate, so the
     caller can make the single authoritative resampling decision. This
-    is what the conversion layer needs to honour 8 kHz telephony and 24 kHz
+    is what the conversion layer needs to honor 8 kHz telephony and 24 kHz
     realtime engines without a spurious round-trip through 16 kHz (the standard
     must not upsample native-rate input).
 
@@ -1225,15 +1268,16 @@ def decode_audio(
         AudioProcessingError: Decoding failed, the input is missing/oversize, or
             looks like an injected option.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
         TypeError: Unsupported source type.
     """
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_valid_target_channels(target_channels)
 
     if isinstance(source, str):
         # A bare str is ALWAYS a local file path -- never content-sniffed for a
         # data: URI. Sniffing here would let a pathological
-        # filename literally named "data:audio/...;base64,..." be decoded as
+        # filename literally named ``data:audio/...;base64,...`` be decoded as
         # inline base64 instead of opened as a file, silently overriding the
         # explicit AudioPath type tag the conversion layer relies on. No
         # strip(): a path with surrounding whitespace is a legitimate (if
@@ -1291,12 +1335,13 @@ def decode_audio_from_data_uri(
             lacks the ``;base64,`` marker, the decoded size exceeds ``max_bytes``,
             or decoding failed.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
         TypeError: ``value`` is not a ``str``.
     """
     if not isinstance(value, str):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise TypeError(f"decode_audio_from_data_uri requires a str, got {type(value)}")
-    if target_channels is not None and target_channels <= 0:
-        raise AudioProcessingError(f"target_channels must be None or > 0, got {target_channels}")
+    _require_valid_target_channels(target_channels)
     # Gate-and-decode: the decoded size is estimated from the payload length
     # and checked BEFORE the decode allocates it (the exact length is re-checked
     # inside _decode_base64_bounded).
@@ -1322,6 +1367,8 @@ def _decode_path_native(
     Raises:
         AudioProcessingError: Decoding failed.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
     """
     # Layer 1: stdlib WAV via the shared helper (decode at the NATIVE rate, so
     # normalize_audio's target equals the source rate -- no resample here).
@@ -1353,6 +1400,8 @@ def _decode_bytes_native(
     Raises:
         AudioProcessingError: Decoding failed.
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
+        FFprobeNotFoundError: FFmpeg fallback needed but ffprobe is not
+            installed.
     """
     decoded = _read_with_soundfile(io.BytesIO(data))
     if decoded is not None:
@@ -1375,18 +1424,35 @@ def _decode_with_ffmpeg_native(
         The decoded ``float32`` waveform and its native sample rate.
 
     Raises:
-        AudioProcessingError: If the native rate cannot be determined or decoding
-            fails.
+        AudioProcessingError: If ffprobe reported no usable rate (an
+            unreadable file, or no audio stream), or the probe itself could
+            not run (a transient system condition; the message says which).
+        FFprobeNotFoundError: ffprobe not found on PATH, or not executable.
         FFmpegNotFoundError: FFmpeg not in PATH.
     """
-    native_sr = _probe_sample_rate_with_ffprobe(source)
-    if native_sr is None:
+    probe = _probe_sample_rate_with_ffprobe(source)
+    if probe.value is None:
+        if probe.failure == "tool-missing":
+            raise FFprobeNotFoundError(
+                "ffprobe is required to determine the native sample rate but "
+                "was not found on PATH (or is not executable); install the "
+                "ffmpeg suite or the [audio] extra (soundfile) for "
+                "native-rate decoding."
+            ) from probe.cause
+        if probe.failure == "could-not-run":
+            raise AudioProcessingError(
+                "ffprobe could not run to determine the native sample rate "
+                f"({probe.detail}). This is an environmental failure, not "
+                "evidence about the audio; retry, or run ffprobe on the "
+                "source directly."
+            ) from probe.cause
         raise AudioProcessingError(
-            "Could not determine the native sample rate via ffprobe; install "
-            "ffprobe or the [audio] extra (soundfile) for native-rate decoding."
-        )
-    array = _load_with_ffmpeg(source, native_sr, target_channels)
-    return array, native_sr
+            "Could not determine the native sample rate: ffprobe examined "
+            f"the source but reported no usable rate ({probe.detail}). Run "
+            "ffprobe on the source directly to see why."
+        ) from probe.cause
+    array = _load_with_ffmpeg(source, probe.value, target_channels)
+    return array, probe.value
 
 
 def _load_with_ffmpeg(
@@ -1421,14 +1487,17 @@ def _load_with_ffmpeg(
 
     Raises:
         FFmpegNotFoundError: FFmpeg not in PATH.
-        AudioProcessingError: Decoding failed, timeout, empty output, or decoded
-            output exceeding ``max_output_bytes``.
+        FFprobeNotFoundError: ``target_channels=None`` but ffprobe, which
+            reports the source channel count, is not in PATH.
+        AudioProcessingError: Decoding failed, timeout, empty output, decoded
+            output exceeding ``max_output_bytes``, or a source channel count
+            that could not be determined with ``target_channels=None``.
     """
     # Security: a string source is a *local file* and
     # nothing else. Validate + absolutize it up front (before probing), and
     # constrain ffmpeg/ffprobe to the file/pipe protocols so they can never be
-    # coerced into fetching http(s)://, tcp://, concat:, data:, etc. via a
-    # crafted input string.
+    # coerced into fetching ``http(s)://``, ``tcp://``, ``concat:``, ``data:``,
+    # etc. via a crafted input string.
     #
     # Validate BEFORE the ffmpeg-presence check: a missing or
     # mistyped path must surface the decoders' clear "not found" error even when
@@ -1448,17 +1517,38 @@ def _load_with_ffmpeg(
             "'choco install ffmpeg' (Windows)."
         )
 
-    # If target_channels is None, attempt to preserve original channels via ffprobe.
+    # target_channels=None means "preserve the source channel layout", which
+    # needs ffprobe to report the source channel count. An unknown count MUST
+    # fail loudly here: downmixing a surround source to mono because a probe
+    # could not run is a silent wrong result (AGENTS.md, Philosophy), not a
+    # fallback. The message must name the right culprit -- tool, environment,
+    # or source -- so the probe outcome's three failure kinds map to three
+    # different messages.
     if target_channels is None:
-        detected_channels = _probe_channels_with_ffprobe(probe_source)
-        if detected_channels is None:
-            logger.warning(
-                "ffprobe not available or failed to detect channels. "
-                "Defaulting to mono (1 channel)."
-            )
-            final_target_channels = 1
-        else:
-            final_target_channels = detected_channels
+        probe = _probe_channels_with_ffprobe(probe_source)
+        if probe.value is None:
+            if probe.failure == "tool-missing":
+                raise FFprobeNotFoundError(
+                    "ffprobe is required to preserve the source channel "
+                    "layout (target_channels=None) but was not found on PATH "
+                    "(or is not executable); install the ffmpeg suite, or "
+                    "pass target_channels explicitly."
+                ) from probe.cause
+            if probe.failure == "could-not-run":
+                raise AudioProcessingError(
+                    "ffprobe could not run to determine the source channel "
+                    f"count ({probe.detail}). This is an environmental "
+                    "failure, not evidence about the audio; retry, pass "
+                    "target_channels explicitly, or run ffprobe on the "
+                    "source directly."
+                ) from probe.cause
+            raise AudioProcessingError(
+                "Could not determine the source channel count: ffprobe "
+                f"examined the source but reported no usable count "
+                f"({probe.detail}). Pass target_channels explicitly, or run "
+                "ffprobe on the source directly to see why."
+            ) from probe.cause
+        final_target_channels = probe.value
     else:
         final_target_channels = target_channels
 
@@ -1550,7 +1640,7 @@ def _load_with_ffmpeg(
 
         # Respect contract: mono->1D, multi->2D even if n_samples==1
         if final_target_channels == 1:
-            # Ensure we return 1D array (n_samples,) not scalar for single sample
+            # Return a 1D array (n_samples,), not a scalar, for a single sample
             return audio.reshape(-1)
         return audio
 
@@ -1572,7 +1662,36 @@ def _load_with_ffmpeg(
         ) from e
 
 
-def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -> int | None:
+class _ProbeOutcome(NamedTuple):
+    """What a guarded ffprobe query learned, and why it learned nothing.
+
+    ``value`` is the probed positive integer, or ``None``. When it is
+    ``None``, ``failure`` names which of three distinguishable situations
+    produced the unknown. The callers owe the user three DIFFERENT messages,
+    and collapsing them was the defect that blamed a transient fork failure
+    on the user's audio file:
+
+    - ``"tool-missing"``: ffprobe was not found on ``PATH`` (or is not
+      executable, or vanished between the lookup and the spawn). The remedy
+      is installing it.
+    - ``"could-not-run"``: ffprobe could not start or complete -- a spawn
+      failure such as ``EAGAIN`` or ``EMFILE``, a broken pipe, a timeout.
+      Environmental and usually transient; not evidence about the audio.
+    - ``"no-value"``: ffprobe ran and answered, but reported no usable value
+      (no audio stream, an unreadable container, a non-positive or
+      undecodable field). Evidence about the source.
+
+    ``detail`` carries the underlying error text for messages, and ``cause``
+    the caught exception for ``raise ... from`` chaining.
+    """
+
+    value: int | None
+    failure: Literal["tool-missing", "could-not-run", "no-value"] | None = None
+    detail: str | None = None
+    cause: Exception | None = None
+
+
+def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -> _ProbeOutcome:
     """Query a single integer ``stream=<entry>`` value via ffprobe (guarded).
 
     Like the ffmpeg decode path, this constrains ffprobe to the ``file,pipe``
@@ -1582,19 +1701,19 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
 
     Args:
         source: A local file path, or raw bytes.
-        entry: The ``stream=`` field to read (e.g. ``"channels"``,
+        entry: The ``stream=`` field to read (for example, ``"channels"``,
             ``"sample_rate"``).
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        The positive integer value, or ``None`` if ffprobe is unavailable,
-        detection failed, or the reported value is not a positive integer.
+        A :class:`_ProbeOutcome`: the positive integer value, or the reason
+        none could be determined.
 
     Raises:
         None.
     """
     if shutil.which("ffprobe") is None:
-        return None
+        return _ProbeOutcome(None, "tool-missing")
 
     if isinstance(source, bytes):
         input_arg = "pipe:0"
@@ -1622,21 +1741,50 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
         proc = subprocess.run(
             cmd, capture_output=True, input=input_data, check=True, timeout=timeout
         )
+    except FileNotFoundError as e:
+        # ffprobe vanished between the shutil.which lookup and the spawn (for
+        # example, a concurrent package upgrade): same remedy as
+        # never-installed, so the same outcome.
+        return _ProbeOutcome(None, "tool-missing", str(e), e)
+    except subprocess.TimeoutExpired as e:
+        return _ProbeOutcome(None, "could-not-run", f"timed out after {timeout}s", e)
+    except subprocess.CalledProcessError as e:
+        # ffprobe ran and rejected the source (unreadable, not a media file):
+        # that IS evidence about the source. Carry its first stderr line so
+        # the caller's message can say why.
+        stderr_lines = (e.stderr or b"").decode(errors="replace").strip().splitlines()
+        detail = stderr_lines[0][:200] if stderr_lines else f"ffprobe exited {e.returncode}"
+        return _ProbeOutcome(None, "no-value", detail, e)
+    except OSError as e:
+        # The spawn itself failed (EAGAIN/EMFILE process or file-descriptor
+        # exhaustion, a broken pipe feeding stdin): environmental, not
+        # evidence about the audio -- and never an escaping exception
+        # (Raises: None).
+        return _ProbeOutcome(None, "could-not-run", str(e), e)
+
+    try:
         text = proc.stdout.decode().strip()
-        if not text.isdigit():
-            return None
+    except UnicodeDecodeError as e:
+        # A broken stream can make ffprobe emit undecodable bytes.
+        return _ProbeOutcome(None, "no-value", "undecodable ffprobe output", e)
+    try:
         value = int(text)
-        # ffprobe can report 0 for a hostile/broken stream; a non-positive count
-        # or rate is "unknown", never forwarded (``-ar 0`` is a silent no-op on
-        # some ffmpeg builds, which would skip resampling without any error).
-        return value if value > 0 else None
-    except subprocess.TimeoutExpired:
-        return None
-    except subprocess.CalledProcessError:
-        return None
+    except ValueError:
+        # int() itself is the guard: str.isdigit() would admit Unicode
+        # digit-category characters (SUPERSCRIPT TWO) that int() rejects, so
+        # a pre-check could let a ValueError slip through the no-raise
+        # contract.
+        return _ProbeOutcome(None, "no-value", f"non-integer field value {text[:40]!r}")
+    if value <= 0:
+        # ffprobe can report 0 for a hostile/broken stream; a non-positive
+        # count or rate is "unknown", never forwarded (``-ar 0`` is a silent
+        # no-op on some ffmpeg builds, which would skip resampling without
+        # any error).
+        return _ProbeOutcome(None, "no-value", f"non-positive field value {value}")
+    return _ProbeOutcome(value)
 
 
-def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> int | None:
+def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> _ProbeOutcome:
     """Detect audio channel count via ffprobe (internal helper).
 
     Args:
@@ -1644,15 +1792,18 @@ def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> i
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        Number of channels, or ``None`` if ffprobe unavailable or detection failed.
+        A :class:`_ProbeOutcome` with the channel count, or the reason none
+        could be determined. An unvalidated string source that is not a
+        readable local file reads as ``"no-value"`` (string sources are
+        forwarded verbatim; callers validate them first).
 
     Raises:
-        AudioProcessingError: If a string source is not a valid local file.
+        None.
     """
     return _probe_stream_entry(source, "channels", timeout)
 
 
-def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> int | None:
+def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> _ProbeOutcome:
     """Detect the native sample rate via ffprobe (internal helper).
 
     Args:
@@ -1660,10 +1811,12 @@ def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        Native sample rate in Hz, or ``None`` if ffprobe unavailable or detection
-        failed.
+        A :class:`_ProbeOutcome` with the native sample rate in Hz, or the
+        reason none could be determined. An unvalidated string source that
+        is not a readable local file reads as ``"no-value"`` (string sources
+        are forwarded verbatim; callers validate them first).
 
     Raises:
-        AudioProcessingError: If a string source is not a valid local file.
+        None.
     """
     return _probe_stream_entry(source, "sample_rate", timeout)

@@ -395,7 +395,7 @@ def test_decode_audio_never_sniffs_data_uri_as_base64() -> None:
     # literally named like a data: URI is therefore opened as a
     # (non-existent) file and fails "not found", NOT decoded as inline base64.
     # This is the security boundary the conversion layer relies on: an AudioPath
-    # whose value happens to read "data:..." must not be decoded as base64.
+    # whose value happens to read ``data:...`` must not be decoded as base64.
     import base64 as _b64
 
     uri = "data:audio/wav;base64," + _b64.b64encode(_wav_bytes(rate=8000)).decode()

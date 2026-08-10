@@ -140,7 +140,7 @@ def test_negotiate_or_raise_raises() -> None:
 
 def test_bytes_to_file_only_engine_no_viable_path() -> None:
     # In-memory bytes cannot be delivered to an engine that accepts only files on
-    # disk (the standard will not write a temp file). Must be NoViablePath, not a
+    # disk (the standard never writes a temp file). Must be NoViablePath, not a
     # wrong-shape ENCODED_BYTES payload.
     result = negotiate(AudioBytes(b"x"), {FILE})
     assert isinstance(result, NoViablePath)
@@ -374,6 +374,16 @@ def test_validate_url_malformed_url_raises_unsafe() -> None:
         validate_fetchable_url("https://[::1/a.wav")
 
 
+def test_validate_url_unencodable_host_raises_unsafe() -> None:
+    # getaddrinfo IDNA-encodes the host name before resolving; an over-long
+    # label raises UnicodeError there, not gaierror, and needs no network to
+    # do so. The validator's contract is that UnsafeAudioUrlError is its only
+    # exception type, so the encoding failure must be wrapped, never escape
+    # as a bare UnicodeEncodeError.
+    with pytest.raises(UnsafeAudioUrlError, match="cannot be encoded"):
+        validate_fetchable_url("https://" + "a" * 300 + ".example.com/a.wav")
+
+
 def test_validate_url_opt_in_allows_private() -> None:
     # The opt-in relaxes the private-address rejection (still HTTPS-only).
     validate_fetchable_url("https://127.0.0.1/a.wav", allow_private_addresses=True)
@@ -382,6 +392,24 @@ def test_validate_url_opt_in_allows_private() -> None:
 def test_validate_url_opt_in_still_requires_https() -> None:
     with pytest.raises(UnsafeAudioUrlError):
         validate_fetchable_url("http://127.0.0.1/a.wav", allow_private_addresses=True)
+
+
+def test_validate_url_opt_in_skips_the_resolvability_check() -> None:
+    """The opt-in skips the whole address stage, DNS resolution included.
+
+    Documented deliberately: resolution exists only to feed the private-address
+    policy, so with that policy opted out an internal name this host cannot
+    resolve is not the validator's business. The class docstring once said the
+    error covers an "unresolvable host" without qualification, which this case
+    disproves -- keep the contract and the code saying the same thing.
+    """
+    validate_fetchable_url("https://does-not-resolve.invalid/a.wav", allow_private_addresses=True)
+
+
+def test_validate_url_opt_in_still_rejects_a_malformed_port() -> None:
+    # Structure is checked in both modes; only the address stage is opted out.
+    with pytest.raises(UnsafeAudioUrlError, match="malformed port"):
+        validate_fetchable_url("https://10.0.0.1:99999/a.wav", allow_private_addresses=True)
 
 
 def test_validate_url_unresolvable_host_rejected() -> None:

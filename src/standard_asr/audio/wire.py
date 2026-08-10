@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 #: Use this instead of hardcoding the ``"pcm_s16le"`` string. It is the one
 #: encoding for which the standard ships a built-in codec (:func:`pcm16_encode` /
 #: :func:`pcm16_decode`); ``AudioFormat.encoding`` and ``wire_encodings`` remain
-#: open strings so engines MAY declare other encodings (e.g. ``"mulaw"``) that
+#: open strings so engines MAY declare other encodings (for example, ``"mulaw"``) that
 #: carry their own transport.
 CANONICAL_WIRE_ENCODING: Final = "pcm_s16le"
 
@@ -55,7 +55,7 @@ def require_float_waveform(audio: NDArray[np.floating]) -> NDArray[np.floating]:
     The public encoders are typed ``NDArray[np.floating]``, but ``np.asarray``
     does not enforce dtype at runtime, so a dynamic / un-type-checked caller can
     pass an **integer** PCM array. ``np.clip(int_codes, -1, 1)`` would crush every
-    sample to a square wave (e.g. ``1000 -> 1.0``), encoding completely corrupted
+    sample to a square wave (for example, ``1000 -> 1.0``), encoding completely corrupted
     PCM that still 'succeeds' -- a silent wrong result. The engine input boundary
     (``AudioArray.__post_init__``) already rejects non-floating dtypes; this gives
     the standalone codec/encoder helpers the same guard. The conversion is
@@ -76,7 +76,7 @@ def require_float_waveform(audio: NDArray[np.floating]) -> NDArray[np.floating]:
         raise AudioProcessingError(
             f"Audio must be a floating-point waveform in [-1, 1], got dtype "
             f"{array.dtype}. Integer PCM is not an amplitude: convert it first, "
-            "e.g. samples.astype(np.float32) / 32768.0 for int16."
+            "for example, samples.astype(np.float32) / 32768.0 for int16."
         )
     return array
 

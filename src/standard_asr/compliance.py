@@ -92,7 +92,7 @@ __all__ = [
 #: capability the engine does NOT support, so it always exercises the gating
 #: drop/raise path; when every probe is supported it falls back to a
 #: sub-constraint probe (:func:`_pick_sub_constraint_probe`). The builder
-#: returns a fully-typed :class:`RuntimeParams`.
+#: returns a fully typed :class:`RuntimeParams`.
 _GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
     (
         "word_timestamps",
@@ -150,7 +150,7 @@ def _pick_sub_constraint_probe(engine: StandardASR) -> tuple[str, RuntimeParams,
         readable capability tree to derive one from).
     """
     # ``effective_capabilities`` is an EngineBase convenience, NOT a StandardASR
-    # protocol member: a fully-compliant structural engine may omit it, and
+    # protocol member: a fully compliant structural engine may omit it, and
     # reading it bare turned that omission into an AttributeError the caller
     # reported as gating_probe_selection_raised -- a false FAILURE of a
     # compliant engine. Fall back to the protocol's ``declared_capabilities``
@@ -214,8 +214,8 @@ class ComplianceIssue:
 
     Attributes:
         level: Issue severity (``"error"`` or ``"warning"``).
-        code: Stable machine-readable category identifier (e.g.
-            ``"entrypoint_factory_failed"``, ``"streaming_invariant"``). Safe to
+        code: Stable machine-readable category identifier (for example,
+            ``"entrypoint_factory_failed"``, ``"streaming_invariant:<guard_code>"``). Safe to
             match in CI; never reworded within a major version.
         message: Human-readable description (for display; MAY be reworded).
         model: The model key the issue is attributed to, or ``None`` for
@@ -250,7 +250,6 @@ class ComplianceReport:
         Returns:
             ``True`` when no error-level issues exist.
         """
-
         return not any(issue.level == "error" for issue in self.issues)
 
     def iter_level(self, level: Literal["error", "warning"]) -> Iterable[ComplianceIssue]:
@@ -262,7 +261,6 @@ class ComplianceReport:
         Returns:
             Iterable of matching issues.
         """
-
         for issue in self.issues:
             if issue.level == level:
                 yield issue
@@ -277,7 +275,6 @@ def _can_call_without_args(factory: object) -> bool:
     Returns:
         ``True`` when the callable has no required parameters.
     """
-
     try:
         signature = inspect.signature(factory)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -353,7 +350,6 @@ def check_entrypoints(
     Returns:
         Compliance report summarizing findings.
     """
-
     issues: list[ComplianceIssue] = []
 
     if registry is None:
@@ -405,7 +401,7 @@ def check_entrypoints(
                 message=(
                     f"engine_id {engine_id!r} is provided by more than one "
                     "distribution (an identity collision); config.engine routing "
-                    "is ambiguous. Install only one provider for this engine_id, or "
+                    "is ambiguous. Install only one distribution that provides this engine_id, or "
                     "have the authors choose distinct engine_ids."
                 ),
                 model=engine_id,
@@ -544,7 +540,7 @@ def _check_engine_unguarded(
                     f"present in this environment ({safe_exception_summary(exc)}). "
                     "Set the engine's "
                     "STANDARD_ASR_<ENGINE>__<FIELD> environment variable (double "
-                    "underscore between engine and field, per env_var_name; e.g. an "
+                    "underscore between engine and field, per env_var_name; for example, an "
                     "API key) or pass an explicit config to run the full instance "
                     "checks."
                 ),
@@ -584,7 +580,7 @@ def _check_engine_unguarded(
                 message=(
                     f"Factory invocation failed with a configuration/validation "
                     f"defect ({defect}). If this state is actually 'required "
-                    "configuration absent from the environment' (e.g. a missing "
+                    "configuration absent from the environment' (for example, a missing "
                     "credential), raise ConfigurationRequiredError instead "
                     "(BaseConfig.from_env does so automatically); compliance "
                     "skips that state rather than failing it."
@@ -1046,8 +1042,8 @@ def _check_instance_capabilities(
                 message=(
                     "effective_capabilities is not a DeclaredCapabilities "
                     f"(got {safe_type_name(effective)!r}); it MUST be a "
-                    "DeclaredCapabilities (or None) so the effective ⊆ "
-                    "declared invariant can be verified."
+                    "DeclaredCapabilities (or None) so the effective-narrows-declared "
+                    "invariant can be verified."
                 ),
                 model=name,
             )
@@ -1063,8 +1059,10 @@ def _check_language_axis_config(
 
     An engine whose properties expose a language axis but whose config lacks a
     valid ``default_language`` passes construction (the standard keeps ``__init__``
-    pure) and then raises ``ConfigError`` on the **user's first transcribe** --
-    the worst place for an engine-author bug to surface. Catch it at compliance
+    pure) and then fails on the **user's first transcribe** -- the worst place for
+    an engine-author bug to surface. The exception depends on the defect:
+    ``EngineContractError`` when ``default_language`` is unset (IC.6),
+    ``ConfigError`` when its value is malformed or not selectable. Catch it at compliance
     time instead. For :class:`EngineBase` engines this reuses the exact runtime
     validation (presence, selectable-membership, canonicalization), so the
     compliance verdict cannot drift from runtime behavior; for structural
@@ -1112,8 +1110,10 @@ def _check_language_axis_config(
                 code="language_axis_without_default",
                 message=(
                     "Engine exposes a language axis (selectable_languages is non-empty) "
-                    "but its config does not set default_language; every transcribe "
-                    "will raise ConfigError."
+                    "but its config does not set default_language; IC.6 requires the "
+                    "field to be required or defaulted once the axis is declared. An "
+                    "EngineBase engine raises EngineContractError on the first "
+                    "transcribe; a structural engine has no standard-layer guard here."
                 ),
                 model=name,
             )
@@ -1214,8 +1214,8 @@ def _check_required_surface(
     # Presence is unconditional (checked above for every engine); what remains
     # is the streaming-declaration CONSISTENCY check. Read the declared axes
     # defensively: a malformed ``declared_capabilities`` (its own error is
-    # raised elsewhere) simply means we cannot assert anything here, so we do
-    # not over-report.
+    # raised elsewhere) simply means nothing can be asserted here, so the check
+    # does not over-report.
     declared = getattr(instance, "declared_capabilities", None)
     declares_streaming = isinstance(declared, DeclaredCapabilities) and (
         declared.supports("streaming_input") or declared.supports("streaming_output")
@@ -1224,7 +1224,7 @@ def _check_required_surface(
         if isinstance(declared, DeclaredCapabilities):
             # Presence alone does not verify the protocol's batch-only
             # promise; the refusal probe below does. Skipped when
-            # declared_capabilities is unreadable (we cannot know the engine
+            # declared_capabilities is unreadable (the check cannot know the engine
             # is batch-only, and its own error is reported elsewhere).
             _check_batch_only_streaming_refusal(instance, name, issues)
         return
@@ -1294,7 +1294,8 @@ def _sync_member_violation(
         member: Display name of the member (for the message).
         model: The model key to attribute the issue to, or ``None``.
         issues: The mutable issue list to append to.
-        expected_type: The member's pinned return type(s), or ``None`` to
+        expected_type: The member's pinned return type (or tuple of types),
+            or ``None`` to
             check only synchronicity.
 
     Returns:
@@ -1345,7 +1346,7 @@ def _sync_member_violation(
                 f"{member} returned {safe_type_name(value)!r}, not the "
                 "protocol-pinned return type; consumers negotiating "
                 "capabilities on truthiness would silently misread it "
-                "(e.g. a non-empty string reads as 'supported'). Return "
+                "(for example, a non-empty string reads as 'supported'). Return "
                 "a real value of the pinned type (for supports(): a bool)."
             ),
             model=model,
@@ -1411,7 +1412,7 @@ def _check_batch_only_streaming_refusal(
         )
         return
     if _sync_member_violation(session, "start_transcription()", name, issues):
-        # A SYNC wrapper returning an awaitable (e.g. delegating to an
+        # A SYNC wrapper returning an awaitable (for example, delegating to an
         # internal `async def`) slips the iscoroutinefunction pre-checks; the
         # shared guard closed the stray coroutine and reported the modality
         # defect -- it must not additionally read as "returned a session".
@@ -1444,7 +1445,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
 
     This is the single definition of the zero-argument half of the contract,
     shared by :func:`_check_prepare_hook` and the ``standard-asr prepare``
-    CLI command so the compliance verdict and the runtime behaviour cannot drift.
+    CLI command so the compliance verdict and the runtime behavior cannot drift.
 
     Args:
         prepare: An engine's ``prepare`` attribute, already confirmed callable.
@@ -1457,7 +1458,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
     try:
         signature = inspect.signature(prepare)
     except (TypeError, ValueError):
-        # A callable whose signature cannot be introspected (e.g. some C builtins)
+        # A callable whose signature cannot be introspected (for example, some C builtins)
         # cannot be proven to require arguments; treat it as zero-arg and let an
         # actual call surface any real arity error.
         return False
@@ -1474,7 +1475,7 @@ def prepare_requires_arguments(prepare: Callable[..., object]) -> bool:
 
 
 def _check_prepare_hook(instance: object, name: str, issues: list[ComplianceIssue]) -> None:
-    """Verify the optional ``prepare()`` warm-up hook honours its contract.
+    """Verify the optional ``prepare()`` warm-up hook honors its contract.
 
     ``prepare()`` is optional, but when present (overridden past the
     :class:`~standard_asr.runtime.interface.EngineBase` no-op) it MUST be a
@@ -1564,9 +1565,9 @@ def _check_streaming_wire_encodings_declared(
                 message=(
                     "Engine declares 'streaming_input' but does not declare "
                     "'wire_encodings'; an audio_format session's wire encoding then "
-                    "cannot be validated and a non-PCM (e.g. mulaw) frame would be "
+                    "cannot be validated and a non-PCM (for example, mulaw) frame would be "
                     "read as PCM -- a silent mistranscription. Declare wire_encodings "
-                    "(e.g. ['pcm_s16le']) unless the adapter self-manages its wire "
+                    "(for example, ['pcm_s16le']) unless the engine self-manages its wire "
                     "format via bare start_transcription()."
                 ),
                 model=name,
@@ -1594,7 +1595,7 @@ def _check_streaming_axis_declared(
 _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on the
     silent side.
 
-    Unlike the ``wire_encodings`` nudge -- which a self-managing-wire adapter may
+    Unlike the ``wire_encodings`` nudge -- which a self-managing-wire engine may
     legitimately trip, so it is a *warning* -- there is NO legitimate engine with a
     streaming domain and neither axis (it cannot be opened at all), so this is an
     **error**: the compliance run MUST fail rather than soft-nudge a definitely
@@ -1787,7 +1788,7 @@ def _cross_check_event_capabilities(
       ``speaker`` or any ``words[i].speaker``): attribution is diarization
       output the engine declared it does not produce. This negative check is
       the only diarization coverage the suite can offer -- *positive*
-      diarization behaviour (correct labels) is unverifiable without
+      diarization behavior (correct labels) is unverifiable without
       multi-speaker fixtures, and the standard probes feed silence.
 
     The reverse -- declaring a capability a given recorded stream simply never
@@ -1872,7 +1873,7 @@ def check_event_sequence(
 ) -> ComplianceReport:
     """Validate a *recorded* streaming event sequence against the invariants.
 
-    Behavioral check for streaming adapters that is **pure**: it replays an
+    Behavioral check for streaming engines that is **pure**: it replays an
     already-captured event stream through the standard lifecycle/frontier guard
     and reports every invariant it violates, without ever instantiating or
     calling an engine. (Behavioral checks that would require *running* a model --
@@ -1909,7 +1910,7 @@ def check_event_sequence(
             event.
         capabilities: When provided, additionally cross-check each event against
             the engine's declared streaming capabilities: a stream MUST NOT
-            *exceed* what it declares -- e.g. emit a non-zero ``stable_until`` while
+            *exceed* what it declares -- for example, emit a non-zero ``stable_until`` while
             ``word_stability`` is unsupported, an ``audio_processed_until`` cursor
             while ``timestamps`` mode is ``none``, ``words`` while
             ``word_timestamps`` is unsupported, or a speaker label (event- or
@@ -1919,7 +1920,7 @@ def check_event_sequence(
 
     Returns:
         A :class:`ComplianceReport`; ``passed`` is ``True`` when the sequence
-        honours every streaming invariant.
+        honors every streaming invariant.
     """
     guard = _LifecycleGuard(strict=False)
     issues: list[ComplianceIssue] = []
@@ -2018,7 +2019,7 @@ _PREFIX_INVARIANT_CODES: frozenset[str] = frozenset(
 
 
 def assert_prefix_invariant(events: Iterable[TranscriptionEvent]) -> None:
-    """Assert a recorded stream's partials honour the frozen-prefix invariant.
+    """Assert a recorded stream's partials honor the frozen-prefix invariant.
 
     Test helper for engine authors. Partials are **lossy under backpressure**: the
     base coalesces pending partials when the consumer is slow, so the
@@ -2128,10 +2129,10 @@ def check_transcription_result(
 ) -> ComplianceReport:
     """Cross-check a *recorded* batch result against the declared capabilities.
 
-    Behavioral check for batch adapters that is **pure**, mirroring
+    Behavioral check for batch engines that is **pure**, mirroring
     :func:`check_event_sequence`: it inspects a result the author already
     produced -- it never instantiates or calls an engine (invoking a cloud
-    engine from a compliance run would be a billable side effect). Currently it
+    engine from a compliance run would be a billable side effect). In v1 it
     verifies the diarization couple: a result carrying speaker labels anywhere
     (top-level ``segments[]`` / ``words[]``, a segment's ``words``, or any
     ``channels[i]`` view) while ``batch.diarization`` is unsupported (or the
@@ -2139,7 +2140,7 @@ def check_transcription_result(
     reported as an error with code ``result_exceeds_diarization``.
 
     **Honest scoping note:** this is the only diarization coverage the suite
-    can offer. *Positive* diarization behaviour -- labels present when
+    can offer. *Positive* diarization behavior -- labels present when
     requested, correctly attributed, consistent across views -- is unverifiable
     without multi-speaker audio fixtures, and the standard probes feed silence.
     The check is therefore an opportunistic *negative* cross-check an author
@@ -2201,7 +2202,7 @@ def check_streaming_param_gating(engine: StandardASR) -> ComplianceReport:
       :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` whose ``param``
       identifies the gated field;
     * **best_effort** policy -- the call MUST succeed, drop (or degrade) the
-      parameter, and surface the probe's expected diagnostic (e.g.
+      parameter, and surface the probe's expected diagnostic (for example,
       ``unsupported_parameter_ignored``) via ``session.diagnostics()``.
 
     When the engine supports every probed parameter at the feature level, the
@@ -2671,7 +2672,7 @@ class SupportsWireRecommendation(Protocol):
     own promise -- and the previous ``EngineBase``-typed signature invited
     calling ``EngineBase``-only members on them (the check once called
     ``ensure_stream_format_supported``, not a ``StandardASR`` member, so a
-    fully-compliant structural engine failed with a false
+    fully compliant structural engine failed with a false
     ``recommended_wire_format_self_inconsistent`` verdict on an
     ``AttributeError``).
     """
@@ -2758,9 +2759,7 @@ def _wire_format_round_trip_issues(
             ComplianceIssue(
                 level="error",
                 code="recommended_wire_format_raised",
-                message=(
-                    f"EngineBase.recommended_wire_format() raised: {safe_exception_summary(exc)}."
-                ),
+                message=(f"recommended_wire_format() raised: {safe_exception_summary(exc)}."),
                 model=model,
             )
         )
@@ -2882,7 +2881,7 @@ def check_sync_bridge(
     model: str | None = None,
     engine: SupportsCapabilities | None = None,
 ) -> ComplianceReport:
-    """Drive an async adapter's :class:`SyncSession` from an external thread.
+    """Drive an async engine's :class:`SyncSession` from an external thread.
 
     Implements the standard's sync-bridge mandate: a no-deadlock / no-leak
     test. A fresh session is created and driven synchronously from a *different*
@@ -2893,7 +2892,7 @@ def check_sync_bridge(
 
     Args:
         session_factory: A zero-argument callable returning a fresh async
-            :class:`TranscriptionSession` (e.g. ``engine.start_transcription``
+            :class:`TranscriptionSession` (for example, ``engine.start_transcription``
             bound with its arguments). The return crosses the same sync-call
             boundary as every protocol member: a factory handing back an
             awaitable (an ``async def`` ``start_transcription`` behind the
@@ -2920,8 +2919,8 @@ def check_sync_bridge(
             each bridged lifecycle call (forwarded as the ``SyncSession``
             ``submit_timeout``), so granting a larger budget genuinely extends
             slow-but-compliant ``_open``/``_close`` phases. This
-            MUST exceed the adapter's real ``_open`` + ``_close`` cost: a slow but
-            compliant adapter (a cloud session doing a real network handshake) is
+            MUST exceed the engine's real ``_open`` + ``_close`` cost: a slow but
+            compliant engine (a cloud session doing a real network handshake) is
             *not* a deadlock, so when a run reports a timeout, re-run with a larger
             value to tell "slow" from "stuck". The driver thread is a daemon, so a
             false positive (or a real deadlock) never blocks interpreter exit --
@@ -2952,7 +2951,7 @@ def check_sync_bridge(
         by an engine KNOWN not to declare ``streaming_input``; reported as a
         ``sync_bridge_not_applicable`` warning, never as an engine failure).
         An ``UnsupportedFeatureError`` from anywhere PAST establishment (the
-        adapter's ``_open``, ``end_audio``, event drain, close) is always a
+        engine's ``_open``, ``end_audio``, event drain, close) is always a
         failing ``sync_bridge_raised`` -- the not-applicable carve-out is
         scoped to the factory call alone.
 
@@ -2969,7 +2968,7 @@ def check_sync_bridge(
     # plugin code is arbitrary -- is exactly the fault class this no-deadlock
     # check exists to diagnose, so the check must never itself hang on either.
     # Scoping establishment outside the DRIVE worker keeps the not-applicable
-    # carve-out surgical: an UnsupportedFeatureError from the adapter's own
+    # carve-out surgical: an UnsupportedFeatureError from the engine's own
     # lifecycle (_open, end_audio, drain, close) can then NEVER be mistaken
     # for "the check does not apply" -- it stays a failing sync_bridge_raised
     # like any other mid-bridge exception. Each phase (establishment; bridged
@@ -2990,7 +2989,7 @@ def check_sync_bridge(
             # Close-only drive: __exit__ without __enter__ is tolerated by the
             # base session (a never-entered session just awaits _close), so
             # the teardown NEVER opens the session -- driving _open here would
-            # initiate a fresh (for cloud adapters: billable) connection
+            # initiate a fresh (for cloud engines: billable) connection
             # purely to destroy it, the very cost that makes the bridge
             # opt-in.
             SyncSession(late_session, submit_timeout=timeout).__exit__(None, None, None)
@@ -3245,7 +3244,7 @@ def check_sync_bridge(
             # The user's timeout budget applies to the bridged lifecycle calls
             # too (submit_timeout), not only the outer join: otherwise a
             # --bridge-timeout above SyncSession's internal 30 s default was
-            # silently inert for open/close and a slow-but-compliant adapter
+            # silently inert for open/close and a slow-but-compliant engine
             # failed as "raised" no matter how much time the user granted.
             sync = SyncSession(session, submit_timeout=timeout)
             with sync:
@@ -3265,8 +3264,8 @@ def check_sync_bridge(
             outcome["error"] = exc
         finally:
             # Record the bridge's OWN loop-thread liveness so the leak check below
-            # asserts on this thread specifically. A compliant adapter may pull in a
-            # dependency that spawns a benign daemon thread (e.g. tqdm's monitor, a
+            # asserts on this thread specifically. A compliant engine may pull in a
+            # dependency that spawns a benign daemon thread (for example, tqdm's monitor, a
             # thread-pool worker) during the session; a process-wide thread diff
             # would mis-report that as a sync_bridge_thread_leak.
             outcome["loop_alive"] = sync.is_loop_alive() if sync is not None else False
@@ -3274,7 +3273,7 @@ def check_sync_bridge(
     # daemon=True: this thread only *observes* the bridge; the leak check below is
     # responsible for catching a surviving loop thread. If the bridged session
     # genuinely deadlocks, a non-daemon worker would block interpreter shutdown for
-    # the full done_timeout (up to 300s), so the process that just reported the
+    # the full done_timeout (up to 300 s), so the process that just reported the
     # deadlock would itself hang on it -- the daemon flag prevents that.
     worker = threading.Thread(target=_drive, name=worker_name, daemon=True)
     worker.start()
@@ -3287,12 +3286,12 @@ def check_sync_bridge(
                 code="sync_bridge_did_not_terminate",
                 message=(
                     f"SyncSession did not terminate within {timeout}s -- this may be a "
-                    "deadlock OR an adapter whose _open/_close legitimately takes "
+                    "deadlock OR an engine whose _open/_close legitimately takes "
                     f"longer than {timeout}s. Re-run with a larger timeout to "
                     "disambiguate (library: check_sync_bridge(..., timeout=...); "
                     "CLI: standard-asr compliance run --include-bridge "
                     "--bridge-timeout SECONDS). If it is a deadlock, check the "
-                    "sync-bridge adapter contract: bind loop resources in "
+                    "sync-bridge contract: bind loop resources in "
                     "__aenter__, never touch the ambient event loop."
                 ),
                 model=model,
@@ -3314,7 +3313,7 @@ def check_sync_bridge(
         )
     elif not outcome.get("terminal"):
         # A well-formed session always lands a terminal event (the base producer
-        # force-appends ``done``); reaching here means a non-compliant adapter
+        # force-appends ``done``); reaching here means a non-compliant engine
         # bypassed the base class and closed without one. This is exactly what the
         # compliance check exists to catch.
         issues.append(
@@ -3329,7 +3328,7 @@ def check_sync_bridge(
     # Leak check: the bridge owns a background loop thread that __exit__ (and a
     # failed __enter__) MUST tear down. Assert on the bridge's OWN thread (recorded
     # in _drive via is_loop_alive), not a process-wide thread diff -- a compliant
-    # adapter may spawn a benign daemon thread during the session, which a diff
+    # engine may spawn a benign daemon thread during the session, which a diff
     # would mis-flag as a sync_bridge_thread_leak.
     if outcome.get("loop_alive"):
         issues.append(

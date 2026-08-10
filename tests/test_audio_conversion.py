@@ -405,7 +405,7 @@ def test_decode_base64_to_array() -> None:
 
 
 def test_path_passthrough_stat_oserror_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A file whose size cannot be stat'd (e.g. it vanished mid-flight) must fail
+    # A file whose size cannot be stat'd (for example, it vanished mid-flight) must fail
     # loud, not silently bypass the payload-size guard.
     def _boom(_self: object, *args: object, **kwargs: object) -> object:
         raise OSError("gone")
@@ -608,9 +608,19 @@ def test_target_sample_rate_self_describing_returns_native() -> None:
     assert _target_array_sample_rate("any", 16000, None) == 16000
 
 
+def test_target_sample_rate_any_still_honors_required_rate() -> None:
+    # "any" accepts every rate, so a hard-required wire rate wins there too
+    # (the docstring's step 1; spec R7.2). The "any" fast path used to
+    # short-circuit before the required check and returned the native rate --
+    # unreachable through _apply_sample_rate, which resolves required/
+    # passthrough first (test_array_required_rate_overrides_any pins that
+    # public path), but wrong for a direct caller of this helper.
+    assert _target_array_sample_rate("any", 16000, 24000) == 24000
+
+
 def test_target_sample_rate_falls_back_to_smallest_when_source_unknown() -> None:
     # Neither required nor native is accepted and the source rate is
-    # unknown -> deterministically pick the SMALLEST accepted rate (minimises
+    # unknown -> deterministically pick the SMALLEST accepted rate (minimizes
     # gratuitous upsampling), independent of declaration order.
     assert _target_array_sample_rate([44100, 22050], 16000, None) == 22050
     # A required rate the engine does not accept also falls through to the policy.

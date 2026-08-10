@@ -7,8 +7,8 @@
 (spec, section "Runtime Parameters"). It carries the v1 portable standard set
 (``language``, ``candidate_languages``, ``word_timestamps``, ``diarization``,
 and the ``guidance`` family ``prompt`` / ``phrase_hints``) plus a single typed
-escape hatch, ``provider_params``, for engine-specific knobs. ASR authors MUST NOT add
-top-level fields (``extra="forbid"``); engine-specific knobs go through a
+escape hatch, ``provider_params``, for engine-specific parameters. Engine authors MUST NOT
+add top-level fields (``extra="forbid"``); engine-specific parameters go through a
 :class:`ProviderParams` subclass.
 
 The ``guidance`` family uses **flat fields** directly on ``RuntimeParams`` (no
@@ -64,7 +64,7 @@ assert {g.value for g in WordTimestampGranularity} == set(get_args(WordTimestamp
 class ProviderParams(BaseModel):
     """Base class for an engine's typed, non-portable parameter model.
 
-    Engines publish a subclass (e.g. ``OpenAIParams``) and declare it as their
+    Engines publish a subclass (for example, ``OpenAIParams``) and declare it as their
     expected ``provider_params`` type. Passing one engine's params model to a
     different engine is a validation error (swap-safe), raised as
     :class:`~standard_asr.contract.exceptions.InvalidProviderParamError` by the engine
@@ -73,16 +73,16 @@ class ProviderParams(BaseModel):
     The swap-safety match is **exact** (``type(provided) is <EngineParams>``),
     not ``isinstance``: every engine MUST publish a distinct *terminal* params
     type, because honoring a subclass would let one engine silently accept
-    another's params and drop the extra knobs. Inheritance is
+    another's params and drop the extra fields. Inheritance is
     therefore not a way to declare cross-engine compatibility. This bare base is
     never a valid concrete params model -- declaring it as an engine's
     ``provider_params`` type, or passing a bare instance, is rejected (the latter
     at :class:`RuntimeParams` construction).
     """
 
-    # Engine params subclasses may carry `model_*` knobs; opt out of pydantic's
+    # Engine params subclasses may carry `model_*` fields; opt out of pydantic's
     # `model_` protected namespace so they do not warn (the warning fires on
-    # older pydantic, e.g. the lower-bounds 2.5).
+    # older pydantic, for example, the lower-bounds 2.5).
     model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
 
 
@@ -92,18 +92,18 @@ class DiarizationRequest(BaseModel):
     Presence enables diarization: ``RuntimeParams(diarization=DiarizationRequest())``
     (or the :data:`DIARIZE` convenience constant) requests speaker labels;
     ``diarization=None`` (the default) means not requested. There is **no**
-    ``[]``-analogue -- a "requested-but-empty" state is meaningless for an
+    ``[]``-analog -- a "requested-but-empty" state is meaningless for an
     on/off feature, so ``None`` vs an instance is the whole state space. On the
     wire the marker maps three ways: ``"diarization": {}``
     -> ``DiarizationRequest()``; ``"diarization": null`` -> ``None``; key
     absent -> ``None``.
 
-    The model is a deliberately **empty** frozen marker in v1: tuning knobs
+    The model is a deliberately **empty** frozen marker in v1: tuning parameters
     (``num_speakers`` / ``min``/``max`` hints, granularity selection) are
     deferred because today's engine landscape cannot honor them portably --
     they graduate additively onto this model once support is broad enough.
     ``extra="forbid"`` keeps that
-    evolution honest: an unknown key (e.g. a client guessing
+    evolution honest: an unknown key (for example, a client guessing
     ``num_speakers``) fails loudly (a 422 on the wire) instead of being
     silently ignored. An import-time assert in
     :mod:`standard_asr.runtime.gating` additionally forces sub-gating to be
@@ -142,7 +142,7 @@ class RuntimeParams(BaseModel):
         on_unsupported: Guidance degradation policy. ``"fail"`` (default) keeps
             the fail-closed contract; ``"degrade_to_prompt"`` opts into the
             one-way rich->prompt fallback (a diagnostic is emitted on degrade).
-        provider_params: Engine-specific typed knobs, or ``None``.
+        provider_params: Engine-specific typed parameters, or ``None``.
 
     Raises:
         ValueError: If field validation fails.
@@ -170,14 +170,14 @@ class RuntimeParams(BaseModel):
         description=(
             "Guidance degradation policy (opt-in one-way to prompt). This is a "
             "policy directive, not a capability-gated channel. 'fail' means do "
-            "NOT degrade -- the unsupported channel then follows the standard "
-            "strict/best_effort gate (strict raises, best_effort drops with a "
-            "diagnostic); it does NOT force the whole request to fail. "
+            "NOT degrade. The unsupported channel then follows the standard "
+            "strict/best_effort gate: strict raises, best_effort drops with a "
+            "diagnostic. 'fail' does NOT force the whole request to fail. "
             "'degrade_to_prompt' opts into the one-way rich->prompt fallback."
         ),
     )
     provider_params: ProviderParams | None = Field(
-        default=None, description="Engine-specific typed knobs."
+        default=None, description="Engine-specific typed parameters."
     )
 
     @field_validator("language")
@@ -256,7 +256,7 @@ class RuntimeParams(BaseModel):
         ``provider_params`` is typed ``ProviderParams | None``, so pydantic would
         otherwise coerce an empty mapping (``provider_params={}``) into a bare
         ``ProviderParams()`` instance -- which then reaches the gate and trips the
-        swap-safety check with a misleading ``"(swapped engine?)"`` message about
+        swap-safety check with a misleading swapped-engine message about
         a wrong-engine model, when the real mistake was passing a dict (or the
         base class) instead of the engine's concrete params subclass. The bare
         base carries no fields and is never a valid concrete params model, so it
@@ -312,7 +312,7 @@ def _validate_language_tag(value: str | None) -> str | None:
         raise PydanticCustomError(
             "standard_asr_language_tag",
             "language tag is not a well-formed BCP-47 language tag "
-            "(e.g. 'en', 'en-US', 'zh-Hans') or 'auto'.",
+            "(for example, 'en', 'en-US', 'zh-Hans') or 'auto'.",
         )
     return value
 
@@ -364,12 +364,12 @@ def _validate_candidate_language_list(value: list[str] | None) -> list[str] | No
             raise PydanticCustomError(
                 "standard_asr_candidate_language_tag",
                 "candidate_languages contains an entry that is not a well-formed "
-                "BCP-47 language tag (e.g. 'en', 'en-US', 'zh-Hans').",
+                "BCP-47 language tag (for example, 'en', 'en-US', 'zh-Hans').",
             )
         if normalize_bcp47(tag) == AUTO:
             raise PydanticCustomError(
                 "standard_asr_candidate_language_auto",
-                "candidate_languages MUST NOT contain 'auto' (it is a directive, "
+                "candidate_languages cannot contain 'auto' (it is a directive, "
                 "not a candidate language).",
             )
     return value
@@ -379,7 +379,7 @@ def _validate_phrase_hints_list(value: list[str] | None) -> list[str] | None:
     """Reject empty / whitespace-only phrase-hint terms at construction.
 
     A blank term (``""`` or all whitespace) carries no boost signal and is a
-    caller mistake (e.g. a stray trailing element from a form). Worse, it breaks
+    caller mistake (for example, a stray trailing element from a form). Worse, it breaks
     downstream invariants: the opt-in ``phrase_hints -> prompt`` degrade checks
     whether any term *survived* truncation with ``term in surviving_frame``, and
     ``"" in anything`` is always ``True`` -- so a single ``""`` term would make
@@ -446,7 +446,7 @@ class WireRuntimeParams(BaseModel):
         on_unsupported: See :class:`RuntimeParams`.
 
     Raises:
-        ValueError: If field validation fails, or a non-portable key (e.g.
+        ValueError: If field validation fails, or a non-portable key (for example,
             ``provider_params``) is supplied.
     """
 
@@ -472,9 +472,9 @@ class WireRuntimeParams(BaseModel):
         description=(
             "Guidance degradation policy (opt-in one-way to prompt). This is a "
             "policy directive, not a capability-gated channel. 'fail' means do "
-            "NOT degrade -- the unsupported channel then follows the standard "
-            "strict/best_effort gate (strict raises, best_effort drops with a "
-            "diagnostic); it does NOT force the whole request to fail. "
+            "NOT degrade. The unsupported channel then follows the standard "
+            "strict/best_effort gate: strict raises, best_effort drops with a "
+            "diagnostic. 'fail' does NOT force the whole request to fail. "
             "'degrade_to_prompt' opts into the one-way rich->prompt fallback."
         ),
     )
@@ -547,7 +547,7 @@ class WireRuntimeParams(BaseModel):
         return RuntimeParams.model_validate(self.model_dump())
 
 
-# D5 drift guard: the wire view is exactly the portable set, i.e. RuntimeParams
+# D5 drift guard: the wire view is exactly the portable set, that is, RuntimeParams
 # minus the discover-only ``provider_params`` escape hatch. Defining the two
 # field sets independently risks them desyncing as the portable set evolves; this
 # import-time invariant (and a drift test) makes such a desync a hard failure.

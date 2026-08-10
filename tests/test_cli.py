@@ -265,7 +265,7 @@ class _StreamConfig(BaseConfig[Literal["stream"]]):
 
 class _StreamOkProps(BaseProperties):
     engine_id: str = "stream"
-    model_name: str = "ok"  # model_id == 'stream/ok'
+    model_name: str = "ok"  # model_id == ``stream/ok``
     protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
@@ -711,7 +711,7 @@ def test_cli_strict_discovery_threads_into_discovery(
 def test_cli_bare_strict_flag_is_rejected(argv: list[str]) -> None:
     """A bare ``--strict`` is a usage error (exit 2), never an abbreviation.
 
-    ``strict`` alone already names a DIFFERENT knob: the engine's
+    ``strict`` alone already names a DIFFERENT setting: the engine's
     strict/best_effort PARAMETER-gating policy, an init-config field set via
     ``--set strict=...``. The discovery flag is therefore spelled
     ``--strict-discovery``, and argparse prefix abbreviation is disabled
@@ -869,7 +869,7 @@ def test_cli_transcribe_unsupported_feature_is_usage_exit_2(
     ``UnsupportedFeatureError`` is a ``StructuredError`` -- NOT a ``ValueError``
     -- so without its explicit entry in ``main()``'s usage-error branch it fell
     into the generic runtime-failure branch (exit 1) and scripts misread a
-    caller mistake (e.g. a strict non-detectable candidate language) as an
+    caller mistake (for example, a strict non-detectable candidate language) as an
     internal failure.
 
         Args:
@@ -1079,6 +1079,50 @@ def test_cli_serve_missing_server_dependency(
     # Errors go to stderr, never stdout.
     assert "dependencies are missing" in captured.err
     assert captured.out == ""
+
+
+def test_cli_serve_missing_dependency_honors_debug(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--debug prints the trace on the handler-caught serve error path too.
+
+    The flag's help and ``docs/spec/cli.md`` promise a trace on EVERY error
+    path; ``_cmd_serve`` catches its ImportErrors itself and returned 1
+    without ever consulting ``--debug``, so this documented path printed
+    nothing. Pin the promise.
+    """
+    monkeypatch.setitem(sys.modules, "standard_asr.toolchain.server", None)
+
+    exit_code = cli.main(["--debug", "serve"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "dependencies are missing" in captured.err
+    assert "Traceback" in captured.err
+
+
+def test_cli_debug_does_not_claim_to_cover_argument_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An argument error ends in the parser, so `--debug` prints usage, not a trace.
+
+    ``main()`` calls ``parse_args`` before the ``try`` that routes failures
+    through ``_debug_traceback``, so argparse exits first. The flag's help and
+    ``docs/spec/cli.md`` said "any error path", which promised a trace here;
+    both now name this boundary. Lock the claim to the behavior.
+    """
+    import pathlib
+
+    with pytest.raises(SystemExit):
+        cli.main(["--debug", "transcribe", "--no-such-flag"])
+    assert "Traceback" not in capsys.readouterr().err
+
+    help_text = cli.build_parser().format_help()
+    assert "any error path" not in help_text
+
+    cli_md = pathlib.Path(__file__).resolve().parents[1] / "docs" / "spec" / "cli.md"
+    doc = cli_md.read_text(encoding="utf-8")
+    assert "argument errors are reported by the parser" in doc.lower()
 
 
 def test_cli_serve_importerror_from_run(
@@ -2229,7 +2273,7 @@ def test_ensure_utf8_stream_noop_on_utf8() -> None:
 
 
 def test_ensure_utf8_stream_tolerates_missing_reconfigure() -> None:
-    # A stream without reconfigure() (e.g. a plain StringIO) must not crash.
+    # A stream without reconfigure() (for example, a plain StringIO) must not crash.
     import io
 
     cli._ensure_utf8_stream(io.StringIO())  # pyright: ignore[reportPrivateUsage]
@@ -2388,7 +2432,7 @@ def test_cli_debug_traceback_for_named_branch(
 ) -> None:
     # A ValueError (caught by the ConfigError/DiscoveryError/ValueError
     # branch -> exit 2) must still print a trace under --debug. Previously only
-    # the final `except Exception` branch honoured --debug.
+    # the final `except Exception` branch honored --debug.
     called: dict[str, bool] = {"traceback": False}
 
     def _raise(_: object) -> int:
@@ -2433,7 +2477,7 @@ def test_cli_no_debug_no_traceback_for_named_branch(
 
 
 def _compliant_dummy_registry() -> ModelRegistry:
-    # _GatingStreamEngine is a fully-compliant EngineBase subclass (passes
+    # _GatingStreamEngine is a fully compliant EngineBase subclass (passes
     # check_entrypoints), unlike the minimal structural _dummy_factory.
     eps = [
         EntryPoint(
@@ -2571,7 +2615,7 @@ def test_parse_init_config_rejects_set_with_empty_key() -> None:
 def test_cli_compliance_run_skips_engine_needing_args(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # An engine whose factory needs arguments (e.g. credentials)
+    # An engine whose factory needs arguments (for example, credentials)
     # cannot be exercised for the streaming checks; the skip is reported (the
     # streaming checks cannot supply real credentials), not failed.
     registry = _compliant_dummy_registry()
@@ -2691,7 +2735,7 @@ def test_cli_compliance_run_bridge_not_applicable_for_output_only_engine(
     script could never see: it always runs the bridge and hands it ``engine=``
     so ``check_sync_bridge`` itself classifies the refusal, putting a
     ``sync_bridge_not_applicable`` warning in the REPORT SET -- one layer, one
-    message, visible to machine consumers and honouring ``--quiet``.
+    message, visible to machine consumers and honoring ``--quiet``.
 
         Args:
             monkeypatch: Pytest fixture for attribute patching.
@@ -2708,7 +2752,7 @@ def test_cli_compliance_run_bridge_not_applicable_for_output_only_engine(
     _patch_discover(monkeypatch, registry)
 
     # Record the engine each check receives, delegating to the REAL checks so
-    # the classification below is the shipped behaviour, not a stub's.
+    # the classification below is the shipped behavior, not a stub's.
     constructed: list[object] = []
     real_swap_check = cli.check_provider_params_swap_safety
     real_check_sync_bridge = cli.check_sync_bridge
@@ -2781,9 +2825,9 @@ def test_cli_bridge_timeout_rejects_nonpositive_and_nonfinite(bad: str) -> None:
     """--bridge-timeout must be finite, > 0, and within the platform's wait cap.
 
     A bare ``type=float`` would accept these; fed into ``Thread.join`` they
-    become an immediately-expiring timeout (a false "did not terminate"
+    become an immediately expiring timeout (a false "did not terminate"
     verdict blamed on the engine), a hang (``inf``), or an ``OverflowError``
-    mid-check (a finite value beyond ``threading.TIMEOUT_MAX``, e.g.
+    mid-check (a finite value beyond ``threading.TIMEOUT_MAX``, for example,
     ``1e300``). argparse rejects them as usage errors (exit 2) at parse time.
 
         Args:
@@ -3030,7 +3074,7 @@ def test_cli_compliance_run_bridge_timeout_reaches_check_sync_bridge(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """--bridge-timeout is threaded all the way to check_sync_bridge: without
-    this the check's own advice ("re-run with a larger timeout") named a knob
+    this the check's own advice ("re-run with a larger timeout") named a setting
     no CLI user could reach.
 
         Args:
@@ -3667,7 +3711,7 @@ def test_engine_supports_defensive() -> None:
 def test_ensure_utf8_stream_tolerates_reconfigure_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # _ensure_utf8_stream must not crash when reconfigure() raises (e.g. a
+    # _ensure_utf8_stream must not crash when reconfigure() raises (for example, a
     # detached buffer); it leaves the stream as-is.
     import io
 

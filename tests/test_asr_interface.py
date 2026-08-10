@@ -631,7 +631,7 @@ def test_malformed_declared_selectable_tag_is_an_engine_fault() -> None:
     # A malformed declared selectable tag is an engine-author bug; the
     # membership canonicalization must report it as EngineContractError (the
     # engine-fault type: no configuration value fixes a declaration) naming
-    # the offending declaration, not leak a bare ValueError and not claim
+    # the offending declaration, not leak a bare ValueError, and not claim
     # ConfigError's caller-actionable meaning.
     with pytest.raises(EngineContractError, match="selectable_languages") as exc_info:
         _WhitespaceSelectableEngine().transcribe(_audio())
@@ -681,19 +681,19 @@ class _NonCanonicalLangEngine(_ArrayEngine):
 
 def test_non_canonical_default_language_is_canonicalized_not_rejected() -> None:
     # Regression: BCP-47 language matching is case-insensitive. A non-canonical
-    # default_language ("en-us") declared against a canonical selectable set
-    # (["en-US"]) -- both as class-level defaults, which pydantic does NOT run the
+    # default_language (``en-us``) declared against a canonical selectable set
+    # (``["en-US"]``) -- both as class-level defaults, which pydantic does NOT run the
     # field validators on -- must be matched case-insensitively instead of
     # spuriously failing the totality check and blocking the engine.
     engine = _NonCanonicalLangEngine()
     # No ConfigError is raised, and the engine receives the CANONICAL effective
-    # language (echoed as detected_language), not the raw "en-us".
+    # language (echoed as detected_language), not the raw ``en-us``.
     result = engine.transcribe(_audio())
     assert result.detected_language == "en-US"
 
 
 def test_region_tagged_request_matches_selectable_primary_subtag() -> None:
-    # A region/script refinement ("en-US") of a
+    # A region/script refinement (``en-US``) of a
     # selectable primary subtag ("en", in _ArrayProps.selectable_languages) is
     # accepted via RFC 4647 lookup, and the full tag is handed to the engine to
     # reduce -- so engines that declare only primary subtags need not enumerate
@@ -847,7 +847,7 @@ class _CapturingAutoEngine(_CapturingArrayEngine):
 def test_candidate_languages_strict_non_detectable_raises_in_base() -> None:
     # Through the engine pipeline the strict rejection is the standard
     # structured one: UnsupportedFeatureError carrying the offending param AND
-    # the mode the base resolved it in -- so it reads (and maps, e.g. to the
+    # the mode the base resolved it in -- so it reads (and maps, for example, to the
     # server's 422) like every other strict gate rejection instead of escaping
     # as a bare ValueError.
     with pytest.raises(UnsupportedFeatureError, match="detectable") as excinfo:
@@ -1134,7 +1134,7 @@ def test_audio_format_encoding_is_normalized() -> None:
 
 def test_ensure_stream_format_supported_matches_encoding_case_insensitively() -> None:
     # An engine declaring wire_encodings=['pcm_s16le'] (already lowercased) MUST
-    # accept a session opened with a differently-cased AudioFormat encoding: the
+    # accept a session opened with a differently cased AudioFormat encoding: the
     # request encoding is normalized to the same form, so it is not a mismatch.
     from standard_asr.audio.format import AudioFormat
 
@@ -1676,8 +1676,8 @@ def test_streaming_gated_params_flow_to_hook() -> None:
 
 def test_start_transcription_applies_app_deadline_overrides() -> None:
     # The base template applies the application's deadline overrides AFTER the
-    # hook constructed the session: explicitly-set fields win
-    # over the adapter's construction-time choices, unset fields keep them,
+    # hook constructed the session: explicitly set fields win
+    # over the engine's construction-time choices, unset fields keep them,
     # and omitting `deadlines` leaves the session untouched.
     class _DeadlineChoosingEngine(_StreamEngine):
         def _start_transcription(
@@ -1692,7 +1692,7 @@ def test_start_transcription_applies_app_deadline_overrides() -> None:
     overridden = _DeadlineChoosingEngine().start_transcription(
         deadlines=StreamDeadlines(max_idle=0.5)
     )
-    assert overridden.done_timeout == 7.0  # adapter choice kept (field unset)
+    assert overridden.done_timeout == 7.0  # engine choice kept (field unset)
     assert overridden.max_idle == 0.5  # application's explicit field wins
 
     untouched = _DeadlineChoosingEngine().start_transcription()
@@ -1768,7 +1768,7 @@ def test_base_start_transcription_hook_raises_unsupported() -> None:
 
 def test_non_streaming_engine_runs_exclusivity_guard_first() -> None:
     # Even for a non-streaming engine, the mutual-exclusion guard runs first
-    # (preserving the prior behaviour): passing both inputs raises ValueError,
+    # (preserving the prior behavior): passing both inputs raises ValueError,
     # not the unsupported-streaming error.
     from standard_asr.audio.format import AudioFormat
 
@@ -1788,7 +1788,7 @@ def test_engine_base_default_prepare_is_noop() -> None:
 # Batch segment-speaker synthesis (the pinned synthesis rule)
 # --------------------------------------------------------------------------- #
 def _w(index: int, label: str | None) -> Word:
-    """One word at index*0.1s carrying the given speaker label (None = no vote)."""
+    """One word at ``index * 0.1`` seconds carrying the given speaker label (None = no vote)."""
     return Word(start=index * 0.1, end=index * 0.1 + 0.1, text=f"w{index}", speaker=label)
 
 
@@ -1821,7 +1821,7 @@ def test_transcribe_synthesizes_segment_speaker_from_words() -> None:
 
 
 def test_transcribe_keeps_adapter_populated_speaker() -> None:
-    # A pre-populated (adapter-native) Segment.speaker is authoritative: the
+    # A pre-populated (engine-native) Segment.speaker is authoritative: the
     # standard layer synthesizes ONLY when it is None, even when words disagree.
     canned = TranscriptionResult(text="w0 w1", segments=[_speaker_segment(["A", "A"], speaker="B")])
     result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))

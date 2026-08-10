@@ -9,8 +9,8 @@ them as fields, and plugin discovery parses them out of entry-point names.
 Both need the same surface-syntax check, so the validators live here in the
 contract layer -- the lowest layer -- and both consumers depend downward on it.
 
-The checks are purely syntactic. Canonicalisation of an engine id to its
-routing identity (PEP 503 normalisation) is a separate, discovery-layer step.
+The checks are purely syntactic. Canonicalization of an engine id to its
+routing identity (PEP 503 normalization) is a separate, discovery-layer step.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+%:-]*\Z")
 def validate_engine_id(engine_id: str) -> None:
     """Validate the *declared* form of an engine identifier.
 
-    This checks the surface syntax only. Canonicalisation to the PEP 503
+    This checks the surface syntax only. Canonicalization to the PEP 503
     routing identity is performed by :func:`parse_entrypoint_name`; a
     non-canonical-but-valid id such as ``my_engine`` passes here and is folded
     to its canonical ``my-engine`` form downstream.
@@ -43,12 +43,15 @@ def validate_engine_id(engine_id: str) -> None:
     Raises:
         EntrypointValidationError: If the engine identifier is invalid.
     """
+    if engine_id == "":
+        raise EntrypointValidationError("engine_id must not be empty.")
     if "/" in engine_id:
         raise EntrypointValidationError(f"engine_id must not contain '/' (got {engine_id!r})")
     if not _ENGINE_ID_RE.match(engine_id):
         raise EntrypointValidationError(
-            "engine_id contains unsupported characters. Allowed: lowercase ASCII "
-            "letters, digits, '.', '_' and '-'."
+            f"engine_id {engine_id!r} is invalid: it must start with a "
+            "lowercase ASCII letter or digit and may continue with lowercase "
+            "ASCII letters, digits, '.', '_', and '-'."
         )
 
 
@@ -74,6 +77,7 @@ def validate_model_name(model_name: str) -> None:
         raise EntrypointValidationError(f"model_name must not contain '/' (got {model_name!r})")
     if not _MODEL_NAME_RE.match(model_name):
         raise EntrypointValidationError(
-            "model_name contains unsupported characters. Allowed characters: "
-            "letters, digits, '.', '_', '+', '%', ':', '-'."
+            f"model_name {model_name!r} is invalid: it must start with an "
+            "ASCII letter or digit and may continue with ASCII letters, "
+            "digits, '.', '_', '+', '%', ':', and '-'."
         )

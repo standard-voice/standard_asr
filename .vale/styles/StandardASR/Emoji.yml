@@ -1,0 +1,40 @@
+extends: existence
+message: "No emoji or pictographs in shipped text (STYLE.md, punctuation and symbols)."
+link: https://github.com/standard-voice/standard_asr/blob/main/STYLE.md
+level: error
+nonword: true
+# STYLE.md bans emoji and pictographs but ALLOWS typographic and mathematical
+# symbols, so this rule must not blanket whole Unicode blocks that mix the
+# two. Letterlike Symbols and Miscellaneous Technical are exactly such blocks:
+# they hold set symbols and bracket notation the standard permits alongside a
+# handful of characters that are only ever emoji. Those few are named
+# individually below; the blocks are not banned wholesale.
+#
+# The pictograph blocks (2600-27BF, 2B00-2BFF, 1F000-1FAFF) ARE banned
+# wholesale, and deliberately wider than Unicode's Emoji property: the plain
+# dingbats in that range (CHECK MARK 2713, MULTIPLICATION X 2715, BALLOT X
+# 2717) carry Emoji=No, but they are dingbat imitations of marks that already
+# have correct counterparts -- write the real MULTIPLICATION SIGN (00D7), and
+# use the ASCII status markers for a check-and-cross column. STYLE.md,
+# "ASCII runtime strings", states the same boundary in prose; the two must
+# not drift apart. Symbols outside these blocks (the plain arrows at
+# 2190-21FF, the math operators, the trademark sign) stay legal as
+# typography, and the U+FE0F token still catches the EMOJI presentation of
+# any of them.
+tokens:
+  # Emoji planes: unambiguous.
+  - '[\x{1F000}-\x{1FAFF}]'
+  # Miscellaneous Symbols and Dingbats: pictographs.
+  - '[\x{2600}-\x{27BF}]'
+  # Supplemental symbols and shapes: pictographs.
+  - '[\x{2B00}-\x{2BFF}]'
+  # Emoji inside otherwise-typographic blocks, named one by one: information
+  # source; watch, hourglass, keyboard, eject; the media-control run; the
+  # circled M.
+  - '\x{2139}'
+  - '[\x{231A}\x{231B}\x{2328}\x{23CF}]'
+  - '[\x{23E9}-\x{23F3}]'
+  - '[\x{23F8}-\x{23FA}]'
+  - '\x{24C2}'
+  # The emoji variation selector: turns any dual-use character into emoji.
+  - '\x{FE0F}'
