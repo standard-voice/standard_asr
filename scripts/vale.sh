@@ -13,6 +13,10 @@
 #   scripts/vale.sh --selfcheck    # prove the gate sees what it claims to see
 #   VALE=/path/to/vale scripts/vale.sh
 set -euo pipefail
+# An exported CDPATH makes every `cd <relative>` echo the resolved directory
+# to stdout, which corrupts the command substitutions below (the resolved
+# VALE path grows a stray line and the gate dies with exit 127).
+unset CDPATH
 cd "$(dirname "$0")/.."
 
 VALE="${VALE:-vale}"
@@ -25,7 +29,29 @@ esac
 
 TARGETS=(README.md CONTRIBUTING.md AGENTS.md STYLE.md TERMINOLOGY.md RELEASING.md
     docs src tests)
-EXEMPT='!{docs/spec/specification.md,docs/design-notes/*,docs/research/*,docs/work_doc/*,docs/feat_plan/*,docs/legacy/*,docs/misc.md,work/*,CHANGELOG.md}'
+
+# The exemption, as data (STYLE.md, "Scope"): whole directories of Chinese
+# documents, historical files, and working notes, plus individual exempt
+# files. The --glob below is COMPOSED from these arrays, and --selfcheck
+# derives its per-directory expectations from the same arrays -- so the
+# arrays are the single spec, and a glob that stops matching what they say
+# fails the selfcheck instead of silently shrinking the corpus.
+EXEMPT_DIRS=(docs/design-notes docs/research docs/work_doc docs/feat_plan
+    docs/legacy work)
+EXEMPT_FILES=(docs/spec/specification.md docs/misc.md CHANGELOG.md)
+
+compose_exempt() {
+    local parts=() entry
+    for entry in "${EXEMPT_FILES[@]}"; do
+        parts+=("${entry}")
+    done
+    for entry in "${EXEMPT_DIRS[@]}"; do
+        parts+=("${entry}/*")
+    done
+    local IFS=,
+    printf '!{%s}' "${parts[*]}"
+}
+EXEMPT="$(compose_exempt)"
 
 # Root Markdown that is deliberately NOT gate-governed, with the reason
 # STYLE.md gives: the pre-standard CHANGELOG history the gate cannot separate
@@ -95,13 +121,16 @@ case "${1:-}" in
     echo "vale gate: clean (no alerts at any level)."
     ;;
 --selfcheck)
-    # Negative test: prove the exact gate composition (config, EXEMPT glob,
-    # TARGETS) still reaches EVERY target. It mirrors the target layout into
-    # a temporary directory -- same relative paths, same .vale.ini, same
-    # styles -- plants a deliberate violation in each, and runs `run_vale`
-    # there, so the composition under test is the same function the gate
-    # calls. Guards against a config edit, a glob typo, or a Vale upgrade
-    # silently shrinking coverage while the gate stays green.
+    # Negative test: prove the exact gate composition (config, composed
+    # EXEMPT glob, TARGETS) delivers EXACTLY the partition the arrays above
+    # declare. It mirrors the real directory layout of every target into a
+    # temporary directory -- same relative paths, same .vale.ini, same
+    # styles -- plants a deliberate violation in every directory (exempt
+    # ones included) and in every single-file target, then runs `run_vale`
+    # there: a probe under a governed path MUST be flagged, a probe under an
+    # exempt path MUST NOT be. Guards against a config edit, a glob-escaping
+    # defect, or a Vale upgrade silently shrinking (or widening) coverage
+    # while the gate stays green.
     #
     # The mirror exists because the working tree is not a safe scratch pad:
     # planting fixtures in docs/, src/, and tests/ (the previous design)
@@ -109,41 +138,79 @@ case "${1:-}" in
     # debris behind when the run was killed. It also covers the single-file
     # targets, which cannot hold a planted fixture at all: the --glob is
     # applied even to an explicitly passed file argument (verified against
-    # the pinned Vale), so a typo in EXEMPT can silently drop README.md
-    # while both the gate and the existence check above stay green.
+    # the pinned Vale), so a glob defect can silently drop README.md while
+    # both the gate and the existence check above stay green.
     #
     # Known, documented gaps (STYLE.md, "Enforcement"): a module docstring
-    # that follows the SPDX header, Python string literals, attribute
-    # docstrings, and the text of a tight list item that owns a nested
-    # sub-list.
+    # that follows the SPDX header, Python string literals, and attribute
+    # docstrings.
     tmp="$(mktemp -d)"
     trap 'rm -rf "${tmp}"' EXIT
     cp .vale.ini "${tmp}/"
     cp -R .vale "${tmp}/"
-    md_probes=()
+
+    is_exempt_path() {
+        local path="$1" prefix
+        for prefix in "${EXEMPT_DIRS[@]}"; do
+            case "${path}" in
+            "${prefix}"/*) return 0 ;;
+            esac
+        done
+        return 1
+    }
+
+    plant_md() {
+        mkdir -p "${tmp}/$(dirname "$1")"
+        printf 'A probe sentence with a deliberate e.g. marker.\n' > "${tmp}/$1"
+    }
+
+    expect_hit=()
+    expect_skip=()
     py_probes=()
     for target in "${TARGETS[@]}"; do
         if [[ -d "${target}" ]]; then
-            mkdir -p "${tmp}/${target}"
-            probe="${target}/vale-selfcheck-probe.md"
-            case "${target}" in
-            src | tests)
-                # The .py targets also carry tier-2 and tier-3 prose, so
-                # probe docstring and comment extraction there.
-                py_probe="${target}/vale_selfcheck_probe.py"
-                cat > "${tmp}/${py_probe}" <<'PYEOF'
+            # Every real subdirectory gets a probe, so an exemption that
+            # swallows a subtree (say, all of docs/spec) is caught even
+            # though the target's root probe is still reached. Caches and
+            # hidden directories are not prose surfaces.
+            while IFS= read -r dir; do
+                probe="${dir}/vale-selfcheck-probe.md"
+                plant_md "${probe}"
+                if is_exempt_path "${probe}"; then
+                    expect_skip+=("${probe}")
+                else
+                    expect_hit+=("${probe}")
+                    case "${dir}" in
+                    src | src/* | tests | tests/*)
+                        # The .py surfaces also carry tier-2/tier-3 prose:
+                        # probe docstring and comment extraction per
+                        # directory.
+                        py_probe="${dir}/vale_selfcheck_probe.py"
+                        cat > "${tmp}/${py_probe}" <<'PYEOF'
 def example() -> None:
     """Function docstring with a deliberate e.g. marker."""
     # A comment with a deliberate e.g. marker.
 PYEOF
-                py_probes+=("${py_probe}")
-                ;;
-            esac
+                        py_probes+=("${py_probe}")
+                        ;;
+                    esac
+                fi
+            done < <(find "${target}" \( -name '__pycache__' -o -name '.*' \) -prune -o -type d -print | LC_ALL=C sort)
         else
-            probe="${target}"
+            plant_md "${target}"
+            expect_hit+=("${target}")
         fi
-        printf 'A probe sentence with a deliberate e.g. marker.\n' > "${tmp}/${probe}"
-        md_probes+=("${probe}")
+    done
+    # Exempt files under a directory target: prove the exclusion excludes
+    # them (entries outside every target are never visited; planting them is
+    # harmless and keeps the loop uniform).
+    for entry in "${EXEMPT_FILES[@]}"; do
+        case "${entry}" in
+        *.md)
+            plant_md "${entry}"
+            expect_skip+=("${entry}")
+            ;;
+        esac
     done
 
     status=0
@@ -154,7 +221,7 @@ PYEOF
         exit "${status}"
     fi
     fail=0
-    for probe in "${md_probes[@]}"; do
+    for probe in "${expect_hit[@]}"; do
         if ! printf '%s\n' "${out}" | grep -F "${probe}:" | grep -qF 'Google.Latin'; then
             echo "selfcheck FAILED: the gate composition does not reach '${probe}'." >&2
             fail=1
@@ -167,10 +234,16 @@ PYEOF
             fail=1
         fi
     done
+    for probe in ${expect_skip[@]+"${expect_skip[@]}"}; do
+        if printf '%s\n' "${out}" | grep -qF "${probe}:"; then
+            echo "selfcheck FAILED: exempt path '${probe}' was linted; the exemption no longer excludes it." >&2
+            fail=1
+        fi
+    done
     if [[ "${fail}" -ne 0 ]]; then
         exit 1
     fi
-    echo "vale selfcheck: the gate composition reaches all ${#md_probes[@]} targets (Markdown prose, docstrings, comments)."
+    echo "vale selfcheck: ${#expect_hit[@]} governed probes reached, ${#expect_skip[@]} exempt probes excluded (Markdown prose, docstrings, comments)."
     ;;
 *)
     run_vale "$@"
