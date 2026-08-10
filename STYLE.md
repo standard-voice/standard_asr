@@ -4,16 +4,29 @@
 # Writing standard
 
 This file defines how to write English prose in Standard ASR. The baseline is
-the [Google developer documentation style guide](https://developers.google.com/style/);
-this file holds the scope, the tier system, the repo's deltas from that guide,
-and the fact-check gate for meaning changes. Every contributor and every AI
-agent that works in this repository must follow it. `AGENTS.md` points here;
-the term rules live in [`TERMINOLOGY.md`](TERMINOLOGY.md).
+the Google developer documentation style guide, adopted here as the **pinned
+copy vendored in this repository** (`.vale/styles/Google`, errata-ai/Google
+v0.7.1) rather than as the live website. This file holds the scope, the tier
+system, the repo's deltas from that baseline, and the fact-check gate for
+meaning changes. Every contributor and every AI agent that works in this
+repository must follow it. `AGENTS.md` points here; the term rules live in
+[`TERMINOLOGY.md`](TERMINOLOGY.md).
 
-Precedence: where this file speaks, it wins; where it is silent, the Google
-guide applies; where both are silent, match the surrounding prose. Where any
-prose rule conflicts with a code fact (an identifier, a domain term, a
-cross-reference role), the code fact wins.
+Precedence: where this file speaks, it wins; where it is silent, the pinned
+baseline applies (its rules are listed in the appendix, so no network access
+is needed to know what it asks for); where both are silent, match the
+surrounding prose. Where any prose rule conflicts with a code fact (an
+identifier, a domain term, a cross-reference role), the code fact wins.
+
+The baseline is pinned on purpose. A live URL cannot be a contract source: the
+[published guide](https://developers.google.com/style/) can change under us,
+so the same commit would mean one thing today and another next month, while CI
+kept enforcing the version it vendored. Treat the published guide as
+explanatory reading — helpful for the reasoning behind a rule, never the
+authority for whether prose is compliant. Upgrading the baseline is a
+deliberate commit: re-vendor the package, record the version here and in
+`.vale/styles/README.md`, and update the appendix (a test enforces that it
+matches).
 
 The goal is one thing: a reader understands the behavior from the prose alone,
 with the least possible room for misunderstanding. Prose is part of the
@@ -23,10 +36,12 @@ contract, so we hold it to the same rigor as the code.
 
 The Google guide is written for developer documentation — API references,
 code samples, error messages — so it answers the questions this repo actually
-has (headings, lists, code font, link text, UI text). It is public under
-CC BY 4.0, so agents can read the rule they are asked to follow. And it has a
-maintained [Vale](https://vale.sh) implementation, so most of it is enforced
-mechanically rather than by review (see "Enforcement" below). A few rules of
+has (headings, lists, code font, link text, UI text). Its guide text is public
+under CC BY 4.0 and its Vale implementation is MIT, so the baseline can be
+vendored and read in place — an agent follows a rule it can open, not one it
+has to remember or fetch (see the appendix for the full list). That
+[Vale](https://vale.sh) implementation is maintained, so most of the baseline
+is enforced mechanically rather than by review (see "Enforcement" below). A few rules of
 ASD-STE100, the standard this repo adapted first, survive as deltas because
 they serve a contract-grade voice better than the baseline does; they are
 listed below, not implied.
@@ -349,3 +364,60 @@ Three layers, weakest claim first:
 - Code spans, roles, and identifiers are unchanged.
 - `uv run ruff check` passes (pydocstyle included).
 - `scripts/vale.sh --gate` passes (it fails on any alert at any level).
+
+## Appendix: the pinned baseline, rule by rule
+
+The vendored package (`.vale/styles/Google`, errata-ai/Google v0.7.1) is the
+mechanized form of the baseline this standard adopts. It is listed here so
+that a contributor — or an agent with no network access — can see what the
+baseline asks for without leaving the repository, and so that an upgrade
+that adds or drops a rule cannot pass unnoticed:
+`tests/test_style_baseline.py` fails when this table and the vendored
+package disagree.
+
+A rule marked *`Off`* is a deliberate house delta, explained in "Deltas from
+the Google guide" above and in `.vale.ini`; the standard still governs the
+underlying question, by review. *`Off in Python only`* marks a checker
+adaptation: the rule assumes a document and misreads docstrings.
+Note that the baseline is only the mechanized floor — this file wins wherever
+the two differ, and the rules in `.vale/styles/StandardASR` add what
+`TERMINOLOGY.md` requires on top.
+
+| Rule | What it asks for | Status here |
+| --- | --- | --- |
+| `AMPM` | Write clock times as `9:00 AM`, with a space before it. | Enforced |
+| `Acronyms` | Expand an unfamiliar acronym on first use. | Off — house delta |
+| `Anthropomorphism` | Do not give software human qualities (a service does not `think` or `want`). | Enforced |
+| `Colons` | Start lowercase after a colon. | Off — house delta |
+| `Contractions` | Prefer contractions in user-facing prose. | Off — house delta |
+| `DateFormat` | Write dates as `July 31, 2016`. | Off in Python only |
+| `Ellipses` | Avoid ellipses in prose. | Enforced |
+| `EmDash` | Set em dashes tight, with no surrounding spaces. | Off — house delta |
+| `ExcessiveClaims` | Drop unverifiable claims (`effortless`, `painless`). | Enforced |
+| `Exclamation` | No exclamation points. | Enforced |
+| `FirstPerson` | Avoid first-person singular pronouns. | Off — house delta |
+| `Gender` | Do not use a gendered pronoun as the neutral one. | Enforced |
+| `GenderBias` | Use gender-neutral role nouns. | Enforced |
+| `HeadingPunctuation` | No period at the end of a heading. | Off in Python only |
+| `Headings` | Use sentence-style capitalization in headings. | Off in Python only |
+| `Jargon` | Avoid jargon the audience may not share. | Enforced |
+| `Latin` | Write `for example` and `that is`, not the Latin abbreviations. | Enforced |
+| `LyHyphens` | No hyphen after an adverb ending in *-ly*. | Enforced |
+| `OptionalPlurals` | No parenthesized plurals (`file(s)`). | Enforced |
+| `Ordinal` | Spell out ordinals in text. | Enforced |
+| `OxfordComma` | Use the serial comma. | Off — house delta |
+| `Parens` | Use parentheses judiciously. | Off — house delta |
+| `Passive` | Prefer active voice, naming the actor. | Off — house delta |
+| `Periods` | No periods inside an acronym. | Enforced |
+| `Quotes` | Put commas and periods inside quotation marks. | Off — house delta |
+| `Ranges` | Write a numeric range without `from` or `between`. | Enforced |
+| `Semicolons` | Use semicolons judiciously. | Off — house delta |
+| `Slang` | No internet slang abbreviations. | Enforced |
+| `Spacing` | One space after sentence-ending punctuation. | Off in Python only |
+| `Spelling` | Use American spelling. | Enforced |
+| `Timeless` | Avoid time-bound words (`currently`, `new`). | Enforced |
+| `Units` | No-break space between a number and its unit. | Enforced |
+| `We` | Avoid first-person plural. | Enforced |
+| `Will` | Prefer the present tense over `will`. | Enforced |
+| `WordList` | Use the guide's preferred term. | Enforced |
+| `WordListCase` | Use the guide's capitalization for a term. | Enforced |
