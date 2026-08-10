@@ -887,6 +887,16 @@ def test_engine_class_resolves_from_factory_return_annotation() -> None:
 
 
 def test_engine_class_resolves_when_entrypoint_is_a_class() -> None:
+    """A directly exposed engine class needs no factory return annotation.
+
+    Both engine-author guides once carried a blanket "the entry-point factory
+    MUST be annotated with your concrete engine class", which would tell a
+    plugin author that this -- registering the class with no factory at all --
+    is noncompliant. It is not: ``engine_class`` returns a class target
+    directly, and compliance only reports ``class_metadata_unreadable`` when
+    NEITHER form resolves. Keep this test as the contract the guides
+    (``adapting_engine.md``, ``plugin_entrypoints.md``) must match.
+    """
     eps = [
         EntryPoint(
             name="alpha/first",

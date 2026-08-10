@@ -96,8 +96,11 @@ def create_turbo(**kwargs: Any) -> TurboASR:
 > the engine, by resolving the factory's **return annotation**
 > (`ModelRegistry.engine_class`). A concrete class (`-> FasterWhisperASR`) exposes
 > those `ClassVar`s; the `StandardASR` protocol does not, so annotating the
-> factory `-> StandardASR` breaks instantiation-free discovery. The compliance
-> suite enforces this.
+> factory `-> StandardASR` breaks instantiation-free discovery. This applies to
+> a **factory function**; an entry point that is the engine class itself needs
+> no annotation, because the class is returned directly. Compliance checks the
+> outcome either way, reporting `class_metadata_unreadable` when neither form
+> resolves.
 
 Discovery validates each declaration:
 

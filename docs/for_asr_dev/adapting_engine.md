@@ -477,13 +477,22 @@ engine may surface five partials or none, purely by timing. A test asserting
 Register an entry point under `standard_asr.models` (see
 [`plugin_entrypoints.md`](plugin_entrypoints.md)).
 
-**The entry-point factory MUST be annotated with your concrete engine class**
-(return type `-> MyEngine`), **not** with the `StandardASR` protocol.
+**The engine class MUST be resolvable without calling the entry point.**
 Capabilities and the params schema are read from class-level `ClassVar`s
 *without instantiating or authenticating* the engine (CLI `show`, the registry,
-REST `GET /v1/capabilities/{model}` and `/v1/params-schema/{model}`). A Protocol
-return annotation has no readable `ClassVar`s, so it breaks instantiation-free
-discovery. The compliance suite enforces this.
+REST `GET /v1/capabilities/{model}` and `/v1/params-schema/{model}`). Two forms
+satisfy that, and the compliance suite accepts either:
+
+- **The entry point is the engine class itself.** Nothing more is needed —
+  the class is returned directly.
+- **The entry point is a factory function.** Then its return annotation MUST
+  name your concrete engine class (`-> MyEngine`), **not** the `StandardASR`
+  protocol: only the annotation is read, and a Protocol has no readable
+  `ClassVar`s, so it breaks instantiation-free discovery.
+
+What compliance actually checks is the outcome, not the form: it reports
+`class_metadata_unreadable` when the class cannot be resolved either way — an
+unannotated factory, or one annotated with the protocol.
 
 Check with:
 
