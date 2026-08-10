@@ -3,12 +3,14 @@ message: "Prefer '%s' over '%s' for the engine test surface. 'Conformance' stays
 link: https://github.com/standard-voice/standard_asr/blob/main/TERMINOLOGY.md
 level: warning
 ignorecase: true
-# RE2 has no lookbehind, so the token consumes an optional 'wire ' prefix and
-# the exception then filters the matched text: 'wire conformance' (spaced,
-# hyphenated, or wrapped across a line break) is the sanctioned phrase and
-# passes; every bare 'conformance' is flagged. No action block: this is a
-# judgment call, not a mechanical 1:1 replacement.
+# TERMINOLOGY.md keeps 'conformance' for the cross-language wire sense; in
+# this repo both 'wire conformance' and 'cross-language conformance' can only
+# carry that sense, so both bigrams pass. RE2 has no lookbehind, so the token
+# consumes the optional prefix and the exception then filters the matched
+# text (spaced, hyphenated, or wrapped across a line break); every bare
+# 'conformance' is flagged. No action block: this is a judgment call, not a
+# mechanical 1:1 replacement.
 exceptions:
-  - 'wire[-\s]conformance'
+  - '(?:wire|cross-language)[-\s]conformance'
 swap:
-  '(?:wire[-\s])?conformance': compliance
+  '(?:(?:wire|cross-language)[-\s])?conformance': compliance

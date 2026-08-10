@@ -17,9 +17,15 @@ ignorecase: true
 # stay with review. 'analyses' (the plural of 'analysis') and 'dialogue'
 # (Merriam-Webster's primary American form) are correct American English,
 # so 'analys...' omits the 'es' inflection and 'dialogue' has no entry.
+# Keys carry only inflections whose AMERICAN form is a real word
+# ('unauthorised' -> 'unauthorized', never 'unauthorize'), and every
+# prescribed replacement must be accepted by StandardASR.Spelling -- the
+# accept list carries the technical -ize families the stock dictionary
+# lacks, so obeying this rule can never trip the other one.
 swap:
   'analogue(s?)': 'analog$1'
   'analys(e|ed|ing|er|ers)': 'analyz$1'
+  'artefact(s?)': 'artifact$1'
   'authoris(e|es|ed|ing|ation)': 'authoriz$1'
   'behaviour(ally|al|s)?': 'behavior$1'
   'calibre(s?)': 'caliber$1'
@@ -82,9 +88,9 @@ swap:
   'synthesis(e|es|ed|ing|er|ers)': 'synthesiz$1'
   'tokenis(e|es|ed|ing|ation|er|ers)': 'tokeniz$1'
   'travell(ed|ing|er|ers)': 'travel$1'
-  'unauthoris(e|es|ed|ing|ation)': 'unauthoriz$1'
+  'unauthorised': unauthorized
   'unlabelled': unlabeled
-  'unrecognis(e|es|ed|ing|able)': 'unrecogniz$1'
+  'unrecognis(ed|able|ably)': 'unrecogniz$1'
   'utilis(e|es|ed|ing|ation)': 'utiliz$1'
   'vectoris(e|es|ed|ing|ation)': 'vectoriz$1'
   'virtualis(e|es|ed|ing|ation)': 'virtualiz$1'

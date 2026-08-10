@@ -45,6 +45,7 @@
 (?i)callables
 (?i)callsites
 (?i)candidate_languages
+(?i)canonicaliz(e|es|ed|ing|ation)
 (?i)canonicalizable
 (?i)canonicalization
 (?i)canonicalize
@@ -91,6 +92,7 @@
 (?i)dequeue
 (?i)dereference
 (?i)derivability
+(?i)deserializ(e|es|ed|ing|ation|er|ers)
 (?i)desync
 (?i)desyncing
 (?i)dev
@@ -149,6 +151,7 @@
 (?i)heartbeating
 (?i)hostname
 (?i)iff
+(?i)initializ(er|ers)
 (?i)install
 (?i)interims
 (?i)interoperate
@@ -182,11 +185,13 @@
 (?i)lowercased
 (?i)lowercases
 (?i)mapping's
+(?i)maximiz(er|ers)
 (?i)memoized
 (?i)metacharacters
 (?i)metaclass
 (?i)metaclasses
 (?i)middleware
+(?i)minimiz(er|ers)
 (?i)minnan
 (?i)misattributed
 (?i)misattributes
@@ -199,6 +204,7 @@
 (?i)mistranscription
 (?i)mixin
 (?i)mkdocstrings
+(?i)modulariz(e|es|ed|ing|ation)
 (?i)monkeypatch
 (?i)monkeypatching
 (?i)msg
@@ -220,6 +226,8 @@
 (?i)optinos
 (?i)overridable
 (?i)param
+(?i)parameteriz(e|es|ed|ing|ation)
+(?i)parametriz(e|es|ed|ing|ation)
 (?i)parametrizations
 (?i)params
 (?i)parentheticals?
@@ -242,6 +250,7 @@
 (?i)pyright
 (?i)pytest
 (?i)pythonic
+(?i)quantiz(er|ers)
 (?i)quantizes
 (?i)quantizing
 (?i)queryable
@@ -341,6 +350,7 @@
 (?i)supersede
 (?i)suppressions
 (?i)swappable
+(?i)synchroniz(er|ers)
 (?i)sys
 (?i)syscalls
 (?i)teardown
@@ -348,6 +358,7 @@
 (?i)terminate
 (?i)threadsafe
 (?i)titlecase
+(?i)tokeniz(e|es|ed|ing|ation|er|ers)
 (?i)tokenization
 (?i)tokenizer
 (?i)tokenless
@@ -360,6 +371,7 @@
 (?i)typo
 (?i)uis
 (?i)unauditable
+(?i)unauthorized
 (?i)unawaited
 (?i)unboundedly
 (?i)unbounding
@@ -385,6 +397,7 @@
 (?i)unplaceable
 (?i)unprocessable
 (?i)unprojectable
+(?i)unrecogniz(ed|able|ably)
 (?i)unredacted
 (?i)unrejected
 (?i)unrenderable
@@ -417,8 +430,10 @@
 (?i)validator
 (?i)validators
 (?i)ve
+(?i)vectoriz(e|es|ed|ing|ation)
 (?i)vendored
 (?i)venv
+(?i)virtualiz(e|es|ed|ing|ation)
 (?i)waveform
 (?i)websocket
 (?i)wf

@@ -10,9 +10,13 @@ nonword: true
 # handful of characters that are only ever emoji. Those few are named
 # individually below; the blocks are not banned wholesale.
 #
-# Dual-use characters (arrows, check marks, trademark signs) stay legal as
-# typography and are caught in their EMOJI form by the U+FE0F
-# variation-selector token, which is what makes a character render as emoji.
+# The pictograph blocks (2600-27BF, 2B00-2BFF, 1F000-1FAFF) ARE banned
+# wholesale: everything in them -- the check marks and heavy arrows included
+# -- is a picture, not one of STYLE.md's permitted typographic symbols
+# (arrows, set notation, reference marks). Symbols outside those blocks (the
+# plain arrows at 2190-21FF, the trademark sign) stay legal as typography;
+# the U+FE0F token catches the EMOJI presentation of any such character,
+# which is what makes it render as emoji.
 tokens:
   # Emoji planes: unambiguous.
   - '[\x{1F000}-\x{1FAFF}]'
