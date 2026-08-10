@@ -1101,6 +1101,30 @@ def test_cli_serve_missing_dependency_honors_debug(
     assert "Traceback" in captured.err
 
 
+def test_cli_debug_does_not_claim_to_cover_argument_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An argument error ends in the parser, so `--debug` prints usage, not a trace.
+
+    ``main()`` calls ``parse_args`` before the ``try`` that routes failures
+    through ``_debug_traceback``, so argparse exits first. The flag's help and
+    ``docs/spec/cli.md`` said "any error path", which promised a trace here;
+    both now name this boundary. Lock the claim to the behavior.
+    """
+    import pathlib
+
+    with pytest.raises(SystemExit):
+        cli.main(["--debug", "transcribe", "--no-such-flag"])
+    assert "Traceback" not in capsys.readouterr().err
+
+    help_text = cli.build_parser().format_help()
+    assert "any error path" not in help_text
+
+    cli_md = pathlib.Path(__file__).resolve().parents[1] / "docs" / "spec" / "cli.md"
+    doc = cli_md.read_text(encoding="utf-8")
+    assert "argument errors are reported by the parser" in doc.lower()
+
+
 def test_cli_serve_importerror_from_run(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -428,8 +428,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--debug",
         action="store_true",
         help=(
-            "Show a stack trace on any error path (a validation error prints a "
-            "scrubbed summary instead)."
+            "Show a stack trace when a command fails (a validation error prints "
+            "a scrubbed summary instead). Argument errors are reported by the "
+            "parser before a command runs, so they print usage, not a trace."
         ),
     )
     # required=False so a bare `standard-asr` prints help instead of an argparse
@@ -1704,7 +1705,8 @@ def main(argv: list[str] | None = None) -> int:
 def _debug_traceback(args: argparse.Namespace) -> None:
     """Emit a stack trace to stderr when ``--debug`` is set.
 
-    ``--debug`` promises a stack trace on any error path, but the trace was
+    ``--debug`` promises a stack trace on every error path a command reaches
+    (argument errors end in the parser, before any command runs), but the trace was
     previously printed only in the final
     ``except Exception`` branch, so an error caught by a named branch (for example, an
     engine-internal failure surfacing as a ``ValueError`` from ``_transcribe``)
