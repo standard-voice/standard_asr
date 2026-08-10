@@ -388,10 +388,12 @@ that adds or drops a rule cannot pass unnoticed:
 `tests/test_style_baseline.py` fails when this table and the vendored
 package disagree.
 
-A rule marked *`Off`* is a deliberate house delta, explained in "Deltas from
+A rule marked **Off** is a deliberate house delta, explained in "Deltas from
 the Google guide" above and in `.vale.ini`; the standard still governs the
-underlying question, by review. *`Off in Python only`* marks a checker
-adaptation: the rule assumes a document and misreads docstrings.
+underlying question, by review. **Off in Python only** marks a checker
+adaptation: the rule assumes a document and misreads docstrings. **Minus
+named files** means a per-file exception applies on top, for a reason
+`.vale.ini` records inline at that section.
 Note that the baseline is only the mechanized floor — this file wins wherever
 the two differ, and the rules in `.vale/styles/StandardASR` add what
 `TERMINOLOGY.md` requires on top.
@@ -404,14 +406,14 @@ the two differ, and the rules in `.vale/styles/StandardASR` add what
 | `Colons` | Start lowercase after a colon. | Off — house delta |
 | `Contractions` | Prefer contractions in user-facing prose. | Off — house delta |
 | `DateFormat` | Write dates as `July 31, 2016`. | Off in Python only |
-| `Ellipses` | Avoid ellipses in prose. | Enforced |
+| `Ellipses` | Avoid ellipses in prose. | Enforced, minus named files |
 | `EmDash` | Set em dashes tight, with no surrounding spaces. | Off — house delta |
 | `ExcessiveClaims` | Drop unverifiable claims (`effortless`, `painless`). | Enforced |
 | `Exclamation` | No exclamation points. | Enforced |
 | `FirstPerson` | Avoid first-person singular pronouns. | Off — house delta |
 | `Gender` | Do not use a gendered pronoun as the neutral one. | Enforced |
 | `GenderBias` | Use gender-neutral role nouns. | Enforced |
-| `HeadingPunctuation` | No period at the end of a heading. | Off in Python only |
+| `HeadingPunctuation` | No period at the end of a heading. | Off in Python only, minus named files |
 | `Headings` | Use sentence-style capitalization in headings. | Off in Python only |
 | `Jargon` | Avoid jargon the audience may not share. | Enforced |
 | `Latin` | Write `for example` and `that is`, not the Latin abbreviations. | Enforced |
@@ -430,7 +432,7 @@ the two differ, and the rules in `.vale/styles/StandardASR` add what
 | `Spelling` | Use American spelling. | Enforced |
 | `Timeless` | Avoid time-bound words (`currently`, `new`). | Enforced |
 | `Units` | No-break space between a number and its unit. | Enforced |
-| `We` | Avoid first-person plural. | Enforced |
+| `We` | Avoid first-person plural. | Enforced, minus named files |
 | `Will` | Prefer the present tense over `will`. | Enforced |
 | `WordList` | Use the guide's preferred term. | Enforced |
 | `WordListCase` | Use the guide's capitalization for a term. | Enforced |

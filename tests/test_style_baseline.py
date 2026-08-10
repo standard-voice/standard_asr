@@ -7,8 +7,11 @@ STYLE.md adopts the Google developer documentation style guide as the pinned
 copy under ``.vale/styles/Google``, and lists every rule in an appendix so a
 contributor or an agent can read the baseline without network access. That
 listing is only trustworthy if it cannot drift: a package upgrade that adds a
-rule, drops one, or a ``.vale.ini`` edit that disables one, must not leave the
-statute describing a baseline the repository no longer has.
+rule, drops one, or a ``.vale.ini`` edit that disables one -- repo-wide or for
+a single glob of files -- must not leave the statute describing a baseline the
+repository no longer has. Every section of the configuration is read, because
+a rule switched off for named files is just as real a change to the baseline
+as one switched off everywhere.
 """
 
 from __future__ import annotations
@@ -36,6 +39,24 @@ def _appendix_rows() -> dict[str, str]:
     return {m.group("rule"): m.group("status").strip() for m in _ROW.finditer(appendix)}
 
 
+def _sections() -> dict[str, str]:
+    """Split ``.vale.ini`` into ``{section header: body}``.
+
+    Reading every section matters: the two generic ones are not the whole
+    configuration, and a rule switched off for a glob of files is just as
+    real a change to the baseline as one switched off repo-wide.
+
+    Returns:
+        Each bracketed section mapped to the text that follows it, up to the
+        next section.
+    """
+    text = _VALE_INI.read_text(encoding="utf-8")
+    out: dict[str, str] = {}
+    for match in re.finditer(r"^\[(?P<name>[^\]]+)\]$(?P<body>.*?)(?=^\[|\Z)", text, re.M | re.S):
+        out[f"[{match.group('name')}]"] = match.group("body")
+    return out
+
+
 def _disabled_google_rules(section: str) -> set[str]:
     """Collect the ``Google.X = NO`` rule names from one ``.vale.ini`` section.
 
@@ -45,11 +66,23 @@ def _disabled_google_rules(section: str) -> set[str]:
     Returns:
         The disabled rule names, without the ``Google.`` prefix.
     """
-    text = _VALE_INI.read_text(encoding="utf-8")
-    body = text.split(section, 1)[1]
-    # Stop at the next section header so a later section's disables do not leak.
-    body = re.split(r"^\[", body, maxsplit=1, flags=re.M)[0]
-    return set(re.findall(r"^Google\.(\w+) = NO", body, re.M))
+    return set(re.findall(r"^Google\.(\w+) = NO", _sections()[section], re.M))
+
+
+def _per_file_disabled_google_rules() -> set[str]:
+    """Collect rules switched off only for specific files or globs.
+
+    Returns:
+        Rule names disabled in any section other than the two generic ones
+        and the format map.
+    """
+    generic = {"[*.md]", "[*.py]", "[formats]"}
+    found: set[str] = set()
+    for name, body in _sections().items():
+        if name in generic:
+            continue
+        found |= set(re.findall(r"^Google\.(\w+) = NO", body, re.M))
+    return found
 
 
 def test_appendix_lists_exactly_the_vendored_rules() -> None:
@@ -65,6 +98,7 @@ def test_appendix_lists_exactly_the_vendored_rules() -> None:
 def test_appendix_status_matches_the_active_configuration() -> None:
     md_off = _disabled_google_rules("[*.md]")
     py_off = _disabled_google_rules("[*.py]")
+    per_file_off = _per_file_disabled_google_rules()
     for rule, status in _appendix_rows().items():
         if rule in md_off:
             expected = "Off — house delta"
@@ -72,6 +106,11 @@ def test_appendix_status_matches_the_active_configuration() -> None:
             expected = "Off in Python only"
         else:
             expected = "Enforced"
+        if rule not in md_off and rule in per_file_off:
+            # Switched off for named files on top of the generic posture.
+            # Reading only the two generic sections would leave the statute
+            # describing a stricter baseline than the one in force.
+            expected += ", minus named files"
         assert status == expected, (
             f"STYLE.md's appendix calls Google.{rule} {status!r}, but .vale.ini "
             f"makes it {expected!r}."
