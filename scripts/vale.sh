@@ -219,6 +219,40 @@ PYEOF
         esac
     done
 
+    # The probes above all violate one Google rule, so they prove the target
+    # composition and the extraction -- but they would stay green if the
+    # StandardASR style were dropped from `BasedOnStyles`, silently retiring
+    # every TERMINOLOGY.md rule. Seed one violation per custom rule, and one
+    # file of prose those rules must NOT touch, so both a disabled style and
+    # an over-broad rule fail here instead of in review.
+    # Written with printf escapes so this script itself stays ASCII while the
+    # fixture carries the non-ASCII characters the rules must catch.
+    rule_probe="docs/vale-selfcheck-rules.md"
+    plant_md "${rule_probe}"
+    {
+        printf 'The colour of the behaviour is unspecified.\n\n'
+        printf 'The Web API server accepts a fail-safe request.\n\n'
+        printf 'A conformance test for the engine surface belongs here.\n\n'
+        printf 'A banned pictograph: \xe2\x9c\x85\n'
+    } > "${tmp}/${rule_probe}"
+    expected_rules="StandardASR.BritishSpelling StandardASR.Terminology \
+StandardASR.Conformance StandardASR.Emoji"
+
+    # Prose the custom rules must leave alone: the sanctioned wire senses, the
+    # American plural, and the typographic and mathematical symbols STYLE.md
+    # permits. An over-broad rule (a whole Unicode block, a missing exception)
+    # shows up here as an alert on legal prose.
+    legal_probe="docs/vale-selfcheck-legal.md"
+    plant_md "${legal_probe}"
+    printf 'The suite checks cross-language wire conformance across clients.\n' \
+        > "${tmp}/${legal_probe}"
+    printf 'A cross-language conformance test compares two clients.\n' \
+        >> "${tmp}/${legal_probe}"
+    printf 'The two analyses agree, and the dialogue continues.\n' \
+        >> "${tmp}/${legal_probe}"
+    printf 'Symbols STYLE.md permits: \xe2\x86\x92 \xe2\x87\x92 \xe2\x8a\x86 \xc2\xa7 \xc2\xb1 \xe2\x84\x95 \xc3\x97.\n' \
+        >> "${tmp}/${legal_probe}"
+
     status=0
     out="$(cd "${tmp}" && run_vale --output=line)" || status=$?
     if [[ "${status}" -gt 1 ]]; then
@@ -227,6 +261,17 @@ PYEOF
         exit "${status}"
     fi
     fail=0
+    for rule in ${expected_rules}; do
+        if ! printf '%s\n' "${out}" | grep -F "${rule_probe}:" | grep -qF "${rule}"; then
+            echo "selfcheck FAILED: ${rule} did not fire; the StandardASR style is not active." >&2
+            fail=1
+        fi
+    done
+    if printf '%s\n' "${out}" | grep -qF "${legal_probe}:"; then
+        echo "selfcheck FAILED: a rule flagged prose the standard permits:" >&2
+        printf '%s\n' "${out}" | grep -F "${legal_probe}:" >&2
+        fail=1
+    fi
     for probe in "${expect_hit[@]}"; do
         if ! printf '%s\n' "${out}" | grep -F "${probe}:" | grep -qF 'Google.Latin'; then
             echo "selfcheck FAILED: the gate composition does not reach '${probe}'." >&2
@@ -249,7 +294,11 @@ PYEOF
     if [[ "${fail}" -ne 0 ]]; then
         exit 1
     fi
-    echo "vale selfcheck: ${#expect_hit[@]} governed probes reached, ${#expect_skip[@]} exempt probes excluded (Markdown prose, docstrings, comments)."
+    rule_count=0
+    for rule in ${expected_rules}; do
+        rule_count=$((rule_count + 1))
+    done
+    echo "vale selfcheck: ${#expect_hit[@]} governed probes reached, ${#expect_skip[@]} exempt probes excluded, ${rule_count} StandardASR rules live, permitted prose untouched."
     ;;
 *)
     run_vale "$@"
