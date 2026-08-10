@@ -911,6 +911,9 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
             # construction, compliance_check_crashed is the suite itself
             # falling over. Both fail the run. BaseException is not caught:
             # KeyboardInterrupt/SystemExit are the operator's control flow.
+            # --debug still owes the operator the crash's trace (the report
+            # carries only the scrubbed summary).
+            _debug_traceback(args)
             reports.append(
                 _single_error_report(
                     name,
@@ -1521,6 +1524,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         from standard_asr.toolchain.server import run
     except ImportError:
+        # A handler-caught error is still an error path: --debug promises a
+        # trace on every one of them, not only main()'s named arms.
+        _debug_traceback(args)
         _print_error(
             "FastAPI server dependencies are missing. Install with: "
             "pip install 'standard-asr[server]'."
@@ -1530,6 +1536,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         run(host=args.host, port=args.port, log_level=args.log_level)
     except ImportError as exc:
+        _debug_traceback(args)
         _print_error(str(exc))
         return 1
     return 0

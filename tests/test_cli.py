@@ -1081,6 +1081,26 @@ def test_cli_serve_missing_server_dependency(
     assert captured.out == ""
 
 
+def test_cli_serve_missing_dependency_honors_debug(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--debug prints the trace on the handler-caught serve error path too.
+
+    The flag's help and ``docs/spec/cli.md`` promise a trace on EVERY error
+    path; ``_cmd_serve`` catches its ImportErrors itself and returned 1
+    without ever consulting ``--debug``, so this documented path printed
+    nothing. Pin the promise.
+    """
+    monkeypatch.setitem(sys.modules, "standard_asr.toolchain.server", None)
+
+    exit_code = cli.main(["--debug", "serve"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "dependencies are missing" in captured.err
+    assert "Traceback" in captured.err
+
+
 def test_cli_serve_importerror_from_run(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
