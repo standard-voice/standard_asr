@@ -3490,6 +3490,10 @@ class SyncSession:
                 whole file goes to ``start_transcription(audio=...)``).
             InvalidSessionUseError: If manual input or a prior feed was already
                 used (forwarded from the async session).
+            StreamClosedError: If the bridge was already torn down (its
+                ``with`` block exited, or a prior lifecycle call timed out).
+            TimeoutError: If the call does not complete within the submit
+                timeout; the bridge is torn down first (no-hang contract).
         """
 
         async def _do_feed() -> None:
@@ -3502,11 +3506,30 @@ class SyncSession:
 
         Args:
             chunk: The audio chunk.
+
+        Raises:
+            InvalidSessionUseError: If ``feed`` was already used (forwarded
+                from the async session: mixing input modes).
+            StreamClosedError: If the input was ended or the session already
+                delivered a terminal event (forwarded from the async
+                session), or the bridge was already torn down (its ``with``
+                block exited, or a prior lifecycle call timed out).
+            TimeoutError: If the call does not complete within the submit
+                timeout; the bridge is torn down first (no-hang contract).
         """
         self._submit(self._session.send_audio(chunk), timeout=self._submit_timeout)
 
     def end_audio(self) -> None:
-        """Mark the end of manual audio input."""
+        """Mark the end of manual audio input.
+
+        Raises:
+            InvalidSessionUseError: If ``feed`` was already used (forwarded
+                from the async session: mixing input modes).
+            StreamClosedError: If the bridge was already torn down (its
+                ``with`` block exited, or a prior lifecycle call timed out).
+            TimeoutError: If the call does not complete within the submit
+                timeout; the bridge is torn down first (no-hang contract).
+        """
         self._submit(self._session.end_audio(), timeout=self._submit_timeout)
 
     def _loop_responsive(self) -> bool:
@@ -3548,9 +3571,10 @@ class SyncSession:
             Events from the underlying async session.
 
         Raises:
-            StreamClosedError: If the bridge was already torn down by a prior
-                timed-out lifecycle call, or if the session was never entered
-                (no event stream exists to pump).
+            StreamClosedError: If the bridge was already torn down (its
+                ``with`` block exited, or a prior lifecycle call timed out),
+                or if the session was never entered (no event stream exists
+                to pump).
             TimeoutError: If the owned event-loop thread died or stayed
                 unresponsive, so no further event (or in-loop deadline) can
                 ever be delivered.
