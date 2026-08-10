@@ -81,7 +81,9 @@ for seg in result.segments or []:
     print(seg.start, seg.end, seg.speaker, seg.text)   # speaker: label when diarized, else None
 
 from standard_asr import to_srt, to_vtt
-open("out.srt", "w").write(to_srt(result))
+
+with open("out.srt", "w", encoding="utf-8") as f:
+    f.write(to_srt(result))
 ```
 
 A segment renders as a *visible* cue only if it carries a measured `start`/`end`
