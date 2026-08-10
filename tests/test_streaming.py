@@ -1111,6 +1111,25 @@ def test_drop_proof_slots_consume_the_shared_budget() -> None:
         buf.put(TranscriptionEvent.partial("p0", "hi"))
 
 
+def test_undelivered_segment_holds_two_slots() -> None:
+    """A never-delivered segment costs a partial slot AND a final slot.
+
+    The sole-mention carve-out keeps the declaration partial alive when its
+    final arrives before the consumer ever saw the segment, so under a slow
+    consumer each in-flight segment holds two budget slots. Pins the sizing
+    rule the class docstring states: capacity 4 fits TWO undelivered
+    segments, and the third segment's partial -- not some later event -- is
+    the one refused.
+    """
+    buf = _CoalescingBuffer(capacity=4)
+    buf.put(TranscriptionEvent.partial("s1", "a"))
+    buf.put(TranscriptionEvent.final("s1", "aa"))  # partial kept: s1 undeclared
+    buf.put(TranscriptionEvent.partial("s2", "b"))
+    buf.put(TranscriptionEvent.final("s2", "bb"))  # budget now fully spent
+    with pytest.raises(EventBufferOverflow):
+        buf.put(TranscriptionEvent.partial("s3", "c"))
+
+
 def test_final_supersede_never_dropped_at_capacity() -> None:
     # Fill the buffer to capacity with distinct-segment partials, then assert a
     # final and a supersede still land (drop-proof, not converted to overflow).

@@ -1197,10 +1197,13 @@ class _CoalescingBuffer:
     ``final`` / ``supersede`` (like ``done`` / ``error`` via
     :meth:`put_forced`) MUST never be dropped, so they are appended even
     past the budget -- but their slots still consume it, so a backlog of
-    drop-proof events alone can make the next eligible put overflow.
-    Finals and supersedes are bounded per segment (each invalidates its own
-    pending partial), so only distinct-segment *partials* and ``progress``
-    heartbeats can be refused.
+    drop-proof events alone can make the next eligible put overflow. A
+    final or supersede invalidates its segment's pending partial (freeing
+    that slot) ONLY once the consumer has seen the segment; a
+    never-delivered segment keeps its declaration partial, so under a slow
+    consumer each in-flight segment can hold TWO slots -- the partial and
+    its final. Size ``capacity`` for that regime; refusal itself still
+    falls only on distinct-segment *partials* and ``progress`` heartbeats.
     """
 
     def __init__(self, capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY) -> None:
@@ -2225,8 +2228,10 @@ class TranscriptionSession(ABC):
             max_session_seconds: Absolute wall-clock cap; ``None`` disables.
             event_buffer_capacity: Pending-event budget shared by every
                 event kind -- drop-proof ``final`` / ``supersede`` /
-                ``error`` / ``done`` slots consume it too. A new-segment
-                partial or ``progress`` heartbeat arriving once it is spent
+                ``error`` / ``done`` slots consume it too, and a
+                not-yet-delivered segment can hold two slots at once (its
+                declaration partial plus its final). A new-segment partial
+                or ``progress`` heartbeat arriving once the budget is spent
                 overflows, which the session reports as a terminal
                 ``backpressure`` error.
             audio_queue_maxsize: Max pending audio chunks; bounds ``feed`` /
