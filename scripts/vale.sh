@@ -16,10 +16,22 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VALE="${VALE:-vale}"
+# --selfcheck runs Vale from a temporary mirror directory, so a relative
+# VALE path (CI passes .tools/vale/vale) has to be resolved here, while the
+# working directory is still the repo root. A bare name keeps its PATH lookup.
+case "${VALE}" in
+*/*) VALE="$(cd "$(dirname "${VALE}")" && pwd)/$(basename "${VALE}")" ;;
+esac
 
 TARGETS=(README.md CONTRIBUTING.md AGENTS.md STYLE.md TERMINOLOGY.md RELEASING.md
     docs src tests)
 EXEMPT='!{docs/spec/specification.md,docs/design-notes/*,docs/research/*,docs/work_doc/*,docs/feat_plan/*,docs/legacy/*,docs/misc.md,work/*,CHANGELOG.md}'
+
+# Root Markdown that is deliberately NOT gate-governed, with the reason
+# STYLE.md gives: the pre-standard CHANGELOG history the gate cannot separate
+# from new entries (review owns those), and a one-line tool pointer that
+# carries no prose.
+UNGOVERNED_ROOT_MD=(CHANGELOG.md CLAUDE.md)
 
 # Vale silently skips a path that does not exist (exit 0, no output, no
 # error), so a renamed or deleted TARGETS entry would shrink the corpus
@@ -29,6 +41,24 @@ for target in "${TARGETS[@]}"; do
         echo "vale.sh: target '${target}' does not exist; update TARGETS." >&2
         exit 1
     fi
+done
+
+# The selfcheck derives its expectations FROM TARGETS, so it cannot notice a
+# target that was dropped from the list. Close that by accounting for every
+# root document against STYLE.md, "Scope": each is either governed or
+# explicitly exempt. Dropping a target, or adding a root document and
+# forgetting to govern it, now fails here instead of silently shrinking the
+# corpus.
+for md in *.md; do
+    case " ${TARGETS[*]} ${UNGOVERNED_ROOT_MD[*]} " in
+    *" ${md} "*) ;;
+    *)
+        echo "vale.sh: root document '${md}' is neither a Vale target nor listed" >&2
+        echo "  as ungoverned. Add it to TARGETS (STYLE.md, \"Scope\") or to" >&2
+        echo "  UNGOVERNED_ROOT_MD with the reason it is exempt." >&2
+        exit 1
+        ;;
+    esac
 done
 
 run_vale() {
@@ -66,54 +96,81 @@ case "${1:-}" in
     ;;
 --selfcheck)
     # Negative test: prove the exact gate composition (config, EXEMPT glob,
-    # TARGETS) still sees the surfaces it claims to cover, by planting one
-    # deliberately violating fixture inside each directory target and
-    # requiring the gate run to flag every one. Guards against a config
-    # edit, a glob typo, or a Vale upgrade silently shrinking coverage
-    # while the gate stays green. Single-file targets need no fixture: the
-    # existence check above covers them, and Vale lints an existing file
-    # argument unconditionally. If a killed run leaves a fixture behind,
-    # the next gate run flags it -- the fixtures are violations by design.
+    # TARGETS) still reaches EVERY target. It mirrors the target layout into
+    # a temporary directory -- same relative paths, same .vale.ini, same
+    # styles -- plants a deliberate violation in each, and runs `run_vale`
+    # there, so the composition under test is the same function the gate
+    # calls. Guards against a config edit, a glob typo, or a Vale upgrade
+    # silently shrinking coverage while the gate stays green.
+    #
+    # The mirror exists because the working tree is not a safe scratch pad:
+    # planting fixtures in docs/, src/, and tests/ (the previous design)
+    # truncated any same-named file, raced with a concurrent run, and left
+    # debris behind when the run was killed. It also covers the single-file
+    # targets, which cannot hold a planted fixture at all: the --glob is
+    # applied even to an explicitly passed file argument (verified against
+    # the pinned Vale), so a typo in EXEMPT can silently drop README.md
+    # while both the gate and the existence check above stay green.
+    #
     # Known, documented gaps (STYLE.md, "Enforcement"): a module docstring
     # that follows the SPDX header, Python string literals, attribute
     # docstrings, and the text of a tight list item that owns a nested
     # sub-list.
-    fixture_md="docs/vale-selfcheck-fixture-delete-me.md"
-    fixture_src="src/vale_selfcheck_fixture_delete_me.py"
-    fixture_tests="tests/vale_selfcheck_fixture_delete_me.py"
-    cleanup() { rm -f "${fixture_md}" "${fixture_src}" "${fixture_tests}"; }
-    trap cleanup EXIT
-    printf 'A test sentence with a deliberate e.g. marker.\n' > "${fixture_md}"
-    for py in "${fixture_src}" "${fixture_tests}"; do
-        cat > "${py}" <<'PYEOF'
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "${tmp}"' EXIT
+    cp .vale.ini "${tmp}/"
+    cp -R .vale "${tmp}/"
+    md_probes=()
+    py_probes=()
+    for target in "${TARGETS[@]}"; do
+        if [[ -d "${target}" ]]; then
+            mkdir -p "${tmp}/${target}"
+            probe="${target}/vale-selfcheck-probe.md"
+            case "${target}" in
+            src | tests)
+                # The .py targets also carry tier-2 and tier-3 prose, so
+                # probe docstring and comment extraction there.
+                py_probe="${target}/vale_selfcheck_probe.py"
+                cat > "${tmp}/${py_probe}" <<'PYEOF'
 def example() -> None:
     """Function docstring with a deliberate e.g. marker."""
     # A comment with a deliberate e.g. marker.
 PYEOF
+                py_probes+=("${py_probe}")
+                ;;
+            esac
+        else
+            probe="${target}"
+        fi
+        printf 'A probe sentence with a deliberate e.g. marker.\n' > "${tmp}/${probe}"
+        md_probes+=("${probe}")
     done
+
     status=0
-    out="$(run_vale --output=line)" || status=$?
+    out="$(cd "${tmp}" && run_vale --output=line)" || status=$?
     if [[ "${status}" -gt 1 ]]; then
         printf '%s\n' "${out}"
         echo "vale selfcheck: Vale itself failed (exit ${status}); fix the tool error above." >&2
         exit "${status}"
     fi
     fail=0
-    if ! printf '%s\n' "${out}" | grep -F "${fixture_md}" | grep -qF 'Google.Latin'; then
-        echo "selfcheck FAILED: Markdown under docs/ is not being linted." >&2
-        fail=1
-    fi
-    for py in "${fixture_src}" "${fixture_tests}"; do
-        hits="$(printf '%s\n' "${out}" | grep -F "${py}" | grep -cF 'Google.Latin' || true)"
+    for probe in "${md_probes[@]}"; do
+        if ! printf '%s\n' "${out}" | grep -F "${probe}:" | grep -qF 'Google.Latin'; then
+            echo "selfcheck FAILED: the gate composition does not reach '${probe}'." >&2
+            fail=1
+        fi
+    done
+    for probe in "${py_probes[@]}"; do
+        hits="$(printf '%s\n' "${out}" | grep -F "${probe}:" | grep -cF 'Google.Latin' || true)"
         if [[ "${hits}" -lt 2 ]]; then
-            echo "selfcheck FAILED: expected the docstring AND the comment of ${py} to be linted (got ${hits} hits)." >&2
+            echo "selfcheck FAILED: expected the docstring AND the comment of '${probe}' to be linted (got ${hits})." >&2
             fail=1
         fi
     done
     if [[ "${fail}" -ne 0 ]]; then
         exit 1
     fi
-    echo "vale selfcheck: the gate composition sees docs/, src/, and tests/ (Markdown prose, docstrings, comments)."
+    echo "vale selfcheck: the gate composition reaches all ${#md_probes[@]} targets (Markdown prose, docstrings, comments)."
     ;;
 *)
     run_vale "$@"

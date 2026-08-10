@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Pinned CI tool binaries (actionlint, vale) downloaded into the tree.
+.tools/

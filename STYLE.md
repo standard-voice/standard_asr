@@ -296,8 +296,9 @@ Three layers, weakest claim first:
   The full run, warnings and suggestions included, is kept at zero, and the
   CI gate enforces exactly that: `scripts/vale.sh --gate` fails on any alert
   at any level, and `scripts/vale.sh --selfcheck` proves the gate composition
-  (config, exemption glob, target list) still flags planted violations in
-  every directory target. Four extraction gaps are known and disclosed —
+  (config, exemption glob, target list) still flags a planted violation in
+  every target, root documents included, by mirroring the target layout into
+  a temporary directory rather than writing to the working tree. Four extraction gaps are known and disclosed —
   prose that Vale never sees and review must own. Vale skips a module
   docstring that follows the SPDX header; it never reads Python string
   literals; it skips attribute docstrings (the bare string under an
