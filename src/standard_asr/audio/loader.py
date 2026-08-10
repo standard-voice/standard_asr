@@ -48,7 +48,7 @@ import pathlib
 import shutil
 import subprocess
 import wave
-from typing import Any, BinaryIO, Literal, TypeGuard, cast, overload
+from typing import Any, BinaryIO, Literal, NamedTuple, TypeGuard, cast, overload
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
@@ -954,8 +954,9 @@ def load_audio(
     Raises:
         AudioProcessingError: Invalid parameters or decoding/processing failures,
             including missing or unreadable paths, input exceeding ``max_bytes``,
-            or a source channel count that ffprobe ran on but could not
-            determine with ``target_channels=None``.
+            or a source channel count that could not be determined with
+            ``target_channels=None`` (the message says whether the source or
+            the environment is at fault).
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
         FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
             fallback, which needs ffprobe to preserve the source channel
@@ -1092,8 +1093,8 @@ def load_audio_from_path(
     Raises:
         AudioProcessingError: Decoding failed, including missing or unreadable
             files, the file exceeding ``max_bytes``, or a source channel count
-            that ffprobe ran on but could not determine with
-            ``target_channels=None``.
+            that could not be determined with ``target_channels=None`` (the
+            message says whether the source or the environment is at fault).
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
         FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
             fallback, which needs ffprobe to preserve the source channel
@@ -1195,8 +1196,9 @@ def load_audio_from_bytes(
 
     Raises:
         AudioProcessingError: Decoding failed, empty audio, ``data`` exceeding
-            ``max_bytes``, or a source channel count that ffprobe ran on but
-            could not determine with ``target_channels=None``.
+            ``max_bytes``, or a source channel count that could not be
+            determined with ``target_channels=None`` (the message says whether
+            the source or the environment is at fault).
         FFmpegNotFoundError: FFmpeg fallback needed but not installed.
         FFprobeNotFoundError: ``target_channels=None`` reached the FFmpeg
             fallback, which needs ffprobe to preserve the source channel
@@ -1422,26 +1424,35 @@ def _decode_with_ffmpeg_native(
         The decoded ``float32`` waveform and its native sample rate.
 
     Raises:
-        AudioProcessingError: If ffprobe ran but the native rate could not be
-            determined (an unreadable file, or no audio stream).
-        FFprobeNotFoundError: ffprobe not in PATH.
+        AudioProcessingError: If ffprobe reported no usable rate (an
+            unreadable file, or no audio stream), or the probe itself could
+            not run (a transient system condition; the message says which).
+        FFprobeNotFoundError: ffprobe not found on PATH, or not executable.
         FFmpegNotFoundError: FFmpeg not in PATH.
     """
-    native_sr = _probe_sample_rate_with_ffprobe(source)
-    if native_sr is None:
-        if shutil.which("ffprobe") is None:
+    probe = _probe_sample_rate_with_ffprobe(source)
+    if probe.value is None:
+        if probe.failure == "tool-missing":
             raise FFprobeNotFoundError(
                 "ffprobe is required to determine the native sample rate but "
-                "is not in PATH; install the ffmpeg suite or the [audio] extra "
-                "(soundfile) for native-rate decoding."
-            )
+                "was not found on PATH (or is not executable); install the "
+                "ffmpeg suite or the [audio] extra (soundfile) for "
+                "native-rate decoding."
+            ) from probe.cause
+        if probe.failure == "could-not-run":
+            raise AudioProcessingError(
+                "ffprobe could not run to determine the native sample rate "
+                f"({probe.detail}). This is an environmental failure, not "
+                "evidence about the audio; retry, or run ffprobe on the "
+                "source directly."
+            ) from probe.cause
         raise AudioProcessingError(
-            "Could not determine the native sample rate: ffprobe reported no "
-            "audio stream, could not read the source, or timed out. Run "
+            "Could not determine the native sample rate: ffprobe examined "
+            f"the source but reported no usable rate ({probe.detail}). Run "
             "ffprobe on the source directly to see why."
-        )
-    array = _load_with_ffmpeg(source, native_sr, target_channels)
-    return array, native_sr
+        ) from probe.cause
+    array = _load_with_ffmpeg(source, probe.value, target_channels)
+    return array, probe.value
 
 
 def _load_with_ffmpeg(
@@ -1510,24 +1521,34 @@ def _load_with_ffmpeg(
     # needs ffprobe to report the source channel count. An unknown count MUST
     # fail loudly here: downmixing a surround source to mono because a probe
     # could not run is a silent wrong result (AGENTS.md, Philosophy), not a
-    # fallback.
+    # fallback. The message must name the right culprit -- tool, environment,
+    # or source -- so the probe outcome's three failure kinds map to three
+    # different messages.
     if target_channels is None:
-        detected_channels = _probe_channels_with_ffprobe(probe_source)
-        if detected_channels is None:
-            if shutil.which("ffprobe") is None:
+        probe = _probe_channels_with_ffprobe(probe_source)
+        if probe.value is None:
+            if probe.failure == "tool-missing":
                 raise FFprobeNotFoundError(
                     "ffprobe is required to preserve the source channel "
-                    "layout (target_channels=None) but is not in PATH; "
-                    "install the ffmpeg suite, or pass target_channels "
-                    "explicitly."
-                )
+                    "layout (target_channels=None) but was not found on PATH "
+                    "(or is not executable); install the ffmpeg suite, or "
+                    "pass target_channels explicitly."
+                ) from probe.cause
+            if probe.failure == "could-not-run":
+                raise AudioProcessingError(
+                    "ffprobe could not run to determine the source channel "
+                    f"count ({probe.detail}). This is an environmental "
+                    "failure, not evidence about the audio; retry, pass "
+                    "target_channels explicitly, or run ffprobe on the "
+                    "source directly."
+                ) from probe.cause
             raise AudioProcessingError(
                 "Could not determine the source channel count: ffprobe "
-                "reported no audio stream, could not read the source, or "
-                "timed out. Pass target_channels explicitly, or run ffprobe "
-                "on the source directly to see why."
-            )
-        final_target_channels = detected_channels
+                f"examined the source but reported no usable count "
+                f"({probe.detail}). Pass target_channels explicitly, or run "
+                "ffprobe on the source directly to see why."
+            ) from probe.cause
+        final_target_channels = probe.value
     else:
         final_target_channels = target_channels
 
@@ -1641,7 +1662,36 @@ def _load_with_ffmpeg(
         ) from e
 
 
-def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -> int | None:
+class _ProbeOutcome(NamedTuple):
+    """What a guarded ffprobe query learned, and why it learned nothing.
+
+    ``value`` is the probed positive integer, or ``None``. When it is
+    ``None``, ``failure`` names which of three distinguishable situations
+    produced the unknown. The callers owe the user three DIFFERENT messages,
+    and collapsing them was the defect that blamed a transient fork failure
+    on the user's audio file:
+
+    - ``"tool-missing"``: ffprobe was not found on ``PATH`` (or is not
+      executable, or vanished between the lookup and the spawn). The remedy
+      is installing it.
+    - ``"could-not-run"``: ffprobe could not start or complete -- a spawn
+      failure such as ``EAGAIN`` or ``EMFILE``, a broken pipe, a timeout.
+      Environmental and usually transient; not evidence about the audio.
+    - ``"no-value"``: ffprobe ran and answered, but reported no usable value
+      (no audio stream, an unreadable container, a non-positive or
+      undecodable field). Evidence about the source.
+
+    ``detail`` carries the underlying error text for messages, and ``cause``
+    the caught exception for ``raise ... from`` chaining.
+    """
+
+    value: int | None
+    failure: Literal["tool-missing", "could-not-run", "no-value"] | None = None
+    detail: str | None = None
+    cause: Exception | None = None
+
+
+def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -> _ProbeOutcome:
     """Query a single integer ``stream=<entry>`` value via ffprobe (guarded).
 
     Like the ffmpeg decode path, this constrains ffprobe to the ``file,pipe``
@@ -1656,14 +1706,14 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        The positive integer value, or ``None`` if ffprobe is unavailable,
-        detection failed, or the reported value is not a positive integer.
+        A :class:`_ProbeOutcome`: the positive integer value, or the reason
+        none could be determined.
 
     Raises:
         None.
     """
     if shutil.which("ffprobe") is None:
-        return None
+        return _ProbeOutcome(None, "tool-missing")
 
     if isinstance(source, bytes):
         input_arg = "pipe:0"
@@ -1691,31 +1741,50 @@ def _probe_stream_entry(source: str | bytes, entry: str, timeout: float = 5.0) -
         proc = subprocess.run(
             cmd, capture_output=True, input=input_data, check=True, timeout=timeout
         )
+    except FileNotFoundError as e:
+        # ffprobe vanished between the shutil.which lookup and the spawn (for
+        # example, a concurrent package upgrade): same remedy as
+        # never-installed, so the same outcome.
+        return _ProbeOutcome(None, "tool-missing", str(e), e)
+    except subprocess.TimeoutExpired as e:
+        return _ProbeOutcome(None, "could-not-run", f"timed out after {timeout}s", e)
+    except subprocess.CalledProcessError as e:
+        # ffprobe ran and rejected the source (unreadable, not a media file):
+        # that IS evidence about the source. Carry its first stderr line so
+        # the caller's message can say why.
+        stderr_lines = (e.stderr or b"").decode(errors="replace").strip().splitlines()
+        detail = stderr_lines[0][:200] if stderr_lines else f"ffprobe exited {e.returncode}"
+        return _ProbeOutcome(None, "no-value", detail, e)
+    except OSError as e:
+        # The spawn itself failed (EAGAIN/EMFILE process or file-descriptor
+        # exhaustion, a broken pipe feeding stdin): environmental, not
+        # evidence about the audio -- and never an escaping exception
+        # (Raises: None).
+        return _ProbeOutcome(None, "could-not-run", str(e), e)
+
+    try:
         text = proc.stdout.decode().strip()
-        if not text.isdigit():
-            return None
+    except UnicodeDecodeError as e:
+        # A broken stream can make ffprobe emit undecodable bytes.
+        return _ProbeOutcome(None, "no-value", "undecodable ffprobe output", e)
+    try:
         value = int(text)
-        # ffprobe can report 0 for a hostile/broken stream; a non-positive count
-        # or rate is "unknown", never forwarded (``-ar 0`` is a silent no-op on
-        # some ffmpeg builds, which would skip resampling without any error).
-        return value if value > 0 else None
-    except subprocess.TimeoutExpired:
-        return None
-    except subprocess.CalledProcessError:
-        return None
-    except OSError:
-        # ffprobe vanished between the shutil.which probe and the spawn (for
-        # example, a concurrent package upgrade). A probe that cannot run is
-        # "unknown", never an escaping exception (the wrappers promise
-        # Raises: None).
-        return None
-    except UnicodeDecodeError:
-        # A broken stream can make ffprobe emit undecodable bytes; same
-        # fail-closed "unknown" as every other probe failure.
-        return None
+    except ValueError:
+        # int() itself is the guard: str.isdigit() would admit Unicode
+        # digit-category characters (SUPERSCRIPT TWO) that int() rejects, so
+        # a pre-check could let a ValueError slip through the no-raise
+        # contract.
+        return _ProbeOutcome(None, "no-value", f"non-integer field value {text[:40]!r}")
+    if value <= 0:
+        # ffprobe can report 0 for a hostile/broken stream; a non-positive
+        # count or rate is "unknown", never forwarded (``-ar 0`` is a silent
+        # no-op on some ffmpeg builds, which would skip resampling without
+        # any error).
+        return _ProbeOutcome(None, "no-value", f"non-positive field value {value}")
+    return _ProbeOutcome(value)
 
 
-def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> int | None:
+def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> _ProbeOutcome:
     """Detect audio channel count via ffprobe (internal helper).
 
     Args:
@@ -1723,9 +1792,10 @@ def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> i
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        Number of channels, or ``None`` if ffprobe is unavailable, detection
-        failed, or a string source is not a readable local file (string
-        sources are forwarded verbatim; callers validate them first).
+        A :class:`_ProbeOutcome` with the channel count, or the reason none
+        could be determined. An unvalidated string source that is not a
+        readable local file reads as ``"no-value"`` (string sources are
+        forwarded verbatim; callers validate them first).
 
     Raises:
         None.
@@ -1733,7 +1803,7 @@ def _probe_channels_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> i
     return _probe_stream_entry(source, "channels", timeout)
 
 
-def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> int | None:
+def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -> _ProbeOutcome:
     """Detect the native sample rate via ffprobe (internal helper).
 
     Args:
@@ -1741,9 +1811,10 @@ def _probe_sample_rate_with_ffprobe(source: str | bytes, timeout: float = 5.0) -
         timeout: Max seconds to wait. Default: ``5.0``.
 
     Returns:
-        Native sample rate in Hz, or ``None`` if ffprobe is unavailable,
-        detection failed, or a string source is not a readable local file
-        (string sources are forwarded verbatim; callers validate them first).
+        A :class:`_ProbeOutcome` with the native sample rate in Hz, or the
+        reason none could be determined. An unvalidated string source that
+        is not a readable local file reads as ``"no-value"`` (string sources
+        are forwarded verbatim; callers validate them first).
 
     Raises:
         None.
