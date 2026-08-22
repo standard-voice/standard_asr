@@ -55,8 +55,9 @@ either in this table or in an explicit exempt set. One exempt field is itself
 requestable: `candidate_languages` has a `RuntimeParams` field, but
 `language.effective_candidate_languages` owns its gating, so `gate_params()`
 leaves it alone. The requestable set is therefore the five table rows plus
-`language.candidate_languages`. It is exact. It is simply not visible in the
-capability tree.
+`language.candidate_languages`. It is exact. The tree does not mark it:
+every one of these paths resolves to a declared node, but no field on the
+node says that the caller can request it.
 
 Every other declared **leaf** node is a behavior: `streaming_input`,
 `streaming_output`, `self_resamples`, `emits_partials`, `re_segments`,
@@ -103,8 +104,10 @@ and each concrete class pins **one** value:
 ```python
 CapabilityKind = Literal["requestable", "behavior", "limit"]
 
+
 class FlagCap(_FlagLikeNode):
     kind: Literal["behavior"] = "behavior"
+
 
 class WordTimestampsCap(_FlagLikeNode):
     kind: Literal["requestable"] = "requestable"
@@ -258,6 +261,12 @@ These items are implementation work, and they do not block the issues above:
    The exemption set starts with one real entry: `language.candidate_languages`
    is requestable, and `language.effective_candidate_languages` owns its
    gating — see `_UNGATED_PORTABLE_FIELDS` and the written reason it carries.
+
+   The reverse check compares mode-relative suffixes, the same representation
+   item 5 resolves. For each declared mode, walk the requestable nodes under
+   that mode domain, strip the leading `{mode}.` from each path, and require
+   the suffix in `_GATED_PARAMS` or in the exemption set. The exemption set
+   holds mode-relative suffixes too, so one entry covers both modes.
 7. Update `docs/spec/specification.md` and `docs/spec/server.md` for the new
    field and the new query.
 8. Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.
