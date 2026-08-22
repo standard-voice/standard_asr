@@ -425,9 +425,9 @@ capabilities:
 假设引擎声明中 `streaming.guidance` 下没有 `phrase_hints` 键：
 
 ```python
-engine.supports("streaming.guidance.phrase_hints")   # → False（R1 fail-closed）
-engine.supports("batch.guidance.phrase_hints")        # → True
-engine.supports("streaming_input")                    # → True（顶层正交能力）
+engine.supports("streaming.guidance.phrase_hints")  # → False（R1 fail-closed）
+engine.supports("batch.guidance.phrase_hints")  # → True
+engine.supports("streaming_input")  # → True（顶层正交能力）
 ```
 
 如果应用在 streaming 下传入 `phrase_hints`，strict 抛 `UnsupportedFeatureError`；best_effort 忽略并返回 diagnostic。
@@ -1062,19 +1062,19 @@ supersede(old_ids=["seg-3","seg-4"], new_ids=["seg-5"])
 **核心 reduce（每个 compliant 应用 MUST 实现）**：
 
 ```python
-order: list[str] = []       # 存活段 id 的阅读顺序（列表顺序即阅读顺序）
+order: list[str] = []  # 存活段 id 的阅读顺序（列表顺序即阅读顺序）
 texts: dict[str, str] = {}  # segment_id -> 当前文本
 
 if event.type in ("partial", "final"):
     if event.segment_id not in order:
-        order.append(event.segment_id)   # 首次宣告认领下一个阅读位置
-    texts[event.segment_id] = event.text # 显示 / 提交
+        order.append(event.segment_id)  # 首次宣告认领下一个阅读位置
+    texts[event.segment_id] = event.text  # 显示 / 提交
 elif event.type == "supersede":
     pos = order.index(event.old_ids[0])  # 旧块起点（old_ids 连续、按阅读顺序）
     for old_id in event.old_ids:
-        order.remove(old_id)             # 退休旧段
+        order.remove(old_id)  # 退休旧段
         texts.pop(old_id, None)
-    order[pos:pos] = event.new_ids       # 新段原位接管旧块的阅读位置
+    order[pos:pos] = event.new_ids  # 新段原位接管旧块的阅读位置
 # 显示文本 = 按 order 串接 texts（new_ids 的内容随后经 partial/final 到达）
 ```
 
@@ -1235,7 +1235,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 ```python
 async for event in session:
     if event.type == "partial" and event.stable_until and event.stable_until > 0:
-        frozen_prefix = grapheme_clusters(event.text)[:event.stable_until]
+        frozen_prefix = grapheme_clusters(event.text)[: event.stable_until]
         maybe_start_responding_to(frozen_prefix)
 ```
 
@@ -1245,7 +1245,7 @@ async for event in session:
 
 ```python
 async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session:
-    async for event in session:       # partial 事件在转写完成前就会到达
+    async for event in session:  # partial 事件在转写完成前就会到达
         if event.type == "partial":
             show_progress(event.text)
         elif event.type == "final":

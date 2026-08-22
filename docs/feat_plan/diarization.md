@@ -167,6 +167,7 @@ requested.
 ```python
 class DiarizationRequest(BaseModel):
     """Portable diarization request parameters."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
     num_speakers: int | None = Field(default=None, ge=2)
 ```
@@ -220,7 +221,7 @@ instance = diarization requested. `DiarizationRequest()` (bare, all defaults)
 class DiarizationConstraints(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
     max_speakers: int | None = Field(default=None, gt=0)
-    accepts_speaker_count_hint: bool = Field(default=False)   # NEW
+    accepts_speaker_count_hint: bool = Field(default=False)  # NEW
 ```
 
 - `max_speakers`: upper bound on speakers the engine can produce in results.

@@ -30,8 +30,8 @@ A bare `str` is **always** a local path (never a URL — wrap URLs explicitly).
 ```python
 from standard_asr import AudioArray, AudioUrl
 
-engine.transcribe("meeting.mp3")                   # -> AudioPath
-engine.transcribe((samples, 16000))                # -> AudioArray(samples, sr)
+engine.transcribe("meeting.mp3")  # -> AudioPath
+engine.transcribe((samples, 16000))  # -> AudioArray(samples, sr)
 engine.transcribe(AudioUrl("https://.../a.flac"))  # explicit URL (engine-fetched)
 ```
 
@@ -47,11 +47,11 @@ from standard_asr import DIARIZE, RuntimeParams, WordTimestampGranularity
 result = engine.transcribe(
     "meeting.mp3",
     RuntimeParams(
-        language="en",                              # or "auto"
+        language="en",  # or "auto"
         word_timestamps=WordTimestampGranularity.WORD,
-        diarization=DIARIZE,                        # "who said what" (presence = enable)
-        prompt="Q3 budget review.",                 # free-text guidance
-        phrase_hints=["Anthropic", "Claude"],       # term boosting
+        diarization=DIARIZE,  # "who said what" (presence = enable)
+        prompt="Q3 budget review.",  # free-text guidance
+        phrase_hints=["Anthropic", "Claude"],  # term boosting
     ),
 )
 ```
@@ -78,7 +78,7 @@ Missing capabilities are **fail-closed** (`supports(...)` returns `False`).
 print(result.text)
 print(result.detected_language, result.duration)
 for seg in result.segments or []:
-    print(seg.start, seg.end, seg.speaker, seg.text)   # speaker: label when diarized, else None
+    print(seg.start, seg.end, seg.speaker, seg.text)  # speaker: label when diarized, else None
 
 from standard_asr import to_srt, to_vtt
 
@@ -103,7 +103,7 @@ label means "not attributed", never "unsupported" — capabilities answer suppor
 ## 7. Streaming
 
 ```python
-fmt = engine.recommended_wire_format()   # the engine's preferred PCM wire format
+fmt = engine.recommended_wire_format()  # the engine's preferred PCM wire format
 async with engine.start_transcription(audio_format=fmt) as session:
     session.feed(microphone)
     async for event in session:

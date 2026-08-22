@@ -31,8 +31,8 @@ results = model.transcribe(
         "decode_max_len": 0,
         "softmax_smoothing": 1.25,
         "aed_length_penalty": 0.6,
-        "eos_penalty": 1.0
-    }
+        "eos_penalty": 1.0,
+    },
 )
 print(results)
 
@@ -49,8 +49,8 @@ results = model.transcribe(
         "decode_min_len": 0,
         "repetition_penalty": 3.0,
         "llm_length_penalty": 1.0,
-        "temperature": 1.0
-    }
+        "temperature": 1.0,
+    },
 )
 print(results)
 ```

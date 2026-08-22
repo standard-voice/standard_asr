@@ -176,7 +176,10 @@ def _resample_fourier(x: NDArray[np.float64], num: int) -> NDArray[np.float64]:
         else:  # num == n_in handled by the rate-equality fast path; defensive.
             new_spectrum[nyq] = spectrum[nyq]  # pragma: no cover
 
-    result = np.fft.ifft(new_spectrum, axis=0).real
+    # numpy's stubs (2.5) leave ``np.fft.ifft`` partially untyped; the inverse
+    # FFT of a complex spectrum is complex128, so pin that here.
+    inverse: NDArray[np.complex128] = np.fft.ifft(new_spectrum, axis=0)
+    result = inverse.real
     result *= float(num) / float(n_in)
     return result
 

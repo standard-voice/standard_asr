@@ -23,8 +23,14 @@ jobs:
           # Allowlist: every license present in our distributed dependency
           # surface (runtime + extras). Uses ClearlyDefined metadata — no
           # deep-scan, so no false positives from bundled components.
+          # MIT-0 entered with cffi 2.1.1 (PyPI license_expression: MIT-0).
           allow-licenses: >-
             0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BSL-1.0,
-            CC0-1.0, CC-BY-4.0, ISC, MIT, MPL-2.0, PSF-2.0,
+            CC0-1.0, CC-BY-4.0, ISC, MIT, MIT-0, MPL-2.0, PSF-2.0,
             Python-2.0, Unlicense, Zlib
+          # typing-extensions declares PSF-2.0 (allowed), but ClearlyDefined's
+          # scancode harvest of its LICENSE file reads the historical Python
+          # stack as "Python-2.0 AND GPL-1.0-or-later AND ..." — a metadata
+          # false positive, so the package is exempted, not the license.
+          allow-dependencies-licenses: pkg:pypi/typing-extensions
           comment-summary-in-pr: always

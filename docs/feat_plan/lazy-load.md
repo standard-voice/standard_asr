@@ -38,6 +38,7 @@ Recommended lookup helper (implemented in `standard_asr.runtime.downloads.allow_
 ```python
 import os
 
+
 def allow_downloads() -> bool:
     value = os.getenv("STANDARD_ASR_ALLOW_DOWNLOAD")
     if value is None:
@@ -65,6 +66,7 @@ actionable exception when downloads are disallowed.
 
 ```python
 from standard_asr.runtime.downloads import allow_downloads  # proposed helper
+
 
 class FasterWhisperASR(StandardASR):
     def __init__(self, config: FasterWhisperConfig) -> None:
