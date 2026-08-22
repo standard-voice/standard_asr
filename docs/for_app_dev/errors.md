@@ -58,7 +58,7 @@ Building a model is pydantic's job, not the runtime's. A malformed field raises
 `StandardASRError`:
 
 ```python
-RuntimeParams(language="english")        # ValidationError: not a BCP-47 tag
+RuntimeParams(language="english")  # ValidationError: not a BCP-47 tag
 RuntimeParams(candidate_languages=["auto"])
 ```
 
@@ -84,14 +84,14 @@ also raise the built-in `TimeoutError` for a hung engine.
 try:
     engine.transcribe("audio.wav", RuntimeParams(word_timestamps="word"))
 except UnsupportedFeatureError as exc:
-    print(exc.param)   # "word_timestamps" — the offending parameter
-    print(exc.mode)    # "batch" — where the rejection happened
-    print(exc.hint)    # actionable guidance, or None
+    print(exc.param)  # "word_timestamps" — the offending parameter
+    print(exc.mode)  # "batch" — where the rejection happened
+    print(exc.hint)  # actionable guidance, or None
 
 try:
     registry.create("acme/model")
 except ConfigError as exc:
-    print(exc.param)    # the offending field, if a single one is implicated
+    print(exc.param)  # the offending field, if a single one is implicated
     print(exc.details)  # sanitized [{"type", "loc", "msg"}, ...] entries
 ```
 

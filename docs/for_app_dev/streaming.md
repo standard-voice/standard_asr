@@ -50,7 +50,7 @@ For live-input streaming there are two mutually exclusive input modes:
 drive the input side for you:
 
 ```python
-session.feed(microphone)    # any sync or async iterable of bytes chunks
+session.feed(microphone)  # any sync or async iterable of bytes chunks
 ```
 
 `feed()` consumes the source and signals end-of-input automatically when the
@@ -61,8 +61,8 @@ session is owned by exactly one input mode, and mixing them raises
 **Manual mode** -- push chunks yourself and signal the end explicitly:
 
 ```python
-await session.send_audio(chunk)   # repeat per chunk
-await session.end_audio()         # signal end-of-input
+await session.send_audio(chunk)  # repeat per chunk
+await session.end_audio()  # signal end-of-input
 ```
 
 ## The event protocol
@@ -92,20 +92,20 @@ compliant engine -- including ones that rewrite interim text or merge segments
 after emitting them:
 
 ```python
-order: list[str] = []       # reading order of live segment ids
+order: list[str] = []  # reading order of live segment ids
 texts: dict[str, str] = {}
 
 async for event in session:
     if event.type in ("partial", "final"):
         if event.segment_id not in order:
-            order.append(event.segment_id)   # first mention claims a position
+            order.append(event.segment_id)  # first mention claims a position
         texts[event.segment_id] = event.text
     elif event.type == "supersede":
         pos = order.index(event.old_ids[0])  # the retired block's position
         for old_id in event.old_ids:
             order.remove(old_id)
             texts.pop(old_id, None)
-        order[pos:pos] = event.new_ids       # replacements take its place
+        order[pos:pos] = event.new_ids  # replacements take its place
 ```
 
 Display text is `texts` joined in `order`. The state is a reading-order list
@@ -127,8 +127,8 @@ does not revise it as more audio arrives. This is surfaced via
 
 ```python
 if event.type == "partial" and event.stable_until is not None:
-    frozen = event.text[:event.stable_until]
-    tentative = event.text[event.stable_until:]
+    frozen = event.text[: event.stable_until]
+    tentative = event.text[event.stable_until :]
 ```
 
 Voice agents can act on `frozen` immediately (for example, start intent recognition)
@@ -188,7 +188,7 @@ audio_format = engine.recommended_wire_format()
 sync = SyncSession(engine.start_transcription(audio_format=audio_format))
 
 with sync:
-    sync.feed(pcm_chunks)          # an iterable of bytes chunks (or one bytes chunk)
+    sync.feed(pcm_chunks)  # an iterable of bytes chunks (or one bytes chunk)
     for event in sync:
         print(event.type, event.text)
 ```

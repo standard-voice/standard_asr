@@ -213,7 +213,7 @@ keep 路徑是例外，bug 最容易藏在 strip 路徑而且是靜默方向（�
 ```python
 class DiarizationCap(_FlagLikeNode):
     constraints: DiarizationConstraints = Field(default_factory=DiarizationConstraints)
-    always_on: bool = Field(default=False)   # 裸 bool，直接在能力節點上
+    always_on: bool = Field(default=False)  # 裸 bool，直接在能力節點上
 
     @model_validator(mode="after")
     def _always_on_requires_supported(self) -> DiarizationCap:
