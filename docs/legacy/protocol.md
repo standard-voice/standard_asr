@@ -24,15 +24,13 @@ class StandardASR(Protocol):
         self,
         audio: NDArray[np.float32],
         options: BaseTranscribeOptions | None = None,
-    ) -> TranscriptionResult:
-        ...
+    ) -> TranscriptionResult: ...
 
     async def transcribe_async(
         self,
         audio: NDArray[np.float32],
         options: BaseTranscribeOptions | None = None,
-    ) -> TranscriptionResult:
-        ...
+    ) -> TranscriptionResult: ...
 ```
 
 ### Required Attributes

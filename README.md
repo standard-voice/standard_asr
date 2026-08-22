@@ -132,7 +132,7 @@ Discover whatever compliant engines are installed, then transcribe:
 from standard_asr import discover_models
 
 registry = discover_models()
-engine = registry.create("faster-whisper/large-v3")   # any installed engine's model key
+engine = registry.create("faster-whisper/large-v3")  # any installed engine's model key
 
 # Pass the audio you already have — a file path, raw bytes, a base64 data URI, or a
 # NumPy array. Standard ASR negotiates the right form for the chosen engine and converts
@@ -149,7 +149,7 @@ string, no fields that appear and disappear. Render subtitles from any engine's 
 ```python
 from standard_asr import to_srt, to_vtt
 
-print(to_srt(result))                      # works for every compliant engine
+print(to_srt(result))  # works for every compliant engine
 ```
 
 ### Discover capabilities & configuration
@@ -157,14 +157,14 @@ print(to_srt(result))                      # works for every compliant engine
 Engines differ — that's the point. Instead of guessing, ask:
 
 ```python
-engine.supports("batch.word_timestamps")          # True / False, fail-closed
-engine.supports("batch.diarization")              # speaker labels ("who said what")?
+engine.supports("batch.word_timestamps")  # True / False, fail-closed
+engine.supports("batch.diarization")  # speaker labels ("who said what")?
 engine.supports("streaming.guidance.phrase_hints")
-engine.supports("streaming_input")                # can it consume live audio?
+engine.supports("streaming_input")  # can it consume live audio?
 
-registry.config_schema("faster-whisper/large-v3") # the engine's init-config JSON Schema —
-                                                  # render a settings UI without
-                                                  # instantiating (secrets are marked)
+registry.config_schema("faster-whisper/large-v3")  # the engine's init-config JSON Schema —
+# render a settings UI without
+# instantiating (secrets are marked)
 ```
 
 Unsupported parameters never degrade silently: depending on policy, they either raise
@@ -183,24 +183,24 @@ streaming-capable engine:
 audio_format = engine.recommended_wire_format()
 
 async with engine.start_transcription(audio_format=audio_format) as session:
-    session.feed(microphone())             # any (async) iterable of PCM byte chunks
+    session.feed(microphone())  # any (async) iterable of PCM byte chunks
 
-    order: list[str] = []                  # reading order of live segment ids
+    order: list[str] = []  # reading order of live segment ids
     texts: dict[str, str] = {}
     async for event in session:
         if event.type in ("partial", "final"):
             if event.segment_id not in order:
-                order.append(event.segment_id)     # first mention claims a position
-            texts[event.segment_id] = event.text   # partial: may change; final: settled
-        elif event.type == "supersede":            # engine re-segmented (two-pass rescoring)
+                order.append(event.segment_id)  # first mention claims a position
+            texts[event.segment_id] = event.text  # partial: may change; final: settled
+        elif event.type == "supersede":  # engine re-segmented (two-pass rescoring)
             pos = order.index(event.old_ids[0])
             for old_id in event.old_ids:
                 order.remove(old_id)
                 texts.pop(old_id, None)
-            order[pos:pos] = event.new_ids         # replacements take the block's place
+            order[pos:pos] = event.new_ids  # replacements take the block's place
         render(order, texts)
 
-print(session.result().text)               # collapse the session into a TranscriptionResult
+print(session.result().text)  # collapse the session into a TranscriptionResult
 ```
 
 Those branches (packaged as `standard_asr.runtime.streaming.reduce_event`) are the

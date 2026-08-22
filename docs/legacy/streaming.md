@@ -11,15 +11,13 @@ class StreamingASR(Protocol):
         self,
         audio_stream: Iterable[NDArray[np.float32]],
         options: BaseTranscribeOptions | None = None,
-    ) -> Iterator[StreamChunk]:
-        ...
+    ) -> Iterator[StreamChunk]: ...
 
     async def transcribe_stream_async(
         self,
         audio_stream: AsyncIterable[NDArray[np.float32]],
         options: BaseTranscribeOptions | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        ...
+    ) -> AsyncIterator[StreamChunk]: ...
 ```
 
 ## 2. StreamChunk Model

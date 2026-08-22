@@ -50,14 +50,25 @@ Subclass `EngineBase` and provide:
 ```python
 from typing import ClassVar, Literal
 from standard_asr.engine import (
-    BaseConfig, BaseProperties, BatchCapabilities, DeclaredCapabilities,
-    EngineBase, FlagCap, InputKind, LanguageCaps, LanguageConfigMixin,
-    PreparedAudio, RuntimeParams, TranscriptionResult,
+    BaseConfig,
+    BaseProperties,
+    BatchCapabilities,
+    DeclaredCapabilities,
+    EngineBase,
+    FlagCap,
+    InputKind,
+    LanguageCaps,
+    LanguageConfigMixin,
+    PreparedAudio,
+    RuntimeParams,
+    TranscriptionResult,
 )
+
 
 class MyConfig(LanguageConfigMixin, BaseConfig[Literal["my-engine"]]):
     engine: Literal["my-engine"] = "my-engine"
-    default_language: str = "en"   # IC.6: required once you declare a language axis
+    default_language: str = "en"  # IC.6: required once you declare a language axis
+
 
 class MyProps(BaseProperties):
     engine_id: str = "my-engine"
@@ -69,9 +80,10 @@ class MyProps(BaseProperties):
     selectable_languages: list[str] = ["en", "auto"]
     detectable_languages: list[str] = ["en"]
 
+
 class MyEngine(EngineBase):
     properties: ClassVar[BaseProperties] = MyProps()
-    config_type: ClassVar[type[BaseConfig]] = MyConfig   # schema without instantiation
+    config_type: ClassVar[type[BaseConfig]] = MyConfig  # schema without instantiation
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         batch=BatchCapabilities(
             language=LanguageCaps(runtime_override=FlagCap(supported=True)),
@@ -79,12 +91,12 @@ class MyEngine(EngineBase):
     )
 
     def __init__(self, **kw: object) -> None:
-        self.config = MyConfig(**kw)      # extra="forbid": a mistyped option fails loudly
+        self.config = MyConfig(**kw)  # extra="forbid": a mistyped option fails loudly
         self._model = None
 
     def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
-        audio = prepared.array            # 16 kHz float32 mono, per Properties
-        text = my_model_infer(audio)      # your code
+        audio = prepared.array  # 16 kHz float32 mono, per Properties
+        text = my_model_infer(audio)  # your code
         # Report what the recognizer actually decided. Never echo
         # params.language: with "auto" selectable it can be the reserved
         # "auto", which detected_language rejects.
@@ -290,7 +302,7 @@ value arrives as JSON).
 
 ```python
 def __init__(self, **kwargs):
-    self.config = MyConfig.from_env("my-engine", **kwargs)   # IC.4
+    self.config = MyConfig.from_env("my-engine", **kwargs)  # IC.4
 ```
 
 ## Wire-visible values: `extra`, diagnostics

@@ -47,8 +47,8 @@ downstream code (subtitle rendering, search indexing, etc.) never needs to adapt
 Engines differ. Instead of guessing, ask:
 
 ```python
-engine.supports("batch.word_timestamps")          # True / False, fail-closed
-engine.supports("streaming_input")                # can it consume live audio?
+engine.supports("batch.word_timestamps")  # True / False, fail-closed
+engine.supports("streaming_input")  # can it consume live audio?
 ```
 
 ## Stream (real-time)
@@ -60,12 +60,12 @@ async with engine.start_transcription(audio_format=audio_format) as session:
     session.feed(microphone)
     async for event in session:
         if event.type == "partial":
-            show(event.segment_id, event.text)     # may change
+            show(event.segment_id, event.text)  # may change
         elif event.type == "final":
-            commit(event.segment_id, event.text)   # settled
+            commit(event.segment_id, event.text)  # settled
         elif event.type == "supersede":
             for old in event.old_ids:
-                remove(old)                        # engine re-segmented
+                remove(old)  # engine re-segmented
 ```
 
 Those three event types (`partial` / `final` / `supersede`) are the core set
