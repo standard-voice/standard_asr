@@ -43,7 +43,7 @@ jobs:
       # This job intentionally keeps the checkout credentials: mkdocs
       # gh-deploy pushes the rendered site back to the gh-pages branch using
       # the persisted GITHUB_TOKEN, so persist-credentials must stay true.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.3 # zizmor: ignore[artipacked] credentials are required for mkdocs gh-deploy push
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked] credentials are required for mkdocs gh-deploy push
       - name: Configure Git Credentials
         run: |
           git config user.name github-actions[bot]
@@ -57,7 +57,7 @@ jobs:
       # gate did not guarantee a green (or identically rendered) deploy —
       # dependency drift could change the site or block publishing.
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
