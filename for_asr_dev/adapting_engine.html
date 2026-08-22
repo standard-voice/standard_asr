@@ -1,0 +1,2373 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The open standard interface between applications and speech-recognition engines.">
+      
+      
+      
+      
+        <link rel="prev" href="../for_app_dev/errors.html">
+      
+      
+        <link rel="next" href="plugin_entrypoints.html">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/branding/icon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Adapt an ASR System - Standard ASR</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+        <script src="../assets/external/unpkg.com/iframe-worker/shim.js"></script>
+      
+    
+    
+      
+        
+        
+        
+        <link rel="stylesheet" href="../assets/external/fonts.googleapis.com/css.fa05aeac.css">
+        <style>:root{--md-text-font:"Noto Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#adapting-an-asr-system-to-standard-asr-engine-authors" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../index.html" title="Standard ASR" class="md-header__button md-logo" aria-label="Standard ASR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Standard ASR
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Adapt an ASR System
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../index.html" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../quickstart.html" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../for_app_dev/discover_and_use.html" class="md-tabs__link">
+          
+  
+  
+  For App Developers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="adapting_engine.html" class="md-tabs__link">
+          
+  
+  
+  For Engine Authors
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/index.html" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../spec/specification.html" class="md-tabs__link">
+          
+  
+  
+  Specification
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../mission.html" class="md-tabs__link">
+          
+  
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../index.html" title="Standard ASR" class="md-nav__button md-logo" aria-label="Standard ASR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Standard ASR
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../index.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For App Developers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    For App Developers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/discover_and_use.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discover & Use
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/streaming.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../for_app_dev/errors.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors & Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For Engine Authors
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    For Engine Authors
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapt an ASR System
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="adapting_engine.html" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapt an ASR System
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-batch-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Minimal batch engine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#map-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Map parameters
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-you-receive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio you receive
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Streaming">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#session-establishment-the-base-does-the-gating-for-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session establishment — the base does the gating for you
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-environment-fallback-ic4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials &amp; environment fallback (IC.4)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wire-visible-values-extra-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wire-visible values: extra, diagnostics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#streaming-responsibilities-what-the-base-does-vs-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming responsibilities (what the base does vs you)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Streaming responsibilities (what the base does vs you)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sequence-invariants-the-guard-enforces-for-free" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sequence invariants the guard enforces for free
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#declare-what-you-emit-capability-stream-consistency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declare what you emit (capability ⇄ stream consistency)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing-assert-invariants-not-partial-counts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing: assert invariants, not partial counts
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publish" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publish
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="plugin_entrypoints.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin Entrypoints
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/index.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/engine.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/compliance.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/streaming.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.runtime.streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/results.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.contract.results
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/capabilities.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.contract.capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/exceptions.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.contract.exceptions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/wire.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    standard_asr.audio.wire
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specification
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specification
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec/specification.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec/server.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec/cli.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec/download-policy.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Download Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mission.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mission
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../goals.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Goals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/standard-voice/standard_asr/issues/27" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/standard-voice/standard_asr/blob/main/RELEASING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-batch-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Minimal batch engine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#map-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Map parameters
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-you-receive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio you receive
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Streaming">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#session-establishment-the-base-does-the-gating-for-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session establishment — the base does the gating for you
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-environment-fallback-ic4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials &amp; environment fallback (IC.4)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wire-visible-values-extra-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wire-visible values: extra, diagnostics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#streaming-responsibilities-what-the-base-does-vs-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming responsibilities (what the base does vs you)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Streaming responsibilities (what the base does vs you)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sequence-invariants-the-guard-enforces-for-free" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sequence invariants the guard enforces for free
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#declare-what-you-emit-capability-stream-consistency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declare what you emit (capability ⇄ stream consistency)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing-assert-invariants-not-partial-counts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing: assert invariants, not partial counts
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publish" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publish
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="adapting-an-asr-system-to-standard-asr-engine-authors">Adapting an ASR system to Standard ASR (engine authors)</h1>
+<blockquote>
+<p>Authoritative reference: <a href="../spec/specification.html"><code>docs/spec/specification.md</code></a>.
+Entry-point rules: <a href="plugin_entrypoints.html"><code>plugin_entrypoints.md</code></a>.</p>
+</blockquote>
+<p>You implement <strong>one</strong> class. The standard layer gives you audio-input
+negotiation, conversion, resampling, parameter gating, diagnostics, the CLI, the
+reference server, and the compliance suite — for free.</p>
+<h2 id="the-contract">The contract</h2>
+<p>Subclass <code>EngineBase</code> and provide:</p>
+<ol>
+<li><code>properties: ClassVar[BaseProperties]</code> — static identity and I/O boundaries
+   (<code>accepted_input</code>, <code>native_sample_rate</code>, <code>accepted_sample_rates</code>,
+   <code>selectable_languages</code>, …).</li>
+<li><code>declared_capabilities: ClassVar[DeclaredCapabilities]</code> — what you support,
+   per mode (<code>batch</code> / <code>streaming</code>). Omit what you don't support (fail-closed).</li>
+<li><code>provider_params_type: ClassVar[type[ProviderParams] | None]</code> — your typed
+   escape-hatch model, or <code>None</code>. Publish your own <strong>terminal</strong> subclass: the
+   bare <code>ProviderParams</code> base, a non-subclass, or a model that is not closed
+   (<code>extra="forbid"</code>) is a compliance error
+   (<code>provider_params_type_is_bare_base</code> / <code>_not_subclass</code> / <code>_not_closed</code>).</li>
+<li><code>__init__</code> — capture config only. <strong>Keep it pure</strong>: no filesystem, GPU, or
+   network (spec IC.9). Load weights lazily in <code>_ensure_model_loaded</code>.</li>
+<li><code>_transcribe(prepared, params) -&gt; TranscriptionResult</code> — run your model on
+   already-negotiated audio (<code>prepared.kind</code> is one of your <code>accepted_input</code>).</li>
+<li>(Streaming) override
+   <code>_start_transcription(*, gated_params, audio_format, prepared_audio)</code>
+   returning a <code>TranscriptionSession</code> subclass.</li>
+<li><code>config_type: ClassVar[type[BaseConfig]]</code> — your config class. It is read
+   from the class, so a settings UI can render the schema without constructing
+   the engine. Without it, <code>registry.config_schema()</code> returns <code>None</code>,
+   <code>GET /v1/config-schema/{model}</code> returns an empty schema, <code>standard-asr show</code>
+   reports no init config, and compliance warns (<code>missing_config_type</code>).</li>
+<li>If your <code>properties</code> declare <code>selectable_languages</code>, your config MUST carry a
+   usable <code>default_language</code> (spec IC.6). Inherit <code>LanguageConfigMixin</code> to get
+   the field. Without it, every <code>transcribe()</code> raises <code>EngineContractError</code> and
+   compliance reports the error <code>language_config_invalid</code>.</li>
+<li>If you set <code>effective_capabilities</code>, it MUST narrow <code>declared_capabilities</code>,
+   never widen it. Compliance reports a widening as the error
+   <code>effective_widens_declared</code>.</li>
+<li>If your engine loads weights, override <code>prepare()</code> (spec IC.11). Keep it
+    synchronous and zero-argument, and apply the same <code>allow_downloads()</code> gate
+    as transcription. Compliance rejects a coroutine or an argument-taking hook
+    (<code>prepare_hook_is_coroutine</code> / <code>prepare_hook_requires_args</code>).</li>
+</ol>
+<h2 id="minimal-batch-engine">Minimal batch engine</h2>
+<pre><code class="language-python">from typing import ClassVar, Literal
+from standard_asr.engine import (
+    BaseConfig,
+    BaseProperties,
+    BatchCapabilities,
+    DeclaredCapabilities,
+    EngineBase,
+    FlagCap,
+    InputKind,
+    LanguageCaps,
+    LanguageConfigMixin,
+    PreparedAudio,
+    RuntimeParams,
+    TranscriptionResult,
+)
+
+
+class MyConfig(LanguageConfigMixin, BaseConfig[Literal[&quot;my-engine&quot;]]):
+    engine: Literal[&quot;my-engine&quot;] = &quot;my-engine&quot;
+    default_language: str = &quot;en&quot;  # IC.6: required once you declare a language axis
+
+
+class MyProps(BaseProperties):
+    engine_id: str = &quot;my-engine&quot;
+    model_name: str = &quot;base&quot;
+    protocol_version: str = &quot;1.0.0&quot;
+    accepted_input: set[InputKind] = {InputKind.ARRAY}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] = [16000]
+    selectable_languages: list[str] = [&quot;en&quot;, &quot;auto&quot;]
+    detectable_languages: list[str] = [&quot;en&quot;]
+
+
+class MyEngine(EngineBase):
+    properties: ClassVar[BaseProperties] = MyProps()
+    config_type: ClassVar[type[BaseConfig]] = MyConfig  # schema without instantiation
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        )
+    )
+
+    def __init__(self, **kw: object) -&gt; None:
+        self.config = MyConfig(**kw)  # extra=&quot;forbid&quot;: a mistyped option fails loudly
+        self._model = None
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -&gt; TranscriptionResult:
+        audio = prepared.array  # 16 kHz float32 mono, per Properties
+        text = my_model_infer(audio)  # your code
+        # Report what the recognizer actually decided. Never echo
+        # params.language: with &quot;auto&quot; selectable it can be the reserved
+        # &quot;auto&quot;, which detected_language rejects.
+        return TranscriptionResult(text=text, detected_language=&quot;en&quot;)
+</code></pre>
+<h2 id="map-parameters">Map parameters</h2>
+<ul>
+<li>The standard layer gates the portable standard set against your
+  <code>effective_capabilities</code> (which default to <code>declared_capabilities</code>) before it
+  calls <code>_transcribe</code>: <code>language</code>,
+  <code>candidate_languages</code>, <code>word_timestamps</code>, <code>diarization</code>, <code>prompt</code>,
+  <code>phrase_hints</code>. Map them onto your model's native arguments. For
+  <code>diarization</code>, presence means enable: map <code>params.diarization is not None</code>
+  onto your native enable switch (the v1 <code>DiarizationRequest</code> marker carries no
+  fields). An engine that declares <code>diarization.supported=True</code> MUST actually
+  diarize when the request passes the gate. The standard layer cannot verify
+  this. Silently ignoring a gated-and-passed request is the cardinal sin: a
+  silent wrong result.</li>
+<li>Engine-specific parameters → a <code>ProviderParams</code> subclass set as
+  <code>provider_params_type</code>. Wrong-engine params raise <code>InvalidProviderParamError</code>.</li>
+<li>The base resolves the language axis for you on both paths: the
+  <code>params.language</code> your <code>_transcribe</code> receives is already the effective value.
+  Only a structural engine that bypasses <code>EngineBase</code> calls
+  <code>standard_asr.contract.language.effective_language(...)</code> itself.</li>
+<li><strong><code>word_timestamps.granularities</code> declares what you can honestly <em>deliver</em>, not
+  which native API switch exists.</strong> Declare every granularity your engine can
+  serve — including ones that come for free. If your model emits per-segment
+  start/end on every run (most do), declare <code>"segment"</code> even when there is no
+  separate "segment mode" switch. Otherwise the standard layer rejects the
+  cheapest, always-satisfiable request as a false incompatibility. Then map each
+  granularity precisely (for example, only <code>"word"</code> enables your forced-alignment pass; a
+  <code>"segment"</code> request MUST NOT back-fill word-level data — <code>words=None</code> means
+  "not requested").</li>
+</ul>
+<h2 id="audio-you-receive">Audio you receive</h2>
+<p><code>prepared</code> is already in one of your <code>accepted_input</code> shapes:</p>
+<ul>
+<li><code>InputKind.ARRAY</code> → <code>prepared.array</code> (float32, <code>prepared.sample_rate</code>)</li>
+<li><code>InputKind.ENCODED_FILE</code> → <code>prepared.path</code></li>
+<li><code>InputKind.ENCODED_BYTES</code> → <code>prepared.data</code></li>
+<li><code>InputKind.FETCHABLE_URL</code> → <code>prepared.url</code></li>
+<li><code>InputKind.STORAGE_URI</code> → <code>prepared.storage_uri</code> (a provider storage URI
+  such as <code>s3://</code> or <code>gs://</code>, for engines that read from cloud storage)</li>
+</ul>
+<p>You never write decode/resample/encode glue — declare <code>accepted_input</code> and the
+standard layer delivers the right shape (and attaches conversion diagnostics).</p>
+<h2 id="streaming">Streaming</h2>
+<p><strong>Declare the transport axis first.</strong> Set <code>streaming_input=FlagCap(supported=True)</code>
+if you accept incremental PCM frames, <code>streaming_output=FlagCap(supported=True)</code>
+if you return results incrementally, or both. These are engine-global flags, and
+either one may be supported only when you also declare a <code>streaming</code> domain. A
+<code>streaming</code> domain with neither axis is a streaming engine nobody can call: every
+<code>start_transcription()</code> raises <code>UnsupportedFeatureError</code>, and compliance reports
+the error <code>streaming_domain_without_axis</code>.</p>
+<p>Subclass <code>TranscriptionSession</code>, implement async <code>_produce()</code> (read fed audio via
+<code>self.audio_chunks()</code>, yield <code>TranscriptionEvent</code> objects). The base provides
+<code>feed</code>/<code>send_audio</code>/<code>end_audio</code>, backpressure, the done-timeout, and the sync
+bridge — you only write <code>async</code>. See the spec §ST for the event model
+(<code>partial</code>/<code>final</code>/<code>supersede</code>/<code>progress</code>/<code>done</code>/<code>error</code>) and the <code>stable_until</code>
+rules.</p>
+<h3 id="session-establishment-the-base-does-the-gating-for-you">Session establishment — the base does the gating for you</h3>
+<p>You override <code>_start_transcription(...)</code>, <strong>not</strong> the public <code>start_transcription</code>.
+The base <code>start_transcription</code> is a template method (symmetric to
+<code>transcribe</code> / <code>_transcribe</code>): it runs the standard streaming pipeline and then
+calls your hook. Before your hook runs, the base has already:</p>
+<ul>
+<li>enforced the <code>audio_format</code> / <code>audio</code> mutual exclusion (ST §3.1) via
+  <code>ensure_stream_inputs_exclusive</code>;</li>
+<li>validated the language config (LANG R1 / IC.6);</li>
+<li>run the <strong>fail-closed</strong> wire-format check (<code>ensure_stream_format_supported</code>) on
+  the encoding, the channel count, and the sample rate. It rejects an
+  <code>audio_format.encoding</code> not in your declared <code>wire_encodings</code>, so an undeclared
+  encoding is not misframed as PCM and silently mistranscribed. <strong>Declare
+  <code>wire_encodings</code></strong>: leaving it unset means "unconstrained", and the encoding
+  check is then skipped, so an encoding you never declared reaches you unchecked.
+  This is the one fail-open concession in the check; compliance warns about it
+  (<code>streaming_input_without_wire_encodings</code>). It rejects an
+  <code>audio_format.channels</code> other than 1: v1 streaming wire input is mono-only,
+  because the standard layer does not downmix incremental frames the way the batch
+  path does. Downmix to mono before feeding. It also rejects a wire <code>sample_rate</code>
+  you do not accept. Per spec R7's v1 note, the standard does <strong>not</strong> resample streaming wire
+  frames in v1 (only the batch <code>transcribe</code> path resamples), so an unreachable
+  wire rate is a loud error. When <code>required_input_sample_rate</code> is set, the wire
+  rate MUST equal it — even when another rate appears in <code>accepted_sample_rates</code>.
+  That list describes the batch path, which resamples to the required rate before
+  your engine; unresampled wire frames at any other rate would be misread.
+  Otherwise the standard accepts the rate when <code>accepted_sample_rates</code> is <code>"any"</code>
+  or when it is in that concrete list. (Standard-layer streaming resampling is a
+  deferred capability; this guard becomes a resample once it lands.)</li>
+<li><strong>gated the runtime parameters</strong> against your <code>streaming</code> capabilities, and
+  resolved the language axis. Gating covers <code>provider_params</code> swap-safety
+  (Runtime R3: a wrong <code>provider_params</code> type always raises
+  <code>InvalidProviderParamError</code>), capability gating (R2), and guidance degradation
+  (R4). The base attaches the gating and language <strong>diagnostics</strong> to the returned
+  session; they surface through <code>session.diagnostics()</code>.</li>
+<li>for the <strong>whole-input</strong> path (<code>audio=...</code>, for example, OpenAI-style streaming output),
+  run that complete input through the <strong>same</strong> audio negotiation/conversion
+  pipeline as batch <code>transcribe</code>, and hand your hook the result as
+  <code>prepared_audio</code>. The <code>prepared_audio</code> is a <code>PreparedAudio</code> already in one of
+  your <code>accepted_input</code> shapes, with its conversion diagnostics attached to the
+  session. For the incremental <code>audio_format=...</code> path there is no whole input,
+  so <code>prepared_audio</code> is <code>None</code>.</li>
+</ul>
+<p>Your hook receives the <strong>already-gated, frozen</strong> <code>gated_params</code> (spec R5: streaming
+params are frozen at <code>start_transcription</code> and MUST NOT change mid-stream, except a
+guidance channel declared <code>mutable_mid_stream</code> — a reserved declaration in v1). Use them
+directly — do not re-gate or re-accept raw params. The signature is
+keyword-only: <code>gated_params</code>, <code>audio_format</code> (the wire format, or <code>None</code>), and
+<code>prepared_audio</code> (the negotiated whole input, or <code>None</code>).</p>
+<pre><code class="language-python">def _start_transcription(self, *, gated_params, audio_format, prepared_audio):
+    # Guards + gating + (whole-input) audio prep already ran in the base.
+    # gated_params is frozen (R5); prepared_audio is None for the incremental
+    # audio_format path and a PreparedAudio for the whole-input audio path.
+    return MySession(gated_params, ...)
+</code></pre>
+<h2 id="credentials-environment-fallback-ic4">Credentials &amp; environment fallback (IC.4)</h2>
+<p>Build your config with <code>Config.from_env(engine_id, **explicit)</code> instead of the
+bare constructor. Unset fields fall back to <code>STANDARD_ASR_&lt;ENGINE&gt;__&lt;FIELD&gt;</code>
+environment variables. Note the <strong>double underscore</strong> that separates the engine
+and field segments; explicit args win. Credentials are wrapped in their masking
+carrier by construction, never passed around as plaintext. Put secrets
+(<code>api_key</code>, tokens) in <code>SecretStr</code> fields — or <code>SecretBytes</code> for byte
+credentials — via <code>secret_field()</code>. Declare exactly one carrier per field,
+optionally with <code>None</code>. Keep non-secret routing (<code>base_url</code>, <code>region</code>) plain.</p>
+<p>A structured field (a list, a mapping, a submodel, a <code>TypedDict</code>, a dataclass)
+takes its env value as JSON (<code>'["en","ja"]'</code>). A scalar field — including
+<code>SecretStr</code> and <code>Path</code> — takes the raw string, byte for byte. The field's own
+schema decides which of the two applies, so any shape the config guards accept
+is reachable through the env convention. One shape is refused at class
+definition: a field accepting BOTH (<code>str | list[str]</code>) has no defined reading.
+<code>"123"</code> is either that string or that JSON number, and either choice would
+disagree with the explicit constructor, which always takes the string. Declare
+one shape, or model the alternatives as a named submodel.</p>
+<p>The config's serialization surface is <strong>closed</strong>. The closure is proved by
+sweeping the model's actual core schema rather than by listing forbidden
+decorators. Anything that would make <code>model_dump</code> run author code — or emit
+something other than your declared inputs — is rejected at class definition:
+<code>@computed_field</code>, <code>@model_serializer</code>, <code>@field_serializer</code>,
+<code>PlainSerializer</code>/<code>WrapSerializer</code> metadata, a <code>SerializeAsAny[...]</code> field
+(its dump follows the <em>runtime</em> object, so the declared type proves nothing),
+an <strong>undeclared value shape</strong> (<code>Any</code>, <code>object</code>, an unparametrized container,
+<code>dict[str, Any]</code> — same duck-typing, reached from the type instead of a
+marker; spell a heterogeneous mapping as <code>dict[str, str | int | bool | None]</code>
+or a named submodel), a <strong>nested submodel</strong> carrying any of those, a
+serializer installed through a custom <code>__get_pydantic_core_schema__</code>, and
+<code>Field(exclude=True)</code>. Keep <code>extra="forbid"</code> too (BaseConfig's default).
+<code>extra="allow"</code> stores undeclared caller data and dumps it verbatim past the
+secret mask. <code>extra="ignore"</code> silently swallows a mistyped credential key, so
+it reads as an absent credential rather than a loud error. The reason:
+<code>public_dump()</code> is documented safe for <code>/v1/models</code>, persistence, and
+telemetry. That holds only while nothing author-defined can rematerialize a
+credential inside it. Its output must also stay the declared input surface, so
+persisting and reloading a config round-trips.</p>
+<p>The input surface stays closed <strong>at every depth</strong>, not only on the config
+itself. Every nested input container your schema reaches — an options submodel,
+a <code>TypedDict</code>, a dataclass — must forbid undeclared keys, and one that does not
+is rejected at class definition. pydantic's default for all three silently
+<em>drops</em> an unknown key. So a user's typo'd nested option
+(<code>{"decode": {"baem": 8}}</code>) would read as applied while your engine runs on the
+field's default — a silent wrong result. The rule reads the <em>effective</em> policy
+from the core schema, so pydantic's config propagation is honored. A bare
+<code>TypedDict</code> or stdlib dataclass inherits the config's <code>extra="forbid"</code> and is
+closed for free. A nested <code>BaseModel</code> needs
+<code>model_config = ConfigDict(extra="forbid")</code>. A <em>pydantic</em> dataclass (which owns
+its config) needs
+<code>@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))</code>.</p>
+<p>Use a plain <code>@property</code> for derived in-process values (an <code>authorization</code>
+header belongs in your engine code, not in the config dump), and keep config
+fields to plain typed inputs.</p>
+<p>One boundary is yours to keep, because no serialization proof can hold it for
+you: <strong>never copy a secret out of its carrier</strong>. The closure proof bounds what
+the <em>schema</em> installs in the dump, not the contents of values your own code
+builds. A validator that writes <code>get_secret_value()</code> into a plain field or onto
+an object's display state (say, a <code>Path</code> subclass whose <code>__str__</code> embeds the
+token) emits that plaintext through <code>public_dump()</code> — and would through any dump
+mechanism. Read the credential with <code>reveal_dump()</code> at the point of use in your
+engine code, and let it live nowhere else.</p>
+<p>Provider-native wire names map onto standard fields with <strong>plain string
+aliases</strong> (<code>Field(alias="xi-api-key")</code>, or an all-string <code>AliasChoices</code>).
+<code>AliasPath</code> — and any <code>AliasChoices</code> carrying one — is rejected at class
+definition. The flat env convention and the absent-vs-invalid config classifier
+(what makes a missing credential a compliance <em>skip</em> instead of a fail) both
+resolve fields by single string tokens, which a nested path alias cannot
+provide. If a value is genuinely nested, declare it as a submodel field (its env
+value arrives as JSON).</p>
+<pre><code class="language-python">def __init__(self, **kwargs):
+    self.config = MyConfig.from_env(&quot;my-engine&quot;, **kwargs)  # IC.4
+</code></pre>
+<h2 id="wire-visible-values-extra-diagnostics">Wire-visible values: <code>extra</code>, diagnostics</h2>
+<p>Every slot the wire can see — a <code>TranscriptionResult</code> / <code>Segment</code> / <code>Word</code> /
+<code>TranscriptionEvent</code> <code>extra</code>, and <code>emit_diagnostic</code>'s <code>provided</code> / <code>effective</code>
+— holds <strong>JSON values only</strong> (<code>JsonValue</code>: null, bool, int, finite float,
+str, and lists/str-keyed dicts of those). The Python objects and the JSON
+documents are the same protocol seen twice. So a value with no JSON form is
+rejected at construction, naming the field, instead of failing later in the
+transport — after the server has already committed to a response. Non-finite
+floats (<code>NaN</code>, <code>Infinity</code>) are excluded for the same reason: they are Python
+floats but not JSON, and a conforming parser rejects the whole document.</p>
+<p><code>emit_diagnostic</code> projects a <strong>structured</strong> value (a pydantic submodel) into
+its JSON form itself, so <code>provided=my_request_model</code> just works. For any
+other wire-visible slot — or to absorb the <code>list</code>-invariance complaint a
+type checker raises when a <code>list[str]</code> variable meets a <code>list[JsonValue]</code>
+parameter (a static-analysis artifact, not a real mismatch) — use
+<code>to_json_value</code> from the engine surface:</p>
+<pre><code class="language-python">from standard_asr.engine import to_json_value
+
+hints: list[str] = [...]
+event = TranscriptionEvent.final(&quot;s1&quot;, text, extra={&quot;hints&quot;: to_json_value(hints)})
+</code></pre>
+<p>Runtime validation is unchanged either way: a value that is genuinely not
+JSON is rejected loudly at construction, naming the field.</p>
+<p>If you genuinely need an arbitrary in-process object, keep it in your own
+engine/session state: a standard protocol object's whole contract is that
+both layers can express it.</p>
+<h2 id="streaming-responsibilities-what-the-base-does-vs-you">Streaming responsibilities (what the base does vs you)</h2>
+<p>The base <code>TranscriptionSession</code> owns the pump, backpressure (bounded buffers),
+the done-timeout/idle deadlines, the sync bridge, lifecycle suppression
+(<code>strict_lifecycle=True</code> to raise instead of diagnose), and <code>stable_until</code>
+monotonicity clamping. <strong>You</strong> must: emit cumulative/replace <code>text</code>; set
+<code>stable_until</code> conservatively (0 if you have no right-context); and for
+reconnect, detect the disconnect, re-establish, replay <code>self.replay_buffer()</code>,
+keep <code>segment_id</code>/timestamps/language continuous, and call
+<code>self.note_reconnect(gap_start, gap_end, content_lost=...)</code>. The base always
+emits the <code>progress(reconnect)</code> event. It emits a trailing <strong>non-terminal</strong>
+<code>content_lost</code> error (<code>recoverable=true</code> — a fidelity warning; the session
+stays alive and events keep flowing) <strong>only if you pass <code>content_lost=True</code></strong>.
+That is your own determination that the reconnect and replay could not cover the
+gap, and that unreplayable audio was permanently lost. The base does <strong>not</strong>
+infer loss from
+rolling-buffer eviction (a live ring is always evicting, so that would falsely
+claim loss on every long session); you decide, because only you know whether the
+replay actually bridged the gap.</p>
+<p><strong><code>error</code> events fail closed to terminal.</strong> An <code>error</code> event with <code>recoverable</code>
+unset is normalized to <code>recoverable=false</code> (terminal) at construction: unknown
+recoverability must not leave consumers waiting on a stream that may never
+continue. If you emit an advisory, non-fatal error (the session keeps going),
+set <code>recoverable=True</code> explicitly — otherwise your event ends the session.</p>
+<p><strong>Surface non-fatal notes via <code>emit_diagnostic</code>.</strong> Call
+<code>self.emit_diagnostic(code=..., message=..., level="info"|"warning")</code> from
+<code>_produce</code> to report a best-effort degradation, an assumed parameter, or a lossy
+fallback through the session's <code>diagnostics()</code> channel — the streaming
+counterpart of the batch path's <code>result.diagnostics</code>. It is bounded (spec
+ST.6.4, like the guard's own diagnostics) and the server forwards it to a WS
+client as a mid-stream <code>diagnostics</code> frame. Keep <code>error</code> events for <em>fatal</em>
+conditions.</p>
+<blockquote>
+<p><strong>Security:</strong> a diagnostic is <strong>engine-authored, client-facing output</strong>, like
+the transcript itself. Its <code>message</code>/<code>param</code>/<code>provided</code>/<code>effective</code> fields are
+forwarded to (possibly unauthenticated) clients <strong>verbatim and unredacted</strong>.
+Never put a credential, API key, authenticated URL, or raw exception text in a
+diagnostic — route sensitive operator detail to <code>logging</code> instead. (The server
+<em>does</em> scrub an <code>error</code> event's <code>extra</code>, because that is auto-captured
+exception detail — pre-summarized input-echo-free by the standard layer, but
+still operator-only content; a diagnostic is content you chose, so its safety
+is yours.)</p>
+</blockquote>
+<h3 id="sequence-invariants-the-guard-enforces-for-free">Sequence invariants the guard enforces for free</h3>
+<p>Beyond lifecycle transitions and monotonic <code>stable_until</code>, the base <code>_LifecycleGuard</code>
+also enforces two further per-stream invariants on every event you yield, so a
+slipped engine still cannot emit a wrong transcript:</p>
+<ul>
+<li><strong>Monotonic audio cursor</strong> — a decreasing <code>audio_processed_until</code> is clamped to
+  the prior value (the cursor never moves backwards; ST §4.4), with an
+  <code>audio_cursor_decreased</code> diagnostic (or a raise in <code>strict_lifecycle</code>).</li>
+<li><strong>Frozen-prefix immutability</strong> — an event that rewrites a segment's
+  already-frozen prefix (<code>text[:stable_until]</code> changed) is suppressed with a
+  <code>frozen_prefix_rewritten</code> diagnostic (ST §4.2). One exemption, from that same
+  section: a terminal <code>closed</code> final MAY restate frozen text once
+  (post-processing punctuation / ITN / casing) and MAY shrink <code>stable_until</code>;
+  the guard admits it and never clamps it back.</li>
+</ul>
+<p>The full set of standard-layer diagnostic codes the guard can emit (read them off
+the session with <code>session.diagnostics()</code>):</p>
+<ul>
+<li><code>stable_until_clamped</code> — a decreasing or invalid <code>stable_until</code> was clamped.</li>
+<li><code>audio_cursor_decreased</code> — a decreasing <code>audio_processed_until</code> was clamped.</li>
+<li><code>frozen_prefix_rewritten</code> — an event rewriting a frozen prefix was suppressed.</li>
+<li><code>frozen_speaker_rewritten</code> — an event changing (X→Y) or retracting (X→None) a
+  frozen segment's already-accepted <code>speaker</code> was suppressed. First assignment
+  after freezing (None→X, the delay-to-final strategy) stays legal, and a
+  <code>closed</code> final is exempt (terminal correction).</li>
+<li><code>lifecycle_after_terminal</code> — a <code>partial</code>/<code>final</code> after the segment became
+  <code>closed</code>/<code>superseded</code> was suppressed.</li>
+<li><code>lifecycle_partial_after_final</code> — a <code>partial</code> after the segment's <code>final</code> was
+  suppressed.</li>
+<li><code>lifecycle_final_after_final</code> — a second <code>final</code> for an already-final segment
+  was suppressed.</li>
+<li><code>lifecycle_closed_superseded</code> — a <code>supersede</code> retiring a <code>closed</code> segment was
+  suppressed.</li>
+<li><code>lifecycle_retired_resuperseded</code> — a <code>supersede</code> retiring an
+  already-superseded segment was suppressed (an id retires exactly once).</li>
+<li><code>supersede_unknown_old_id</code> — a <code>supersede</code> whose <code>old_ids</code> contain a
+  never-announced segment was suppressed.</li>
+<li><code>supersede_reintroduces_segment</code> — a <code>supersede</code> whose <code>new_ids</code> reuse an
+  already-known id was suppressed.</li>
+<li><code>supersede_noncontiguous_old_ids</code> — a <code>supersede</code> whose <code>old_ids</code> do not
+  form a contiguous block of the live reading order (in reading order) was
+  suppressed: the replacements would have no defined placement, and an
+  untimestamped transcript's word order would silently change.</li>
+<li><code>supersede_cross_speaker_merge</code> — a <code>supersede</code> that would merge segments
+  carrying distinct non-null speakers into fewer segments was suppressed
+  (someone's words would be silently mis-attributed).</li>
+<li><code>supersede_deletes_frozen_text</code> — a pure-deletion <code>supersede</code> (empty
+  <code>new_ids</code>) that would destroy a frozen prefix was suppressed.</li>
+<li><code>frozen_prefix_rewritten_supersede</code> — a replacement group froze text that
+  diverges from the retired frozen text it MUST preserve; the exposing freeze
+  was suppressed.</li>
+<li><code>supersede_obligation_unfulfilled</code> — soft end-of-session note: a replacement
+  group ended with less frozen text than the retired segments it replaced.</li>
+<li><code>diagnostics_truncated</code> — the bounded diagnostic channel overflowed, so one
+  aggregated summary entry replaces the excess. It is rewritten in place as more
+  overflow arrives, so a consumer must treat a later occurrence as superseding
+  the earlier one.</li>
+</ul>
+<h3 id="declare-what-you-emit-capability-stream-consistency">Declare what you emit (capability ⇄ stream consistency)</h3>
+<p>Four streaming capabilities each gate one event field. Your declared
+<code>streaming</code> capabilities and the events you actually emit MUST agree — your
+stream may use <em>less</em> than you declare, but never <em>more</em>:</p>
+<table>
+<thead>
+<tr>
+<th>If you emit…</th>
+<th>…declare</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a non-zero <code>stable_until</code></td>
+<td><code>streaming.word_stability = FlagCap(supported=True)</code></td>
+</tr>
+<tr>
+<td>an <code>audio_processed_until</code> cursor</td>
+<td><code>streaming.timestamps.mode</code> ≠ <code>"none"</code></td>
+</tr>
+<tr>
+<td>per-word <code>words</code></td>
+<td><code>streaming.word_timestamps = WordTimestampsCap(supported=True, …)</code></td>
+</tr>
+<tr>
+<td>a segment- or word-level <code>speaker</code></td>
+<td><code>streaming.diarization = DiarizationCap(supported=True)</code> — add <code>always_on=FlagCap(supported=True)</code> if your model is architecturally unable to disable it</td>
+</tr>
+</tbody>
+</table>
+<p>The coherent <strong>no-timestamp streaming profile</strong> is the all-defaults combination:
+leave <code>word_stability</code>, <code>timestamps</code> (mode <code>"none"</code>), <code>word_timestamps</code>, and
+<code>diarization</code> unsupported, and emit none of those fields (use <code>stable_until=0</code>,
+omit <code>audio_processed_until</code>, <code>words</code>, and <code>speaker</code>). A mismatch — for example,
+declaring <code>word_stability</code> unsupported while emitting <code>stable_until&gt;0</code> — is a
+capability⇄stream desync a client trusting your capabilities would mishandle.
+Record a real session and assert it with
+<code>check_event_sequence(events, capabilities=engine.declared_capabilities)</code>. The
+cross-check fails on any field your declaration does not back (codes
+<code>stream_exceeds_word_stability</code> / <code>stream_exceeds_timestamps</code> /
+<code>stream_exceeds_word_timestamps</code> / <code>stream_exceeds_diarization</code>). The standard
+layer does <strong>not</strong> clamp these at
+runtime — clamping would hide the bug; the contract is yours to keep.</p>
+<h3 id="testing-assert-invariants-not-partial-counts">Testing: assert invariants, not partial counts</h3>
+<p>Partials are <strong>lossy under backpressure</strong>. When the consumer reads slower than
+you produce, the base coalesces pending partials for a segment (spec ST.6.4). So
+the number of <code>partial</code> events a test observes is non-deterministic: the same
+engine may surface five partials or none, purely by timing. A test asserting
+<code>len(partials) == N</code> is therefore flaky. Assert the <strong>invariants</strong> instead:</p>
+<ul>
+<li>the final/reduced text is correct (<code>session.result()</code>, or the <code>final</code> event);</li>
+<li>the partials form monotonic, never-rewritten prefixes — use the exported
+  <code>assert_prefix_invariant(events)</code> helper, which checks exactly that (a frozen
+  <code>text[:stable_until]</code> is never rewritten and <code>stable_until</code> never regresses),
+  tolerates any surviving partial count, and (unlike <code>check_event_sequence</code>) does
+  not require a terminal event, so it also applies to a mid-stream slice.</li>
+</ul>
+<h2 id="publish">Publish</h2>
+<p>Register an entry point under <code>standard_asr.models</code> (see
+<a href="plugin_entrypoints.html"><code>plugin_entrypoints.md</code></a>).</p>
+<p><strong>The engine class MUST be resolvable without calling the entry point.</strong>
+Capabilities and the params schema are read from class-level <code>ClassVar</code>s
+<em>without instantiating or authenticating</em> the engine (CLI <code>show</code>, the registry,
+REST <code>GET /v1/capabilities/{model}</code> and <code>/v1/params-schema/{model}</code>). Two forms
+satisfy that, and the compliance suite accepts either:</p>
+<ul>
+<li><strong>The entry point is the engine class itself.</strong> Nothing more is needed —
+  the class is returned directly.</li>
+<li><strong>The entry point is a factory function.</strong> Then its return annotation MUST
+  name your concrete engine class (<code>-&gt; MyEngine</code>), <strong>not</strong> the <code>StandardASR</code>
+  protocol: only the annotation is read, and a Protocol has no readable
+  <code>ClassVar</code>s, so it breaks instantiation-free discovery.</li>
+</ul>
+<p>What compliance actually checks is the outcome, not the form: it reports
+<code>class_metadata_unreadable</code> when the class cannot be resolved either way — an
+unannotated factory, or one annotated with the protocol.</p>
+<p>Check with:</p>
+<pre><code class="language-bash">standard-asr compliance run
+standard-asr doctor
+</code></pre>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tabs", "navigation.sections", "navigation.expand", "header.autohide", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../assets/external/unpkg.com/mermaid@11/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,285 @@
+/*
+  Optimized Custom CSS for Material for MkDocs (2025 Style)
+  - Purpose: To provide a clean, maintainable, and consistent theme.
+  - Core Features: Integrated header/footer, distinct sidebar navigation, and brand-aligned components.
+  - Author: Gemini AI Assistant
+  - v2: Fixed header and footer text color in light mode.
+*/
+
+/* ==========================================================================
+   1. COLOR & THEME VARIABLES
+   ========================================================================== */
+
+:root,
+[data-md-color-scheme="default"] {
+  /* Base & Backgrounds */
+  --md-default-bg-color: #FCF8F4;
+  --surface-1: #FFFCF9; /* For cards, search input */
+  --surface-2: #F4EEE7; /* For hover states, table headers */
+  --hairline: #E7E1DB;  /* For borders */
+
+  /* Text & Headings */
+  --md-default-fg-color: #1B1A18;          /* Main text, headings */
+  --md-default-fg-color--light: #3C3834;   /* Lighter text */
+  --md-default-fg-color--lighter: #5C5854; /* Muted text (e.g., body) */
+  --md-default-fg-color--lightest: #7B7773;/* Meta text, placeholders */
+
+  /* Primary (Interactive Elements & Links) */
+  --md-primary-fg-color: #000000;
+
+  /* Accent (Highlights & Active States) */
+  --md-accent-fg-color: #000000bb; /* A teal color for hover underlines */
+  --md-accent-bg-color: rgba(143, 143, 143, 0.179); /* For active nav link bg */
+
+  /* Code Blocks */
+  --md-code-fg-color: var(--md-default-fg-color);
+  --md-code-bg-color: #F4EEE7;
+  --md-code-hl-color: #FFF2C6; /* Highlighted lines */
+}
+
+[data-md-color-scheme="slate"] {
+  /* Base & Backgrounds */
+  --md-default-bg-color: #0C0B0A;
+  --surface-1: #121110;
+  --surface-2: #141311;
+  --hairline: #262421;
+
+  /* Text & Headings */
+  --md-default-fg-color: #E7E3DE;
+  --md-default-fg-color--light: #B9B3AC;
+  --md-default-fg-color--lighter: #948E87;
+  --md-default-fg-color--lightest: #756F69;
+
+  /* Primary (Interactive Elements & Links) */
+  --md-primary-fg-color: #82AFFF;
+
+  /* Accent (Highlights & Active States) */
+  --md-accent-fg-color: #dddddd;
+  --md-accent-bg-color: rgba(224, 224, 224, 0.16);
+
+  /* Code Blocks */
+  --md-code-fg-color: var(--md-default-fg-color);
+  --md-code-bg-color: #141311;
+  --md-code-hl-color: #3A2F00;
+}
+
+/* ==========================================================================
+   2. GLOBAL STYLES & TYPOGRAPHY
+   ========================================================================== */
+
+/* Apply seamless background to all main layout components */
+body, .md-main, .md-header, .md-tabs, .md-footer {
+  background-color: var(--md-default-bg-color) !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* Set base font, smoothing, and paragraph color */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.md-typeset p, .md-typeset li {
+  color: var(--md-default-fg-color--lighter);
+}
+
+/* Set heading fonts */
+.md-typeset h1, .md-typeset h2, .md-typeset h3, .md-typeset h4, .md-typeset h5, .md-typeset h6 {
+  color: var(--md-default-fg-color);
+  font-weight: 700;
+}
+
+/* Site title/logo font */
+.md-header__title .md-header__topic {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-weight: 700;
+}
+
+/* Hide default logo image if not used */
+.md-header__button.md-logo {
+  display: none;
+}
+
+/* Optional: text selection aligned to accent */
+::selection {
+  background: var(--md-accent-bg-color);
+}
+
+/* ==========================================================================
+   3. HEADER & FOOTER
+   ========================================================================== */
+
+/* --- FIX: Ensure header title text color adapts to theme --- */
+.md-header__title {
+  color: var(--md-default-fg-color);
+}
+
+/* Ensure header icons use the correct foreground color */
+.md-header .md-icon {
+  color: var(--md-default-fg-color--light) !important;
+  transition: color 0.2s;
+}
+.md-header .md-icon:hover {
+  color: var(--md-default-fg-color) !important;
+}
+
+/* Footer styling */
+.md-footer-meta {
+  background-color: transparent !important;
+}
+.md-footer {
+  border-top: 1px solid var(--hairline);
+}
+/* --- FIX: Ensure footer copyright text color adapts to theme --- */
+.md-footer-meta .md-copyright {
+  color: var(--md-default-fg-color--lighter);
+}
+.md-footer a {
+  color: var(--md-default-fg-color--light);
+  transition: color 0.2s;
+}
+.md-footer a:hover {
+  color: var(--md-primary-fg-color);
+}
+
+/* ==========================================================================
+   4. SIDEBAR NAVIGATION
+   ========================================================================== */
+
+.md-sidebar {
+  background-color: var(--md-default-bg-color) !important;
+  border-right: 1px solid var(--hairline);
+}
+[dir="rtl"] .md-sidebar {
+  border-right: none;
+  border-left: 1px solid var(--hairline);
+}
+
+/* Sidebar titles */
+.md-nav__title {
+  color: var(--md-default-fg-color);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  font-weight: 700;
+}
+
+/* All navigation links */
+.md-nav__link {
+  color: var(--md-default-fg-color--light);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.md-nav__link:hover {
+  color: var(--md-default-fg-color);
+}
+
+/* Top-level navigation items */
+.md-nav__item > .md-nav__link {
+  border-radius: 0.4rem;
+  margin: 0.1rem 0.4rem;
+  padding: 0.4rem 0.6rem;
+  font-weight: 400;
+}
+.md-nav__item > .md-nav__link:hover {
+  background-color: var(--surface-2);
+}
+
+/* Active navigation link */
+.md-nav__link--active {
+  color: var(--md-primary-fg-color) !important;
+  font-weight: 700;
+}
+.md-nav__item > .md-nav__link--active {
+  background-color: var(--md-accent-bg-color);
+}
+
+/* Nested (child) navigation items */
+.md-nav__item .md-nav__item .md-nav__link {
+  font-size: 0.9em;
+  padding-left: 1.2rem;
+  color: var(--md-default-fg-color--lighter);
+}
+.md-nav__item .md-nav__item .md-nav__link:hover {
+  color: var(--md-default-fg-color);
+}
+/* Active nested items just get the color and font weight, no background */
+.md-nav__item .md-nav__item .md-nav__link--active {
+  font-weight: 700;
+}
+
+/* ==========================================================================
+   5. SEARCH
+   ========================================================================== */
+
+.md-search__form {
+  background-color: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 0.6rem;
+}
+.md-search__input {
+  color: var(--md-default-fg-color);
+}
+.md-search__input::placeholder {
+  color: var(--md-default-fg-color--lightest);
+}
+.md-search__form:focus-within {
+  border-color: var(--md-primary-fg-color);
+  box-shadow: 0 0 0 0.12rem var(--md-accent-bg-color);
+}
+
+/* ==========================================================================
+   6. CONTENT & COMPONENTS (Code, Tables, etc.)
+   ========================================================================== */
+
+/* General link styling */
+.md-typeset a {
+  color: var(--md-primary-fg-color);
+}
+.md-typeset a:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--md-accent-fg-color);
+  text-decoration-thickness: 0.12em;
+}
+
+/* Code blocks (fenced) */
+.md-typeset pre > code {
+  background-color: var(--md-code-bg-color);
+  border: 1px solid var(--hairline);
+  border-radius: 0.4rem;
+}
+
+/* Inline code */
+.md-typeset code {
+  color: var(--md-code-fg-color);
+  background-color: var(--md-code-bg-color);
+  border-radius: 0.25rem;
+  padding: 0.15em 0.35em;
+  font-size: 0.9em;
+}
+
+/* Tables */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--hairline);
+  border-radius: 0.4rem;
+  overflow: hidden;
+}
+.md-typeset table:not([class]) th {
+  background-color: var(--surface-2);
+  font-weight: 700;
+}
+.md-typeset table:not([class]) td,
+.md-typeset table:not([class]) th {
+  border-color: var(--hairline);
+  padding: 0.8rem 1rem;
+}
+
+/* Admonitions / notes */
+.md-typeset .admonition,
+.md-typeset details {
+  background-color: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 0.5rem;
+  box-shadow: none;
+}
