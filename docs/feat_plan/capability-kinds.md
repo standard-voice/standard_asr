@@ -51,13 +51,17 @@ the `_GATED_PARAMS` table in `runtime/gating.py`:
 | `prompt` | `guidance.prompt` |
 
 A drift guard in the same module proves that every `RuntimeParams` field is
-either in this table or in an explicit exempt set. The requestable set is
-therefore already exact. It is simply not visible in the capability tree.
+either in this table or in an explicit exempt set. One exempt field is itself
+requestable: `candidate_languages` has a `RuntimeParams` field, but
+`language.effective_candidate_languages` owns its gating, so `gate_params()`
+leaves it alone. The requestable set is therefore the five table rows plus
+`language.candidate_languages`. It is exact. It is simply not visible in the
+capability tree.
 
 Every other declared **leaf** node is a behavior: `streaming_input`,
 `streaming_output`, `self_resamples`, `emits_partials`, `re_segments`,
-`word_stability`, `reconnect`, `finality_level`, `timestamps`, and
-`diarization.always_on`.
+`word_stability`, `reconnect`, `finality_level`, `timestamps`,
+`guidance.mutable_mid_stream`, and `diarization.always_on`.
 
 The constraint submodels are a separate case. `DiarizationConstraints` and its
 siblings hold the limits on a requestable feature. They are queryable paths,
@@ -109,8 +113,31 @@ class WordTimestampsCap(_FlagLikeNode):
 Do not give a node the shared three-value type. That type states the domain
 only. It lets a node hold a valid but wrong value, such as a behavior node that
 declares `kind="requestable"`. A single-value `Literal` per class makes the
-wrong value a validation error, and it makes `kind` a required property in the
-generated schema.
+wrong value a validation error, and it renders as a `const` in the generated
+schema, so a generated client sees the one pinned value.
+
+The `const` alone does not make the property required. The field carries a
+default, and pydantic keeps a defaulted field out of the schema's `required`
+list in both schema modes. Set
+`json_schema_serialization_defaults_required=True` on the shared model config
+and generate the wire schema in serialization mode. The wire document always
+carries `kind`, because `canonical_json()` dumps defaults, so that schema
+describes the wire truthfully. Item 4 tests the result.
+
+Pinning the kind per class exposes one place where the class inventory is too
+coarse today: `language.runtime_override` is requestable — it is the
+`language` row of `_GATED_PARAMS` — but the field is typed `FlagCap`, and
+`FlagCap` pins `behavior`. Give the node its own class before the pin lands:
+
+```python
+class RuntimeOverrideCap(_FlagLikeNode):
+    kind: Literal["requestable"] = "requestable"
+```
+
+Every other `FlagCap` site is a behavior, so `FlagCap` keeps the `behavior`
+pin. `CandidateLanguagesCap` already has its own class; it pins `requestable`.
+The item 5 check exists to catch exactly this mismatch; the class split
+removes the mismatch before the check can fire.
 
 The domain holds three values, not the four kinds of D1. `observation` is never
 a node kind, because D2 keeps observations out of the tree. A reader who finds
@@ -190,7 +217,8 @@ These items are implementation work, and they do not block the issues above:
 
 1. Add a `_ConstraintNode` base for the four constraint classes. Add the `kind`
    field to `_CapNode` and to `_ConstraintNode`. Set the value on each node
-   class.
+   class. Give `language.runtime_override` its own `RuntimeOverrideCap` class,
+   as D4 sets out.
 2. Add `can_request()` to `DeclaredCapabilities`. Return `False` for a
    container path and for an absent path.
 3. Render `kind` in `canonical_json()`, and update the two-layer isomorphism
@@ -201,6 +229,10 @@ These items are implementation work, and they do not block the issues above:
    declares the wrong kind, so it is not enough. D3 rests on the schema, so a
    test must hold the schema correct. The `canonical_json()` test in item 3
    does not cover it.
+
+   The assertion holds only for a serialization-mode schema with
+   `json_schema_serialization_defaults_required=True` set, as D4 sets out. A
+   validation-mode schema leaves a defaulted `kind` out of `required`.
 5. Assert in the compliance suite that every entry in `_GATED_PARAMS` resolves
    to a node with `kind="requestable"`.
 
@@ -222,6 +254,10 @@ These items are implementation work, and they do not block the issues above:
    import-time assertion proves that every `RuntimeParams` field is in
    `_GATED_PARAMS` or in `_UNGATED_PORTABLE_FIELDS`. Mirror that pattern, with
    the same loud failure and a written reason for each exemption.
+
+   The exemption set starts with one real entry: `language.candidate_languages`
+   is requestable, and `language.effective_candidate_languages` owns its
+   gating — see `_UNGATED_PORTABLE_FIELDS` and the written reason it carries.
 7. Update `docs/spec/specification.md` and `docs/spec/server.md` for the new
    field and the new query.
 8. Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.
