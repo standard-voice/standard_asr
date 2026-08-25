@@ -32,5 +32,14 @@ jobs:
           # scancode harvest of its LICENSE file reads the historical Python
           # stack as "Python-2.0 AND GPL-1.0-or-later AND ..." — a metadata
           # false positive, so the package is exempted, not the license.
-          allow-dependencies-licenses: pkg:pypi/typing-extensions
+          #
+          # fumadocs-ui is an npm alias for @fumadocs/base-ui (pinned 16.15.0
+          # in docs/site/package.json, kept so imports match the upstream
+          # fumadocs-ui paths). The scanner cannot resolve license metadata
+          # through the alias identity and reports it as unknown — which the
+          # action does not fail on — while the aliased package itself
+          # resolves to MIT (its package.json license field and the npm
+          # registry agree). Exempted explicitly so the gap is on record,
+          # not silently tolerated.
+          allow-dependencies-licenses: pkg:pypi/typing-extensions, pkg:npm/fumadocs-ui
           comment-summary-in-pr: always

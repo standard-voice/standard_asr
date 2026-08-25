@@ -1,0 +1,116 @@
+name: docs-deploy
+
+# Builds the static documentation site and deploys it to GitHub Pages via
+# the Pages deployment API (artifact upload + OIDC), replacing the previous
+# gh-pages branch push. No job needs write access to the repository
+# contents, so the checkout keeps persist-credentials: false throughout.
+#
+# The Pages source in the repository settings must be "GitHub Actions" for
+# this workflow to publish.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'src/standard_asr/**'
+      # The build runs from the LOCKED environments (uv.lock for the Griffe
+      # API dump, pnpm-lock.yaml for the site), so its output depends on
+      # these too: a dependency bump must redeploy, or the published site
+      # silently diverges from what the CI docs gate validated.
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One Pages deployment at a time; do not cancel a deploy mid-flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Same pin as ci.yml so the deploy environment matches the one the
+  # PR-blocking docs gate validated. Bump alongside ci.yml.
+  UV_VERSION: "0.11.21"
+
+jobs:
+  build:
+    name: Build the static site
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # configure-pages reads the Pages configuration (GET /pages) to hand
+      # the build its base path; with the workflow-level contents-only
+      # grant the call is a 403 and the job dies before building. The
+      # canonical Pages starter workflows grant write on this scope.
+      pages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install Python dependencies (locked)
+        run: uv sync --locked --all-extras --all-groups
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          # The action reads `packageManager` from a package.json, and it
+          # looks at the repository root by default. This repo has no root
+          # package.json (Node serves only the docs), so point it at the
+          # site's, keeping the pinned version in one place.
+          package_json_file: docs/site/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: docs/site/pnpm-lock.yaml
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Install site dependencies (frozen)
+        working-directory: docs/site
+        run: pnpm install --frozen-lockfile
+      - name: Build the static site
+        working-directory: docs/site
+        env:
+          # The project base path ("/standard_asr") from the Pages
+          # configuration; a custom domain later makes this empty with no
+          # workflow change.
+          NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          # The absolute origin for metadata (Open Graph, canonical);
+          # follows a future custom domain the same way.
+          NEXT_PUBLIC_SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: pnpm build
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/site/out
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
