@@ -52,9 +52,11 @@ This standard governs English **prose**:
 
 - docstrings (module, class, function, attribute), in `src/` and in `tests/`;
 - user-facing runtime strings (see the tier test below);
-- English Markdown under `docs/`, published or not (`docs/legacy/` is
-  historical and `docs/feat_plan/` holds working feature plans; both are
-  exempt, like `work/`);
+- English Markdown under `docs/`. The tree says which is which:
+  `docs/content/` is the published documentation and is fully governed;
+  `docs/internal/` holds Chinese documents, historical pages, and working
+  notes, and `docs/site/` is the documentation application's own code tree
+  — both are exempt, like `work/`;
 - English Markdown at the repository root: `README.md`, `CONTRIBUTING.md`,
   `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`. Working notes
   under `work/` are exempt;
@@ -73,7 +75,7 @@ outside the gate's reach is not less governed — it is governed by review, and
 a reviewer is owed a precise list of what they own rather than a false sense
 that a green gate covered it.
 
-`README.md`, `docs/index.md`, and the `AGENTS.md` preamble are the project's
+`README.md`, `docs/content/index.md`, and the `AGENTS.md` preamble are the project's
 front door. They are governed for **accuracy and terminology** like everything
 else, but they may use a wider register than reference prose: a longer
 sentence, a rhetorical structure, or an established figure of speech ("USB-C
@@ -86,11 +88,12 @@ This standard does **not** govern, and must never change:
   symbol. American spelling applies to prose, not to a third-party or standard
   library name (write "the task is canceled" in prose; keep the symbol
   `CancelledError`).
-- **Chinese documents** — `docs/spec/specification.md` (the normative spec),
-  `docs/design-notes/`, `docs/research/`, `docs/work_doc/`, `docs/misc.md`,
-  and other Chinese files. Do not translate or edit them. Read `docs/spec/specification.md` as
-  the source of truth; the other Chinese documents are background context,
-  ranked by the authority order in "Fact-check every meaning change" below.
+- **Chinese documents** — `docs/content/specification/protocol.md` (the
+  normative spec) and the Chinese files under `docs/internal/`
+  (`design-notes/`, `research/`, `work_doc/`, `misc.md`). Do not translate or
+  edit them. Read `docs/content/specification/protocol.md` as the source of
+  truth; the other Chinese documents are background context, ranked by the
+  authority order in "Fact-check every meaning change" below.
 - **reStructuredText roles and code spans** — `:class:`, `:func:`, `:meth:`,
   `:mod:`, `:data:`, double-backtick code spans, and `::` literal blocks stay
   verbatim. Never reflow or "simplify" the text inside them.
@@ -123,8 +126,8 @@ text the first two steps already claim; the first match wins.
    - `argparse` `help=`, `description=`, and `epilog=`;
    - FastAPI and Pydantic text: `Field(description=...)`, `FastAPI(title=...)`,
      route and OpenAPI docstrings, and WebSocket `{"message": ...}` frames;
-   - **every docstring**, public or private (mkdocstrings renders the public
-     ones, and consumers read them all in the source);
+   - **every docstring**, public or private (the site's API reference
+     renders the public ones, and consumers read them all in the source);
    - every governed Markdown file.
 
 **One length exception inside tier 3.** A docstring **body** paragraph that
@@ -227,7 +230,7 @@ tool reads the text, never what good prose is.
   controlled code vocabularies govern domain terms. Expand a genuinely obscure
   acronym on first use. (Vale: `Google.Acronyms` off.)
 - **Project voice.** "We" is allowed in the project-voice files (`README.md`,
-  `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, `docs/index.md`,
+  `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, `docs/content/index.md`,
   mission/goals/advisories); reference prose addresses the reader as "you"
   and avoids "we". (Vale: `Google.We` off for those files.)
 - **Approved `-ing` names.** The domain's `-ing` subsystem names — *streaming,
@@ -297,8 +300,8 @@ is a gate you have not passed.
    style pass keeps the meaning and needs no gate.
 2. **Authority.** Cite the source that establishes the new text, by path and
    line. Use whichever applies, in this order: the normative spec documents
-   where they speak — `docs/spec/specification.md`, and the English
-   `docs/spec/` pages for the surfaces they contract (the server wire API, the
+   where they speak — `docs/content/specification/protocol.md`, and the English
+   `docs/content/specification/` pages for the surfaces they contract (the server wire API, the
    CLI, the download policy); otherwise the code path, a
    test that pins the behavior, or a design note. Much of the toolchain — an
    exit code, an `argparse` help string, a CLI marker — has no spec text; there

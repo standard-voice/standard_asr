@@ -61,4 +61,11 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
   # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
   # SPDX-License-Identifier: Apache-2.0
   ```
+- Documentation lives in `docs/`. `docs/content/` is the published site
+  content: every Markdown file under it ships, a page needs a frontmatter
+  `title`, sibling links use explicit relative paths (`./other-page.md`),
+  and raw HTML fails the build. `docs/internal/` never ships. `docs/site/`
+  is the site application (Node and pnpm; oxlint and oxfmt gate its code,
+  and lychee link-checks the export in CI) — Python development never
+  needs it. Read `docs/site/README.md` before changing the site.
 - Commits: imperative mood, concise. One logical change per commit.

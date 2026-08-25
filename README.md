@@ -25,7 +25,7 @@ _Apps integrate speech-to-text once and gain every engine. Engines implement onc
 > interface is functional and exercised by real engine plugins (interface-level
 > compliance; end-to-end runtime verification is still being built), but features like
 > hardware metadata and model cards are not yet part of the protocol.
-> Developer documentation and tooling are also incomplete. Expect breaking changes.
+> Developer tooling is also incomplete. Expect breaking changes.
 > For production use, wait for a stable release. We follow semantic versioning.
 > See the [Roadmap](https://github.com/standard-voice/standard_asr/issues/27) for what's planned.
 
@@ -87,7 +87,7 @@ the people who know each engine best, and the core never becomes the bottleneck.
   engines rewrite their interim results, some never revise a token, some merge already-emitted
   segments after a second decoding pass. Standard ASR unifies all of it under one event
   protocol with explicit stability guarantees — designed against an in-repo survey of 30+
-  real engine APIs ([`docs/research/`](docs/research/)).
+  real engine APIs ([`docs/internal/research/`](docs/internal/research/)).
 - **Audio negotiation, batteries included.** Hand over what you have — a file path, raw
   bytes, a NumPy array, a URL — and the framework negotiates and converts to whatever form
   the engine accepts, loudly reporting anything lossy. No more sample-rate guesswork.
@@ -212,7 +212,7 @@ frozen against further recognition (a terminal `closed` restatement may still re
 see the streaming guide's "Finality" section).
 
 > Not async? `SyncSession` wraps any streaming session behind a blocking iterator.
-> See [`docs/spec/`](docs/spec/) for the full streaming contract — segment lifecycle,
+> See [`docs/content/specification/`](docs/content/specification/) for the full streaming contract — segment lifecycle,
 > stability guarantees, reconnect semantics, and backpressure rules.
 
 ---
@@ -276,7 +276,7 @@ This is how Standard ASR stays a clean protocol layer instead of a dependency mo
 | **(core)** | The protocol itself: engine discovery, capability discovery and gating, audio negotiation, input and result validation, and the `standard-asr` CLI. Decodes basic `.wav` with the standard library — no extra install.                  | `numpy`, `pydantic`                                                                               |
 | **audio**  | **Battery-included audio loading.** Hand over almost any audio — MP3, FLAC, OGG, raw bytes, base64 — and still drive engines that only accept NumPy arrays. Handles decoding, resampling, and channel mixing. | `soundfile`, `scipy` _(plus optional system **FFmpeg** on `PATH` for M4A and the widest format coverage)_ |
 | **server** | A **FastAPI server** exposing any compliant engine over HTTP (and WebSocket for streaming), so non-Python apps can use the ecosystem too.                                                                          | `fastapi`, `starlette`, `python-multipart`, `uvicorn`, `websockets`                                            |
-| **docs**   | Builds the documentation site. _(For maintainers/contributors.)_                                                                                                                                                   | `mkdocs-material`, `mkdocstrings[python]`                                                                                 |
+| **docs**   | Generates the API reference data for the documentation site (`docs/site`, a Node application). _(For maintainers/contributors.)_                                                                                   | `griffelib`                                                                                 |
 
 > [!NOTE]
 > **Why the `audio` extra matters.** Audio wrangling — formats, sample rates, channels — is one
@@ -294,8 +294,8 @@ This is how Standard ASR stays a clean protocol layer instead of a dependency mo
 standard-asr serve --host 0.0.0.0 --port 8000
 ```
 
-See [`docs/spec/server.md`](docs/spec/server.md) for the full HTTP/WebSocket API contract,
-and [`docs/spec/`](docs/spec/) for the protocol specification. The WebSocket endpoint covers
+See [`docs/content/specification/server-api.md`](docs/content/specification/server-api.md) for the full HTTP/WebSocket API contract,
+and [`docs/content/specification/`](docs/content/specification/) for the protocol specification. The WebSocket endpoint covers
 the incremental-streaming path (declare an `audio_format`, push raw PCM frames, receive live
 events); whole-input engines use the batch HTTP endpoints.
 
@@ -310,7 +310,7 @@ supports), and **config** (its typed, UI-discoverable settings model), and regis
 gating, language resolution, and the sync/async bridge — you implement the model call, and
 the CLI, the HTTP/WebSocket server, and the compliance checks come for free.
 
-See [`docs/for_asr_dev/`](docs/for_asr_dev/) for the plugin authoring guide, then check
+See [`docs/content/engine-authors/`](docs/content/engine-authors/) for the plugin authoring guide, then check
 your implementation with the full suite:
 
 ```bash
@@ -338,16 +338,16 @@ streaming events, plugin system — is shipped and exercised by four engine plug
 compliance suite checks the interface contract (runtime inference verification is
 tracked separately). The toolchain (CLI, FastAPI server, compliance suite) works. What's
 missing: features like hardware metadata and model cards are not yet part of the protocol.
-Developer documentation, a richer CLI, and a plugin starter template are also not done yet.
+A richer CLI and a plugin starter template are also not done yet.
 See the open issues for what's planned.
 
-Built with a normative, RFC-style specification (`docs/spec/`),
+Built with a normative, RFC-style specification (`docs/content/specification/`),
 Pydantic v2 models, `pyright --strict`, 100% test coverage, and CI across numpy 1.x/2.x
 and Python 3.10–3.14. Design decisions are grounded in an in-repo survey of 30+ real ASR
-engines and APIs (`docs/research/`). The authoritative material lives in-repo:
+engines and APIs (`docs/internal/research/`). The authoritative material lives in-repo:
 
-- `docs/spec/` — the protocol specification.
-- `docs/research/` — the engine surveys the design is tested against.
+- `docs/content/specification/` — the protocol specification.
+- `docs/internal/research/` — the engine surveys the design is tested against.
 - `CONTRIBUTING.md` — dev setup, the dependency policy, and the CI channel model.
 
 ## Communication

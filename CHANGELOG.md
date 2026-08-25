@@ -341,6 +341,13 @@ releases may include breaking changes.
 
 ### Changed (non-breaking)
 
+- **Documentation site rebuilt on Fumadocs (Next.js, static export).** The
+  site now lives in `docs/site`, renders the published Markdown content in
+  `docs/content/`, generates the API reference from the source with Griffe,
+  and deploys to GitHub Pages through the Pages deployment API instead of a
+  `gh-pages` branch push. The `docs` extra now pulls in `griffelib` in
+  place of `mkdocs-material` / `mkdocstrings`, and the previous site's
+  `.html` URLs redirect to their new locations.
 - **Internal package restructure.** The flat module layout is split into
   audience-signaling subpackages (`audio`, `contract`, `plugins`, `runtime`,
   `toolchain`). The public API is unchanged — every name still imports from
