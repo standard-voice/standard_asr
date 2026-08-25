@@ -75,7 +75,7 @@ def test_invalid_provider_param_error_is_structured_value_error() -> None:
 def test_structured_error_exposes_exactly_the_documented_attributes() -> None:
     """The app-developer guide's attribute names must be real.
 
-    ``docs/for_app_dev/errors.md`` advertised ``.detail`` / ``.engine_id``,
+    ``docs/content/app-developers/errors.md`` advertised ``.detail`` / ``.engine_id``,
     which never existed -- copying the published snippet raised
     ``AttributeError``, the very "docs teach a wrong API" failure this
     branch exists to remove. Pin the real surface so the guide cannot drift

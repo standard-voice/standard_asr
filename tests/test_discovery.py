@@ -291,7 +291,7 @@ def test_declared_engine_id_docstring_example_is_reachable() -> None:
     # case ``faster_whisper`` is accepted and folded to ``faster-whisper`` (so it
     # is reachable), while the previously documented upper-case ``Faster_Whisper``
     # is rejected at validation and can never appear -- the asymmetry the
-    # docstring and plugin_entrypoints.md now spell out.
+    # docstring and plugin-entry-points.md now spell out.
     eps = [
         EntryPoint(
             name="faster_whisper/large",
@@ -556,7 +556,7 @@ def test_validate_model_name_position_defect_names_the_rule_and_value() -> None:
     ("Allowed characters: letters, digits, '.', ...") and never echoed the
     value -- pointing a plugin author away from the only thing wrong with
     ``.v1``. The message must state the leading-character rule from
-    ``docs/for_asr_dev/plugin_entrypoints.md`` and echo the rejected value.
+    ``docs/content/engine-authors/plugin-entry-points.md`` and echo the rejected value.
     """
     for bad in (".v1", "-int8", ":cpu"):
         with pytest.raises(EntrypointValidationError, match="must start with") as exc_info:
@@ -895,7 +895,7 @@ def test_engine_class_resolves_when_entrypoint_is_a_class() -> None:
     is noncompliant. It is not: ``engine_class`` returns a class target
     directly, and compliance only reports ``class_metadata_unreadable`` when
     NEITHER form resolves. Keep this test as the contract the guides
-    (``adapting_engine.md``, ``plugin_entrypoints.md``) must match.
+    (``adapt-an-asr-system.md``, ``plugin-entry-points.md``) must match.
     """
     eps = [
         EntryPoint(
