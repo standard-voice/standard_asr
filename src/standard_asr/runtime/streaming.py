@@ -74,7 +74,7 @@ EventType = Literal["partial", "final", "supersede", "progress", "done", "error"
 #: backstop for a stuck pipeline, NOT engine-liveness detection: an engine that
 #: legitimately emits nothing during user silence stays alive for as long as it
 #: keeps consuming audio (industry anchors stream liveness to audio
-#: flow, not result flow -- see docs/research/5). After ``end_audio()`` there is
+#: flow, not result flow -- see docs/internal/research/5). After ``end_audio()`` there is
 #: nothing left to consume, so this bounds the engine's flush-and-``done``
 #: window (``done`` MUST arrive, bounded by a timeout).
 DEFAULT_DONE_TIMEOUT: float | None = 300.0
@@ -83,7 +83,7 @@ DEFAULT_DONE_TIMEOUT: float | None = 300.0
 #: ``supersede``) before the session is force-terminated with
 #: ``stream_stalled``. ``None`` (the default) disables it: silence is a normal
 #: state for a live session, and no surveyed engine emits content on a schedule
-#: (docs/research/5). Opt in where continuous speech is expected, or to detect
+#: (docs/internal/research/5). Opt in where continuous speech is expected, or to detect
 #: a pathological engine that keeps consuming audio (or heartbeating) without
 #: ever producing content -- this deadline is NOT reset by ``progress``
 #: heartbeats or audio consumption.
@@ -186,11 +186,14 @@ class StreamDeadlines(BaseModel):
     construction choice > standard default.
 
     The fields mirror the :class:`TranscriptionSession` deadline parameters --
-    see there for full semantics. In short: ``done_timeout`` is the
-    pipeline-inactivity hang backstop (reset by events AND by audio
-    consumption), ``max_idle`` the opt-in content-stall detector, and
-    ``max_session_seconds`` the opt-in absolute wall-clock cap. Each accepts
-    ``None`` to explicitly disable that deadline.
+    see there for full semantics. Each accepts ``None`` to explicitly disable
+    that deadline.
+
+    Attributes:
+        done_timeout: The pipeline-inactivity hang backstop, reset by events
+            AND by audio consumption.
+        max_idle: The opt-in content-stall detector.
+        max_session_seconds: The opt-in absolute wall-clock cap.
     """
 
     # extra="forbid" like every other application-input model (RuntimeParams,
@@ -272,6 +275,10 @@ class TranscriptionEvent(BaseModel):
         reconnect: For ``progress``, whether this marks a reconnect.
         gap_start: For a reconnect ``progress``, the gap start time.
         gap_end: For a reconnect ``progress``, the gap end time.
+        detected_language: The engine-detected language (BCP-47, never
+            ``auto``), validated like ``TranscriptionResult.detected_language``;
+            sticky per session (the last non-``None`` value wins), and the
+            reconnect-continuity carrier.
         extra: Engine-specific extra data.
     """
 
