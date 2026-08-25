@@ -16,7 +16,7 @@
 - **ModelRegistry:** Container of all discovered ASR engine factories.
 - **ModelSpec:** Metadata for a single entry point.
 
-**For Plugin Authors:** See ``docs/for_asr_dev/plugin_entrypoints.md``.
+**For Plugin Authors:** See ``docs/content/engine-authors/plugin-entry-points.md``.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ def _parse_entrypoint_name(name: str, *, declaration: bool = False) -> tuple[str
     - **Declaration** (``declaration=True``, the ``discover_models`` /
       compliance path that reads ``pyproject.toml`` keys): the contract requires
       the explicit ``<engine_id>/<model_name>`` form. A slash-less key is
-      rejected here, because ``plugin_entrypoints.md`` defines only
+      rejected here, because ``plugin-entry-points.md`` defines only
       ``<engine_id>/<model_name>`` and the explicit-default ``<engine_id>/``; a
       bare ``"faster-whisper"`` is an unspecified third form (most often a typo
       that dropped ``/<model_name>``). ``discover_models`` decides whether that
@@ -188,7 +188,7 @@ class ModelSpec:
             only; never used for routing. Equals ``engine_id`` when already
             canonical. Note an upper-case form such as ``Faster_Whisper`` can
             never appear here: the declared id is validated before normalization
-            and rejects upper case outright (``plugin_entrypoints.md`` naming
+            and rejects upper case outright (``plugin-entry-points.md`` naming
             table), unlike the non-canonical-but-valid ``_``/``.`` separators
             which are folded.
         model_name: Model preset name (for example, ``large-v3``), or empty for default.
@@ -378,7 +378,7 @@ class ModelSpec:
         method that would pass the duck-type below, yet it carries none of the
         engine's ``ClassVar`` metadata -- annotating the factory ``-> StandardASR``
         (the most common authoring mistake, called out in
-        ``plugin_entrypoints.md``) would otherwise resolve here and let discovery
+        ``plugin-entry-points.md``) would otherwise resolve here and let discovery
         silently report MISSING capabilities / a ``None`` config schema far from
         the real cause. A protocol is never a concrete engine, so this is a
         deterministic error, not a degenerate-but-intentional engine.
@@ -401,7 +401,7 @@ class ModelSpec:
                 "class-level metadata (declared_capabilities / properties / "
                 "config_type), so discovery cannot read it. Annotate the factory "
                 "with your concrete engine class (for example, '-> FasterWhisperASR'), "
-                "not the StandardASR protocol (see plugin_entrypoints.md)."
+                "not the StandardASR protocol (see plugin-entry-points.md)."
             )
         if not callable(getattr(cls, "transcribe", None)):
             raise FactoryLoadError(

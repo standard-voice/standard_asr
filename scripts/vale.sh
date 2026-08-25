@@ -36,15 +36,16 @@ esac
 TARGETS=(README.md CONTRIBUTING.md AGENTS.md STYLE.md TERMINOLOGY.md RELEASING.md
     docs src tests)
 
-# The exemption, as data (STYLE.md, "Scope"): whole directories of Chinese
-# documents, historical files, and working notes, plus individual exempt
-# files. The --glob below is COMPOSED from these arrays, and --selfcheck
-# derives its per-directory expectations from the same arrays -- so the
-# arrays are the single spec, and a glob that stops matching what they say
-# fails the selfcheck instead of silently shrinking the corpus.
-EXEMPT_DIRS=(docs/design-notes docs/research docs/work_doc docs/feat_plan
-    docs/legacy work)
-EXEMPT_FILES=(docs/spec/specification.md docs/misc.md CHANGELOG.md)
+# The exemption, as data (STYLE.md, "Scope"): the internal tree (Chinese
+# documents, historical files, working notes), the docs-site application
+# (docs/site is code and third-party packages, not prose content), and
+# working notes, plus individual exempt files. The --glob below is COMPOSED
+# from these arrays, and --selfcheck derives its per-directory expectations
+# from the same arrays -- so the arrays are the single spec, and a glob that
+# stops matching what they say fails the selfcheck instead of silently
+# shrinking the corpus.
+EXEMPT_DIRS=(docs/internal docs/site work)
+EXEMPT_FILES=(docs/content/specification/protocol.md CHANGELOG.md)
 
 compose_exempt() {
     local parts=() entry
@@ -177,8 +178,9 @@ case "${1:-}" in
         if [[ -d "${target}" ]]; then
             # Every real subdirectory gets a probe, so an exemption that
             # swallows a subtree (say, all of docs/spec) is caught even
-            # though the target's root probe is still reached. Caches and
-            # hidden directories are not prose surfaces.
+            # though the target's root probe is still reached. Caches,
+            # hidden directories, and installed dependency trees
+            # (node_modules) are not prose surfaces.
             while IFS= read -r dir; do
                 probe="${dir}/vale-selfcheck-probe.md"
                 plant_md "${probe}"
@@ -201,7 +203,7 @@ PYEOF
                         ;;
                     esac
                 fi
-            done < <(find "${target}" \( -name '__pycache__' -o -name '.*' \) -prune -o -type d -print | LC_ALL=C sort)
+            done < <(find "${target}" \( -name '__pycache__' -o -name 'node_modules' -o -name '.*' \) -prune -o -type d -print | LC_ALL=C sort)
         else
             plant_md "${target}"
             expect_hit+=("${target}")

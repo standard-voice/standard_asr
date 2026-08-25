@@ -1,0 +1,50 @@
+{
+  "name": "standard-asr-docs",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "generate:api": "node scripts/check-content.mjs && uv run --project ../.. --no-sync python scripts/dump_api.py .generated/api.json",
+    "predev": "pnpm generate:api",
+    "dev": "next dev",
+    "prebuild": "pnpm generate:api",
+    "build": "next build && node scripts/postbuild.mjs && node scripts/check-export.mjs",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint --deny-warnings",
+    "types:check": "next typegen && tsc --noEmit"
+  },
+  "dependencies": {
+    "fumadocs-core": "16.15.0",
+    "fumadocs-mdx": "15.3.1",
+    "fumadocs-ui": "npm:@fumadocs/base-ui@16.15.0",
+    "lucide-react": "^1.31.0",
+    "next": "16.3.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "rehype-stringify": "^10.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "shiki": "^3.13.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/mdast": "^4.0.4",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "oxfmt": "^0.64.0",
+    "oxlint": "^1.79.0",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.15.1"
+}

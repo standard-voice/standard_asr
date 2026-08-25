@@ -940,7 +940,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
         "cannot synthesize): check_event_sequence for a streaming engine's event "
         "stream, and check_transcription_result for a batch result. Cover them with "
         "standard_asr.compliance in your tests "
-        "(see docs/for_asr_dev/plugin_entrypoints.md)."
+        "(see docs/content/engine-authors/plugin-entry-points.md)."
     )
 
     passed = all(report.passed for report in reports)

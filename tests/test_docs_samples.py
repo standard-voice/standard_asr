@@ -19,7 +19,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-_GUIDE = Path(__file__).resolve().parent.parent / "docs" / "for_asr_dev" / "adapting_engine.md"
+_GUIDE = (
+    Path(__file__).resolve().parent.parent
+    / "docs"
+    / "content"
+    / "engine-authors"
+    / "adapt-an-asr-system.md"
+)
 
 
 def _python_block_under_heading(markdown: str, heading: str) -> str:

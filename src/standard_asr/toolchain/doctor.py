@@ -585,7 +585,7 @@ def _numpy_spec_for(requires: list[str] | None) -> str | None:
 def _render_distributions(plugins: list[PluginNumpy]) -> str:
     """Render a conflict participant list, one entry per distribution.
 
-    A single distribution that ships several presets (``plugin_entrypoints.md``
+    A single distribution that ships several presets (``plugin-entry-points.md``
     encourages this) contributes one :class:`PluginNumpy` per entry point, all
     carrying the SAME ``Requires-Dist`` numpy spec. The numpy constraint belongs
     to the *distribution*, so the conflict text lists each ``(distribution,

@@ -1,0 +1,151 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* Standard ASR palette.
+ *
+ * Two hues, both measured from the brand mark (docs/assets/branding/icon.png)
+ * rather than picked by eye: the paper neutral at hue 78, and the mark's
+ * blue square, oklch(0.422 0.192 262.8). Every value below is OKLCH, so a
+ * lightness step means the same perceived step at any hue -- an HSL ramp
+ * does not, which is why the previous theme drifted into an over-saturated
+ * cream and had to state link color as pure black.
+ *
+ * The system is three rules:
+ *   1. Surfaces rise with lightness in BOTH modes (background < card), so
+ *      elevation reads the same way in light and dark.
+ *   2. Chroma stays under 0.012 on every neutral. The warmth is a tint, not
+ *      a color; text sits on paper, not on cream.
+ *   3. One accent hue, 262.8, in both modes -- only its lightness changes
+ *      (0.470 light / 0.780 dark). The brand is one blue, not two.
+ *
+ * Contrast is measured, not assumed. Every text-on-surface pair clears WCAG
+ * AA, and body text clears AAA in both modes: body 16.2:1 light / 16.1:1
+ * dark, muted text 5.4:1 / 7.7:1, links 6.8:1 / 9.3:1, and text on a filled
+ * primary button 7.1:1 / 9.3:1.
+ */
+@theme {
+  --color-fd-background: oklch(0.985 0.005 78);
+  --color-fd-foreground: oklch(0.23 0.008 78);
+  --color-fd-muted: oklch(0.96 0.007 78);
+  --color-fd-muted-foreground: oklch(0.515 0.012 78);
+  --color-fd-popover: oklch(1 0 78);
+  --color-fd-popover-foreground: oklch(0.23 0.008 78);
+  --color-fd-card: oklch(1 0 78);
+  --color-fd-card-foreground: oklch(0.23 0.008 78);
+  --color-fd-border: oklch(0.898 0.009 78);
+  --color-fd-primary: oklch(0.47 0.19 262.8);
+  --color-fd-primary-foreground: oklch(1 0 78);
+  --color-fd-secondary: oklch(0.96 0.007 78);
+  --color-fd-secondary-foreground: oklch(0.23 0.008 78);
+  --color-fd-accent: oklch(0.945 0.009 78);
+  --color-fd-accent-foreground: oklch(0.23 0.008 78);
+  --color-fd-ring: oklch(0.47 0.19 262.8);
+
+  --color-brand: oklch(0.47 0.19 262.8);
+  --color-brand-strong: oklch(0.422 0.192 262.8); /* the mark, verbatim */
+  --color-brand-soft: oklch(0.47 0.19 262.8 / 0.09);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+.dark {
+  --color-fd-background: oklch(0.178 0.007 78);
+  --color-fd-foreground: oklch(0.945 0.005 78);
+  --color-fd-muted: oklch(0.248 0.008 78);
+  --color-fd-muted-foreground: oklch(0.725 0.011 78);
+  --color-fd-popover: oklch(0.212 0.007 78);
+  --color-fd-popover-foreground: oklch(0.945 0.005 78);
+  --color-fd-card: oklch(0.212 0.007 78);
+  --color-fd-card-foreground: oklch(0.945 0.005 78);
+  --color-fd-border: oklch(0.335 0.009 78);
+  --color-fd-primary: oklch(0.78 0.125 262.8);
+  --color-fd-primary-foreground: oklch(0.178 0.007 78);
+  --color-fd-secondary: oklch(0.248 0.008 78);
+  --color-fd-secondary-foreground: oklch(0.945 0.005 78);
+  --color-fd-accent: oklch(0.278 0.008 78);
+  --color-fd-accent-foreground: oklch(0.945 0.005 78);
+  --color-fd-ring: oklch(0.78 0.125 262.8);
+
+  --color-brand: oklch(0.78 0.125 262.8);
+  --color-brand-strong: oklch(0.84 0.11 262.8);
+  --color-brand-soft: oklch(0.78 0.125 262.8 / 0.14);
+}
+
+/* Blockquotes in this documentation are notes, not quotations: render
+   them GitHub-style (plain, with a rule) instead of italic with inserted
+   quotation marks. */
+.prose blockquote {
+  font-style: normal;
+}
+.prose blockquote p:first-of-type::before,
+.prose blockquote p:last-of-type::after {
+  content: none;
+}
+
+/* Shiki dual-theme blocks emitted outside the fumadocs pipeline (API
+   reference signatures, landing code cards). */
+.api-signature pre,
+.landing-code pre {
+  background: transparent !important;
+}
+
+/* Shiki blocks embedded in docstring prose (Prose / callout content in
+   components/api.tsx). The typography layer styles bare `code` as an
+   inline chip, which fragments a wrapped code line into per-line boxes;
+   scope a real block presentation here instead. `!important` beats the
+   inline light-theme background shiki emits, so dark mode works. */
+.prose-shiki pre {
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.5rem;
+  background: var(--color-fd-card) !important;
+  overflow-x: auto;
+  font-size: 13px;
+}
+.prose-shiki pre code {
+  display: block;
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  background-color: transparent;
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}
+
+/* The animated hero waveform. */
+@keyframes waveform-pulse {
+  0%,
+  100% {
+    transform: scaleY(0.55);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.waveform-bar {
+  animation: waveform-pulse 1.6s ease-in-out infinite;
+  transform-origin: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .waveform-bar {
+    animation: none;
+  }
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}

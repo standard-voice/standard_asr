@@ -76,3 +76,45 @@ updates:
           - patch
         patterns:
           - "*"
+
+  # ---- Documentation site (npm, managed by pnpm) ----------------------------
+  #
+  # The docs site (docs/site) is the repository's only Node surface. It ships
+  # nothing to users -- it builds a static site -- but it is a real dependency
+  # tree that needs security updates, so it gets the same channel-2 treatment
+  # as the Python side.
+  #
+  # Grouping: minor and patch bumps batch into one PR, and a MAJOR bump of a
+  # non-framework package lands alone for deliberate review. The framework
+  # family (Next.js, React, Fumadocs) is the deliberate exception: its
+  # members are version-locked to each other and peer-pinned to Next.js, so
+  # bumping one alone breaks the install. The docs-framework group therefore
+  # carries no update-types filter -- a framework major arrives as one
+  # family PR (a migration, reviewed as one), never split per package.
+  - package-ecosystem: npm
+    directory: "/docs/site"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: deps(docs)
+    cooldown:
+      default-days: 7 # ADR D6.
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - documentation
+    groups:
+      docs-framework:
+        patterns:
+          - "next"
+          - "fumadocs-*"
+          - "@fumadocs/*"
+          - "react"
+          - "react-dom"
+      docs-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"

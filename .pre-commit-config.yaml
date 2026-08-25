@@ -19,8 +19,9 @@ default_install_hook_types: [pre-commit, pre-push]
 exclude: |
   (?x)^(
     reference/|
-    docs/(research|design-notes|legacy)/|
-    docs/spec/specification\.md
+    docs/internal/|
+    docs/site/(node_modules|out|\.next|\.source|\.generated)/|
+    docs/content/specification/protocol\.md
   )
 
 repos:

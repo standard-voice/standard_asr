@@ -1086,7 +1086,7 @@ def test_cli_serve_missing_dependency_honors_debug(
 ) -> None:
     """--debug prints the trace on the handler-caught serve error path too.
 
-    The flag's help and ``docs/spec/cli.md`` promise a trace on EVERY error
+    The flag's help and ``docs/content/specification/cli.md`` promise a trace on EVERY error
     path; ``_cmd_serve`` catches its ImportErrors itself and returned 1
     without ever consulting ``--debug``, so this documented path printed
     nothing. Pin the promise.
@@ -1108,7 +1108,7 @@ def test_cli_debug_does_not_claim_to_cover_argument_errors(
 
     ``main()`` calls ``parse_args`` before the ``try`` that routes failures
     through ``_debug_traceback``, so argparse exits first. The flag's help and
-    ``docs/spec/cli.md`` said "any error path", which promised a trace here;
+    ``docs/content/specification/cli.md`` said "any error path", which promised a trace here;
     both now name this boundary. Lock the claim to the behavior.
     """
     import pathlib
@@ -1120,7 +1120,13 @@ def test_cli_debug_does_not_claim_to_cover_argument_errors(
     help_text = cli.build_parser().format_help()
     assert "any error path" not in help_text
 
-    cli_md = pathlib.Path(__file__).resolve().parents[1] / "docs" / "spec" / "cli.md"
+    cli_md = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "docs"
+        / "content"
+        / "specification"
+        / "cli.md"
+    )
     doc = cli_md.read_text(encoding="utf-8")
     assert "argument errors are reported by the parser" in doc.lower()
 
@@ -1699,7 +1705,13 @@ def test_cli_serve_doc_does_not_list_unparsed_reload_flag() -> None:
     with pytest.raises(SystemExit):
         parser.parse_args(["serve", "--reload"])  # parser intentionally has no --reload
 
-    cli_md = pathlib.Path(__file__).resolve().parents[1] / "docs" / "spec" / "cli.md"
+    cli_md = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "docs"
+        / "content"
+        / "specification"
+        / "cli.md"
+    )
     doc = cli_md.read_text(encoding="utf-8")
     serve_section = doc.split("### `standard-asr serve`", 1)[1].split("\n### ", 1)[0]
     assert "--reload" not in serve_section

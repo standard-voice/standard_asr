@@ -10,9 +10,9 @@
 #
 # Per-finding suppressions are kept inline in the workflows (via
 # `# zizmor: ignore[<rule>]` with a justification) so the reason lives next
-# to the code it applies to. The only such suppression today is the
-# artipacked finding on mkdocs.yml, where the checkout credentials are
-# required for `mkdocs gh-deploy` to push to the gh-pages branch.
+# to the code it applies to. None are in use today: the docs deploy uses
+# the Pages deployment API (artifact + OIDC), so no workflow needs the
+# checkout credentials persisted.
 rules:
   unpinned-uses:
     config:

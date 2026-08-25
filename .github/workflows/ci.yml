@@ -349,12 +349,14 @@ jobs:
   docs:
     # Docs are a load-bearing product surface (the spec and the app-dev guides
     # are the contract's public face), and doc/code drift has repeatedly lived
-    # under a green CI — mkdocstrings warnings and stale API examples are
-    # invisible to lint/test. A strict build turns that whole drift class into
-    # a failing PR check.
-    name: Docs build (strict)
+    # under a green CI. Building the full static site here turns that whole
+    # drift class into a failing PR check: the API reference is regenerated
+    # from the source with Griffe, raw HTML that the Markdown pipeline would
+    # drop fails the build, and a content or config defect fails the export.
+    # The deploy workflow (docs.yml) builds the same way from main.
+    name: Docs site build (static)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -368,10 +370,53 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - name: Install dependencies (locked)
+      - name: Install Python dependencies (locked)
         run: uv sync --locked --all-extras --all-groups
-      - name: Build docs (strict)
-        run: uv run --no-sync mkdocs build --strict
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          # The action reads `packageManager` from a package.json, and it
+          # looks at the repository root by default. This repo has no root
+          # package.json (Node serves only the docs), so point it at the
+          # site's, keeping the pinned version in one place.
+          package_json_file: docs/site/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: docs/site/pnpm-lock.yaml
+      - name: Install site dependencies (frozen)
+        working-directory: docs/site
+        run: pnpm install --frozen-lockfile
+      - name: Lint the site (oxlint)
+        working-directory: docs/site
+        run: pnpm lint
+      - name: Check formatting (oxfmt)
+        working-directory: docs/site
+        run: pnpm format:check
+      - name: Build the static site
+        working-directory: docs/site
+        env:
+          NEXT_PUBLIC_BASE_PATH: /standard_asr
+        run: pnpm build
+      - name: Prepare the link-check root
+        # The export serves under the Pages project prefix, so absolute links
+        # start with /standard_asr/. Mirror that shape so lychee's --root-dir
+        # resolves them against the export.
+        run: |
+          mkdir -p "$RUNNER_TEMP/linkroot"
+          ln -sfn "$GITHUB_WORKSPACE/docs/site/out" "$RUNNER_TEMP/linkroot/standard_asr"
+      - name: Check exported links and fragments (lychee)
+        # Offline on purpose: external links are excluded, so the check is
+        # deterministic and immune to third-party outages. --include-fragments
+        # also verifies every #anchor target, which guards the spec's stable
+        # anchors.
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --offline --include-fragments --index-files index.html
+            --root-dir "$RUNNER_TEMP/linkroot"
+            'docs/site/out/**/*.html'
 
   checks-complete:
     # Single aggregate status required by branch protection (ADR D8). Adding a

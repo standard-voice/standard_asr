@@ -90,6 +90,34 @@ Like `actionlint`, Vale is not a Python dependency: CI downloads a pinned
 binary and verifies its checksum; for local use, install it with your system
 package manager (or set `VALE=/path/to/vale`).
 
+### Adding documentation
+
+The documentation site renders `docs/content/`, and that directory is the
+whole rule: every Markdown file under it is published, and nothing outside
+it is. Adding a page is adding a file. Give it a frontmatter `title`, link
+sibling pages with explicit relative paths (`./other-page.md`), and do not
+use raw HTML — the site build rejects it. Internal material (design notes,
+research, working notes) lives in `docs/internal/`, which the site never
+publishes.
+
+To preview the site locally, sync the Python environment first (the API
+reference is generated from the source with Griffe), then run the site
+from `docs/site` with Node 22+ and pnpm — regular Python development never
+needs them:
+
+```sh
+uv sync --locked --all-extras --all-groups
+cd docs/site
+pnpm install
+pnpm dev
+```
+
+CI builds the site on every pull request, checks its code with the Oxc
+toolchain (`pnpm lint` for oxlint, `pnpm format:check` for oxfmt), and
+link-checks the export with lychee, so a broken internal link or
+`#anchor` target fails the build. The site's own rules and commands live
+in [`docs/site/README.md`](docs/site/README.md).
+
 ## Dependency policy
 
 Standard ASR is infrastructure others build on, so we manage dependencies around
