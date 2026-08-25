@@ -135,6 +135,7 @@
 (?i)file ?path
 (?i)footgun
 (?i)frombuffer
+(?i)frontmatter
 (?i)frozenset
 (?i)gaierror
 (?i)gapped
@@ -225,6 +226,9 @@
 (?i)openai
 (?i)optinos
 (?i)overridable
+(?i)oxc
+(?i)oxfmt
+(?i)oxlint
 (?i)param
 (?i)parameteriz(e|es|ed|ing|ation)
 (?i)parametriz(e|es|ed|ing|ation)
@@ -237,6 +241,7 @@
 (?i)pathlib
 (?i)pipeable
 (?i)plaintext
+(?i)pnpm
 (?i)polyphase
 (?i)pragma
 (?i)precheck
@@ -321,6 +326,7 @@
 (?i)standard_asr
 (?i)starlette
 (?i)stat
+(?i)staticmethod
 (?i)stderr
 (?i)stdin
 (?i)stdlib

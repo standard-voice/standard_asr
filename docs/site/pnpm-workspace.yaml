@@ -1,0 +1,15 @@
+# Standalone pnpm workspace: keeps the docs toolchain out of any future
+# JS workspace at the repository root, and approves the build scripts
+# below (pnpm refuses postinstall scripts unless listed here).
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true
+
+# Next.js pulls sharp as an optional dependency for runtime image
+# optimization, which this site does not use (`images.unoptimized`, required
+# by the static export). Excluding it keeps an LGPL-licensed native binary
+# out of a tree that otherwise stays inside the repository's permissive
+# license allowlist, and drops ~90 platform packages from the install.
+ignoredOptionalDependencies:
+  - sharp
+  - '@img/*'

@@ -92,9 +92,11 @@ dev = [
 
 [project.optional-dependencies]
 audio = ["soundfile>=0.12", "scipy>=1.10"]
+# griffelib distributes the `griffe` module; docs/site/scripts/dump_api.py
+# reads the package with it to generate the API reference data. The site
+# itself is a Node application (docs/site) and is not installed from here.
 docs = [
-    "mkdocs-material>=9.6.18",
-    "mkdocstrings[python]>=0.29",
+    "griffelib>=2.2",
 ]
 # websockets is REQUIRED here: server.md promises a WebSocket streaming
 # endpoint, and bare uvicorn ships no WS protocol implementation -- without it
@@ -151,7 +153,7 @@ source-exclude = [".coverage", ".coverage.*"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src/standard_asr", "tests"]
+include = ["src/standard_asr", "tests", "docs/site/scripts"]
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"
@@ -192,9 +194,9 @@ line-length = 100
 # pydocstyle (Google convention) — it enforces the docstring structure that
 # STYLE.md requires.
 select = ["E", "F", "I", "W", "NPY201", "D"]
-# D107: __init__ is merged into the class page (mkdocstrings
-# merge_init_into_class=true), so it needs no separate docstring. D105: trivial
-# container dunders (__len__, __iter__, __repr__) need none either.
+# D107: the API reference merges __init__ into the class signature
+# (docs/site/scripts/dump_api.py), so it needs no separate docstring. D105:
+# trivial container dunders (__len__, __iter__, __repr__) need none either.
 ignore = ["D105", "D107"]
 
 [tool.ruff.lint.pydocstyle]

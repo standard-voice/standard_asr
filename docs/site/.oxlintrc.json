@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "warn",
+    "suspicious": "warn"
+  },
+  "rules": {
+    // Not needed with the automatic JSX runtime (tsconfig "jsx": "react-jsx").
+    "react/react-in-jsx-scope": "off",
+    // Stricter than upstream eslint-plugin-react-hooks: it flags state values
+    // used as deliberate effect triggers. Missing-dependency detection stays
+    // covered by react-hooks/exhaustive-deps.
+    "react/exhaustive-effect-dependencies": "off"
+  },
+  "ignorePatterns": [".next", ".source", ".generated", "out", "next-env.d.ts"]
+}

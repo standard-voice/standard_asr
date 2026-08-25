@@ -1,0 +1,44 @@
+# Cross-reference targets that stay unlinked on purpose: external,
+# private, or undocumented symbols cited from docstrings. dump_api.py
+# fails when the dump's unresolved set drifts from this list, so a typo,
+# a rename, or a newly documented symbol surfaces as a build error
+# instead of a silently degraded link. One target per line, sorted;
+# blank lines and # comments are ignored.
+SECRET_MASK
+STORAGE_URI_SCHEMES
+ValueError
+_CoalescingBuffer.get
+_CoalescingBuffer.put_forced
+_ENV_EXCLUDED_FIELDS
+_ReadingOrderLedger
+__anext__
+_check_prepare_hook
+_close
+_cues
+_env_override
+_flat_input_keys
+_iter_paths
+_node_narrows
+_normalize_segment
+_open
+_pick_sub_constraint_probe
+_produce
+_reject_security_method_override
+_run_producer
+_secret_carrier
+_shutdown
+_start_transcription
+_submit
+_transcribe
+aiter
+json.loads
+kind
+pydantic.JsonValue
+resolve_cache_dir
+standard_asr.audio
+standard_asr.audio.negotiation
+standard_asr.audio.negotiation.validate_fetchable_url
+standard_asr.runtime.gating
+standard_asr.runtime.protocol_boundary.require_sync_result
+standard_asr.runtime.streaming._LifecycleGuard
+typing.get_type_hints
