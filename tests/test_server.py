@@ -12,6 +12,7 @@ ignored the audio would mask the very contract the server must honor).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import builtins
 import io
@@ -1211,6 +1212,54 @@ def test_ws_engine_validation_error_never_reaches_the_log(
     assert caplog.records
     assert "sk-ENGINE-SIDE-SECRET" not in caplog.text
     assert "input_value" not in caplog.text
+
+
+def test_abort_ws_never_reraises_through_an_active_except_block() -> None:
+    """A failed error-frame send must not resurrect the handled exception.
+
+    Every pre-bridge error frame is sent from inside an active ``except``
+    block. When the client disconnected first, ``send_json``/``close`` raise
+    ``WebSocketDisconnect``, which implicitly chains the handled (safe-logged,
+    possibly credential-bearing) exception as ``__context__`` -- and an
+    exception escaping the route reaches the ASGI server's raw traceback
+    logger, whose native formatter re-renders every chain link, pydantic
+    ``input_value`` echo included. The abort boundary must swallow the
+    transport failure instead.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi import WebSocketDisconnect
+
+    class _GoneWebSocket:
+        """Stub socket whose peer disconnected before the error frame."""
+
+        def __init__(self, *, fail_close_only: bool = False) -> None:
+            self.sent: list[dict[str, str]] = []
+            self.fail_close_only = fail_close_only
+
+        async def send_json(self, frame: dict[str, str]) -> None:
+            if not self.fail_close_only:
+                raise WebSocketDisconnect(code=1006)
+            self.sent.append(frame)
+
+        async def close(self) -> None:
+            raise WebSocketDisconnect(code=1006)
+
+    async def _abort_inside_active_except(websocket: _GoneWebSocket) -> None:
+        try:
+            raise ValueError("sk-HANDLED-SECRET must stay handled")
+        except ValueError:
+            await server_module._abort_ws(  # pyright: ignore[reportPrivateUsage]
+                cast("Any", websocket), "internal_error", "Internal error."
+            )
+
+    # Send fails: nothing escapes, nothing was deliverable.
+    asyncio.run(_abort_inside_active_except(_GoneWebSocket()))
+    # Send succeeds but close fails: the frame is out, nothing escapes.
+    delivered = _GoneWebSocket(fail_close_only=True)
+    asyncio.run(_abort_inside_active_except(delivered))
+    assert delivered.sent == [
+        {"type": "error", "code": "internal_error", "message": "Internal error."}
+    ]
 
 
 def test_transcribe_engine_built_invalid_result_maps_to_500_not_422() -> None:

@@ -107,6 +107,40 @@ def _internal_error_message(stage: str) -> str:
     return f"Internal {stage} error. See server logs for details."
 
 
+async def _abort_ws(websocket: WebSocket, code: str, message: str) -> None:
+    """Best-effort send one terminal error frame, then close the socket.
+
+    THE boundary for every terminal error frame the route sends outside its
+    forward loop: each caller runs inside an active ``except`` block whose
+    exception is already handled (safe-logged where it carries detail). If the
+    client disconnected first, ``send_json`` and ``close`` raise
+    ``WebSocketDisconnect`` -- and an exception raised inside an active
+    ``except`` block implicitly chains the handled exception as
+    ``__context__``, so the disconnect left the route CARRYING the original
+    error into the ASGI server's raw traceback logger. The native formatter
+    re-renders every chain link's message, a pydantic ``input_value`` echo
+    included -- exactly the rendering :func:`log_exception_safely` exists to
+    keep out of operator logs. Suppression is safe by construction: the frame
+    is a courtesy to a client that is already gone, and the fault it reports
+    is handled before this call.
+
+    Args:
+        websocket: The accepted client WebSocket.
+        code: The error frame's machine-readable code.
+        message: The error frame's client-safe message.
+
+    Returns:
+        None.
+    """
+    try:
+        await websocket.send_json({"type": "error", "code": code, "message": message})
+        await websocket.close()
+    except Exception:  # noqa: BLE001
+        # The socket is unusable (client gone, transport torn down, or already
+        # closed); there is nothing left to deliver the frame to.
+        pass
+
+
 # The credential-scrubbing of pydantic validation errors is shared with the CLI
 # (and any other transport that surfaces an `options` validation error) so the
 # two cannot drift on the "never echo the request input" rule. The single owner
@@ -691,29 +725,18 @@ def create_app(
             # the transport ws_max_size), so the documented DoS bound holds
             # regardless of the ASGI server in front. Reported like the audio
             # caps.
-            await websocket.send_json(
-                {"type": "error", "code": "payload_too_large", "message": str(exc)}
-            )
-            await websocket.close()
+            await _abort_ws(websocket, "payload_too_large", str(exc))
             return
         except _ConfigFrameNotText as exc:
             # A malformed handshake (binary first frame): the caller's mistake,
             # reported with the standard-authored message.
-            await websocket.send_json({"type": "error", "code": "bad_request", "message": str(exc)})
-            await websocket.close()
+            await _abort_ws(websocket, "bad_request", str(exc))
             return
         except json.JSONDecodeError as exc:
             # Unparseable JSON text: caller-fixable. JSONDecodeError's str()
             # is positional ("Expecting value: line 1 column 2"), never the
             # document text, so it is safe and actionable to send.
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "bad_request",
-                    "message": f"Config frame is not valid JSON: {exc}.",
-                }
-            )
-            await websocket.close()
+            await _abort_ws(websocket, "bad_request", f"Config frame is not valid JSON: {exc}.")
             return
         except ValidationError as exc:
             # The CLOSED StreamConfigRequest model rejects unknown top-level
@@ -722,14 +745,7 @@ def create_app(
             # audio_format, and invalid options -- all caller-fixable.
             # Sanitize: pydantic's str(exc) echoes the offending input value,
             # so a mis-placed secret in options would be reflected back.
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "bad_request",
-                    "message": _sanitized_validation_message(exc),
-                }
-            )
-            await websocket.close()
+            await _abort_ws(websocket, "bad_request", _sanitized_validation_message(exc))
             return
         except Exception:  # noqa: BLE001
             # Anything else here is the SERVER's fault (the receive machinery, an
@@ -738,14 +754,7 @@ def create_app(
             # and leaking internal text to an unauthenticated client. Scrubbed
             # internal_error, specifics safe-logged.
             log_exception_safely(logger, "WS handshake failed internally for model %r", model)
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "internal_error",
-                    "message": _internal_error_message("handshake"),
-                }
-            )
-            await websocket.close()
+            await _abort_ws(websocket, "internal_error", _internal_error_message("handshake"))
             return
 
         try:
@@ -754,10 +763,7 @@ def create_app(
             # The caller's model key does not exist or cannot be parsed --
             # genuinely caller-fixable; the authored message names only the
             # caller's own key and the available keys.
-            await websocket.send_json(
-                {"type": "error", "code": "unknown_model", "message": str(exc)}
-            )
-            await websocket.close()
+            await _abort_ws(websocket, "unknown_model", str(exc))
             return
         except FactoryLoadError:
             # The key RESOLVED; a server-installed plugin failed to
@@ -767,14 +773,9 @@ def create_app(
             # import/annotation text that must not cross the trust boundary.
             # Scrubbed internal_error, specifics safe-logged (§3.7 twin).
             log_exception_safely(logger, "Registered model %r failed to load for streaming", model)
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "internal_error",
-                    "message": _internal_error_message("model construction"),
-                }
+            await _abort_ws(
+                websocket, "internal_error", _internal_error_message("model construction")
             )
-            await websocket.close()
             return
         except ConfigurationRequiredError:
             # MUST precede any broader arm (subclasses ConfigError). Zero-arg
@@ -787,14 +788,7 @@ def create_app(
                 "Engine %r requires configuration absent from the server environment",
                 model,
             )
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "service_unavailable",
-                    "message": _ENGINE_CONFIG_ABSENT_DETAIL,
-                }
-            )
-            await websocket.close()
+            await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
             return
         except Exception:  # noqa: BLE001
             # Internal/unexpected construction fault (incl. ConfigError /
@@ -805,14 +799,9 @@ def create_app(
             # server-side; send a single generic, non-leaking frame (mirrors
             # the REST scrubbed-500 contract).
             log_exception_safely(logger, "Engine construction failed for streaming model %r", model)
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "internal_error",
-                    "message": _internal_error_message("model construction"),
-                }
+            await _abort_ws(
+                websocket, "internal_error", _internal_error_message("model construction")
             )
-            await websocket.close()
             return
 
         try:
@@ -840,14 +829,7 @@ def create_app(
                 "Engine %r requires configuration absent from the server environment",
                 model,
             )
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "service_unavailable",
-                    "message": _ENGINE_CONFIG_ABSENT_DETAIL,
-                }
-            )
-            await websocket.close()
+            await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
             return
         except (ConfigError, InvalidProviderParamError):
             # An ENGINE fault, not a request error: the WS surface gives the
@@ -868,14 +850,9 @@ def create_app(
                 "Engine-side configuration/contract fault during establishment for %r",
                 model,
             )
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "internal_error",
-                    "message": _internal_error_message("stream establishment"),
-                }
+            await _abort_ws(
+                websocket, "internal_error", _internal_error_message("stream establishment")
             )
-            await websocket.close()
             return
         except ValidationError:
             # By session establishment the client's params are already
@@ -890,14 +867,9 @@ def create_app(
             log_exception_safely(
                 logger, "Engine-side validation failure during establishment for %r", model
             )
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "internal_error",
-                    "message": _internal_error_message("stream establishment"),
-                }
+            await _abort_ws(
+                websocket, "internal_error", _internal_error_message("stream establishment")
             )
-            await websocket.close()
             return
         except UnsupportedFeatureError as exc:
             # The ONLY caller-fixable establishment rejection: the engine
@@ -912,8 +884,7 @@ def create_app(
             # engine-internal message, possibly credential-bearing -- to an
             # unauthenticated client; it now falls to the scrubbed
             # internal_error arm below (REST's fault-ownership twin, §3.7).
-            await websocket.send_json({"type": "error", "code": "unsupported", "message": str(exc)})
-            await websocket.close()
+            await _abort_ws(websocket, "unsupported", str(exc))
             return
         except Exception:  # noqa: BLE001
             # Internal/unexpected session-establishment fault (for example, a fault in the
@@ -922,14 +893,9 @@ def create_app(
             # server-side; send a single generic, non-leaking frame (mirrors
             # the construction scrubbed-frame contract).
             log_exception_safely(logger, "Stream session establishment failed for model %r", model)
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "internal_error",
-                    "message": _internal_error_message("stream establishment"),
-                }
+            await _abort_ws(
+                websocket, "internal_error", _internal_error_message("stream establishment")
             )
-            await websocket.close()
             return
 
         # Forward the standard-layer diagnostics (best-effort parameter degrade,
@@ -959,14 +925,9 @@ def create_app(
             # _close without a matching _open -- an unspecified state. Same
             # stance as the compliance gating probe's constructed-not-entered
             # abandonment.
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "internal_error",
-                    "message": _internal_error_message("stream diagnostics"),
-                }
+            await _abort_ws(
+                websocket, "internal_error", _internal_error_message("stream diagnostics")
             )
-            await websocket.close()
             return
         if diagnostics_frame is not None:
             await websocket.send_json(diagnostics_frame)
