@@ -132,7 +132,7 @@ class MyEngine(EngineBase):
   `candidate_languages`, `word_timestamps`, `diarization`, `prompt`,
   `phrase_hints`. Map them onto your model's native arguments. For
   `diarization`, presence means enable: map `params.diarization is not None`
-  onto your native enable switch (the v1 `DiarizationRequest` marker carries no
+  onto your native enable switch (the current `DiarizationRequest` marker carries no
   fields). An engine that declares `diarization.supported=True` MUST actually
   diarize when the request passes the gate. The standard layer cannot verify
   this. Silently ignoring a gated-and-passed request is the cardinal sin: a
@@ -202,11 +202,11 @@ calls your hook. Before your hook runs, the base has already:
   check is then skipped, so an encoding you never declared reaches you unchecked.
   This is the one fail-open concession in the check; compliance warns about it
   (`streaming_input_without_wire_encodings`). It rejects an
-  `audio_format.channels` other than 1: v1 streaming wire input is mono-only,
+  `audio_format.channels` other than 1: streaming wire input is mono-only,
   because the standard layer does not downmix incremental frames the way the batch
   path does. Downmix to mono before feeding. It also rejects a wire `sample_rate`
-  you do not accept. Per spec R7's v1 note, the standard does **not** resample streaming wire
-  frames in v1 (only the batch `transcribe` path resamples), so an unreachable
+  you do not accept. Per spec R7's implementation note, the standard does **not** resample streaming wire
+  frames (only the batch `transcribe` path resamples), so an unreachable
   wire rate is a loud error. When `required_input_sample_rate` is set, the wire
   rate MUST equal it — even when another rate appears in `accepted_sample_rates`.
   That list describes the batch path, which resamples to the required rate before
@@ -230,7 +230,7 @@ calls your hook. Before your hook runs, the base has already:
 
 Your hook receives the **already-gated, frozen** `gated_params` (spec R5: streaming
 params are frozen at `start_transcription` and MUST NOT change mid-stream, except a
-guidance channel declared `mutable_mid_stream` — a reserved declaration in v1). Use them
+guidance channel declared `mutable_mid_stream` — a reserved declaration in the current generation). Use them
 directly — do not re-gate or re-accept raw params. The signature is
 keyword-only: `gated_params`, `audio_format` (the wire format, or `None`), and
 `prepared_audio` (the negotiated whole input, or `None`).

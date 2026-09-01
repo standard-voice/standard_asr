@@ -212,6 +212,14 @@ def test_stable_major_uses_additive_minor_semantics(monkeypatch: pytest.MonkeyPa
         require_protocol_feature("1.0.9", "future_feature")
 
 
+def test_require_supported_protocol_preserves_the_component_bound_reason() -> None:
+    # A canonical-looking token over the u32 bound is NOT a syntax problem;
+    # the wrapper must surface the parser's bound-specific reason instead of
+    # falsely blaming the syntax.
+    with pytest.raises(ProtocolCompatibilityError, match="4294967295"):
+        require_supported_protocol("4294967296.0.0")
+
+
 def test_require_protocol_feature_wraps_malformed_version() -> None:
     with pytest.raises(ProtocolCompatibilityError, match="invalid protocol_version") as caught:
         require_protocol_feature("1.1", PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE)

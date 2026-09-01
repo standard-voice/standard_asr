@@ -164,6 +164,20 @@ def test_engine_base_refuses_inference_on_an_unsupported_line() -> None:
         engine.start_transcription()
 
 
+def test_engine_base_refuses_semantic_negotiation_on_an_unsupported_line() -> None:
+    # supports() and recommended_wire_format() are the two public
+    # negotiation surfaces the application guide teaches callers to consult
+    # BEFORE opening a session. Answering them from a mismatched line's
+    # declaration would steer engine selection, UI state, and audio setup
+    # by semantics this core cannot interpret (AR.1) -- the caller would
+    # only learn of the mismatch when inference finally refused.
+    engine = _OutsideLineEngine()
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.supports("streaming_input")
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.recommended_wire_format()
+
+
 def test_engine_base_refuses_inference_when_properties_are_untyped() -> None:
     # The three inference entries run the FULL engine gate (AR.1), not only
     # the line comparison: with properties that quack the current version
@@ -1223,7 +1237,7 @@ def test_ensure_stream_format_supported_matches_encoding_case_insensitively() ->
 
 
 def test_ensure_stream_format_supported_rejects_multichannel_wire() -> None:
-    # v1 streaming wire is mono-only: the standard layer does not process
+    # Streaming wire input is mono-only: the standard layer does not process
     # incremental wire frames, so it cannot downmix multi-channel frames the way
     # the batch path does. A stereo wire format is rejected at session start.
     from standard_asr.audio.format import AudioFormat
@@ -1301,7 +1315,7 @@ def test_recommended_wire_format_none_when_no_usable_sample_rate() -> None:
 
 
 def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> None:
-    # v1 does NOT resample streaming wire frames, so a wire sample_rate
+    # The standard does NOT resample streaming wire frames, so a wire sample_rate
     # the engine does not accept must be rejected (fail-closed), not forwarded as
     # frames the engine never declared (silent mistranscription). _ArrayProps
     # accepts only [16000] and declares no required_input_sample_rate.
@@ -1318,7 +1332,7 @@ def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> Non
 def test_ensure_stream_format_supported_range_admits_in_range_rate() -> None:
     # A streaming engine declaring accepted_sample_rates as a range
     # accepts any wire sample_rate inside [min, max] at session start, and rejects
-    # one outside it (v1 does not resample streaming wire frames).
+    # one outside it (the standard does not resample streaming wire frames).
     from standard_asr.audio.format import AudioFormat
 
     class _RangeProps(_ArrayProps):
@@ -1378,7 +1392,7 @@ def test_ensure_stream_format_supported_enforces_required_rate_under_any() -> No
     # required_input_sample_rate + accepted_sample_rates="any"
     # is constructible (the declaration-time reachability validator only checks
     # concrete lists), so the session guard must still fail-closed on a wire
-    # rate that differs from the hard-required one -- v1 does not resample
+    # rate that differs from the hard-required one -- the standard does not resample
     # streaming wire frames.
     from standard_asr.audio.format import AudioFormat
 
@@ -1402,7 +1416,7 @@ def test_ensure_stream_format_supported_required_rate_beats_accepted_list() -> N
     # required_input_sample_rate binds even when the wire rate IS in
     # the concrete accepted_sample_rates list. accepted_sample_rates describes
     # the batch path (which resamples to the required rate before the engine);
-    # v1 does not resample streaming wire frames, so a 16 kHz wire against a
+    # The standard does not resample streaming wire frames, so a 16 kHz wire against a
     # 24 kHz-required engine would be interpreted as 24 kHz frames -- a silent
     # mistranscription. The deliberate semantics: hard-reject at establishment.
     from standard_asr.audio.format import AudioFormat

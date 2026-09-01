@@ -76,7 +76,7 @@ sharp, error paths explicit, no implicit behavior.
 
 Credentials use `SecretStr`. URLs are validated against the SSRF target set
 before being forwarded: HTTPS only, with private, loopback, and link-local
-addresses rejected. In v1 this is a resolve-time check, honest about its limits.
+addresses rejected. Today this is a resolve-time check, honest about its limits.
 It is advisory against DNS rebinding, because the engine re-resolves the name at
 fetch time (see the spec's AudioUrl security policy). Unsafe options require
 explicit opt-in.

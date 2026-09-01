@@ -545,7 +545,7 @@ class StreamingGuidanceCaps(GuidanceCaps):
 
     A supported ``mutable_mid_stream`` means the engine MAY accept updated guidance
     after ``start_transcription`` (otherwise ``RuntimeParams`` is frozen for the
-    whole session). v1 reserves the flag as the standard query path
+    whole session). The current generation reserves the flag as the standard query path
     (``supports("streaming.guidance.mutable_mid_stream")``) and does NOT promise an
     ``update_guidance()`` method; default ``supported=False`` coincides with the
     fail-closed "session-locked" semantics, so the compliance suite requires no

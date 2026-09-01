@@ -4,7 +4,7 @@
 """Per-request runtime parameters (closed portable set + escape hatch).
 
 :class:`RuntimeParams` is the **closed** container of per-request settings
-(spec, section "Runtime Parameters"). It carries the v1 portable standard set
+(spec, section "Runtime Parameters"). It carries the current portable standard set
 (``language``, ``candidate_languages``, ``word_timestamps``, ``diarization``,
 and the ``guidance`` family ``prompt`` / ``phrase_hints``) plus a single typed
 escape hatch, ``provider_params``, for engine-specific parameters. Engine authors MUST NOT
@@ -98,7 +98,7 @@ class DiarizationRequest(BaseModel):
     -> ``DiarizationRequest()``; ``"diarization": null`` -> ``None``; key
     absent -> ``None``.
 
-    The model is a deliberately **empty** frozen marker in v1: tuning parameters
+    The model is a deliberately **empty** frozen marker in the current generation: tuning parameters
     (``num_speakers`` / ``min``/``max`` hints, granularity selection) are
     deferred because today's engine landscape cannot honor them portably --
     they graduate additively onto this model once support is broad enough.

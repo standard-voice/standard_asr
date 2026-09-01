@@ -118,7 +118,7 @@ assert {field for field, _ in _GATED_PARAMS} | _UNGATED_PORTABLE_FIELDS == set(
 
 #: Empty-marker drift guard (import-time, mirrored by a drift test): the
 #: diarization gate above is FEATURE-level only, which is sound solely because
-#: the v1 :class:`DiarizationRequest` marker carries no fields. The moment a
+#: the current :class:`DiarizationRequest` marker carries no fields. The moment a
 #: field graduates onto it (for example, a deferred ``num_speakers`` hint), a
 #: feature-level pass would let that field reach an engine that cannot honor it
 #: -- silently ignored, the cardinal sin. This assert fails the import until the

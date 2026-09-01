@@ -4412,27 +4412,42 @@ def test_gating_best_effort_streaming_input_probe_is_side_effect_free() -> None:
 
 
 def test_gating_probe_context_unbuildable_is_reported() -> None:
-    # If a legal wire audio_format cannot be synthesized from Properties (a broken
-    # native_sample_rate read), report it rather than crash.
+    # If a legal wire audio_format cannot be synthesized (the recommendation
+    # itself raises -- the shape a structural engine's own broken derivation
+    # takes), report it rather than crash. The engine's declaration is typed
+    # and on the current line, so the shared engine gate is NOT what fails.
     class _NoFormatEngine(_FailLoudOnMissingFormatEngine):
+        def recommended_wire_format(self) -> AudioFormat | None:
+            raise RuntimeError("no native rate")
+
+    report = check_streaming_param_gating(_NoFormatEngine(strict=True))
+    assert report.passed is False
+    assert any(i.code == "gating_probe_context_unbuildable" for i in report.issues)
+
+
+def test_gating_probe_gate_refusal_is_contained_as_selection_raise() -> None:
+    # An EngineBase engine whose properties are untyped is refused by the
+    # shared engine gate at the FIRST semantic probe (supports() is gated,
+    # AR.1): the check's Raises-None promise contains that refusal as
+    # gating_probe_selection_raised instead of crashing the run. The
+    # orchestrated compliance flow never reaches this state (the instance
+    # gate stops first); this pins the direct-library-call behavior.
+    class _UntypedPropertiesEngine(_FailLoudOnMissingFormatEngine):
         @property
         def properties(self) -> _StreamProps:  # type: ignore[override]
             class _Bad:
                 required_input_sample_rate = None
                 engine_id = "broken"
 
-                @property
-                def native_sample_rate(self) -> int:
-                    raise RuntimeError("no native rate")
-
             return _Bad()  # type: ignore[return-value]
 
     # cast: the fixture is DELIBERATELY malformed (a raising @property where
     # the protocol pins a ClassVar), so structural typing rightly rejects it;
     # the runtime containment is exactly what this test asserts.
-    report = check_streaming_param_gating(cast(StandardASR, _NoFormatEngine(strict=True)))
+    report = check_streaming_param_gating(cast(StandardASR, _UntypedPropertiesEngine(strict=True)))
     assert report.passed is False
-    assert any(i.code == "gating_probe_context_unbuildable" for i in report.issues)
+    issue = next(i for i in report.issues if i.code == "gating_probe_selection_raised")
+    assert "cannot be established" in issue.message
 
 
 def test_gating_probe_context_unbuildable_when_no_sample_rate() -> None:
@@ -4463,11 +4478,12 @@ def test_safe_engine_id_contains_raising_properties() -> None:
         is None
     )
     # The gating check still returns a report (Raises: None) despite the broken
-    # properties: synthesis reads properties, so it surfaces a contained error
-    # rather than crashing the run. The key invariant is that it does NOT raise.
+    # properties: the gated supports() probe reads properties first, so the
+    # raise surfaces as a contained selection error rather than crashing the
+    # run. The key invariant is that it does NOT raise.
     report = check_streaming_param_gating(cast(StandardASR, engine))
     assert report.passed is False
-    assert any(i.code == "gating_probe_context_unbuildable" for i in report.issues)
+    assert any(i.code == "gating_probe_selection_raised" for i in report.issues)
 
 
 def test_safe_engine_id_handles_missing_properties() -> None:

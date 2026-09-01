@@ -135,9 +135,13 @@ def require_supported_protocol(protocol_version: str) -> None:
     try:
         declared = parse_protocol_version(protocol_version)
     except (TypeError, ValueError) as exc:
+        # Preserve the parser's specific reason: a canonical-looking token
+        # over the u32 component bound would otherwise be blamed on its
+        # syntax, which is exactly what is NOT wrong with it. Parser
+        # messages are this module's own fixed strings (a TypeError names
+        # only the offending type), so embedding them echoes no input.
         raise ProtocolCompatibilityError(
-            "The engine declares an invalid protocol_version. Expected "
-            "canonical MAJOR.MINOR.PATCH syntax.",
+            f"The engine declares an invalid protocol_version: {exc}",
             protocol_version=protocol_version,
         ) from exc
 

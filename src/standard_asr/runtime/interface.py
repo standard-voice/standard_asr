@@ -253,6 +253,12 @@ class StandardASR(Protocol):
 
         Returns:
             ``True`` if supported.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine declares a protocol
+                line the core does not support -- a capability answer is a
+                semantic interpretation of the declaration and must not be
+                given for a mismatched line.
         """
         ...
 
@@ -337,6 +343,12 @@ class StandardASR(Protocol):
         Returns:
             A wire format the engine's session-establishment guard accepts, or
             ``None`` when no bare-frame streaming format can be recommended.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine declares a protocol
+                line the core does not support -- the recommendation is
+                derived from the declaration and must not be interpreted
+                for a mismatched line.
         """
         ...
 
@@ -504,9 +516,9 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     Raises:
         UnsupportedFeatureError: If ``wire_encodings`` is declared and the
             requested encoding is not among them, if the wire ``channels`` is
-            not ``1`` (v1 streaming wire is mono-only), or if the wire sample
-            rate is not reachable for the engine (fail-closed; v1 does not
-            resample streaming wire frames).
+            not ``1`` (streaming wire input is mono-only), or if the wire sample
+            rate is not reachable for the engine (fail-closed; the standard
+            does not resample streaming wire frames).
     """
     props = properties
     wire = props.wire_encodings
@@ -521,7 +533,7 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
 
     if audio_format.channels != 1:
         raise UnsupportedFeatureError(
-            f"Streaming wire format declares channels={audio_format.channels}; v1 "
+            f"Streaming wire format declares channels={audio_format.channels}; "
             "streaming wire input is mono-only. The standard layer does not process "
             "incremental wire frames, so it cannot downmix multi-channel frames the "
             "way the batch path does. Downmix to mono before feeding.",
@@ -534,13 +546,13 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     required = props.required_input_sample_rate
     # A hard-required wire rate binds regardless of accepted_sample_rates:
     # "any" + required_input_sample_rate is constructible (the declaration
-    # reachability validator only checks concrete lists), and v1 does not
+    # reachability validator only checks concrete lists), and the standard does not
     # resample streaming wire frames, so a differing rate fails closed here.
     if required is not None and rate != required:
         raise UnsupportedFeatureError(
             f"Streaming wire sample_rate {rate} Hz does not match the "
             f"required_input_sample_rate={required} Hz that engine "
-            f"{props.engine_id!r} hard-requires. v1 does not resample streaming "
+            f"{props.engine_id!r} hard-requires. The standard does not resample streaming "
             "wire frames, so the required rate is enforced at session "
             "establishment even when accepted_sample_rates is 'any'.",
             param="audio_format.sample_rate",
@@ -551,7 +563,7 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     if accepted != "any" and not sample_rate_accepted(accepted, rate):
         raise UnsupportedFeatureError(
             f"Streaming wire sample_rate {rate} Hz is not accepted by engine "
-            f"{props.engine_id!r} (accepted_sample_rates={accepted!r}). v1 does "
+            f"{props.engine_id!r} (accepted_sample_rates={accepted!r}). The standard does "
             "not resample streaming wire frames, so an unreachable rate is "
             "rejected at session establishment rather than silently "
             "mistranscribed. Open the session at an accepted rate.",
@@ -795,7 +807,17 @@ class EngineBase(ABC):
 
         Returns:
             ``True`` if supported by the effective capabilities.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core -- a mismatched line's
+                capability tree is not interpretable under this core's
+                semantics, and a capability answer steers engine selection
+                and request shaping, so it must not be given (AR.1).
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed).
         """
+        require_engine_protocol(self)
         return self.effective_capabilities.supports(dot_path)
 
     def prepare(self) -> None:
@@ -1928,8 +1950,8 @@ class EngineBase(ABC):
         ``wire_encodings`` unset, since that skip is where a forgotten
         declaration would let a non-PCM frame be misframed.
 
-        Wire **sample rate**: the standard's v1 implementation note is explicit
-        that v1 does **NOT** resample streaming bare frames in the standard layer
+        Wire **sample rate**: the spec's implementation note is explicit
+        that streaming bare frames are **NOT** resampled in the standard layer
         (unlike the batch ``transcribe`` path, which resamples). Therefore, until
         standard-layer streaming resampling lands, a wire ``sample_rate`` that the
         engine does not accept MUST be rejected here rather than forwarded as
@@ -1947,9 +1969,9 @@ class EngineBase(ABC):
         Raises:
             UnsupportedFeatureError: If ``wire_encodings`` is declared and the
                 requested encoding is not among them, if the wire ``channels`` is
-                not ``1`` (v1 streaming wire is mono-only), or if the wire sample
-                rate is not reachable for the engine (fail-closed; v1 does not
-                resample streaming wire frames).
+                not ``1`` (streaming wire input is mono-only), or if the wire sample
+                rate is not reachable for the engine (fail-closed; the
+                standard does not resample streaming wire frames).
         """
         # Delegates to the module-level pure rule so the compliance suite can
         # validate the identical semantics for structural (non-EngineBase)
@@ -1974,7 +1996,7 @@ class EngineBase(ABC):
         * ``encoding`` = the first declared ``wire_encodings`` entry, else the
           canonical ``pcm_s16le`` (used only when ``wire_encodings`` is
           unconstrained, where the engine accepts any encoding).
-        * ``channels`` = 1 (v1 streaming wire is mono-only).
+        * ``channels`` = 1 (streaming wire input is mono-only).
 
         The derivation is deliberately capability-blind (Properties only):
         whether a bare-frame session can be opened at all is decided by the
@@ -1987,8 +2009,17 @@ class EngineBase(ABC):
             A wire format the engine's session-establishment guard accepts, or
             ``None`` when the engine declares no usable (positive) sample rate, so
             no bare-frame streaming format can be recommended.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core -- the recommendation is
+                derived from the declared Properties, and a mismatched
+                line's declaration must not be interpreted under this
+                core's semantics (AR.1).
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed).
         """
-        props = self.properties
+        props = require_engine_protocol(self)
         # required_input_sample_rate (int | None) wins when set; else the native
         # rate. ``or`` also treats a 0 required-rate as unset. The result is typed
         # ``int``; a non-positive rate (a malformed declaration) yields no

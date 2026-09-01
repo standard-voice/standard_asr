@@ -2730,7 +2730,7 @@ def check_transcription_result(
     Behavioral check for batch engines that is **pure**, mirroring
     :func:`check_event_sequence`: it inspects a result the author already
     produced -- it never instantiates or calls an engine (invoking a cloud
-    engine from a compliance run would be a billable side effect). In v1 it
+    engine from a compliance run would be a billable side effect). Today it
     verifies the diarization couple: a result carrying speaker labels anywhere
     (top-level ``segments[]`` / ``words[]``, a segment's ``words``, or any
     ``channels[i]`` view) while ``batch.diarization`` is unsupported (or the

@@ -115,9 +115,18 @@ def test_url_passthrough_when_accepted() -> None:
     assert plan.target_kind is URL
 
 
-def test_url_to_array_engine_v1_fails() -> None:
+def test_url_to_array_engine_has_no_viable_path() -> None:
     result = negotiate(AudioUrl("https://x/a.wav"), {ARR})
     assert isinstance(result, NoViablePath)
+
+
+@pytest.mark.parametrize("accepted", [{FILE}, {BYTES}, {FILE, BYTES}])
+def test_url_to_encoded_only_engine_has_no_viable_path(accepted: set[InputKind]) -> None:
+    # R3: the standard never fetches a URL, so an engine that accepts only
+    # encoded files or bytes cannot receive one. Pins the matrix cell.
+    result = negotiate(AudioUrl("https://x/a.wav"), accepted)
+    assert isinstance(result, NoViablePath)
+    assert "does not fetch URLs" in result.hint
 
 
 def test_can_accept() -> None:
@@ -162,8 +171,8 @@ def test_array_to_file_only_engine_no_viable_path() -> None:
 
 def test_path_to_url_only_engine_no_viable_path() -> None:
     # A local file cannot be turned into a fetchable URL; the standard does not
-    # synthesize one in v1. The hint points at the remote shape the engine
-    # accepts (uploading is the caller's job).
+    # synthesize one. The hint points at the remote shape the engine accepts
+    # (uploading is the caller's job).
     result = negotiate(AudioPath("a.wav"), {URL})
     assert isinstance(result, NoViablePath)
     assert "AudioUrl" in result.hint

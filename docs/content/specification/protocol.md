@@ -105,7 +105,7 @@ lang: zh-Hans
 | `AudioPath` | decode→array（需 `[audio]`） | 读文件→bytes，透传 | **FAIL** | **FAIL** |
 | `AudioBytes` | decode→array（需 `[audio]`） | 透传 | **FAIL** | **FAIL** |
 | `AudioArray` | 透传（+ 采样率 R6–R8） | encode→WAV bytes（R4） | **FAIL** | **FAIL** |
-| `AudioUrl` | **v1: FAIL**（R5）；v2: fetch→decode | 透传给接受 URL 引擎 | 透传 | **FAIL** |
+| `AudioUrl` | **当前: FAIL**（R5）；未来修订: fetch→decode | **当前: FAIL**（R5）；未来修订: fetch→bytes | 透传 | **FAIL** |
 | `AudioBase64` | b64decode→decode→array | b64decode→bytes | **FAIL** | **FAIL** |
 | `AudioStorageUri` | **FAIL**（R5.2） | **FAIL**（R5.2） | **FAIL**（R5.2） | 透传（零转换） |
 
@@ -120,9 +120,9 @@ lang: zh-Hans
 
 **R5 — `AudioUrl` 安全策略。**
 - **引擎/云自取**：转发前 MUST 校验 HTTPS-only + 默认拒绝私网/环回/link-local IP 段（RFC1918、127/8、169.254/16、::1、fc00::/7；可显式 opt-in）+ 重定向上限+每跳重校验。**opt-in 入口**：私网拒绝的显式放宽是 **Init Config 级**部署开关 `allow_private_urls: bool`（`BaseConfig`，默认 `False`），由标准转写管线（`EngineBase._prepare_audio`）透传给校验器；HTTPS 要求**不**可放宽。它属部署属性而非请求属性，故归 Init Config 而非 `RuntimeParams`（不随请求漂移），且与 `strict` 同列 `_ENV_EXCLUDED_FIELDS`——环境变量 MUST NOT 静默放宽该安全策略。
-- **标准自取**：**v1 MUST NOT 实现**（SSRF 高危）。`AudioUrl` v1 仅作透传。
-- v2 若开放：MUST 额外 DNS pin + 流式读取硬上限 + 超时。
-- **v1 校验边界（明示，非静默缺口）**：v1 标准层**只校验调用方给出的那个初始 URL**——解析其 host、核验 HTTPS 与所有解析到的 IP 非私网（实现：`validate_fetchable_url`），随后把**字面 URL**透传给引擎；标准层**自身不拉取、不发起任何请求、因此也不存在需要逐跳重校验的重定向链**。上文第一条里的"重定向上限+每跳重校验"是**引擎/云端 fetcher**的责任（它在 fetch 时会独立地再次解析域名——故 resolve-time IP 检查对 DNS rebinding 仅是 advisory，不是硬保证）。也就是说：**v1 里跟随并逐跳重校验重定向是引擎侧的义务，不是标准层的**；待 v2 标准开放自取时，per-hop 重校验才落到标准层（连同上一条的 DNS pin / 读取上限 / 超时）。
+- **标准自取**：**当前世代 MUST NOT 实现**（SSRF 高危）。`AudioUrl` 当前仅作透传。
+- 未来修订若开放：MUST 额外 DNS pin + 流式读取硬上限 + 超时。
+- **当前校验边界（明示，非静默缺口）**：标准层**只校验调用方给出的那个初始 URL**——解析其 host、核验 HTTPS 与所有解析到的 IP 非私网（实现：`validate_fetchable_url`），随后把**字面 URL**透传给引擎；标准层**自身不拉取、不发起任何请求、因此也不存在需要逐跳重校验的重定向链**。上文第一条里的"重定向上限+每跳重校验"是**引擎/云端 fetcher**的责任（它在 fetch 时会独立地再次解析域名——故 resolve-time IP 检查对 DNS rebinding 仅是 advisory，不是硬保证）。也就是说：**跟随并逐跳重校验重定向当前是引擎侧的义务，不是标准层的**；待未来修订开放标准自取时，per-hop 重校验才落到标准层（连同上一条的 DNS pin / 读取上限 / 超时）。
 
 **R5.2 — `AudioStorageUri` 安全模型（独立于 R5）。** provider 云存储 URI（`s3://`/`gs://`/`oss://`/`abfs://` 等）由**引擎**用自己的云 SDK 凭证解析，标准既不拉取也不能在无凭证下访问，因此：
 - 构造期 MUST 校验 scheme 落在 provider 存储 scheme 白名单内（小且 extensible-by-constant，无运行时注册表）；MUST 拒绝 `file://`、`http(s)://`、空值、未知 scheme，报清晰错误。
@@ -133,17 +133,17 @@ lang: zh-Hans
 
 **R7 — 重采样责任。** `accepted_sample_rates` **始终权威**，不论 `self_resamples`：输入 ∉ accepted 且 ≠ `required_input_sample_rate` → 标准 MUST 重采样；无可达目标 = 定义错误，MUST NOT 静默透传。8 kHz 电话 = 独立原生模型，MUST 经 entrypoint preset 选择，MUST NOT 升采样原生率输入。24 kHz realtime = `required_input_sample_rate`，标准重采样；流式缺 `[audio]` 时 MUST 在会话建立时报错。**可达性不变量**：`required_input_sample_rate`（若设）MUST 被 `accepted_sample_rates` 接受（当后者为具体列表**或区间**时，即非 `"any"`；按上文统一隶属判定）——重采样目标必须可达；同理 `native_sample_rate` MUST 被 `accepted_sample_rates` 接受（非 `"any"` 时）——否则引擎自身的原生率输入会被静默重采样（如 8 kHz 电话模型被升采样到 16k），而 8 kHz 是独立原生模型而非低采样率变体。两条不变量均在 Properties **声明期**即校验（`BaseProperties`），而非延迟到会话建立。
 
-**R7.1 — `required_input_sample_rate` 对 batch 路径绝对权威（normative）。** 对 batch 的数组与编码（array / encoded）路径：当 `required_input_sample_rate` 已设且**输入采样率 ≠ required** 时，标准 **MUST** 重采样到 `required`，**不论** `accepted_sample_rates` 为 `"any"` 抑或其具体列表已含输入采样率。即「输入 ∈ accepted 但 ≠ required」这一可构造组合（如 `accepted_sample_rates=[16000, 24000]` + `required_input_sample_rate=24000` + 输入 16000）下，**MUST** 重采样到 24000 而 **MUST NOT** 透传 16000——硬性线路要求（如 OpenAI Realtime「Always 24000」）必须被精确满足。此条把参考实现既有行为升格为 normative，消除 R7 字面只覆盖「∉ accepted 且 ≠ required」时其它实现可能透传的歧义；流式侧 `ensure_stream_format_supported` 的 required 绝对优先与此同构（见下方 v1 实现说明 ①）。
+**R7.1 — `required_input_sample_rate` 对 batch 路径绝对权威（normative）。** 对 batch 的数组与编码（array / encoded）路径：当 `required_input_sample_rate` 已设且**输入采样率 ≠ required** 时，标准 **MUST** 重采样到 `required`，**不论** `accepted_sample_rates` 为 `"any"` 抑或其具体列表已含输入采样率。即「输入 ∈ accepted 但 ≠ required」这一可构造组合（如 `accepted_sample_rates=[16000, 24000]` + `required_input_sample_rate=24000` + 输入 16000）下，**MUST** 重采样到 24000 而 **MUST NOT** 透传 16000——硬性线路要求（如 OpenAI Realtime「Always 24000」）必须被精确满足。此条把参考实现既有行为升格为 normative，消除 R7 字面只覆盖「∉ accepted 且 ≠ required」时其它实现可能透传的歧义；流式侧 `ensure_stream_format_supported` 的 required 绝对优先与此同构（见下方当前实现说明 ①）。
 
 **R7.2 — 重采样目标率的选择顺序（normative）。** 当 R7 判定必须重采样时，标准 **MUST** 按以下顺序选择目标采样率（首个适用者胜）：① `required_input_sample_rate`（若设）；② 否则 `native_sample_rate`。R7 的两条可达性不变量保证：经引擎管线（`accepted_sample_rates` 为具体列表或区间时 required 与 native 均被 accepted 接受）①②**必然可达**，故无需第三级。仅当调用者**绕过 Properties 不变量直接调用** `execute_plan`（声明不满足不变量）时，实现 MAY 退到一个防御性兜底：在 accepted 中选与源采样率**绝对距离最近**者，并在等距时**偏好不升采样**（`≤ source`）的目标（区间则把源钳入 `[min, max]`；源采样率未知时选 `min(accepted)` / 区间下界以最小化无谓升采样）。此兜底是实现细节而非 normative 要求，独立实现可自选等价的 fail-loud 策略。把目标选择写入规范，避免其它实现选 `accepted[0]` 或 `max(accepted)` 导致同一输入跨实现得到不同质量的重采样结果。
 
-> **v1 实现说明**：v1 不在标准层重采样**流式裸帧**（流式引擎自行处理 wire 帧），因此上文"流式缺 `[audio]` 时会话建立报错"针对的是**未来**标准层流式重采样落地后的路径。v1 的会话建立校验（`EngineBase.ensure_stream_format_supported`）做**三项** fail-closed：①**wire 采样率可达性**——`required_input_sample_rate`（若设）MUST 强等（**含 `accepted_sample_rates="any"` + `required` 的可构造组合**），否则 wire rate MUST 被 `accepted_sample_rates` 接受（非 `"any"` 时，按统一隶属判定——列表成员或区间内）；②**mono-only**——`audio_format.channels` MUST = `1`（与 [§ST 3.1](#streaming):"v1 增量 wire 输入仅支持单声道"一致）；③**wire 编码**——当引擎声明 `wire_encodings`（具体列表）时拒绝列表外编码（`wire_encodings=None` 为 unconstrained，编码 fail-open，缺席语义见 [§AI 3.2](#audio-input)）。采样率拒绝是「标准层流式重采样」deferred 路径落地前的 v1 替代行为（届时该拒绝转为重采样）。批量 `transcribe` 路径的重采样与 `[audio]` 行为按本条全量生效。
+> **当前实现说明**：标准层当前不重采样**流式裸帧**（流式引擎自行处理 wire 帧），因此上文"流式缺 `[audio]` 时会话建立报错"针对的是**未来**标准层流式重采样落地后的路径。当前的会话建立校验（`EngineBase.ensure_stream_format_supported`）做**三项** fail-closed：①**wire 采样率可达性**——`required_input_sample_rate`（若设）MUST 强等（**含 `accepted_sample_rates="any"` + `required` 的可构造组合**），否则 wire rate MUST 被 `accepted_sample_rates` 接受（非 `"any"` 时，按统一隶属判定——列表成员或区间内）；②**mono-only**——`audio_format.channels` MUST = `1`（与 [§ST 3.1](#streaming):"增量 wire 输入当前仅支持单声道"一致）；③**wire 编码**——当引擎声明 `wire_encodings`（具体列表）时拒绝列表外编码（`wire_encodings=None` 为 unconstrained，编码 fail-open，缺席语义见 [§AI 3.2](#audio-input)）。采样率拒绝是「标准层流式重采样」deferred 路径落地前的当前替代行为（届时该拒绝转为重采样）。批量 `transcribe` 路径的重采样与 `[audio]` 行为按本条全量生效。
 
 **R8 — 重采样质量与许可证。** fallback MUST 抗混叠（FFT-based，MUST NOT 裸线性/抽取）；用了 fallback MUST 发 `resampled_with=fallback` diagnostic。许可证：SHOULD clean-room FFT；MUST NOT vendoring SoX/soxr(LGPL/GPL) 或 2016 前 libsamplerate；soxr 仅作 `[audio]` 依赖。
 
 **R9 — 内存与大媒体。** `AudioBytes`/`AudioArray` = 装得下内存的形态；大媒体 SHOULD 用 `AudioPath`/`AudioUrl`；标准读文件/URL 给文件型引擎时 SHOULD 流式不全缓冲。
 
-**R10 — 新增 Properties。** `accepted_input`/`max_file_size`/`max_audio_duration`/`native_sample_rate`/`accepted_sample_rates`/`required_input_sample_rate`/`wire_encodings` MUST 落在 §C 的层级化模型内。关于 `supported_input_formats`（容器格式协商）：v1 由 `accepted_input` + encoder 容器选择间接覆盖，后续可 additive 补充。`max_audio_duration` **强制点**：标准仅在输入**已解码为数组**（时长可测）时校验并 fail-loud；编码透传（file/bytes passthrough）MUST NOT 为测时长而强制全解码（见 R9），改由 `max_file_size` 作本地护栏 + 引擎自行兜底。
+**R10 — 新增 Properties。** `accepted_input`/`max_file_size`/`max_audio_duration`/`native_sample_rate`/`accepted_sample_rates`/`required_input_sample_rate`/`wire_encodings` MUST 落在 §C 的层级化模型内。关于 `supported_input_formats`（容器格式协商）：当前由 `accepted_input` + encoder 容器选择间接覆盖，后续可 additive 补充。`max_audio_duration` **强制点**：标准仅在输入**已解码为数组**（时长可测）时校验并 fail-loud；编码透传（file/bytes passthrough）MUST NOT 为测时长而强制全解码（见 R9），改由 `max_file_size` 作本地护栏 + 引擎自行兜底。
 
 ## 5. 示例
 
@@ -165,11 +165,11 @@ lang: zh-Hans
 3. 重采样：`self_resamples=true` 且 `"any"` → 透传。引擎自行降至 16k。
 4. 结果：float32 数组传给引擎 + decode diagnostic。
 
-### 示例 C：AudioUrl → 只接受数组的引擎（v1 FAIL）
+### 示例 C：AudioUrl → 只接受数组的引擎（当前 FAIL）
 
 引擎：`accepted_input={"array"}`。应用传入 `AudioUrl("https://example.com/audio.wav")`。
 
-1. 协商：矩阵 `AudioUrl` × `array` → v1: FAIL。
+1. 协商：矩阵 `AudioUrl` × `array` → 当前: FAIL。
 2. 结果：抛 `IncompatibleAudioInputError`，hint="请用 AudioPath 提供本地文件"。
 
 ### 示例 D：AudioUrl → ElevenLabs（接受 URL）
@@ -187,11 +187,13 @@ lang: zh-Hans
 2. 检查 `[audio]` 已装；若未装，会话建立时报错（R7）。
 3. 结果：24 kHz PCM 帧传给引擎 + `resampled_with` diagnostic。
 
+> 当前实现：标准层尚未落地流式重采样（见 R7 之后的「当前实现说明」），这个会话今天在建立时被拒绝；以上步骤描述 R7 的 normative 目标行为，deferred 路径落地后生效。
+
 ## 6. 附注与理由
 
 - **为何用判别联合而非字符串嗅探**：一个名为 `https%3A//...` 的本地文件、一个 base64 恰好以 `/` 开头的字符串，都会导致嗅探误判。显式类型标签消除所有歧义，对 IDE 类型提示也更友好。
 - **为何裸 `str` 只映射 `AudioPath`**：最常见且最安全的语义是文件路径。如果允许裸 str 被推断为 URL，恶意输入可能触发 SSRF。URL/base64 强制显式类型是一道安全防线。
-- **为何 v1 禁止标准自取 URL**：SSRF 是 v1 最不值得冒的风险。"接受 URL 就透传；不接受就报错"比安全实现一个 URL fetcher 简单得多。
+- **为何当前禁止标准自取 URL**：SSRF 是现阶段最不值得冒的风险。"接受 URL 就透传；不接受就报错"比安全实现一个 URL fetcher 简单得多。
 - **为何用独立的 `AudioStorageUri` 变体而非放宽 `AudioUrl`**：两者安全模型根本不同。`AudioUrl` 是 HTTPS 可公开拉取的 URL，标准的 SSRF 校验器（HTTPS-only + 拒私网 IP）正是为它而设。provider 云存储 URI（`s3://`/`gs://`/…）则由**引擎用自己的云 SDK 凭证**解析——标准无法、也不应在无凭证下拉取它，对它跑 public-IP SSRF 校验既无意义又会硬拒掉整类合法云引擎（AWS Transcribe batch 强绑 S3 URI、Google STT v2 仅接受 `gs://`）。把它放进 `AudioUrl` 会迫使一个变体承载两套互斥的安全语义；独立变体让"标准侧无 SSRF 面、引擎侧凭证解析"这一事实在类型与协商矩阵中显式可见，且 scheme 白名单在构造期即 fail-loud。
 - **为何 encoder 输出到 BytesIO**：临时文件有泄漏风险、在只读 FS 上失败、有 TOCTOU 竞态。BytesIO 在进程内完成全部操作。
 - **为何 canonical = WAV/16-bit PCM LE**：最简单的无压缩容器 + 行业标准量化深度 + 主流 CPU 字节序 = 最大兼容性。
@@ -474,20 +476,20 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 |---|---|
 | `RuntimeParams` | 每次请求的参数容器。**封闭的** pydantic 模型（`extra="forbid"`, `frozen=True`）。ASR 作者不得新增顶层字段。 |
 | `provider_params` | `RuntimeParams` 中唯一的引擎特有槽位。typed pydantic 模型（`extra="forbid"`），承载不可移植旋钮。使用即锁定该引擎。 |
-| `guidance` 家族 | 可移植标准集中"引导识别"的一组扁平字段。v1 含 `prompt` 和 `phrase_hints`，共享一套行为契约。 |
+| `guidance` 家族 | 可移植标准集中"引导识别"的一组扁平字段。当前含 `prompt` 和 `phrase_hints`，共享一套行为契约。 |
 | channel | `guidance` 家族中的单个字段。每个在能力树有节点 `capabilities.<mode>.guidance.<channel>`。 |
 | strict / best_effort | 全局处理策略。strict：不支持的标准集参数抛 `UnsupportedFeatureError`。best_effort：忽略+返回结构化 diagnostic（哪个参数被忽略/为什么/最终值）。 |
 
 ## 3. 声明与参数
 
-### 3.1 v1 可移植标准集
+### 3.1 可移植标准集（当前世代）
 
 | 字段 | 类型 | 默认 | Capability 路径 | 含义 |
 |---|---|---|---|---|
 | `language` | `str \| None` | `None` | `<mode>.language.runtime_override` | 本次语言（BCP-47 / `"auto"`），覆盖 `default_language`。解析见 [§语言选择 R2](#language-selection)。 |
 | `candidate_languages` | `list[str] \| None` | `None` | `<mode>.language.candidate_languages` | 候选语言列表（仅 `auto` 下有意义）。解析见 [§语言选择 R3](#language-selection)。 |
 | `word_timestamps` | `WordTimestampGranularity \| None` | `None` | `<mode>.word_timestamps` | 词级时间戳。**枚举**（`word \| segment \| char`），非 bool。 |
-| `diarization` | `DiarizationRequest \| None` | `None` | `<mode>.diarization` | 说话人分离（"谁说了什么"）。**presence = enable**：`DiarizationRequest` 是 v1 的**空 frozen marker**（`extra="forbid"`、无字段）；便利常量 `DIARIZE = DiarizationRequest()`。语义与 wire 映射见 §3.4；结果语义见 [§结果模型 TR.5](#transcription-result)。 |
+| `diarization` | `DiarizationRequest \| None` | `None` | `<mode>.diarization` | 说话人分离（"谁说了什么"）。**presence = enable**：`DiarizationRequest` 是当前世代的**空 frozen marker**（`extra="forbid"`、无字段）；便利常量 `DIARIZE = DiarizationRequest()`。语义与 wire 映射见 §3.4；结果语义见 [§结果模型 TR.5](#transcription-result)。 |
 | `prompt` | `str \| None` | `None` | `<mode>.guidance.prompt` | 自由文本软提示（§3.3）。 |
 | `phrase_hints` | `list[str] \| None` | `None` | `<mode>.guidance.phrase_hints` | 词条 boost 集（§3.3）。 |
 | `on_unsupported` | `Literal["fail", "degrade_to_prompt"]` | `"fail"` | （无——策略指令） | `guidance` 降级策略（§3.3 opt-in 降级）。**无 capability 路径**：它是控制*遇到不支持的 guidance channel 时是否降级*的策略字段，不被能力门控。`"fail"` = **不降级**（按 strict/best_effort 走标准门控：strict 抛错、best_effort 丢弃+diagnostic）——它**不**强制本次请求整体失败，最终行为由全局 strict/best_effort 决定；`"degrade_to_prompt"` = 单向降级 rich→prompt。它是 `RuntimeParams` 顶层字段且**随 wire 可移植集传输**（`WireRuntimeParams`）。 |
@@ -506,7 +508,7 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 
 **扁平字段**直接在 `RuntimeParams` 上（`params.prompt`/`params.phrase_hints`），不嵌套子对象。对应 capability 在 `capabilities.<mode>.guidance.<channel>` 下。
 
-**v1 channels:**
+**当前 channels:**
 
 | Channel | 类型 | Capability 约束 | 映射 |
 |---|---|---|---|
@@ -533,13 +535,13 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 
 **扩展**：新 channel = additive-minor；`x_<vendor>_<channel>` 实验 + 提升去前缀（RFC 6648）；无 per-channel version；channel 名不复用。
 
-**流式**：guidance MAY 进 `capabilities.streaming.guidance.*`；中途可变性由 flag 节点 `capabilities.streaming.guidance.mutable_mid_stream`（`{ supported }`，§C 3.3）声明，经 `engine.supports("streaming.guidance.mutable_mid_stream")` 查询。该 flag **流式专有**（batch guidance 无此节点，单 shot 谈不上中途可变）。默认 `supported=false`=会话锁定（与 fail-closed 一致）；v1 **保留**该声明位但不承诺 `update_guidance()` 方法——合规套件不要求任何运行时行为，`covers()` 的集合包含自动拒绝 `declared=false→effective=true` 放宽。
+**流式**：guidance MAY 进 `capabilities.streaming.guidance.*`；中途可变性由 flag 节点 `capabilities.streaming.guidance.mutable_mid_stream`（`{ supported }`，§C 3.3）声明，经 `engine.supports("streaming.guidance.mutable_mid_stream")` 查询。该 flag **流式专有**（batch guidance 无此节点，单 shot 谈不上中途可变）。默认 `supported=false`=会话锁定（与 fail-closed 一致）；当前**保留**该声明位但不承诺 `update_guidance()` 方法——合规套件不要求任何运行时行为，`covers()` 的集合包含自动拒绝 `declared=false→effective=true` 放宽。
 
 ### 3.4 `diarization` 说话人分离请求（空 enable marker）
 
 `diarization: DiarizationRequest | None` 是可移植标准集字段，**presence = enable**：任何 `DiarizationRequest` 实例 = 请求说话人分离；`None` = 未请求。
 
-- **v1 空 frozen marker（normative）**：`DiarizationRequest` 是 `frozen=True`、`extra="forbid"` 的**无字段**模型——它的存在本身即请求。`num_speakers`（说话人数提示）与归属粒度声明**有意 defer**：hint 语义在引擎间不统一（exact / max / hint），且其能力宣告不可验证；将来以 additive 字段毕业进该模型（现有 `DiarizationRequest()` 与 wire `{}` 不受影响）。过渡期各引擎的 count hint 走 `provider_params`。便利常量 **`DIARIZE = DiarizationRequest()`**（平行于语言的保留字 `auto`），常见写法 `RuntimeParams(diarization=DIARIZE)`。
+- **当前空 frozen marker（normative）**：`DiarizationRequest` 是 `frozen=True`、`extra="forbid"` 的**无字段**模型——它的存在本身即请求。`num_speakers`（说话人数提示）与归属粒度声明**有意 defer**：hint 语义在引擎间不统一（exact / max / hint），且其能力宣告不可验证；将来以 additive 字段毕业进该模型（现有 `DiarizationRequest()` 与 wire `{}` 不受影响）。过渡期各引擎的 count hint 走 `provider_params`。便利常量 **`DIARIZE = DiarizationRequest()`**（平行于语言的保留字 `auto`），常见写法 `RuntimeParams(diarization=DIARIZE)`。
 - **无 `[]`-analogue（与 `phrase_hints` 的三态不同）**：`None` = 未请求；任何实例（wire 上 `{}`）= 请求；**不存在**「请求但空」态。
 - **门控**：feature 级，能力路径 `<mode>.diarization`（marker 无字段，故无子门控）。不支持时按 R2 走标准 strict/best_effort：strict 抛 `UnsupportedFeatureError`；best_effort 丢弃（置 `None`）+ `unsupported_parameter_ignored` diagnostic。**`on_unsupported` 不适用**：它只治理 `guidance` 家族的降级路径；diarization 没有降级目标（支持或不支持，无 rich→prompt 类比）。
 - **三路 wire 映射（normative）**。`WireRuntimeParams` 随可移植集携带该字段：
@@ -564,7 +566,7 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 
 **R5 — 流式参数冻结。** 流式会话中 `RuntimeParams` 在 `start_transcription` 时锁定，MUST NOT 中途修改（`mutable_mid_stream` 除外，见 §3.3）。
 
-**R6 — 识别行为三态 flag（v1 占位）。** verbatim/disfluency/punctuation/ITN/profanity-filter 未来作标准三态（`unset | on | off`，capability 门控），不进 `guidance`。v1 先走 `provider_params`。
+**R6 — 识别行为三态 flag（当前占位）。** verbatim/disfluency/punctuation/ITN/profanity-filter 未来作标准三态（`unset | on | off`，capability 门控），不进 `guidance`。当前先走 `provider_params`。
 
 **R7 — 批量运行时失败错误契约。** `transcribe` / `transcribe_async` 在引擎执行期（模型推理、网络调用、SDK）发生失败时 MUST 抛 `TranscriptionError`，并以 `raise TranscriptionError(...) from exc` 保留原始异常为 `__cause__`——使应用得以**跨引擎**用单一类型捕获运行时失败，而非各引擎各抛其原生异常（`RuntimeError` / SDK 异常 / `requests.HTTPError`…）。这是流式 [§6.2](#streaming) `error` 事件 `engine_error` 码的批量对应物：流式把引擎逃逸异常包装为 `engine_error` 事件，批量把它包装为 `TranscriptionError`。它表示**引擎/运行时故障**，与调用方可修的错误（`ConfigError` / `UnsupportedFeatureError` / `InvalidProviderParamError` / `AudioProcessingError`）属不同故障域，server MUST 映射为 5xx（而非 4xx）。约束作用于引擎模板钩子 `_transcribe`（`EngineBase` 为批量管线提供包装位点）；合规套件无法静态核验引擎是否包装，故本契约由规范 + 模板 + 文档约束，不进运行时强制门控。
 
@@ -632,7 +634,7 @@ result = engine_b.transcribe(
 - **为何 provider_params always-raise**：best_effort 为能力协商设计；`provider_params` 错误是代码 bug（如忘了改 params 就换引擎）。对 bug 快失败，不静默继续。
 - **为何扁平字段而非子对象**：子对象增嵌套无新信息；typed-item list 有 oneof null 歧义+丢可发现性。扁平最简——IDE 补全即可发现 channel。
 - **路由出 guidance 的理由**：识别行为开关有确定可检验效果（开/关），不是建议性引导；格式化/脱敏是输出后处理；系统指令会让 namespace 退化为指令垃圾桶。
-- **reserve 候选**：`context` 独立 channel（v1 并入 prompt）；`phrase_hints` 权重（先 provider_params）；`pronunciation_hints`；`negative_phrases`（须先加 polarity 轴）；音频载荷类（音频示例/few-shot → 独立家族）。
+- **reserve 候选**：`context` 独立 channel（当前并入 prompt）；`phrase_hints` 权重（先 provider_params）；`pronunciation_hints`；`negative_phrases`（须先加 polarity 轴）；音频载荷类（音频示例/few-shot → 独立家族）。
 
 
 ---
@@ -762,11 +764,11 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 ## DEP.5 `standard-asr doctor`
 只读诊断：枚举已装插件 entrypoint，读各自 `Requires-Dist`，按**运行解释器**求值环境标记（PEP 508 marker；只取标记成立或缺失的行），算 numpy 版本区间交集，空交集报冲突 + 一行补救（含「3.13 上 `numpy<2` 无 wheel」）。**不做** resolve/install。
 
-**v1 范围（诚实声明）**：doctor **只精确诊断 `numpy`**——它是标准本身唯一的共享原生依赖（DEP.1），其 1.x↔2.x 是干净的 C-ABI 断层、且冲突完整编码在版本区间里，故版本区间交集可判定。其余共享原生库的冲突在 v1 **明确未覆盖（known-uncovered）**，因为其冲突模型与 numpy 根本不同、无法用同一套版本区间交集判定：
+**当前范围（诚实声明）**：doctor **只精确诊断 `numpy`**——它是标准本身唯一的共享原生依赖（DEP.1），其 1.x↔2.x 是干净的 C-ABI 断层、且冲突完整编码在版本区间里，故版本区间交集可判定。其余共享原生库的冲突当前**明确未覆盖（known-uncovered）**，因为其冲突模型与 numpy 根本不同、无法用同一套版本区间交集判定：
 - **torch**：冲突是 CUDA 构建*变体*（`cpu`/`cu118`/`cu121`…），**不**体现在版本号 specifier 里。
 - **onnxruntime vs onnxruntime-gpu**：是包*身份*冲突（两个不同分发包），非版本区间冲突。
 
-把 numpy 的版本交集逻辑泛化到上述库会给出**自信而错误**的诊断（本工具的基数罪），故 v1 不做。对这些库的硬冲突，依 **DEP.4** 的通用进程隔离（subprocess + UDS + `shared_memory`）逃生舱处理。未来若要精确诊断，需为每类库引入其特有的冲突模型，而非复用 numpy 的版本交集。
+把 numpy 的版本交集逻辑泛化到上述库会给出**自信而错误**的诊断（本工具的基数罪），故当前不做。对这些库的硬冲突，依 **DEP.4** 的通用进程隔离（subprocess + UDS + `shared_memory`）逃生舱处理。未来若要精确诊断，需为每类库引入其特有的冲突模型，而非复用 numpy 的版本交集。
 
 
 ---
@@ -794,7 +796,7 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 - **`STANDARD_ASR_<NORMENGINE>__<NORMFIELD>`**（引擎段与字段段之间用**双下划线** `__` 分隔）。normalization = 大写、把每个非字母数字**连续段**折成**单个** `_`（非每字符一个 `_`），故任一段不含 `__`，使 `__` 边界唯一可解析。**为何双下划线**：单下划线分隔下 `(engine="openai", field="api_key")` 与 `(engine="openai-api", field="key")` 都归一为 `STANDARD_ASR_OPENAI_API_KEY`，引擎边界不可恢复——两个引擎可能静默读到彼此凭证。**碰撞检测**：单 config 类内拒绝两字段归一同名（跨引擎碰撞已由 `__` 边界根治）。
 - 一约定 per 字段名（引擎 native 名如 EL `xi-api-key` 在适配器映射到标准名——仅允许**纯字符串** alias：字符串 `alias`/`validation_alias` 或全字符串 `AliasChoices`；`AliasPath`（及含其的 `AliasChoices`）在类定义期 fail-loud 拒绝——平面 env 约定与 absent-vs-invalid 分类器均以单一字符串 token 解析字段，嵌套路径别名无法表达）。平面输入键词汇表 MUST **跨字段唯一**：一字段的 alias/choice 与另一字段的 canonical 名或 alias 相撞，会让单个调用方键静默填充两个独立设置（`populate_by_name` 两者皆填）并使 loc-token 解析歧义——任何跨字段键碰撞在类定义期 fail-loud 拒绝（同字段内重复键去重即可）。**覆盖范围**：env 回退覆盖 config 的**所有字段**——标准 mixin 字段（凭证/端点路由/device/语言/download root）**与**引擎声明字段（如 `beam_size`、`model_path`）均获得对应 env 入口，这是有意的全表 DX。**仅排除三个 fail-loud 安全/身份字段**：`engine`（entrypoint 派生身份，绝不由 env 设）、`strict` 与 `allow_private_urls`（env 不得静默翻转 best_effort 或放宽 SSRF 守卫）。
 - **复合（非标量）字段的 env 值先按 JSON 解析**：env 变量恒为裸字符串，无法强转为 `list`/`dict` 等（如标准字段 `default_candidate_languages: list[str]`），故对复合字段先 `json.loads`，**解析失败保留原串**让构造期**响亮失败**（绝不静默丢值）。标量字段（含凭证 `SecretStr`、`Path`）**原样透传**、不被重解释。该分类 MUST 由字段的 **core schema** 判定，而非注解的 origin 白名单：白名单已被证伪为**残缺**——`Mapping[str, int]`、`Sequence[str]`、`TypedDict`、dataclass 全都通过所有类定义期守卫（它们是完全声明的普通 config 形态），却因无 origin 条目而**无法经自己的 env 约定构造**；继续加白名单只会推迟下一次遗漏（named tuple、type alias、未来的 pydantic kind），与本规范其他证明已放弃枚举、改扫实际执行之 artifact 的理由相同。规则：走字段 schema，穿过包装（`nullable`/`default`/union/`json-or-python`/validator 函数），遇到**结构化 kind**（list/set/frozenset/tuple/dict/typed-dict/model/dataclass/generator）即判定为 JSON 并**停止下降**（其成员描述的是文档的**内容**，不是文档如何抵达）。**`Json[T]` 注解字段是唯一的「结构化形、raw 读」**：该注解的契约就是输入**即** JSON 文档文本（由 pydantic 自有 `json` validator 解码——显式构造器取字符串而**拒绝**解码后的值），故其 core-schema kind `json` 必须与结构 kind 一样**终止行走**、但判定为 raw（其内层 schema 描述的也是解码后文档的内容，不是 env 串如何抵达）；沿内层判为「先 JSON 解码」会把解码值喂给 `json` validator 而构造失败——字段可定义、显式构造可用、却经自己的 env 约定不可达，与上述残缺白名单的病根相同。两个错误方向**不对称**，故偏置是刻意的：把结构化误判为 raw 会在构造期**响亮失败**（pydantic 拒绝该字符串），而把标量误判为 JSON 会**静默重解释**——`"123"` 变整数 123、`"null"` 变 `None`——正是本规范定义的 cardinal sin；故 JSON 只在**正面证据**下返回，未识别形状一律留在 raw。**同时到达标量与结构化的字段**（如 `str | list[str]`）没有可定义的 env 读法（无规则能判断 `"123"` 是该字符串还是该 JSON 数字，且任一选择都会与显式构造器分歧——后者恒取字符串），MUST 在**类定义期**响亮拒绝，而非在某个 env var 恰好被设置时才静默选边。
-- 优先级：**显式 config > env > （必填缺失）报错**。「显式」= 该字段以**任一平面输入键**（canonical 名、字符串 alias/`validation_alias`、`AliasChoices` 任一 choice——与空白保留 validator、absent-vs-invalid 分类器共用同一 alias 词汇表）**作为键出现**在显式入参中：以 alias 显式供值同样压过该字段的 canonical env 回退（否则 `extra="forbid"` 下 alias 值与 env canonical 键相撞、响亮误拒）。显式传入的 `None` **是一个值**、压过 env（规则是「显式即胜」，非「显式非 None 才胜」）；包装层若以 `None` 默认透传可选 kwargs，需先剔除 `None` 键才能让 env 回退生效。调用方对同一字段同时传两个键仍由 pydantic 响亮拒绝。多账户：保留 profile 段 hook（v1 不实现）。
+- 优先级：**显式 config > env > （必填缺失）报错**。「显式」= 该字段以**任一平面输入键**（canonical 名、字符串 alias/`validation_alias`、`AliasChoices` 任一 choice——与空白保留 validator、absent-vs-invalid 分类器共用同一 alias 词汇表）**作为键出现**在显式入参中：以 alias 显式供值同样压过该字段的 canonical env 回退（否则 `extra="forbid"` 下 alias 值与 env canonical 键相撞、响亮误拒）。显式传入的 `None` **是一个值**、压过 env（规则是「显式即胜」，非「显式非 None 才胜」）；包装层若以 `None` 默认透传可选 kwargs，需先剔除 `None` 键才能让 env 回退生效。调用方对同一字段同时传两个键仍由 pydantic 响亮拒绝。多账户：保留 profile 段 hook（当前不实现）。
 
 ## IC.5 适用性谓词（applicability —— 跨 §C/§AI/IC 同一规则）
 可选标准字段用 **capability-bearing config mixin**（`DeviceConfigMixin`/`LanguageConfigMixin`/`DownloadConfigMixin`…）：**字段出现在模型里 ⇒ 适用**——auto-UI 据此渲染正确表单，无需逐字段隐藏。「缺失 ⇒ 不适用」；「present-with-default ⇒ 适用-默认」。
@@ -874,7 +876,7 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 
 ## 4. 行为（规范）
 
-**AR.1 — 协议版本与 pre-stable 语义。** `properties.protocol_version` MUST 为 canonical `MAJOR.MINOR.PATCH`（`parse_protocol_version`；长度上限 32；每个数字分量 MUST 在 `[0, 4294967295]`（u32）内——版本是跨语言 wire token，此界让任何实现语言无需任意精度算术即可精确表示与比较分量）。协议版本与 core 包版本是**两条独立的版本线**：前者命名引擎实现的契约世代（跨语言、跨包的兼容性 token），后者命名本 Python 实现的一次发布——两者当前同处 0.x 系是巧合，MUST NOT 假设 lockstep，插件也 MUST NOT 让声明跟随已安装 core 自动升版（声明的是插件自己完整实现的世代）。**major 0 = pre-stable**：每个 `0.MINOR` 世代 MAY 不兼容地改动契约，故 major 0 之下 **minor 是 breaking 轴**——核心恰支持一条 `0.MINOR` 线（当前 0.2；feature 最低版本表：`artifact_lifecycle → 0.2.0`，`PROTOCOL_FEATURE_MINIMUMS`），引擎声明其他 `(major, minor)` 组合即得 typed `ProtocolCompatibilityError`（invoker 可修——升级插件；CLI exit 2）。该 minor 匹配规则**永久**内建于 `require_supported_protocol()`（`require_protocol_feature()` 委托它），进入 major 1 后自然休眠。**PATCH 语义**：同一线内（`0.MINOR` 线，或稳定 major 的同一 minor）PATCH 只允许不改变既有语法与行为的修订——缺陷修正、编辑性澄清、旧消费者可安全忽略的补充；需要消费者感知的变更 MUST 走 feature 最低版本（表条目可带非零 patch，`require_protocol_feature()` 据此比较）或新的 minor。**世代冻结点**：一个 `0.MINOR` 世代的契约在**首个携带它的 core 公开发布**时冻结。冻结前（core 包处于对应 `.dev` 版本期间，例如本世代的 `0.2.0.dev`）该世代的契约 MAY 就地修订而不升 minor——此窗口的消费者只有与 core lockstep 演进的仓库，当前（core 是协议的唯一发布者）包版本的 `.dev` 标记即是「本世代尚未冻结」的机器可读信号——长期的冻结记录归下述协议发布台账所有（协议 token 自身不携带 dev 标记：canonical 语法与跨语言 wire 面不为此复杂化）。冻结后：同线非破坏修订 = PATCH，任何 breaking 改动 MUST 开新 minor。同一规则适用于 1.0 冻结前的 RC 窗口。**执法拓扑（normative）**：引擎门（`require_engine_protocol()`——typed `BaseProperties` 检查 + 一般线守卫 `require_supported_protocol()`，不查 feature 表）是每个 selected-engine 语义面共享的**唯一 fail-closed 边界**：`properties` 缺失或非 typed `BaseProperties` 同样 fail-closed（协议线无法确立的引擎比线错误的引擎**更**不可知，绝不更可信）。强制 seam：`ModelRegistry.create()`（工具链共享的构造 seam；并要求 instance properties **等于**类级声明——类读面与 runtime 门必须看到同一份声明）；`EngineBase` 的推理入口（`transcribe` / `transcribe_async` / `start_transcription`：线外引擎的转写语义按定义不可知，结构上有效但语义漂移的结果正是 cardinal sin，故推理 MUST NOT 运行；`transcribe_async` 与 `acquire_artifacts` 经**虚派发**调用公开成员，各自独立设门，五个公开模板标记 `@final` 且合规以 `public_template_overridden` 拒绝覆盖公开模板的 `EngineBase` 子类）；工件成员查找之前（typed 错误而非 `AttributeError`，且 MUST NOT 被解读为 `NO_ARTIFACT_LIFECYCLE`）；类元数据投影面（`GET /v1/metadata|capabilities|params-schema|config-schema/{model}`、`ModelRegistry.config_schema()`、CLI `show` 的语义段——线不匹配的声明不得按当前语义序列化：server 映射 scrubbed 500，`show` 打印 entry-point 身份行后停止投影、经共享 arm 以 exit 2 结束）；以及合规套件（`protocol_version_unsupported`，类与 instance 两级共用同一守卫，线不匹配后 MUST 停止按当前世代的一切解读——类级其余声明检查与 instance 行为探测都不再运行，该引擎只得这一条错误；类级 `properties` 缺失或未类型化（`missing_class_properties`）同样在此停止且不实例化，与 `create()` 的类预检一致，instance 层的同类缺失报 `missing_instance_properties` 而非版本错误）。仅插件发现与 `list` / `GET /v1/models`（import-free 面）不设版本门。错误消息 MUST 按方向给出修复建议：引擎较旧 ⇒ 升级插件；引擎较新 ⇒ 升级 core（或安装匹配线的插件版本）。**冻结计划**：首个稳定发布把当时的契约语义**原样**冻结并命名为 `1.0.0`（`SUPPORTED_PROTOCOL_MAJOR = 1`；「原样」指语义契约——版本 token 本身当然改变）。冻入 1.0 baseline 的 feature 的表条目 MUST **保留并改写为 `1.0.0`**，不得删除：`PROTOCOL_FEATURE_MINIMUMS` 与 `require_protocol_feature()` 是规范点名的公开内省面，删除条目会把一个已知 feature 的兼容性查询变成 `ValueError`（runtime 守卫不依赖该表——引擎门走一般线守卫——所以保留纯为公开查询面的稳定）；自 major 1 起 additive 特性 = minor（同 major 内较新 minor 对旧 feature 保持可用；其未知标准 metadata 节按 tolerant reader 保留，见 §3.3），改动既有契约、删除、或新增改变消费者控制流的状态 = major。冻结日算法与 tolerant-reader 行为由合成常数测试预先钉死（`tests/test_protocol_version.py`、`tests/test_artifact_interface.py`、`tests/test_compliance.py` 的 freeze 测试）。冻结发布还 MUST 显式决定并记录三件事：(1) 对声明**确切冻结 0.N token** 的插件的处理——语义与 1.0.0 逐字相同，直接拒绝会制造纯声明性 flag day；零外部插件时 lockstep 升级即可，否则定义有界别名或 RC 双接受期——别名 MUST 是在一切比较之前把 `0.N.P` 规范化为 `1.0.0` 的单一操作（线守卫、feature 最低版本比较、合规的 producer/reader 排序共用），而非线守卫里的局部放行：只放行线守卫的别名仍会在 `require_protocol_feature()` 拿原 token 与已改写为 `1.0.0` 的最低版本比较时失败；(2) `SUPPORTED_PROTOCOL_MAJOR` 单值是 pre-stable 简化，不是永久架构法则——引入 major 2 之前 MUST 重新评估多 major 并存政策（成熟生态无法原子升级全部生产者与消费者）；(3) 建立独立的协议发布台账（每世代：冻结日期、规范快照、兼容性分类、新增 feature 最低版本、被取代世代、任何有界别名）——包 CHANGELOG 不得成为协议演进的事实 source of truth。**wire 版本轴（normative）**：`/v1` 路径组件版本化的是 HTTP 传输封套；`properties.protocol_version` 版本化的是应用—引擎语义契约。两个数字互不派生；一次 wire API 修订 MUST 声明它能忠实投影哪些语义协议世代（server-api.md 同则）。
+**AR.1 — 协议版本与 pre-stable 语义。** `properties.protocol_version` MUST 为 canonical `MAJOR.MINOR.PATCH`（`parse_protocol_version`；长度上限 32；每个数字分量 MUST 在 `[0, 4294967295]`（u32）内——版本是跨语言 wire token，此界让任何实现语言无需任意精度算术即可精确表示与比较分量）。协议版本与 core 包版本是**两条独立的版本线**：前者命名引擎实现的契约世代（跨语言、跨包的兼容性 token），后者命名本 Python 实现的一次发布——两者当前同处 0.x 系是巧合，MUST NOT 假设 lockstep，插件也 MUST NOT 让声明跟随已安装 core 自动升版（声明的是插件自己完整实现的世代）。**major 0 = pre-stable**：每个 `0.MINOR` 世代 MAY 不兼容地改动契约，故 major 0 之下 **minor 是 breaking 轴**——核心恰支持一条 `0.MINOR` 线（当前 0.2；feature 最低版本表：`artifact_lifecycle → 0.2.0`，`PROTOCOL_FEATURE_MINIMUMS`），引擎声明其他 `(major, minor)` 组合即得 typed `ProtocolCompatibilityError`（invoker 可修——升级插件；CLI exit 2）。该 minor 匹配规则**永久**内建于 `require_supported_protocol()`（`require_protocol_feature()` 委托它），进入 major 1 后自然休眠。**PATCH 语义**：同一线内（`0.MINOR` 线，或稳定 major 的同一 minor）PATCH 只允许不改变既有语法与行为的修订——缺陷修正、编辑性澄清、旧消费者可安全忽略的补充；需要消费者感知的变更 MUST 走 feature 最低版本（表条目可带非零 patch，`require_protocol_feature()` 据此比较）或新的 minor。**世代冻结点**：一个 `0.MINOR` 世代的契约在**首个携带它的 core 公开发布**时冻结。冻结前（core 包处于对应 `.dev` 版本期间，例如本世代的 `0.2.0.dev`）该世代的契约 MAY 就地修订而不升 minor——此窗口的消费者只有与 core lockstep 演进的仓库，当前（core 是协议的唯一发布者）包版本的 `.dev` 标记即是「本世代尚未冻结」的机器可读信号——长期的冻结记录归下述协议发布台账所有（协议 token 自身不携带 dev 标记：canonical 语法与跨语言 wire 面不为此复杂化）。冻结后：同线非破坏修订 = PATCH，任何 breaking 改动 MUST 开新 minor。同一规则适用于 1.0 冻结前的 RC 窗口。**执法拓扑（normative）**：引擎门（`require_engine_protocol()`——typed `BaseProperties` 检查 + 一般线守卫 `require_supported_protocol()`，不查 feature 表）是每个 selected-engine 语义面共享的**唯一 fail-closed 边界**：`properties` 缺失或非 typed `BaseProperties` 同样 fail-closed（协议线无法确立的引擎比线错误的引擎**更**不可知，绝不更可信）。强制 seam：`ModelRegistry.create()`（工具链共享的构造 seam；并要求 instance properties **等于**类级声明——类读面与 runtime 门必须看到同一份声明）；`EngineBase` 的推理入口（`transcribe` / `transcribe_async` / `start_transcription`：线外引擎的转写语义按定义不可知，结构上有效但语义漂移的结果正是 cardinal sin，故推理 MUST NOT 运行；`transcribe_async` 与 `acquire_artifacts` 经**虚派发**调用公开成员，各自独立设门，五个公开模板标记 `@final` 且合规以 `public_template_overridden` 拒绝覆盖公开模板的 `EngineBase` 子类）；工件成员查找之前（typed 错误而非 `AttributeError`，且 MUST NOT 被解读为 `NO_ARTIFACT_LIFECYCLE`）；类元数据投影面（`GET /v1/metadata|capabilities|params-schema|config-schema/{model}`、`ModelRegistry.config_schema()`、CLI `show` 的语义段——线不匹配的声明不得按当前语义序列化：server 映射 scrubbed 500，`show` 打印 entry-point 身份行后停止投影、经共享 arm 以 exit 2 结束）；以及合规套件（`protocol_version_unsupported`，类与 instance 两级共用同一守卫，线不匹配后 MUST 停止按当前世代的一切解读——类级其余声明检查与 instance 行为探测都不再运行，该引擎只得这一条错误；类级 `properties` 缺失或未类型化（`missing_class_properties`）同样在此停止且不实例化，与 `create()` 的类预检一致，instance 层的同类缺失报 `missing_instance_properties` 而非版本错误）。仅插件发现与 `list` / `GET /v1/models`（import-free 面）不设版本门。错误消息 MUST 按方向给出修复建议：引擎较旧 ⇒ 升级插件；引擎较新 ⇒ 升级 core（或安装匹配线的插件版本）。**冻结计划**：首个稳定发布把当时的契约语义**原样**冻结并命名为 `1.0.0`（`SUPPORTED_PROTOCOL_MAJOR = 1`；「原样」指语义契约——版本 token 本身当然改变）。冻入 1.0 baseline 的 feature 的表条目 MUST **保留并改写为 `1.0.0`**，不得删除：`PROTOCOL_FEATURE_MINIMUMS` 与 `require_protocol_feature()` 是规范点名的公开内省面，删除条目会把一个已知 feature 的兼容性查询变成 `ValueError`（runtime 守卫不依赖该表——引擎门走一般线守卫——所以保留纯为公开查询面的稳定）；自 major 1 起 additive 特性 = minor（同 major 内较新 minor 对旧 feature 保持可用；其未知标准 metadata 节按 tolerant reader 保留，见 §3.3），改动既有契约、删除、或新增改变消费者控制流的状态 = major。冻结日算法与 tolerant-reader 行为由合成常数测试预先钉死（`tests/test_protocol_version.py`、`tests/test_artifact_interface.py`、`tests/test_compliance.py` 的 freeze 测试）。冻结发布还 MUST 显式决定并记录三件事：(1) 对声明**确切冻结 0.N token** 的插件的处理——语义与 1.0.0 逐字相同，直接拒绝会制造纯声明性 flag day；零外部插件时 lockstep 升级即可，否则定义有界别名或 RC 双接受期——别名 MUST 是在一切比较之前把 `0.N.P` 规范化为 `1.0.0` 的单一操作（线守卫、feature 最低版本比较、合规的 producer/reader 排序共用），而非线守卫里的局部放行：只放行线守卫的别名仍会在 `require_protocol_feature()` 拿原 token 与已改写为 `1.0.0` 的最低版本比较时失败；(2) `SUPPORTED_PROTOCOL_MAJOR` 单值是 pre-stable 简化，不是永久架构法则——引入 major 2 之前 MUST 重新评估多 major 并存政策（成熟生态无法原子升级全部生产者与消费者）；(3) 建立独立的协议发布台账（每世代：冻结日期、规范快照、兼容性分类、新增 feature 最低版本、被取代世代、任何有界别名）——包 CHANGELOG 不得成为协议演进的事实 source of truth。**wire 版本轴（normative）**：`/v1` 路径组件版本化的是 HTTP 传输封套；`properties.protocol_version` 版本化的是应用—引擎语义契约。两个数字互不派生；一次 wire API 修订 MUST 声明它能忠实投影哪些语义协议世代——当前 `/v1` 投影且仅投影协议 0.2 线；换到不兼容语义线 MUST 要么修订该声明（并给出客户端区分世代的设计）、要么开新 wire 修订；稳定冻结把 0.N 语义原样晋升为 `1.0.0` 的同一发布 MUST 修订该声明——wire 表示不变时 `/v1` 加入 `1.0.x` 线（预期结果），否则开新 wire 修订（server-api.md 载有该 normative 声明）。
 
 **AR.2 — `artifact_status()` 只读契约。** 运行于配置解析后的实例（IC.9 纯构造是前提）。对可移植参数**一律 best-effort** gating（不论引擎 strict 策略；诊断并入报告；语言轴走 best-effort 解析路径），**唯 wrong-engine `provider_params` 仍无条件抛**（§RT 5.4 swap 安全是策略无关规则）。MUST NOT：加载权重、初始化加速器、跑推理、发起应用级网络请求、创建/修复/删除文件。MAY：检视文件系统、本地缓存索引、OS 资产清单；以 `unknown` 代替昂贵完整性检查（`corrupt` 仅在已有可靠证据时报告；unknown 永不等于 ready）。外部状态未变时重复调用 MUST 返回相同报告。status 不承诺知晓远端审批/条款状态（那些由获取失败发现并随错误返回新 action）。文件系统检查可能因 NFS 阻塞——协议不承诺有界延迟，扫描多模型的应用自行下线程与 deadline。宣告 `applicable=False` 的模型恒返回 not-applicable 报告；动态报告 MUST 只**收窄**静态上界（模板强制：`applicable`、`can_acquire_now`、`may_acquire_during_inference` 任一越界 = `EngineContractError`）。
 
@@ -909,7 +911,7 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 
 > **本节定义**：Standard ASR 引擎如何提供实时（流式）转写——应用如何开启流式会话、如何喂入和接收音频与结果、结果事件的格式与修订规则、以及连接中断时如何恢复。
 > **另见**：[§能力系统](#capabilities)（Capabilities 树结构）、[§结果模型](#transcription-result)（Segment/Word 定义）、[§音频输入](#audio-input)（输入类型）。
-> **组织**：概述 → 术语 → 接口与能力 → 事件模型 → 段生命周期 → 生命周期与健壮性 → 示例 → 附注与理由 → 能力清单 → v1 ship vs defer。
+> **组织**：概述 → 术语 → 接口与能力 → 事件模型 → 段生命周期 → 生命周期与健壮性 → 示例 → 附注与理由 → 能力清单 → 当前世代 ship vs defer。
 > **取代**：idea_docs `spec/streaming.md`。
 
 ---
@@ -973,7 +975,7 @@ start_transcription(
 - **`deadlines`**：应用对会话终止 deadline（`done_timeout` / `max_idle` / `max_session_seconds`，语义见 §6.1）的逐字段覆盖。优先级 MUST 为：应用显式设置 > 适配器构造时选择 > 标准默认；由标准层模板在适配器构造会话**之后**统一施加（不依赖适配器转发，杜绝静默丢失）。未显式设置的字段不受影响。
 - **整段输入 + 流式输出**（OpenAI Audio SSE）：传 `audio`（一个完整的 `AudioInput`，如文件路径或编码字节），引擎一次收完后流式返回结果。
 - `audio_format` 与 `audio` **互斥**；同时传 MUST 报错。**两者皆缺是合法的**：引擎可在适配器内部自管 wire 格式（如固定协议格式的引擎），此时 `start_transcription()` 不带任何参数即开启增量会话——标准层只在两者**同时出现**时报错。**无参调用的能力门控**：无参开启的是增量（自管 wire 格式）会话，语义上即 §3.2 的 `streaming_input` 能力，故标准层 MUST 对无参调用施加与 `audio_format` 路径**相同**的 `streaming_input` 门控——仅声明 `streaming_output` 的引擎即使实现了流式钩子，无参调用也 MUST fail-closed 抛 `UnsupportedFeatureError`（缺失即不支持，[§能力系统 R1](#capabilities)），而非交回一个无法喂入的增量会话（实现：`EngineBase.start_transcription`）。
-- **v1 增量 wire 输入仅支持单声道（mono-only）**：`audio_format.channels` MUST = `1`。与批量 `transcribe` 路径不同，标准层**不处理**增量 wire 帧（它们被直接转发给流式引擎），因此**无法**像批量那样对多声道做降混；声明 `channels != 1` 的会话 MUST 在建立时 fail-closed 报错（实现：`EngineBase.ensure_stream_format_supported`）。如需多声道，调用方 MUST 自行在客户端降混到 mono 再喂入。多声道 wire 输入是未来能力（与 §AI R7 的"标准层流式重采样"同属 deferred 路径）。
+- **增量 wire 输入当前仅支持单声道（mono-only）**：`audio_format.channels` MUST = `1`。与批量 `transcribe` 路径不同，标准层**不处理**增量 wire 帧（它们被直接转发给流式引擎），因此**无法**像批量那样对多声道做降混；声明 `channels != 1` 的会话 MUST 在建立时 fail-closed 报错（实现：`EngineBase.ensure_stream_format_supported`）。如需多声道，调用方 MUST 自行在客户端降混到 mono 再喂入。多声道 wire 输入是未来能力（与 §AI R7 的"标准层流式重采样"同属 deferred 路径）。
 
 ### 3.2 两个正交能力轴
 
@@ -1077,7 +1079,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 
 > 实际上，适配器从引擎拿到的稳定边界通常是 word/token 级的，映射到 `text` 中的位置天然满足此不变量，不需要额外处理。
 
-适配器 SHOULD 进一步使 `stable_until` 落在**字素簇 (grapheme cluster) 边界**上（覆盖 emoji ZWJ 等 combining 以外的多 codepoint 序列），但这是 SHOULD 级建议，不强制。完整 UAX#29 字素簇支持留作 v2 如有需求时的 additive 扩展。
+适配器 SHOULD 进一步使 `stable_until` 落在**字素簇 (grapheme cluster) 边界**上（覆盖 emoji ZWJ 等 combining 以外的多 codepoint 序列），但这是 SHOULD 级建议，不强制。完整 UAX#29 字素簇支持留作未来修订如有需求时的 additive 扩展。
 
 **规则**：
 - `stable_until` 在同一段内 **MUST 只增不减**（冻结的前缀永不回退）。
@@ -1087,7 +1089,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 - **简单应用**：可以无视 `stable_until`，只用 `partial` 显示、`final` 提交。
 - **语音助手**：读 `text[:stable_until]` 作为"可安全行动的前缀"。
 
-**冻结区域的 speaker 保护（normative）**：冻结保证延伸到**段级** `event.speaker`（词级 speaker 的冻结追踪 v1 明确不做，留作适配器义务）。规则：
+**冻结区域的 speaker 保护（normative）**：冻结保证延伸到**段级** `event.speaker`（词级 speaker 的冻结追踪当前明确不做，留作适配器义务）。规则：
 
 - 一旦某段在**先前事件**中确立了冻结前缀（`stable_until > 0`）**且**该段已被接受过非 `None` 的 speaker，其**最后被接受的**非 `None` speaker 即被锁定：后续 `partial` / `final` MUST NOT 改变它（X→Y）也 MUST NOT 撤回它（X→None——撤回即改写：应用已依冻结前缀行动）。
 - **`None→X` 合法**（冻结后首次赋 speaker）——这正是推荐的适配器策略「**延迟 speaker 到 final**」：引擎聚类未稳定时 partial 报 `speaker=None`，稳定后（通常 `final`）再给。聚类会漂移的引擎（流式重分配 speaker 的云引擎）SHOULD 采用此策略而非盲转发。
@@ -1182,7 +1184,7 @@ elif event.type == "supersede":
   - **方向不对称**：**改写/分歧方向** MUST **及早（eagerly）**检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。「拒绝」作用于**整个触发事件**（含其未冻结尾部）而非仅冻结部分——只伤害不合规适配器，且保证被拒事件不会以半改写状态泄出。而"新分段冻结的文本严格少于 F_old"是**保守安全方向**（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。该"至多一条软诊断"在实现中是：会话到达终态（或合规重放结束）时，若某个 supersede 的 F_new 仍严格短于 F_old，标准层发一条 **`info` 级 `supersede_obligation_unfulfilled`** diagnostic（点名受影响的 `new_ids`），表示未重新冻结的尾巴被从 lineage 中丢弃——它**不是 error、不拒绝**任何事件，supersede 依旧成立（实现：`TranscriptionSession.finalize`）。
 - **跨说话人合并禁令（normative）**：引擎 MUST NOT 把携带**不同** speaker 的段 supersede 进单一新段——合并后的段只有一个 `speaker` 字段，无论选谁，另一人说的文字都被静默错误归属；set-to-set lineage（见下）原理上无法保留 per-speaker 归属。标准层的运行时守卫做**鸽笼式**最佳努力执行：当退休旧段（`old_ids`）各自**最后已知**的非 `None` speaker 互不相同（≥2 个不同标签），且 `new_ids` 非空而数量**少于**这些不同标签的数量（跨 speaker 合并不可避免；典型即多→1）时，MUST 抑制整个 `supersede` 事件并发 `supersede_cross_speaker_merge` diagnostic。set-to-set lineage 证明不了更细的映射，其余形态（如等基数换牌）仅由本条 MUST NOT 约束——守卫检不出（合规重放共用同一鸽笼守卫，同样检不出），是防线不是完备判定。**被抑制 supersede 的副作用（与上文「拒绝作用于整个触发事件」同一抑制语义，明示）**：旧段在应用/归约器中继续存活，而 `new_ids` 的段随后以全新段到达——归约结果出现**重复文本**。这是既有「只伤害不合规适配器」立场的延续；合法引擎（同 speaker 合并、保 speaker 拆分）不受影响。
 - `re_segments` capability：`false` 表示引擎承诺不发 `supersede`（finals 只增不改）；`true` 表示可能发。
-- **lineage 是 set-to-set（v1 已知限制）**：`old_ids`/`new_ids` 表达 re-segmentation 的**基数**（哪些退休、哪些出现），但**不**承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；冻结前缀保留（上）按**拼接**的 F_old/F_new 校验而非逐对。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。
+- **lineage 是 set-to-set（当前已知限制）**：`old_ids`/`new_ids` 表达 re-segmentation 的**基数**（哪些退休、哪些出现），但**不**承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；冻结前缀保留（上）按**拼接**的 F_old/F_new 校验而非逐对。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。
 
 ### 5.3 两级终态
 
@@ -1356,7 +1358,7 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 
 ---
 
-## 9. 能力清单（v1 流式 Capabilities）
+## 9. 能力清单（流式 Capabilities）
 
 以下 capability 节点住在 `capabilities.streaming.*`（参见 [§能力系统](#capabilities)）：
 
@@ -1376,10 +1378,10 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 
 ---
 
-## 10. v1 ship vs defer
+## 10. 当前世代 ship vs defer
 
-**v1 包含**：`partial`/`final`/`supersede`/`progress`/`done`/`error` + 稳定 `segment_id` + 保守 `stable_until`(codepoints, SHOULD 字素簇边界) + `end_audio` + 两级终态标志 + 正交 input/output 能力 + `reconnect(lossy,gap)` + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。
+**当前世代包含**：`partial`/`final`/`supersede`/`progress`/`done`/`error` + 稳定 `segment_id` + 保守 `stable_until`(codepoints, SHOULD 字素簇边界) + `end_audio` + 两级终态标志 + 正交 input/output 能力 + `reconnect(lossy,gap)` + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。
 
-**defer（additive-later）**：运行时 `target_latency` 调整（v1 仅构造期固定；流式节奏与延迟调优已有已定案设计——见 `docs/internal/feat_plan/streaming-cadence-and-tuning.md` D1–D7，实现落地时将其规范文本与 rationale 并入本 spec）；`update_guidance()` 中途改引导（v1 保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（v1 声明 lossy）；多通道流式展开。
+**defer（additive-later）**：运行时 `target_latency` 调整（当前仅构造期固定；流式节奏与延迟调优已有已定案设计——见 `docs/internal/feat_plan/streaming-cadence-and-tuning.md` D1–D7，实现落地时将其规范文本与 rationale 并入本 spec）；`update_guidance()` 中途改引导（当前保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（当前声明 lossy）；多通道流式展开。
 
 

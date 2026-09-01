@@ -156,7 +156,7 @@ class AudioUrl:
     (HTTPS-only, private/loopback/link-local-address rejection) are enforced
     before the URL is forwarded to an engine, by
     :func:`standard_asr.audio.negotiation.validate_fetchable_url` at plan
-    execution. In v1 the standard never fetches the URL itself.
+    execution. The standard never fetches the URL itself.
 
     Args:
         value: The remote URL.

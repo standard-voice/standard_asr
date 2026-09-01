@@ -642,12 +642,15 @@ class ModelRegistry:
         Raises:
             EntrypointValidationError: Model not found.
             FactoryLoadError: Entry point failed to load or is not callable.
-            ProtocolCompatibilityError: The constructed engine declares a
-                protocol line this core does not support (AR.1). The gate
-                runs here -- the one construction path every toolchain
-                consumer shares -- so a mismatched installed plugin fails
-                loudly at creation instead of transcribing with possibly
-                drifted semantics.
+            ProtocolCompatibilityError: The engine declares a protocol line
+                this core does not support (AR.1). The gate runs here -- the
+                one construction path every toolchain consumer shares -- so a
+                mismatched installed plugin fails loudly at creation instead
+                of transcribing with possibly drifted semantics; when the
+                engine class is resolvable without construction, the line is
+                checked BEFORE the factory runs, so a construction-time fault
+                (a missing credential, say) cannot mask the mismatch behind a
+                configuration diagnosis.
             EngineContractError: The engine's ``properties`` is missing or
                 not a ``BaseProperties`` instance (its protocol line cannot
                 be established, which is less knowable than a wrong line,
@@ -695,6 +698,26 @@ class ModelRegistry:
                 name,
                 engine_id,
             )
+        # Class-level line preflight (AR.1): when the engine class is
+        # resolvable without construction, its protocol line is checked
+        # BEFORE the factory runs. Gating only after construction let a
+        # construction-time fault -- a missing credential, say -- mask the
+        # line mismatch: the operator was sent debugging configuration for
+        # an engine this core cannot use at all. An unreadable declaration
+        # (untyped class properties) defers to the post-construction checks
+        # below for their more precise verdicts, and an unresolvable class
+        # (a factory without a concrete return annotation -- itself a
+        # class-metadata contract violation compliance reports) falls
+        # through to the instance gate.
+        try:
+            preflight_class: object | None = self.spec(name).engine_class()
+        except FactoryLoadError:
+            preflight_class = None
+        if preflight_class is not None:
+            try:
+                require_engine_protocol(preflight_class)
+            except EngineContractError:
+                pass
         try:
             engine = factory(*args, **kwargs)
         except ValidationError as exc:

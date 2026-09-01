@@ -304,16 +304,6 @@ time:
   the multi-major support policy, and the protocol release ledger that owns
   the generation history from then on.
 
-## First release (`v0.1.0`)
-
-The changelog already contains a drafted `0.1.0` section, but there is no
-published GitHub Release or PyPI upload yet. For the first release:
-
-1. Confirm `pyproject.toml` still has `version = "0.1.0"`.
-2. Confirm `CHANGELOG.md` accurately describes the release.
-3. Run the TestPyPI dry-run.
-4. Publish GitHub Release `v0.1.0` and approve `pypi`.
-
 ## Troubleshooting
 
 | Symptom | Cause / Fix |

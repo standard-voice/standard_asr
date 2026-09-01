@@ -4,7 +4,7 @@
 """FastAPI server utilities for Standard ASR.
 
 **Security note (operators MUST read).** These endpoints intentionally ship
-**without authentication**: for v1 they are designed for localhost / trusted-LAN
+**without authentication**: they are designed for localhost / trusted-LAN
 use and for fronting by a reverse proxy. The capability, metadata, and schema
 endpoints are deliberately readable without auth (declared metadata is
 discoverable without instantiation or authentication). Before

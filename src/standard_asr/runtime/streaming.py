@@ -575,7 +575,7 @@ class TranscriptionEvent(BaseModel):
         *cardinality* of the re-segmentation (which ids retire, which appear)
         but not a per-old->per-new mapping. On a merge+split (many->many) a UI
         cannot tell which specific old segment a given new segment descends
-        from. This is a documented v1 limitation; the spec does not
+        from. This is a documented limitation of the current generation; the spec does not
         require a pairwise mapping, and the frozen-prefix-preservation invariant
         is enforced over the concatenated prefixes, not per pair. Per-pair
         edit-ops/diffs are a possible future direction (additive later).
@@ -1131,7 +1131,7 @@ class StreamReducer:
         # Strip each segment and drop empties so a segment carrying edge
         # whitespace (or an empty committed segment) does not inject a double
         # space / stray separator into the reduced transcript. Segments are
-        # space-joined as the v1 default; a no-space-language (CJK) separator is a
+        # space-joined as the standard default; a no-space-language (CJK) separator is a
         # separate spec question, not silently changed here.
         text = " ".join(part for part in (segment.text.strip() for segment in segments) if part)
         diagnostics: list[Diagnostic] = list(self._suppressions)

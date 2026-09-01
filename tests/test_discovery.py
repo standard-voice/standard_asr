@@ -127,6 +127,20 @@ def _outside_line_factory(**kwargs: Any) -> _OutsideLineDummyASR:  # pyright: ig
     return _OutsideLineDummyASR(**kwargs)
 
 
+#: Construction ledger for the preflight test: an outside-line class must be
+#: refused BEFORE its factory runs -- otherwise a construction-time fault (a
+#: missing credential, say) masks the line mismatch behind a configuration
+#: diagnosis.
+_outside_line_constructions: list[str] = []
+
+
+def _counting_outside_line_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _OutsideLineDummyASR
+):
+    _outside_line_constructions.append("dummy/old")
+    return _OutsideLineDummyASR()
+
+
 class _DuckPropertiesASR:
     """Engine-shaped object whose ``properties`` is not a ``BaseProperties``.
 
@@ -1555,6 +1569,26 @@ def test_create_refuses_an_outside_line_engine() -> None:
     registry = discover_models(eps=eps, strict=True)
     with pytest.raises(ProtocolCompatibilityError, match="pre-stable line 0.2"):
         registry.create("dummy/old")
+
+
+def test_create_preflights_the_class_line_before_the_factory() -> None:
+    # The gate's placement is part of the contract: gating only after
+    # construction let a construction-time fault (a missing credential, an
+    # SDK failure) mask the line mismatch, sending the operator to debug
+    # configuration for an engine this core cannot use at all. With the
+    # class resolvable, the factory must never run.
+    eps = [
+        EntryPoint(
+            name="dummy/old",
+            value="tests.test_discovery:_counting_outside_line_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _outside_line_constructions.clear()
+    with pytest.raises(ProtocolCompatibilityError, match="pre-stable line 0.2"):
+        registry.create("dummy/old")
+    assert _outside_line_constructions == []
 
 
 def test_create_refuses_untyped_properties() -> None:

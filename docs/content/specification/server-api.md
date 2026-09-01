@@ -14,7 +14,7 @@ Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
 
 ## 1. Security & limits
 
-- **No per-endpoint authentication.** v1 targets localhost / trusted-LAN use.
+- **No per-endpoint authentication.** The server targets localhost / trusted-LAN use.
   Transcription is CPU/GPU-expensive and there is no quota or rate limiting.
   Before exposing beyond localhost, operators **MUST** front the server with a
   reverse proxy providing authentication and rate limiting.
@@ -129,7 +129,7 @@ sendable**:
   mis-routed.
 
 > The long-term JSON-Schema-over-wire path (validating `provider_params` against
-> the discovered schema) is **deferred**; for v1 the escape hatch is in-process
+> the discovered schema) is **deferred**; today the escape hatch is in-process
 > only (pass it to `transcribe(...)` / `start_transcription(...)` directly).
 
 ## 3. REST endpoints
@@ -165,7 +165,21 @@ safely interpretable under this core's semantics. Only `/v1/models`
 The `/v1` path component versions the HTTP transport envelope;
 `properties.protocol_version` versions the application-to-engine semantic
 contract. Neither number derives from the other. A wire-API revision must
-state which semantic protocol generations it can faithfully project.
+state which semantic protocol generations it can faithfully project, and
+that declaration is normative -- without it, `/v1` would silently mean
+"whatever contract the installed core happens to implement," re-coupling
+the two axes.
+
+**Wire API `/v1` projects exactly the semantic protocol `0.2` line.**
+Moving the core to a semantically incompatible protocol line under the
+same `/v1` envelope requires a revision of this declaration that names the
+new set together with a design for how a wire client tells the
+generations apart; absent that design, an incompatible generation
+requires a new wire revision. The stable freeze revises this declaration
+in the same release: when the wire representation is unchanged, `/v1` adds
+the `1.0.x` line to its declared set (the freeze promotes the contract's
+semantics verbatim, so this is the expected outcome); otherwise the core
+opens a new wire revision.
 
 ### 3.3 `POST /v1/transcribe` (multipart form)
 Transcribe an uploaded file.
@@ -236,7 +250,7 @@ the form collects. Secret fields carry `format: password` / `writeOnly: true`
 markers, so schema-driven UIs render them safely. The schema describes field
 *shapes* only and never contains configured values, so — like capabilities and
 params-schema — it is deliberately readable without authentication. Note that
-the server itself does not accept engine construction over the wire in v1; the
+the server itself does not accept engine construction over the wire; the
 collected config is consumed by the operator-side process that constructs the
 engine (for example, `registry.create(key, **values)`).
 
@@ -560,13 +574,13 @@ Client authors MUST handle **both**:
   > `extra` is the engine-specific, non-portable event slot defined in the
   > in-process protocol (`protocol.md` §4.1). Only `error` events scrub it.
 
-### 4.3 Scope limit (v1)
+### 4.3 Scope limit
 
 The WebSocket surface supports **only** the incremental `audio_format` path
 (declare format, push raw PCM frames, receive live events). The
 **whole-input + streaming-output** path
 (`start_transcription(audio=...)`, OpenAI SSE style, spec §7.3) is **NOT**
-exposed over WebSocket in v1. For those engines, use the batch REST endpoints
+exposed over WebSocket. For those engines, use the batch REST endpoints
 (`POST /v1/transcribe` or `POST /v1/transcribe:json`).
 
 ### 4.4 Frame / session byte caps (DoS bound)

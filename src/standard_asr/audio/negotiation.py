@@ -107,7 +107,7 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
 def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -> None:
     """Validate an ``AudioUrl`` against the SSRF policy before forwarding.
 
-    The standard never fetches the URL itself in v1; this only
+    The standard never fetches the URL itself; this only
     validates the literal that is passed to the engine. The check is:
     HTTPS-only, a parseable host, and -- unless opted out -- every address the
     host resolves to must be public.
@@ -118,9 +118,9 @@ def validate_fetchable_url(url: str, *, allow_private_addresses: bool = False) -
     resolves the name again independently at fetch time, so an attacker who
     controls DNS can return a public address here and a private one to the
     engine (classic TOCTOU/DNS-rebinding). Pinning the validated address for the
-    engine's subsequent fetch (DNS-pin) is a documented v1 limitation and a v2
-    requirement. Strong SSRF defense for engine-fetched URLs requires
-    the engine to honor a pinned address.
+    engine's subsequent fetch (DNS-pin) is a documented current-generation
+    limitation and a future-revision requirement. Strong SSRF defense for
+    engine-fetched URLs requires the engine to honor a pinned address.
 
     Args:
         url: The URL to validate.
@@ -249,8 +249,8 @@ class ConversionPlan:
     ``execute_plan`` dispatches on the ``(source variant, target_kind)`` pair and
     *membership-tests* ``operations`` -- it does not iterate them in order -- so
     in the current matrix every ``(source, target)`` cell maps to a unique step
-    set and the order is descriptive only. A future multi-step plan (for example, a v2
-    ``fetch -> decode``) MUST either keep this 1:1 mapping or switch execution to
+    set and the order is descriptive only. A future multi-step plan (for example, a future
+    revision's ``fetch -> decode``) MUST either keep this 1:1 mapping or switch execution to
     an ordered op-dispatcher; do not assume appending an op to this tuple changes
     execution.
 
@@ -463,7 +463,7 @@ def _negotiate_path(source: str, accepted: frozenset[InputKind]) -> ConversionPl
     if InputKind.ARRAY in accepted:
         return ConversionPlan(source, InputKind.ARRAY, (ConversionOp.DECODE,))
     # Only remote kinds remain; the standard does not synthesize a fetchable URL
-    # or upload to provider storage in v1, so the caller must host the media.
+    # or upload to provider storage, so the caller must host the media.
     return NoViablePath(source, accepted, _remote_only_hint(accepted))
 
 
@@ -535,7 +535,7 @@ def _bytes_only_file_hint(accepted: frozenset[InputKind]) -> str:
 def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPlan | NoViablePath:
     """Negotiate a path for an :class:`AudioUrl` source.
 
-    In v1 the standard never fetches URLs (SSRF risk); a URL is only viable if
+    The standard never fetches URLs itself (SSRF risk); a URL is only viable if
     the engine fetches it server-side. Negotiation is a pure, I/O-free structural
     match; the SSRF *security* validation (HTTPS + non-private-address, which
     needs DNS resolution) runs at execution time via
@@ -554,7 +554,7 @@ def _negotiate_url(source: str, accepted: frozenset[InputKind]) -> ConversionPla
         return NoViablePath(
             source,
             accepted,
-            "This engine does not fetch URLs; in v1 the standard does not fetch "
+            "This engine does not fetch URLs; the standard does not fetch "
             "them either. Provide a local file via AudioPath.",
         )
     # A storage-only engine cannot fetch an HTTPS URL either, so suggesting
