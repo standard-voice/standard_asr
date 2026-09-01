@@ -31,6 +31,22 @@ standard-asr list
 Every compliant engine plugin registers itself via entry points. No configuration
 needed -- install a plugin and it appears.
 
+## Check what the model needs on disk
+
+Most engines keep persistent inference artifacts: weights, tokenizers, compiled
+graphs, installed operating-system assets. Ask before the first run instead of
+finding out during one:
+
+```bash
+standard-asr status faster-whisper/large-v3   # what is on disk, what is missing
+standard-asr pull faster-whisper/large-v3     # acquire what inference needs
+```
+
+`pull` never transcribes audio to warm a cache, and it prints any step only you
+can take, such as accepting a license or signing in. An engine that carries no
+artifacts, such as a cloud API, reports `not_applicable`. See
+[Inference artifacts](./reference/artifacts.md).
+
 ## Transcribe
 
 ```python

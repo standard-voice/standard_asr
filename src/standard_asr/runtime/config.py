@@ -2000,12 +2000,12 @@ class DownloadConfigMixin(BaseModel):
     """Applicability mixin: model download / cache location.
 
     Attributes:
-        download_root: Root directory for model artifacts. Priority: explicit >
+        download_root: Root directory for inference artifacts. Priority: explicit >
             ``STANDARD_ASR_MODEL_DIR`` > library default > ``~/.cache``.
     """
 
     download_root: Path | None = Field(
-        default=None, description="Root directory for downloaded model artifacts."
+        default=None, description="Root directory for downloaded inference artifacts."
     )
 
 

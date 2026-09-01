@@ -18,9 +18,9 @@ Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
   Transcription is CPU/GPU-expensive and there is no quota or rate limiting.
   Before exposing beyond localhost, operators **MUST** front the server with a
   reverse proxy providing authentication and rate limiting.
-- The capability and params-schema endpoints are deliberately readable without
-  auth (spec §3.1 / §C: declared metadata is discoverable without instantiation
-  or authentication).
+- The declared-metadata, capability, and schema endpoints are deliberately
+  readable without authentication. They expose declarations, not configured
+  values or artifact status.
 - **Validation errors never echo request input VALUES.** Every REST **422** that
   originates from a pydantic validation failure of the CLIENT's own request
   material — the global `RequestValidationError` handler **and** the
@@ -141,6 +141,22 @@ Returns `{"status": "ok"}`.
 Returns a list of `ModelInfo`:
 `{"key": "<engine/model>", "engine_id": "...", "model_name": "..."}`.
 
+This bulk endpoint reads entry-point identity only. It does not import every
+installed plugin and does not include declared metadata or artifact status.
+
+### 3.2.1 `GET /v1/metadata/{model}`
+
+Returns protocol 1.1 `DeclaredEngineMetadata` as canonical JSON. The endpoint
+loads only the selected model's engine class and does not instantiate it. The
+initial `artifacts` section exposes three independent static upper bounds:
+artifact-lifecycle applicability, explicit-acquisition support, and possible
+acquisition during inference.
+
+An unknown model key returns **404**. A registered plugin that cannot load, an
+invalid declaration, or a protocol version that predates declared metadata is a
+deployment fault and returns a scrubbed **500**. The endpoint never fabricates
+`NO_ARTIFACT_LIFECYCLE` for a legacy engine.
+
 ### 3.3 `POST /v1/transcribe` (multipart form)
 Transcribe an uploaded file.
 
@@ -227,6 +243,7 @@ The transcribe endpoints map errors from **both** engine construction
 | Unknown / unparseable model key (`EntrypointValidationError` — the caller's key does not exist or is malformed) | **404** (authored detail: the caller's own key + available keys) |
 | Registered model whose plugin fails to load/resolve (`FactoryLoadError` — the key resolved, a server-installed plugin is broken) | **500** (scrubbed generic detail; plugin import/annotation internals are safe-logged only — a 404 would blame the caller for a fault it cannot fix) |
 | Required configuration absent from the SERVER environment (`ConfigurationRequiredError` — for example, a credential env var not set), at construction OR discovered lazily at call time | **503** (stable generic detail; the absent field names are deployment detail, safe-logged only) |
+| Required inference artifacts are unavailable (`ArtifactUnavailableError`) or their acquisition failed (`ArtifactAcquisitionError`) | **503** (stable generic detail; reports, paths, actions, source URLs, and native error text are deployment detail) |
 | Any other construction failure (`ConfigError`, `InvalidProviderParamError`, `ValidationError`, anything unexpected) | **500** (scrubbed) |
 | Engine config/contract fault during transcription (`ConfigError` — for example, a bad `default_language` value; `EngineContractError` — for example, a malformed declared language tag or a missing IC.6 `default_language`; `InvalidProviderParamError`; a bare engine-side `ValidationError`) | **500** (scrubbed) |
 | Unsupported standard feature / non-selectable language requested, strict mode (`UnsupportedFeatureError`) | **422** |
@@ -243,9 +260,10 @@ so `ConfigError` and `InvalidProviderParamError` are UNREACHABLE from a
 request: wherever they surface (construction, transcription, session
 establishment) they are engine/deployment faults, mirroring the compliance
 suite's classification of the same states. Absent required config
-(`ConfigurationRequiredError`, the state compliance *skips*) is an
-operator-side availability state → **503**, whether hit at construction or
-lazily at call time; every other `ConfigError`/`EngineContractError`/
+(`ConfigurationRequiredError`, the state compliance *skips*) and an
+inference-artifact failure are operator-side availability states → **503**,
+whether hit at construction or lazily at call time. Every other
+`ConfigError`/`EngineContractError`/
 `InvalidProviderParamError` (the states compliance *fails*) → scrubbed
 **500**. Client-caused rejections
 each have their own type and status: `UnsupportedFeatureError` → 422,
@@ -271,7 +289,7 @@ the raw exception text is logged server-side only, never returned (avoids
 leaking internal paths or upstream/credential material).
 
 **Metadata fault boundary (normative).** The discovery endpoints
-(`/v1/capabilities/{model}`, `/v1/params-schema/{model}`,
+(`/v1/metadata/{model}`, `/v1/capabilities/{model}`, `/v1/params-schema/{model}`,
 `/v1/config-schema/{model}`) MUST wrap the WHOLE operation — class
 resolution, the descriptor read, `canonical_json()` /
 `model_json_schema()`, and the JSON projection — in ONE fault boundary,
@@ -385,8 +403,9 @@ Bridges a WebSocket to an engine streaming session (the incremental
      closes. (A conformant server does **not** parse a binary first frame as
      config; relying on that leniency breaks against strict implementations.)
 
-2. **Initial diagnostics frame (server → client).** Immediately after the
-   session starts — *before* any audio is sent — the server forwards the
+2. **Initial diagnostics frame (server → client).** Immediately after
+   `start_transcription` returns — *before* the bridge enters the session, and
+   *before* any audio is sent — the server forwards the
    standard-layer diagnostics attached at session establishment (best-effort
    parameter degrade, language resolution, audio conversion), so the client learns
    **why** a parameter was dropped or changed (the REST path returns these on the
@@ -450,11 +469,22 @@ Client authors MUST handle **both**:
     (`EntrypointValidationError` only — a registered model whose plugin
     fails to LOAD is an engine/deployment fault and maps to the scrubbed
     `internal_error` frame, mirroring the REST 404/500 split).
-  - `service_unavailable`: required configuration absent from the server
-    environment (`ConfigurationRequiredError`), whether at engine
-    construction or discovered lazily at session establishment — the WS twin
-    of the REST 503 (§3.7): an operator-side state, stable generic
-    `message`, never the absent field names.
+  - `service_unavailable`: required configuration is absent from the server
+    environment, or an inference-artifact failure prevents session
+    establishment. Establishment covers session OPEN as well: an engine that
+    materializes artifacts or checks credentials when the session opens (the
+    `_open` hook) reaches the client through this same frame. On that one path
+    the client may already hold the §4.1.2 diagnostics frame, because
+    establishment succeeded and attached its diagnostics before the open
+    failed: both facts are true and both are delivered. "Sent as a single
+    frame" describes the error's own shape, not a promise that it is the first
+    frame on the socket, so a client MUST dispatch on `type` rather than treat
+    frame one as the verdict. Every earlier pre-bridge failure returns before
+    the diagnostics frame is built, so there the error is the only frame. The
+    open failure reaches the client here because no event channel exists yet.
+    This is the WebSocket twin of the REST 503 (§3.7): an
+    operator-side state with a stable generic `message`, never field names,
+    artifact reports, paths, actions, URLs, or native error text.
   - `unsupported`: engine cannot start a streaming session for this request
     (`UnsupportedFeatureError` — the only caller-fixable establishment
     rejection; by establishment every client input is already validated, so
@@ -478,6 +508,15 @@ Client authors MUST handle **both**:
   ```
   (It carries the full `TranscriptionEvent` field set; other fields are `null`
   or defaults.)
+
+  `artifact_unavailable` and `artifact_acquisition_failed` are distinct
+  terminal codes when an inference-artifact failure occurs while the engine is
+  producing events. Both set `recoverable=false`. `artifact_unavailable` has no
+  retry delay; `artifact_acquisition_failed` can retain a nonnegative
+  `retriable_after`, but the client must open a new session for a retry. A
+  failure before the first event — construction, establishment, or session
+  open — cannot use these event fields and remains the coarser
+  `service_unavailable` shape above.
 
   > **Non-leak (mirrors the REST 500 contract, §3.7).** For `error` events the
   > server **drops the `extra` payload** before sending (it is emptied to `{}`).

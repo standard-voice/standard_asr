@@ -21,6 +21,8 @@ import logging
 import wave
 from collections.abc import AsyncIterator
 from importlib.metadata import EntryPoint
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar, Literal, cast
 
 import httpx2
@@ -32,6 +34,11 @@ from standard_asr import (
     RuntimeParams,
     TranscriptionResult,
 )
+from standard_asr.contract.artifacts import (
+    ArtifactAction,
+    ArtifactReport,
+    ArtifactRequirement,
+)
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
@@ -41,6 +48,15 @@ from standard_asr.contract.capabilities import (
     FlagCap,
     LanguageCaps,
     StreamingCapabilities,
+)
+from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactUnavailableError,
+    ProtocolCompatibilityError,
+)
+from standard_asr.contract.metadata import (
+    ArtifactDeclaration,
+    DeclaredEngineMetadata,
 )
 from standard_asr.contract.params import ProviderParams
 from standard_asr.engine import (
@@ -64,7 +80,7 @@ class _DummyConfig(BaseConfig[str]):
 class _DummyProperties(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "echo"
-    protocol_version: str = "0.2.0"
+    protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -221,6 +237,125 @@ def _no_instantiate_config_type_factory() -> (  # pyright: ignore[reportUnusedFu
     return _NoInstantiateConfigTypeASR()
 
 
+class _MetadataProperties(_DummyProperties):
+    protocol_version: str = "1.1.0"
+
+
+class _NoInstantiateMetadataASR(_NoInstantiateASR):
+    """Protocol 1.1 engine whose static metadata needs no construction."""
+
+    properties: ClassVar[_DummyProperties] = _MetadataProperties()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
+        {
+            "artifacts": ArtifactDeclaration(
+                applicable=True,
+                supports_explicit_acquisition=True,
+                may_acquire_during_inference=False,
+            ),
+            "x_test_section": {"label": "preserved"},
+        }
+    )
+
+
+def _no_instantiate_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _NoInstantiateMetadataASR
+):
+    return _NoInstantiateMetadataASR()
+
+
+class _MetadataMissingProtocolASR(_NoInstantiateMetadataASR):
+    """Broken engine whose properties lack a protocol-version string."""
+
+    properties: ClassVar[_DummyProperties] = cast(_DummyProperties, object())
+
+
+def _metadata_missing_protocol_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _MetadataMissingProtocolASR
+):
+    return _MetadataMissingProtocolASR()
+
+
+class _MetadataDuckPropertiesASR(_NoInstantiateMetadataASR):
+    """Engine whose properties quack a protocol version without the type.
+
+    ``require_artifact_protocol()`` and the CLI refuse this engine (the gate
+    requires a typed ``BaseProperties``), so the endpoint's former duck-typed
+    ``protocol_version`` read answered 200 where every other consumer raised
+    -- two verdicts for one installed engine.
+    """
+
+    properties: ClassVar[_DummyProperties] = cast(
+        _DummyProperties, SimpleNamespace(protocol_version="1.1.0")
+    )
+
+
+def _metadata_duck_properties_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _MetadataDuckPropertiesASR
+):
+    return _MetadataDuckPropertiesASR()
+
+
+class _MetadataMissingDeclarationASR(_NoInstantiateMetadataASR):
+    """Broken protocol 1.1 engine without typed declared metadata."""
+
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = cast(DeclaredEngineMetadata, None)
+
+
+def _metadata_missing_declaration_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _MetadataMissingDeclarationASR
+):
+    return _MetadataMissingDeclarationASR()
+
+
+class _MetadataUnvalidatedDeclarationASR(_NoInstantiateMetadataASR):
+    """Protocol 1.1 engine whose declaration skipped validation.
+
+    The instance IS a ``DeclaredEngineMetadata``, so the endpoint's isinstance
+    check passes; only its contents never met a validator.
+    """
+
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_construct(
+        artifacts={"applicable": "not-a-bool"}
+    )
+
+
+def _metadata_unvalidated_declaration_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _MetadataUnvalidatedDeclarationASR
+):
+    return _MetadataUnvalidatedDeclarationASR()
+
+
+_LEGACY_METADATA_SENTINEL = "legacy-metadata-must-not-be-read"
+
+
+class _LegacyMetadataProperties(_DummyProperties):
+    protocol_version: str = "1.0.0"
+
+
+class _LegacyMetadataMeta(type):
+    """Expose a descriptor that the protocol guard must not read."""
+
+    @property
+    def declared_metadata(cls) -> Any:
+        """Fail if metadata is read before protocol compatibility is checked.
+
+        Returns:
+            Never returns.
+
+        Raises:
+            AssertionError: Always.
+        """
+        raise AssertionError(_LEGACY_METADATA_SENTINEL)
+
+
+class _LegacyMetadataASR(_DummyASR, metaclass=_LegacyMetadataMeta):
+    properties: ClassVar[_DummyProperties] = _LegacyMetadataProperties()
+
+
+def _legacy_metadata_factory() -> _LegacyMetadataASR:  # pyright: ignore[reportUnusedFunction]
+    return _LegacyMetadataASR()
+
+
 class _NotAConfigType:
     """Deliberately not a BaseConfig subclass."""
 
@@ -270,6 +405,157 @@ def _configuration_required_factory() -> (  # pyright: ignore[reportUnusedFuncti
     _ConfigurationRequiredASR
 ):
     return _ConfigurationRequiredASR()
+
+
+_ARTIFACT_ERROR_SECRET = "artifact-server-secret"
+# Anchored to the current drive so the path is absolute on every platform
+# (ArtifactRequirement rejects a relative location).
+_ARTIFACT_ERROR_PATH = str(Path(Path.cwd().anchor, "private", "models", "customer", "checkpoint"))
+_ARTIFACT_ACTION_URL = "https://models.example.test/accept?token=secret"
+
+
+def _artifact_error_report() -> ArtifactReport:
+    """Build a valid report whose contents must stay off the wire.
+
+    The exception constructors validate their payloads, so the leak-bait
+    local path, action URL, and secret ride a REAL report and action -- the
+    same shapes an honest engine attaches -- and the assertions prove the
+    server scrubs even fully valid structured context.
+
+    Returns:
+        The artifact report.
+    """
+    action = ArtifactAction.model_validate(
+        {
+            "kind": "accept_terms",
+            "message": f"Accept the terms; {_ARTIFACT_ERROR_SECRET}",
+            "url": _ARTIFACT_ACTION_URL,
+        }
+    )
+    requirement = ArtifactRequirement(
+        artifact_id="customer_checkpoint",
+        label="Customer checkpoint",
+        state="missing",
+        required_for_inference=True,
+        can_acquire_now=False,
+        may_acquire_during_inference=False,
+        source_is_mutable=False,
+        acquisition_blocker="action_required",
+        required_actions=(action,),
+        location=Path(_ARTIFACT_ERROR_PATH),
+    )
+    return ArtifactReport.from_requirements(
+        mode="batch", applicable=True, requirements=(requirement,)
+    )
+
+
+def _artifact_unavailable_error() -> ArtifactUnavailableError:
+    """Build an unavailable error with data that must stay off the wire.
+
+    Returns:
+        The artifact error.
+    """
+    return ArtifactUnavailableError(
+        f"Missing {_ARTIFACT_ERROR_PATH}; open {_ARTIFACT_ACTION_URL}; {_ARTIFACT_ERROR_SECRET}",
+        reason="missing",
+        report=_artifact_error_report(),
+    )
+
+
+def _artifact_acquisition_error() -> ArtifactAcquisitionError:
+    """Build an acquisition error with data that must stay off the wire.
+
+    Returns:
+        The artifact error.
+    """
+    return ArtifactAcquisitionError(
+        f"Download failed at {_ARTIFACT_ERROR_PATH}; open {_ARTIFACT_ACTION_URL}; "
+        f"{_ARTIFACT_ERROR_SECRET}",
+        reason="failed",
+        report=_artifact_error_report(),
+        required_actions=(
+            ArtifactAction.model_validate(
+                {
+                    "kind": "accept_terms",
+                    "message": f"Accept the terms; {_ARTIFACT_ERROR_SECRET}",
+                    "url": _ARTIFACT_ACTION_URL,
+                }
+            ),
+        ),
+        retriable_after=3.0,
+    )
+
+
+class _ArtifactUnavailableOnConstructASR(_DummyASR):
+    def __init__(self) -> None:
+        try:
+            raise RuntimeError(f"native loader leaked {_ARTIFACT_ERROR_SECRET}")
+        except RuntimeError as exc:
+            raise _artifact_unavailable_error() from exc
+
+
+def _artifact_unavailable_construct_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUnavailableOnConstructASR
+):
+    return _ArtifactUnavailableOnConstructASR()
+
+
+class _ArtifactAcquisitionOnConstructASR(_DummyASR):
+    def __init__(self) -> None:
+        try:
+            raise RuntimeError(f"native downloader leaked {_ARTIFACT_ERROR_SECRET}")
+        except RuntimeError as exc:
+            raise _artifact_acquisition_error() from exc
+
+
+def _artifact_acquisition_construct_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactAcquisitionOnConstructASR
+):
+    return _ArtifactAcquisitionOnConstructASR()
+
+
+class _ArtifactUnavailableOnTranscribeASR(_DummyASR):
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        raise _artifact_unavailable_error()
+
+
+def _artifact_unavailable_transcribe_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUnavailableOnTranscribeASR
+):
+    return _ArtifactUnavailableOnTranscribeASR()
+
+
+class _ArtifactAcquisitionOnTranscribeASR(_DummyASR):
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        raise _artifact_acquisition_error()
+
+
+def _artifact_acquisition_transcribe_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactAcquisitionOnTranscribeASR
+):
+    return _ArtifactAcquisitionOnTranscribeASR()
+
+
+class _ArtifactUnavailableOnStartASR(_DummyASR):
+    def start_transcription(self, **kwargs: Any) -> Any:
+        raise _artifact_unavailable_error()
+
+
+def _artifact_unavailable_start_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUnavailableOnStartASR
+):
+    return _ArtifactUnavailableOnStartASR()
+
+
+class _ArtifactAcquisitionOnStartASR(_DummyASR):
+    def start_transcription(self, **kwargs: Any) -> Any:
+        raise _artifact_acquisition_error()
+
+
+def _artifact_acquisition_start_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactAcquisitionOnStartASR
+):
+    return _ArtifactAcquisitionOnStartASR()
 
 
 class _ValidationErrorOnConstructASR(_DummyASR):
@@ -843,6 +1129,110 @@ def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert create_app_kwargs["max_ws_frame_bytes"] == 4096
 
 
+def test_declared_metadata_endpoint_is_canonical_and_does_not_instantiate() -> None:
+    """The per-model endpoint reads typed metadata from the engine class."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_no_instantiate_metadata_factory"))
+    client = TestClient(app)
+
+    resp: httpx2.Response = client.get("/v1/metadata/dummy/echo")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "artifacts": {
+            "applicable": True,
+            "supports_explicit_acquisition": True,
+            "may_acquire_during_inference": False,
+        },
+        "x_test_section": {"label": "preserved"},
+    }
+
+
+def test_declared_metadata_endpoint_unknown_model_maps_to_404() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_no_instantiate_metadata_factory"))
+    client = TestClient(app)
+
+    resp: httpx2.Response = client.get("/v1/metadata/nope/missing")
+    assert resp.status_code == 404
+
+
+def test_declared_metadata_legacy_protocol_is_scrubbed_deployment_500(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A legacy plugin cannot provide protocol 1.1 declared metadata.
+
+    The installed plugin version is a deployment fault that no wire request can
+    repair, so it maps to the metadata boundary's scrubbed 500. The protocol
+    guard must run before the legacy class's ``declared_metadata`` descriptor is
+    read, which also prevents a missing declaration from becoming a false
+    no-artifact claim.
+
+    Args:
+        caplog: Pytest fixture capturing operator logs.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_legacy_metadata_factory"))
+    client = TestClient(app)
+    with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
+        resp: httpx2.Response = client.get("/v1/metadata/dummy/echo")
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Internal model metadata error. See server logs for details."
+    assert "1.0.0" not in resp.text
+    assert "artifact_lifecycle" not in resp.text
+    assert _LEGACY_METADATA_SENTINEL not in resp.text
+    assert _LEGACY_METADATA_SENTINEL not in caplog.text
+    assert any(
+        record.exc_info is not None and record.exc_info[0] is ProtocolCompatibilityError
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "_metadata_missing_protocol_factory",
+        # Properties that quack protocol_version without being BaseProperties:
+        # the shared guard refuses them for the CLI and the runtime, and the
+        # endpoint must give the same verdict instead of answering 200 (AR.1).
+        "_metadata_duck_properties_factory",
+        "_metadata_missing_declaration_factory",
+        # An instance of the right CLASS whose contents skipped validation. The
+        # endpoint's isinstance check cannot see the difference, so before the
+        # projection re-validated, pydantic serialized the mistyped section with
+        # a warning and this answered 200 -- against a spec that promises a
+        # scrubbed 500 for an invalid declaration.
+        "_metadata_unvalidated_declaration_factory",
+    ],
+)
+def test_declared_metadata_contract_fault_is_scrubbed_deployment_500(
+    factory_name: str,
+) -> None:
+    """Malformed declarations are installed-plugin faults, not request faults.
+
+    Args:
+        factory_name: Factory for a different malformed declaration.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for(factory_name))
+    client = TestClient(app)
+
+    resp: httpx2.Response = client.get("/v1/metadata/dummy/echo")
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Internal model metadata error. See server logs for details."
+    assert "protocol_version" not in resp.text
+    assert "typed engine metadata" not in resp.text
+
+
 def test_capabilities_endpoint() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -974,6 +1364,41 @@ def test_transcribe_construction_missing_config_maps_to_503(
     assert any("requires configuration absent" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "_artifact_unavailable_construct_factory",
+        "_artifact_acquisition_construct_factory",
+    ],
+)
+def test_transcribe_construction_artifact_error_maps_to_scrubbed_503(
+    factory_name: str,
+) -> None:
+    """Construction-time inference-artifact failures are deployment states.
+
+    The wire caller cannot repair the installed artifacts. The response is a
+    stable 503 that excludes reports, local paths, action URLs, and native
+    exception text.
+
+    Args:
+        factory_name: Factory that raises one of the artifact error types.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for(factory_name))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 503
+    assert "required inference artifacts" in resp.json()["detail"]
+    assert _ARTIFACT_ERROR_SECRET not in resp.text
+    assert _ARTIFACT_ERROR_PATH not in resp.text
+    assert _ARTIFACT_ACTION_URL not in resp.text
+
+
 def test_transcribe_construction_unexpected_error_maps_to_500_no_leak() -> None:
     """An unexpected construction fault -> generic 500 with no internal detail."""
     pytest.importorskip("fastapi")
@@ -1087,6 +1512,35 @@ def test_transcribe_lazy_missing_config_maps_to_503() -> None:
     assert "server-side configuration" in resp.json()["detail"]
     assert "api_key" not in resp.text
     assert "STANDARD_ASR_DUMMY__API_KEY" not in resp.text
+
+
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "_artifact_unavailable_transcribe_factory",
+        "_artifact_acquisition_transcribe_factory",
+    ],
+)
+def test_transcribe_artifact_error_maps_to_scrubbed_503(factory_name: str) -> None:
+    """Transcription-time inference-artifact failures use the same safe 503.
+
+    Args:
+        factory_name: Factory that raises one of the artifact error types.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for(factory_name))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 503
+    assert "required inference artifacts" in resp.json()["detail"]
+    assert _ARTIFACT_ERROR_SECRET not in resp.text
+    assert _ARTIFACT_ERROR_PATH not in resp.text
+    assert _ARTIFACT_ACTION_URL not in resp.text
 
 
 def test_transcribe_engine_config_error_maps_to_500_scrubbed() -> None:
@@ -1378,6 +1832,38 @@ def test_ws_stream_construction_missing_config_reports_service_unavailable() -> 
     assert "server-side configuration" in err["message"]
     assert "api_key" not in err["message"]
     assert "STANDARD_ASR_DUMMY__API_KEY" not in err["message"]
+
+
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "_artifact_unavailable_construct_factory",
+        "_artifact_acquisition_construct_factory",
+    ],
+)
+def test_ws_stream_construction_artifact_error_is_service_unavailable(
+    factory_name: str,
+) -> None:
+    """Construction-time artifact errors become one scrubbed WS frame.
+
+    Args:
+        factory_name: Factory that raises one of the artifact error types.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for(factory_name))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+
+    assert err["type"] == "error"
+    assert err["code"] == "service_unavailable"
+    assert "required inference artifacts" in err["message"]
+    assert _ARTIFACT_ERROR_SECRET not in json.dumps(err)
+    assert _ARTIFACT_ERROR_PATH not in json.dumps(err)
+    assert _ARTIFACT_ACTION_URL not in json.dumps(err)
 
 
 def test_ws_stream_construction_config_error_reports_internal_error() -> None:
@@ -3121,6 +3607,334 @@ def test_ws_stream_establishment_missing_config_reports_service_unavailable() ->
     assert "STANDARD_ASR_STREAM__API_KEY" not in err["message"]
 
 
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "_artifact_unavailable_start_factory",
+        "_artifact_acquisition_start_factory",
+    ],
+)
+def test_ws_stream_establishment_artifact_error_is_service_unavailable(
+    factory_name: str,
+) -> None:
+    """Establishment-time artifact errors become one scrubbed WS frame.
+
+    Args:
+        factory_name: Factory that raises one of the artifact error types.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for(factory_name))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+
+    assert err["type"] == "error"
+    assert err["code"] == "service_unavailable"
+    assert "required inference artifacts" in err["message"]
+    assert _ARTIFACT_ERROR_SECRET not in json.dumps(err)
+    assert _ARTIFACT_ERROR_PATH not in json.dumps(err)
+    assert _ARTIFACT_ACTION_URL not in json.dumps(err)
+
+
+class _OpenFaultSession(_StreamEchoSession):
+    """Fails inside ``_open`` -- the session-ENTRY seam, past establishment.
+
+    ``start_transcription`` returns normally, so the route's establishment
+    boundary has already been left behind; the fault surfaces only when the
+    bridge enters the session. Every ``_close`` call is recorded so a test can
+    pin that a FAILED entry is never paired with a teardown of resources the
+    engine never opened.
+    """
+
+    closes: ClassVar[list[str]] = []
+
+    def _fault(self) -> Exception:
+        raise NotImplementedError  # pragma: no cover - every subclass overrides
+
+    async def _open(self) -> None:
+        raise self._fault()
+
+    async def _close(self) -> None:
+        _OpenFaultSession.closes.append(type(self).__name__)
+
+
+class _ArtifactUnavailableOpenSession(_OpenFaultSession):
+    def _fault(self) -> Exception:
+        return _artifact_unavailable_error()
+
+
+class _ArtifactAcquisitionOpenSession(_OpenFaultSession):
+    def _fault(self) -> Exception:
+        return _artifact_acquisition_error()
+
+
+class _LazyCredOpenSession(_OpenFaultSession):
+    def _fault(self) -> Exception:
+        from standard_asr.contract.exceptions import ConfigurationRequiredError
+
+        return ConfigurationRequiredError(
+            "api_key is required; set STANDARD_ASR_STREAM__API_KEY or pass it explicitly"
+        )
+
+
+class _UnexpectedOpenSession(_OpenFaultSession):
+    def _fault(self) -> Exception:
+        return RuntimeError("native open failed: /secret/internal/path")
+
+
+class _CloseFaultSession(_StreamEchoSession):
+    """Streams normally, then fails inside ``_close`` -- the session-EXIT seam."""
+
+    async def _close(self) -> None:
+        raise RuntimeError("native close failed: /secret/internal/path")
+
+
+class _SessionLifecycleEngine(_StreamEchoEngine):
+    """Serves whichever lifecycle-fault session its subclass names."""
+
+    session_type: ClassVar[type[TranscriptionSession]] = _StreamEchoSession
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return type(self).session_type()
+
+
+class _ArtifactUnavailableOpenEngine(_SessionLifecycleEngine):
+    session_type: ClassVar[type[TranscriptionSession]] = _ArtifactUnavailableOpenSession
+
+
+class _ArtifactAcquisitionOpenEngine(_SessionLifecycleEngine):
+    session_type: ClassVar[type[TranscriptionSession]] = _ArtifactAcquisitionOpenSession
+
+
+class _LazyCredOpenEngine(_SessionLifecycleEngine):
+    session_type: ClassVar[type[TranscriptionSession]] = _LazyCredOpenSession
+
+
+class _UnexpectedOpenEngine(_SessionLifecycleEngine):
+    session_type: ClassVar[type[TranscriptionSession]] = _UnexpectedOpenSession
+
+
+class _CloseFaultEngine(_SessionLifecycleEngine):
+    session_type: ClassVar[type[TranscriptionSession]] = _CloseFaultSession
+
+
+class _BestEffortOpenFaultEngine(_SessionLifecycleEngine):
+    """Degrades a parameter at establishment AND then fails in the session open.
+
+    The only shape that puts a diagnostics frame and a pre-bridge error frame on
+    the same socket: establishment has to succeed far enough to attach a
+    diagnostic, and the open hook has to fail afterwards.
+    """
+
+    session_type: ClassVar[type[TranscriptionSession]] = _ArtifactUnavailableOpenSession
+
+    def __init__(self) -> None:
+        # best_effort: the unsupported param is dropped with a diagnostic
+        # instead of raising, so the session carries one to forward.
+        self.config = _DummyConfig(engine="stream", strict=False)
+
+
+def _best_effort_open_fault_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _BestEffortOpenFaultEngine
+):
+    return _BestEffortOpenFaultEngine()
+
+
+def _artifact_unavailable_open_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUnavailableOpenEngine
+):
+    return _ArtifactUnavailableOpenEngine()
+
+
+def _artifact_acquisition_open_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactAcquisitionOpenEngine
+):
+    return _ArtifactAcquisitionOpenEngine()
+
+
+def _lazy_cred_open_factory() -> _LazyCredOpenEngine:  # pyright: ignore[reportUnusedFunction]
+    return _LazyCredOpenEngine()
+
+
+def _unexpected_open_factory() -> _UnexpectedOpenEngine:  # pyright: ignore[reportUnusedFunction]
+    return _UnexpectedOpenEngine()
+
+
+def _close_fault_factory() -> _CloseFaultEngine:  # pyright: ignore[reportUnusedFunction]
+    return _CloseFaultEngine()
+
+
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "_artifact_unavailable_open_factory",
+        "_artifact_acquisition_open_factory",
+    ],
+)
+def test_ws_stream_session_open_artifact_error_is_service_unavailable(
+    factory_name: str,
+) -> None:
+    """Artifact errors from ``_open`` get the same scrubbed 503 twin.
+
+    ``_open`` is where an engine declaring ``may_acquire_during_inference``
+    materializes artifacts, and it runs INSIDE the bridge -- past the route's
+    establishment boundary. Without a boundary there the exception escaped the
+    route entirely: no verdict frame for the client, and the ASGI server logged
+    the raw traceback, around the operator-log redaction contract.
+
+    Args:
+        factory_name: Factory whose session raises one artifact error type.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _OpenFaultSession.closes.clear()
+    app = server_module.create_app(registry=_registry_for(factory_name))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+
+    assert err["type"] == "error"
+    assert err["code"] == "service_unavailable"
+    assert "required inference artifacts" in err["message"]
+    assert _ARTIFACT_ERROR_SECRET not in json.dumps(err)
+    assert _ARTIFACT_ERROR_PATH not in json.dumps(err)
+    assert _ARTIFACT_ACTION_URL not in json.dumps(err)
+    # A failed entry is never paired with a teardown of what was never opened.
+    assert _OpenFaultSession.closes == []
+
+
+def test_ws_stream_diagnostics_frame_may_precede_a_session_open_error() -> None:
+    """A pre-bridge error is the LAST frame on this path, not the only one.
+
+    Establishment attaches its diagnostics and the route forwards them before
+    the bridge enters the session, so an ``_open`` failure lands behind a
+    diagnostics frame. Section 4.2's "sent as a single frame" describes the
+    error's own shape, not a promise that nothing precedes it -- a client that
+    reads exactly one frame and treats it as the verdict misreads this path.
+    Both facts are true and both are worth delivering: the parameter really was
+    degraded, and the session really could not open.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _OpenFaultSession.closes.clear()
+    app = server_module.create_app(registry=_registry_for("_best_effort_open_fault_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {
+                "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                "options": {"word_timestamps": "word"},
+            }
+        )
+        first = ws.receive_json()
+        second = ws.receive_json()
+
+    assert first["type"] == "diagnostics"
+    assert any(d.get("param") == "word_timestamps" for d in first["diagnostics"])
+    assert second["type"] == "error"
+    assert second["code"] == "service_unavailable"
+    assert _ARTIFACT_ERROR_SECRET not in json.dumps([first, second])
+    assert _OpenFaultSession.closes == []
+
+
+def test_ws_stream_session_open_missing_config_reports_service_unavailable() -> None:
+    """A credential check deferred all the way to ``_open`` is still the 503 twin.
+
+    Absence is an operator-side availability state wherever it surfaces; the
+    generic arm would have misattributed it as an engine fault.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _OpenFaultSession.closes.clear()
+    app = server_module.create_app(registry=_registry_for("_lazy_cred_open_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        err = ws.receive_json()
+
+    assert err["type"] == "error"
+    assert err["code"] == "service_unavailable"
+    assert "server-side configuration" in err["message"]
+    assert "api_key" not in err["message"]
+    assert "STANDARD_ASR_STREAM__API_KEY" not in err["message"]
+    assert _OpenFaultSession.closes == []
+
+
+def test_ws_stream_session_open_unexpected_fault_is_scrubbed_internal_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Any other ``_open`` fault: one scrubbed frame, detail logged safely.
+
+    Args:
+        caplog: Pytest fixture capturing log records.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _OpenFaultSession.closes.clear()
+    app = server_module.create_app(registry=_registry_for("_unexpected_open_factory"))
+    client = TestClient(app)
+    with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
+        with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+            ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+            err = ws.receive_json()
+
+    assert err["type"] == "error"
+    assert err["code"] == "internal_error"
+    assert "/secret/internal/path" not in err["message"]
+    assert "See server logs" in err["message"]
+    # The detail belongs to the OPERATOR, through log_exception_safely -- what
+    # the escaping exception used to bypass on its way to the ASGI logger.
+    assert "Stream session open failed" in caplog.text
+    assert _OpenFaultSession.closes == []
+
+
+def test_ws_stream_session_close_fault_does_not_crash_the_route(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A teardown fault is safe-logged, never a frame after the terminal event.
+
+    The stream itself succeeded and the client already holds its ``done``; a
+    trailing ``error`` frame is not a shape server-api.md 4.2 defines. What
+    must not happen is the exception escaping the route as a raw traceback.
+
+    Args:
+        caplog: Pytest fixture capturing log records.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_close_fault_factory"))
+    client = TestClient(app)
+    events: list[dict[str, Any]] = []
+    with caplog.at_level(logging.ERROR, logger="standard_asr.toolchain.server"):
+        with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+            ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+            ws.send_bytes(b"abc")
+            ws.send_text("end")
+            while True:
+                event = ws.receive_json()
+                events.append(event)
+                if event["type"] == "done":
+                    break
+
+    assert [event["type"] for event in events] == ["final", "done"]
+    assert "WebSocket session teardown failed" in caplog.text
+
+
 class _StreamIPPEEngine(_StreamEchoEngine):
     """Raises ``InvalidProviderParamError`` at establishment (engine contract bug)."""
 
@@ -3691,14 +4505,29 @@ def test_ws_registered_model_load_failure_is_internal_error_not_unknown_model() 
     assert "_missing_SENTINEL_target" not in json.dumps(err)
 
 
+def test_bulk_models_remains_import_free_for_broken_plugin() -> None:
+    """Bulk discovery returns entry-point metadata without importing plugins."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_broken_load_registry())
+    client = TestClient(app)
+
+    resp: httpx2.Response = client.get("/v1/models")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{"key": "dummy/echo", "engine_id": "dummy", "model_name": "echo"}]
+
+
 def test_metadata_endpoints_load_failure_is_scrubbed_500_not_404() -> None:
-    """capabilities / params-schema / config-schema: same split."""
+    """All per-model metadata endpoints preserve the fault-ownership split."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     app = server_module.create_app(registry=_broken_load_registry())
     client = TestClient(app)
     for path in (
+        "/v1/metadata/dummy/echo",
         "/v1/capabilities/dummy/echo",
         "/v1/params-schema/dummy/echo",
         "/v1/config-schema/dummy/echo",

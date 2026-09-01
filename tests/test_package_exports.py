@@ -180,25 +180,33 @@ def test_curated_names_are_not_on_the_application_top_level(name: str) -> None:
 #: result, drives a session) and an engine author *produces* them. Every other
 #: name must live on exactly one tier -- this is what keeps the app-dev surface
 #: small without hiding anything an author needs.
-_DELIBERATE_DUAL_EXPORTS: frozenset[str] = frozenset(
-    {
-        "AudioFormat",
-        "ChannelResult",
-        # DIARIZE / DiarizationRequest: an application constructs the request
-        # marker; an engine author receives it (and tests gating against it) --
-        # the WordTimestampGranularity precedent.
-        "DIARIZE",
-        "Diagnostic",
-        "DiarizationRequest",
-        "RuntimeParams",
-        "Segment",
-        "StandardASR",
-        "TranscriptionEvent",
-        "TranscriptionResult",
-        "TranscriptionSession",
-        "Word",
-        "WordTimestampGranularity",
-    }
+_ARTIFACT_DUAL_EXPORTS = frozenset(
+    importlib.import_module("standard_asr.contract.artifacts").__all__
+)
+
+
+_DELIBERATE_DUAL_EXPORTS: frozenset[str] = (
+    frozenset(
+        {
+            "AudioFormat",
+            "ChannelResult",
+            # DIARIZE / DiarizationRequest: an application constructs the request
+            # marker; an engine author receives it (and tests gating against it) --
+            # the WordTimestampGranularity precedent.
+            "DIARIZE",
+            "Diagnostic",
+            "DiarizationRequest",
+            "RuntimeParams",
+            "Segment",
+            "StandardASR",
+            "TranscriptionEvent",
+            "TranscriptionResult",
+            "TranscriptionSession",
+            "Word",
+            "WordTimestampGranularity",
+        }
+    )
+    | _ARTIFACT_DUAL_EXPORTS
 )
 
 

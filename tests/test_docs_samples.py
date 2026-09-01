@@ -142,3 +142,17 @@ def test_guide_minimal_engine_declares_a_usable_default_language(
     properties = minimal_engine_namespace["MyProps"]()
 
     assert config.default_language in properties.selectable_languages
+
+
+def test_guide_minimal_engine_pins_its_protocol_version() -> None:
+    # AR.1: a plugin declares the protocol version it implements, and bumps it
+    # only after it fully implements the newer contract. The sample previously
+    # assigned CURRENT_PROTOCOL_VERSION -- the version of the INSTALLED core --
+    # so a plugin copied from it would silently re-declare whatever protocol a
+    # later core implements, a claim consumers trust before member lookup.
+    source = _python_block_under_heading(
+        _GUIDE.read_text(encoding="utf-8"), "## Minimal batch engine"
+    )
+
+    assert "CURRENT_PROTOCOL_VERSION" not in source
+    assert 'protocol_version: str = "1.1.0"' in source

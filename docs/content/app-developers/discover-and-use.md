@@ -26,6 +26,44 @@ for name in registry.names():
 engine = registry.create("faster-whisper/large-v3", device="cpu")
 ```
 
+### Inspect and acquire inference artifacts
+
+Protocol 1.1 engines report the persistent artifacts needed by a configured
+inference path:
+
+```python
+from standard_asr import ArtifactAcquisitionError
+
+report = engine.artifact_status()
+for requirement in report.requirements:
+    for action in requirement.required_actions:
+        print(action.message, action.url or "")
+
+if any(
+    requirement.state != "ready" and requirement.can_acquire_now
+    for requirement in report.requirements
+):
+    try:
+        report = engine.acquire_artifacts()
+    except ArtifactAcquisitionError as exc:
+        # Blocked, not broken: a license to accept, a sign-in, downloads turned off.
+        if exc.report is not None:
+            report = exc.report
+```
+
+Status inspection is side-effect-free. Explicit acquisition never fabricates a
+transcription request. A manual prerequisite, such as accepting terms or
+providing files, appears as a structured `ArtifactAction`; an engine that can
+only acquire during first inference reports that limitation explicitly.
+`acquire_artifacts()` can still raise after completing runnable work when a
+different required artifact remains blocked. The error carries the final
+report and any newly discovered `required_actions`, which is why the sample
+reads them from the exception instead of parsing its message.
+
+These facts do not classify an engine as local or remote. See
+[Inference artifacts](../reference/artifacts.md) for states, refresh behavior,
+progress, and errors.
+
 ## 3. Pass audio — whatever you have
 
 `transcribe` accepts a discriminated `AudioInput` union; bare values are coerced.

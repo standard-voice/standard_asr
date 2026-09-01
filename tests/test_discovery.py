@@ -57,7 +57,7 @@ class _DummyConfig(BaseConfig[Literal["dummy"]]):
 class _DummyProperties(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "demo"
-    protocol_version: str = "0.2.0"
+    protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]

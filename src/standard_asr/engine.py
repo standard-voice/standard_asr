@@ -14,15 +14,16 @@ an *engine* author implements and declares against:
   their own establishment guard;
 - the typed config surface (:class:`BaseConfig`, the applicability mixins,
   :func:`secret_field`);
-- static metadata (:class:`BaseProperties`, :class:`SampleRateRange`,
-  :class:`InputKind`), and the :func:`sample_rate_accepted` /
+- static I/O metadata (:class:`BaseProperties`, :class:`SampleRateRange`,
+  :class:`InputKind`), declared operational metadata
+  (:class:`DeclaredEngineMetadata`), and the :func:`sample_rate_accepted` /
   :func:`nearest_accepted_sample_rate` helpers an engine reuses so its
   ``accepted_sample_rates`` membership and resample-target choices match the
   standard's;
 - the full capability vocabulary (:class:`DeclaredCapabilities` and every
   ``*Cap`` / ``*Constraints`` node);
-- language resolution and download-policy helpers (:func:`effective_language`,
-  :data:`AUTO`, :func:`resolve_download_root`);
+- language resolution, artifact-lifecycle types, and download-policy helpers
+  (:func:`effective_language`, :data:`AUTO`, :func:`resolve_download_root`);
 - the result and streaming types an engine constructs and emits, plus the
   wire projection helper (:func:`to_json_value`) for values headed into a
   wire-visible slot.
@@ -48,6 +49,47 @@ from __future__ import annotations
 from standard_asr.audio.conversion import PreparedAudio
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import InputKind
+from standard_asr.contract.artifacts import (
+    ARTIFACT_ACTION_ACCEPT_TERMS,
+    ARTIFACT_ACTION_AUTHENTICATE,
+    ARTIFACT_ACTION_INSTALL_EXTERNAL,
+    ARTIFACT_ACTION_OTHER,
+    ARTIFACT_ACTION_PROVIDE_ARTIFACTS,
+    ARTIFACT_ACTION_REQUEST_ACCESS,
+    ARTIFACT_BLOCKER_ACTION_REQUIRED,
+    ARTIFACT_BLOCKER_DOWNLOADS_DISABLED,
+    ARTIFACT_BLOCKER_UNSUPPORTED,
+    ARTIFACT_CORRUPT,
+    ARTIFACT_INCOMPLETE,
+    ARTIFACT_MISSING,
+    ARTIFACT_PROGRESS_CONVERTING,
+    ARTIFACT_PROGRESS_EXTRACTING,
+    ARTIFACT_PROGRESS_FINALIZING,
+    ARTIFACT_PROGRESS_RESOLVING,
+    ARTIFACT_PROGRESS_TRANSFERRING,
+    ARTIFACT_PROGRESS_UNIT_BYTES,
+    ARTIFACT_PROGRESS_UNIT_FILES,
+    ARTIFACT_PROGRESS_VERIFYING,
+    ARTIFACT_READY,
+    ARTIFACT_UNKNOWN,
+    ARTIFACTS_NOT_APPLICABLE,
+    ARTIFACTS_READY,
+    ARTIFACTS_UNAVAILABLE,
+    ARTIFACTS_UNKNOWN,
+    ArtifactAcquisitionBlocker,
+    ArtifactAction,
+    ArtifactActionKind,
+    ArtifactContext,
+    ArtifactProgress,
+    ArtifactProgressCallback,
+    ArtifactProgressPhase,
+    ArtifactProgressUnit,
+    ArtifactReadiness,
+    ArtifactReport,
+    ArtifactRequirement,
+    ArtifactState,
+    HttpsUrl,
+)
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
@@ -76,6 +118,11 @@ from standard_asr.contract.language import (
     effective_candidate_languages,
     effective_language,
     normalize_bcp47,
+)
+from standard_asr.contract.metadata import (
+    NO_ARTIFACT_LIFECYCLE,
+    ArtifactDeclaration,
+    DeclaredEngineMetadata,
 )
 from standard_asr.contract.params import (
     DIARIZE,
@@ -114,6 +161,45 @@ from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSess
 
 __all__ = [
     "AUTO",
+    "ARTIFACTS_NOT_APPLICABLE",
+    "ARTIFACTS_READY",
+    "ARTIFACTS_UNAVAILABLE",
+    "ARTIFACTS_UNKNOWN",
+    "ARTIFACT_ACTION_ACCEPT_TERMS",
+    "ARTIFACT_ACTION_AUTHENTICATE",
+    "ARTIFACT_ACTION_INSTALL_EXTERNAL",
+    "ARTIFACT_ACTION_OTHER",
+    "ARTIFACT_ACTION_PROVIDE_ARTIFACTS",
+    "ARTIFACT_ACTION_REQUEST_ACCESS",
+    "ARTIFACT_BLOCKER_ACTION_REQUIRED",
+    "ARTIFACT_BLOCKER_DOWNLOADS_DISABLED",
+    "ARTIFACT_BLOCKER_UNSUPPORTED",
+    "ARTIFACT_CORRUPT",
+    "ARTIFACT_INCOMPLETE",
+    "ARTIFACT_MISSING",
+    "ARTIFACT_PROGRESS_CONVERTING",
+    "ARTIFACT_PROGRESS_EXTRACTING",
+    "ARTIFACT_PROGRESS_FINALIZING",
+    "ARTIFACT_PROGRESS_RESOLVING",
+    "ARTIFACT_PROGRESS_TRANSFERRING",
+    "ARTIFACT_PROGRESS_UNIT_BYTES",
+    "ARTIFACT_PROGRESS_UNIT_FILES",
+    "ARTIFACT_PROGRESS_VERIFYING",
+    "ARTIFACT_READY",
+    "ARTIFACT_UNKNOWN",
+    "ArtifactAcquisitionBlocker",
+    "ArtifactAction",
+    "ArtifactActionKind",
+    "ArtifactContext",
+    "ArtifactDeclaration",
+    "ArtifactProgress",
+    "ArtifactProgressCallback",
+    "ArtifactProgressPhase",
+    "ArtifactProgressUnit",
+    "ArtifactReadiness",
+    "ArtifactReport",
+    "ArtifactRequirement",
+    "ArtifactState",
     "AudioFormat",
     "BaseConfig",
     "BaseProperties",
@@ -124,6 +210,7 @@ __all__ = [
     "CredentialsConfigMixin",
     "DIARIZE",
     "DeclaredCapabilities",
+    "DeclaredEngineMetadata",
     "DeviceConfigMixin",
     "Diagnostic",
     "DiarizationCap",
@@ -137,7 +224,9 @@ __all__ = [
     "InputKind",
     "LanguageCaps",
     "LanguageConfigMixin",
+    "HttpsUrl",
     "Mode",
+    "NO_ARTIFACT_LIFECYCLE",
     "PhraseHintsCap",
     "PhraseHintsConstraints",
     "PreparedAudio",

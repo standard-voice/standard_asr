@@ -5,7 +5,7 @@
 
 **Security note (operators MUST read).** These endpoints intentionally ship
 **without authentication**: for v1 they are designed for localhost / trusted-LAN
-use and for fronting by a reverse proxy. The capability and params-schema
+use and for fronting by a reverse proxy. The capability, metadata, and schema
 endpoints are deliberately readable without auth (declared metadata is
 discoverable without instantiation or authentication). Before
 exposing this server beyond localhost, operators **MUST** front it with
@@ -28,16 +28,21 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioBase64, AudioBytes, AudioInput
 from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactUnavailableError,
     AudioProcessingError,
     ConfigError,
     ConfigurationRequiredError,
+    EngineContractError,
     EntrypointValidationError,
     InvalidProviderParamError,
     UnsupportedFeatureError,
 )
+from standard_asr.contract.metadata import DeclaredEngineMetadata
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import TranscriptionResult
 from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
+from standard_asr.runtime.interface import require_artifact_protocol
 from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
     log_exception_safely,
@@ -86,6 +91,15 @@ _ENGINE_CONFIG_ABSENT_DETAIL: str = (
     "The engine for this model requires server-side configuration that is not "
     "present on this deployment (for example a credential environment "
     "variable). This is an operator-side state, not a request error."
+)
+
+#: Stable client-facing detail for an operator-side inference-artifact state.
+#: Both artifact exceptions can carry local paths, source actions, and native
+#: failure text, so REST and pre-bridge WebSocket responses use this fixed
+#: message and retain specifics only in the safe operator log.
+_ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL: str = (
+    "The required inference artifacts are unavailable on this deployment. This is "
+    "an operator-side state, not a request error."
 )
 
 
@@ -508,6 +522,47 @@ def create_app(
             infos.append(ModelInfo(key=name, engine_id=spec.engine_id, model_name=spec.model_name))
         return infos
 
+    @app.get("/v1/metadata/{model:path}")
+    def declared_metadata(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """Return an engine's declared metadata as canonical JSON.
+
+        The endpoint resolves one engine class without instantiating it. It
+        checks the engine's protocol version before reading
+        ``declared_metadata`` so a legacy protocol is never interpreted as a
+        no-artifact declaration. A protocol incompatibility is an installed
+        plugin or deployment fault, not a request fault, and therefore uses the
+        metadata boundary's scrubbed 500 response.
+
+        Args:
+            model: Model key in ``engine/model`` format.
+
+        Returns:
+            The engine's canonical declared metadata.
+
+        Raises:
+            HTTPException: 404 if the model key is unknown; scrubbed 500 if
+                the plugin fails to load, its protocol cannot provide declared
+                artifact metadata, its declaration is invalid, or its canonical
+                JSON is unencodable.
+        """
+
+        def _project(engine_class: Any) -> dict[str, Any]:
+            # The SHARED guard, not an ad-hoc protocol_version read: AR.1 has
+            # every generic consumer call require_artifact_protocol() before
+            # the artifact-metadata lookup, and the CLI's metadata view gates
+            # on it. A duck-typed re-implementation here accepted properties
+            # objects the other consumers refuse (a typed BaseProperties is
+            # part of the gate) -- two verdicts for one installed engine.
+            require_artifact_protocol(engine_class)
+            metadata = getattr(engine_class, "declared_metadata", None)
+            if not isinstance(metadata, DeclaredEngineMetadata):
+                raise EngineContractError(
+                    "A protocol 1.1 engine must declare typed engine metadata."
+                )
+            return metadata.canonical_json()
+
+        return _metadata_or_http_error(model_registry, model, HTTPException, project=_project)
+
     @app.post("/v1/transcribe", response_model=TranscribeResponse)
     async def transcribe_file(  # pyright: ignore[reportUnusedFunction]
         model: str = Form(...),
@@ -707,8 +762,11 @@ def create_app(
         then binary audio frames, then any text frame to signal end-of-audio (or
         simply disconnects). The server streams each
         :class:`~standard_asr.runtime.streaming.TranscriptionEvent` back as a JSON text
-        frame. Errors before the bridge are reported as a single
+        frame. An error before the bridge is reported as one
         ``{"type": "error", "code", "message"}`` frame, then the socket closes.
+        That frame is not always the FIRST one: the route forwards the initial
+        diagnostics frame before the bridge enters the session, so a failure in
+        the engine's ``_open`` hook lands behind it (server-api.md 4.2).
 
         Args:
             websocket: The client WebSocket connection.
@@ -790,6 +848,18 @@ def create_app(
             )
             await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
             return
+        except (ArtifactUnavailableError, ArtifactAcquisitionError):
+            # The model exists, but an operator-side inference-artifact state
+            # prevents this deployment from constructing it. The exceptions
+            # can carry paths, actions, and native details, so the pre-bridge
+            # frame uses only the fixed 503-equivalent message.
+            log_exception_safely(
+                logger,
+                "Engine %r has unavailable inference artifacts during streaming construction",
+                model,
+            )
+            await _abort_ws(websocket, "service_unavailable", _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL)
+            return
         except Exception:  # noqa: BLE001
             # Internal/unexpected construction fault (incl. ConfigError /
             # InvalidProviderParamError / ValidationError from the zero-arg
@@ -830,6 +900,18 @@ def create_app(
                 model,
             )
             await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
+            return
+        except (ArtifactUnavailableError, ArtifactAcquisitionError):
+            # Inference-artifact availability discovered while establishing
+            # the session is the same operator-side state as the REST 503. The
+            # client gets no report, local path, action URL, or native failure
+            # text.
+            log_exception_safely(
+                logger,
+                "Engine %r has unavailable inference artifacts during stream establishment",
+                model,
+            )
+            await _abort_ws(websocket, "service_unavailable", _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL)
             return
         except (ConfigError, InvalidProviderParamError):
             # An ENGINE fault, not a request error: the WS surface gives the
@@ -938,7 +1020,16 @@ def create_app(
             max_frame_bytes=max_ws_frame_bytes,
             max_session_bytes=max_ws_session_bytes,
         )
-        await websocket.close()
+        # Best-effort by contract: a mid-stream client disconnect is the
+        # NORMAL way a WS session ends (the bridge handles it and tears the
+        # session down), and the bridge's abort path has already closed the
+        # socket -- in either state this close raises, and it previously
+        # escaped the route into the ASGI server's error log for a
+        # completely ordinary disconnect.
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     return app
 
@@ -1179,6 +1270,14 @@ async def _bridge_stream(
     bounds peak/total memory against an unauthenticated client feeding a few
     huge frames.
 
+    This function owns the session's lifecycle, so it also owns the fault
+    boundary around it. Entry runs the engine's ``_open`` hook: absent
+    configuration and an inference-artifact failure send the pre-bridge
+    ``service_unavailable`` frame (server-api.md 4.2), any other fault sends
+    the scrubbed ``internal_error`` frame, and a failed entry is never paired
+    with ``__aexit__``. Exit runs ``_close`` after the client already has its
+    terminal event, so a teardown fault is safe-logged without a frame.
+
     Args:
         websocket: The accepted client WebSocket.
         session: The engine's :class:`~standard_asr.runtime.streaming.TranscriptionSession`.
@@ -1251,8 +1350,61 @@ async def _bridge_stream(
             # no further guard is needed here.
             await session.end_audio()
 
-    async with session:
-        pump = asyncio.create_task(_pump_audio())
+    # Session ENTRY runs the engine's ``_open`` hook -- the third engine-code
+    # seam on this route, and the only one no boundary covered: the
+    # establishment try/except in the route has already returned by the time
+    # ``_bridge_stream`` is awaited, and the forward-loop catch below does not
+    # start until entry succeeded. An exception here therefore escaped the
+    # route entirely -- the ASGI server logged the RAW traceback (bypassing
+    # the operator-log redaction ``log_exception_safely`` exists to enforce)
+    # and the client got an abrupt close with no verdict frame. Protocol 1.1
+    # makes the seam an EXPECTED one: ``_open`` is where an engine declaring
+    # ``may_acquire_during_inference`` materializes artifacts, and
+    # server-api.md 4.2 already promises ``service_unavailable`` for an
+    # artifact failure that prevents session establishment. Entered explicitly
+    # rather than through ``async with``, so a FAILED entry skips
+    # ``__aexit__``: calling the engine's ``_close`` without a matching
+    # ``_open`` is an unspecified state (the same stance the
+    # constructed-not-entered abandonment in the route takes).
+    try:
+        await session.__aenter__()
+    except ConfigurationRequiredError:
+        # An engine that defers its credential check past construction AND
+        # past start_transcription still leaves an OPERATOR-side gap: the same
+        # 503 twin with the same stable generic detail. MUST precede the
+        # generic arm below, which would misattribute it as an engine fault.
+        log_exception_safely(logger, "Engine configuration absent at stream session open")
+        await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
+        return
+    except (ArtifactUnavailableError, ArtifactAcquisitionError):
+        # An allowed implicit acquisition failed at session open, or a
+        # required artifact is gone: the operator-side state of the REST 503.
+        # Both exceptions carry reports, local paths, action URLs, and native
+        # text, so the frame uses only the fixed 503-equivalent message.
+        log_exception_safely(
+            logger, "Engine has unavailable inference artifacts at stream session open"
+        )
+        await _abort_ws(websocket, "service_unavailable", _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL)
+        return
+    except Exception:  # noqa: BLE001
+        # Any other ``_open`` fault (a native handle, an accelerator init, a
+        # bare ValueError from engine internals): never crash the route and
+        # never let the detail out. Scrubbed frame, specifics safe-logged.
+        log_exception_safely(logger, "Stream session open failed")
+        await _abort_ws(
+            websocket, "internal_error", _internal_error_message("stream establishment")
+        )
+        return
+
+    pump = asyncio.create_task(_pump_audio())
+    # Session EXIT runs the engine's ``_close`` hook -- the second seam no
+    # boundary covered. Nested rather than appended to the pump teardown
+    # below: the pump gather is an await point, so a cancellation delivered
+    # there (server shutdown mid-teardown) would skip every later statement in
+    # that ``finally`` and leave ``_close`` uncalled -- a regression against
+    # the ``async with`` this replaced, since ``CancelledError`` derives from
+    # BaseException and the forward loop's ``except Exception`` never sees it.
+    try:
         try:
             async for event in session:
                 if violation or pump_failed:
@@ -1363,6 +1515,15 @@ async def _bridge_stream(
         finally:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
+    finally:
+        # Exit runs AFTER the client already received its terminal event, so a
+        # teardown fault gets no error frame (a frame after ``done`` is not a
+        # shape server-api.md 4.2 defines, and the stream itself succeeded);
+        # it is safe-logged instead of escaping the route as a raw traceback.
+        try:
+            await session.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            log_exception_safely(logger, "WebSocket session teardown failed")
 
 
 async def _create_engine_or_http_error(
@@ -1391,6 +1552,8 @@ async def _create_engine_or_http_error(
       available on this deployment -> ``503`` with a stable generic detail
       (never the field names; the specifics are safe-logged for the
       operator);
+    - required inference artifacts unavailable, or their implicit acquisition
+      failed, is another operator-side availability state -> scrubbed ``503``;
     - anything else -- including a plain ``ConfigError`` /
       ``InvalidProviderParamError`` / ``ValidationError``, which from a
       zero-arg factory is a broken deployment or plugin, exactly the state
@@ -1433,6 +1596,13 @@ async def _create_engine_or_http_error(
         )
         detail = _ENGINE_CONFIG_ABSENT_DETAIL
         raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
+    except (ArtifactUnavailableError, ArtifactAcquisitionError) as exc:
+        # Inference-artifact exceptions can carry an operator path, required
+        # actions, and a native failure chain. Preserve those only in the safe
+        # log; the unauthenticated client receives one stable message.
+        log_exception_safely(logger, "Engine %r has unavailable inference artifacts", model)
+        detail = _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL
+        raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
     except Exception as exc:  # noqa: BLE001
         # Internal/unexpected construction fault (incl. ConfigError /
         # ValidationError from the zero-arg factory: a deployment or plugin
@@ -1454,9 +1624,10 @@ async def _run_transcription(
 
     The audio is passed as an :data:`~standard_asr.audio.input.AudioInput` (not a
     pre-decoded array) so the engine's standard negotiation owns decoding and
-    resampling. Client-caused errors map to 4xx; everything else to a generic
-    500 (the raw exception text is logged server-side, never returned, to avoid
-    leaking internal paths or upstream/credential material).
+    resampling. Client-caused errors map to 4xx. Operator-side configuration or
+    artifact availability maps to 503; other failures map to a generic 500.
+    Raw exception text is logged server-side and never returned, which avoids
+    leaking internal paths or upstream credential material.
 
     Args:
         registry: The model registry.
@@ -1537,6 +1708,13 @@ async def _run_transcription(
             logger, "Engine %r requires configuration absent from the server environment", model
         )
         detail = _ENGINE_CONFIG_ABSENT_DETAIL
+        raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
+    except (ArtifactUnavailableError, ArtifactAcquisitionError) as exc:
+        # The request cannot repair this deployment's inference-artifact
+        # state. Keep the attached report, actions, paths, and native cause out
+        # of the response.
+        log_exception_safely(logger, "Engine %r has unavailable inference artifacts", model)
+        detail = _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL
         raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
     except (ConfigError, InvalidProviderParamError) as exc:
         # An ENGINE fault, not a request error: the wire surface gives the

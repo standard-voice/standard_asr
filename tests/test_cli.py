@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import types
 from collections.abc import AsyncIterator, Callable
@@ -25,12 +26,33 @@ from standard_asr.compliance import (
     ComplianceIssue,
     ComplianceReport,
 )
+from standard_asr.contract.artifacts import (
+    ARTIFACT_ACTION_ACCEPT_TERMS,
+    ARTIFACT_BLOCKER_ACTION_REQUIRED,
+    ARTIFACT_BLOCKER_DOWNLOADS_DISABLED,
+    ARTIFACT_BLOCKER_UNSUPPORTED,
+    ARTIFACT_MISSING,
+    ARTIFACT_PROGRESS_TRANSFERRING,
+    ARTIFACT_PROGRESS_UNIT_BYTES,
+    ARTIFACT_READY,
+    ARTIFACT_UNKNOWN,
+    ArtifactAction,
+    ArtifactContext,
+    ArtifactProgress,
+    ArtifactProgressCallback,
+    ArtifactReport,
+    ArtifactRequirement,
+)
 from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
     FlagCap,
     StreamingCapabilities,
 )
 from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactProgressCallbackError,
+    ArtifactStatusError,
+    ArtifactUnavailableError,
     AudioProcessingError,
     ConfigError,
     ConfigurationRequiredError,
@@ -39,6 +61,7 @@ from standard_asr.contract.exceptions import (
     TranscriptionError,
     UnsupportedFeatureError,
 )
+from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -48,6 +71,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.plugins.discovery import ModelRegistry, discover_models
+from standard_asr.runtime.interface import StandardASR
 from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 from standard_asr.toolchain import cli
 
@@ -79,6 +103,201 @@ def _patch_check_entrypoints(monkeypatch: pytest.MonkeyPatch, report: Compliance
         return report
 
     monkeypatch.setattr(cli, "check_entrypoints", _check_entrypoints)
+
+
+class _ArtifactCliProperties(BaseProperties):
+    """Protocol 1.1 properties for artifact CLI test doubles."""
+
+    engine_id: str = "artifact-cli"
+    model_name: str = "demo"
+    protocol_version: str = "1.1.0"
+    accepted_input: set[InputKind] = {InputKind.ENCODED_FILE}
+    native_sample_rate: int = 16000
+    accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
+    selectable_languages: list[str] = []
+
+
+class _ArtifactCliLegacyProperties(_ArtifactCliProperties):
+    """Protocol 1.0 properties used to verify compatibility errors."""
+
+    protocol_version: str = "1.0.0"
+
+
+_ARTIFACT_CLI_METADATA = DeclaredEngineMetadata(
+    artifacts=ArtifactDeclaration(
+        applicable=True,
+        supports_explicit_acquisition=True,
+        may_acquire_during_inference=True,
+    )
+)
+
+
+class _ArtifactCliEngine:
+    """Controllable structural engine for status, pull, and preflight tests."""
+
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _ARTIFACT_CLI_METADATA
+
+    def __init__(
+        self,
+        report: ArtifactReport,
+        *,
+        status_error: BaseException | None = None,
+        acquisition_error: BaseException | None = None,
+    ) -> None:
+        self.report = report
+        self.status_error = status_error
+        self.acquisition_error = acquisition_error
+        self.status_contexts: list[ArtifactContext | None] = []
+        self.refresh_values: list[bool] = []
+        self.transcribe_calls = 0
+
+    def artifact_status(self, context: ArtifactContext | None = None) -> ArtifactReport:
+        self.status_contexts.append(context)
+        if self.status_error is not None:
+            raise self.status_error
+        return self.report
+
+    def acquire_artifacts(
+        self,
+        context: ArtifactContext | None = None,
+        *,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        del context
+        self.refresh_values.append(refresh)
+        if self.acquisition_error is not None:
+            raise self.acquisition_error
+        if progress is not None:
+            progress(
+                ArtifactProgress(
+                    phase=ARTIFACT_PROGRESS_TRANSFERRING,
+                    artifact_id="weights",
+                    completed_units=5,
+                    total_units=10,
+                    unit=ARTIFACT_PROGRESS_UNIT_BYTES,
+                )
+            )
+        return self.report
+
+    def transcribe(
+        self,
+        audio: object,
+        params: RuntimeParams | None = None,
+    ) -> TranscriptionResult:
+        del audio, params
+        self.transcribe_calls += 1
+        return TranscriptionResult(text="artifact transcript")
+
+
+class _ArtifactCliLegacyEngine(_ArtifactCliEngine):
+    """Engine that predates the artifact-lifecycle protocol surface."""
+
+    properties: ClassVar[BaseProperties] = _ArtifactCliLegacyProperties()
+
+
+class _ArtifactCliInvalidMetadataEngine(_ArtifactCliEngine):
+    """Protocol 1.1 engine with a malformed metadata class declaration."""
+
+    declared_metadata: ClassVar[Any] = {"artifacts": {}}
+
+
+class _ArtifactCliMissingMetadataEngine(_ArtifactCliEngine):
+    """Protocol 1.1 engine omitting its required metadata declaration."""
+
+    declared_metadata: ClassVar[Any] = None
+
+
+def _artifact_cli_factory() -> _ArtifactCliEngine:  # pyright: ignore[reportUnusedFunction]
+    raise AssertionError("show must not instantiate the selected engine")
+
+
+def _artifact_cli_legacy_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactCliLegacyEngine
+):
+    raise AssertionError("show must not instantiate the selected engine")
+
+
+def _artifact_cli_invalid_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactCliInvalidMetadataEngine
+):
+    raise AssertionError("show must not instantiate the selected engine")
+
+
+def _artifact_cli_missing_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactCliMissingMetadataEngine
+):
+    raise AssertionError("show must not instantiate the selected engine")
+
+
+def _patch_artifact_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: object,
+) -> dict[str, object]:
+    """Patch discovery with a recording single-engine registry."""
+
+    seen: dict[str, object] = {}
+
+    class _Registry:
+        def create(self, name: str, **config: object) -> object:
+            seen["name"] = name
+            seen["config"] = config
+            return engine
+
+    registry = cast("ModelRegistry", _Registry())
+
+    def _discover_models(**kwargs: object) -> ModelRegistry:
+        seen["discovery"] = kwargs
+        return registry
+
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+    return seen
+
+
+def _artifact_requirement(
+    *,
+    artifact_id: str = "weights",
+    label: str = "Recognizer weights",
+    state: str = ARTIFACT_READY,
+    required: bool = True,
+    can_acquire_now: bool = False,
+    may_acquire_during_inference: bool = False,
+    mutable: bool = False,
+    blocker: str | None = None,
+    actions: tuple[ArtifactAction, ...] = (),
+    location: Path | None = None,
+    size_bytes: int | None = None,
+    expected_size_bytes: int | None = None,
+    artifact_version: str | None = None,
+) -> ArtifactRequirement:
+    """Build one internally coherent artifact CLI fixture."""
+
+    return ArtifactRequirement(
+        artifact_id=artifact_id,
+        label=label,
+        state=state,
+        required_for_inference=required,
+        can_acquire_now=can_acquire_now,
+        may_acquire_during_inference=may_acquire_during_inference,
+        source_is_mutable=mutable,
+        acquisition_blocker=blocker,
+        required_actions=actions,
+        location=location,
+        size_bytes=size_bytes,
+        expected_size_bytes=expected_size_bytes,
+        artifact_version=artifact_version,
+    )
+
+
+def _artifact_report(*requirements: ArtifactRequirement) -> ArtifactReport:
+    """Build a batch artifact report with canonical aggregate readiness."""
+
+    return ArtifactReport.from_requirements(
+        mode="batch",
+        applicable=True,
+        requirements=requirements,
+    )
 
 
 def test_cli_models_list(
@@ -138,6 +357,138 @@ def test_cli_models_show(
     # It also surfaces the init-config schema; this engine declares none, so the
     # omission is stated explicitly rather than left silent.
     assert "Config schema: <none" in output
+
+
+def test_cli_show_renders_canonical_declared_metadata_without_instantiation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="artifact-cli/demo",
+                value="tests.test_cli:_artifact_cli_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "artifact-cli/demo"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Declared metadata:" in output
+    assert '"artifacts": {' in output
+    assert '"applicable": true' in output
+    assert '"supports_explicit_acquisition": true' in output
+    assert '"may_acquire_during_inference": true' in output
+
+
+def test_cli_show_marks_legacy_declared_metadata_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="artifact-cli/demo",
+                value="tests.test_cli:_artifact_cli_legacy_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "artifact-cli/demo"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Declared metadata: <unsupported:" in output
+    assert "requires protocol 1.1.0" in output
+    assert '"applicable"' not in output
+
+
+def test_cli_show_fault_bounds_invalid_declared_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="artifact-cli/demo",
+                value="tests.test_cli:_artifact_cli_invalid_metadata_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "artifact-cli/demo"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Declared metadata: <invalid:" in output
+    assert "DeclaredEngineMetadata model" in output
+    assert "Config schema:" in output
+
+
+def test_cli_show_fault_bounds_missing_protocol_1_1_declared_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="artifact-cli/demo",
+                value="tests.test_cli:_artifact_cli_missing_metadata_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "artifact-cli/demo"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Declared metadata: <invalid:" in output
+    assert "protocol 1.1 requires declared_metadata.artifacts" in output
+
+
+def test_cli_declared_metadata_fault_boundary_reraises_factory_load_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _UnresolvableSpec:
+        def engine_class(self) -> type[object]:
+            raise FactoryLoadError("Selected plugin class could not be resolved.")
+
+    with pytest.raises(FactoryLoadError):
+        cli._print_declared_metadata(  # pyright: ignore[reportPrivateUsage]
+            _UnresolvableSpec()
+        )
+    output = capsys.readouterr().out
+
+    assert "Declared metadata: <unavailable:" in output
+    assert "Selected plugin class could not be resolved." in output
+
+
+def test_cli_declared_metadata_rejects_noncallable_canonical_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _Spec:
+        def engine_class(self) -> type[_ArtifactCliEngine]:
+            return _ArtifactCliEngine
+
+    monkeypatch.setattr(DeclaredEngineMetadata, "canonical_json", None)
+    cli._print_declared_metadata(_Spec())  # pyright: ignore[reportPrivateUsage]
+
+    assert "Declared metadata: <invalid: canonical_json is not callable>" in capsys.readouterr().out
 
 
 def test_cli_models_show_unresolvable_class(
@@ -266,7 +617,7 @@ class _StreamConfig(BaseConfig[Literal["stream"]]):
 class _StreamOkProps(BaseProperties):
     engine_id: str = "stream"
     model_name: str = "ok"  # model_id == ``stream/ok``
-    protocol_version: str = "0.2.0"
+    protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -340,7 +691,7 @@ class _BatchConfig(BaseConfig[Literal["batch"]]):
 class _BatchOnlyProps(BaseProperties):
     engine_id: str = "batch"
     model_name: str = "only"
-    protocol_version: str = "0.2.0"
+    protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -634,6 +985,628 @@ def test_cli_models_cache(
     assert str(tmp_path) in output
 
 
+def test_cli_artifact_status_human_uses_init_config_and_full_report(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    action = ArtifactAction.model_validate(
+        {
+            "kind": ARTIFACT_ACTION_ACCEPT_TERMS,
+            "message": "Accept the model license.",
+            "url": "https://example.test/license",
+        }
+    )
+    engine = _ArtifactCliEngine(
+        _artifact_report(
+            _artifact_requirement(
+                location=tmp_path,
+                size_bytes=10,
+                expected_size_bytes=20,
+                artifact_version="commit-1",
+            ),
+            _artifact_requirement(
+                artifact_id="aligner",
+                label="Forced aligner",
+                state=ARTIFACT_MISSING,
+                required=False,
+                blocker=ARTIFACT_BLOCKER_ACTION_REQUIRED,
+                actions=(action,),
+            ),
+        )
+    )
+    seen = _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(
+        [
+            "status",
+            "artifact-cli/demo",
+            "--strict-discovery",
+            "--config",
+            '{"device": "cpu", "compute_type": "float32"}',
+            "--set",
+            "compute_type=int8",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Artifact readiness: ready" in captured.out
+    assert "Recognizer weights (weights): ready, required" in captured.out
+    assert "Forced aligner (aligner): missing, optional" in captured.out
+    assert "Accept the model license." in captured.out
+    assert "https://example.test/license" in captured.out
+    assert f"location: {tmp_path}" in captured.out
+    assert "version: commit-1" in captured.out
+    assert "size_bytes: 10" in captured.out
+    assert "expected_size_bytes: 20" in captured.out
+    assert captured.err == ""
+    assert engine.status_contexts == [None]
+    assert seen["name"] == "artifact-cli/demo"
+    assert seen["discovery"] == {"strict": True}
+    assert seen["config"] == {"device": "cpu", "compute_type": "int8"}
+
+
+@pytest.mark.parametrize(
+    ("require_ready", "expected_exit"),
+    [(False, 0), (True, 1)],
+)
+def test_cli_artifact_status_json_and_require_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_ready: bool,
+    expected_exit: int,
+) -> None:
+    engine = _ArtifactCliEngine(
+        _artifact_report(
+            _artifact_requirement(
+                state=ARTIFACT_MISSING,
+                can_acquire_now=True,
+            )
+        )
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+    argv = ["status", "artifact-cli/demo", "--json"]
+    if require_ready:
+        argv.append("--require-ready")
+
+    exit_code = cli.main(argv)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == expected_exit
+    assert payload["readiness"] == "unavailable"
+    assert payload["requirements"][0]["artifact_id"] == "weights"
+    assert captured.err == ""
+
+
+def test_cli_artifact_status_require_ready_accepts_not_applicable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliEngine(ArtifactReport.from_requirements(mode="batch", applicable=False))
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["status", "artifact-cli/demo", "--require-ready"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Artifact readiness: not_applicable" in captured.out
+    assert "Applicable : no" in captured.out
+    assert "Requirements: <none>" in captured.out
+
+
+@pytest.mark.parametrize(
+    ("command", "strict"),
+    [("status", False), ("status", True), ("pull", False), ("pull", True)],
+)
+def test_cli_artifact_commands_thread_strict_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    strict: bool,
+) -> None:
+    engine = _ArtifactCliEngine(_artifact_report(_artifact_requirement()))
+    seen = _patch_artifact_engine(monkeypatch, engine)
+    argv = [command, "artifact-cli/demo"]
+    if strict:
+        argv.append("--strict-discovery")
+
+    assert cli.main(argv) == 0
+    capsys.readouterr()
+    assert seen["discovery"] == {"strict": strict}
+
+
+def test_cli_artifact_status_rejects_missing_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliEngine(_artifact_report(_artifact_requirement()))
+    setattr(engine, "artifact_status", None)
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["status", "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "must expose callable artifact_status()" in captured.err
+
+
+@pytest.mark.parametrize("command", [["status"], ["pull"], ["pull", "--refresh"]])
+def test_cli_artifact_commands_guard_protocol_1_0_before_operation_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+) -> None:
+    engine = _ArtifactCliLegacyEngine(_artifact_report(_artifact_requirement()))
+    _patch_artifact_engine(monkeypatch, engine)
+    argv = [command[0], "artifact-cli/demo", *command[1:]]
+
+    exit_code = cli.main(argv)
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "requires protocol 1.1.0" in captured.err
+    assert engine.status_contexts == []
+    assert engine.refresh_values == []
+
+
+def test_cli_artifact_pull_refresh_reports_progress_and_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliEngine(_artifact_report(_artifact_requirement()))
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["pull", "artifact-cli/demo", "--refresh", "--json"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert json.loads(captured.out)["readiness"] == "ready"
+    assert engine.refresh_values == [True]
+    assert "Artifact progress for 'weights': transferring 5/10 bytes." in captured.err
+    assert "[OK] Artifact acquisition complete." in captured.err
+
+
+def test_cli_artifact_progress_renders_partial_and_unknown_counts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for progress in (
+        ArtifactProgress(phase="resolving"),
+        ArtifactProgress(
+            phase="transferring",
+            total_units=20,
+            unit=ARTIFACT_PROGRESS_UNIT_BYTES,
+        ),
+        ArtifactProgress(
+            phase="transferring",
+            completed_units=5,
+            unit=ARTIFACT_PROGRESS_UNIT_BYTES,
+        ),
+    ):
+        cli._render_artifact_progress(progress)  # pyright: ignore[reportPrivateUsage]
+    error = capsys.readouterr().err
+
+    assert "Artifact progress: resolving." in error
+    assert "Artifact progress: transferring total=20 bytes." in error
+    assert "Artifact progress: transferring 5 bytes." in error
+
+
+def test_cli_artifact_pull_optional_blocker_warns_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    action = ArtifactAction(
+        kind=ARTIFACT_ACTION_ACCEPT_TERMS,
+        message="Accept optional aligner terms.",
+    )
+    engine = _ArtifactCliEngine(
+        _artifact_report(
+            _artifact_requirement(),
+            _artifact_requirement(
+                artifact_id="aligner",
+                label="Optional aligner",
+                state=ARTIFACT_MISSING,
+                required=False,
+                blocker=ARTIFACT_BLOCKER_ACTION_REQUIRED,
+                actions=(action,),
+            ),
+        )
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["pull", "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Optional artifact 'Optional aligner' remains missing" in captured.err
+    assert "Accept optional aligner terms." in captured.err
+    assert "Artifact acquisition complete" in captured.err
+
+
+def test_cli_artifact_pull_optional_warning_never_contradicts_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The optional warning states that the REQUIRED artifacts are ready, so it
+    # belongs after the required verdict. Emitted before it, a report carrying
+    # one non-ready required and one non-ready optional requirement printed the
+    # readiness claim and the failure line together -- two stderr lines
+    # contradicting each other on the surface an operator reads to know what to
+    # fix.
+    engine = _ArtifactCliEngine(
+        _artifact_report(
+            _artifact_requirement(
+                state=ARTIFACT_MISSING,
+                blocker=ARTIFACT_BLOCKER_UNSUPPORTED,
+            ),
+            _artifact_requirement(
+                artifact_id="aligner",
+                label="Optional aligner",
+                state=ARTIFACT_MISSING,
+                required=False,
+                blocker=ARTIFACT_BLOCKER_UNSUPPORTED,
+            ),
+        )
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["pull", "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Required inference artifacts remain unavailable" in captured.err
+    assert "required inference artifacts are ready" not in captured.err
+    assert "Optional aligner" not in captured.err
+
+
+@pytest.mark.parametrize("command", ["status", "pull"])
+def test_cli_artifact_report_diagnostics_are_not_duplicated_in_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    # `--json` carries the report's diagnostics on stdout, so rendering them to
+    # stderr too gave one run two representations of the same diagnostic. The
+    # text view keeps the stderr rendering (that is the view that would
+    # otherwise drop them) -- the rule `transcribe` already follows.
+    from standard_asr.contract.results import Diagnostic
+
+    diagnostic = Diagnostic(code="opaque_cache", message="native cache index is unreadable")
+    report = ArtifactReport.from_requirements(
+        mode="batch",
+        applicable=True,
+        requirements=(_artifact_requirement(),),
+        diagnostics=(diagnostic,),
+    )
+    engine = _ArtifactCliEngine(report)
+    _patch_artifact_engine(monkeypatch, engine)
+
+    assert cli.main([command, "artifact-cli/demo", "--json"]) == 0
+    as_json = capsys.readouterr()
+    _patch_artifact_engine(monkeypatch, _ArtifactCliEngine(report))
+    assert cli.main([command, "artifact-cli/demo"]) == 0
+    as_text = capsys.readouterr()
+
+    payload = json.loads(as_json.out)
+    assert payload["diagnostics"][0]["code"] == "opaque_cache"
+    assert "diagnostic [opaque_cache]" not in as_json.err
+    assert "diagnostic [opaque_cache]" in as_text.err
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected_exit"),
+    [
+        (ARTIFACT_BLOCKER_ACTION_REQUIRED, 2),
+        (ARTIFACT_BLOCKER_DOWNLOADS_DISABLED, 2),
+        (ARTIFACT_BLOCKER_UNSUPPORTED, 1),
+        ("x_vendor_policy", 1),
+    ],
+)
+def test_cli_artifact_pull_aggregates_required_returned_blockers(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    blocker: str,
+    expected_exit: int,
+) -> None:
+    action = ArtifactAction(
+        kind=ARTIFACT_ACTION_ACCEPT_TERMS,
+        message="Accept terms before acquisition.",
+    )
+    actions = (action,) if blocker == ARTIFACT_BLOCKER_ACTION_REQUIRED else ()
+    engine = _ArtifactCliEngine(
+        _artifact_report(
+            _artifact_requirement(
+                state=ARTIFACT_MISSING,
+                blocker=blocker,
+                actions=actions,
+            )
+        )
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["pull", "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == expected_exit
+    assert "Required inference artifacts remain unavailable" in captured.err
+    if actions:
+        assert "Accept terms before acquisition." in captured.err
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_exit"),
+    [
+        ("downloads_disabled", 2),
+        ("action_required", 2),
+        ("unsupported", 1),
+        ("busy", 1),
+        ("failed", 1),
+    ],
+)
+def test_cli_artifact_acquisition_error_exit_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reason: Literal["downloads_disabled", "action_required", "unsupported", "busy", "failed"],
+    expected_exit: int,
+) -> None:
+    action = ArtifactAction.model_validate(
+        {
+            "kind": ARTIFACT_ACTION_ACCEPT_TERMS,
+            "message": "Complete the external action.",
+            "url": "https://example.test/action",
+        }
+    )
+    report = _artifact_report(
+        _artifact_requirement(
+            state=ARTIFACT_MISSING,
+            blocker=ARTIFACT_BLOCKER_ACTION_REQUIRED,
+            actions=(action,),
+        ),
+        _artifact_requirement(
+            artifact_id="aligner",
+            label="Optional aligner",
+            state=ARTIFACT_MISSING,
+            required=False,
+            blocker=ARTIFACT_BLOCKER_ACTION_REQUIRED,
+            actions=(action,),
+        ),
+    )
+    error = ArtifactAcquisitionError(
+        "Artifact acquisition did not complete.",
+        reason=reason,
+        report=None if reason == "busy" else report,
+        required_actions=(action,),
+    )
+    engine = _ArtifactCliEngine(report, acquisition_error=error)
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["pull", "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == expected_exit
+    assert "Artifact acquisition did not complete." in captured.err
+    assert captured.err.count("Complete the external action.") == 1
+    assert captured.err.count("https://example.test/action") == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_exit"),
+    [
+        ("downloads_disabled", 2),
+        ("action_required", 2),
+        ("missing", 1),
+        ("incomplete", 1),
+        ("corrupt", 1),
+        ("unknown", 1),
+    ],
+)
+def test_cli_artifact_unavailable_error_exit_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reason: Literal[
+        "missing",
+        "incomplete",
+        "corrupt",
+        "unknown",
+        "action_required",
+        "downloads_disabled",
+    ],
+    expected_exit: int,
+) -> None:
+    report = _artifact_report(_artifact_requirement(state=ARTIFACT_MISSING, can_acquire_now=True))
+    error = ArtifactUnavailableError(
+        "Required artifacts are unavailable.",
+        reason=reason,
+        report=report,
+    )
+    engine = _ArtifactCliEngine(report, acquisition_error=error)
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["pull", "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == expected_exit
+    assert "Required artifacts are unavailable." in captured.err
+
+
+@pytest.mark.parametrize("command", ["status", "pull"])
+def test_cli_artifact_status_error_is_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    report = _artifact_report(_artifact_requirement())
+    error = ArtifactStatusError("Native artifact inspection failed.")
+    engine = _ArtifactCliEngine(
+        report,
+        status_error=error if command == "status" else None,
+        acquisition_error=error if command == "pull" else None,
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main([command, "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Native artifact inspection failed." in captured.err
+
+
+def test_cli_artifact_progress_callback_error_is_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = _artifact_report(_artifact_requirement())
+    engine = _ArtifactCliEngine(
+        report,
+        acquisition_error=ArtifactProgressCallbackError(
+            "Artifact progress observer failed.",
+            report=report,
+        ),
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["pull", "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Artifact progress observer failed." in captured.err
+
+
+def test_cli_transcribe_artifact_preflight_passes_runtime_context_and_notices(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliEngine(
+        _artifact_report(
+            _artifact_requirement(
+                state=ARTIFACT_MISSING,
+                can_acquire_now=True,
+                may_acquire_during_inference=True,
+            )
+        )
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(
+        [
+            "transcribe",
+            "artifact-cli/demo",
+            "audio.wav",
+            "--options",
+            '{"language": "en"}',
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "artifact transcript\n"
+    assert "The first transcription can acquire them" in captured.err
+    assert "standard-asr pull artifact-cli/demo" in captured.err
+    assert engine.transcribe_calls == 1
+    assert len(engine.status_contexts) == 1
+    context = engine.status_contexts[0]
+    assert context is not None
+    assert context.params.language == "en"
+
+
+def test_cli_transcribe_unknown_artifact_preflight_uses_static_may_acquire(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliEngine(
+        _artifact_report(
+            _artifact_requirement(
+                state=ARTIFACT_UNKNOWN,
+                blocker=ARTIFACT_BLOCKER_UNSUPPORTED,
+            )
+        )
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Required artifact readiness is unknown" in captured.err
+    assert "may acquire inference artifacts" in captured.err
+    assert engine.transcribe_calls == 1
+
+
+def test_cli_transcribe_artifact_status_error_warns_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliEngine(
+        _artifact_report(_artifact_requirement()),
+        status_error=ArtifactStatusError("Native status probe failed."),
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "artifact transcript\n"
+    assert "[WARN] Artifact status inspection failed" in captured.err
+    assert "Native status probe failed." in captured.err
+    assert engine.transcribe_calls == 1
+
+
+def test_cli_transcribe_protocol_1_0_skips_advisory_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliLegacyEngine(
+        _artifact_report(
+            _artifact_requirement(
+                state=ARTIFACT_MISSING,
+                can_acquire_now=True,
+                may_acquire_during_inference=True,
+            )
+        )
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "artifact transcript\n"
+    assert captured.err == ""
+    assert engine.status_contexts == []
+    assert engine.transcribe_calls == 1
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        _artifact_report(_artifact_requirement()),
+        _artifact_report(
+            _artifact_requirement(
+                state=ARTIFACT_MISSING,
+                blocker=ARTIFACT_BLOCKER_UNSUPPORTED,
+            )
+        ),
+    ],
+)
+def test_cli_transcribe_artifact_preflight_emits_no_false_notice(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    report: ArtifactReport,
+) -> None:
+    engine = _ArtifactCliEngine(report)
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "artifact transcript\n"
+    assert captured.err == ""
+    assert engine.transcribe_calls == 1
+
+
 def test_cli_transcribe(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -703,6 +1676,8 @@ def test_cli_strict_discovery_threads_into_discovery(
         ["list", "--strict"],
         ["show", "alpha/first", "--strict"],
         ["prepare", "alpha/first", "--strict"],
+        ["status", "alpha/first", "--strict"],
+        ["pull", "alpha/first", "--strict"],
         ["transcribe", "alpha/first", "dummy.wav", "--strict"],
         ["compliance", "entrypoints", "--strict"],
         ["compliance", "run", "--strict"],
@@ -1744,6 +2719,8 @@ def test_cli_flat_verbs_resolve_to_handlers() -> None:
         "show": parser.parse_args(["show", "e/m"]).func.__name__,
         "cache": parser.parse_args(["cache"]).func.__name__,
         "prepare": parser.parse_args(["prepare", "e/m"]).func.__name__,
+        "status": parser.parse_args(["status", "e/m"]).func.__name__,
+        "pull": parser.parse_args(["pull", "e/m"]).func.__name__,
         "transcribe": parser.parse_args(["transcribe", "e/m", "a.wav"]).func.__name__,
         "serve": parser.parse_args(["serve"]).func.__name__,
         "doctor": parser.parse_args(["doctor"]).func.__name__,
@@ -1753,6 +2730,8 @@ def test_cli_flat_verbs_resolve_to_handlers() -> None:
         "show": "_cmd_show",
         "cache": "_cmd_cache",
         "prepare": "_cmd_prepare",
+        "status": "_cmd_status",
+        "pull": "_cmd_pull",
         "transcribe": "_cmd_transcribe",
         "serve": "_cmd_serve",
         "doctor": "_cmd_doctor",
@@ -2398,8 +3377,8 @@ def test_cli_models_show_uses_canonical_json(
 
     assert exit_code == 0
     assert "Capabilities:" in output
-    # Isolate the capabilities JSON block (the config-schema section follows it).
-    caps_block = output.split("Capabilities:", 1)[1].split("Config schema:", 1)[0]
+    # Isolate the capabilities JSON block (the metadata section follows it).
+    caps_block = output.split("Capabilities:", 1)[1].split("Declared metadata:", 1)[0]
     caps = json.loads(caps_block)
     # The `batch` domain is a container with no `supported` field of its own;
     # canonical_json derives one (true here), model_dump(mode="json") would not.
@@ -2772,7 +3751,7 @@ def test_cli_compliance_run_bridge_not_applicable_for_output_only_engine(
 
     def _spy_swap(engine: object) -> ComplianceReport:
         constructed.append(engine)
-        return real_swap_check(cast(EngineBase, engine))
+        return real_swap_check(cast(StandardASR, engine))
 
     def _spy_bridge(factory: object, **kwargs: object) -> ComplianceReport:
         bridge_kwargs.append(dict(kwargs))

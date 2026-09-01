@@ -27,7 +27,24 @@ from standard_asr.compliance import (
     prepare_requires_arguments,
     validate_bridge_timeout,
 )
+from standard_asr.contract.artifacts import (
+    ARTIFACT_BLOCKER_ACTION_REQUIRED,
+    ARTIFACT_BLOCKER_DOWNLOADS_DISABLED,
+    ARTIFACT_READY,
+    ARTIFACTS_NOT_APPLICABLE,
+    ARTIFACTS_READY,
+    ARTIFACTS_UNKNOWN,
+    ArtifactAction,
+    ArtifactContext,
+    ArtifactProgress,
+    ArtifactReport,
+    ArtifactRequirement,
+)
 from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactProgressCallbackError,
+    ArtifactStatusError,
+    ArtifactUnavailableError,
     AudioProcessingError,
     ConfigError,
     ConfigurationRequiredError,
@@ -35,14 +52,16 @@ from standard_asr.contract.exceptions import (
     EngineContractError,
     EntrypointValidationError,
     FactoryLoadError,
+    ProtocolCompatibilityError,
     TranscriptionError,
     UnsupportedFeatureError,
 )
+from standard_asr.contract.metadata import DeclaredEngineMetadata
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
 from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
-from standard_asr.runtime.interface import EngineBase, StandardASR
+from standard_asr.runtime.interface import EngineBase, StandardASR, require_artifact_protocol
 from standard_asr.runtime.protocol_boundary import (
     require_sync_result,
     safe_type_name,
@@ -134,9 +153,11 @@ _INFO = "[INFO]"
 _EPILOG = """\
 Examples:
   standard-asr list                                   # what engines/models are installed
-  standard-asr show faster-whisper/large-v3           # identity, capabilities, config schema
+  standard-asr show faster-whisper/large-v3           # identity, declarations, config schema
+  standard-asr status faster-whisper/large-v3         # inspect inference-artifact readiness
+  standard-asr pull faster-whisper/large-v3           # acquire non-ready inference artifacts
   standard-asr transcribe faster-whisper/tiny a.wav   # transcribe an audio file
-  standard-asr prepare faster-whisper/tiny            # pre-download / warm up weights
+  standard-asr prepare faster-whisper/tiny            # warm up process-local engine state
   standard-asr serve --port 8000                      # expose every engine over HTTP + WebSocket
   standard-asr doctor                                 # diagnose environment / dependency issues
 """
@@ -145,7 +166,7 @@ Examples:
 def _add_strict_discovery_flag(parser: Any) -> None:
     """Register the shared ``--strict-discovery`` flag on a subparser.
 
-    One registration site for the six discovery-driven commands so the flag
+    One registration site for the discovery-driven commands so the flag
     name, default, and the collision-explaining help text can never drift
     between them (the same single-owner pattern as ``_add_init_config_args``).
 
@@ -170,12 +191,30 @@ def _add_strict_discovery_flag(parser: Any) -> None:
     )
 
 
+def _add_json_output_flag(parser: argparse.ArgumentParser, *, noun: str) -> None:
+    """Register a shared canonical-JSON output flag.
+
+    Args:
+        parser: Subcommand parser to extend.
+        noun: Human-readable result noun used in help text.
+
+    Returns:
+        None.
+    """
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help=f"Print the canonical JSON {noun}.",
+    )
+
+
 def _add_inspection_subcommands(subparsers: Any) -> None:
     """Register the model-inspection verbs as flat top-level commands.
 
-    ``list`` / ``show`` / ``cache`` / ``prepare`` are registered directly on the
-    root parser (not nested under a ``models`` group), so the common commands are
-    visible in ``standard-asr --help`` without a second-level menu.
+    ``list``, ``show``, ``cache``, ``prepare``, ``status``, and ``pull`` are
+    registered directly on the root parser, not nested under a ``models``
+    group. The common commands remain visible in ``standard-asr --help``
+    without a second-level menu.
 
     Args:
         subparsers: Subparser collection for the root CLI.
@@ -198,7 +237,7 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
 
     show_parser = subparsers.add_parser(
         "show",
-        help="Show a model's identity, capabilities, and config schema.",
+        help="Show a model's identity, declarations, and config schema.",
         allow_abbrev=False,
     )
     show_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
@@ -219,13 +258,51 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
 
     prepare_parser = subparsers.add_parser(
         "prepare",
-        help="Warm up a model (download/load weights if required).",
+        help="Warm up process-local engine state.",
         allow_abbrev=False,
     )
     prepare_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
     _add_strict_discovery_flag(prepare_parser)
     _add_init_config_args(prepare_parser)
     prepare_parser.set_defaults(func=_cmd_prepare)
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Inspect a model's inference-artifact readiness.",
+        allow_abbrev=False,
+    )
+    status_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
+    _add_strict_discovery_flag(status_parser)
+    _add_init_config_args(status_parser)
+    _add_json_output_flag(status_parser, noun="artifact report")
+    status_parser.add_argument(
+        "--require-ready",
+        action="store_true",
+        help=(
+            "Exit 1 unless required inference artifacts are ready or the "
+            "artifact lifecycle is not applicable."
+        ),
+    )
+    status_parser.set_defaults(func=_cmd_status)
+
+    pull_parser = subparsers.add_parser(
+        "pull",
+        help="Acquire a model's non-ready inference artifacts.",
+        allow_abbrev=False,
+    )
+    pull_parser.add_argument("name", help="Model key in '<engine>/<model>' format.")
+    _add_strict_discovery_flag(pull_parser)
+    _add_init_config_args(pull_parser)
+    _add_json_output_flag(pull_parser, noun="final artifact report")
+    pull_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help=(
+            "Re-resolve mutable artifact sources. Identical pinned artifacts "
+            "are not transferred again."
+        ),
+    )
+    pull_parser.set_defaults(func=_cmd_pull)
 
 
 def _positive_finite_seconds(value: str) -> float:
@@ -366,11 +443,7 @@ def _add_transcribe_subcommand(subparsers: Any) -> None:
     )
     _add_strict_discovery_flag(parser)
     _add_init_config_args(parser)
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the full JSON transcription result.",
-    )
+    _add_json_output_flag(parser, noun="transcription result")
     parser.set_defaults(func=_cmd_transcribe)
 
 
@@ -545,6 +618,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"  Attribute   : {spec.entry_point.attr}")
     print(f"  Value       : {spec.entry_point.value}")
     _print_declared_capabilities(spec)
+    _print_declared_metadata(spec)
     _print_config_schema(registry, args.name)
     return 0
 
@@ -607,6 +681,61 @@ def _print_declared_capabilities(spec: Any) -> None:
         )
         return
     print("  Capabilities:")
+    rendered = json.dumps(_run_engine_call(canonical_json), indent=2, sort_keys=True)
+    for line in rendered.splitlines():
+        print(f"    {line}")
+
+
+def _print_declared_metadata(spec: Any) -> None:
+    """Print one engine class's protocol-gated declared metadata.
+
+    The selected plugin class is resolved, but never instantiated. Artifact
+    metadata did not exist before protocol 1.1, so a legacy engine is rendered
+    as unsupported instead of treating a missing declaration as a false
+    no-artifact claim.
+
+    Args:
+        spec: Selected model specification.
+
+    Returns:
+        None.
+
+    Raises:
+        FactoryLoadError: If the selected plugin class cannot be resolved.
+        _EngineFault: If a plugin descriptor or canonical serializer raises a
+            ``ValueError`` family exception.
+    """
+    try:
+        engine_class = spec.engine_class()
+    except FactoryLoadError as exc:
+        print(f"  Declared metadata: <unavailable: {safe_exception_summary(exc)}>")
+        raise
+    try:
+        _run_engine_call(lambda: require_artifact_protocol(engine_class))
+    except ProtocolCompatibilityError as exc:
+        message = safe_str(exc) or "artifact lifecycle is not supported"
+        print(f"  Declared metadata: <unsupported: {message}>")
+        return
+    except EngineContractError as exc:
+        message = safe_str(exc) or "invalid engine properties"
+        print(f"  Declared metadata: <invalid: {message}>")
+        return
+
+    metadata = _run_engine_call(lambda: getattr(engine_class, "declared_metadata", None))
+    if metadata is None:
+        print("  Declared metadata: <invalid: protocol 1.1 requires declared_metadata.artifacts>")
+        return
+    if not isinstance(metadata, DeclaredEngineMetadata):
+        print(
+            "  Declared metadata: <invalid: declared_metadata is not a "
+            f"DeclaredEngineMetadata model (got {safe_type_name(metadata)})>"
+        )
+        return
+    canonical_json = _run_engine_call(lambda: getattr(metadata, "canonical_json", None))
+    if not callable(canonical_json):
+        print("  Declared metadata: <invalid: canonical_json is not callable>")
+        return
+    print("  Declared metadata:")
     rendered = json.dumps(_run_engine_call(canonical_json), indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
@@ -702,9 +831,9 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
     if prepare is None or _is_base_prepare(asr):
         # No warm-up hook: either a structural engine that declares none, or an
         # EngineBase subclass that inherited the base no-op. There is
-        # nothing to warm up or download. Never fire a real transcribe as a
-        # stand-in -- for cloud/commercial engines that would be a billable
-        # request with side effects (lazy / no-surprise).
+        # nothing to warm up. Never fire a real transcribe as a stand-in. A
+        # remote inference service could bill that request, and persistent
+        # inference-artifact acquisition belongs to the pull command.
         print(f"{_INFO} Engine declares no prepare() step; nothing to warm up.")
         return 0
     if inspect.iscoroutinefunction(prepare):
@@ -749,7 +878,7 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
     # The call itself runs behind the execution seam: a bare ValueError or
     # raw ValidationError escaping a warm-up is an engine fault (exit 1).
     require_sync_result(_run_engine_call(prepare), "prepare()", expected_type=type(None))
-    print(f"{_OK} Model prepare complete.")
+    print(f"{_OK} Engine prepare complete.")
     return 0
 
 
@@ -778,6 +907,366 @@ def _is_base_prepare(asr: Any) -> bool:
         return False
     prepare = inspect.getattr_static(asr, "prepare", None)
     return prepare is EngineBase.__dict__["prepare"]
+
+
+def _configured_artifact_engine(args: argparse.Namespace) -> Any:
+    """Construct and protocol-check the engine selected by an artifact command.
+
+    Args:
+        args: Parsed ``status`` or ``pull`` arguments.
+
+    Returns:
+        The configured engine instance.
+
+    Raises:
+        ProtocolCompatibilityError: If the engine predates artifact lifecycle.
+        EngineContractError: If the engine has no valid properties declaration.
+        ConfigError: If the supplied engine configuration is invalid.
+        DiscoveryError: If discovery or construction fails.
+    """
+    registry = discover_models(strict=args.strict_discovery)
+    asr = registry.create(args.name, **_parse_init_config(args))
+    _run_engine_call(lambda: require_artifact_protocol(asr))
+    return asr
+
+
+def _artifact_operation(asr: Any, member: str) -> Callable[..., Any]:
+    """Return one required artifact operation from an engine.
+
+    Args:
+        asr: Configured engine instance.
+        member: Public artifact-operation name.
+
+    Returns:
+        The bound synchronous operation.
+
+    Raises:
+        EngineContractError: If the protocol 1.1 engine omits the operation or
+            exposes a non-callable value.
+        _EngineFault: If plugin attribute lookup raises a ``ValueError`` family
+            exception.
+    """
+    operation = _run_engine_call(lambda: getattr(asr, member, None))
+    if not callable(operation):
+        raise EngineContractError(
+            f"Protocol 1.1 engine {safe_type_name(asr)} must expose callable {member}()."
+        )
+    return operation
+
+
+def _call_artifact_status(
+    asr: Any,
+    context: ArtifactContext | None = None,
+) -> ArtifactReport:
+    """Call and validate an engine's synchronous artifact-status operation.
+
+    Args:
+        asr: Configured engine instance.
+        context: Optional resolved-request input.
+
+    Returns:
+        The validated artifact report.
+
+    Raises:
+        Exception: Any documented artifact-status error.
+        EngineContractError: If the operation violates its sync return contract.
+    """
+    _run_engine_call(lambda: require_artifact_protocol(asr))
+    operation = _artifact_operation(asr, "artifact_status")
+    report = _run_engine_call(lambda: operation(context))
+    require_sync_result(report, "artifact_status()", expected_type=ArtifactReport)
+    return cast("ArtifactReport", report)
+
+
+def _call_acquire_artifacts(
+    asr: Any,
+    *,
+    refresh: bool,
+) -> ArtifactReport:
+    """Call and validate synchronous explicit artifact acquisition.
+
+    Args:
+        asr: Configured engine instance.
+        refresh: Whether to re-resolve mutable sources.
+
+    Returns:
+        The validated final artifact report.
+
+    Raises:
+        Exception: Any documented artifact-acquisition error.
+        EngineContractError: If the operation violates its sync return contract.
+    """
+    operation = _artifact_operation(asr, "acquire_artifacts")
+    report = _run_engine_call(
+        lambda: operation(refresh=refresh, progress=_render_artifact_progress)
+    )
+    require_sync_result(report, "acquire_artifacts()", expected_type=ArtifactReport)
+    return cast("ArtifactReport", report)
+
+
+def _render_artifact_progress(progress: ArtifactProgress) -> None:
+    """Render one artifact progress update to stderr.
+
+    Args:
+        progress: Validated progress update.
+
+    Returns:
+        None.
+    """
+    subject = f" for {progress.artifact_id!r}" if progress.artifact_id is not None else ""
+    counts = ""
+    if progress.completed_units is not None:
+        counts = f" {progress.completed_units}"
+        if progress.total_units is not None:
+            counts += f"/{progress.total_units}"
+        # ArtifactProgress validation requires a unit whenever a count exists.
+        counts += f" {progress.unit}"
+    elif progress.total_units is not None:
+        counts = f" total={progress.total_units} {progress.unit}"
+    _print_error(f"{_INFO} Artifact progress{subject}: {progress.phase}{counts}.")
+
+
+def _unique_artifact_actions(actions: Iterable[ArtifactAction]) -> tuple[ArtifactAction, ...]:
+    """De-duplicate actions by rendered identity, keeping first-seen order.
+
+    The single authority for what makes two required actions "the same" on this
+    surface: everything :func:`_render_artifact_actions` prints, and nothing
+    else. Both action paths (a report's requirements and an artifact error's own
+    list) go through here, so one rule cannot drift into two and print an
+    operator instruction twice.
+
+    Args:
+        actions: Required actions in the order they were collected.
+
+    Returns:
+        The unique actions in first-seen order.
+    """
+    unique: list[ArtifactAction] = []
+    seen: set[tuple[str, str, str | None]] = set()
+    for action in actions:
+        key = (action.kind, action.message, str(action.url) if action.url is not None else None)
+        if key not in seen:
+            seen.add(key)
+            unique.append(action)
+    return tuple(unique)
+
+
+def _artifact_actions(
+    requirements: Iterable[ArtifactRequirement],
+) -> tuple[ArtifactAction, ...]:
+    """Collect unique required actions in report order.
+
+    Args:
+        requirements: Artifact requirements whose actions are needed.
+
+    Returns:
+        Required actions, de-duplicated by their complete rendered identity.
+    """
+    return _unique_artifact_actions(
+        action for requirement in requirements for action in requirement.required_actions
+    )
+
+
+def _render_artifact_actions(actions: Iterable[ArtifactAction]) -> None:
+    """Render operator actions to stderr without performing them.
+
+    Args:
+        actions: Required actions to display.
+
+    Returns:
+        None.
+    """
+    for action in actions:
+        _print_error(f"{_INFO} Required action [{action.kind}]: {action.message}")
+        if action.url is not None:
+            _print_error(f"{_INFO} Action URL: {action.url}")
+
+
+def _render_artifact_error_actions(
+    error: ArtifactUnavailableError | ArtifactAcquisitionError,
+) -> None:
+    """Render every known external action attached to an artifact error.
+
+    Args:
+        error: Availability or acquisition error reported by an engine.
+
+    Returns:
+        None.
+    """
+    candidates: list[ArtifactAction] = []
+    if isinstance(error, ArtifactAcquisitionError):
+        candidates.extend(error.required_actions)
+    report = error.report
+    if report is not None:
+        candidates.extend(_artifact_actions(report.requirements))
+    _render_artifact_actions(_unique_artifact_actions(candidates))
+
+
+def _render_artifact_report(report: ArtifactReport, *, as_json: bool) -> None:
+    """Render an artifact report to the selected stdout representation.
+
+    The report's diagnostics reach stderr in the text view only: the JSON view
+    already carries them on the report, so rendering both would give one run
+    two representations of the same diagnostic. This is the rule
+    :func:`_cmd_transcribe` states for the result view, applied to the report
+    view (see :func:`_render_diagnostics`, whose stderr rendering is defined
+    for text mode).
+
+    Args:
+        report: Artifact report to render.
+        as_json: Whether to emit canonical JSON instead of human-readable text.
+
+    Returns:
+        None.
+    """
+    if as_json:
+        print(report.model_dump_json(indent=2))
+        return
+    print(f"Artifact readiness: {report.readiness}")
+    print(f"  Mode       : {report.mode}")
+    print(f"  Applicable : {'yes' if report.applicable else 'no'}")
+    if not report.requirements:
+        print("  Requirements: <none>")
+    for requirement in report.requirements:
+        necessity = "required" if requirement.required_for_inference else "optional"
+        print(
+            f"  - {requirement.label} ({requirement.artifact_id}): {requirement.state}, {necessity}"
+        )
+        print(
+            "      acquisition: "
+            f"now={'yes' if requirement.can_acquire_now else 'no'}, "
+            "during_inference="
+            f"{'yes' if requirement.may_acquire_during_inference else 'no'}, "
+            f"mutable_source={'yes' if requirement.source_is_mutable else 'no'}"
+        )
+        if requirement.acquisition_blocker is not None:
+            print(f"      blocker: {requirement.acquisition_blocker}")
+        if requirement.location is not None:
+            print(f"      location: {requirement.location}")
+        if requirement.artifact_version is not None:
+            print(f"      version: {requirement.artifact_version}")
+        if requirement.size_bytes is not None:
+            print(f"      size_bytes: {requirement.size_bytes}")
+        if requirement.expected_size_bytes is not None:
+            print(f"      expected_size_bytes: {requirement.expected_size_bytes}")
+        for action in requirement.required_actions:
+            print(f"      action [{action.kind}]: {action.message}")
+            if action.url is not None:
+                print(f"      action_url: {action.url}")
+    _render_diagnostics(report.diagnostics)
+
+
+def _required_artifact_exit_code(report: ArtifactReport) -> int | None:
+    """Classify non-ready required requirements by CLI fault ownership.
+
+    Args:
+        report: Final status report from an explicit acquisition operation.
+
+    Returns:
+        ``None`` when every required requirement is ready, ``2`` when an
+        operator action or download policy blocks one, and ``1`` otherwise.
+    """
+    nonready = tuple(
+        requirement
+        for requirement in report.requirements
+        if requirement.required_for_inference and requirement.state != ARTIFACT_READY
+    )
+    if not nonready:
+        return None
+    blockers = {requirement.acquisition_blocker for requirement in nonready}
+    if blockers & {
+        ARTIFACT_BLOCKER_ACTION_REQUIRED,
+        ARTIFACT_BLOCKER_DOWNLOADS_DISABLED,
+    }:
+        return 2
+    return 1
+
+
+def _warn_optional_artifacts(report: ArtifactReport) -> None:
+    """Warn about optional artifacts left non-ready after a successful pull.
+
+    Args:
+        report: Final artifact report.
+
+    Returns:
+        None.
+    """
+    optional = tuple(
+        requirement
+        for requirement in report.requirements
+        if not requirement.required_for_inference and requirement.state != ARTIFACT_READY
+    )
+    for requirement in optional:
+        _print_error(
+            f"{_WARN} Optional artifact {requirement.label!r} remains "
+            f"{requirement.state}; required inference artifacts are ready."
+        )
+    _render_artifact_actions(_artifact_actions(optional))
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    """Inspect configured inference-artifact readiness.
+
+    Args:
+        args: Parsed ``status`` arguments.
+
+    Returns:
+        ``0`` for a valid report, or ``1`` when ``--require-ready`` is set and
+        aggregate readiness is neither ready nor not applicable.
+
+    Raises:
+        Exception: Discovery, configuration, compatibility, status, or engine
+            contract errors handled by :func:`main`.
+    """
+    asr = _configured_artifact_engine(args)
+    report = _call_artifact_status(asr)
+    _render_artifact_report(report, as_json=args.json)
+    if args.require_ready and report.readiness not in {
+        ARTIFACTS_READY,
+        ARTIFACTS_NOT_APPLICABLE,
+    }:
+        return 1
+    return 0
+
+
+def _cmd_pull(args: argparse.Namespace) -> int:
+    """Acquire configured inference artifacts and render final status.
+
+    Args:
+        args: Parsed ``pull`` arguments.
+
+    Returns:
+        ``0`` when all required artifacts are ready, ``2`` for a returned
+        caller-actionable blocker, or ``1`` for any other returned required
+        unavailability.
+
+    Raises:
+        Exception: Discovery, configuration, compatibility, status,
+            acquisition, callback, or engine contract errors handled by
+            :func:`main`.
+    """
+    asr = _configured_artifact_engine(args)
+    report = _call_acquire_artifacts(asr, refresh=args.refresh)
+    _render_artifact_report(report, as_json=args.json)
+    exit_code = _required_artifact_exit_code(report)
+    if exit_code is not None:
+        required = tuple(
+            requirement
+            for requirement in report.requirements
+            if requirement.required_for_inference and requirement.state != ARTIFACT_READY
+        )
+        _print_error(f"{_FAIL} Required inference artifacts remain unavailable.")
+        _render_artifact_actions(_artifact_actions(required))
+        return exit_code
+    # AFTER the required verdict, never before: the optional warning states
+    # that the required artifacts ARE ready, which is only true on this branch.
+    # Emitting it first made a report carrying one non-ready required and one
+    # non-ready optional requirement print both that claim and the failure line
+    # beneath it -- two stderr lines contradicting each other, on the surface
+    # whose whole job is telling an operator what to fix.
+    _warn_optional_artifacts(report)
+    _print_error(f"{_OK} Artifact acquisition complete.")
+    return 0
 
 
 def _cmd_compliance_entrypoints(args: argparse.Namespace) -> int:
@@ -1423,6 +1912,98 @@ def _parse_init_config(args: argparse.Namespace) -> dict[str, Any]:
     return config
 
 
+def _static_inference_acquisition(asr: Any) -> bool:
+    """Read the static first-use acquisition upper bound when available.
+
+    Args:
+        asr: Configured engine instance.
+
+    Returns:
+        Whether declared metadata permits inference-time artifact acquisition.
+
+    Raises:
+        _EngineFault: If plugin metadata lookup raises a ``ValueError`` family
+            exception.
+    """
+    metadata = _run_engine_call(lambda: getattr(asr, "declared_metadata", None))
+    declaration = _run_engine_call(lambda: getattr(metadata, "artifacts", None))
+    return bool(
+        _run_engine_call(lambda: getattr(declaration, "may_acquire_during_inference", False))
+    )
+
+
+def _transcribe_artifact_preflight(
+    asr: Any,
+    *,
+    name: str,
+    params: RuntimeParams,
+) -> None:
+    """Emit an advisory first-use artifact notice for protocol 1.1 engines.
+
+    Protocol compatibility is probed before looking up the new operation. A
+    pre-1.1 engine skips this advisory step so ordinary transcription remains
+    usable while plugins migrate. A typed status-inspection failure is downgraded to a
+    scrubbed warning; caller-input, configuration, and contract failures remain
+    loud.
+
+    Args:
+        asr: Configured engine instance.
+        name: Selected model key for the pull guidance.
+        params: Validated runtime parameters for the pending transcription.
+
+    Returns:
+        None.
+
+    Raises:
+        Exception: Non-status errors raised by the protocol 1.1 engine.
+    """
+    properties = _run_engine_call(lambda: getattr(asr, "properties", None))
+    if properties is None:
+        # Legacy structural engines can predate the class-level Properties
+        # declaration as well as protocol 1.1. The advisory cannot classify
+        # them, and must not make a previously valid transcription unavailable.
+        return
+    try:
+        _run_engine_call(lambda: require_artifact_protocol(asr))
+    except ProtocolCompatibilityError:
+        return
+
+    try:
+        report = _call_artifact_status(asr, ArtifactContext(params=params))
+    except ArtifactStatusError as exc:
+        _print_error(
+            f"{_WARN} Artifact status inspection failed; transcription will "
+            f"continue. {safe_exception_summary(exc)}"
+        )
+        return
+
+    required_nonready = tuple(
+        requirement
+        for requirement in report.requirements
+        if requirement.required_for_inference and requirement.state != ARTIFACT_READY
+    )
+    if not required_nonready:
+        return
+    effective_may_acquire = any(
+        requirement.may_acquire_during_inference for requirement in required_nonready
+    )
+    if report.readiness == ARTIFACTS_UNKNOWN and (
+        effective_may_acquire or _static_inference_acquisition(asr)
+    ):
+        _print_error(
+            f"{_INFO} Required artifact readiness is unknown. This transcription "
+            "may acquire inference artifacts. To acquire them explicitly first, "
+            f"run 'standard-asr pull {name}'."
+        )
+        return
+    if effective_may_acquire:
+        _print_error(
+            f"{_INFO} Required inference artifacts are not ready. The first "
+            "transcription can acquire them. To acquire them explicitly first, "
+            f"run 'standard-asr pull {name}'."
+        )
+
+
 def _cmd_transcribe(args: argparse.Namespace) -> int:
     """Handle ``transcribe`` command.
 
@@ -1468,6 +2049,8 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     asr = registry.create(args.name, **_parse_init_config(args))
 
     params = _parse_options(args.options)
+    effective_params = params or RuntimeParams()
+    _transcribe_artifact_preflight(asr, name=args.name, params=effective_params)
     # The execution seam: what escapes the engine call here as a bare
     # ValueError / raw ValidationError is an engine fault (exit 1 through
     # _EngineFault), never a usage error -- every caller-fixable input was
@@ -1631,6 +2214,28 @@ def main(argv: list[str] | None = None) -> int:
         _print_exception(exc)
         _debug_traceback(args)
         return 2
+    except ProtocolCompatibilityError as exc:
+        _print_exception(exc)
+        _debug_traceback(args)
+        return 2
+    except ArtifactUnavailableError as exc:
+        _print_exception(exc)
+        _render_artifact_error_actions(exc)
+        _debug_traceback(args)
+        if exc.reason in {"downloads_disabled", "action_required"}:
+            return 2
+        return 1
+    except ArtifactAcquisitionError as exc:
+        _print_exception(exc)
+        _render_artifact_error_actions(exc)
+        _debug_traceback(args)
+        if exc.reason in {"downloads_disabled", "action_required"}:
+            return 2
+        return 1
+    except (ArtifactStatusError, ArtifactProgressCallbackError) as exc:
+        _print_exception(exc)
+        _debug_traceback(args)
+        return 1
     except _EngineFault as exc:
         # The execution seam already classified this (see _run_engine_call):
         # an engine-side fault the CLI user did not cause. Raw

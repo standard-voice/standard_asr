@@ -9,15 +9,28 @@ import asyncio
 import threading
 import time
 from collections.abc import AsyncIterator, Iterable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
+from standard_asr.contract.artifacts import (
+    ArtifactAction,
+    ArtifactReport,
+    ArtifactRequirement,
+)
+from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactUnavailableError,
+    InvalidSessionUseError,
+    StreamClosedError,
+)
 from standard_asr.contract.results import Word
 from standard_asr.runtime import streaming as streaming_module
 from standard_asr.runtime.streaming import (
+    ARTIFACT_ACQUISITION_FAILED_CODE,
+    ARTIFACT_UNAVAILABLE_CODE,
     DEFAULT_DONE_TIMEOUT,
     DIAG_AUDIO_CURSOR_DECREASED,
     DIAG_FROZEN_PREFIX_REWRITTEN,
@@ -706,6 +719,117 @@ def test_session_producer_validation_error_detail_is_scrubbed() -> None:
     # components are kept), the value never; the wrapper's own message is
     # withheld when it interpolated the chained error's text.
     assert "beam" in detail
+
+
+def _leaky_artifact_report(artifact_path: str, action_url: str, secret: str) -> ArtifactReport:
+    """Build a valid report whose contents must stay out of the projection.
+
+    The exception constructors validate their payloads, so the leak-bait path,
+    URL, and secret ride a real report and action -- the same shapes an honest
+    engine attaches.
+
+    Args:
+        artifact_path: Absolute local path that must never be projected.
+        action_url: HTTPS action URL that must never be projected.
+        secret: Marker string that must never be projected.
+
+    Returns:
+        The artifact report.
+    """
+    action = ArtifactAction.model_validate(
+        {"kind": "accept_terms", "message": f"Accept; {secret}", "url": action_url}
+    )
+    requirement = ArtifactRequirement(
+        artifact_id="checkpoint",
+        label="Checkpoint",
+        state="missing",
+        required_for_inference=True,
+        can_acquire_now=False,
+        may_acquire_during_inference=False,
+        source_is_mutable=False,
+        acquisition_blocker="action_required",
+        required_actions=(action,),
+        location=Path(artifact_path),
+    )
+    return ArtifactReport.from_requirements(
+        mode="streaming", applicable=True, requirements=(requirement,)
+    )
+
+
+def test_session_artifact_unavailable_error_has_safe_terminal_projection() -> None:
+    """Artifact unavailability exposes only its safe standard projection."""
+    secret = "artifact-unavailable-secret"
+    artifact_path = str(Path(Path.cwd().anchor, "private", "models", "account", "checkpoint"))
+    action_url = "https://models.example.test/accept?token=secret"
+
+    class _UnavailableSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            try:
+                raise RuntimeError(f"native loader leaked {secret}")
+            except RuntimeError as exc:
+                raise ArtifactUnavailableError(
+                    f"Missing {artifact_path}; open {action_url}; {secret}",
+                    reason="missing",
+                    report=_leaky_artifact_report(artifact_path, action_url, secret),
+                ) from exc
+            yield TranscriptionEvent.done()  # pragma: no cover
+
+    events = asyncio.run(_collect(_UnavailableSession()))
+    terminal = events[-1]
+
+    assert terminal.type == "error"
+    assert terminal.code == ARTIFACT_UNAVAILABLE_CODE == "artifact_unavailable"
+    assert terminal.recoverable is False
+    assert terminal.retriable_after is None
+    assert terminal.extra == {"detail": "Required inference artifacts are unavailable."}
+    serialized = terminal.model_dump_json()
+    assert secret not in serialized
+    assert artifact_path not in serialized
+    assert action_url not in serialized
+    assert all(event.type != "done" for event in events)
+
+
+def test_session_artifact_acquisition_error_projects_only_retry_delay() -> None:
+    """Artifact acquisition projects retry timing without sensitive context."""
+    secret = "artifact-acquisition-secret"
+    artifact_path = str(Path(Path.cwd().anchor, "private", "cache", "customer", "checkpoint"))
+    action_url = "https://models.example.test/request?credential=secret"
+
+    class _AcquisitionSession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            try:
+                raise RuntimeError(f"native downloader leaked {secret}")
+            except RuntimeError as exc:
+                raise ArtifactAcquisitionError(
+                    f"Download failed at {artifact_path}; open {action_url}; {secret}",
+                    reason="failed",
+                    report=_leaky_artifact_report(artifact_path, action_url, secret),
+                    required_actions=(
+                        ArtifactAction.model_validate(
+                            {
+                                "kind": "accept_terms",
+                                "message": f"Accept; {secret}",
+                                "url": action_url,
+                            }
+                        ),
+                    ),
+                    retriable_after=2.5,
+                ) from exc
+            yield TranscriptionEvent.done()  # pragma: no cover
+
+    events = asyncio.run(_collect(_AcquisitionSession()))
+    terminal = events[-1]
+
+    assert terminal.type == "error"
+    assert terminal.code == ARTIFACT_ACQUISITION_FAILED_CODE == "artifact_acquisition_failed"
+    assert terminal.recoverable is False
+    assert terminal.retriable_after == 2.5
+    assert terminal.extra == {"detail": "Inference-artifact acquisition failed."}
+    serialized = terminal.model_dump_json()
+    assert secret not in serialized
+    assert artifact_path not in serialized
+    assert action_url not in serialized
+    assert all(event.type != "done" for event in events)
 
 
 def _assert_input_source_error(events: list[TranscriptionEvent], raw_detail: str) -> None:

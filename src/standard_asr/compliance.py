@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import inspect
 import math
+import re
 import threading
 from dataclasses import dataclass
-from typing import Callable, ClassVar, Iterable, Literal, Protocol, Sequence, cast
+from typing import Callable, ClassVar, Final, Iterable, Literal, Protocol, Sequence, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -30,6 +31,7 @@ from standard_asr.contract.exceptions import (
     InvalidProviderParamError,
     UnsupportedFeatureError,
 )
+from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
 from standard_asr.contract.params import (
     DIARIZE,
     ProviderParams,
@@ -37,6 +39,13 @@ from standard_asr.contract.params import (
     WordTimestampGranularity,
 )
 from standard_asr.contract.properties import BaseProperties
+from standard_asr.contract.protocol_version import (
+    CURRENT_PROTOCOL_VERSION,
+    PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE,
+    PROTOCOL_FEATURE_MINIMUMS,
+    SUPPORTED_PROTOCOL_MAJOR,
+    parse_protocol_version,
+)
 from standard_asr.contract.results import Segment, TranscriptionResult, Word
 from standard_asr.plugins.discovery import (
     FactoryLoadError,
@@ -120,6 +129,10 @@ _GATING_PROBES: tuple[tuple[str, Callable[[], RuntimeParams], str], ...] = (
 #: allocate gigabytes and OOM the run it exists to keep alive. Budgets at or
 #: above the cap skip the prompt probe (the granularity probe may still apply).
 _SUB_CONSTRAINT_PROBE_MAX_TOKENS = 4096
+
+#: Required namespace shape for plugin-authored metadata sections. The first
+#: segment identifies the vendor, and the remaining segment names the extension.
+_VENDOR_METADATA_KEY_PATTERN = re.compile(r"^x_[a-z0-9]+_[a-z0-9]+(?:_[a-z0-9]+)*$")
 
 
 def _pick_sub_constraint_probe(engine: StandardASR) -> tuple[str, RuntimeParams, str] | None:
@@ -1630,12 +1643,423 @@ _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on th
         )
 
 
+def _declares_unsupported_protocol_major(properties: BaseProperties) -> bool:
+    """Return whether the declared protocol major is outside this core's.
+
+    Args:
+        properties: Class-level engine properties.
+
+    Returns:
+        ``True`` when the engine declares a protocol major this core cannot
+        interpret. The properties model validates the version's syntax at
+        construction, so this parse does not guard it -- the same stance
+        :func:`_uses_artifact_lifecycle` takes on the same field.
+    """
+    return parse_protocol_version(properties.protocol_version)[0] != SUPPORTED_PROTOCOL_MAJOR
+
+
+def _uses_artifact_lifecycle(properties: BaseProperties) -> bool:
+    """Return whether properties target the protocol 1.1 artifact surface.
+
+    Args:
+        properties: Class-level engine properties.
+
+    Returns:
+        ``True`` for protocol 1.1 or later in the supported protocol major.
+    """
+    declared = parse_protocol_version(properties.protocol_version)
+    minimum = parse_protocol_version(PROTOCOL_FEATURE_MINIMUMS[PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE])
+    return declared[0] == SUPPORTED_PROTOCOL_MAJOR and declared >= minimum
+
+
+def _mro_member_owner(engine_class: type[object], member: str) -> type[object] | None:
+    """Return the first class that authors a member in an engine's MRO.
+
+    Args:
+        engine_class: Engine class to inspect.
+        member: Member name whose owner is required.
+
+    Returns:
+        The nearest authoring class, or ``None`` when no class authors the
+        member.
+    """
+    return next((owner for owner in inspect.getmro(engine_class) if member in vars(owner)), None)
+
+
+def _static_callable_shape(value: object) -> tuple[object, bool]:
+    """Return a static callable target and whether its receiver is explicit.
+
+    Args:
+        value: Value returned by :func:`inspect.getattr_static`.
+
+    Returns:
+        A pair containing the callable target and whether its signature starts
+        with an instance or class receiver.
+    """
+    if isinstance(value, staticmethod):
+        return value.__func__, False
+    if isinstance(value, classmethod):
+        return cast("object", value.__func__), True  # pyright: ignore[reportUnknownMemberType]
+    return value, inspect.isfunction(value) or inspect.ismethoddescriptor(value)
+
+
+#: Positional arguments the core passes to each protected artifact hook, after
+#: the receiver. Only the COUNT is pinned: the template calls both hooks
+#: positionally, so a plugin may name the parameters whatever reads best.
+_ARTIFACT_HOOK_ARITY: Final = {"_artifact_requirements": 1, "_acquire_artifacts": 4}
+
+
+def _artifact_hook_call_defect(value: object, hook: str) -> str | None:
+    """Return why a protected artifact hook cannot be called, or ``None``.
+
+    The public methods are checked separately, but for an ``EngineBase``
+    subclass those are INHERITED and therefore trivially correct -- the methods
+    a plugin actually authors are these two protected hooks, and until this
+    check they were only tested for being some other callable.
+
+    Args:
+        value: Value returned by :func:`inspect.getattr_static`.
+        hook: Protected artifact-hook name.
+
+    Returns:
+        A defect phrase for the compliance message, or ``None`` when the hook
+        is callable the way the core calls it. A shape this core cannot read is
+        itself a defect, not a pass.
+    """
+    target, has_receiver = _static_callable_shape(value)
+    # ``iscoroutinefunction`` answers for the target itself; a callable OBJECT
+    # whose ``__call__`` is async reports False, and the core would then store
+    # the coroutine it returns instead of running it.
+    if inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(
+        getattr(target, "__call__", None)
+    ):
+        return "is a coroutine function, but the core calls it synchronously"
+    try:
+        signature = inspect.signature(target)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        # Fail CLOSED, matching _artifact_method_matches_signature on the same
+        # condition: compliance cannot certify a call shape it cannot read, and
+        # staying silent here certified exactly the hooks least likely to be a
+        # plain reviewed ``def``.
+        return "has a signature this core cannot read, so its call shape is unprovable"
+    arity = _ARTIFACT_HOOK_ARITY[hook] + (1 if has_receiver else 0)
+    try:
+        signature.bind(*([None] * arity))
+    except TypeError:
+        return (
+            f"does not accept the {_ARTIFACT_HOOK_ARITY[hook]} positional arguments the core passes"
+        )
+    return None
+
+
+def _artifact_method_matches_signature(value: object, method: str) -> bool:
+    """Return whether a static artifact method has its protocol call shape.
+
+    Args:
+        value: Value returned by :func:`inspect.getattr_static`.
+        method: Artifact method name.
+
+    Returns:
+        ``True`` when the callable has the protocol-pinned parameters.
+    """
+    target, has_receiver = _static_callable_shape(value)
+    try:
+        parameters = list(inspect.signature(target).parameters.values())  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    if has_receiver:
+        if not parameters:
+            return False
+        receiver = parameters.pop(0)
+        if (
+            receiver.kind
+            not in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+            or receiver.default is not inspect.Signature.empty
+        ):
+            return False
+
+    if method == "artifact_status":
+        return len(parameters) == 1 and (
+            parameters[0].name == "context"
+            and parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            and parameters[0].default is None
+        )
+    return len(parameters) == 3 and (
+        parameters[0].name == "context"
+        and parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and parameters[0].default is None
+        and parameters[1].name == "refresh"
+        and parameters[1].kind is inspect.Parameter.KEYWORD_ONLY
+        and parameters[1].default is False
+        and parameters[2].name == "progress"
+        and parameters[2].kind is inspect.Parameter.KEYWORD_ONLY
+        and parameters[2].default is None
+    )
+
+
+def _check_artifact_method_surface(
+    engine_class: type[object],
+    name: str,
+    issues: list[ComplianceIssue],
+) -> None:
+    """Check the protocol 1.1 artifact methods without invoking descriptors.
+
+    Args:
+        engine_class: Engine class to inspect.
+        name: Model key for issue attribution.
+        issues: Mutable issue list to append to.
+    """
+    for method in ("artifact_status", "acquire_artifacts"):
+        value = inspect.getattr_static(engine_class, method, None)
+        target, _ = _static_callable_shape(value)
+        if not callable(target):
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code="missing_artifact_method",
+                    message=(f"Protocol 1.1 engine class is missing a callable {method}() method."),
+                    model=name,
+                )
+            )
+            continue
+        # ``iscoroutinefunction`` answers for the target itself; a callable
+        # OBJECT whose ``__call__`` is async reports False, so without the
+        # second check this certified a method the runtime then rejects
+        # (``require_sync_result`` refuses the coroutine it returns) -- the
+        # same rule the protected-hook checker already applies.
+        if inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(
+            getattr(target, "__call__", None)
+        ):
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code="artifact_method_not_synchronous",
+                    message=(
+                        f"{method}() is an async function; protocol 1.1 requires a "
+                        "synchronous artifact method."
+                    ),
+                    model=name,
+                )
+            )
+            continue
+        if not _artifact_method_matches_signature(value, method):
+            expected = (
+                "artifact_status(self, context=None)"
+                if method == "artifact_status"
+                else ("acquire_artifacts(self, context=None, *, refresh=False, progress=None)")
+            )
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code="artifact_method_signature_invalid",
+                    message=f"{method}() does not match the required shape {expected}.",
+                    model=name,
+                )
+            )
+
+
+def _enginebase_hook_is_overridden(engine_class: type[object], hook: str) -> bool:
+    """Return whether an EngineBase subclass provides a callable hook override.
+
+    Args:
+        engine_class: Engine class to inspect.
+        hook: Protected artifact-hook name.
+
+    Returns:
+        ``True`` when plugin code replaces the callable core placeholder.
+    """
+    value = inspect.getattr_static(engine_class, hook, None)
+    core_value = inspect.getattr_static(EngineBase, hook)
+    target, _ = _static_callable_shape(value)
+    return value is not core_value and callable(target)
+
+
+def _check_artifact_declaration(
+    engine_class: type[object],
+    protocol_version: str,
+    name: str,
+    issues: list[ComplianceIssue],
+) -> None:
+    """Check protocol 1.1 metadata authorship and hook consistency.
+
+    Args:
+        engine_class: Engine class to inspect.
+        protocol_version: Protocol version declared by the engine.
+        name: Model key for issue attribution.
+        issues: Mutable issue list to append to.
+    """
+    _check_artifact_method_surface(engine_class, name, issues)
+
+    owner = _mro_member_owner(engine_class, "declared_metadata")
+    metadata = inspect.getattr_static(engine_class, "declared_metadata", None)
+    if owner is None:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="missing_declared_metadata",
+                message=(
+                    "Protocol 1.1 engine class does not author declared_metadata "
+                    "in its plugin-owned class hierarchy."
+                ),
+                model=name,
+            )
+        )
+        return
+    if owner is EngineBase:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="declared_metadata_core_placeholder",
+                message=(
+                    "Protocol 1.1 engine class inherits the EngineBase "
+                    "declared_metadata placeholder. Author a DeclaredEngineMetadata "
+                    "value in the plugin class hierarchy."
+                ),
+                model=name,
+            )
+        )
+        return
+    if not isinstance(metadata, DeclaredEngineMetadata):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="declared_metadata_invalid",
+                message=(
+                    "Protocol 1.1 declared_metadata is not a DeclaredEngineMetadata instance."
+                ),
+                model=name,
+            )
+        )
+        return
+
+    declaration = getattr(metadata, "artifacts", None)
+    if not isinstance(declaration, ArtifactDeclaration) or any(
+        type(value) is not bool
+        for value in (
+            getattr(declaration, "applicable", None),
+            getattr(declaration, "supports_explicit_acquisition", None),
+            getattr(declaration, "may_acquire_during_inference", None),
+        )
+    ):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="declared_metadata_invalid",
+                message=(
+                    "Protocol 1.1 declared_metadata.artifacts must contain three "
+                    "exact boolean values in an ArtifactDeclaration."
+                ),
+                model=name,
+            )
+        )
+        return
+
+    try:
+        normalized = DeclaredEngineMetadata.model_validate(metadata.model_dump(mode="python"))
+    except ValidationError as exc:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="declared_metadata_invalid",
+                message=(
+                    "Protocol 1.1 declared_metadata fails re-validation: "
+                    f"{sanitized_validation_message(exc, prefix='ValidationError')}"
+                ),
+                model=name,
+            )
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 - malformed plugin declaration is reported
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="declared_metadata_invalid",
+                message=(
+                    "Protocol 1.1 declared_metadata could not be re-validated: "
+                    f"{safe_exception_summary(exc)}"
+                ),
+                model=name,
+            )
+        )
+        return
+
+    declared_version = parse_protocol_version(protocol_version)
+    current_version = parse_protocol_version(CURRENT_PROTOCOL_VERSION)
+    if declared_version[:2] == current_version[:2]:
+        for key in normalized.model_extra or {}:
+            if _VENDOR_METADATA_KEY_PATTERN.fullmatch(key) is None:
+                issues.append(
+                    ComplianceIssue(
+                        level="error",
+                        code="declared_metadata_extension_not_namespaced",
+                        message=(
+                            f"declared_metadata contains unknown section {key!r}; "
+                            "protocol 1.1 producers must namespace extension sections "
+                            "as x_<vendor>_<name>."
+                        ),
+                        model=name,
+                    )
+                )
+
+    if not issubclass(engine_class, EngineBase):
+        return
+    for required, hook, missing_code, subject in (
+        (
+            declaration.applicable,
+            "_artifact_requirements",
+            "artifact_requirements_hook_missing",
+            "an applicable artifact lifecycle",
+        ),
+        (
+            declaration.supports_explicit_acquisition,
+            "_acquire_artifacts",
+            "artifact_acquisition_hook_missing",
+            "explicit artifact acquisition",
+        ),
+    ):
+        if not required:
+            continue
+        if not _enginebase_hook_is_overridden(engine_class, hook):
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code=missing_code,
+                    message=(
+                        f"EngineBase model declares {subject} but does not override {hook}()."
+                    ),
+                    model=name,
+                )
+            )
+            continue
+        # Overriding is not implementing. The public artifact methods get a
+        # signature and sync check, but an EngineBase subclass INHERITS those,
+        # so that check can only ever pass -- these two hooks are what the
+        # plugin authors. A wrong-arity hook used to reach the first real
+        # status call as an ArtifactStatusError blaming the native inspection,
+        # and an `async def` one as a contract error, both after compliance had
+        # already certified the plugin.
+        defect = _artifact_hook_call_defect(inspect.getattr_static(engine_class, hook, None), hook)
+        if defect is not None:
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code="artifact_hook_signature_invalid",
+                    message=f"{hook}() {defect}.",
+                    model=name,
+                )
+            )
+
+
 def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[ComplianceIssue]) -> None:
     """Verify class-level metadata is readable without instantiation.
 
-    Reads ``declared_capabilities`` and ``provider_params_type`` from the engine
-    *class* (never the instance) and validates that, when present, the
-    provider-params type is a closed :class:`ProviderParams` subclass.
+    Reads the properties, declarations, protocol call shapes, and
+    ``provider_params_type`` from the engine class. It never constructs an
+    engine or calls an artifact operation. When present, the provider-params
+    type must be a closed :class:`ProviderParams` subclass.
 
     Args:
         spec: The :class:`~standard_asr.plugins.discovery.ModelSpec`.
@@ -1686,6 +2110,33 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
                 model=name,
             )
         )
+
+    if isinstance(properties, BaseProperties):
+        if _declares_unsupported_protocol_major(properties):
+            # A false "no artifact lifecycle here" and a false "this plugin is
+            # compliant" are different answers, and _uses_artifact_lifecycle
+            # returns the same False for both: legitimately pre-1.1 (AR.1 keeps
+            # those discoverable and able to transcribe) and a major this core
+            # cannot interpret at all. Only the first is a reason to stay
+            # silent. Left conflated, an engine declaring major 2 passed every
+            # check while require_protocol_feature() rejects it at runtime --
+            # compliance certifying a plugin whose artifact tooling cannot run.
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code="protocol_major_unsupported",
+                    message=(
+                        f"Engine declares protocol_version "
+                        f"{properties.protocol_version!r}, which this core cannot "
+                        f"interpret: it supports protocol major "
+                        f"{SUPPORTED_PROTOCOL_MAJOR}. Artifact tooling rejects the "
+                        "engine at runtime with ProtocolCompatibilityError."
+                    ),
+                    model=name,
+                )
+            )
+        elif _uses_artifact_lifecycle(properties):
+            _check_artifact_declaration(engine_class, properties.protocol_version, name, issues)
 
     config_type = inspect.getattr_static(engine_class, "config_type", None)
     if config_type is None:

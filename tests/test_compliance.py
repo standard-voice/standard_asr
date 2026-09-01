@@ -36,6 +36,12 @@ from standard_asr.compliance import (
     check_transcription_result,
     validate_bridge_timeout,
 )
+from standard_asr.contract.artifacts import (
+    ArtifactContext,
+    ArtifactProgressCallback,
+    ArtifactReport,
+    ArtifactRequirement,
+)
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
@@ -55,6 +61,7 @@ from standard_asr.contract.exceptions import (
     InvalidProviderParamError,
     UnsupportedFeatureError,
 )
+from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
 from standard_asr.contract.params import (
     ProviderParams,
     RuntimeParams,
@@ -92,7 +99,7 @@ class _ConfigNoLang(BaseConfig[Literal["dummy"]]):
 class _Props(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "demo"
-    protocol_version: str = "0.2.0"
+    protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -185,6 +192,21 @@ class _BypassedPropsASR(_GoodASR):
 
 def bypassed_props_factory() -> _BypassedPropsASR:  # pyright: ignore[reportUnusedFunction]
     return _BypassedPropsASR()
+
+
+class _FutureMajorProps(_Props):
+    protocol_version: str = "2.0.0"
+
+
+class _FutureMajorASR(_GoodASR):
+    # A protocol major this core cannot interpret. Nothing about the engine is
+    # syntactically wrong, so every shape check passes; only the version says
+    # the artifact tooling refuses it at runtime.
+    properties: ClassVar[BaseProperties] = _FutureMajorProps()
+
+
+def future_major_factory() -> _FutureMajorASR:  # pyright: ignore[reportUnusedFunction]
+    return _FutureMajorASR()
 
 
 class _WidenedASR(_GoodASR):
@@ -380,6 +402,29 @@ def test_check_entrypoints_bypassed_properties_fail_revalidation() -> None:
     report = check_entrypoints(registry=_registry("bypassed_props_factory"))
     assert report.passed is False
     assert any("fail re-validation" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_unsupported_protocol_major_is_an_error() -> None:
+    # An engine declaring a major this core cannot interpret must NOT be
+    # certified. _uses_artifact_lifecycle() answers False for two different
+    # reasons -- legitimately pre-1.1, and uninterpretable major -- and only
+    # the first is a reason to skip the artifact checks silently. Conflated,
+    # this engine passed compliance while require_protocol_feature() rejects
+    # it at runtime, so `status` and `pull` fail on a plugin the author was
+    # told was compliant.
+    report = check_entrypoints(registry=_registry("future_major_factory"))
+    assert report.passed is False
+    issue = next(i for i in report.issues if i.code == "protocol_major_unsupported")
+    assert issue.level == "error"
+    assert "2.0.0" in issue.message
+
+
+def test_check_entrypoints_protocol_1_0_engine_is_not_a_major_error() -> None:
+    # The transition case AR.1 protects: a 1.0 engine stays discoverable and
+    # can still transcribe, so compliance must not report the artifact checks
+    # it legitimately skips as an unsupported major.
+    report = check_entrypoints(registry=_registry("good_factory"))
+    assert not any(i.code == "protocol_major_unsupported" for i in report.issues)
 
 
 def test_check_entrypoints_runtime_params_not_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3207,7 +3252,7 @@ def test_assert_prefix_invariant_flags_frozen_prefix_rewrite() -> None:
 class _StreamProps(BaseProperties):
     engine_id: str = "streamer"
     model_name: str = "demo"
-    protocol_version: str = "0.2.0"
+    protocol_version: str = "1.0.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -4613,3 +4658,617 @@ def test_sync_bridge_base_exception_from_supports_is_not_a_timeout_verdict() -> 
     assert "sync_bridge_raised" in codes
     assert "sync_bridge_did_not_terminate" not in codes
     assert "supports() raised" in report.issues[0].message
+
+
+# --------------------------------------------------------------------------- #
+# Protocol 1.1 inference-artifact static compliance.
+# --------------------------------------------------------------------------- #
+class _ArtifactProps(_Props):
+    protocol_version: str = "1.1.0"
+
+
+class _LegacyArtifactProps(_Props):
+    protocol_version: str = "1.0.0"
+
+
+class _FutureArtifactProps(_Props):
+    protocol_version: str = "1.2.0"
+
+
+_NO_ARTIFACT_METADATA = DeclaredEngineMetadata(
+    artifacts=ArtifactDeclaration(
+        applicable=False,
+        supports_explicit_acquisition=False,
+        may_acquire_during_inference=False,
+    )
+)
+_EXPLICIT_ARTIFACT_METADATA = DeclaredEngineMetadata(
+    artifacts=ArtifactDeclaration(
+        applicable=True,
+        supports_explicit_acquisition=True,
+        may_acquire_during_inference=False,
+    )
+)
+_INFERENCE_ONLY_ARTIFACT_METADATA = DeclaredEngineMetadata(
+    artifacts=ArtifactDeclaration(
+        applicable=True,
+        supports_explicit_acquisition=False,
+        may_acquire_during_inference=True,
+    )
+)
+
+_ARTIFACT_METHOD_CALLS: list[str] = []
+
+
+class _LegacyArtifactASR(_GoodASR):
+    properties: ClassVar[BaseProperties] = _LegacyArtifactProps()
+
+
+def legacy_artifact_factory() -> _LegacyArtifactASR:  # pyright: ignore[reportUnusedFunction]
+    return _LegacyArtifactASR()
+
+
+class _ArtifactStructuralBase(_GoodASR):
+    """Plugin-owned protocol 1.1 base with side-effect sentinels."""
+
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
+
+    def artifact_status(self, context: ArtifactContext | None = None) -> ArtifactReport:
+        _ARTIFACT_METHOD_CALLS.append("status")
+        raise AssertionError("compliance called artifact_status")
+
+    def acquire_artifacts(
+        self,
+        context: ArtifactContext | None = None,
+        *,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        _ARTIFACT_METHOD_CALLS.append("acquire")
+        raise AssertionError("compliance called acquire_artifacts")
+
+
+class _ArtifactStructuralPreset(_ArtifactStructuralBase):
+    """Preset inheriting protocol 1.1 metadata from its plugin-owned base."""
+
+
+def artifact_structural_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactStructuralPreset
+):
+    return _ArtifactStructuralPreset()
+
+
+class _ArtifactMissingSurfaceASR(_GoodASR):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
+
+
+def artifact_missing_surface_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactMissingSurfaceASR
+):
+    return _ArtifactMissingSurfaceASR()
+
+
+class _ArtifactBadSurfaceASR(_ArtifactStructuralBase):
+    async def artifact_status(  # type: ignore[override]
+        self, context: ArtifactContext | None = None
+    ) -> ArtifactReport:
+        raise AssertionError("compliance called async artifact_status")
+
+    def acquire_artifacts(  # type: ignore[override]
+        self,
+        context: ArtifactContext | None = None,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        raise AssertionError("compliance called bad acquire_artifacts")
+
+
+def artifact_bad_surface_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactBadSurfaceASR
+):
+    return _ArtifactBadSurfaceASR()
+
+
+class _ArtifactInvalidMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[Any] = {"artifacts": {}}
+
+
+def artifact_invalid_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactInvalidMetadataASR
+):
+    return _ArtifactInvalidMetadataASR()
+
+
+class _ArtifactNoMetadataASR(_GoodASR):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+
+
+def artifact_no_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactNoMetadataASR
+):
+    return _ArtifactNoMetadataASR()
+
+
+class _ArtifactCorePlaceholderEngine(EngineBase):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+
+def artifact_core_placeholder_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactCorePlaceholderEngine
+):
+    return _ArtifactCorePlaceholderEngine()
+
+
+_BYPASSED_ARTIFACT_METADATA = DeclaredEngineMetadata.model_construct(
+    artifacts=ArtifactDeclaration.model_construct(
+        applicable=False,
+        supports_explicit_acquisition=True,
+        may_acquire_during_inference=False,
+    )
+)
+
+
+class _ArtifactBypassedMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _BYPASSED_ARTIFACT_METADATA
+
+
+def artifact_bypassed_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactBypassedMetadataASR
+):
+    return _ArtifactBypassedMetadataASR()
+
+
+_UNTYPED_BOOLEAN_ARTIFACT_METADATA = DeclaredEngineMetadata.model_construct(
+    artifacts=ArtifactDeclaration.model_construct(
+        applicable=1,
+        supports_explicit_acquisition=0,
+        may_acquire_during_inference=0,
+    )
+)
+
+
+class _ArtifactUntypedBooleanASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _UNTYPED_BOOLEAN_ARTIFACT_METADATA
+
+
+def artifact_untyped_boolean_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUntypedBooleanASR
+):
+    return _ArtifactUntypedBooleanASR()
+
+
+class _ArtifactUnnamespacedMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
+        {
+            "artifacts": _NO_ARTIFACT_METADATA.artifacts,
+            "future_section": {"enabled": True},
+        }
+    )
+
+
+def artifact_unnamespaced_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUnnamespacedMetadataASR
+):
+    return _ArtifactUnnamespacedMetadataASR()
+
+
+class _ArtifactNamespacedMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
+        {
+            "artifacts": _NO_ARTIFACT_METADATA.artifacts,
+            "x_vendor_future": {"enabled": True},
+        }
+    )
+
+
+def artifact_namespaced_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactNamespacedMetadataASR
+):
+    return _ArtifactNamespacedMetadataASR()
+
+
+class _ArtifactFutureMetadataASR(_ArtifactStructuralBase):
+    properties: ClassVar[BaseProperties] = _FutureArtifactProps()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
+        {
+            "artifacts": _NO_ARTIFACT_METADATA.artifacts,
+            "future_section": {"enabled": True},
+        }
+    )
+
+
+def artifact_future_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactFutureMetadataASR
+):
+    return _ArtifactFutureMetadataASR()
+
+
+class _ArtifactHookBase(EngineBase):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _EXPLICIT_ARTIFACT_METADATA
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+    def _artifact_requirements(
+        self, context: ArtifactContext
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        return True, (), ()
+
+    def _acquire_artifacts(
+        self,
+        context: ArtifactContext,
+        requirements: tuple[ArtifactRequirement, ...],
+        refresh: bool,
+        progress: ArtifactProgressCallback | None,
+    ) -> None:
+        return None
+
+
+class _ArtifactHookPreset(_ArtifactHookBase):
+    """Preset inheriting its declaration and hooks from plugin-owned code."""
+
+
+def artifact_hook_preset_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactHookPreset
+):
+    return _ArtifactHookPreset()
+
+
+class _ArtifactWrongAritySignatureHook(_ArtifactHookBase):
+    """Overrides the hook, but not with a shape the core can call.
+
+    The public artifact methods are inherited from EngineBase and therefore
+    always pass their own signature check, so nothing but a hook-level check
+    catches this before the plugin ships.
+    """
+
+    # The incompatible override IS the fixture: it is what compliance must
+    # catch, so the type checker's objection is the behavior under test.
+    def _artifact_requirements(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        return True, (), ()
+
+
+def artifact_wrong_arity_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactWrongAritySignatureHook
+):
+    return _ArtifactWrongAritySignatureHook()
+
+
+class _ArtifactAsyncAcquisitionHook(_ArtifactHookBase):
+    """Declares explicit acquisition with a coroutine hook the core never awaits."""
+
+    async def _acquire_artifacts(  # type: ignore[override]
+        self,
+        context: ArtifactContext,
+        requirements: tuple[ArtifactRequirement, ...],
+        refresh: bool,
+        progress: ArtifactProgressCallback | None,
+    ) -> None:
+        return None
+
+
+def artifact_async_acquisition_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactAsyncAcquisitionHook
+):
+    return _ArtifactAsyncAcquisitionHook()
+
+
+class _ArtifactMissingRequirementsHook(EngineBase):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _EXPLICIT_ARTIFACT_METADATA
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+
+def artifact_missing_requirements_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactMissingRequirementsHook
+):
+    return _ArtifactMissingRequirementsHook()
+
+
+class _ArtifactMissingAcquisitionHook(_ArtifactMissingRequirementsHook):
+    def _artifact_requirements(
+        self, context: ArtifactContext
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        return True, (), ()
+
+
+def artifact_missing_acquisition_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactMissingAcquisitionHook
+):
+    return _ArtifactMissingAcquisitionHook()
+
+
+class _ArtifactInferenceOnlyEngine(_ArtifactMissingAcquisitionHook):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _INFERENCE_ONLY_ARTIFACT_METADATA
+
+
+def artifact_inference_only_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactInferenceOnlyEngine
+):
+    return _ArtifactInferenceOnlyEngine()
+
+
+class _ArtifactNotApplicableEngine(_ArtifactMissingRequirementsHook):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
+
+
+def artifact_not_applicable_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactNotApplicableEngine
+):
+    return _ArtifactNotApplicableEngine()
+
+
+def test_protocol_1_1_static_artifact_check_is_side_effect_free() -> None:
+    _ARTIFACT_METHOD_CALLS.clear()
+    report = check_entrypoints(registry=_registry("artifact_structural_factory"))
+    assert report.passed is True, [issue.message for issue in report.issues]
+    assert _ARTIFACT_METHOD_CALLS == []
+
+
+def test_protocol_1_0_does_not_require_artifact_surface() -> None:
+    report = check_entrypoints(registry=_registry("legacy_artifact_factory"), instantiate=False)
+    assert report.passed is True, [issue.message for issue in report.issues]
+    assert not any("artifact" in issue.code for issue in report.issues)
+
+
+def test_protocol_1_1_requires_both_artifact_methods() -> None:
+    report = check_entrypoints(
+        registry=_registry("artifact_missing_surface_factory"), instantiate=False
+    )
+    issues = [issue for issue in report.issues if issue.code == "missing_artifact_method"]
+    assert len(issues) == 2
+    assert any("artifact_status" in issue.message for issue in issues)
+    assert any("acquire_artifacts" in issue.message for issue in issues)
+
+
+def test_protocol_1_1_requires_sync_exact_artifact_method_shapes() -> None:
+    report = check_entrypoints(
+        registry=_registry("artifact_bad_surface_factory"), instantiate=False
+    )
+    assert any(issue.code == "artifact_method_not_synchronous" for issue in report.issues)
+    assert any(issue.code == "artifact_method_signature_invalid" for issue in report.issues)
+
+
+def test_protocol_1_1_requires_typed_authored_metadata() -> None:
+    invalid = check_entrypoints(
+        registry=_registry("artifact_invalid_metadata_factory"), instantiate=False
+    )
+    placeholder = check_entrypoints(
+        registry=_registry("artifact_core_placeholder_factory"), instantiate=False
+    )
+    missing = check_entrypoints(
+        registry=_registry("artifact_no_metadata_factory"), instantiate=False
+    )
+    assert any(issue.code == "declared_metadata_invalid" for issue in invalid.issues)
+    assert any(issue.code == "declared_metadata_core_placeholder" for issue in placeholder.issues)
+    assert any(issue.code == "missing_declared_metadata" for issue in missing.issues)
+
+
+def test_protocol_1_1_revalidates_bypassed_artifact_metadata() -> None:
+    invariant = check_entrypoints(
+        registry=_registry("artifact_bypassed_metadata_factory"), instantiate=False
+    )
+    booleans = check_entrypoints(
+        registry=_registry("artifact_untyped_boolean_factory"), instantiate=False
+    )
+    assert any(issue.code == "declared_metadata_invalid" for issue in invariant.issues)
+    assert any(issue.code == "declared_metadata_invalid" for issue in booleans.issues)
+
+
+def test_protocol_1_1_contains_unexpected_metadata_projection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_model_dump(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        raise RuntimeError("metadata projection failed")
+
+    monkeypatch.setattr(DeclaredEngineMetadata, "model_dump", fail_model_dump)
+    report = check_entrypoints(registry=_registry("artifact_structural_factory"), instantiate=False)
+    assert any(issue.code == "declared_metadata_invalid" for issue in report.issues)
+
+
+def test_protocol_1_1_requires_metadata_extension_namespace() -> None:
+    unnamespaced = check_entrypoints(
+        registry=_registry("artifact_unnamespaced_metadata_factory"), instantiate=False
+    )
+    namespaced = check_entrypoints(
+        registry=_registry("artifact_namespaced_metadata_factory"), instantiate=False
+    )
+    assert any(
+        issue.code == "declared_metadata_extension_not_namespaced" for issue in unnamespaced.issues
+    )
+    assert namespaced.passed is True, [issue.message for issue in namespaced.issues]
+
+
+def test_future_minor_tolerates_unknown_standard_metadata_section() -> None:
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+    assert report.passed is True, [issue.message for issue in report.issues]
+
+
+def test_protocol_1_1_accepts_plugin_owned_metadata_and_hook_inheritance() -> None:
+    report = check_entrypoints(
+        registry=_registry("artifact_hook_preset_factory"), instantiate=False
+    )
+    assert report.passed is True, [issue.message for issue in report.issues]
+
+
+def test_protocol_1_1_accepts_descriptor_methods_with_the_same_call_shape() -> None:
+    class _DescriptorSurface:
+        @staticmethod
+        def artifact_status(context: ArtifactContext | None = None) -> ArtifactReport:
+            raise AssertionError("shape check called artifact_status")
+
+        @classmethod
+        def acquire_artifacts(
+            cls,
+            context: ArtifactContext | None = None,
+            *,
+            refresh: bool = False,
+            progress: ArtifactProgressCallback | None = None,
+        ) -> ArtifactReport:
+            raise AssertionError("shape check called acquire_artifacts")
+
+    assert compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        inspect.getattr_static(_DescriptorSurface, "artifact_status"), "artifact_status"
+    )
+    assert compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        inspect.getattr_static(_DescriptorSurface, "acquire_artifacts"), "acquire_artifacts"
+    )
+
+
+def test_protocol_1_1_rejects_uninspectable_and_receiverless_method_shapes() -> None:
+    def receiverless() -> ArtifactReport:
+        raise AssertionError("shape check called receiverless")
+
+    class _DefaultReceiver:
+        def artifact_status(
+            self: _DefaultReceiver | None = None,
+            context: ArtifactContext | None = None,
+        ) -> ArtifactReport:
+            raise AssertionError("shape check called default receiver")
+
+    assert not compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        type, "artifact_status"
+    )
+    assert not compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        receiverless, "artifact_status"
+    )
+    assert not compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        inspect.getattr_static(_DefaultReceiver, "artifact_status"), "artifact_status"
+    )
+
+
+def test_protocol_1_1_hook_check_fails_closed_on_shapes_it_cannot_prove() -> None:
+    # Two shapes that slipped through while the check failed open. An async
+    # ``__call__`` is invisible to ``iscoroutinefunction`` on the object itself,
+    # so a callable instance reported as synchronous and the core would store
+    # the coroutine instead of running it. An unreadable signature proves
+    # nothing at all, and the sibling checker for the PUBLIC methods already
+    # treats that condition as a defect -- staying silent here certified
+    # exactly the hooks least likely to be a plain reviewed ``def``.
+    class _AsyncCallable:
+        async def __call__(self, context: ArtifactContext) -> None:
+            raise AssertionError("hook check called the hook")
+
+    async_defect = compliance_module._artifact_hook_call_defect(  # pyright: ignore[reportPrivateUsage]
+        _AsyncCallable(), "_artifact_requirements"
+    )
+    assert async_defect is not None
+    assert "coroutine" in async_defect
+
+    unreadable = compliance_module._artifact_hook_call_defect(  # pyright: ignore[reportPrivateUsage]
+        type, "_artifact_requirements"
+    )
+    assert unreadable is not None
+    assert "cannot read" in unreadable
+
+
+def test_protocol_1_1_public_check_rejects_an_async_callable_object() -> None:
+    # ``iscoroutinefunction`` answers False for a callable OBJECT whose
+    # ``__call__`` is async, so the public-method check certified a surface
+    # the runtime then rejects (``require_sync_result`` refuses the coroutine
+    # it returns) -- while the protected-hook checker already fails the same
+    # shape closed.
+    class _AsyncStatusCallable:
+        async def __call__(self, context: ArtifactContext | None = None) -> None:
+            raise AssertionError("surface check called artifact_status")
+
+    class _AsyncCallableSurface:
+        artifact_status = _AsyncStatusCallable()
+
+        def acquire_artifacts(
+            self,
+            context: ArtifactContext | None = None,
+            *,
+            refresh: bool = False,
+            progress: ArtifactProgressCallback | None = None,
+        ) -> ArtifactReport:
+            raise AssertionError("surface check called acquire_artifacts")
+
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_artifact_method_surface(  # pyright: ignore[reportPrivateUsage]
+        _AsyncCallableSurface, "dummy/demo", issues
+    )
+    assert [issue.code for issue in issues] == ["artifact_method_not_synchronous"]
+    assert "artifact_status()" in issues[0].message
+
+
+def test_protocol_1_1_rejects_a_hook_the_core_cannot_call() -> None:
+    # Overriding is not implementing. Compliance pins the PUBLIC artifact
+    # methods' signatures, but an EngineBase subclass inherits those, so that
+    # check passes for free while the hooks the plugin actually wrote go
+    # unchecked. Before this, a wrong-arity hook was certified compliant and
+    # then surfaced on the first real status call as an ArtifactStatusError
+    # blaming the engine's native inspection -- the wrong fault, reported at
+    # the wrong time, to the wrong person.
+    wrong_arity = check_entrypoints(
+        registry=_registry("artifact_wrong_arity_hook_factory"), instantiate=False
+    )
+    issue = next(i for i in wrong_arity.issues if i.code == "artifact_hook_signature_invalid")
+    assert issue.level == "error"
+    assert "_artifact_requirements()" in issue.message
+    assert "positional" in issue.message
+
+    coroutine_hook = check_entrypoints(
+        registry=_registry("artifact_async_acquisition_hook_factory"), instantiate=False
+    )
+    async_issue = next(
+        i for i in coroutine_hook.issues if i.code == "artifact_hook_signature_invalid"
+    )
+    assert "_acquire_artifacts()" in async_issue.message
+    assert "coroutine" in async_issue.message
+
+    # A correctly shaped pair stays silent, including one that inherits its
+    # hooks from a plugin-owned base rather than authoring them locally.
+    good = check_entrypoints(registry=_registry("artifact_hook_preset_factory"), instantiate=False)
+    assert not any(i.code == "artifact_hook_signature_invalid" for i in good.issues)
+
+
+def test_protocol_1_1_requires_hooks_promised_by_static_booleans() -> None:
+    missing_status = check_entrypoints(
+        registry=_registry("artifact_missing_requirements_hook_factory"), instantiate=False
+    )
+    missing_acquisition = check_entrypoints(
+        registry=_registry("artifact_missing_acquisition_hook_factory"), instantiate=False
+    )
+    inference_only = check_entrypoints(
+        registry=_registry("artifact_inference_only_factory"), instantiate=False
+    )
+    not_applicable = check_entrypoints(
+        registry=_registry("artifact_not_applicable_factory"), instantiate=False
+    )
+    assert any(
+        issue.code == "artifact_requirements_hook_missing" for issue in missing_status.issues
+    )
+    assert any(
+        issue.code == "artifact_acquisition_hook_missing" for issue in missing_acquisition.issues
+    )
+    assert not any(
+        issue.code == "artifact_acquisition_hook_missing" for issue in inference_only.issues
+    )
+    assert inference_only.passed is True, [issue.message for issue in inference_only.issues]
+    assert not_applicable.passed is True, [issue.message for issue in not_applicable.issues]

@@ -30,17 +30,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Iterator, Literal, Sequence, cast
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    TypeAdapter,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from standard_asr.contract.results import require_json_string_keys
+from standard_asr.contract._json_extra import JsonExtraModel
 
 WordTimestampGranularityName = Literal["word", "segment", "char"]
 
@@ -159,93 +151,20 @@ def granularity_offers_all(granularities: Sequence[str]) -> bool:
     return not granularities
 
 
-#: The JSON value space every extra key is validated into. A capability
-#: tree is a first-class wire-visible contract surface (G.5.2 -- the same
-#: model on the Python and wire layers), so an extension value must be
-#: expressible as a JSON document at CONSTRUCTION: otherwise the Python tree
-#: accepts a state (an arbitrary object, NaN/Inf) whose wire projection can
-#: only fail later, at the metadata endpoint.
-#:
-#: Why a validator + adapter rather than the ``__pydantic_extra__`` typed
-#: annotation: the native mechanism cannot express the floor contract here
-#: -- pydantic 2.5 builds typed extras only from an EAGER annotation, while
-#: this module (like the whole project) annotates lazily via
-#: ``from __future__ import annotations`` (the floor raises
-#: ``PydanticSchemaGenerationError`` on the deferred form at class
-#: creation). The adapter below was profiled to accept/reject identically
-#: to the native mechanism on both the floor and current pydantic.
-#:
-#: ``allow_inf_nan=False`` is set on the ADAPTER explicitly: the enclosing
-#: model's config does not propagate into a standalone ``TypeAdapter``.
-_EXTRA_VALUE_ADAPTER = TypeAdapter(dict[str, JsonValue], config=ConfigDict(allow_inf_nan=False))
+class _JsonExtraModel(JsonExtraModel):
+    """Apply capability dot-path rules to the shared JSON-extra base."""
 
-
-class _JsonExtraModel(BaseModel):
-    """Base for capability-tree models: tolerant KEYS, closed VALUES.
-
-    ``extra="allow"`` keeps parsing forward-compatible (a future standard
-    field or a typo is tolerated rather than fatal), while the value space
-    of every such key closes construction-side: anything a JSON document
-    cannot express is rejected loudly instead of surfacing as a projection
-    failure at the metadata endpoint. Non-finite floats are not JSON
-    (``allow_inf_nan=False``) and are rejected at the same boundary.
-
-    "Tolerant keys" tolerates UNKNOWN keys, not un-JSON ones: every extra
-    key must be an exact ``str`` at every depth (the same
-    :func:`~standard_asr.contract.results.require_json_string_keys` rule
-    the results-layer wire slots enforce). The check runs BEFORE the value
-    adapter because the adapter's lax ``dict[str, ...]`` validation would
-    otherwise DECODE a bytes key into its str spelling and the merge would
-    re-home the laundered key -- ``{b"supported": True}`` silently
-    overriding a declared ``supported=False``, or ``b"x_vendor"`` minting a
-    canonical extension key the input never spelled.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="allow", allow_inf_nan=False)
-
-    @model_validator(mode="before")
     @classmethod
-    def _extras_are_json_values(cls, data: Any) -> Any:
-        """Move every non-field key's value into the JSON value space.
-
-        The canonicalized adapter output is stored, not just checked, so the
-        in-process tree and any later ``model_validate`` of the wire
-        document agree byte-for-byte (for example, a str-subclass value settles to a
-        plain ``str`` here rather than at dump time).
+    def _validate_extra_keys(cls, extras: Mapping[str, object]) -> None:
+        """Reject separators in queryable capability-extension keys.
 
         Args:
-            data: The raw constructor input.
+            extras: Unknown capability fields with validated string keys.
 
         Returns:
-            The input, with extra values replaced by their validated
-            canonical form.
+            None.
         """
-        if not isinstance(data, Mapping):
-            # An already-constructed instance gating through model_validate
-            # carries only values its own construction vetted.
-            return data
-        mapping = cast("Mapping[Any, Any]", data)
-        declared = cls.model_fields
-        extras: dict[Any, Any] = {
-            key: value for key, value in mapping.items() if key not in declared
-        }
-        if not extras:
-            return cast("Any", data)
-        # The KEY domain first (fail loudly): with every extra key proven an
-        # exact str, the adapter below canonicalizes only VALUES -- no key
-        # can change spelling, so no laundered collision with a declared
-        # field and no order-sensitive merge is possible.
-        require_json_string_keys(extras)
-        # And the PATH grammar: a queryable-surface key must not embed the
-        # dot-path separator, or the tree mints paths supports() can never
-        # resolve (see :func:`_reject_separator_keys_on_node_surface`).
         _reject_separator_keys_on_node_surface(extras)
-        validated = _EXTRA_VALUE_ADAPTER.validate_python(extras)
-        merged = dict(mapping)
-        # Same keys, canonicalized values: updating in place keeps each key
-        # at its original position in the document.
-        merged.update(validated)
-        return merged
 
 
 class _CapNode(_JsonExtraModel):

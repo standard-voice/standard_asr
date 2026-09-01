@@ -16,10 +16,11 @@ Concrete, executable goals that deliver on the [mission](./mission.md).
   Lossy steps surface as structured diagnostics; impossible conversions fail
   loudly. The result is a constant-schema `TranscriptionResult` whose shape never
   changes with parameters.
-- **G.1.3: Properties, capabilities, and config declarations.** Engines declare
-  three machine-readable metadata surfaces: *Properties* (static I/O identity),
-  *Capabilities* (hierarchical feature tree), and *Config* (typed, UI-renderable
-  Pydantic model with secret-field marking).
+- **G.1.3: Properties, capabilities, metadata, and config declarations.**
+  Engines declare four machine-readable surfaces: *Properties* (static I/O
+  identity), *Capabilities* (hierarchical feature tree), *Metadata* (typed
+  lifecycle and operational facts), and *Config* (typed, UI-renderable Pydantic
+  model with secret-field marking).
 - **G.1.4: Standardize optional features.** Streaming, word timestamps,
   diarization, phrase hints, and other advanced features have standard interfaces,
   standard return formats, and a fail-closed capability query (`supports()`).
@@ -64,5 +65,7 @@ Concrete, executable goals that deliver on the [mission](./mission.md).
   evolves into an independently versioned, language-neutral specification. The
   Python FastAPI server is a reference implementation, not the definition.
 - **G.5.2: Two-layer isomorphism.** The in-process Python protocol and the wire
-  protocol share the same capability model, result schema, and event semantics.
-  Any evolution in one layer must have a corresponding expression in the other.
+  protocol share the same capability and declared-metadata models, result
+  schema, and event semantics. Any evolution in one layer must have a
+  corresponding expression in the other. Per-model metadata uses a dedicated
+  endpoint so bulk discovery remains import-free.

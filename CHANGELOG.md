@@ -12,6 +12,12 @@ releases may include breaking changes.
 
 ### Added
 
+- **Inference-artifact lifecycle protocol.** Protocol 1.1 adds typed static
+  declarations, configured-instance status reports, explicit acquisition with
+  refresh and progress, structured operator actions, and distinct availability
+  errors. The CLI can inspect and pull artifacts without triggering a fake
+  transcription, and the reference server exposes per-model declared metadata
+  without importing plugins during bulk model listing.
 - **Speaker diarization ("who said what").** An opt-in, per-request
   `RuntimeParams.diarization` marker (the `DIARIZE` constant / `DiarizationRequest`)
   requests speaker labels, gated by a new `<mode>.diarization` capability. Results

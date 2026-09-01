@@ -237,7 +237,8 @@ class ModelSpec:
         """Resolve the engine **class** without instantiating it.
 
         This enables reading class-level ``ClassVar`` metadata
-        (``declared_capabilities``, ``properties``, ``provider_params_type``)
+        (``declared_capabilities``, ``declared_metadata``, ``properties``,
+        ``provider_params_type``)
         without calling the factory -- which the standard requires to be
         possible "without instantiation or authentication". Instantiating a
         cloud engine would force credential resolution and a heavy ``__init__``,
@@ -366,12 +367,13 @@ class ModelSpec:
         ``AttributeError``.
 
         The check is intentionally narrow: per-attribute completeness (a class
-        that has ``transcribe`` but is missing ``declared_capabilities`` /
-        ``properties``) is the job of the compliance suite, which emits precise
-        diagnostics; and metadata readers consume those attributes defensively
-        via ``getattr``, so a degenerate-but-intentional engine is still
-        tolerated. The check rejects only classes that lack the defining engine method,
-        plus the one machine-identifiable always-wrong case below.
+        that has ``transcribe`` but is missing ``declared_capabilities``,
+        ``declared_metadata``, or ``properties``) is the job of the compliance
+        suite, which emits precise diagnostics. Metadata readers consume those
+        attributes defensively through ``getattr``, so a degenerate but
+        intentional engine is still tolerated. The check rejects only classes
+        that lack the defining engine method, plus the one identifiable
+        always-wrong case below.
 
         The :class:`~standard_asr.runtime.interface.StandardASR` protocol is rejected
         explicitly. It is ``runtime_checkable`` so its ``transcribe`` is a real
@@ -398,8 +400,8 @@ class ModelSpec:
             raise FactoryLoadError(
                 f"Entry point {self.model_id!r} resolves to the {cls.__name__!r} "
                 "Protocol, not a concrete engine class. A protocol exposes no "
-                "class-level metadata (declared_capabilities / properties / "
-                "config_type), so discovery cannot read it. Annotate the factory "
+                "class-level metadata (declared_capabilities / declared_metadata / "
+                "properties / config_type), so discovery cannot read it. Annotate the factory "
                 "with your concrete engine class (for example, '-> FasterWhisperASR'), "
                 "not the StandardASR protocol (see plugin-entry-points.md)."
             )
@@ -543,9 +545,10 @@ class ModelRegistry:
         """Resolve a model's engine class without instantiating it.
 
         Use this to read class-level metadata (``declared_capabilities``,
-        ``properties``, ``provider_params_type``) for discovery, UI generation,
-        and REST endpoints without paying the cost (or auth requirements) of
-        constructing the engine. See :meth:`ModelSpec.engine_class`.
+        ``declared_metadata``, ``properties``, ``provider_params_type``) for
+        discovery, UI generation, and REST endpoints without paying the cost or
+        authentication requirements of constructing the engine. See
+        :meth:`ModelSpec.engine_class`.
 
         Args:
             name: Model key in ``engine_id/model_name`` format.

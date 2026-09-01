@@ -4,8 +4,8 @@
 """Standard ASR -- the open interface between applications and ASR engines.
 
 This top-level namespace is the **application-developer surface**: discover an
-engine, hand it audio, read a constant-shape result, and (optionally) stream.
-That is the whole 80% path::
+engine, inspect its inference artifacts when needed, hand it audio, read a
+constant-shape result, and optionally stream. That is the whole 80% path::
 
     from standard_asr import discover_models, RuntimeParams
 
@@ -38,7 +38,53 @@ from standard_asr.audio.input import (
     AudioUrl,
 )
 from standard_asr.audio.negotiation import UnsafeAudioUrlError
+from standard_asr.contract.artifacts import (
+    ARTIFACT_ACTION_ACCEPT_TERMS,
+    ARTIFACT_ACTION_AUTHENTICATE,
+    ARTIFACT_ACTION_INSTALL_EXTERNAL,
+    ARTIFACT_ACTION_OTHER,
+    ARTIFACT_ACTION_PROVIDE_ARTIFACTS,
+    ARTIFACT_ACTION_REQUEST_ACCESS,
+    ARTIFACT_BLOCKER_ACTION_REQUIRED,
+    ARTIFACT_BLOCKER_DOWNLOADS_DISABLED,
+    ARTIFACT_BLOCKER_UNSUPPORTED,
+    ARTIFACT_CORRUPT,
+    ARTIFACT_INCOMPLETE,
+    ARTIFACT_MISSING,
+    ARTIFACT_PROGRESS_CONVERTING,
+    ARTIFACT_PROGRESS_EXTRACTING,
+    ARTIFACT_PROGRESS_FINALIZING,
+    ARTIFACT_PROGRESS_RESOLVING,
+    ARTIFACT_PROGRESS_TRANSFERRING,
+    ARTIFACT_PROGRESS_UNIT_BYTES,
+    ARTIFACT_PROGRESS_UNIT_FILES,
+    ARTIFACT_PROGRESS_VERIFYING,
+    ARTIFACT_READY,
+    ARTIFACT_UNKNOWN,
+    ARTIFACTS_NOT_APPLICABLE,
+    ARTIFACTS_READY,
+    ARTIFACTS_UNAVAILABLE,
+    ARTIFACTS_UNKNOWN,
+    ArtifactAcquisitionBlocker,
+    ArtifactAction,
+    ArtifactActionKind,
+    ArtifactContext,
+    ArtifactProgress,
+    ArtifactProgressCallback,
+    ArtifactProgressPhase,
+    ArtifactProgressUnit,
+    ArtifactReadiness,
+    ArtifactReport,
+    ArtifactRequirement,
+    ArtifactState,
+    HttpsUrl,
+)
+from standard_asr.contract.capabilities import ModeName
 from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactProgressCallbackError,
+    ArtifactStatusError,
+    ArtifactUnavailableError,
     AudioProcessingError,
     ConfigError,
     ConfigurationRequiredError,
@@ -51,6 +97,7 @@ from standard_asr.contract.exceptions import (
     IncompatibleAudioInputError,
     InvalidProviderParamError,
     InvalidSessionUseError,
+    ProtocolCompatibilityError,
     StandardASRError,
     StreamClosedError,
     StructuredError,
@@ -74,7 +121,7 @@ from standard_asr.contract.results import (
 )
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
 from standard_asr.renderers import UnrenderablePolicy, to_srt, to_vtt
-from standard_asr.runtime.interface import StandardASR
+from standard_asr.runtime.interface import StandardASR, require_artifact_protocol
 from standard_asr.runtime.streaming import (
     StreamDeadlines,
     SyncSession,
@@ -83,6 +130,48 @@ from standard_asr.runtime.streaming import (
 )
 
 __all__ = [
+    "ARTIFACTS_NOT_APPLICABLE",
+    "ARTIFACTS_READY",
+    "ARTIFACTS_UNAVAILABLE",
+    "ARTIFACTS_UNKNOWN",
+    "ARTIFACT_ACTION_ACCEPT_TERMS",
+    "ARTIFACT_ACTION_AUTHENTICATE",
+    "ARTIFACT_ACTION_INSTALL_EXTERNAL",
+    "ARTIFACT_ACTION_OTHER",
+    "ARTIFACT_ACTION_PROVIDE_ARTIFACTS",
+    "ARTIFACT_ACTION_REQUEST_ACCESS",
+    "ARTIFACT_BLOCKER_ACTION_REQUIRED",
+    "ARTIFACT_BLOCKER_DOWNLOADS_DISABLED",
+    "ARTIFACT_BLOCKER_UNSUPPORTED",
+    "ARTIFACT_CORRUPT",
+    "ARTIFACT_INCOMPLETE",
+    "ARTIFACT_MISSING",
+    "ARTIFACT_PROGRESS_CONVERTING",
+    "ARTIFACT_PROGRESS_EXTRACTING",
+    "ARTIFACT_PROGRESS_FINALIZING",
+    "ARTIFACT_PROGRESS_RESOLVING",
+    "ARTIFACT_PROGRESS_TRANSFERRING",
+    "ARTIFACT_PROGRESS_UNIT_BYTES",
+    "ARTIFACT_PROGRESS_UNIT_FILES",
+    "ARTIFACT_PROGRESS_VERIFYING",
+    "ARTIFACT_READY",
+    "ARTIFACT_UNKNOWN",
+    "ArtifactAcquisitionBlocker",
+    "ArtifactAcquisitionError",
+    "ArtifactAction",
+    "ArtifactActionKind",
+    "ArtifactContext",
+    "ArtifactProgress",
+    "ArtifactProgressCallback",
+    "ArtifactProgressCallbackError",
+    "ArtifactProgressPhase",
+    "ArtifactProgressUnit",
+    "ArtifactReadiness",
+    "ArtifactReport",
+    "ArtifactRequirement",
+    "ArtifactState",
+    "ArtifactStatusError",
+    "ArtifactUnavailableError",
     "AudioArray",
     "AudioBase64",
     "AudioBytes",
@@ -109,6 +198,9 @@ __all__ = [
     "IncompatibleAudioInputError",
     "InvalidProviderParamError",
     "InvalidSessionUseError",
+    "HttpsUrl",
+    "ModeName",
+    "ProtocolCompatibilityError",
     "UnrenderablePolicy",
     "ModelRegistry",
     "ModelSpec",
@@ -130,6 +222,7 @@ __all__ = [
     "Word",
     "WordTimestampGranularity",
     "discover_models",
+    "require_artifact_protocol",
     "to_srt",
     "to_vtt",
 ]

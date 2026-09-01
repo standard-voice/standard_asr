@@ -21,6 +21,7 @@ from standard_asr.audio.input import InputKind
 from standard_asr.contract.exceptions import EntrypointValidationError
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
 from standard_asr.contract.language import AUTO, is_valid_bcp47, normalize_bcp47
+from standard_asr.contract.protocol_version import parse_protocol_version
 
 
 class SampleRateRange(BaseModel):
@@ -300,6 +301,24 @@ class BaseProperties(BaseModel):
         """
         if not value:
             raise ValueError("accepted_input must not be empty.")
+        return value
+
+    @field_validator("protocol_version")
+    @classmethod
+    def _validate_protocol_version(cls, value: str) -> str:
+        """Require a canonical protocol version.
+
+        Args:
+            value: Declared protocol version.
+
+        Returns:
+            The validated version unchanged.
+
+        Raises:
+            ValueError: If the value is not canonical ``MAJOR.MINOR.PATCH``
+                syntax.
+        """
+        parse_protocol_version(value)
         return value
 
     @field_validator("accepted_sample_rates")

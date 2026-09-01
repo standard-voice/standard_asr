@@ -14,3 +14,6 @@ from standard_asr import discover_models, RuntimeParams, TranscriptionResult
 
 For the engine-author surface (building a plugin), see
 [`standard_asr.engine`](./engine.md).
+
+For inference-artifact status, acquisition, progress, and errors, see
+[Inference artifacts](./artifacts.md).

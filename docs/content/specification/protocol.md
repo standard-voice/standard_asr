@@ -77,7 +77,7 @@ lang: zh-Hans
 | `wire_encodings` | `list[str] \| None` | 否 | 流式 `audio_format` 会话允许的 wire 编码白名单（如 `["pcm_s16le", "mulaw"]`）。缺席语义见下。 |
 | `description` | `str \| None` | 否 | 仅**展示性**的人类可读描述。MUST NOT 承载影响协商/门控的机器可读数据。 |
 
-仅行为性 `self_resamples: bool` 放 Capabilities（见 [§能力系统 R7](#capabilities)）。引擎身份字段（`engine_id`/`model_name`/`protocol_version`）的 normative 定义见 [§Init Config IC.2](#init-config)。
+仅行为性 `self_resamples: bool` 放 Capabilities（见 [§能力系统 R7](#capabilities)）。引擎身份字段（`engine_id`/`model_name`/`protocol_version`）同属 Properties，但 normative 定义各有归属，不在本表：`engine_id` 的路由身份、entrypoint 派生与碰撞处理见 [§Init Config IC.2](#init-config)；`protocol_version` 的语法与版本语义见 [§推理工件生命周期 AR.1](#artifact-lifecycle)；`model_name` 是 entrypoint 名 `<engine_id>/<model_name>` 的第二段，表面语法由 contract 层校验（`validate_model_name`）。生命周期与运营性静态事实（如推理工件声明）不入 Properties，归第四个声明表面 `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)）。
 
 **无 blanket metadata（normative）。** Properties **不含**自由 `extra: dict` 元数据口袋——与 §C 对能力树「砍掉 blanket `metadata`」（无已知用例、鼓励非结构化信息、破坏机器可读性）的决策对称。引擎需表达的机器可读信息 MUST 走结构化通道：标准字段（additive-minor 提案）或能力树的 `x_<vendor>_*` 实验命名空间；纯展示文本走 `description`。这避免在 wire 层形成无 schema、不可移植的私有并行声明通道。
 
@@ -420,8 +420,11 @@ capabilities:
 |---|---|---|
 | 只有当特性 X 被支持时才有意义的限额 | X 的能力节点 `constraints` | `batch.language.candidate_languages.constraints.max` |
 | 引擎固有 I/O 边界值 | Properties | `accepted_sample_rates`、`max_file_size` |
+| 转写请求之外的静态生命周期/运营事实（不 gate 任何 runtime 参数） | `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)） | `declared_metadata.artifacts.supports_explicit_acquisition` |
 
 据此 **`max_candidate_languages` 已从 Properties 移入** `capabilities.<mode>.language.candidate_languages.constraints.max`。
+
+第三行的裁决标准是**消费场景**而非「是否被 gate」——能力树本就含仅信息性的 behavior 节点（`self_resamples` 等）。工件声明被排除出能力树，是因为它描述转写请求之外的**管理操作**：放入能力树会让 `supports()` 覆盖非推理操作（决策记录：`engine-metadata-surface`，docs/internal/feat_plan/）。
 
 ## 5. 示例
 
@@ -564,6 +567,8 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 **R6 — 识别行为三态 flag（v1 占位）。** verbatim/disfluency/punctuation/ITN/profanity-filter 未来作标准三态（`unset | on | off`，capability 门控），不进 `guidance`。v1 先走 `provider_params`。
 
 **R7 — 批量运行时失败错误契约。** `transcribe` / `transcribe_async` 在引擎执行期（模型推理、网络调用、SDK）发生失败时 MUST 抛 `TranscriptionError`，并以 `raise TranscriptionError(...) from exc` 保留原始异常为 `__cause__`——使应用得以**跨引擎**用单一类型捕获运行时失败，而非各引擎各抛其原生异常（`RuntimeError` / SDK 异常 / `requests.HTTPError`…）。这是流式 [§6.2](#streaming) `error` 事件 `engine_error` 码的批量对应物：流式把引擎逃逸异常包装为 `engine_error` 事件，批量把它包装为 `TranscriptionError`。它表示**引擎/运行时故障**，与调用方可修的错误（`ConfigError` / `UnsupportedFeatureError` / `InvalidProviderParamError` / `AudioProcessingError`）属不同故障域，server MUST 映射为 5xx（而非 4xx）。约束作用于引擎模板钩子 `_transcribe`（`EngineBase` 为批量管线提供包装位点）；合规套件无法静态核验引擎是否包装，故本契约由规范 + 模板 + 文档约束，不进运行时强制门控。
+
+**工件错误豁免（normative）。** `ArtifactUnavailableError` 与 `ArtifactAcquisitionError` 是 R7 包装的**显式例外**：它们描述识别前的可用性状态（必需推理工件不可用 / 允许的隐式获取失败），即便从 `_transcribe` 内的原生加载器抛出也 MUST 原样传播、MUST NOT 包成 `TranscriptionError`——应用得以把「pull 或完成外部动作可修」与一般引擎故障区分开。其余引擎执行期失败保持 R7 映射。流式侧同构：两者映射为专用终态码 `artifact_unavailable` / `artifact_acquisition_failed`（[§流式 6.2](#streaming)）而非 `engine_error`；server 对两者映射 scrubbed 503（server-api.md §3.7）。契约细节见 [§推理工件生命周期 AR.8](#artifact-lifecycle)。
 
 ### 5.1 OpenAI：prompt + temperature
 
@@ -801,22 +806,101 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 init = 实例存续期固定、属安装/部署选择（权重/路径、device、凭证、batch size、aligner 装配、默认语言）；runtime = 每请求可变。**Tie-breaker：能按请求变 ⇒ runtime（`provider_params`），不进 init**（即便引擎也接受构造期传）。模型选择 = **entrypoint preset**，非 init `model` 字段。
 
 ## IC.8 多 artifact
-nested 引擎声明 submodel（按 model-family）+ 标准 **artifact 路径解析 helper**（相对 cache-dir、存在性、可选 checksum）；标准**不**标准化 bundle 形状。
+nested 引擎声明 submodel（按 model-family）表达多文件 bundle 的 init 配置；标准**不**标准化 bundle 形状。工件的就绪、布局与完整性判定**归引擎所有**（[§推理工件生命周期](#artifact-lifecycle)）：核心 MAY 提供路径拼接类的可选便利 helper，但它不是存在性/checksum 的权威——早先「标准 artifact 路径解析 helper（存在性、可选 checksum）」的承诺已按审批撤回（决策记录：`model-management`，docs/internal/feat_plan/，审批项 12）。多文件依赖对外呈现为**逻辑需求**：一个可用的识别器可能需要多个协调文件（如 sherpa-onnx 的 tokens/encoder/decoder/joiner），路径存在不等于就绪，引擎报告逻辑依赖而非逐文件清单。
 
 ## IC.9 lazy 纯度不变量
-`__init__` 捕获 config MUST 纯——无 FS 创建 / 路径探测 / GPU init / 网络。cache-dir、凭证仅在 `_ensure_model_loaded` 材料化，受 `allow_downloads()` 门控。download/cache 走 `DownloadConfigMixin`（`download_root` + 优先级：显式 > `STANDARD_ASR_MODEL_DIR` > 库默认 HF cache > `~/.cache/standard-asr`）。
+`__init__` 捕获 config MUST 纯——无 FS 创建 / 路径探测 / GPU init / 网络。cache-dir、凭证仅在 `_ensure_model_loaded` 材料化，受 `allow_downloads()` 门控。download/cache 走 `DownloadConfigMixin`（`resolve_download_root()` 优先级：显式 `download_root` > `STANDARD_ASR_MODEL_DIR` > 库默认缓存——引擎声明 `has_library_default=True` 时以 **`None` 透传**给原生库，零配置情形因此并**不**使用共享缓存目录 > `resolve_cache_dir()` 共享缓存；与 download-policy.md §3 同一契约）。该纯度不变量正是实例级 `artifact_status()` 可行的前提：构造廉价且无副作用，观测才能落在配置解析之后（[§推理工件生命周期 AR.2](#artifact-lifecycle)）。
 
 ## IC.10 `bias_resource` 归这里
 注册词表/模型句柄（Aliyun `vocabulary_id`、Tencent `HotwordId`…）= 引擎声明 init 字段（账户级资源）；如需 per-request 选择，薄 `provider_params` 旋钮（资源**身份**仍在 init）。
 
 ## IC.11 `prepare()` 预热钩子（optional，normative）
-**可选**的实例方法，供 `standard-asr prepare` 与生产/CI 预热（download-policy §4）显式触发权重下载/加载，把 IC.9 的 lazy 副作用从首次转写挪到一个无计费、无转写的调用点。契约：
+**可选**的实例方法，供 `standard-asr prepare` 与生产/CI 预热显式触发**进程内预热**（把权重加载进内存、初始化加速器、编译 kernel、执行安全的本地 priming），把 IC.9 的 lazy 副作用从首次转写挪到一个无计费、无转写的调用点。**持久化工件的获取不是它的定义职责**——那归 `acquire_artifacts()`（[§推理工件生命周期 AR.3](#artifact-lifecycle)；CLI 上 `pull` 调用后者、**从不**调用 `prepare()`）。原生库无法分离获取与加载时，`prepare()` MAY 先走同一获取路径再继续预热，并服从同一下载门控与工件错误契约。契约：
 - **签名 MUST 为零参同步方法** `def prepare(self) -> None`：**MUST NOT** 是 coroutine function（`async def`）——否则零参调用只得到未 await 的 coroutine，工具链会误报"预热完成"（静默假成功）。`EngineBase` 提供默认 **no-op** 实现；声明语义不同的同名 `prepare` 即违规。
 - **幂等**：重复调用安全（内部应短路到已加载的模型，复用 `_ensure_model_loaded` 之类的守卫）。
-- **MUST 自查 `runtime.allow_downloads()`**：禁止下载且权重缺失时 MUST 抛 `DiscoveryError`（与 IC.9 / download-policy §2 同一下载门控义务），**绝不**静默跳过或以真实转写代跑（云引擎会被计费）。
+- **下载门控与错误（替换旧 `DiscoveryError` 义务）**：需要网络获取时 MUST 自查 `runtime.allow_downloads()`；禁止下载且必需工件缺失时 MUST 抛 `ArtifactUnavailableError`，允许的获取尝试失败时抛 `ArtifactAcquisitionError`（[§推理工件生命周期 AR.8](#artifact-lifecycle)）。`DiscoveryError` 自协议 1.1 起**仅**保留给插件发现与工厂加载，MUST NOT 用于缺失权重。**绝不**静默跳过或以真实转写代跑（云引擎会被计费；`prepare` 与 `pull` 均不伪造音频）。
 - **无钩子 = reported no-op**：未覆盖 `prepare` 的引擎（落到 `EngineBase` 默认实现）视为"无需预热"，工具链报告 no-op 而非失败。
 - 合规：`compliance` 套件检查 `prepare` 存在时**零参且非 coroutine function**；CLI 对 coroutine function 显式报错（不静默）。
 
+
+---
+---
+
+# 推理工件生命周期 (Inference Artifact Lifecycle) — NORMATIVE {#artifact-lifecycle}
+
+> **本节定义**（协议 1.1 引入）：应用如何在不触发转写的前提下**观测**并**显式获取**一个已配置引擎的持久化推理工件——权重、tokenizer、对齐器、转换后的识别器 bundle 等。设计依据与逐案证据见 `docs/internal/feat_plan/model-management.md`（含审批记录）与 `engine-metadata-surface.md`；英文规范面见 download-policy.md、cli.md、server-api.md 与 `docs/content/reference/artifacts.md`。
+
+## 1. 概述（要解决什么）
+
+插件发现列出「已安装插件能提供的每个模型」，不是「本机已就绪的模型」。应用因此无法回答：这个模型跑起来之前需要哪些持久化工件？它们就绪了吗？能显式获取吗？普通推理会不会隐式获取？用户/运维要不要先完成外部动作（接受条款、认证、提供文件）？`prepare()` 混合了持久化获取与进程内预热且返回 `None`，无法承载这些答案。本节把**观测**（status）、**显式获取**（acquire/pull）与**预热**（prepare，IC.11）拆成边界清晰的三件事。
+
+**边界 = 生命周期所有权，不是进程拓扑。** 已配置引擎消费、检视或能请求他方供给的持久化资源在界内（运维提供的 NFS 路径、引擎管理的 sidecar 都算）；引擎只能**调用**的独立推理服务所拥有的工件在界外，即便该服务跑在 loopback（如 `std-qwen3-asr` 的 vLLM 后端）。本设计**不**做 `local | cloud | hybrid` 分类：那捆绑了推理位置、凭证、网络、隐私、计费、硬件等互不蕴含的事实；未来若需披露网络使用/计费/音频出程，各自立独立字段（见附注）。
+
+## 2. 术语
+
+| 术语 | 含义 |
+|---|---|
+| 推理工件 (inference artifact) | 引擎生命周期内、推理所需或有用的持久化材料：权重/checkpoint、tokenizer、编译图、OS 安装的语音资产等。描述生命周期所有权，不描述进程位置/网络/计费。 |
+| `declared_metadata` | 第四个类级声明表面（typed 聚合）；其 `artifacts` 节 = `ArtifactDeclaration`。 |
+| `artifact_status()` | 实例级只读观测操作及其 `ArtifactReport`。 |
+| `acquire_artifacts()` / `pull` | 引擎所有的显式获取操作：下载、复制、解压、转换、校验或调用原生安装器，**不转写音频**。 |
+| `refresh` | 对 `source_is_mutable=True` 的需求重新解析可变源引用（branch/tag/alias）；不是强制重传相同 blob。 |
+| state / readiness | **state** 属单个逻辑需求（`ready/missing/incomplete/corrupt/unknown`）；**readiness** 是聚合推理判定（`ready/unavailable/unknown/not_applicable`）。两套词汇分开，聚合不复用逐项词。 |
+| blocker / action | `acquisition_blocker` 说明非就绪需求为何**现在**不能获取（`downloads_disabled/action_required/unsupported`）；`ArtifactAction` 描述用户/运维需完成的外部动作（`accept_terms/authenticate/request_access/provide_artifacts/install_external/other`），仅 HTTPS 展示 URL、无内嵌凭证。 |
+
+## 3. 声明与参数
+
+### 3.1 第四声明表面 `declared_metadata`
+
+`StandardASR` 与 `EngineBase` 增加必填类变量 `declared_metadata: ClassVar[DeclaredEngineMetadata]`。它是 **typed 聚合、不是自由 metadata 口袋**（与 §AI 3.2「无 blanket metadata」相容）：已知节 closed（`extra="forbid"`），根层未知的字符串键+JSON 值**原样保留**（与能力树同一 tolerant JSON-extra 机制），生产者的未知非 `x_<vendor>_*` 键由合规套件标记为疑似 typo。未来 #8（静态硬件声明）与 #19（model card）作为**同一聚合的兄弟节**落地，不再新增类变量（决策记录：`engine-metadata-surface`）。
+
+Wire 投影：`GET /v1/metadata/{model}`（逐模型、走既有 metadata fault boundary）；`standard-asr show` 渲染同一 canonical JSON。**批量面保持零 import**：`standard-asr list` 与 `GET /v1/models` MUST NOT 解析 entry point、import 插件或读取本表面——一个坏插件不得拖垮整个发现列表（DEP.4 的 numpy 冲突亦然）。
+
+### 3.2 `ArtifactDeclaration` 三个正交上界
+
+```text
+applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
+```
+
+三者是**对所有受支持 config 与请求上下文的上界**（or 语义），不宣称当前实例需要获取。`applicable=True` 表示至少一个受支持 context 使用由已安装插件之外另行提供、且位于引擎生命周期边界内的持久工件；它描述工件生命周期的适用性，不承诺存在 engine-owned acquisition path。`applicable=False` 时另两者 MUST 为 `False`（pydantic validator）；反向不要求——external-only 引擎声明 `True, False, False`。**无默认值**：`False, False, False` 的默认会把未升级引擎变成虚假的「工件生命周期不适用」声明；作者用导出的 `NO_ARTIFACT_LIFECYCLE` 常量显式声明常见情形（常量仍是 authored claim）。必填性由静态类型 + 合规期 `inspect.getattr_static` 强制（无 `__init_subclass__`，类创建保持廉价）；**插件自有基类可为其子类共享声明，继承核心 `EngineBase` 的过渡占位不算 authorship、合规判 error**（code `declared_metadata_core_placeholder`）。
+
+### 3.3 报告数据模型与开放词汇
+
+全部为 frozen pydantic v2、`extra="forbid"`。`ArtifactContext(mode: ModeName | None, params: RuntimeParams)` 打包请求上下文；`mode=None` 由引擎解析（batch 域存在取 batch；否则唯一声明的域；歧义抛 `ConfigError`，显式不支持的 mode 抛 `ValueError`）。`ArtifactRequirement` 携带 `artifact_id`（引擎作用域、非删除权威）、`state`、`required_for_inference`、`can_acquire_now`、`may_acquire_during_inference`、`source_is_mutable`、`acquisition_blocker`、`required_actions`、`location`（存在时 MUST 绝对路径）、`size_bytes/expected_size_bytes`（≥0；共享 blob 可致求和大于物理占用，不预示删除可回收量）、`artifact_version`。`ArtifactReport` 携带 `mode`、显式 `applicable`、需求元组、diagnostics、存储的 `readiness`（`from_requirements()` 派生；after-validator 拒绝已识别值与派生不符的报告——存储而非 `computed_field` 保 JSON dump/validate 同构）。
+
+**逐需求不变量（pydantic validator，非仅合规约定）**：ready 需求无 action、无 blocker、`can_acquire_now=False`（refresh 是操作请求，不是就绪属性）；非 ready 需求 `can_acquire_now=True` ⟺ `blocker is None`；标准 blocker 中 `action_required` ⟺ 存在 action；`downloads_disabled` 仅当可用显式操作需要网络传输（本地解压仍可跑）；external 需求有已知动作（如 `provide_artifacts`）用 `action_required`，仅首推理可获取或无任何动作可改善时才用 `unsupported` 且 action 为空。**聚合规则**：`applicable=False` ⇒ 无需求且 `not_applicable`；必需需求全 ready（或无必需需求）⇒ `ready`；任一必需 `missing/incomplete/corrupt` ⇒ `unavailable`；其余含 unknown/未来态 ⇒ `unknown`。聚合是展示/路由摘要——获取永远逐需求迭代，可选非就绪工件不使推理不可用、但显式 `pull` 仍可获取它。
+
+**开放词汇 + 保守投影（tolerant reader，normative）**：state/readiness/blocker/action kind/progress phase/unit 是受 `^[a-z][a-z0-9_]{0,63}$` 约束的**开放字符串词汇**（与流式错误码同款），不是封闭 enum——新生产者的未知 token 不使旧消费者拒收整份报告。消费侧控制流投影：未知 state 按 `unknown` 处理、未知 readiness 视为非 ready、未知 blocker 阻止获取并在需要错误时投影为 `unsupported`、未知 action 以其 message 作通用动作、未知 progress phase 仅展示；**原始 token 在报告与序列化中原样保留**，只有控制流投影保守。1.1 生产者 MUST 只发标准 token 或 `x_<vendor>_*`（合规检查生产者义务）；新增会改变消费者控制流的标准 token = 协议 **major**。
+
+## 4. 行为（规范）
+
+**AR.1 — 协议版本与过渡。** `properties.protocol_version` MUST 为 canonical `MAJOR.MINOR.PATCH`（`parse_protocol_version`；长度上限 32）。核心支持 major 1；feature 最低版本表：`artifact_lifecycle → 1.1.0`（`PROTOCOL_FEATURE_MINIMUMS`）。通用消费者在查找工件成员**之前** MUST 调 `require_artifact_protocol()`：1.0 引擎得到 typed `ProtocolCompatibilityError`（invoker 可修——升级插件；CLI exit 2）而非 `AttributeError`，且 MUST NOT 被解读为 `NO_ARTIFACT_LIFECYCLE`。1.0 引擎在过渡期保持可发现、可转写；仅工件工具（`status`/`pull`、metadata 端点）响亮拒绝。插件 MUST 在完整实现本节契约后才把声明升到 1.1.0。后续 additive 特性 = minor；改动既有契约、删除、或新增改变消费者控制流的状态 = major。
+
+**AR.2 — `artifact_status()` 只读契约。** 运行于配置解析后的实例（IC.9 纯构造是前提）。对可移植参数**一律 best-effort** gating（不论引擎 strict 策略；诊断并入报告；语言轴走 best-effort 解析路径），**唯 wrong-engine `provider_params` 仍无条件抛**（§RT 5.4 swap 安全是策略无关规则）。MUST NOT：加载权重、初始化加速器、跑推理、发起应用级网络请求、创建/修复/删除文件。MAY：检视文件系统、本地缓存索引、OS 资产清单；以 `unknown` 代替昂贵完整性检查（`corrupt` 仅在已有可靠证据时报告；unknown 永不等于 ready）。外部状态未变时重复调用 MUST 返回相同报告。status 不承诺知晓远端审批/条款状态（那些由获取失败发现并随错误返回新 action）。文件系统检查可能因 NFS 阻塞——协议不承诺有界延迟，扫描多模型的应用自行下线程与 deadline。宣告 `applicable=False` 的模型恒返回 not-applicable 报告；动态报告 MUST 只**收窄**静态上界（模板强制：`applicable`、`can_acquire_now`、`may_acquire_during_inference` 任一越界 = `EngineContractError`）。
+
+**AR.3 — `acquire_artifacts()` 契约与最终报告。** 同步；config 与上游解析不变时幂等。尝试解析闭包内每个「非 ready 且 `can_acquire_now=True`」的需求（`refresh=True` 时目标集按 AR.4 扩大）；不转写音频、不调计费推理端点；每次网络传输前应用 `STANDARD_ASR_ALLOW_DOWNLOAD`；锁/断点续传/临时文件/原子替换/跨进程安全归引擎或其原生库。操作后 MUST 重新查询 status 返回新报告，且**最终报告 MUST 保留传入 hook 的每个 target id**（闭包可新增子项、不得静默替换 target；缺失 = `EngineContractError`），**每个被尝试的 target MUST 为 ready**——仍非 ready 即 `ArtifactAcquisitionError(reason="failed")`，target 为可选也一样（原生 standalone 检视不透明的库可用「刚成功的同步获取返回」作该次最终查询的实例内证据；连这也建立不了就绪，就不得宣称成功）。无可运行需求且至少一个**必需**需求被阻塞 ⇒ 抛错；仅可选被阻塞 ⇒ 返回合法报告。部分可运行 ⇒ 获取可运行集、查询最终状态，再对剩余被阻塞的必需需求抛错（可选阻塞随报告返回）。调用方逐需求读报告，不得假设一次原生下载使每个条件依赖就绪。
+
+**AR.4 — `refresh` 语义（逐需求）。** `refresh=True` = 重新解析可变源引用并获取变更内容，**不是**重传相同 blob。**目标集**：AR.3 的「非 ready 且 `can_acquire_now=True`」需求，**并上**每个「`source_is_mutable=True` 且 `acquisition_blocker` 为 `None`」的需求（按 `artifact_id` 取并集）。第二个集合**含已 ready 的需求**，这正是 refresh 存在的理由：ready 需求按 §3.3 不变量恒为 `can_acquire_now=False`，只用 AR.3 的规则筛选会把每个浮动引用都漏掉，`pull --refresh` 于是永远发现不了新版本。逐需求生效：`source_is_mutable=False`（pinned commit/digest、运维路径、不透明已装资产）恒为 no-op，与可变兄弟并存也**不使整个操作失败**；带任何 blocker 的可变需求（不限于 `action_required`）**不**因 refresh 重新进 hook（blocker 优先序与最终报告行为照旧）。`reason="unsupported"` 保留给「确有 `source_is_mutable=True` 但引擎无法重新解析该源」的未阻塞需求，MUST NOT 因需求没有可变引用而抛。`STANDARD_ASR_ALLOW_DOWNLOAD=0` 时模板在 target 过滤与 hook 之前**即拒绝**任何含可变需求的 refresh 请求（`reason="downloads_disabled"`）：源重解析本身就是网络元数据请求，即便 blob 全在本地——MUST NOT 静默跳过查询而谎称新鲜。引擎 hook 同理 MUST 取得远端解析确实发生的证据（如比对解析出的版本与源端元数据查询的结果）：原生下载器可能在远端不可达时静默回退到本地缓存而不报错（Hugging Face Hub 客户端即如此），回退成功不是 refresh 成功（首批插件 rollout 的实测缺陷）。就绪 + 每个有效 `may_acquire_during_inference=False` + 可变源已 pin，三者齐备应用才可承诺「下次推理不获取」；一次 refresh 不是持久性保证。
+
+**AR.5 — `reason` 的来源与 blocker 优先序。** closed `reason` 保持可移植（`Literal["downloads_disabled","action_required","unsupported","busy","failed"]`），其取值按抛出情形分三类，MUST NOT 混用——只有第一类读 blocker，另两类抛错时并无 blocker 可读（ready 需求按 §3.3 不变量不携带 blocker，未进入目标集的需求也一样）：**① 目标被阻塞**（无可运行需求而必需需求被阻塞，或最终报告仍有被阻塞的必需需求）：`reason` 由被阻塞需求的 blocker 决定，不从静态上界猜测；多 blocker 时 `action_required` > `downloads_disabled` > `unsupported`，未识别/`x_<vendor>_*` blocker 归入 `unsupported` 档。**② 策略性拒绝**：模板在 target 过滤与 hook 之前拒绝含可变需求的 refresh 请求，取 `downloads_disabled`（AR.4；这是全局下载开关作为 `reason` 来源的**唯一**情形）；引擎不支持显式获取却有可运行目标，取 `unsupported`（AR.4 的「有可变源但无法重新解析」同档）。**③ 操作失败**：原生获取失败、hook 抛出的非工件异常、最终报告里被尝试的 target 或必需需求仍非 ready，一律 `failed`（AR.3、AR.7 ②）；并发获取无法合并时引擎取 `busy`（AR.9），并 SHOULD 带 `retriable_after`。三类共同义务：错误保留完整报告与它已知的全部 action（原始 blocker token 随报告的需求保留）。`retriable_after: float | None`（≥0）替代弱布尔 retriable：建议新操作/新会话的等待秒数，从不使当前流式会话可恢复。
+
+**AR.6 — 进度。** 模板在 hook 前发 `resolving`、最终查询前发 `finalizing`；引擎可自发更多事件。无总量 ⇒ 不定进度，MUST NOT 编造百分比。事件有序、回调调用不重叠；回调执行线程不可移植，应用回调须线程安全。核心包裹回调：逐事件校验（无效事件 = 引擎的 `EngineContractError`，获取成功后抛）、加锁串行投递、捕获**首个**回调异常并抑制后续投递——回调失败**不是**取消请求，原生操作继续；hook 与最终查询都成功后才抛 `ArtifactProgressCallbackError`（携带最终报告，语义=「工件操作成功、观测者失败」），获取/状态失败优先。首版**不承诺取消**：同步原生下载器多数不能安全停止、`asyncio.to_thread()` 的取消停不掉 worker、线程终止不可接受；async 变体推迟到能提供「协作取消 + 可独立 await 的最终报告」的获取句柄（async 迭代器返回不了最终报告，薄 `to_thread` 包装会误导调用方以为 task 取消能停下载）。
+
+**AR.7 — 失败优先序（模板）。** ① preflight status 失败 ⇒ `ArtifactStatusError`，不开始获取；② 原生获取失败 ⇒ `ArtifactAcquisitionError`（不被失败的最终查询掩盖；应用可再查 status）；③ hook 成功后最终查询失败 ⇒ `ArtifactStatusError`（消息言明「获取可能已成功但终态未知」）；④ 仅当 hook 与最终查询都成功，被捕获的回调失败 ⇒ `ArtifactProgressCallbackError`。中断后的下一次 status 可报 `incomplete/corrupt/missing/unknown`——MUST NOT 假设失败操作未留下文件；核心不回滚不属于它的文件。
+
+**AR.8 — 错误类型与全链路映射。** 四个公开错误：`ArtifactStatusError`（意外检视失败；可预期的「查不了不透明缓存」不是异常——返回 unknown 需求 + 可选 diagnostic）、`ArtifactUnavailableError(reason, report)`（转写/预热路径因必需工件不可用而无法继续）、`ArtifactAcquisitionError(reason, report?, required_actions, retriable_after?)`（显式获取无法执行其请求的工作，或推理内允许的隐式获取失败；原生异常留 `__cause__`；message/report/action MUST NOT 含凭证、签名 URL 或原始校验错误回显）、`ArtifactProgressCallbackError(report)`。批量侧 R7 豁免见 [§RT R7](#runtime-parameters)；流式侧两个专用终态码见 [§流式 6.2](#streaming)（producer 在 blanket `except` 之前捕获、只构造固定安全 detail 与 `retriable_after`）；该映射**只覆盖 producer**——会话建立期（`__aenter__` → `_open`，引擎在此材料化 `may_acquire_during_inference` 的工件）抛出的工件错误还没有事件通道，MUST 原样传播给调用方，wire 侧由 server 在会话入口边界映射为同一个握手帧；server 把两者映射 scrubbed 503 + `service_unavailable` 握手帧（把 normative 503 条件从 `ConfigurationRequiredError` 扩为「运维侧配置或工件不可用」；server-api.md §3.7/§4.2），未认证 wire 客户端永远看不到本地路径/action/报告。`EngineBase` **不**在每次转写前做 status preflight（热路径不加文件系统操作，也不阻断合法隐式获取/回退）；各引擎的原生加载守卫把已知的缺失/不完整/损坏翻译成 `ArtifactUnavailableError`、把失败的允许隐式获取翻译成 `ArtifactAcquisitionError`。
+
+**AR.9 — 并发、安全与下载门控。** 重复获取安全；并发获取 MUST NOT 损坏工件——引擎可合并、阻塞在原生锁上、或抛 `ArtifactAcquisitionError(reason="busy", retriable_after=…)`，MUST NOT 仅因两个应用请求同一模型就并行不安全写。另一进程获取期间 status 保持只读，观测不到稳定快照时报 `incomplete`/`unknown`。**就绪不单调**：OS 可回收托管资产、运维可删缓存、挂载可消失、gated 源的已批准访问可被撤销——每份报告都是时点观测。`STANDARD_ASR_ALLOW_DOWNLOAD=0` 阻断显式与推理路径的**网络**获取，不禁止读取/校验/复制/解压/转换已在本地的工件：显式 `pull` 本身即授权工件工作；推理路径只在声明 `may_acquire_during_inference` 时可做不可分离的本地材料化（CLI 预检通知使该成本可见）；该开关是网络传输策略，不是通用 CPU/磁盘工作的 kill switch。**引擎自有的离线配置（如 `local_files_only` 字段）MUST 在引擎的获取 hook 内自行门控**：模板的 refresh 前置拒绝只咨询全局 `allow_downloads()`，而 ready 需求按 §3.3 不变量不携带 blocker，故引擎级离线策略对模板不可见——不自行门控的引擎会让 `pull --refresh` 绕过它自己文档化的离线承诺（首批插件 rollout 的实测缺陷）。引擎 MUST NOT 经工件 diagnostics 记录凭证、签名 URL、原始原生异常链或校验错误回显。
+
+**AR.10 — 合规边界。** 默认合规**零副作用**：只检查声明与调用形状（`declared_metadata.artifacts` 为 1.1 直接 authored、声明不变量、两方法同步且签名正确、`EngineBase` 声明显式获取者已覆盖原生 hook），**从不**调用任一工件操作——对不合规引擎，「调用公开钩子以证明它无副作用」恰会触发那个副作用（#53 边界）。`artifact_status()` 调用进 opt-in `--runtime` 档（检查返回值有效、not-applicable 引擎返回空报告、动态不超静态、常见 Python socket/文件写陷阱无违禁动作——是对被观测 Python 路径的证据，不是对原生代码/子进程/OS API 的证明）；真实获取再单独 opt-in `--acquire-artifacts`（可用网络与磁盘，永不并入 `--runtime`），只检查实际路径触达的行为。合规不证明缓存完整性、不下载全量生产模型矩阵、不接受条款、不测付费推理端点。实施顺序 normative：#53 Part 1 → 版本校验与声明/形状检查 → #53 Part 2 与 #33 共享的 `--runtime` 命名空间 → status 档 → `--acquire-artifacts` 档。
+
+## 5. 附注与理由
+
+- **为何拒绝 `local | cloud | hybrid`**：捆绑互不蕴含的事实、分类的是部署而非本特性拥有的工件操作。`qwen3-asr/1.7b` 命名开源权重 checkpoint、当前引擎却调用独立部署的 vLLM——工件获取对它不适用，与 loopback 无关。
+- **为何三个正交布尔而非互斥模式**：显式获取、推理内自动获取、外部前置动作**并存**（faster-whisper 同时有 `download_model()` 与构造器隐式下载；Vosk 按 config 在 path-only 与自动下载间切换）；正交声明 + 动态 action 覆盖组合而无需 `other/hybrid` 桶。
+- **为何 `pull` ≠ `prepare`**：持久化获取与进程内预热的后置条件、成本、生命周期都不同；native 下载 API 可以不把多 GB 模型留在 RAM。`pull --refresh` 补上 docker/ollama/hf 生态中「pull 可变名 = 重解析」的缺口，而普通 `pull` 的帮助文本言明不检查浮动源更新。
+- **为何删除推迟**：HF 共享 blob/revision 语义使通用删除不安全（上游 `delete_revisions()` 本身就是 plan-and-execute）；首版以 status + acquire 解决应用缺口而不引入破坏性行为。远端管理端点同理推迟（Speaches 证明有需求；reference server 尚无 operator 授权/角色/磁盘政策；#7 daemon-hub 是重启该讨论的 forcing function）。
+- **为何开放词汇**：`extra="forbid"` 封闭**字段**（插件 typo 是错误），开放**值域**（新 token 不应使旧应用拒收报告）——与设计审查综合 §8 的 tolerant-reader 决议一致。
 
 ---
 ---
@@ -1168,9 +1252,13 @@ elif event.type == "supersede":
 | `backpressure` | 发送侧有界缓冲区溢出（消费太慢），标准层合成终态（§6.4） | `false` |
 | `input_source_error` | `feed()` 的音频源自身抛错 | `false` |
 | `engine_error` | 适配器 `_produce` 逃逸的未分类异常 | `false` |
+| `artifact_unavailable` | producer 运行期间发现必需推理工件不可用（[§推理工件生命周期](#artifact-lifecycle)）；事件仅携带固定安全 detail，MUST NOT 携带 report、本地路径或 action URL。会话建立期（`_open`）的同类错误没有事件通道，按 AR.8 原样传播 | `false` |
+| `artifact_acquisition_failed` | producer 运行期间允许的隐式工件获取失败；MAY 从源异常投影 `retriable_after`（对**新**会话的建议延迟——当前会话不可恢复），除此之外同样只携带固定安全 detail；`_open` 的同类错误同上 | `false` |
 | `content_lost` | 重连缝隙真实丢失音频的保真度警告（§6.3）；**非终态** | `true` |
 
 引擎可扩展自有错误码；与标准码冲突的语义 MUST NOT 复用上表名字。
+
+两个 `artifact_*` 码由标准层在 producer 边界从 `ArtifactUnavailableError` / `ArtifactAcquisitionError` 合成（**不是** `engine_error` catch-all；[§Runtime 参数 R7 工件错误豁免](#runtime-parameters)）。**会话建立期**的工件失败不用这两个码：它走既有的 `service_unavailable` 握手错误（server-api.md §4.2 的粗粒度映射——区分码只存在于已建立会话的终态）。
 
 ### 6.3 重连（透明、但诚实）
 
