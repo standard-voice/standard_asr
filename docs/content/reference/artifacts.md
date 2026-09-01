@@ -11,7 +11,7 @@ remote.
 
 Every supported engine exposes both lifecycle methods. An engine on an
 unsupported protocol line might not have them, so call
-`require_artifact_protocol(engine)`
+`require_engine_protocol(engine)`
 (exported from `standard_asr`) before looking either method up. The guard
 raises a typed `ProtocolCompatibilityError` instead of an `AttributeError`.
 `EngineBase` supplies guarded methods that raise the same error on such an

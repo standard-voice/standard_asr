@@ -59,7 +59,7 @@ from standard_asr.contract.params import (
 from standard_asr.contract.properties import BaseProperties, SampleRateRange
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
 from standard_asr.runtime.config import BaseConfig, LanguageConfigMixin
-from standard_asr.runtime.interface import EngineBase, require_artifact_protocol
+from standard_asr.runtime.interface import EngineBase, require_engine_protocol
 
 
 class _ArtifactConfig(LanguageConfigMixin, BaseConfig[Literal["artifact-test"]]):
@@ -472,7 +472,7 @@ def test_status_requires_hook_when_artifacts_are_declared_applicable() -> None:
         _MissingStatusHookEngine().artifact_status()
 
 
-def test_protocol_1_1_status_requires_authored_metadata() -> None:
+def test_status_requires_authored_metadata() -> None:
     class _MissingMetadataEngine(_ArtifactEngine):
         declared_metadata = cast("DeclaredEngineMetadata", None)
 
@@ -482,7 +482,7 @@ def test_protocol_1_1_status_requires_authored_metadata() -> None:
     assert engine.status_calls == 0
 
 
-def test_protocol_1_1_status_requires_a_typed_artifacts_section() -> None:
+def test_status_requires_a_typed_artifacts_section() -> None:
     # The outer isinstance proves the class, not the section's type. A metadata
     # object whose artifacts section is a raw mapping -- what
     # model_copy(update=...) stores when handed one -- passes that check, and
@@ -546,9 +546,9 @@ def test_status_rejects_declaration_values_the_model_would_reject() -> None:
     assert engine.status_calls == 0
 
 
-def test_artifact_protocol_guard_requires_typed_properties() -> None:
-    with pytest.raises(EngineContractError, match="requires engine properties"):
-        require_artifact_protocol(object())
+def test_engine_protocol_guard_requires_typed_properties() -> None:
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        require_engine_protocol(object())
 
 
 def test_base_status_hook_returns_nonapplicable_empty_shape() -> None:
@@ -1098,11 +1098,12 @@ def test_new_required_nonready_requirement_in_final_report_is_failure() -> None:
 def test_artifact_guard_survives_the_feature_table_freeze(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Freeze-day counterexample (review round 23): the guard must not depend
-    # on the feature table, whose artifact entry the first stable release
-    # removes. Under frozen constants -- and an EMPTY table -- the guard
-    # admits the stable line and its additive minors, and rejects the
-    # pre-stable line.
+    # Robustness counterexample: the guard must not depend on the feature
+    # table, whatever its content. The actual freeze plan RETAINS the
+    # baseline entries rewritten to 1.0.0 (AR.1) -- the EMPTY table here is
+    # deliberately harsher than that, proving the guard's verdict comes from
+    # the general line gate alone: under frozen constants it admits the
+    # stable line and its additive minors, and rejects the pre-stable line.
     import standard_asr.contract.protocol_version as protocol_version_module
 
     monkeypatch.setattr(protocol_version_module, "SUPPORTED_PROTOCOL_MAJOR", 1)
@@ -1119,11 +1120,26 @@ def test_artifact_guard_survives_the_feature_table_freeze(
     for accepted in ("1.0.0", "1.1.0"):
         stub = _Holder()
         stub.properties = _ArtifactProperties(protocol_version=accepted)
-        assert require_artifact_protocol(stub) is None
+        assert require_engine_protocol(stub) is stub.properties
     stub = _Holder()
     stub.properties = _ArtifactProperties(protocol_version="0.2.0")
     with pytest.raises(ProtocolCompatibilityError):
-        require_artifact_protocol(stub)
+        require_engine_protocol(stub)
+
+
+def test_acquire_gates_independently_of_a_public_status_override() -> None:
+    # Round-25 M1: acquire_artifacts runs its preflight through the VIRTUAL
+    # self.artifact_status; an override of that public member must not
+    # leave the acquisition entry without the gate for a mismatched line.
+    class _StatusOverrideEngine(_OutsideLineEngine):
+        def artifact_status(  # pyright: ignore[reportIncompatibleMethodOverride]
+            self, context: ArtifactContext | None = None
+        ) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
+    engine = _StatusOverrideEngine((_requirement(),))
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.acquire_artifacts()
 
 
 @pytest.mark.parametrize("operation", ["status", "acquire"])

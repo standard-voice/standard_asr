@@ -155,7 +155,17 @@ acquisition during inference.
 An unknown model key returns **404**. A registered plugin that cannot load, an
 invalid declaration, or a protocol line this core does not support (older or
 newer) is a deployment fault and returns a scrubbed **500**. The endpoint never
-fabricates `NO_ARTIFACT_LIFECYCLE` for an engine on an unsupported line.
+fabricates `NO_ARTIFACT_LIFECYCLE` for an engine on an unsupported line. The
+same protocol gate guards every per-model class-metadata projection --
+`/v1/capabilities`, `/v1/params-schema`, and `/v1/config-schema` map an
+unsupported line to the same scrubbed 500: a mismatched declaration is not
+safely interpretable under this core's semantics. Only `/v1/models`
+(import-free inventory) is ungated.
+
+The `/v1` path component versions the HTTP transport envelope;
+`properties.protocol_version` versions the application-to-engine semantic
+contract. Neither number derives from the other. A wire-API revision must
+state which semantic protocol generations it can faithfully project.
 
 ### 3.3 `POST /v1/transcribe` (multipart form)
 Transcribe an uploaded file.

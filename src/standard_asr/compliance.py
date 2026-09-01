@@ -63,6 +63,7 @@ from standard_asr.runtime.interface import (
     EngineBase,
     StandardASR,
     ensure_wire_format_supported,
+    require_engine_protocol,
 )
 from standard_asr.runtime.protocol_boundary import (
     safe_class_name,
@@ -511,7 +512,18 @@ def _check_engine_unguarded(
 
     # Declared metadata MUST be readable from the class without
     # instantiation. Resolve the class and read its ClassVars directly.
-    _check_class_level_metadata(spec, name, issues)
+    verdict = _check_class_level_metadata(spec, name, issues)
+
+    if verdict in ("unsupported", "undeclared"):
+        # The class already failed the shared gate (a wrong line, or no typed
+        # declaration to establish a line from). ModelRegistry.create()
+        # refuses such a class before its factory runs, so instantiating and
+        # probing it here would run plugin code the runtime never runs, and
+        # would measure the engine against a generation the verdict already
+        # declared uninterpretable -- a cascade of migration noise behind the
+        # one root-cause error. Only an unresolvable class falls through: its
+        # returned instance is then the only declaration the gate can rule on.
+        return
 
     if not instantiate:
         return
@@ -612,9 +624,46 @@ def _check_engine_unguarded(
         )
         return
 
+    # The instance is a separate declaration source (the factory may hand
+    # back anything), so the shared gate runs on IT unconditionally -- a
+    # class-compatible engine whose instance shadows a wrong line would
+    # otherwise reach the behavior probes, which the EngineBase gates then
+    # fill with mismatched-line noise; and an unreadable class leaves the
+    # instance as the only declaration the gate can rule on.
+    try:
+        instance_properties = require_engine_protocol(instance)
+    except ProtocolCompatibilityError as exc:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="protocol_version_unsupported",
+                message=(
+                    f"Instance properties fail the protocol gate: {safe_exception_summary(exc)}"
+                ),
+                model=name,
+            )
+        )
+        return
+    except EngineContractError as exc:
+        # A missing or untyped instance declaration has no version to call
+        # unsupported: it is a declaration-shape defect, reported as one.
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="missing_instance_properties",
+                message=(
+                    f"Instance properties fail the protocol gate: {safe_exception_summary(exc)} "
+                    "Registry creation, inference, and artifact tooling reject this "
+                    "engine at runtime with EngineContractError."
+                ),
+                model=name,
+            )
+        )
+        return
+
     _check_required_surface(instance, name, issues)
     _check_prepare_hook(instance, name, issues)
-    _check_instance_properties(instance, spec, name, issues)
+    _check_instance_properties(instance, instance_properties, spec, name, issues)
     _check_instance_config(instance, name, issues)
     _check_instance_capabilities(instance, name, issues)
     _check_supports_contract(instance, name, issues)
@@ -881,29 +930,26 @@ def _supports_baseline_tree(instance: object) -> DeclaredCapabilities | None:
 
 def _check_instance_properties(
     instance: object,
+    properties: BaseProperties,
     spec: ModelSpec,
     name: str,
     issues: list[ComplianceIssue],
 ) -> None:
-    """Verify the instance's ``properties`` (presence, identity match, re-validation).
+    """Verify the instance's ``properties`` (identity match, re-validation).
+
+    Presence and typing are the instance-level protocol gate's job (the
+    orchestrator ran it and passed the validated declaration in), so this
+    check owns only what the gate does not: the identity match against the
+    entry-point key, the class/instance equality, and the re-validation
+    round trip.
 
     Args:
         instance: The instantiated engine.
+        properties: The gate-validated instance properties.
         spec: The engine's discovery spec.
         name: The model key (for issue attribution).
         issues: The mutable list of issues to append to.
     """
-    properties = getattr(instance, "properties", None)
-    if not isinstance(properties, BaseProperties):
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="missing_properties",
-                message="Instance is missing a BaseProperties-compatible 'properties' attribute.",
-                model=name,
-            )
-        )
-        return
     # One authoritative declaration: discovery, `show`, and the metadata
     # endpoint read the CLASS properties, while every runtime gate (registry
     # creation, the inference entries, the artifact guard) reads the
@@ -1874,6 +1920,56 @@ def _enginebase_hook_is_overridden(engine_class: type[object], hook: str) -> boo
     return value is not core_value and callable(target)
 
 
+#: EngineBase's public template methods. The templates own the protocol-line
+#: gate, gating, negotiation, and the sync-result boundary; a subclass that
+#: overrides one of them (instead of the documented protected hook) owns the
+#: whole call and silently bypasses all of that.
+_PUBLIC_TEMPLATE_METHODS: Final = (
+    "transcribe",
+    "transcribe_async",
+    "start_transcription",
+    "artifact_status",
+    "acquire_artifacts",
+)
+
+
+def _check_public_templates(
+    engine_class: type[object],
+    name: str,
+    issues: list[ComplianceIssue],
+) -> None:
+    """Report an ``EngineBase`` subclass that overrides a public template.
+
+    Structural engines implement the public surface themselves and are
+    exempt; the check binds only where the base template exists to be
+    bypassed. The honest mistake it catches: an author overriding
+    ``transcribe`` instead of ``_transcribe``.
+
+    Args:
+        engine_class: Engine class to inspect.
+        name: Model key for issue attribution.
+        issues: Mutable issue list to append to.
+    """
+    if not issubclass(engine_class, EngineBase):
+        return
+    for method in _PUBLIC_TEMPLATE_METHODS:
+        owner = _mro_member_owner(engine_class, method)
+        if owner is not None and owner is not EngineBase:
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code="public_template_overridden",
+                    message=(
+                        f"Engine class overrides the public EngineBase template "
+                        f"{method}() (owned by {owner.__name__}). The template "
+                        "carries the protocol-line gate and the standard "
+                        "pipeline; override the protected hook instead."
+                    ),
+                    model=name,
+                )
+            )
+
+
 def _check_artifact_declaration(
     engine_class: type[object],
     protocol_version: str,
@@ -1985,17 +2081,20 @@ def _check_artifact_declaration(
         )
         return
 
-    # Tolerant reader: a producer on a NEWER minor within the supported
-    # major may carry standard sections this reader does not know yet, and
-    # the protocol promises older readers preserve them -- flagging them as vendor
+    # Tolerant reader: a producer on a NEWER version than this reader may
+    # carry standard sections the reader does not know yet, and the protocol
+    # promises older readers preserve them -- flagging them as vendor
     # extensions missing the namespace would punish legal additive evolution.
-    # The namespace obligation is only enforceable against a producer whose
-    # generation this reader fully knows. During protocol major 0 the line
-    # gate never admits a newer minor, so the skip is dormant; the
-    # synthetic-constants freeze test proves it under a stable major.
-    declared_line = parse_protocol_version(protocol_version)[:2]
-    current_line = parse_protocol_version(CURRENT_PROTOCOL_VERSION)[:2]
-    if declared_line <= current_line:
+    # The comparison uses the FULL version, not the (major, minor) line:
+    # AR.1's PATCH rule lets a 0.2.1 producer add sections a 0.2.0 reader
+    # safely ignores, so truncating to the line would reject that legal
+    # producer (round-25 B2). The namespace obligation binds only a producer
+    # whose whole generation this reader knows. A newer minor is dormant
+    # during major 0 (the line gate refuses it); a newer PATCH is reachable
+    # today, and the stable-major case is proven by the freeze test.
+    declared_version = parse_protocol_version(protocol_version)
+    current_version = parse_protocol_version(CURRENT_PROTOCOL_VERSION)
+    if declared_version <= current_version:
         for key in normalized.model_extra or {}:
             if _VENDOR_METADATA_KEY_PATTERN.fullmatch(key) is None:
                 issues.append(
@@ -2060,18 +2159,44 @@ def _check_artifact_declaration(
             )
 
 
-def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[ComplianceIssue]) -> None:
+#: Verdict of the class-level gate, returned by
+#: :func:`_check_class_level_metadata` so the orchestrator can mirror
+#: ``ModelRegistry.create()``'s class preflight: stop for a class whose
+#: contract this core cannot interpret (a wrong line, or no typed declaration
+#: to establish a line from), and construct only a compatible class or one
+#: that cannot be resolved at all.
+_ClassGateVerdict = Literal["compatible", "unsupported", "undeclared", "unresolvable"]
+
+
+def _check_class_level_metadata(
+    spec: ModelSpec, name: str, issues: list[ComplianceIssue]
+) -> _ClassGateVerdict:
     """Verify class-level metadata is readable without instantiation.
 
     Reads the properties, declarations, protocol call shapes, and
     ``provider_params_type`` from the engine class. It never constructs an
-    engine or calls an artifact operation. When present, the provider-params
-    type must be a closed :class:`ProviderParams` subclass.
+    engine or calls an artifact operation. The protocol gate runs first: a
+    class whose declared line fails it gets the one canonical error and
+    nothing else is read, because every other check here interprets the class
+    under this core's generation. When present, the provider-params type must
+    be a closed :class:`ProviderParams` subclass.
 
     Args:
         spec: The :class:`~standard_asr.plugins.discovery.ModelSpec`.
         name: The model key (for issue attribution).
         issues: The mutable list of issues to append to.
+
+    Returns:
+        The class gate's verdict. ``"unsupported"`` when the declared line
+        fails the shared gate, and ``"undeclared"`` when the resolved class
+        has no typed ``properties`` to establish a line from: in both cases
+        this function stops at that one error and the orchestrator skips
+        instantiation, because checking or probing an engine against a
+        contract this core cannot interpret yields migration noise measured
+        against the wrong line, and ``ModelRegistry.create()`` refuses such
+        a class before its factory runs. ``"unresolvable"`` when the class
+        itself cannot be resolved (the returned instance is then the only
+        declaration the gate can rule on), and ``"compatible"`` otherwise.
     """
     try:
         engine_class = spec.engine_class()
@@ -2087,7 +2212,62 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
                 model=name,
             )
         )
-        return
+        return "unresolvable"
+
+    properties = inspect.getattr_static(engine_class, "properties", None)
+    if not isinstance(properties, BaseProperties):
+        # Mirrors ModelRegistry.create()'s class preflight (AR.1): a
+        # resolvable class without a typed declaration is certain to be
+        # refused before its factory runs, and an engine whose protocol line
+        # cannot be established is less knowable than one on a wrong line --
+        # so, exactly as for a wrong line, nothing else is read under this
+        # core's generation and the orchestrator never constructs it.
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="missing_class_properties",
+                message=(
+                    "Engine class does not declare class-level 'properties' as a "
+                    "BaseProperties ClassVar readable without instantiation. "
+                    "Registry creation refuses this engine before its factory "
+                    "runs, with EngineContractError; declare properties once, "
+                    "as a ClassVar."
+                ),
+                model=name,
+            )
+        )
+        return "undeclared"
+
+    # The line gate runs FIRST, before any other class-level check: every
+    # check below reads the class under THIS core's generation, and within
+    # protocol major 0 the minor is the breaking axis, so a wrong-line
+    # engine's capabilities, config type, streaming declarations, and
+    # provider-params type may all be legitimate under the generation it
+    # actually implements. Compliance runs the SAME line gate the runtime
+    # runs at engine creation, inference entry, and artifact-member lookup,
+    # so it can never certify an engine those seams refuse -- and once the
+    # gate refuses, the one root-cause error is the whole class verdict.
+    # There is no legitimate older line to stay silent for, so for a
+    # compatible class the artifact declaration checks are unconditional:
+    # every supported engine carries the lifecycle.
+    try:
+        require_supported_protocol(properties.protocol_version)
+    except ProtocolCompatibilityError as exc:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="protocol_version_unsupported",
+                message=(
+                    f"{exc} Registry creation, inference, and artifact "
+                    "tooling reject this engine at runtime with "
+                    "ProtocolCompatibilityError."
+                ),
+                model=name,
+            )
+        )
+        return "unsupported"
+    _check_artifact_declaration(engine_class, properties.protocol_version, name, issues)
+    _check_public_templates(engine_class, name, issues)
 
     declared = inspect.getattr_static(engine_class, "declared_capabilities", None)
     if not isinstance(declared, DeclaredCapabilities):
@@ -2103,45 +2283,6 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
                 model=name,
             )
         )
-
-    properties = inspect.getattr_static(engine_class, "properties", None)
-    if not isinstance(properties, BaseProperties):
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="missing_class_properties",
-                message=(
-                    "Engine class does not expose a class-level 'properties' "
-                    "(ClassVar) readable without instantiation."
-                ),
-                model=name,
-            )
-        )
-
-    if isinstance(properties, BaseProperties):
-        # Compliance runs the SAME line gate the runtime runs at engine
-        # creation, inference entry, and artifact-member lookup, so it can
-        # never certify an engine those seams refuse. There is no legitimate
-        # older line to stay silent for: within protocol major 0 the minor is
-        # the breaking axis, so every supported engine carries the artifact
-        # lifecycle and the declaration checks below are unconditional.
-        try:
-            require_supported_protocol(properties.protocol_version)
-        except ProtocolCompatibilityError as exc:
-            issues.append(
-                ComplianceIssue(
-                    level="error",
-                    code="protocol_version_unsupported",
-                    message=(
-                        f"{exc} Registry creation, inference, and artifact "
-                        "tooling reject this engine at runtime with "
-                        "ProtocolCompatibilityError."
-                    ),
-                    model=name,
-                )
-            )
-        else:
-            _check_artifact_declaration(engine_class, properties.protocol_version, name, issues)
 
     config_type = inspect.getattr_static(engine_class, "config_type", None)
     if config_type is None:
@@ -2178,7 +2319,7 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
 
     params_type = inspect.getattr_static(engine_class, "provider_params_type", None)
     if params_type is None:
-        return
+        return "compatible"
     if not (isinstance(params_type, type) and issubclass(params_type, ProviderParams)):
         issues.append(
             ComplianceIssue(
@@ -2217,6 +2358,7 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
                 model=name,
             )
         )
+    return "compatible"
 
 
 def _cross_check_event_capabilities(

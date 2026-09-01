@@ -26,7 +26,7 @@ import asyncio
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, final, runtime_checkable
 
 from pydantic import ValidationError
 
@@ -561,13 +561,20 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
         )
 
 
-def require_artifact_protocol(engine: object) -> None:
-    """Require an engine to implement the artifact-lifecycle protocol.
+def require_engine_protocol(engine: object) -> BaseProperties:
+    """Require an engine or engine class to be on the supported protocol line.
 
-    Generic consumers call this before looking up ``artifact_status`` or
-    ``acquire_artifacts``. The ordering gives an engine on an unsupported
-    protocol line a typed compatibility error instead of a missing-attribute
-    error. The check is the general line gate
+    The one fail-closed gate every selected-engine surface shares: registry
+    creation, the ``EngineBase`` inference and artifact entries, the CLI's
+    ``show`` and transcribe preflight, and the per-model metadata endpoints
+    all call it before interpreting anything the engine declares. Consumers
+    that look up ``artifact_status`` or ``acquire_artifacts`` call it FIRST,
+    so an engine on an unsupported line gets a typed compatibility error
+    instead of a missing-attribute error -- and an unsupported line MUST NOT
+    be read as ``NO_ARTIFACT_LIFECYCLE``. Missing or untyped ``properties``
+    fails closed too: an engine whose protocol line cannot be established is
+    less knowable than one on a wrong line, never more trustworthy. The check
+    is the general line gate
     (:func:`~standard_asr.contract.protocol_version.require_supported_protocol`),
     not a feature-table lookup: every supported line carries the artifact
     lifecycle, so no per-feature minimum survives to gate it -- which also
@@ -575,22 +582,26 @@ def require_artifact_protocol(engine: object) -> None:
     this guard.
 
     Args:
-        engine: Engine instance whose declared protocol version is inspected.
+        engine: Engine instance or engine class whose declared protocol
+            version is inspected.
 
     Returns:
-        None.
+        The validated ``BaseProperties`` declaration.
 
     Raises:
-        EngineContractError: If the engine does not carry valid properties.
+        EngineContractError: If the engine does not declare ``properties`` as
+            a ``BaseProperties`` instance.
         ProtocolCompatibilityError: If its declared protocol line is not
             supported by this core.
     """
     properties = getattr(engine, "properties", None)
     if not isinstance(properties, BaseProperties):
         raise EngineContractError(
-            "Artifact lifecycle requires engine properties declared as a BaseProperties instance."
+            "Engine protocol compatibility cannot be established: 'properties' "
+            "is missing or is not a BaseProperties instance."
         )
     require_supported_protocol(properties.protocol_version)
+    return properties
 
 
 class _ArtifactProgressObserver:
@@ -1053,6 +1064,7 @@ class EngineBase(ABC):
                 "does not allow."
             )
 
+    @final
     def artifact_status(
         self,
         context: ArtifactContext | None = None,
@@ -1074,7 +1086,7 @@ class EngineBase(ABC):
             EngineContractError: On invalid declarations or hook results.
             ArtifactStatusError: On unexpected native inspection failure.
         """
-        require_artifact_protocol(self)
+        require_engine_protocol(self)
         declaration = self._artifact_declaration()
         resolved_context, standard_diagnostics = self._resolve_artifact_context(
             context,
@@ -1165,6 +1177,7 @@ class EngineBase(ABC):
             required_actions=_artifact_required_actions(requirements),
         )
 
+    @final
     def acquire_artifacts(
         self,
         context: ArtifactContext | None = None,
@@ -1194,6 +1207,10 @@ class EngineBase(ABC):
             ConfigError: On invalid engine configuration.
             ValueError: On malformed request language data.
         """
+        # Independent line gate: the preflight below dispatches through the
+        # virtual `self.artifact_status`, so an override of that PUBLIC
+        # member would otherwise leave this entry without the gate.
+        require_engine_protocol(self)
         preflight = self.artifact_status(context)
         declaration = self._artifact_declaration()
         if (
@@ -1384,6 +1401,7 @@ class EngineBase(ABC):
         """
         return bool(getattr(self.config, "allow_private_urls", False))
 
+    @final
     def transcribe(
         self, audio: AudioInputLike, params: RuntimeParams | None = None
     ) -> TranscriptionResult:
@@ -1415,7 +1433,9 @@ class EngineBase(ABC):
             ConfigError: If the engine's ``default_language`` VALUE is
                 malformed or not in ``selectable_languages`` -- fixable by
                 whoever supplies the config.
-            EngineContractError: On an engine-declaration defect -- a
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed before any work), or on an
+                engine-declaration defect -- a
                 declared language axis with no ``default_language`` (IC.6),
                 or a malformed declared selectable/detectable tag.
             IncompatibleAudioInputError: If no conversion path exists.
@@ -1442,12 +1462,14 @@ class EngineBase(ABC):
                 fault; the template wraps it here so it can never masquerade
                 as a client-input validation error).
         """
-        # The line gate runs before any work: AR.1 makes each 0.MINOR
+        # The full engine gate runs before any work: AR.1 makes each 0.MINOR
         # generation potentially contract-breaking, so running a
         # mismatched-line engine could return a structurally valid but
-        # semantically drifted transcript -- a silent wrong result. A parse
-        # and tuple comparison is negligible next to inference.
-        require_supported_protocol(self.properties.protocol_version)
+        # semantically drifted transcript -- a silent wrong result -- and an
+        # engine whose properties cannot even be typed is less knowable
+        # still. A parse and tuple comparison is negligible next to
+        # inference.
+        require_engine_protocol(self)
         request = params or RuntimeParams()
         # Fail fast: validate config + params (no audio needed) before decode.
         self._validate_language_config()
@@ -1791,6 +1813,7 @@ class EngineBase(ABC):
         cap = domain.language.candidate_languages
         return cap.constraints.max if cap.constraints is not None else None
 
+    @final
     async def transcribe_async(
         self, audio: AudioInputLike, params: RuntimeParams | None = None
     ) -> TranscriptionResult:
@@ -1815,6 +1838,10 @@ class EngineBase(ABC):
                 acquisition errors without wrapping them as
                 ``TranscriptionError``.
         """
+        # Same line gate as transcribe(): `self.transcribe` below is virtual
+        # dispatch, so a subclass that overrode the PUBLIC method would
+        # otherwise carry a mismatched line straight past the template.
+        require_engine_protocol(self)
         result = await asyncio.to_thread(self.transcribe, audio, params)
         # This bridge is a real CONSUMER of the synchronous protocol member,
         # exactly like the CLI and the server's REST path: `self.transcribe`
@@ -1988,6 +2015,7 @@ class EngineBase(ABC):
         """
         return type(self)._start_transcription is not EngineBase._start_transcription
 
+    @final
     def start_transcription(
         self,
         *,
@@ -2049,7 +2077,9 @@ class EngineBase(ABC):
                 bug; always raises, independent of strict/best_effort).
             ConfigError: If the engine's ``default_language`` VALUE is
                 malformed or not in ``selectable_languages``.
-            EngineContractError: On an engine-declaration defect -- a
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed before any work), or on an
+                engine-declaration defect -- a
                 declared language axis with no ``default_language`` (IC.6),
                 or a malformed declared selectable/detectable tag.
             UnsupportedFeatureError: When the requested streaming input/output
@@ -2073,9 +2103,9 @@ class EngineBase(ABC):
                 construction is an engine fault; wrapped here so it can never
                 masquerade as a client-input validation error).
         """
-        # Same line gate as transcribe(), for the same reason: a
+        # Same full engine gate as transcribe(), for the same reason: a
         # mismatched-line engine's streaming semantics are unknowable.
-        require_supported_protocol(self.properties.protocol_version)
+        require_engine_protocol(self)
         self.ensure_stream_inputs_exclusive(audio_format, audio)
         if audio_format is not None and not self.effective_capabilities.supports("streaming_input"):
             raise UnsupportedFeatureError(
@@ -2242,5 +2272,5 @@ __all__ = [
     "EngineBase",
     "StandardASR",
     "ensure_wire_format_supported",
-    "require_artifact_protocol",
+    "require_engine_protocol",
 ]

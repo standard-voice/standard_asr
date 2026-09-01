@@ -223,12 +223,13 @@ class _FutureMajorProps(_Props):
 
 class _ShadowedPropertiesASR(_GoodASR):
     # Class declares the supported line; __init__ rebuilds properties on the
-    # instance with a DIFFERENT line -- the honest rebuild-from-config
-    # mistake that splits the class-read surfaces from the instance-read
-    # runtime gates.
+    # instance with a divergent SAME-LINE copy -- the honest
+    # rebuild-from-config mistake that splits the class-read surfaces from
+    # the instance-read runtime gates. (A wrong-LINE shadow is the instance
+    # gate's case, pinned separately.)
     def __init__(self) -> None:
         super().__init__()
-        self.properties = _Props(protocol_version="0.3.0")  # type: ignore[misc]
+        self.properties = _Props(model_name="shadow")  # type: ignore[misc]
 
 
 def shadowed_properties_factory() -> _ShadowedPropertiesASR:  # pyright: ignore[reportUnusedFunction]
@@ -443,9 +444,9 @@ def test_check_entrypoints_bypassed_properties_fail_revalidation() -> None:
 
 def test_check_entrypoints_unsupported_protocol_major_is_an_error() -> None:
     # An engine declaring a major this core cannot interpret must NOT be
-    # certified. Compliance runs the same version gate the runtime runs, so
-    # it can never pass a plugin whose artifact tooling
-    # require_protocol_feature() rejects at runtime.
+    # certified. Compliance runs the same line gate the runtime runs, so it
+    # can never pass a plugin that registry creation, inference, and the
+    # artifact tooling refuse at runtime through require_engine_protocol().
     report = check_entrypoints(registry=_registry("future_major_factory"))
     assert report.passed is False
     issue = next(i for i in report.issues if i.code == "protocol_version_unsupported")
@@ -613,6 +614,30 @@ def unannotated_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[re
     return _GoodASR()
 
 
+class _UntypedClassPropertiesASR(_GoodASR):
+    """Resolvable class whose ``properties`` is untyped; other declarations invalid too."""
+
+    properties: ClassVar[Any] = {"engine_id": "dummy", "protocol_version": "0.2.0"}
+    declared_capabilities: ClassVar[Any] = None
+    config_type: ClassVar[Any] = _NotProviderParams
+
+
+_UNTYPED_CLASS_FACTORY_CALLS: list[str] = []
+
+
+def untyped_class_properties_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _UntypedClassPropertiesASR
+):
+    _UNTYPED_CLASS_FACTORY_CALLS.append("called")
+    return _UntypedClassPropertiesASR()
+
+
+def unannotated_untyped_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[reportUnusedFunction]
+    # Unresolvable class (no return annotation) whose returned instance
+    # carries an untyped declaration: only the instance gate can rule on it.
+    return _UntypedClassPropertiesASR()
+
+
 def test_check_entrypoints_class_metadata_unreadable() -> None:
     # The factory loads, but the engine class is unresolvable without
     # instantiation; the class-level metadata check surfaces that as an error.
@@ -635,6 +660,28 @@ def test_check_entrypoints_no_instantiate_skips_invocation() -> None:
     # factory; the good engine passes its class-level checks.
     report = check_entrypoints(registry=_registry("good_factory"), instantiate=False)
     assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_undeclared_class_is_refused_before_its_factory_runs() -> None:
+    # Mirrors ModelRegistry.create()'s class preflight: a resolvable class
+    # without a typed properties declaration is refused before the factory
+    # runs, so compliance must neither run plugin code the runtime never
+    # runs nor read the other declarations under a generation it could not
+    # establish. One root-cause error, no cascade, no construction.
+    _UNTYPED_CLASS_FACTORY_CALLS.clear()
+    report = check_entrypoints(registry=_registry("untyped_class_properties_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"missing_class_properties"}
+    assert _UNTYPED_CLASS_FACTORY_CALLS == []
+
+
+def test_unresolvable_class_falls_through_to_the_instance_declaration_check() -> None:
+    # With no class to preflight, the returned instance is the only
+    # declaration the gate can rule on -- and an untyped one is a
+    # declaration-shape defect, not a version this core does not support.
+    report = check_entrypoints(registry=_registry("unannotated_untyped_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"class_metadata_unreadable", "missing_instance_properties"}
 
 
 # --------------------------------------------------------------------------- #
@@ -3356,7 +3403,7 @@ class _GatingStreamEngine(EngineBase):
 class _UngatedStreamEngine(_GatingStreamEngine):
     """Non-compliant: overrides the PUBLIC start_transcription, bypassing gating."""
 
-    def start_transcription(
+    def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
         audio_format: Any = None,
@@ -3484,7 +3531,7 @@ def test_streaming_gating_pins_the_session_type_like_the_server() -> None:
             ]
 
     class _DuckSessionEngine(_GatingStreamEngine):
-        def start_transcription(
+        def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             *,
             audio_format: Any = None,
@@ -3574,7 +3621,7 @@ def test_streaming_gating_structural_engine_without_effective_caps_not_failed() 
 def test_streaming_gating_best_effort_engine_raising_fails() -> None:
     # A best_effort engine that wrongly RAISES for the unsupported param fails.
     class _RaisingBestEffortEngine(_GatingStreamEngine):
-        def start_transcription(
+        def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             *,
             audio_format: Any = None,
@@ -3593,7 +3640,7 @@ def test_streaming_gating_engine_crash_is_reported_not_raised() -> None:
     # A non-UnsupportedFeatureError exception (an engine bug)
     # MUST surface as a compliance error, never crash the whole compliance run.
     class _CrashingEngine(_GatingStreamEngine):
-        def start_transcription(
+        def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             *,
             audio_format: Any = None,
@@ -3654,7 +3701,7 @@ def test_streaming_gating_sub_constraint_prompt_best_effort_passes() -> None:
 class _UngatedPromptConstrainedEngine(_PromptConstrainedStreamEngine):
     """Bypasses the template: accepts the over-budget prompt without gating."""
 
-    def start_transcription(
+    def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
         audio_format: Any = None,
@@ -3735,7 +3782,7 @@ class _DiarizationUnsupportedStreamEngine(_GatingStreamEngine):
 class _UngatedDiarizationEngine(_DiarizationUnsupportedStreamEngine):
     """Bypasses the template: accepts the diarization request without gating."""
 
-    def start_transcription(
+    def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
         audio_format: Any = None,
@@ -4087,11 +4134,21 @@ def test_check_entrypoints_plain_config_error_factory_is_config_defect() -> None
 
 
 class _CrashingPropsASR(_GoodASR):
-    """A buggy @property properties that raises a NON-AttributeError."""
+    """A buggy @property (``config``) that raises a NON-AttributeError.
+
+    The class-level declaration stays typed, so the class gate passes and the
+    crash happens on an instance read the orchestrator performs after the
+    instance gate (a crashing ``properties`` would now stop at the class
+    preflight, like ``ModelRegistry.create()``, and never be constructed).
+    """
+
+    def __init__(self) -> None:
+        # The base assigns self.config; the crashing property has no setter.
+        pass
 
     @property
-    def properties(self) -> _Props:  # type: ignore[override]
-        raise RuntimeError("properties exploded")
+    def config(self) -> _Config:  # type: ignore[override]
+        raise RuntimeError("config exploded")
 
 
 def crashing_props_factory() -> _CrashingPropsASR:  # pyright: ignore[reportUnusedFunction]
@@ -4456,7 +4513,7 @@ def test_provider_params_swap_safety_best_effort_passes() -> None:
 class _SwapUnsafeEngine(_SwapSafeEngine):
     """Bypasses the template's transcribe and forgets the provider_params check."""
 
-    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:
+    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:  # pyright: ignore[reportIncompatibleMethodOverride]
         # Silently accepts ANY provider_params -- the swap bug swap-safety makes loud.
         return TranscriptionResult(text="ok")
 
@@ -4470,7 +4527,7 @@ def test_provider_params_swap_safety_accepted_fails() -> None:
 class _SwapWrongErrorEngine(_SwapSafeEngine):
     """Bypasses the template and raises the WRONG exception type for swap."""
 
-    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:
+    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:  # pyright: ignore[reportIncompatibleMethodOverride]
         raise RuntimeError("not the contractual InvalidProviderParamError")
 
 
@@ -4767,6 +4824,39 @@ def outside_line_artifact_factory() -> (  # pyright: ignore[reportUnusedFunction
     return _OutsideLineArtifactASR()
 
 
+class _OutsideLineBrokenDeclarationsASR(_GoodASR):
+    """Wrong line, and every other class-level declaration is invalid under 0.2.
+
+    Each of these declarations may be legitimate under the generation the
+    engine actually implements, so the line verdict must be the only error.
+    """
+
+    properties: ClassVar[BaseProperties] = _OutsideLineArtifactProps()
+    declared_capabilities: ClassVar[Any] = None
+    config_type: ClassVar[Any] = _NotProviderParams
+    provider_params_type: ClassVar[Any] = ProviderParams
+
+
+def outside_line_broken_declarations_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _OutsideLineBrokenDeclarationsASR
+):
+    return _OutsideLineBrokenDeclarationsASR()
+
+
+class _WrongLineInstanceASR(_GoodASR):
+    """Class on the supported line; the factory shadows a wrong-line copy."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.properties = _OutsideLineArtifactProps()  # type: ignore[misc]
+
+
+def wrong_line_instance_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WrongLineInstanceASR
+):
+    return _WrongLineInstanceASR()
+
+
 class _ArtifactStructuralBase(_GoodASR):
     """Plugin-owned structural base with side-effect sentinels."""
 
@@ -4879,6 +4969,32 @@ def artifact_core_placeholder_factory() -> (  # pyright: ignore[reportUnusedFunc
     _ArtifactCorePlaceholderEngine
 ):
     return _ArtifactCorePlaceholderEngine()
+
+
+class _PublicTemplateOverrideEngine(_ArtifactCorePlaceholderEngine):
+    def transcribe(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, audio: Any, params: Any = None
+    ) -> TranscriptionResult:
+        return TranscriptionResult(text="bypassed")
+
+
+def public_template_override_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _PublicTemplateOverrideEngine
+):
+    return _PublicTemplateOverrideEngine()
+
+
+def test_check_entrypoints_flags_public_template_overrides() -> None:
+    # Round-25 M1: an EngineBase subclass overriding a PUBLIC template owns
+    # the whole call and silently bypasses the line gate, gating, and the
+    # sync-result boundary. Compliance names the member and the owner.
+    report = check_entrypoints(
+        registry=_registry("public_template_override_factory"), instantiate=False
+    )
+    issue = next(i for i in report.issues if i.code == "public_template_overridden")
+    assert issue.level == "error"
+    assert "transcribe()" in issue.message
+    assert "_PublicTemplateOverrideEngine" in issue.message
 
 
 _BYPASSED_ARTIFACT_METADATA = DeclaredEngineMetadata.model_construct(
@@ -5207,6 +5323,76 @@ def test_frozen_reader_tolerates_newer_minor_standard_sections(
 
     assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
     assert not any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_newer_patch_producer_standard_sections_are_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Round-25 B2: AR.1's PATCH rule lets a 0.2.1 producer add sections a
+    # 0.2.0 reader safely ignores. Truncating the tolerant-reader compare to
+    # the (major, minor) line rejected that legal producer.
+    monkeypatch.setattr(
+        _ArtifactFutureMetadataASR, "properties", _ArtifactProps(protocol_version="0.2.1")
+    )
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
+    assert not any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_older_patch_reader_enforces_the_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The mirror direction: a 0.2.0 producer's unknown section is fully
+    # within a 0.2.1 reader's knowledge, so the namespace obligation binds.
+    import standard_asr.compliance as compliance_module
+    import standard_asr.contract.protocol_version as protocol_version_module
+
+    monkeypatch.setattr(protocol_version_module, "CURRENT_PROTOCOL_VERSION", "0.2.1")
+    monkeypatch.setattr(compliance_module, "CURRENT_PROTOCOL_VERSION", "0.2.1")
+    monkeypatch.setattr(
+        _ArtifactFutureMetadataASR, "properties", _ArtifactProps(protocol_version="0.2.0")
+    )
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+    assert any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_unsupported_line_short_circuits_instantiation() -> None:
+    # Round-25 M2: after the shared gate refuses the class, instantiating and
+    # probing the engine would measure it against the wrong generation and
+    # run plugin code the verdict already declared uninterpretable. One
+    # root-cause error, no migration noise.
+    report = check_entrypoints(registry=_registry("outside_line_artifact_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"protocol_version_unsupported"}
+    # Generation-independent bootstrap diagnostics (warnings) may remain;
+    # no behavior probe or artifact check ran.
+    assert not any("artifact" in i.code for i in report.issues)
+
+
+def test_unsupported_line_is_the_only_class_level_error() -> None:
+    # Every class-level check reads the class under THIS core's generation. A
+    # wrong-line engine whose capabilities, config type, and provider-params
+    # type are also invalid under 0.2 may be legitimate under the generation
+    # it implements, so once the gate refuses the line nothing else may be
+    # measured against the wrong line -- not even the checks that used to run
+    # before the gate.
+    report = check_entrypoints(registry=_registry("outside_line_broken_declarations_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"protocol_version_unsupported"}
+
+
+def test_wrong_line_instance_short_circuits_behavior_probes() -> None:
+    # The instance is a separate declaration source: a class-compatible
+    # engine whose factory shadows a wrong-line instance must get the
+    # canonical version verdict, not a cascade of mismatched-line probe
+    # failures from the EngineBase gates.
+    report = check_entrypoints(registry=_registry("wrong_line_instance_factory"))
+    version_errors = [i for i in report.issues if i.code == "protocol_version_unsupported"]
+    assert len(version_errors) == 1
+    assert "Instance properties fail the protocol gate" in version_errors[0].message
+    assert not any(i.code == "missing_required_method" for i in report.issues)
 
 
 def test_future_line_is_refused_before_metadata_checks() -> None:

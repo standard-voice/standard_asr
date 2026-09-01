@@ -9,7 +9,7 @@ import asyncio
 import inspect
 import runpy
 from importlib.metadata import EntryPoint, EntryPoints
-from typing import Any, AsyncIterator, ClassVar, Literal, cast
+from typing import Any, AsyncIterator, ClassVar, Literal
 
 import pytest
 from pydantic import ConfigDict
@@ -26,6 +26,7 @@ from standard_asr.contract.capabilities import (
 )
 from standard_asr.contract.exceptions import (
     ConfigError,
+    EngineContractError,
     EntrypointValidationError,
     FactoryLoadError,
     ProtocolCompatibilityError,
@@ -129,9 +130,9 @@ def _outside_line_factory(**kwargs: Any) -> _OutsideLineDummyASR:  # pyright: ig
 class _DuckPropertiesASR:
     """Engine-shaped object whose ``properties`` is not a ``BaseProperties``.
 
-    The create-time line gate reads only typed properties; an untyped
-    declaration is compliance's defect to report, so ``create`` must hand
-    the object back rather than crash on it.
+    The create-time gate fails closed on it: an engine whose protocol line
+    cannot be established is less knowable than one on a wrong line, so it
+    must not be handed back ready to transcribe (round-25 review).
     """
 
     properties: ClassVar[dict[str, str]] = {"protocol_version": "9.9.9"}
@@ -142,6 +143,30 @@ class _DuckPropertiesASR:
 
 def _duck_properties_factory() -> _DuckPropertiesASR:  # pyright: ignore[reportUnusedFunction]
     return _DuckPropertiesASR()
+
+
+class _InstanceOnlyPropertiesASR:
+    """Engine whose only typed declaration is built on the instance.
+
+    The class-level slot holds an untyped dict, so every class-read surface
+    (show, compliance, the per-model endpoints) fails closed on this engine;
+    creation must join that verdict instead of handing back a running engine
+    whose class declaration the rest of the toolchain rejects.
+    """
+
+    properties: dict[str, str] | BaseProperties = {"protocol_version": "0.2.0"}
+
+    def __init__(self) -> None:
+        self.properties = _DummyProperties()
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="instance-only")
+
+
+def _instance_only_properties_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _InstanceOnlyPropertiesASR
+):
+    return _InstanceOnlyPropertiesASR()
 
 
 class _NotAnEngine:
@@ -320,6 +345,24 @@ class _MissingMetaASR:
 
 def _missing_meta_factory() -> _MissingMetaASR:  # pyright: ignore[reportUnusedFunction]
     return _MissingMetaASR()
+
+
+class _GatedButBareASR:
+    """Typed supported-line properties; everything else missing.
+
+    Passes the instance protocol gate, so the per-attribute instance checks
+    (config, capabilities, the required surface) actually run and report
+    their own arms instead of being short-circuited behind the gate.
+    """
+
+    properties: ClassVar[_DummyProperties] = _DummyProperties()
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="bare")
+
+
+def _gated_but_bare_factory() -> _GatedButBareASR:  # pyright: ignore[reportUnusedFunction]
+    return _GatedButBareASR()
 
 
 # pyright: ignore[reportUnusedFunction]
@@ -906,8 +949,33 @@ def test_check_entrypoints_missing_metadata() -> None:
     report = check_entrypoints(registry=registry, instantiate=True)
 
     errors = list(report.iter_level("error"))
+    # The class-level gate fails closed on the untyped declaration and stops
+    # there, exactly as ModelRegistry.create() refuses the class before its
+    # factory runs: with no protocol line the gate can establish, measuring
+    # the engine against this core's contract would be noise behind the root
+    # cause, and constructing it would run plugin code the runtime never runs.
+    assert [issue.code for issue in errors] == ["missing_class_properties"]
     assert any("BaseProperties" in issue.message for issue in errors)
+    assert not any("BaseConfig" in issue.message for issue in errors)
+
+
+def test_check_entrypoints_reports_per_attribute_gaps_behind_the_gate() -> None:
+    # A gate-passing instance still gets the per-attribute arms: missing
+    # config and missing capabilities each report their own error rather
+    # than hiding behind the protocol verdict.
+    eps = [
+        EntryPoint(
+            name="dummy/demo",
+            value="tests.test_discovery:_gated_but_bare_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    report = check_entrypoints(registry=registry, instantiate=True)
+
+    errors = list(report.iter_level("error"))
     assert any("BaseConfig" in issue.message for issue in errors)
+    assert any("DeclaredCapabilities" in issue.message for issue in errors)
 
 
 def test_check_entrypoints_model_id_mismatch() -> None:
@@ -1414,10 +1482,12 @@ def test_create_shadowed_engine_id_warns_at_routing(
 
 
 def test_compliance_flags_unreadable_class_metadata() -> None:
+    # Typed properties (so the class gate passes) but no class-level
+    # declared_capabilities: the class pass flags it without instantiation.
     eps = [
         EntryPoint(
             name="alpha/first",
-            value="tests.test_discovery:_missing_meta_factory",
+            value="tests.test_discovery:_gated_but_bare_factory",
             group="standard_asr.models",
         )
     ]
@@ -1487,9 +1557,10 @@ def test_create_refuses_an_outside_line_engine() -> None:
         registry.create("dummy/old")
 
 
-def test_create_leaves_untyped_properties_to_compliance() -> None:
-    # The gate reads only a typed BaseProperties declaration; an untyped one
-    # is a compliance defect, and create hands the object back unchanged.
+def test_create_refuses_untyped_properties() -> None:
+    # Fail closed: strictly less information must never earn strictly more
+    # permission. A typed engine declaring "9.9.9" is refused, so a dict
+    # declaration quacking the same field cannot be handed back transcribing.
     eps = [
         EntryPoint(
             name="dummy/duck",
@@ -1498,5 +1569,57 @@ def test_create_leaves_untyped_properties_to_compliance() -> None:
         )
     ]
     registry = discover_models(eps=eps, strict=True)
-    duck = cast("_DuckPropertiesASR", registry.create("dummy/duck"))
-    assert duck.transcribe(None).text == "duck"
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        registry.create("dummy/duck")
+
+
+class _ShadowedDummyASR(_DummyASR):
+    """Class on the supported line; ``__init__`` shadows a divergent copy.
+
+    The shadow stays ON the supported line (only ``model_name``
+    differs) so the failure exercised is the equality check itself, not the
+    line gate that would fire first for an off-line shadow.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.properties = _DummyProperties(model_name="shadow")  # type: ignore[misc]
+
+
+def _shadowed_dummy_factory(**kwargs: Any) -> _ShadowedDummyASR:  # pyright: ignore[reportUnusedFunction]
+    return _ShadowedDummyASR(**kwargs)
+
+
+def test_create_refuses_an_instance_that_shadows_the_class_declaration() -> None:
+    # One authoritative declaration: the class-read surfaces (show, metadata)
+    # and the runtime gates must see the same properties, so a divergent
+    # instance fails at the shared construction seam.
+    eps = [
+        EntryPoint(
+            name="dummy/shadow",
+            value="tests.test_discovery:_shadowed_dummy_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(EngineContractError, match="class-level declaration"):
+        registry.create("dummy/shadow")
+
+
+def test_create_refuses_a_typed_instance_without_a_class_declaration() -> None:
+    # The middle case between "both untyped" and "typed but divergent": an
+    # instance-built typed declaration with no class-level BaseProperties
+    # passed the instance gate while the equality check silently skipped --
+    # creation handed back an engine that show, compliance, and the
+    # per-model endpoints all fail closed on (AR.1: the class declaration
+    # is the authoritative one).
+    eps = [
+        EntryPoint(
+            name="dummy/instance-only",
+            value="tests.test_discovery:_instance_only_properties_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(EngineContractError, match="class-level 'properties'"):
+        registry.create("dummy/instance-only")

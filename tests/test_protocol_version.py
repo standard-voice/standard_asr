@@ -176,20 +176,33 @@ def test_require_protocol_feature_rejects_a_predating_version_within_the_line(
 
 
 def test_stable_major_uses_additive_minor_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Pin the ACTUAL frozen-era constants the first stable release installs
-    # (current 1.0.0, supported major 1, the artifact entry dropped because
-    # the artifact guards use the general line gate) plus one later additive
-    # feature, and prove the algebra that activates with them: every minor in
-    # the stable major passes the line gate; a feature added in a later minor
-    # is refused for an older engine by its minimum, not by the line rule.
+    # Pin a coherent stable-era state a later 1.x release installs (supported
+    # major 1, the frozen artifact entry RETAINED and rewritten to 1.0.0 per
+    # AR.1, current raised to the minor that added a feature -- a core never
+    # knows a floor above its own version, per the production-constants
+    # invariant), and prove the algebra that activates with it: every minor
+    # in the stable major passes the line gate; a feature added in a later
+    # minor is refused for an older engine by its minimum, not by the line
+    # rule.
     monkeypatch.setattr(protocol_version_module, "SUPPORTED_PROTOCOL_MAJOR", 1)
-    monkeypatch.setattr(protocol_version_module, "CURRENT_PROTOCOL_VERSION", "1.0.0")
+    monkeypatch.setattr(protocol_version_module, "CURRENT_PROTOCOL_VERSION", "1.1.0")
     monkeypatch.setattr(
         protocol_version_module,
         "PROTOCOL_FEATURE_MINIMUMS",
-        MappingProxyType({"future_feature": "1.1.0"}),
+        MappingProxyType(
+            {
+                # The frozen baseline entry is RETAINED and rewritten to
+                # 1.0.0 (AR.1): the table is a public introspection surface,
+                # so a known feature's compatibility query must not turn
+                # into ValueError on freeze day.
+                PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE: "1.0.0",
+                "future_feature": "1.1.0",
+            }
+        ),
     )
     assert require_supported_protocol("1.0.0") is None
+    assert require_protocol_feature("1.0.0", PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE) is None
+    assert require_protocol_feature("1.4.2", PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE) is None
     assert require_supported_protocol("1.5.3") is None
     with pytest.raises(ProtocolCompatibilityError, match="supports protocol major 1"):
         require_supported_protocol("0.2.0")

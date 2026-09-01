@@ -1,3 +1,16 @@
+> **Superseded numbering.** This record predates the protocol re-base: read
+> its "protocol 1.1" as the artifact-lifecycle generation, now **protocol
+> 0.2** on the pre-stable 0.x line. Spec AR.1
+> (docs/content/specification/protocol.md) is authoritative.
+>
+> **Superseded behavior.** The version-rule paragraph below ("Protocol 1.0
+> engines remain discoverable and transcribable") describes a transition
+> tolerance that was deleted with the re-base: within protocol major 0 the
+> minor is the breaking axis, so the preceding generation is NOT
+> transcribable -- every gated surface rejects it with
+> ``ProtocolCompatibilityError``. Only import-free discovery still lists
+> such an engine. AR.1 governs.
+
 # Engine metadata surface decision
 
 Status: approved with the model artifact lifecycle design on 2026-08-26.

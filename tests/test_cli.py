@@ -386,10 +386,15 @@ def test_cli_show_renders_canonical_declared_metadata_without_instantiation(
     assert '"may_acquire_during_inference": true' in output
 
 
-def test_cli_show_marks_legacy_declared_metadata_unsupported(
+def test_cli_show_outside_line_prints_identity_then_exits_2(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # Round-25: show previously rendered capabilities and the config schema
+    # under current-line semantics, marked only the artifact metadata
+    # unsupported, and exited 0 -- three verdicts for one engine, and a
+    # success code for a model every runtime seam refuses. Identity lines
+    # (entry-point facts) still print; semantic projections do not.
     registry = discover_models(
         eps=[
             EntryPoint(
@@ -403,12 +408,14 @@ def test_cli_show_marks_legacy_declared_metadata_unsupported(
     _patch_discover(monkeypatch, registry)
 
     exit_code = cli.main(["show", "artifact-cli/demo"])
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
 
-    assert exit_code == 0
-    assert "Declared metadata: <unsupported:" in output
-    assert "outside the supported pre-stable line 0.2" in output
-    assert '"applicable"' not in output
+    assert exit_code == 2
+    assert "Model: artifact-cli/demo" in captured.out
+    assert "outside the supported pre-stable line 0.2" in captured.err
+    assert "Capabilities" not in captured.out
+    assert "Declared metadata" not in captured.out
+    assert "Config schema" not in captured.out
 
 
 def test_cli_show_fault_bounds_invalid_declared_metadata(
@@ -436,7 +443,7 @@ def test_cli_show_fault_bounds_invalid_declared_metadata(
     assert "Config schema:" in output
 
 
-def test_cli_show_fault_bounds_missing_protocol_1_1_declared_metadata(
+def test_cli_show_fault_bounds_missing_declared_metadata(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -460,33 +467,12 @@ def test_cli_show_fault_bounds_missing_protocol_1_1_declared_metadata(
     assert "the protocol requires declared_metadata.artifacts" in output
 
 
-def test_cli_declared_metadata_fault_boundary_reraises_factory_load_error(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class _UnresolvableSpec:
-        def engine_class(self) -> type[object]:
-            raise FactoryLoadError("Selected plugin class could not be resolved.")
-
-    with pytest.raises(FactoryLoadError):
-        cli._print_declared_metadata(  # pyright: ignore[reportPrivateUsage]
-            _UnresolvableSpec()
-        )
-    output = capsys.readouterr().out
-
-    assert "Declared metadata: <unavailable:" in output
-    assert "Selected plugin class could not be resolved." in output
-
-
 def test_cli_declared_metadata_rejects_noncallable_canonical_projection(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    class _Spec:
-        def engine_class(self) -> type[_ArtifactCliEngine]:
-            return _ArtifactCliEngine
-
     monkeypatch.setattr(DeclaredEngineMetadata, "canonical_json", None)
-    cli._print_declared_metadata(_Spec())  # pyright: ignore[reportPrivateUsage]
+    cli._print_declared_metadata(_ArtifactCliEngine)  # pyright: ignore[reportPrivateUsage]
 
     assert "Declared metadata: <invalid: canonical_json is not callable>" in capsys.readouterr().out
 
@@ -582,6 +568,10 @@ def test_cli_models_show_config_schema_unavailable(
 class _NoCapsClass:
     """An engine class that declares no capabilities (declared_capabilities=None)."""
 
+    # Typed properties on the supported line: the show gate now requires
+    # them before any semantic section renders, and this fixture's subject
+    # is the no-capabilities rendering, not the gate.
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
     declared_capabilities = None
 
     def transcribe(self, audio: object, options: object = None) -> object:
@@ -600,6 +590,7 @@ def _no_caps_factory() -> _NoCapsClass:  # pyright: ignore[reportUnusedFunction]
 class _DictCapsASR:
     """Engine mis-declaring declared_capabilities as a dict (declaration bug)."""
 
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
     declared_capabilities: ClassVar[dict[str, dict[str, object]]] = {"batch": {}}
 
     def transcribe(self, audio: object, options: object = None) -> object:
@@ -679,7 +670,7 @@ class _UngatedStreamEngine(_GatingStreamEngine):
 
     properties: ClassVar[BaseProperties] = _StreamBadProps()
 
-    def start_transcription(
+    def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
         audio_format: object = None,
@@ -779,6 +770,69 @@ class _OtherRecordingEngine(_GatingStreamEngine):
 
 def _other_recording_factory() -> _OtherRecordingEngine:  # pyright: ignore[reportUnusedFunction]
     return _OtherRecordingEngine()
+
+
+class _WrongLineProps(_StreamOkProps):
+    model_name: str = "old"  # model_id == 'stream/old'
+    protocol_version: str = "0.1.0"
+
+
+#: Construction ledger for the wrong-line short-circuit test: after the
+#: class gate rules the line unsupported, `compliance run` must never
+#: construct (and thereby probe) this engine.
+_wrong_line_constructions: list[str] = []
+
+
+class _WrongLineRecordingEngine(_GatingStreamEngine):
+    """An outside-line engine that records every construction."""
+
+    properties: ClassVar[BaseProperties] = _WrongLineProps()
+
+    def __init__(self) -> None:
+        _wrong_line_constructions.append("stream/old")
+        super().__init__()
+
+
+def _wrong_line_recording_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WrongLineRecordingEngine
+):
+    return _WrongLineRecordingEngine()
+
+
+#: Construction ledger proving the unresolvable-class fall-through still
+#: constructs and probes the instance: with no readable class, the instance
+#: is the only declaration the shared gate can rule on.
+_unresolvable_class_constructions: list[str] = []
+
+
+class _UnresolvableClassRecordingEngine(_GatingStreamEngine):
+    """Compliant engine reached through a factory whose class is unresolvable."""
+
+    def __init__(self) -> None:
+        _unresolvable_class_constructions.append("stream/ok")
+        super().__init__()
+
+
+def _protocol_annotated_factory() -> StandardASR:  # pyright: ignore[reportUnusedFunction]
+    # `-> StandardASR` deliberately defeats class resolution: the protocol
+    # itself is rejected by _ensure_engine_class, so spec.engine_class()
+    # raises FactoryLoadError while the factory still works at runtime.
+    return _UnresolvableClassRecordingEngine()
+
+
+class _DuckClassPropertiesASR:
+    """Structural engine whose class-level ``properties`` is an untyped dict."""
+
+    properties: ClassVar[dict[str, str]] = {"protocol_version": "0.2.0"}
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="duck")
+
+
+def _duck_class_properties_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _DuckClassPropertiesASR
+):
+    return _DuckClassPropertiesASR()
 
 
 class _ArbitraryFactoryFault(Exception):
@@ -1833,8 +1887,13 @@ def test_cli_transcribe_audio_processing_error(
     registry = _demo_registry()
 
     class _BadAudioASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
         def transcribe(self, audio: object, params: object = None) -> None:
             raise AudioProcessingError("bad audio")
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
 
     def _discover_models(**_: object) -> ModelRegistry:
         return registry
@@ -1870,6 +1929,11 @@ def test_cli_transcribe_unsupported_feature_is_usage_exit_2(
     registry = _demo_registry()
 
     class _StrictRejectASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: object, params: object = None) -> None:
             raise UnsupportedFeatureError(
                 "Candidate language 'zz' is not detectable by this engine.",
@@ -1899,6 +1963,11 @@ def test_cli_transcribe_transcription_error(
     registry = _demo_registry()
 
     class _FailASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: object, params: object = None) -> None:
             raise TranscriptionError("boom")
 
@@ -2304,6 +2373,11 @@ class _RawValidationErrorASR:
     the server's scrubbed-500 case.
     """
 
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+    def artifact_status(self, context: object = None) -> ArtifactReport:
+        return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
     def transcribe(self, audio: Any, options: Any = None) -> Any:
         """Build an invalid internal model.
 
@@ -2504,7 +2578,9 @@ def test_cli_show_class_attribute_descriptor_is_an_engine_fault(
             raise ValueError("capabilities descriptor exploded")
 
     class _EngineClass(metaclass=_CapsMeta):
-        pass
+        # Typed properties on the supported line: the show gate must pass so
+        # the capabilities descriptor is actually reached.
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
 
     class _DescriptorSpec(_ShowSpec):
         def engine_class(self) -> object:
@@ -2610,6 +2686,11 @@ def test_cli_engine_bare_value_error_at_execution_is_exit_1(
     registry = _demo_registry()
 
     class _SdkBugASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: object, params: object = None) -> None:
             raise ValueError("SDK returned malformed response")
 
@@ -2670,6 +2751,11 @@ def test_cli_config_error_is_invoker_owned_at_every_seam(
     assert "device" in captured.err
 
     class _LazyCredentialASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: object, params: object = None) -> None:
             raise ConfigurationRequiredError(
                 "Engine 'alpha' requires configuration: set STANDARD_ASR_ALPHA__API_KEY."
@@ -2896,6 +2982,11 @@ def test_cli_transcribe_async_engine_is_engine_fault_exit_1(
     """
 
     class _AsyncASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         async def _impl(self) -> None:
             """Async implementation (never driven)."""
             return None  # pragma: no cover - never awaited
@@ -2934,6 +3025,11 @@ def test_cli_transcribe_wrong_result_type_is_engine_fault_exit_1(
     """
 
     class _DictASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: Any, options: Any = None) -> Any:
             """Return the wrong type (a plain dict)."""
             return {"text": "dict-not-result"}
@@ -3068,6 +3164,11 @@ def test_cli_debug_traceback_keeps_full_trace_for_plain_exceptions(
     """
 
     class _BoomASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: Any, options: Any = None) -> Any:
             """Raise a plain engine fault."""
             raise RuntimeError("boom: plain engine fault")
@@ -3095,6 +3196,11 @@ class _EchoCopyingASR:
     exc``: the wrapper's own message embeds pydantic's (truncated) input
     echo, so any surface printing ``str(exc)`` re-leaks it.
     """
+
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+    def artifact_status(self, context: object = None) -> ArtifactReport:
+        return ArtifactReport.from_requirements(mode="batch", applicable=False)
 
     def __init__(self, secret: str) -> None:
         """Store the credential to mis-place into a validation failure.
@@ -3312,6 +3418,11 @@ def test_cli_transcribe_text_mode_renders_diagnostics_to_stderr(
     )
 
     class _DiagASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: object, params: object = None) -> TranscriptionResult:
             return result
 
@@ -3350,6 +3461,11 @@ def test_cli_transcribe_json_mode_keeps_diagnostics_off_stderr(
     )
 
     class _DiagASR:
+        properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+
+        def artifact_status(self, context: object = None) -> ArtifactReport:
+            return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
         def transcribe(self, audio: object, params: object = None) -> TranscriptionResult:
             return result
 
@@ -3512,6 +3628,94 @@ def test_cli_compliance_run_aggregates_and_passes(
     assert "check_event_sequence" in output
     assert "check_transcription_result" in output
     assert "Compliance run passed" in output
+
+
+def test_cli_compliance_run_wrong_line_is_terminal_and_never_constructs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # AR.1: after the class gate rules the declared line unsupported,
+    # compliance MUST stop probing that model against this core's
+    # generation. The run previously constructed the engine anyway and
+    # re-reported the one root cause as engine_construction_failed -- two
+    # fault identities for one condition, sending the author to debug a
+    # construction defect that does not exist.
+    eps = [
+        EntryPoint(
+            name="stream/old",
+            value="tests.test_cli:_wrong_line_recording_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+    _wrong_line_constructions.clear()
+
+    exit_code = cli.main(["compliance", "run", "stream/old"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert _wrong_line_constructions == []
+    assert output.count("[protocol_version_unsupported]") == 1
+    assert "engine_construction_failed" not in output
+    assert "skipped instance checks (unsupported protocol line" in output
+    assert "Compliance run failed" in output
+
+
+def test_cli_compliance_run_unresolvable_class_still_probes_the_instance(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An unresolvable class is NOT a verdict on the protocol line, so the
+    # class-level pre-gate must fall through: the instance (constructed by
+    # both the entry point layer and the instance layer) remains the only
+    # declaration the shared gate can rule on, and here it rules compatible.
+    eps = [
+        EntryPoint(
+            name="stream/ok",
+            value="tests.test_cli:_protocol_annotated_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+    _unresolvable_class_constructions.clear()
+
+    exit_code = cli.main(["compliance", "run", "stream/ok"])
+    output = capsys.readouterr().out
+
+    # The unreadable class is the entry point layer's error; the run fails on
+    # it, but the instance-level probes still executed (one construction per
+    # layer) instead of skipping a model whose line was never ruled on.
+    assert exit_code == 1
+    assert "[class_metadata_unreadable]" in output
+    assert "engine_construction_failed" not in output
+    assert len(_unresolvable_class_constructions) == 2
+
+
+def test_cli_compliance_run_duck_class_declaration_is_not_a_construction_fault(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A class whose typed declaration is missing falls through the line
+    # pre-gate (no line verdict), then create()'s shared gate refuses the
+    # declaration. That typed rejection is the entry point layer's
+    # missing_class_properties root cause -- not a second
+    # engine_construction_failed identity.
+    eps = [
+        EntryPoint(
+            name="duck/echo",
+            value="tests.test_cli:_duck_class_properties_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["compliance", "run", "duck/echo"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "[missing_class_properties]" in output
+    assert "skipped instance checks (engine declaration rejected" in output
+    assert "engine_construction_failed" not in output
 
 
 def test_cli_compliance_run_batch_only_engine(

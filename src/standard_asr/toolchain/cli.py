@@ -61,7 +61,7 @@ from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
 from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
-from standard_asr.runtime.interface import EngineBase, StandardASR, require_artifact_protocol
+from standard_asr.runtime.interface import EngineBase, StandardASR, require_engine_protocol
 from standard_asr.runtime.protocol_boundary import (
     require_sync_result,
     safe_type_name,
@@ -607,6 +607,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
         _EngineFault: When reading the engine class's
             ``declared_capabilities`` runs a plugin descriptor that raises
             the ``ValueError`` family (exit 1).
+        ProtocolCompatibilityError: When the engine class declares a protocol
+            line this core does not support. The entry-point identity lines
+            are printed first; the semantic projections are not (exit 2).
+        EngineContractError: When the engine class does not declare
+            ``properties`` as a typed ``BaseProperties`` ClassVar, so no
+            protocol line can be established (an engine fault: exit 1).
     """
     registry = discover_models(strict=args.strict_discovery)
     spec = registry.spec(args.name)
@@ -617,43 +623,47 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"  Module      : {spec.entry_point.module}")
     print(f"  Attribute   : {spec.entry_point.attr}")
     print(f"  Value       : {spec.entry_point.value}")
-    _print_declared_capabilities(spec)
-    _print_declared_metadata(spec)
+    # AR.1: capabilities, metadata, and the config schema are SEMANTIC
+    # projections -- rendering them for a mismatched protocol line would
+    # interpret declarations under meanings this core cannot vouch for, and
+    # exiting 0 would tell a script the model is usable when every runtime
+    # seam refuses it. The identity lines above stay: they are entry-point
+    # facts, not interpretations. The typed errors propagate to main's arms
+    # (compatibility: exit 2; missing typed properties: engine fault,
+    # exit 1), matching status/pull.
+    try:
+        engine_class = spec.engine_class()
+    except FactoryLoadError as exc:
+        # Keep the pre-gate partial-render contract: print what show could
+        # learn, then report the installation fault through main (exit 1).
+        print(f"  Capabilities: <unavailable: {safe_exception_summary(exc)}>")
+        raise
+    _run_engine_call(lambda: require_engine_protocol(engine_class))
+    _print_declared_capabilities(engine_class)
+    _print_declared_metadata(engine_class)
     _print_config_schema(registry, args.name)
     return 0
 
 
-def _print_declared_capabilities(spec: Any) -> None:
+def _print_declared_capabilities(engine_class: Any) -> None:
     """Print an engine's DeclaredCapabilities without instantiating it.
 
     ``standard-asr show`` is a consumer of DeclaredCapabilities. The
     capabilities are read from the engine *class* (ClassVar), so no engine is
-    constructed and no credentials are resolved.
+    constructed and no credentials are resolved. The caller (``show``)
+    resolved the class and ran the protocol-line gate already.
 
     Args:
-        spec: The model :class:`~standard_asr.plugins.discovery.ModelSpec`.
+        engine_class: The resolved, gate-passed engine class.
 
     Returns:
         None.
 
     Raises:
-        FactoryLoadError: Re-raised after rendering the sanitized
-            unavailable line, so ``show`` reports the installation fault
-            through ``main``'s exit-1 arm instead of a silent success.
         _EngineFault: When the class-level ``declared_capabilities`` lookup
             executes a plugin descriptor that raises the ``ValueError``
             family -- the same engine-fault seam as an instance call.
     """
-    try:
-        engine_class = spec.engine_class()
-    except FactoryLoadError as exc:
-        # The FactoryLoadError chain can hold a plugin's import-time
-        # ValidationError; render through the total safe boundary.
-        # Then RE-RAISE: printing the fault while returning success made
-        # `show` the one consumer that swallowed a broken installation --
-        # the caller's key was fine, so it is not exit 2 either.
-        print(f"  Capabilities: <unavailable: {safe_exception_summary(exc)}>")
-        raise
     # A class-level attribute read is still plugin code: `declared_capabilities`
     # can be a descriptor/property on the engine class (or its metaclass), so
     # the lookup goes through the engine-fault seam like every other engine call.
@@ -686,40 +696,24 @@ def _print_declared_capabilities(spec: Any) -> None:
         print(f"    {line}")
 
 
-def _print_declared_metadata(spec: Any) -> None:
-    """Print one engine class's protocol-gated declared metadata.
+def _print_declared_metadata(engine_class: Any) -> None:
+    """Print one engine class's declared metadata.
 
-    The selected plugin class is resolved, but never instantiated. An engine
-    on an unsupported protocol line is rendered as unsupported instead of
-    treating its missing declaration as a false no-artifact claim.
+    The class is never instantiated. The caller (``show``) resolved it and
+    ran the protocol-line gate already, so a missing declaration here is a
+    declaration defect, never a false no-artifact claim from an unsupported
+    line.
 
     Args:
-        spec: Selected model specification.
+        engine_class: The resolved, gate-passed engine class.
 
     Returns:
         None.
 
     Raises:
-        FactoryLoadError: If the selected plugin class cannot be resolved.
         _EngineFault: If a plugin descriptor or canonical serializer raises a
             ``ValueError`` family exception.
     """
-    try:
-        engine_class = spec.engine_class()
-    except FactoryLoadError as exc:
-        print(f"  Declared metadata: <unavailable: {safe_exception_summary(exc)}>")
-        raise
-    try:
-        _run_engine_call(lambda: require_artifact_protocol(engine_class))
-    except ProtocolCompatibilityError as exc:
-        message = safe_str(exc) or "artifact lifecycle is not supported"
-        print(f"  Declared metadata: <unsupported: {message}>")
-        return
-    except EngineContractError as exc:
-        message = safe_str(exc) or "invalid engine properties"
-        print(f"  Declared metadata: <invalid: {message}>")
-        return
-
     metadata = _run_engine_call(lambda: getattr(engine_class, "declared_metadata", None))
     if metadata is None:
         print("  Declared metadata: <invalid: the protocol requires declared_metadata.artifacts>")
@@ -925,7 +919,7 @@ def _configured_artifact_engine(args: argparse.Namespace) -> Any:
     """
     registry = discover_models(strict=args.strict_discovery)
     asr = registry.create(args.name, **_parse_init_config(args))
-    _run_engine_call(lambda: require_artifact_protocol(asr))
+    _run_engine_call(lambda: require_engine_protocol(asr))
     return asr
 
 
@@ -971,7 +965,7 @@ def _call_artifact_status(
         Exception: Any documented artifact-status error.
         EngineContractError: If the operation violates its sync return contract.
     """
-    _run_engine_call(lambda: require_artifact_protocol(asr))
+    _run_engine_call(lambda: require_engine_protocol(asr))
     operation = _artifact_operation(asr, "artifact_status")
     report = _run_engine_call(lambda: operation(context))
     require_sync_result(report, "artifact_status()", expected_type=ArtifactReport)
@@ -1452,7 +1446,13 @@ def _run_instance_checks(
     ``ConfigurationRequiredError`` because the required credential/config is
     absent from the environment (the same classification ``check_entrypoints``
     applies, so one ``compliance run`` never issues two contradictory verdicts
-    for one engine). Any OTHER ``ConfigError`` is a defect and fails. For every
+    for one engine). Any OTHER ``ConfigError`` is a defect and fails. A model
+    whose class declaration fails the shared engine gate on the protocol LINE
+    is skipped before construction (AR.1: compliance stops probing after a
+    line mismatch, and ``check_entrypoints`` already carries the
+    ``protocol_version_unsupported`` verdict); a typed gate rejection from
+    ``create()`` itself is likewise a skip, not a second
+    ``engine_construction_failed`` identity for the same root cause. For every
     constructed engine it runs
     ``check_provider_params_swap_safety`` (an unconditional MUST for any engine,
     streaming or not). The ``recommended_wire_format()`` self-consistency
@@ -1500,6 +1500,34 @@ def _run_instance_checks(
         )
         return []
 
+    # Class-level pre-gate (AR.1): the entry point checks -- run first by the
+    # same command -- already classified an unsupported line as
+    # protocol_version_unsupported, and compliance MUST stop probing a model
+    # against a generation it cannot interpret. Constructing it here anyway
+    # would run plugin code for a doomed model and re-report the one root
+    # cause as engine_construction_failed. An unresolvable class is not a
+    # verdict on the line, so it falls through to the instance gate below.
+    try:
+        engine_class: type[StandardASR] | None = registry.engine_class(name)
+    except FactoryLoadError:
+        engine_class = None
+    if engine_class is not None:
+        try:
+            require_engine_protocol(engine_class)
+        except ProtocolCompatibilityError as exc:
+            print(
+                f"{_INFO} {name}: skipped instance checks (unsupported protocol "
+                f"line: {safe_exception_summary(exc)}; reported by the entry "
+                "point checks as protocol_version_unsupported)."
+            )
+            return []
+        except EngineContractError:
+            # An unreadable class declaration (missing/untyped properties) is
+            # already an entry-point-layer error; the instance remains the
+            # only declaration the gate can rule on, so construction proceeds
+            # and the arm below classifies its verdict.
+            pass
+
     try:
         engine = registry.create(name)
     except ConfigurationRequiredError as exc:
@@ -1521,6 +1549,22 @@ def _run_instance_checks(
             f"{_INFO} {name}: skipped instance checks (factory requires "
             f"configuration not present in this environment: "
             f"{safe_exception_summary(exc)})."
+        )
+        return []
+    except (ProtocolCompatibilityError, EngineContractError) as exc:
+        # A typed declaration/contract rejection -- normally create()'s
+        # shared engine gate, the same root cause the entry point checks
+        # already reported (protocol_version_unsupported /
+        # missing_class_properties / instance_properties_diverge; a factory
+        # raising its own contract error lands there as
+        # entrypoint_factory_failed). Re-wrapping it as
+        # engine_construction_failed would give one defect two fault
+        # identities and send the author chasing a construction bug that
+        # does not exist.
+        print(
+            f"{_INFO} {name}: skipped instance checks (engine declaration "
+            f"rejected: {safe_exception_summary(exc)}; the entry point "
+            "checks report this defect)."
         )
         return []
     except Exception as exc:  # noqa: BLE001 - a per-model verdict, never an abort
@@ -1961,13 +2005,7 @@ def _transcribe_artifact_preflight(
             not supported by this core (mapped to usage exit 2).
         Exception: Non-status errors raised by the engine.
     """
-    properties = _run_engine_call(lambda: getattr(asr, "properties", None))
-    if properties is None:
-        # A structural engine may omit the class-level Properties
-        # declaration entirely. The advisory cannot classify it, and must not
-        # make an otherwise valid transcription unavailable.
-        return
-    _run_engine_call(lambda: require_artifact_protocol(asr))
+    _run_engine_call(lambda: require_engine_protocol(asr))
 
     try:
         report = _call_artifact_status(asr, ArtifactContext(params=params))
@@ -2039,12 +2077,19 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
             non-selectable language, or a valid-but-unreachable candidate list
             (non-detectable / over-``max``).
         TranscriptionError: On an engine-execution failure during transcription.
-        EngineContractError: When ``transcribe()`` broke the sync-call
+        EngineContractError: When ``registry.create()`` finds no typed
+            ``properties`` declaration or a factory returning a class other
+            than the declared one, when ``transcribe()`` broke the sync-call
             boundary (returned an awaitable or a non-``TranscriptionResult``),
             or the engine's language declaration is malformed (a bad declared
             tag, a missing IC.6 ``default_language``) -- engine faults
             surfaced loudly at the boundary (exit 1) instead of a secondary
             ``AttributeError`` below.
+        ProtocolCompatibilityError: When the selected engine declares a
+            protocol line this core does not support -- refused by
+            ``registry.create()`` before construction, and by the artifact
+            preflight for an engine obtained another way (exit 2 via
+            ``main``'s arm).
     """
     registry = discover_models(strict=args.strict_discovery)
     asr = registry.create(args.name, **_parse_init_config(args))

@@ -41,11 +41,15 @@ from typing import (
 from pydantic import ValidationError
 from pydantic.errors import PydanticInvalidForJsonSchema
 
-from standard_asr.contract.exceptions import EntrypointValidationError, FactoryLoadError
+from standard_asr.contract.exceptions import (
+    EngineContractError,
+    EntrypointValidationError,
+    FactoryLoadError,
+)
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
 from standard_asr.contract.properties import BaseProperties
-from standard_asr.contract.protocol_version import require_supported_protocol
 from standard_asr.runtime.config import BaseConfig
+from standard_asr.runtime.interface import require_engine_protocol
 from standard_asr.runtime.redaction import (
     config_error_from_validation,
     safe_exception_summary,
@@ -589,8 +593,14 @@ class ModelRegistry:
                 cannot be determined without calling the factory,
                 ``config_type`` is not a ``BaseConfig`` subclass, or its JSON
                 Schema cannot be generated.
+            EngineContractError: The engine class does not declare typed
+                ``properties`` (AR.1 fail-closed line gate).
+            ProtocolCompatibilityError: The engine class declares a protocol
+                line this core does not support -- its config semantics are
+                not interpretable, so no schema is projected.
         """
         engine_class = self.engine_class(name)
+        require_engine_protocol(engine_class)
         config_type = getattr(engine_class, "config_type", None)
         if config_type is None:
             return None
@@ -637,9 +647,16 @@ class ModelRegistry:
                 runs here -- the one construction path every toolchain
                 consumer shares -- so a mismatched installed plugin fails
                 loudly at creation instead of transcribing with possibly
-                drifted semantics. An engine whose ``properties`` is not a
-                ``BaseProperties`` instance is not gated here; compliance
-                owns that defect.
+                drifted semantics.
+            EngineContractError: The engine's ``properties`` is missing or
+                not a ``BaseProperties`` instance (its protocol line cannot
+                be established, which is less knowable than a wrong line,
+                so creation fails closed), the class does not declare typed
+                ``properties`` as a ClassVar (the class declaration is the
+                authoritative one every class-read surface consumes), or the
+                instance properties do not
+                equal the class-level declaration (a divergent instance
+                splits the class-read surfaces from the runtime gates).
             ConfigError: The model needs configuration that was missing or
                 invalid (a required credential, a bad ``default_language``, and so on).
                 A construction-time pydantic ``ValidationError`` -- whether from
@@ -689,10 +706,33 @@ class ModelRegistry:
             raise config_error_from_validation(
                 exc, prefix=f"Invalid configuration for {name!r}"
             ) from exc
-        properties = getattr(engine, "properties", None)
-        if isinstance(properties, BaseProperties):
-            # AR.1 line gate at the shared construction seam (see Raises).
-            require_supported_protocol(properties.protocol_version)
+        # AR.1 line gate at the shared construction seam (see Raises):
+        # fail-closed, including a missing or untyped declaration -- an
+        # engine whose protocol line cannot be established is less knowable
+        # than one on a wrong line.
+        properties = require_engine_protocol(engine)
+        class_properties = inspect.getattr_static(type(engine), "properties", None)
+        if not isinstance(class_properties, BaseProperties):
+            # The CLASS declaration is the authoritative one (AR.1): show,
+            # compliance, and the per-model endpoints read it without
+            # instantiation, so an engine whose typed declaration exists only
+            # on the instance would be creatable here yet rejected by every
+            # class-read surface -- the same split fail-open would reopen.
+            raise EngineContractError(
+                f"Engine {name!r} does not declare class-level 'properties' "
+                "as a BaseProperties ClassVar readable without instantiation. "
+                "Declare properties once, as a ClassVar."
+            )
+        if class_properties != properties:
+            # One authoritative declaration: discovery/show/metadata read the
+            # CLASS while the runtime gates read the INSTANCE, so an instance
+            # that shadows the class declaration (an honest
+            # rebuild-from-config mistake) would split those surfaces.
+            raise EngineContractError(
+                f"Engine {name!r} instance properties do not equal its "
+                "class-level declaration. Declare properties once, as a "
+                "ClassVar."
+            )
         return engine
 
     def __len__(self) -> int:  # pragma: no cover

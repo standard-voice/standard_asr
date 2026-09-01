@@ -285,6 +285,25 @@ Then verify:
 - **Yanking:** If a release is broken, yank it on PyPI and ship a new patch.
   Never reuse a version number.
 
+### Protocol generations
+
+The package version above is not the protocol version:
+`properties.protocol_version` names the engine-protocol contract generation,
+an independent version line governed by spec AR.1
+(`docs/content/specification/protocol.md`). Two obligations land at release
+time:
+
+- The first public core release carrying a new `0.MINOR` protocol generation
+  **freezes that generation** (AR.1's generation freeze point). Before
+  publishing, confirm `CURRENT_PROTOCOL_VERSION` in
+  `src/standard_asr/contract/protocol_version.py` names the contract you
+  intend to freeze; after the release, a breaking change to that contract
+  requires a new minor.
+- The first stable release (protocol `1.0.0`) must execute AR.1's freeze plan
+  and record its three freeze-day decisions: the frozen `0.N` alias policy,
+  the multi-major support policy, and the protocol release ledger that owns
+  the generation history from then on.
+
 ## First release (`v0.1.0`)
 
 The changelog already contains a drafted `0.1.0` section, but there is no

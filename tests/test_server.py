@@ -274,7 +274,7 @@ def _metadata_missing_protocol_factory() -> (  # pyright: ignore[reportUnusedFun
 class _MetadataDuckPropertiesASR(_NoInstantiateMetadataASR):
     """Engine whose properties quack a protocol version without the type.
 
-    ``require_artifact_protocol()`` and the CLI refuse this engine (the gate
+    ``require_engine_protocol()`` and the CLI refuse this engine (the gate
     requires a typed ``BaseProperties``), so the endpoint's former duck-typed
     ``protocol_version`` read answered 200 where every other consumer raised
     -- two verdicts for one installed engine.
@@ -1188,6 +1188,30 @@ def test_declared_metadata_legacy_protocol_is_scrubbed_deployment_500(
         record.exc_info is not None and record.exc_info[0] is ProtocolCompatibilityError
         for record in caplog.records
     )
+
+
+@pytest.mark.parametrize("route", ["capabilities", "params-schema", "config-schema"])
+def test_class_projection_refuses_an_outside_line_engine(route: str) -> None:
+    """Every per-model class projection shares the metadata endpoint's gate.
+
+    The server specification (section 3.2) promises that ``/v1/capabilities``,
+    ``/v1/params-schema``, and ``/v1/config-schema`` map an unsupported
+    protocol line to the same scrubbed 500 as ``/v1/metadata`` --
+    ``params-schema`` answering 200 with a schema interpreted under this
+    core's semantics was the one projection where that promise did not hold.
+
+    Args:
+        route: The class-projection route under test.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_legacy_metadata_factory"))
+    resp: httpx2.Response = TestClient(app).get(f"/v1/{route}/dummy/echo")
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Internal model metadata error. See server logs for details."
+    assert "0.1.0" not in resp.text
 
 
 @pytest.mark.parametrize(

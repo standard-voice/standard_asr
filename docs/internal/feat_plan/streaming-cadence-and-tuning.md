@@ -1,3 +1,8 @@
+> **Superseded numbering.** This record predates the protocol re-base: read
+> its "protocol 1.1" as the artifact-lifecycle generation, now **protocol
+> 0.2** on the pre-stable 0.x line. Spec AR.1
+> (docs/content/specification/protocol.md) is authoritative.
+
 # Streaming Cadence & Tuning (Design Case)
 
 **Status:** Design settled 2026-07-05 (decisions recorded below; engine facts

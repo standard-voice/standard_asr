@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import ClassVar, Literal, cast
 
 import numpy as np
@@ -24,6 +26,9 @@ from standard_asr import (
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioArray, AudioPath, AudioUrl, InputKind
 from standard_asr.audio.negotiation import UnsafeAudioUrlError
+from standard_asr.compliance import (
+    _PUBLIC_TEMPLATE_METHODS,  # pyright: ignore[reportPrivateUsage]
+)
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
@@ -128,6 +133,22 @@ class _OutsideLineEngine(_ArrayEngine):
     properties: ClassVar[BaseProperties] = _OutsideLineProps()
 
 
+def test_public_override_cannot_bypass_the_line_gate_on_dispatch_seams() -> None:
+    # Round-25 M1: transcribe_async and acquire_artifacts dispatch through
+    # VIRTUAL public members (self.transcribe / self.artifact_status), so a
+    # subclass overriding those public members would otherwise carry a mismatched
+    # line straight past the template. Both entries gate independently.
+    class _PublicOverrideEngine(_OutsideLineEngine):
+        def transcribe(  # pyright: ignore[reportIncompatibleMethodOverride]
+            self, audio: object, params: object = None
+        ) -> TranscriptionResult:
+            return TranscriptionResult(text="bypassed")
+
+    engine = _PublicOverrideEngine()
+    with pytest.raises(ProtocolCompatibilityError):
+        asyncio.run(engine.transcribe_async(_audio()))
+
+
 def test_engine_base_refuses_inference_on_an_unsupported_line() -> None:
     # AR.1: each 0.MINOR generation may change the contract incompatibly, so
     # the template refuses to run inference for a mismatched line instead of
@@ -141,6 +162,40 @@ def test_engine_base_refuses_inference_on_an_unsupported_line() -> None:
         asyncio.run(engine.transcribe_async(_audio()))
     with pytest.raises(ProtocolCompatibilityError):
         engine.start_transcription()
+
+
+def test_engine_base_refuses_inference_when_properties_are_untyped() -> None:
+    # The three inference entries run the FULL engine gate (AR.1), not only
+    # the line comparison: with properties that quack the current version
+    # string without being a BaseProperties, the protocol line cannot be
+    # established -- less knowable than a wrong line, never more trustworthy.
+    # Gating only two of the three entries gave one declaration shape two
+    # different verdicts.
+    class _DuckPropertiesEngine(_ArrayEngine):
+        properties: ClassVar[BaseProperties] = cast(
+            BaseProperties, SimpleNamespace(protocol_version="0.2.0")
+        )
+
+    engine = _DuckPropertiesEngine()
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        engine.transcribe(_audio())
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        asyncio.run(engine.transcribe_async(_audio()))
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        engine.start_transcription()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="typing.final records __final__ only on Python 3.11+",
+)
+def test_every_public_template_is_statically_final() -> None:
+    # The @final markers are the promised pyright-time guard against
+    # overriding a public template (AR.1 names all five). A decorator landing
+    # on the StandardASR Protocol stub instead of the EngineBase template
+    # satisfies neither pyright nor this assertion.
+    for method_name in _PUBLIC_TEMPLATE_METHODS:
+        assert getattr(getattr(EngineBase, method_name), "__final__", False), method_name
 
 
 def test_engine_with_narrowed_config_is_assignable_without_cast() -> None:
@@ -321,7 +376,7 @@ def test_transcribe_async_returns_result_identity() -> None:
     captured: list[TranscriptionResult] = []
 
     class _Capturing(_ArrayEngine):
-        def transcribe(
+        def transcribe(  # pyright: ignore[reportIncompatibleMethodOverride]
             self, audio: object, params: RuntimeParams | None = None
         ) -> TranscriptionResult:
             result = super().transcribe(cast("AudioArray", audio), params)

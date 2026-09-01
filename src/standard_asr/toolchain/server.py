@@ -42,7 +42,7 @@ from standard_asr.contract.metadata import DeclaredEngineMetadata
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import TranscriptionResult
 from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
-from standard_asr.runtime.interface import require_artifact_protocol
+from standard_asr.runtime.interface import require_engine_protocol
 from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
     log_exception_safely,
@@ -547,13 +547,8 @@ def create_app(
         """
 
         def _project(engine_class: Any) -> dict[str, Any]:
-            # The SHARED guard, not an ad-hoc protocol_version read: AR.1 has
-            # every generic consumer call require_artifact_protocol() before
-            # the artifact-metadata lookup, and the CLI's metadata view gates
-            # on it. A duck-typed re-implementation here accepted properties
-            # objects the other consumers refuse (a typed BaseProperties is
-            # part of the gate) -- two verdicts for one installed engine.
-            require_artifact_protocol(engine_class)
+            # The shared engine gate already ran inside
+            # _metadata_or_http_error, before this projection.
             metadata = getattr(engine_class, "declared_metadata", None)
             if not isinstance(metadata, DeclaredEngineMetadata):
                 raise EngineContractError("The engine must declare typed engine metadata.")
@@ -703,6 +698,7 @@ def create_app(
         Raises:
             HTTPException: 404 if the model key is unknown; scrubbed 500
                 if the registered model's plugin fails to load, its
+                declared protocol line is unsupported, its
                 descriptor raises, or its schema is unencodable (see
                 :func:`_metadata_or_http_error`).
         """
@@ -1861,6 +1857,13 @@ def _metadata_or_http_error(
     unencodable is a scrubbed 500 from inside the boundary instead of a
     crash after the endpoint returned.
 
+    The shared engine gate (:func:`require_engine_protocol`) also runs here,
+    between resolution and projection: every route this helper serves is a
+    per-model class projection, and none may interpret a declaration from an
+    unsupported protocol line (AR.1). Centralizing the call makes a
+    forgotten per-route gate structurally impossible; the import-free
+    ``/v1/models`` inventory does not use this helper and stays ungated.
+
     Args:
         registry: The model registry.
         model: Model key in ``engine/model`` format.
@@ -1889,6 +1892,14 @@ def _metadata_or_http_error(
         # unhandled path -- the undocumented plain 500, and the ASGI
         # server's native traceback logging of the raw chain, echo included.
         engine_class = _engine_class_or_http_error(registry, model, http_exception)
+        # The SHARED engine gate (AR.1) runs here, inside the one boundary
+        # every per-model class projection passes through, so no route can
+        # forget it: a declaration from an unsupported line (or one whose
+        # typed properties cannot be established) must not be interpreted
+        # under this core's semantics on ANY of the four routes. A
+        # per-route call left the omitted route answering 200 where its
+        # siblings raised -- two verdicts for one installed engine.
+        require_engine_protocol(engine_class)
         payload = project(engine_class)
         _prove_json_projectable(payload)
     except http_exception:

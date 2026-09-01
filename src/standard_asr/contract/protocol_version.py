@@ -34,7 +34,13 @@ PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE: Final = "artifact_lifecycle"
 PROTOCOL_FEATURE_MINIMUMS: Mapping[str, str] = MappingProxyType(
     {PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE: "0.2.0"}
 )
-"""Earliest protocol version that defines each guarded feature."""
+"""Minimum version, within the supported major, for each guarded feature.
+
+Not a historical record: the first stable release rewrites the frozen
+baseline entries to ``1.0.0`` (AR.1), so an entry names the floor an engine
+must declare under THIS core's supported major, not the version that first
+defined the feature.
+"""
 
 _PROTOCOL_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 #: Upper bound for each version component. The protocol version is a

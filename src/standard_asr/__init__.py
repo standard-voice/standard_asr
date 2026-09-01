@@ -121,7 +121,7 @@ from standard_asr.contract.results import (
 )
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
 from standard_asr.renderers import UnrenderablePolicy, to_srt, to_vtt
-from standard_asr.runtime.interface import StandardASR, require_artifact_protocol
+from standard_asr.runtime.interface import StandardASR, require_engine_protocol
 from standard_asr.runtime.streaming import (
     StreamDeadlines,
     SyncSession,
@@ -222,7 +222,7 @@ __all__ = [
     "Word",
     "WordTimestampGranularity",
     "discover_models",
-    "require_artifact_protocol",
+    "require_engine_protocol",
     "to_srt",
     "to_vtt",
 ]

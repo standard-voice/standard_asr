@@ -37,9 +37,13 @@ compared field-for-field (spec §C R6; the two layers share one capability model
 If an engine mis-declares its `declared_capabilities` (for example, as a raw dict), the
 capabilities line reports the problem and the rest of the metadata still renders.
 
-Declared metadata is rendered as canonical JSON for supported engines. An
-unsupported protocol line is shown as unsupported; a missing or invalid
-declaration is shown as invalid. `show` resolves only the selected plugin.
+Declared metadata is rendered as canonical JSON for supported engines. For
+an engine on an unsupported protocol line, `show` prints the entry-point
+identity lines (facts, not interpretations), then stops: capabilities,
+metadata, and the config schema are semantic projections this core cannot
+vouch for, so none renders and the command exits 2 through the shared
+compatibility arm. A missing or invalid declaration on the supported line
+is shown as invalid. `show` resolves only the selected plugin.
 `standard-asr list` remains entry-point-only and does not import plugins.
 
 The config schema is the JSON Schema of the engine's class-level `config_type` —
