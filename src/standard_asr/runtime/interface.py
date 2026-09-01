@@ -103,15 +103,15 @@ class StandardASR(Protocol):
     engine as ``StandardASR`` and call the streaming entry point without a cast.
 
     Gate ownership: the ``ProtocolCompatibilityError`` raises documented on
-    the members below are the standard's guarantee, owned by its boundaries --
-    not an intrinsic obligation on every structural method body.
+    the members below are kept by the standard's own checks -- they are not
+    a duty every implementation's method body carries.
     ``ModelRegistry.create()`` refuses an engine on an unsupported protocol
-    line before callers can reach these members, and ``EngineBase`` re-checks
-    at each semantic entry as defense in depth; a structural implementation
-    is not required to reproduce those checks. A host that obtains an engine
-    without the registry (direct construction, a custom loader, injection)
-    MUST run :func:`require_engine_protocol` on the object once before any
-    semantic use (AR.1).
+    line before callers can reach these members, and ``EngineBase`` checks
+    again at each entry as a second net; an implementation built directly on
+    this protocol does not have to repeat those checks. A host that obtains
+    an engine without the registry (direct construction, a custom loader,
+    injection) MUST run :func:`require_engine_protocol` on the object once
+    before using it (AR.1).
     """
 
     properties: ClassVar[BaseProperties]
@@ -278,6 +278,14 @@ class StandardASR(Protocol):
         context: ArtifactContext | None = None,
     ) -> ArtifactReport:
         """Inspect inference-artifact readiness without acquiring anything.
+
+        The report describes the moment it was taken -- ready today does
+        not mean ready tomorrow. A ``ready`` artifact can become ``missing``
+        with no action from the application (a cleared cache, an asset the
+        OS cleaned up, a disconnected drive). Check again by calling again:
+        while nothing external changes, repeated calls return the same
+        report (AR.2), so a changed report means something outside the
+        application really changed.
 
         Args:
             context: Optional request context. ``None`` resolves an engine mode
@@ -835,8 +843,9 @@ class EngineBase(ABC):
     def prepare(self) -> None:
         """Warm up process-local engine state without transcribing.
 
-        This optional, synchronous, idempotent hook moves process-local loading
-        or initialization off the first transcription. Persistent
+        This optional, synchronous hook moves process-local loading
+        or initialization off the first transcription; calling it more than
+        once is safe. Persistent
         inference-artifact acquisition belongs to :meth:`acquire_artifacts`.
         An engine can call that operation before continuing its warm-up when the
         native library cannot separate the two steps. The base implementation is
@@ -1105,6 +1114,13 @@ class EngineBase(ABC):
     ) -> ArtifactReport:
         """Inspect inference-artifact readiness without side effects.
 
+        The report describes the moment it was taken -- ready today does
+        not mean ready tomorrow. A ``ready`` artifact can become ``missing``
+        with no action from the application (a cleared cache, an asset the
+        OS cleaned up, a disconnected drive). Check again by calling again:
+        while nothing external changes, repeated calls return the same
+        report (AR.2).
+
         Args:
             context: Optional request context.
 
@@ -1179,8 +1195,8 @@ class EngineBase(ABC):
             configured instance's dynamic answer to "does an inference-artifact
             lifecycle apply here", and it MUST only narrow the static
             declaration -- a report cannot claim applicability the class-level
-            metadata withholds. ``requirements`` is the logical dependency
-            closure for the resolved context, one entry per requirement, and
+            metadata withholds. ``requirements`` lists every logical
+            dependency of the resolved context, one entry per requirement, and
             ``diagnostics`` carries the non-fatal notes the inspection made.
             Aggregate readiness is not returned: the core derives it. The base
             implementation returns ``(False, (), ())``, the no-artifact shape.

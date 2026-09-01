@@ -649,11 +649,11 @@ def _check_engine_unguarded(
                 message=(
                     f"Factory returned an instance of {safe_type_name(instance)!r}, "
                     f"not the declared class {safe_class_name(declared_class)!r} "
-                    "the entry point resolves to. The class-level checks certify "
-                    "the declared class, so a divergent returned class would be "
-                    "certified under one contract and executed under another; "
-                    "instance probing stops here. Annotate the factory with, "
-                    "and return, exactly the one concrete engine class. "
+                    "the entry point resolves to. The class-level checks above "
+                    "examined the declared class, so their verdicts do not "
+                    "describe the returned class that actually runs; instance "
+                    "probing stops here. Annotate the factory with, and "
+                    "return, exactly one concrete engine class. "
                     "ModelRegistry.create() refuses this engine at runtime with "
                     "EngineContractError."
                 ),
@@ -1007,10 +1007,10 @@ def _check_instance_properties(
                 code="instance_properties_diverge",
                 message=(
                     "Instance properties do not equal the class-level declaration. "
-                    "Discovery and metadata surfaces read the class while the "
-                    "runtime gates read the instance, so a divergent instance is "
-                    "certified by one and refused by the other. Declare properties "
-                    "once, as a ClassVar."
+                    "Discovery and the metadata endpoints read the class, while "
+                    "the runtime checks read the instance, so a divergent "
+                    "instance passes one and is refused by the other. Declare "
+                    "properties once, as a ClassVar."
                 ),
                 model=name,
             )
@@ -2037,8 +2037,9 @@ def _check_artifact_declaration(
 
     The caller's version gate already admitted the engine, so the checks
     below apply unconditionally -- except the extension-namespace check,
-    which honors the tolerant-reader rule for a producer on a newer minor
-    (see the comment at that check).
+    which keeps unknown data from a producer on a newer minor instead of
+    rejecting it (the tolerant-reader pattern; see the comment at that
+    check).
 
     Args:
         engine_class: Engine class to inspect.

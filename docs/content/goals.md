@@ -17,7 +17,7 @@ Concrete, executable goals that deliver on the [mission](./mission.md).
   loudly. The result is a constant-schema `TranscriptionResult` whose shape never
   changes with parameters.
 - **G.1.3: Properties, capabilities, metadata, and config declarations.**
-  Engines declare four machine-readable surfaces: *Properties* (static I/O
+  Engines make four machine-readable declarations: *Properties* (static I/O
   identity), *Capabilities* (hierarchical feature tree), *Metadata* (typed
   lifecycle and operational facts), and *Config* (typed, UI-renderable Pydantic
   model with secret-field marking).

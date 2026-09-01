@@ -273,7 +273,7 @@ def _derive_readiness(
 
     Args:
         applicable: Whether artifact management applies to the resolved context.
-        requirements: Logical artifact requirements in the resolved closure.
+        requirements: The logical artifact requirements resolved for the context.
 
     Returns:
         A canonical readiness token.
@@ -294,7 +294,7 @@ class ArtifactReport(BaseModel):
     Attributes:
         mode: Concrete inference mode represented by the report.
         applicable: Whether artifact management applies to the resolved context.
-        requirements: Logical dependency closure for the resolved context.
+        requirements: Every logical requirement the resolved context depends on.
         diagnostics: Non-fatal decisions made while producing the report.
         readiness: Stored aggregate inference-readiness verdict.
 

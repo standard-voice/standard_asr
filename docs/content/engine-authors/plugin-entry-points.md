@@ -105,8 +105,9 @@ def create_turbo(**kwargs: Any) -> TurboASR:
 > no annotation, because the class is returned directly. Compliance checks the
 > outcome either way, reporting `class_metadata_unreadable` when neither form
 > resolves. The factory must also return an instance of **exactly** its
-> annotated class: discovery and the metadata surfaces project the annotated
-> class while the runtime executes the returned one, so
+> annotated class: discovery, `show`, and the server's per-model endpoints
+> describe the annotated class, while the returned class is what actually
+> runs, so
 > `ModelRegistry.create()` refuses any other returned class
 > (`EngineContractError`) and compliance reports it as
 > `factory_return_class_mismatch`. A factory that picks between engine
@@ -318,7 +319,7 @@ also importable from `standard_asr.compliance`:
 
 | Check | What it asserts | How to run |
 | --- | --- | --- |
-| `check_entrypoints` | Entry-point metadata, capability and declared-metadata declarations, the artifact surface, and the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
+| `check_entrypoints` | Entry-point metadata, capability and declared-metadata declarations, the artifact methods, and the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
 | `check_provider_params_swap_safety(engine)` | An engine rejects another engine's `provider_params` rather than silently misreading them (spec Runtime R3 / §5.4) | `standard-asr compliance run` (per zero-arg engine) |
 | `check_streaming_param_gating(engine)` | A streaming engine gates an unsupported standard parameter per its strict/best_effort policy | `standard-asr compliance run` (per zero-arg streaming engine) |
 | `check_recommended_wire_format(engine)` | `recommended_wire_format()` returns `AudioFormat \| None` and any returned format passes the engine's own session-establishment rule — the member is unconditional (spec §3.1: Properties-pure, capability-blind), so this holds for **every** engine, batch-only included | `standard-asr compliance run` (per zero-arg engine, inside the entrypoint instance checks) |

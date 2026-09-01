@@ -559,8 +559,9 @@ class ModelRegistry:
         """Get the factory callable for a model (without instantiating).
 
         This is a raw accessor: the returned callable and anything it
-        constructs have not passed the engine gate or the create-time
-        contract checks. :meth:`create` is the admitted construction path.
+        constructs have not passed the engine gate or ``create()``'s
+        contract checks. Use :meth:`create` to construct an engine with
+        those checks applied.
 
         Args:
             name: Model key in ``engine_id/model_name`` format.
@@ -582,9 +583,9 @@ class ModelRegistry:
         discovery, UI generation, and REST endpoints without paying the cost or
         authentication requirements of constructing the engine. See
         :meth:`ModelSpec.engine_class`. This is a raw accessor: resolution
-        does not run the engine gate, so the gated consumers (:meth:`create`,
-        the per-model projections, compliance) apply it to the result
-        themselves.
+        does not run the engine gate, so the callers that need the gate
+        (:meth:`create`, the per-model server endpoints, compliance) run it
+        on the result themselves.
 
         Args:
             name: Model key in ``engine_id/model_name`` format.
@@ -686,16 +687,18 @@ class ModelRegistry:
                 be established, which is less knowable than a wrong line,
                 so creation fails closed), the class does not declare typed
                 ``properties`` as a ClassVar (the class declaration is the
-                authoritative one every class-read surface consumes; when
-                the class is resolvable without construction this is
+                authoritative copy that ``show``, compliance, and the
+                per-model endpoints read without constructing the engine;
+                when the class is resolvable without construction this is
                 refused BEFORE the factory runs, for the same masking
                 reason as the line preflight), the factory returned an
                 instance of a class other than the resolved declared class
-                (the class-read surfaces project the declared class, so
-                the runtime class must be exactly it), or the
+                (those class readers describe the declared class, so the
+                class that runs must be exactly it), or the
                 instance properties do not
                 equal the class-level declaration (a divergent instance
-                splits the class-read surfaces from the runtime gates).
+                would let the class readers and the running engine
+                disagree).
             ConfigError: The model needs configuration that was missing or
                 invalid (a required credential, a bad ``default_language``, and so on).
                 A construction-time pydantic ``ValidationError`` -- whether from
@@ -780,11 +783,11 @@ class ModelRegistry:
                 f"Engine {name!r} factory returned an instance of "
                 f"{safe_type_name(engine)!r}, not the declared class "
                 f"{safe_class_name(preflight_class)!r} its entry point "
-                "resolves to. The class-read surfaces project the declared "
-                "class while the runtime executes the returned one, so any "
-                "class-level divergence between the two splits certification "
-                "from execution. Annotate the factory with, and return, "
-                "exactly the one concrete engine class."
+                "resolves to. Discovery, show, compliance, and the "
+                "per-model endpoints describe the declared class, but the "
+                "returned class is what runs -- when the two differ, what "
+                "was checked is not what runs. Annotate the factory with, "
+                "and return, exactly one concrete engine class."
             )
         # AR.1 line gate at the shared construction seam (see Raises):
         # fail-closed, including a missing or untyped declaration -- an

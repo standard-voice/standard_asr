@@ -31,8 +31,8 @@ model weights at runtime. The list below is the **contract**
 ## 2. Expected engine behavior
 
 - **Keep the constructor lazy.** Do not download or load weights in `__init__`.
-- **Guard each network transfer.** Check
-  `standard_asr.runtime.downloads.allow_downloads()` before the transfer. The
+- **Guard each network transfer.** Check `allow_downloads()` (import it
+  from `standard_asr.engine`) before the transfer. The
   toggle does not prohibit a local copy, extraction, conversion, verification,
   or process-local warm-up.
 - **Report status without side effects.** `artifact_status()` does not contact a
@@ -46,7 +46,7 @@ model weights at runtime. The list below is the **contract**
 - **Keep acquisition separate from warm-up.** `acquire_artifacts()` makes
   persistent inference artifacts available without transcription. The optional
   `prepare()` hook performs process-local warm-up and remains synchronous and
-  idempotent. When `prepare()` also needs persistent artifacts, it applies the
+  safe to call more than once. When `prepare()` also needs persistent artifacts, it applies the
   same policy and error types.
 
 `acquire_artifacts(refresh=True)` rejects the request when any mutable source is
@@ -67,8 +67,9 @@ status checks. `resolve_download_root()` applies this precedence:
 2. `STANDARD_ASR_MODEL_DIR`, if set (a whitespace-only value is treated as unset;
    a relative value resolves against the current working directory at call
    time, so the result is always absolute).
-3. The native library's default cache, represented by a `None` passthrough when
-   the engine declares `has_library_default=True`.
+3. The native library's default cache: when the engine declares
+   `has_library_default=True`, `resolve_download_root()` returns `None` and the
+   engine forwards it, so the library keeps using its own cache.
 4. The Standard ASR cache returned by `resolve_cache_dir()`.
 
 The Standard ASR cache uses these platform defaults:
@@ -82,7 +83,15 @@ The Standard ASR cache uses these platform defaults:
    roaming `%APPDATA%` profile is **not** used — multi-gigabyte weights must not
    land in a profile that is synced across domain logins.
 
-Use `standard_asr.runtime.downloads.ensure_cache_dir()` to create it.
+Use `ensure_cache_dir()` (from `standard_asr.engine`, like the other helpers
+on this page) to create it.
+
+**Nothing enforces this section.** The order above and the cache locations
+are rules for the engine author that nothing verifies: the toolchain cannot
+see where a third-party library writes its files, so `standard-asr
+compliance run` passes a plugin that ignores `STANDARD_ASR_MODEL_DIR`
+entirely. Treat the order as part of your engine's promise to its users,
+not as a rule the toolchain checks.
 
 ## 4. Operational guidance
 

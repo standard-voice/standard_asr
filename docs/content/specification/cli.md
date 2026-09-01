@@ -40,8 +40,8 @@ capabilities line reports the problem and the rest of the metadata still renders
 Declared metadata is rendered as canonical JSON for supported engines. For
 an engine on an unsupported protocol line, `show` prints the entry-point
 identity lines (facts, not interpretations), then stops: capabilities,
-metadata, and the config schema are semantic projections this core cannot
-vouch for, so none renders and the command exits 2 through the shared
+metadata, and the config schema would all have to be interpreted under this
+core's contract, which it cannot vouch for on that line, so none renders and the command exits 2 through the shared
 compatibility arm. A missing or invalid declaration on the supported line
 is shown as invalid. `show` resolves only the selected plugin.
 `standard-asr list` remains entry-point-only and does not import plugins.
@@ -297,8 +297,8 @@ stderr explains that the first transcription can acquire artifacts and points
 to `standard-asr pull`. An unknown state uses “may acquire” wording. An
 `ArtifactStatusError` at this advisory step becomes a scrubbed warning and
 transcription continues; configuration, caller-input, and contract errors keep
-their normal fail-loud behavior. The Python `transcribe()` method does not add a
-universal preflight to its hot path.
+their normal fail-loud behavior. This advisory is CLI-only: the Python
+`transcribe()` method does not run a status inspection before every call.
 
 ### `standard-asr serve`
 Launch the FastAPI server (requires `standard-asr[server]`). Flags:

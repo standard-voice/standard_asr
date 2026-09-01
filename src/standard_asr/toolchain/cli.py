@@ -912,7 +912,8 @@ def _configured_artifact_engine(args: argparse.Namespace) -> Any:
         The configured engine instance.
 
     Raises:
-        ProtocolCompatibilityError: If the engine predates artifact lifecycle.
+        ProtocolCompatibilityError: If the engine declares a protocol line
+            this core does not support.
         EngineContractError: If the engine has no valid properties declaration.
         ConfigError: If the supplied engine configuration is invalid.
         DiscoveryError: If discovery or construction fails.

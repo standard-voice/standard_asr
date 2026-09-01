@@ -528,9 +528,10 @@ def create_app(
 
         The endpoint resolves one engine class without instantiating it. It
         checks the engine's protocol version before reading
-        ``declared_metadata`` so a legacy protocol is never interpreted as a
-        no-artifact declaration. A protocol incompatibility is an installed
-        plugin or deployment fault, not a request fault, and therefore uses the
+        ``declared_metadata``, so an engine on a protocol line this core does
+        not support is never read as if it had declared no artifacts. A
+        protocol incompatibility is an installed plugin or deployment fault,
+        not a request fault, and therefore uses the
         metadata boundary's scrubbed 500 response.
 
         Args:
@@ -541,8 +542,8 @@ def create_app(
 
         Raises:
             HTTPException: 404 if the model key is unknown; scrubbed 500 if
-                the plugin fails to load, its protocol cannot provide declared
-                artifact metadata, its declaration is invalid, or its canonical
+                the plugin fails to load, its declared protocol line is
+                unsupported, its declaration is invalid, or its canonical
                 JSON is unencodable.
         """
 
@@ -667,7 +668,8 @@ def create_app(
         Raises:
             HTTPException: 404 if the model key is unknown or the engine
                 declares no capabilities; scrubbed 500 if the registered
-                model's plugin fails to load, its capability descriptor
+                model's plugin fails to load, its declared protocol line is
+                unsupported, its capability descriptor
                 raises, or its canonical JSON is unencodable (see
                 :func:`_metadata_or_http_error`).
         """
@@ -733,6 +735,7 @@ def create_app(
         Raises:
             HTTPException: 404 if the model key is unknown; scrubbed 500
                 if the registered model's plugin fails to load, its
+                declared protocol line is unsupported, its
                 descriptor raises, or its schema is unencodable (see
                 :func:`_metadata_or_http_error`).
         """

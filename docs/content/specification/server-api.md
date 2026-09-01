@@ -156,7 +156,7 @@ An unknown model key returns **404**. A registered plugin that cannot load, an
 invalid declaration, or a protocol line this core does not support (older or
 newer) is a deployment fault and returns a scrubbed **500**. The endpoint never
 fabricates `NO_ARTIFACT_LIFECYCLE` for an engine on an unsupported line. The
-same protocol gate guards every per-model class-metadata projection --
+same protocol gate guards every per-model class-metadata endpoint --
 `/v1/capabilities`, `/v1/params-schema`, and `/v1/config-schema` map an
 unsupported line to the same scrubbed 500: a mismatched declaration is not
 safely interpretable under this core's semantics. Only `/v1/models`
@@ -496,7 +496,7 @@ Client authors MUST handle **both**:
   - `service_unavailable`: required configuration is absent from the server
     environment, or an inference-artifact failure prevents session
     establishment. Establishment covers session OPEN as well: an engine that
-    materializes artifacts or checks credentials when the session opens (the
+    acquires artifacts or checks credentials when the session opens (the
     `_open` hook) reaches the client through this same frame. On that one path
     the client may already hold the §4.1.2 diagnostics frame, because
     establishment succeeded and attached its diagnostics before the open
