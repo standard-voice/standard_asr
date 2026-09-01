@@ -99,7 +99,7 @@ class _ConfigNoLang(BaseConfig[Literal["dummy"]]):
 class _Props(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "demo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -120,6 +120,29 @@ class _GoodASR:
     declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
     effective_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _GoodParams
+    # The supported protocol line carries the artifact lifecycle, so a
+    # compliant structural engine authors the metadata and exposes both
+    # lifecycle methods -- the same reason this fixture implements
+    # recommended_wire_format.
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=ArtifactDeclaration(
+            applicable=False,
+            supports_explicit_acquisition=False,
+            may_acquire_during_inference=False,
+        )
+    )
+
+    def artifact_status(self, context: ArtifactContext | None = None) -> ArtifactReport:
+        return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
+    def acquire_artifacts(
+        self,
+        context: ArtifactContext | None = None,
+        *,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        return self.artifact_status(context)
 
     def __init__(self) -> None:
         self.config = _Config(engine="dummy")
@@ -196,6 +219,20 @@ def bypassed_props_factory() -> _BypassedPropsASR:  # pyright: ignore[reportUnus
 
 class _FutureMajorProps(_Props):
     protocol_version: str = "2.0.0"
+
+
+class _ShadowedPropertiesASR(_GoodASR):
+    # Class declares the supported line; __init__ rebuilds properties on the
+    # instance with a DIFFERENT line -- the honest rebuild-from-config
+    # mistake that splits the class-read surfaces from the instance-read
+    # runtime gates.
+    def __init__(self) -> None:
+        super().__init__()
+        self.properties = _Props(protocol_version="0.3.0")  # type: ignore[misc]
+
+
+def shadowed_properties_factory() -> _ShadowedPropertiesASR:  # pyright: ignore[reportUnusedFunction]
+    return _ShadowedPropertiesASR()
 
 
 class _FutureMajorASR(_GoodASR):
@@ -406,25 +443,35 @@ def test_check_entrypoints_bypassed_properties_fail_revalidation() -> None:
 
 def test_check_entrypoints_unsupported_protocol_major_is_an_error() -> None:
     # An engine declaring a major this core cannot interpret must NOT be
-    # certified. _uses_artifact_lifecycle() answers False for two different
-    # reasons -- legitimately pre-1.1, and uninterpretable major -- and only
-    # the first is a reason to skip the artifact checks silently. Conflated,
-    # this engine passed compliance while require_protocol_feature() rejects
-    # it at runtime, so `status` and `pull` fail on a plugin the author was
-    # told was compliant.
+    # certified. Compliance runs the same version gate the runtime runs, so
+    # it can never pass a plugin whose artifact tooling
+    # require_protocol_feature() rejects at runtime.
     report = check_entrypoints(registry=_registry("future_major_factory"))
     assert report.passed is False
-    issue = next(i for i in report.issues if i.code == "protocol_major_unsupported")
+    issue = next(i for i in report.issues if i.code == "protocol_version_unsupported")
     assert issue.level == "error"
     assert "2.0.0" in issue.message
 
 
-def test_check_entrypoints_protocol_1_0_engine_is_not_a_major_error() -> None:
-    # The transition case AR.1 protects: a 1.0 engine stays discoverable and
-    # can still transcribe, so compliance must not report the artifact checks
-    # it legitimately skips as an unsupported major.
+def test_check_entrypoints_flags_instance_properties_that_shadow_the_class() -> None:
+    # Review round 24: the class-level gate reads the class declaration while
+    # every runtime gate reads the instance, so compliance certified an
+    # engine whose instance shadowed the declared line and which the runtime
+    # then refused on creation. The equality check closes that split.
+    report = check_entrypoints(registry=_registry("shadowed_properties_factory"))
+    assert report.passed is False
+    issue = next(i for i in report.issues if i.code == "instance_properties_diverge")
+    assert issue.level == "error"
+    # The class-level gate saw the supported line, so no version error fires;
+    # the divergence itself is the one reported root cause.
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
+
+
+def test_check_entrypoints_current_line_engine_has_no_version_error() -> None:
+    # The compliant engine declares the core's exact pre-stable line, so the
+    # shared version gate stays silent for it.
     report = check_entrypoints(registry=_registry("good_factory"))
-    assert not any(i.code == "protocol_major_unsupported" for i in report.issues)
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
 
 
 def test_check_entrypoints_runtime_params_not_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -571,6 +618,16 @@ def test_check_entrypoints_class_metadata_unreadable() -> None:
     # instantiation; the class-level metadata check surfaces that as an error.
     report = check_entrypoints(registry=_registry("unannotated_factory"), instantiate=False)
     assert any("not readable without instantiation" in i.message for i in report.issues)
+
+
+def test_instance_properties_check_tolerates_an_unresolvable_class() -> None:
+    # With an unresolvable engine class the divergence check has no class
+    # declaration to compare against; the class-level pass already reported
+    # the resolution failure, so the instance pass must not pile a spurious
+    # divergence (or a crash) on top of it.
+    report = check_entrypoints(registry=_registry("unannotated_factory"))
+    assert any("not readable without instantiation" in i.message for i in report.issues)
+    assert not any(i.code == "instance_properties_diverge" for i in report.issues)
 
 
 def test_check_entrypoints_no_instantiate_skips_invocation() -> None:
@@ -3252,7 +3309,7 @@ def test_assert_prefix_invariant_flags_frozen_prefix_rewrite() -> None:
 class _StreamProps(BaseProperties):
     engine_id: str = "streamer"
     model_name: str = "demo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -4661,18 +4718,18 @@ def test_sync_bridge_base_exception_from_supports_is_not_a_timeout_verdict() -> 
 
 
 # --------------------------------------------------------------------------- #
-# Protocol 1.1 inference-artifact static compliance.
+# Inference-artifact static compliance.
 # --------------------------------------------------------------------------- #
 class _ArtifactProps(_Props):
-    protocol_version: str = "1.1.0"
+    protocol_version: str = "0.2.0"
 
 
-class _LegacyArtifactProps(_Props):
-    protocol_version: str = "1.0.0"
+class _OutsideLineArtifactProps(_Props):
+    protocol_version: str = "0.1.0"
 
 
 class _FutureArtifactProps(_Props):
-    protocol_version: str = "1.2.0"
+    protocol_version: str = "0.3.0"
 
 
 _NO_ARTIFACT_METADATA = DeclaredEngineMetadata(
@@ -4700,16 +4757,18 @@ _INFERENCE_ONLY_ARTIFACT_METADATA = DeclaredEngineMetadata(
 _ARTIFACT_METHOD_CALLS: list[str] = []
 
 
-class _LegacyArtifactASR(_GoodASR):
-    properties: ClassVar[BaseProperties] = _LegacyArtifactProps()
+class _OutsideLineArtifactASR(_GoodASR):
+    properties: ClassVar[BaseProperties] = _OutsideLineArtifactProps()
 
 
-def legacy_artifact_factory() -> _LegacyArtifactASR:  # pyright: ignore[reportUnusedFunction]
-    return _LegacyArtifactASR()
+def outside_line_artifact_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _OutsideLineArtifactASR
+):
+    return _OutsideLineArtifactASR()
 
 
 class _ArtifactStructuralBase(_GoodASR):
-    """Plugin-owned protocol 1.1 base with side-effect sentinels."""
+    """Plugin-owned structural base with side-effect sentinels."""
 
     properties: ClassVar[BaseProperties] = _ArtifactProps()
     declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
@@ -4730,7 +4789,7 @@ class _ArtifactStructuralBase(_GoodASR):
 
 
 class _ArtifactStructuralPreset(_ArtifactStructuralBase):
-    """Preset inheriting protocol 1.1 metadata from its plugin-owned base."""
+    """Preset inheriting artifact metadata from its plugin-owned base."""
 
 
 def artifact_structural_factory() -> (  # pyright: ignore[reportUnusedFunction]
@@ -4742,6 +4801,10 @@ def artifact_structural_factory() -> (  # pyright: ignore[reportUnusedFunction]
 class _ArtifactMissingSurfaceASR(_GoodASR):
     properties: ClassVar[BaseProperties] = _ArtifactProps()
     declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
+    # Mask the base fixture's lifecycle methods: this double models an engine
+    # that never authored them.
+    artifact_status: ClassVar[None] = None  # type: ignore[assignment]
+    acquire_artifacts: ClassVar[None] = None  # type: ignore[assignment]
 
 
 def artifact_missing_surface_factory() -> (  # pyright: ignore[reportUnusedFunction]
@@ -4781,8 +4844,18 @@ def artifact_invalid_metadata_factory() -> (  # pyright: ignore[reportUnusedFunc
     return _ArtifactInvalidMetadataASR()
 
 
-class _ArtifactNoMetadataASR(_GoodASR):
+class _ArtifactNoMetadataASR:
+    # Deliberately NOT a _GoodASR subclass: the base fixture now authors
+    # declared_metadata, and this double models an engine whose whole
+    # hierarchy never authored it.
     properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="ok")
 
 
 def artifact_no_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
@@ -5020,20 +5093,27 @@ def artifact_not_applicable_factory() -> (  # pyright: ignore[reportUnusedFuncti
     return _ArtifactNotApplicableEngine()
 
 
-def test_protocol_1_1_static_artifact_check_is_side_effect_free() -> None:
+def test_static_artifact_check_is_side_effect_free() -> None:
     _ARTIFACT_METHOD_CALLS.clear()
     report = check_entrypoints(registry=_registry("artifact_structural_factory"))
     assert report.passed is True, [issue.message for issue in report.issues]
     assert _ARTIFACT_METHOD_CALLS == []
 
 
-def test_protocol_1_0_does_not_require_artifact_surface() -> None:
-    report = check_entrypoints(registry=_registry("legacy_artifact_factory"), instantiate=False)
-    assert report.passed is True, [issue.message for issue in report.issues]
-    assert not any("artifact" in issue.code for issue in report.issues)
+def test_outside_line_engine_is_refused_not_silently_skipped() -> None:
+    # There is no legitimate older line within protocol major 0: an engine
+    # declaring the previous 0.MINOR generation is refused loudly instead of
+    # being certified with the artifact checks silently skipped.
+    report = check_entrypoints(
+        registry=_registry("outside_line_artifact_factory"), instantiate=False
+    )
+    assert report.passed is False
+    issue = next(i for i in report.issues if i.code == "protocol_version_unsupported")
+    assert "0.1.0" in issue.message
+    assert not any("artifact" in i.code for i in report.issues)
 
 
-def test_protocol_1_1_requires_both_artifact_methods() -> None:
+def test_compliance_requires_both_artifact_methods() -> None:
     report = check_entrypoints(
         registry=_registry("artifact_missing_surface_factory"), instantiate=False
     )
@@ -5043,7 +5123,7 @@ def test_protocol_1_1_requires_both_artifact_methods() -> None:
     assert any("acquire_artifacts" in issue.message for issue in issues)
 
 
-def test_protocol_1_1_requires_sync_exact_artifact_method_shapes() -> None:
+def test_compliance_requires_sync_exact_artifact_method_shapes() -> None:
     report = check_entrypoints(
         registry=_registry("artifact_bad_surface_factory"), instantiate=False
     )
@@ -5051,7 +5131,7 @@ def test_protocol_1_1_requires_sync_exact_artifact_method_shapes() -> None:
     assert any(issue.code == "artifact_method_signature_invalid" for issue in report.issues)
 
 
-def test_protocol_1_1_requires_typed_authored_metadata() -> None:
+def test_compliance_requires_typed_authored_metadata() -> None:
     invalid = check_entrypoints(
         registry=_registry("artifact_invalid_metadata_factory"), instantiate=False
     )
@@ -5066,7 +5146,7 @@ def test_protocol_1_1_requires_typed_authored_metadata() -> None:
     assert any(issue.code == "missing_declared_metadata" for issue in missing.issues)
 
 
-def test_protocol_1_1_revalidates_bypassed_artifact_metadata() -> None:
+def test_compliance_revalidates_bypassed_artifact_metadata() -> None:
     invariant = check_entrypoints(
         registry=_registry("artifact_bypassed_metadata_factory"), instantiate=False
     )
@@ -5077,7 +5157,7 @@ def test_protocol_1_1_revalidates_bypassed_artifact_metadata() -> None:
     assert any(issue.code == "declared_metadata_invalid" for issue in booleans.issues)
 
 
-def test_protocol_1_1_contains_unexpected_metadata_projection_failure(
+def test_compliance_contains_unexpected_metadata_projection_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_model_dump(*args: object, **kwargs: object) -> dict[str, object]:
@@ -5089,7 +5169,7 @@ def test_protocol_1_1_contains_unexpected_metadata_projection_failure(
     assert any(issue.code == "declared_metadata_invalid" for issue in report.issues)
 
 
-def test_protocol_1_1_requires_metadata_extension_namespace() -> None:
+def test_compliance_requires_metadata_extension_namespace() -> None:
     unnamespaced = check_entrypoints(
         registry=_registry("artifact_unnamespaced_metadata_factory"), instantiate=False
     )
@@ -5102,21 +5182,54 @@ def test_protocol_1_1_requires_metadata_extension_namespace() -> None:
     assert namespaced.passed is True, [issue.message for issue in namespaced.issues]
 
 
-def test_future_minor_tolerates_unknown_standard_metadata_section() -> None:
+def test_frozen_reader_tolerates_newer_minor_standard_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Freeze-day counterexample (review round 23): under a STABLE major a
+    # newer-minor producer passes the line gate, and its unknown standard
+    # sections are the tolerant-reader case the protocol promises to
+    # preserve -- flagging them as vendor extensions missing the namespace would
+    # punish legal additive evolution. Dormant during major 0 (the line gate
+    # never admits a newer minor), proven here under synthetic constants.
+    import standard_asr.compliance as compliance_module
+    import standard_asr.contract.protocol_version as protocol_version_module
+
+    monkeypatch.setattr(protocol_version_module, "SUPPORTED_PROTOCOL_MAJOR", 1)
+    monkeypatch.setattr(protocol_version_module, "CURRENT_PROTOCOL_VERSION", "1.0.0")
+    monkeypatch.setattr(compliance_module, "CURRENT_PROTOCOL_VERSION", "1.0.0")
+    monkeypatch.setattr(
+        _ArtifactFutureMetadataASR, "properties", _ArtifactProps(protocol_version="1.1.0")
+    )
+
     report = check_entrypoints(
         registry=_registry("artifact_future_metadata_factory"), instantiate=False
     )
-    assert report.passed is True, [issue.message for issue in report.issues]
+
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
+    assert not any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
 
 
-def test_protocol_1_1_accepts_plugin_owned_metadata_and_hook_inheritance() -> None:
+def test_future_line_is_refused_before_metadata_checks() -> None:
+    # Within protocol major 0 a NEWER minor is just as unsupported as an
+    # older one -- each 0.MINOR generation may change the contract -- so the
+    # version gate refuses the engine before any metadata check can certify
+    # or mis-flag its sections.
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+    assert report.passed is False
+    assert any(i.code == "protocol_version_unsupported" for i in report.issues)
+    assert not any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_compliance_accepts_plugin_owned_metadata_and_hook_inheritance() -> None:
     report = check_entrypoints(
         registry=_registry("artifact_hook_preset_factory"), instantiate=False
     )
     assert report.passed is True, [issue.message for issue in report.issues]
 
 
-def test_protocol_1_1_accepts_descriptor_methods_with_the_same_call_shape() -> None:
+def test_compliance_accepts_descriptor_methods_with_the_same_call_shape() -> None:
     class _DescriptorSurface:
         @staticmethod
         def artifact_status(context: ArtifactContext | None = None) -> ArtifactReport:
@@ -5140,7 +5253,7 @@ def test_protocol_1_1_accepts_descriptor_methods_with_the_same_call_shape() -> N
     )
 
 
-def test_protocol_1_1_rejects_uninspectable_and_receiverless_method_shapes() -> None:
+def test_compliance_rejects_uninspectable_and_receiverless_method_shapes() -> None:
     def receiverless() -> ArtifactReport:
         raise AssertionError("shape check called receiverless")
 
@@ -5162,7 +5275,7 @@ def test_protocol_1_1_rejects_uninspectable_and_receiverless_method_shapes() -> 
     )
 
 
-def test_protocol_1_1_hook_check_fails_closed_on_shapes_it_cannot_prove() -> None:
+def test_hook_check_fails_closed_on_shapes_it_cannot_prove() -> None:
     # Two shapes that slipped through while the check failed open. An async
     # ``__call__`` is invisible to ``iscoroutinefunction`` on the object itself,
     # so a callable instance reported as synchronous and the core would store
@@ -5187,7 +5300,7 @@ def test_protocol_1_1_hook_check_fails_closed_on_shapes_it_cannot_prove() -> Non
     assert "cannot read" in unreadable
 
 
-def test_protocol_1_1_public_check_rejects_an_async_callable_object() -> None:
+def test_public_check_rejects_an_async_callable_object() -> None:
     # ``iscoroutinefunction`` answers False for a callable OBJECT whose
     # ``__call__`` is async, so the public-method check certified a surface
     # the runtime then rejects (``require_sync_result`` refuses the coroutine
@@ -5217,7 +5330,7 @@ def test_protocol_1_1_public_check_rejects_an_async_callable_object() -> None:
     assert "artifact_status()" in issues[0].message
 
 
-def test_protocol_1_1_rejects_a_hook_the_core_cannot_call() -> None:
+def test_compliance_rejects_a_hook_the_core_cannot_call() -> None:
     # Overriding is not implementing. Compliance pins the PUBLIC artifact
     # methods' signatures, but an EngineBase subclass inherits those, so that
     # check passes for free while the hooks the plugin actually wrote go
@@ -5248,7 +5361,7 @@ def test_protocol_1_1_rejects_a_hook_the_core_cannot_call() -> None:
     assert not any(i.code == "artifact_hook_signature_invalid" for i in good.issues)
 
 
-def test_protocol_1_1_requires_hooks_promised_by_static_booleans() -> None:
+def test_compliance_requires_hooks_promised_by_static_booleans() -> None:
     missing_status = check_entrypoints(
         registry=_registry("artifact_missing_requirements_hook_factory"), instantiate=False
     )

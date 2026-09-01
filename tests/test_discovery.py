@@ -9,7 +9,7 @@ import asyncio
 import inspect
 import runpy
 from importlib.metadata import EntryPoint, EntryPoints
-from typing import Any, AsyncIterator, ClassVar, Literal
+from typing import Any, AsyncIterator, ClassVar, Literal, cast
 
 import pytest
 from pydantic import ConfigDict
@@ -28,10 +28,18 @@ from standard_asr.contract.exceptions import (
     ConfigError,
     EntrypointValidationError,
     FactoryLoadError,
+    ProtocolCompatibilityError,
 )
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
 from standard_asr.contract.params import ProviderParams
-from standard_asr.engine import BaseConfig, BaseProperties, SampleRateRange
+from standard_asr.engine import (
+    NO_ARTIFACT_LIFECYCLE,
+    ArtifactReport,
+    BaseConfig,
+    BaseProperties,
+    DeclaredEngineMetadata,
+    SampleRateRange,
+)
 from standard_asr.plugins import discovery as discovery_module
 from standard_asr.plugins.discovery import (
     ENTRYPOINT_GROUP,
@@ -57,7 +65,7 @@ class _DummyConfig(BaseConfig[Literal["dummy"]]):
 class _DummyProperties(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "demo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -74,6 +82,13 @@ _DUMMY_CAPS = DeclaredCapabilities(
 class _DummyASR:
     properties: ClassVar[_DummyProperties] = _DummyProperties()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _DUMMY_CAPS
+    # The supported protocol line carries the artifact lifecycle, so even this
+    # minimal structural fixture authors the metadata and answers both
+    # lifecycle operations (the CLI transcribe preflight calls
+    # artifact_status on any engine that declares the line).
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=NO_ARTIFACT_LIFECYCLE
+    )
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -82,9 +97,51 @@ class _DummyASR:
     def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
         return TranscriptionResult(text="dummy")
 
+    def artifact_status(self, context: Any = None) -> ArtifactReport:
+        return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
+    def acquire_artifacts(
+        self,
+        context: Any = None,
+        *,
+        refresh: bool = False,
+        progress: Any = None,
+    ) -> ArtifactReport:
+        return self.artifact_status(context)
+
 
 def _dummy_factory(**kwargs: Any) -> _DummyASR:  # pyright: ignore[reportUnusedFunction]
     return _DummyASR(**kwargs)
+
+
+class _OutsideLineDummyProperties(_DummyProperties):
+    protocol_version: str = "0.1.0"
+
+
+class _OutsideLineDummyASR(_DummyASR):
+    properties: ClassVar[_DummyProperties] = _OutsideLineDummyProperties()
+
+
+def _outside_line_factory(**kwargs: Any) -> _OutsideLineDummyASR:  # pyright: ignore[reportUnusedFunction]
+    return _OutsideLineDummyASR(**kwargs)
+
+
+class _DuckPropertiesASR:
+    """Engine-shaped object whose ``properties`` is not a ``BaseProperties``.
+
+    The create-time line gate reads only typed properties; an untyped
+    declaration is compliance's defect to report, so ``create`` must hand
+    the object back rather than crash on it.
+    """
+
+    properties: ClassVar[dict[str, str]] = {"protocol_version": "9.9.9"}
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="duck")
+
+
+def _duck_properties_factory() -> _DuckPropertiesASR:  # pyright: ignore[reportUnusedFunction]
+    return _DuckPropertiesASR()
 
 
 class _NotAnEngine:
@@ -1412,3 +1469,34 @@ def test_running_the_discovery_module_points_at_the_real_cli() -> None:
     message = str(excinfo.value.code)
     assert "standard-asr list" in message
     assert "--strict-discovery" in message
+
+
+def test_create_refuses_an_outside_line_engine() -> None:
+    # AR.1: the registry is the one construction seam every toolchain
+    # consumer shares, so a mismatched installed plugin fails loudly at
+    # creation instead of transcribing with possibly drifted semantics.
+    eps = [
+        EntryPoint(
+            name="dummy/old",
+            value="tests.test_discovery:_outside_line_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(ProtocolCompatibilityError, match="pre-stable line 0.2"):
+        registry.create("dummy/old")
+
+
+def test_create_leaves_untyped_properties_to_compliance() -> None:
+    # The gate reads only a typed BaseProperties declaration; an untyped one
+    # is a compliance defect, and create hands the object back unchanged.
+    eps = [
+        EntryPoint(
+            name="dummy/duck",
+            value="tests.test_discovery:_duck_properties_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    duck = cast("_DuckPropertiesASR", registry.create("dummy/duck"))
+    assert duck.transcribe(None).text == "duck"

@@ -556,9 +556,7 @@ def create_app(
             require_artifact_protocol(engine_class)
             metadata = getattr(engine_class, "declared_metadata", None)
             if not isinstance(metadata, DeclaredEngineMetadata):
-                raise EngineContractError(
-                    "A protocol 1.1 engine must declare typed engine metadata."
-                )
+                raise EngineContractError("The engine must declare typed engine metadata.")
             return metadata.canonical_json()
 
         return _metadata_or_http_error(model_registry, model, HTTPException, project=_project)
@@ -1357,8 +1355,8 @@ async def _bridge_stream(
     # start until entry succeeded. An exception here therefore escaped the
     # route entirely -- the ASGI server logged the RAW traceback (bypassing
     # the operator-log redaction ``log_exception_safely`` exists to enforce)
-    # and the client got an abrupt close with no verdict frame. Protocol 1.1
-    # makes the seam an EXPECTED one: ``_open`` is where an engine declaring
+    # and the client got an abrupt close with no verdict frame. The artifact
+    # lifecycle makes the seam an EXPECTED one: ``_open`` is where an engine declaring
     # ``may_acquire_during_inference`` materializes artifacts, and
     # server-api.md 4.2 already promises ``service_unavailable`` for an
     # artifact failure that prevents session establishment. Entered explicitly

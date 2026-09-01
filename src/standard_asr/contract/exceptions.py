@@ -76,16 +76,20 @@ class StructuredError(StandardASRError):
 
 
 class ProtocolCompatibilityError(StandardASRError):
-    """Raised when an engine protocol cannot provide a requested feature.
+    """Raised when an engine's declared protocol cannot be used by this core.
 
     The error reports a version compatibility boundary, not a missing Python
-    attribute. Generic consumers raise it before they inspect a feature that an
-    older engine protocol does not define.
+    attribute. It covers both directions: an engine on an older protocol line
+    than the core supports, and an engine on a newer one. Generic consumers
+    raise it before they inspect a member the declared protocol does not
+    define.
 
     Args:
         message: Human-readable description of the incompatibility.
         protocol_version: Protocol version declared by the engine.
-        feature: Stable feature identifier requested by the consumer.
+        feature: Stable feature identifier requested by the consumer, or
+            ``None`` when the incompatibility is at the protocol-line level
+            rather than about one feature.
         required_protocol_version: Earliest protocol version that defines the
             feature, if known.
     """
@@ -95,7 +99,7 @@ class ProtocolCompatibilityError(StandardASRError):
         message: str,
         *,
         protocol_version: str,
-        feature: str,
+        feature: str | None = None,
         required_protocol_version: str | None = None,
     ) -> None:
         self.protocol_version = protocol_version

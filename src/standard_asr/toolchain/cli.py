@@ -689,10 +689,9 @@ def _print_declared_capabilities(spec: Any) -> None:
 def _print_declared_metadata(spec: Any) -> None:
     """Print one engine class's protocol-gated declared metadata.
 
-    The selected plugin class is resolved, but never instantiated. Artifact
-    metadata did not exist before protocol 1.1, so a legacy engine is rendered
-    as unsupported instead of treating a missing declaration as a false
-    no-artifact claim.
+    The selected plugin class is resolved, but never instantiated. An engine
+    on an unsupported protocol line is rendered as unsupported instead of
+    treating its missing declaration as a false no-artifact claim.
 
     Args:
         spec: Selected model specification.
@@ -723,7 +722,7 @@ def _print_declared_metadata(spec: Any) -> None:
 
     metadata = _run_engine_call(lambda: getattr(engine_class, "declared_metadata", None))
     if metadata is None:
-        print("  Declared metadata: <invalid: protocol 1.1 requires declared_metadata.artifacts>")
+        print("  Declared metadata: <invalid: the protocol requires declared_metadata.artifacts>")
         return
     if not isinstance(metadata, DeclaredEngineMetadata):
         print(
@@ -941,15 +940,16 @@ def _artifact_operation(asr: Any, member: str) -> Callable[..., Any]:
         The bound synchronous operation.
 
     Raises:
-        EngineContractError: If the protocol 1.1 engine omits the operation or
-            exposes a non-callable value.
+        EngineContractError: If the engine omits the operation or
+            exposes a non-callable value after passing the protocol guard.
         _EngineFault: If plugin attribute lookup raises a ``ValueError`` family
             exception.
     """
     operation = _run_engine_call(lambda: getattr(asr, member, None))
     if not callable(operation):
         raise EngineContractError(
-            f"Protocol 1.1 engine {safe_type_name(asr)} must expose callable {member}()."
+            f"Engine {safe_type_name(asr)} passed the artifact protocol guard "
+            f"but does not expose callable {member}()."
         )
     return operation
 
@@ -1938,11 +1938,13 @@ def _transcribe_artifact_preflight(
     name: str,
     params: RuntimeParams,
 ) -> None:
-    """Emit an advisory first-use artifact notice for protocol 1.1 engines.
+    """Emit an advisory first-use artifact notice before transcription.
 
-    Protocol compatibility is probed before looking up the new operation. A
-    pre-1.1 engine skips this advisory step so ordinary transcription remains
-    usable while plugins migrate. A typed status-inspection failure is downgraded to a
+    Protocol compatibility is probed before looking up the operation, and a
+    mismatch propagates: an engine on an unsupported protocol line MUST NOT
+    transcribe (AR.1 makes its semantics unknowable), so the typed
+    compatibility error ends the command at usage exit 2 rather than being
+    downgraded. A typed status-inspection failure is downgraded to a
     scrubbed warning; caller-input, configuration, and contract failures remain
     loud.
 
@@ -1955,18 +1957,17 @@ def _transcribe_artifact_preflight(
         None.
 
     Raises:
-        Exception: Non-status errors raised by the protocol 1.1 engine.
+        ProtocolCompatibilityError: If the engine's declared protocol line is
+            not supported by this core (mapped to usage exit 2).
+        Exception: Non-status errors raised by the engine.
     """
     properties = _run_engine_call(lambda: getattr(asr, "properties", None))
     if properties is None:
-        # Legacy structural engines can predate the class-level Properties
-        # declaration as well as protocol 1.1. The advisory cannot classify
-        # them, and must not make a previously valid transcription unavailable.
+        # A structural engine may omit the class-level Properties
+        # declaration entirely. The advisory cannot classify it, and must not
+        # make an otherwise valid transcription unavailable.
         return
-    try:
-        _run_engine_call(lambda: require_artifact_protocol(asr))
-    except ProtocolCompatibilityError:
-        return
+    _run_engine_call(lambda: require_artifact_protocol(asr))
 
     try:
         report = _call_artifact_status(asr, ArtifactContext(params=params))

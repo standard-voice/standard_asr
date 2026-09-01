@@ -136,11 +136,11 @@ subclass) that exposes:
 
 - `properties`: a `BaseProperties` instance (class attribute / `ClassVar`).
 - `declared_capabilities`: a `DeclaredCapabilities` instance (`ClassVar`).
-- `declared_metadata`: a `DeclaredEngineMetadata` instance (`ClassVar`) for a
-  protocol 1.1 engine. Its required `artifacts` section must be authored by the
-  plugin class hierarchy, not inherited from the core transition placeholder.
-  Additional producer sections in protocol 1.1 use the
-  `x_<vendor>_<name>` namespace. A future protocol minor can add standard
+- `declared_metadata`: a `DeclaredEngineMetadata` instance (`ClassVar`). Its
+  required `artifacts` section must be authored by the
+  plugin class hierarchy, not inherited from the core fail-loud placeholder.
+  Additional producer sections use the
+  `x_<vendor>_<name>` namespace. A future protocol version can add standard
   sections without the `x_` prefix, which older readers preserve.
 - `config`: a `BaseConfig` instance (captured at initialization).
 - `transcribe(audio, params)` returning `TranscriptionResult`, where `params` is
@@ -287,7 +287,7 @@ The `standard_asr.compliance.check_entrypoints()` helper powers the compliance s
 2. Factories load successfully.
 3. Factories that can be invoked without arguments produce an object exposing `transcribe`.
 4. `properties.model_id` matches the entry point key.
-5. A protocol 1.1 engine authors valid declared metadata and the required
+5. The engine authors valid declared metadata and the required
    artifact methods without executing status or acquisition.
 
 Plugin authors can integrate the check into their CI:
@@ -312,7 +312,7 @@ also importable from `standard_asr.compliance`:
 
 | Check | What it asserts | How to run |
 | --- | --- | --- |
-| `check_entrypoints` | Entry-point metadata, capability and declared-metadata declarations, the protocol 1.1 artifact surface, and the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
+| `check_entrypoints` | Entry-point metadata, capability and declared-metadata declarations, the artifact surface, and the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
 | `check_provider_params_swap_safety(engine)` | An engine rejects another engine's `provider_params` rather than silently misreading them (spec Runtime R3 / §5.4) | `standard-asr compliance run` (per zero-arg engine) |
 | `check_streaming_param_gating(engine)` | A streaming engine gates an unsupported standard parameter per its strict/best_effort policy | `standard-asr compliance run` (per zero-arg streaming engine) |
 | `check_recommended_wire_format(engine)` | `recommended_wire_format()` returns `AudioFormat \| None` and any returned format passes the engine's own session-establishment rule — the member is unconditional (spec §3.1: Properties-pure, capability-blind), so this holds for **every** engine, batch-only included | `standard-asr compliance run` (per zero-arg engine, inside the entrypoint instance checks) |

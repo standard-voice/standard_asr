@@ -80,7 +80,7 @@ class _DummyConfig(BaseConfig[str]):
 class _DummyProperties(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "echo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -237,14 +237,10 @@ def _no_instantiate_config_type_factory() -> (  # pyright: ignore[reportUnusedFu
     return _NoInstantiateConfigTypeASR()
 
 
-class _MetadataProperties(_DummyProperties):
-    protocol_version: str = "1.1.0"
-
-
 class _NoInstantiateMetadataASR(_NoInstantiateASR):
-    """Protocol 1.1 engine whose static metadata needs no construction."""
+    """Engine whose static metadata needs no construction."""
 
-    properties: ClassVar[_DummyProperties] = _MetadataProperties()
+    properties: ClassVar[_DummyProperties] = _DummyProperties()
     declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
         {
             "artifacts": ArtifactDeclaration(
@@ -285,7 +281,7 @@ class _MetadataDuckPropertiesASR(_NoInstantiateMetadataASR):
     """
 
     properties: ClassVar[_DummyProperties] = cast(
-        _DummyProperties, SimpleNamespace(protocol_version="1.1.0")
+        _DummyProperties, SimpleNamespace(protocol_version="0.2.0")
     )
 
 
@@ -296,7 +292,7 @@ def _metadata_duck_properties_factory() -> (  # pyright: ignore[reportUnusedFunc
 
 
 class _MetadataMissingDeclarationASR(_NoInstantiateMetadataASR):
-    """Broken protocol 1.1 engine without typed declared metadata."""
+    """Broken engine without typed declared metadata."""
 
     declared_metadata: ClassVar[DeclaredEngineMetadata] = cast(DeclaredEngineMetadata, None)
 
@@ -308,7 +304,7 @@ def _metadata_missing_declaration_factory() -> (  # pyright: ignore[reportUnused
 
 
 class _MetadataUnvalidatedDeclarationASR(_NoInstantiateMetadataASR):
-    """Protocol 1.1 engine whose declaration skipped validation.
+    """Engine whose declaration skipped validation.
 
     The instance IS a ``DeclaredEngineMetadata``, so the endpoint's isinstance
     check passes; only its contents never met a validator.
@@ -329,7 +325,7 @@ _LEGACY_METADATA_SENTINEL = "legacy-metadata-must-not-be-read"
 
 
 class _LegacyMetadataProperties(_DummyProperties):
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.1.0"
 
 
 class _LegacyMetadataMeta(type):
@@ -649,7 +645,7 @@ def _bare_value_error_start_factory() -> (  # pyright: ignore[reportUnusedFuncti
 class _StaleResultProperties(BaseProperties):
     engine_id: str = "dummy"
     model_name: str = "echo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = "any"
@@ -703,7 +699,7 @@ def _wav_bytes(rate: int, samples: int = 1600) -> bytes:
 class _Array8kProperties(BaseProperties):
     engine_id: str = "rec"
     model_name: str = "array8k"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 8000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [8000]
@@ -734,7 +730,7 @@ def _recording_array8k_factory() -> _RecordingArray8kASR:  # pyright: ignore[rep
 class _EncodedProperties(BaseProperties):
     engine_id: str = "rec"
     model_name: str = "bytes"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ENCODED_BYTES}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = "any"
@@ -766,7 +762,7 @@ class _AutoLangProperties(BaseProperties):
 
     engine_id: str = "rec"
     model_name: str = "autolang"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -1163,7 +1159,7 @@ def test_declared_metadata_endpoint_unknown_model_maps_to_404() -> None:
 def test_declared_metadata_legacy_protocol_is_scrubbed_deployment_500(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A legacy plugin cannot provide protocol 1.1 declared metadata.
+    """An outside-line plugin cannot provide the declared metadata.
 
     The installed plugin version is a deployment fault that no wire request can
     repair, so it maps to the metadata boundary's scrubbed 500. The protocol
@@ -1184,7 +1180,7 @@ def test_declared_metadata_legacy_protocol_is_scrubbed_deployment_500(
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Internal model metadata error. See server logs for details."
-    assert "1.0.0" not in resp.text
+    assert "0.1.0" not in resp.text
     assert "artifact_lifecycle" not in resp.text
     assert _LEGACY_METADATA_SENTINEL not in resp.text
     assert _LEGACY_METADATA_SENTINEL not in caplog.text
@@ -3005,7 +3001,7 @@ def test_capabilities_no_instantiation() -> None:
 class _StreamProperties(BaseProperties):
     engine_id: str = "stream"
     model_name: str = "echo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]

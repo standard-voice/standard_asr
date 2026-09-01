@@ -276,7 +276,7 @@ def _derive_readiness(
         requirements: Logical artifact requirements in the resolved closure.
 
     Returns:
-        A canonical protocol 1.1 readiness token.
+        A canonical readiness token.
     """
     if not applicable:
         return ARTIFACTS_NOT_APPLICABLE

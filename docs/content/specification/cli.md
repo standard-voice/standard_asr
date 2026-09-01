@@ -37,8 +37,8 @@ compared field-for-field (spec §C R6; the two layers share one capability model
 If an engine mis-declares its `declared_capabilities` (for example, as a raw dict), the
 capabilities line reports the problem and the rest of the metadata still renders.
 
-Declared metadata is rendered as canonical JSON for protocol 1.1 engines. A
-legacy protocol is shown as unsupported; a missing or invalid protocol 1.1
+Declared metadata is rendered as canonical JSON for supported engines. An
+unsupported protocol line is shown as unsupported; a missing or invalid
 declaration is shown as invalid. `show` resolves only the selected plugin.
 `standard-asr list` remains entry-point-only and does not import plugins.
 
@@ -111,8 +111,9 @@ Flags:
 
 Pull exits 0 when every required artifact is ready. An optional blocked artifact
 produces a warning and still exits 0. A disabled network path or known required
-operator action exits 2; protocol 1.0 also exits 2 because the installed plugin
-must be upgraded for this command. A native acquisition failure, busy or
+operator action exits 2; an unsupported protocol line also exits 2 because the
+fix is invoker-owned -- install a core and plugin that share a protocol line.
+A native acquisition failure, busy or
 unsupported required acquisition, status failure, or progress callback failure
 exits 1. `pull --refresh` exits 2 when downloads are disabled and a mutable
 source exists.
@@ -171,7 +172,7 @@ before constructing anything; a returned session is never entered, but a
 non-compliant implementation may still run arbitrary author code in the
 method body). Flags:
 
-For protocol 1.1, the class-level pass also checks the two synchronous artifact
+The class-level pass also checks the two synchronous artifact
 method signatures, plugin-owned metadata authorship, declaration invariants,
 and required `EngineBase` hook overrides. The default check never calls
 `artifact_status()` or `acquire_artifacts()`.
@@ -283,8 +284,11 @@ are rendered to **stderr**, so stdout stays a clean, pipeable transcript while a
 degrade is never silent. `--json` prints the full
 result (diagnostics included) to stdout.
 
-For a protocol 1.1 engine, the command first performs advisory artifact status
-inspection. If required artifacts are not ready and inference can acquire them,
+Before transcribing, the command runs the protocol-line gate and then an
+advisory artifact status inspection. An engine on an unsupported protocol
+line exits 2 without transcribing: its inference semantics are not
+interpretable by this core, so the compatibility error is never downgraded
+to a warning. If required artifacts are not ready and inference can acquire them,
 stderr explains that the first transcription can acquire artifacts and points
 to `standard-asr pull`. An unknown state uses “may acquire” wording. An
 `ArtifactStatusError` at this advisory step becomes a scrubbed warning and
@@ -345,7 +349,8 @@ is nothing to analyze). Does not resolve or install anything.
   - **Exit 2 (invoker-actionable).** A mis-typed flag; an unknown/malformed
     model key; a bad `--options` payload (validated by `_parse_options`
     before the engine runs); a strict-mode `UnsupportedFeatureError`; a bad
-    audio input; a protocol 1.0 plugin selected for an artifact command; a
+    audio input; a plugin on an unsupported protocol line selected for
+    transcription or an artifact command; a
     required `downloads_disabled` or `action_required` artifact state; and
     every `ConfigError` -- configuration is invoker-owned
     at the CLI *whichever seam it surfaces at*, including a factory

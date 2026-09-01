@@ -28,7 +28,7 @@ engine = registry.create("faster-whisper/large-v3", device="cpu")
 
 ### Inspect and acquire inference artifacts
 
-Protocol 1.1 engines report the persistent artifacts needed by a configured
+Engines report the persistent artifacts needed by a configured
 inference path:
 
 ```python

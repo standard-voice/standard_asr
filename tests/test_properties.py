@@ -23,7 +23,7 @@ def _base_kwargs() -> dict[str, Any]:
     return {
         "engine_id": "engine",
         "model_name": "model",
-        "protocol_version": "1.0.0",
+        "protocol_version": "0.2.0",
         "accepted_input": {InputKind.ARRAY},
         "native_sample_rate": 16000,
         "accepted_sample_rates": [16000],
@@ -299,7 +299,7 @@ def test_class_level_defaults_run_field_validators() -> None:
     class _BadDeclaration(BaseProperties):
         engine_id: str = "My/Engine!!"  # illegal identifier
         model_name: str = "model"
-        protocol_version: str = "1.0.0"
+        protocol_version: str = "0.2.0"
         accepted_input: set[InputKind] = {InputKind.ARRAY}
         native_sample_rate: int = 16000
         accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [
@@ -316,7 +316,7 @@ def test_class_level_defaults_are_normalized() -> None:
     class _UnnormalizedDeclaration(BaseProperties):
         engine_id: str = "engine"
         model_name: str = "model"
-        protocol_version: str = "1.0.0"
+        protocol_version: str = "0.2.0"
         accepted_input: set[InputKind] = {InputKind.ARRAY}
         native_sample_rate: int = 16000
         accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]

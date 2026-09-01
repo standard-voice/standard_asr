@@ -38,6 +38,7 @@ from standard_asr.contract.exceptions import (
     EngineContractError,
     IncompatibleAudioInputError,
     InvalidProviderParamError,
+    ProtocolCompatibilityError,
     TranscriptionError,
     UnsupportedFeatureError,
 )
@@ -62,7 +63,7 @@ class _Config(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
 class _ArrayProps(BaseProperties):
     engine_id: str = "arr"
     model_name: str = "echo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -117,6 +118,29 @@ def _audio() -> AudioArray:
 
 def test_engine_is_standard_asr() -> None:
     assert isinstance(_ArrayEngine(), StandardASR)
+
+
+class _OutsideLineProps(_ArrayProps):
+    protocol_version: str = "0.1.0"
+
+
+class _OutsideLineEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _OutsideLineProps()
+
+
+def test_engine_base_refuses_inference_on_an_unsupported_line() -> None:
+    # AR.1: each 0.MINOR generation may change the contract incompatibly, so
+    # the template refuses to run inference for a mismatched line instead of
+    # returning a structurally valid but possibly drifted transcript. All
+    # three inference entries share the gate (transcribe_async delegates to
+    # transcribe in a worker thread).
+    engine = _OutsideLineEngine()
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.transcribe(_audio())
+    with pytest.raises(ProtocolCompatibilityError):
+        asyncio.run(engine.transcribe_async(_audio()))
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.start_transcription()
 
 
 def test_engine_with_narrowed_config_is_assignable_without_cast() -> None:

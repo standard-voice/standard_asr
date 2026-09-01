@@ -106,11 +106,11 @@ def _patch_check_entrypoints(monkeypatch: pytest.MonkeyPatch, report: Compliance
 
 
 class _ArtifactCliProperties(BaseProperties):
-    """Protocol 1.1 properties for artifact CLI test doubles."""
+    """Current-line properties for artifact CLI test doubles."""
 
     engine_id: str = "artifact-cli"
     model_name: str = "demo"
-    protocol_version: str = "1.1.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ENCODED_FILE}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -118,9 +118,9 @@ class _ArtifactCliProperties(BaseProperties):
 
 
 class _ArtifactCliLegacyProperties(_ArtifactCliProperties):
-    """Protocol 1.0 properties used to verify compatibility errors."""
+    """Outside-line properties used to verify compatibility errors."""
 
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.1.0"
 
 
 _ARTIFACT_CLI_METADATA = DeclaredEngineMetadata(
@@ -198,13 +198,13 @@ class _ArtifactCliLegacyEngine(_ArtifactCliEngine):
 
 
 class _ArtifactCliInvalidMetadataEngine(_ArtifactCliEngine):
-    """Protocol 1.1 engine with a malformed metadata class declaration."""
+    """Engine with a malformed metadata class declaration."""
 
     declared_metadata: ClassVar[Any] = {"artifacts": {}}
 
 
 class _ArtifactCliMissingMetadataEngine(_ArtifactCliEngine):
-    """Protocol 1.1 engine omitting its required metadata declaration."""
+    """Engine omitting its required metadata declaration."""
 
     declared_metadata: ClassVar[Any] = None
 
@@ -407,7 +407,7 @@ def test_cli_show_marks_legacy_declared_metadata_unsupported(
 
     assert exit_code == 0
     assert "Declared metadata: <unsupported:" in output
-    assert "requires protocol 1.1.0" in output
+    assert "outside the supported pre-stable line 0.2" in output
     assert '"applicable"' not in output
 
 
@@ -457,7 +457,7 @@ def test_cli_show_fault_bounds_missing_protocol_1_1_declared_metadata(
 
     assert exit_code == 0
     assert "Declared metadata: <invalid:" in output
-    assert "protocol 1.1 requires declared_metadata.artifacts" in output
+    assert "the protocol requires declared_metadata.artifacts" in output
 
 
 def test_cli_declared_metadata_fault_boundary_reraises_factory_load_error(
@@ -617,7 +617,7 @@ class _StreamConfig(BaseConfig[Literal["stream"]]):
 class _StreamOkProps(BaseProperties):
     engine_id: str = "stream"
     model_name: str = "ok"  # model_id == ``stream/ok``
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -649,6 +649,13 @@ class _GatingStreamEngine(EngineBase):
 
     properties: ClassVar[BaseProperties] = _StreamOkProps()
     declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAM_CAPS
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=ArtifactDeclaration(
+            applicable=False,
+            supports_explicit_acquisition=False,
+            may_acquire_during_inference=False,
+        )
+    )
     config_type: ClassVar[type[BaseConfig[str]] | None] = _StreamConfig
 
     def __init__(self) -> None:
@@ -691,7 +698,7 @@ class _BatchConfig(BaseConfig[Literal["batch"]]):
 class _BatchOnlyProps(BaseProperties):
     engine_id: str = "batch"
     model_name: str = "only"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -703,6 +710,13 @@ class _BatchOnlyEngine(EngineBase):
 
     properties: ClassVar[BaseProperties] = _BatchOnlyProps()
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=ArtifactDeclaration(
+            applicable=False,
+            supports_explicit_acquisition=False,
+            may_acquire_during_inference=False,
+        )
+    )
     config_type: ClassVar[type[BaseConfig[str]] | None] = _BatchConfig
 
     def __init__(self) -> None:
@@ -1129,11 +1143,11 @@ def test_cli_artifact_status_rejects_missing_operation(
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "must expose callable artifact_status()" in captured.err
+    assert "does not expose callable artifact_status()" in captured.err
 
 
 @pytest.mark.parametrize("command", [["status"], ["pull"], ["pull", "--refresh"]])
-def test_cli_artifact_commands_guard_protocol_1_0_before_operation_lookup(
+def test_cli_artifact_commands_guard_unsupported_protocol_line_before_operation_lookup(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     command: list[str],
@@ -1146,7 +1160,7 @@ def test_cli_artifact_commands_guard_protocol_1_0_before_operation_lookup(
     captured = capsys.readouterr()
 
     assert exit_code == 2
-    assert "requires protocol 1.1.0" in captured.err
+    assert "outside the supported pre-stable line 0.2" in captured.err
     assert engine.status_contexts == []
     assert engine.refresh_values == []
 
@@ -1553,10 +1567,13 @@ def test_cli_transcribe_artifact_status_error_warns_and_continues(
     assert engine.transcribe_calls == 1
 
 
-def test_cli_transcribe_protocol_1_0_skips_advisory_preflight(
+def test_cli_transcribe_outside_line_engine_exits_usage_2(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # AR.1: an engine on an unsupported protocol line MUST NOT transcribe --
+    # its semantics may have drifted -- so the preflight compatibility
+    # error propagates to usage exit 2 instead of being swallowed.
     engine = _ArtifactCliLegacyEngine(
         _artifact_report(
             _artifact_requirement(
@@ -1571,11 +1588,10 @@ def test_cli_transcribe_protocol_1_0_skips_advisory_preflight(
     exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
     captured = capsys.readouterr()
 
-    assert exit_code == 0
-    assert captured.out == "artifact transcript\n"
-    assert captured.err == ""
+    assert exit_code == 2
+    assert "outside the supported pre-stable line 0.2" in captured.err
     assert engine.status_contexts == []
-    assert engine.transcribe_calls == 1
+    assert engine.transcribe_calls == 0
 
 
 @pytest.mark.parametrize(

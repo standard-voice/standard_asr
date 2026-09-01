@@ -340,6 +340,14 @@ subclasses that share it; compliance follows the MRO owner and does not require
 
 ### 7.2 Protocol generation and rollout
 
+> **Amendment (2026-08-31, maintainer decision).** The protocol number line
+> was re-based before any external release: the pre-artifact contract is
+> `0.1.0`, this feature's contract is `0.2.0`, protocol major 0 is the
+> pre-stable line with the minor as the breaking axis, and the first stable
+> release promotes the then-current contract verbatim to `1.0.0`. The `1.0.0`
+> / `1.1.0` numbers below are the historical plan as approved; spec AR.1 is
+> authoritative.
+
 This feature targets Standard ASR protocol `1.1.0` and core package `0.2.0`.
 The two version numbers have different owners: `properties.protocol_version`
 names the protocol implemented by an engine, while the package version names a

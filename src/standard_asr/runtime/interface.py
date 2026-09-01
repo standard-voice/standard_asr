@@ -71,10 +71,7 @@ from standard_asr.contract.language import (
 from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
 from standard_asr.contract.params import ProviderParams, RuntimeParams
 from standard_asr.contract.properties import BaseProperties, sample_rate_accepted
-from standard_asr.contract.protocol_version import (
-    PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE,
-    require_protocol_feature,
-)
+from standard_asr.contract.protocol_version import require_supported_protocol
 from standard_asr.contract.results import (
     ChannelResult,
     Diagnostic,
@@ -143,6 +140,8 @@ class StandardASR(Protocol):
             The transcription result.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ConfigError: On an invalid language configuration VALUE
                 (``default_language`` malformed or not selectable) -- fixable
                 by whoever supplies the config.
@@ -214,6 +213,8 @@ class StandardASR(Protocol):
             A streaming session.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ValueError: If both ``audio_format`` and ``audio`` are provided, or
                 on a malformed/``auto`` candidate-language entry (a caller code
                 bug; always raises, independent of strict/best_effort).
@@ -269,8 +270,8 @@ class StandardASR(Protocol):
             A point-in-time artifact report for the resolved context.
 
         Raises:
-            ProtocolCompatibilityError: If the engine predates artifact
-                lifecycle protocol support.
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core.
             InvalidProviderParamError: If provider params belong to another
                 engine.
             ValueError: If request language data is malformed or the explicit
@@ -300,8 +301,8 @@ class StandardASR(Protocol):
             A newly inspected artifact report.
 
         Raises:
-            ProtocolCompatibilityError: If the engine predates artifact
-                lifecycle protocol support.
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core.
             ArtifactStatusError: If preflight or final status inspection fails.
             ArtifactAcquisitionError: If acquisition is blocked or fails.
             ArtifactProgressCallbackError: After successful acquisition and
@@ -564,8 +565,14 @@ def require_artifact_protocol(engine: object) -> None:
     """Require an engine to implement the artifact-lifecycle protocol.
 
     Generic consumers call this before looking up ``artifact_status`` or
-    ``acquire_artifacts``. The ordering gives a protocol 1.0 structural engine a
-    typed compatibility error instead of a missing-attribute error.
+    ``acquire_artifacts``. The ordering gives an engine on an unsupported
+    protocol line a typed compatibility error instead of a missing-attribute
+    error. The check is the general line gate
+    (:func:`~standard_asr.contract.protocol_version.require_supported_protocol`),
+    not a feature-table lookup: every supported line carries the artifact
+    lifecycle, so no per-feature minimum survives to gate it -- which also
+    keeps the first stable release's feature-table rewrite from breaking
+    this guard.
 
     Args:
         engine: Engine instance whose declared protocol version is inspected.
@@ -575,18 +582,15 @@ def require_artifact_protocol(engine: object) -> None:
 
     Raises:
         EngineContractError: If the engine does not carry valid properties.
-        ProtocolCompatibilityError: If its protocol predates or is incompatible
-            with artifact lifecycle support.
+        ProtocolCompatibilityError: If its declared protocol line is not
+            supported by this core.
     """
     properties = getattr(engine, "properties", None)
     if not isinstance(properties, BaseProperties):
         raise EngineContractError(
             "Artifact lifecycle requires engine properties declared as a BaseProperties instance."
         )
-    require_protocol_feature(
-        properties.protocol_version,
-        PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE,
-    )
+    require_supported_protocol(properties.protocol_version)
 
 
 class _ArtifactProgressObserver:
@@ -675,7 +679,7 @@ def _artifact_required_actions(
 class EngineBase(ABC):
     """Abstract base implementing the standard transcribe pipeline.
 
-    Subclasses targeting protocol 1.1 MUST set :attr:`properties`,
+    Subclasses MUST set :attr:`properties`,
     :attr:`declared_capabilities`, and :attr:`declared_metadata` as class
     attributes, assign :attr:`config` in ``__init__`` (which MUST stay pure --
     no filesystem, GPU, or network access), and implement :meth:`_transcribe`.
@@ -686,9 +690,10 @@ class EngineBase(ABC):
 
     properties: ClassVar[BaseProperties]
     declared_capabilities: ClassVar[DeclaredCapabilities]
-    #: Protocol 1.0 transition placeholder. Protocol 1.1 compliance requires a
-    #: plugin-owned :class:`DeclaredEngineMetadata` value; artifact methods run
-    #: the version guard before inspecting this attribute.
+    #: Fail-loud placeholder, not a usable default. Compliance requires a
+    #: plugin-owned :class:`DeclaredEngineMetadata` value; an engine that
+    #: inherits this placeholder gets the typed declaration error from the
+    #: artifact methods instead of a bare ``AttributeError``.
     declared_metadata: ClassVar[DeclaredEngineMetadata] = cast("DeclaredEngineMetadata", None)
     #: The engine's expected ``provider_params`` type, or ``None``.
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
@@ -808,7 +813,7 @@ class EngineBase(ABC):
         """
 
     def _artifact_declaration(self) -> ArtifactDeclaration:
-        """Return the protocol 1.1 artifact declaration.
+        """Return the engine's authored artifact declaration.
 
         Returns:
             The engine's artifact declaration.
@@ -819,7 +824,7 @@ class EngineBase(ABC):
         metadata = cast("object", type(self).declared_metadata)
         if not isinstance(metadata, DeclaredEngineMetadata):
             raise EngineContractError(
-                "Protocol 1.1 engine metadata must be a DeclaredEngineMetadata "
+                "Engine metadata must be a DeclaredEngineMetadata "
                 "instance with an authored artifacts section."
             )
         # The outer isinstance proves the CLASS, not the section's type. The
@@ -832,7 +837,7 @@ class EngineBase(ABC):
         declaration = cast("object", metadata.artifacts)
         if not isinstance(declaration, ArtifactDeclaration):
             raise EngineContractError(
-                "Protocol 1.1 declared_metadata.artifacts must be an "
+                "declared_metadata.artifacts must be an "
                 f"ArtifactDeclaration (got {safe_type_name(declaration)})."
             )
         # The isinstance proves the section's class, not its values: a
@@ -848,9 +853,7 @@ class EngineBase(ABC):
         try:
             return ArtifactDeclaration.model_validate(declaration)
         except ValidationError as exc:
-            raise EngineContractError(
-                "Protocol 1.1 declared_metadata.artifacts fails re-validation."
-            ) from exc
+            raise EngineContractError("declared_metadata.artifacts fails re-validation.") from exc
 
     def _resolve_artifact_mode(self, requested: Mode | None, *, applicable: bool) -> Mode:
         """Resolve an omitted artifact mode without inventing engine support.
@@ -1063,7 +1066,7 @@ class EngineBase(ABC):
             A point-in-time artifact report.
 
         Raises:
-            ProtocolCompatibilityError: If the engine predates protocol 1.1.
+            ProtocolCompatibilityError: If the engine declares an unsupported protocol line.
             InvalidProviderParamError: On wrong-engine provider params.
             ValueError: On malformed request language data or an explicit mode
                 the engine does not support.
@@ -1180,7 +1183,7 @@ class EngineBase(ABC):
             A newly inspected artifact report.
 
         Raises:
-            ProtocolCompatibilityError: If the engine predates protocol 1.1.
+            ProtocolCompatibilityError: If the engine declares an unsupported protocol line.
             ArtifactStatusError: If preflight or final status inspection fails.
             ArtifactAcquisitionError: If acquisition is blocked or fails.
             ArtifactProgressCallbackError: After successful acquisition and
@@ -1407,6 +1410,8 @@ class EngineBase(ABC):
             diagnostics attached.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ConfigError: If the engine's ``default_language`` VALUE is
                 malformed or not in ``selectable_languages`` -- fixable by
                 whoever supplies the config.
@@ -1437,6 +1442,12 @@ class EngineBase(ABC):
                 fault; the template wraps it here so it can never masquerade
                 as a client-input validation error).
         """
+        # The line gate runs before any work: AR.1 makes each 0.MINOR
+        # generation potentially contract-breaking, so running a
+        # mismatched-line engine could return a structurally valid but
+        # semantically drifted transcript -- a silent wrong result. A parse
+        # and tuple comparison is negligible next to inference.
+        require_supported_protocol(self.properties.protocol_version)
         request = params or RuntimeParams()
         # Fail fast: validate config + params (no audio needed) before decode.
         self._validate_language_config()
@@ -2031,6 +2042,8 @@ class EngineBase(ABC):
             A streaming session with gating / language diagnostics attached.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ValueError: If both ``audio_format`` and ``audio`` are provided, or
                 on a malformed/``auto`` candidate-language entry (a caller code
                 bug; always raises, independent of strict/best_effort).
@@ -2060,6 +2073,9 @@ class EngineBase(ABC):
                 construction is an engine fault; wrapped here so it can never
                 masquerade as a client-input validation error).
         """
+        # Same line gate as transcribe(), for the same reason: a
+        # mismatched-line engine's streaming semantics are unknowable.
+        require_supported_protocol(self.properties.protocol_version)
         self.ensure_stream_inputs_exclusive(audio_format, audio)
         if audio_format is not None and not self.effective_capabilities.supports("streaming_input"):
             raise UnsupportedFeatureError(

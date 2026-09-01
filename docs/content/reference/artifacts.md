@@ -4,15 +4,17 @@ title: Inference Artifacts
 
 # Inference artifacts
 
-Standard ASR protocol 1.1 lets an application inspect and acquire persistent
-files or installed assets that an engine needs for inference. The contract
-describes lifecycle ownership, not whether inference is local or remote.
+The Standard ASR artifact lifecycle lets an application inspect and acquire
+persistent files or installed assets that an engine needs for inference. The
+contract describes lifecycle ownership, not whether inference is local or
+remote.
 
-Protocol 1.1 engines always expose both lifecycle methods. A legacy structural
-engine might not have them, so call `require_artifact_protocol(engine)`
+Every supported engine exposes both lifecycle methods. An engine on an
+unsupported protocol line might not have them, so call
+`require_artifact_protocol(engine)`
 (exported from `standard_asr`) before looking either method up. The guard
 raises a typed `ProtocolCompatibilityError` instead of an `AttributeError`.
-`EngineBase` supplies guarded methods that raise the same error on a pre-1.1
+`EngineBase` supplies guarded methods that raise the same error on such an
 engine.
 
 Use `artifact_status()` to inspect one configured engine without downloading,
@@ -126,8 +128,9 @@ report attached.
 
 ## Error handling
 
-- `ProtocolCompatibilityError` means the installed engine predates protocol
-  1.1 or declares an incompatible version.
+- `ProtocolCompatibilityError` means the installed engine and this core do
+  not share a protocol line -- the engine is older or newer than the core
+  supports. The message names the direction and the fix.
 - `ArtifactStatusError` means side-effect-free status inspection failed.
 - `ArtifactUnavailableError` means inference or warm-up cannot proceed because
   required artifacts are unavailable.
@@ -142,7 +145,7 @@ messages.
 
 ## Engine-author contract
 
-Every protocol 1.1 engine authors a static upper bound:
+Every engine authors a static upper bound:
 
 ```python
 from typing import ClassVar

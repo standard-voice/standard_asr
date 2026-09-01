@@ -146,16 +146,16 @@ installed plugin and does not include declared metadata or artifact status.
 
 ### 3.2.1 `GET /v1/metadata/{model}`
 
-Returns protocol 1.1 `DeclaredEngineMetadata` as canonical JSON. The endpoint
+Returns the engine class's `DeclaredEngineMetadata` as canonical JSON. The endpoint
 loads only the selected model's engine class and does not instantiate it. The
 initial `artifacts` section exposes three independent static upper bounds:
 artifact-lifecycle applicability, explicit-acquisition support, and possible
 acquisition during inference.
 
 An unknown model key returns **404**. A registered plugin that cannot load, an
-invalid declaration, or a protocol version that predates declared metadata is a
-deployment fault and returns a scrubbed **500**. The endpoint never fabricates
-`NO_ARTIFACT_LIFECYCLE` for a legacy engine.
+invalid declaration, or a protocol line this core does not support (older or
+newer) is a deployment fault and returns a scrubbed **500**. The endpoint never
+fabricates `NO_ARTIFACT_LIFECYCLE` for an engine on an unsupported line.
 
 ### 3.3 `POST /v1/transcribe` (multipart form)
 Transcribe an uploaded file.

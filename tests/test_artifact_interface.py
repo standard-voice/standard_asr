@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, ClassVar, Literal, cast
 
 import pytest
@@ -69,7 +70,7 @@ class _ArtifactConfig(LanguageConfigMixin, BaseConfig[Literal["artifact-test"]])
 class _ArtifactProperties(BaseProperties):
     engine_id: str = "artifact-test"
     model_name: str = "fixture"
-    protocol_version: str = "1.1.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -77,8 +78,8 @@ class _ArtifactProperties(BaseProperties):
     detectable_languages: list[str] = ["en", "fr"]
 
 
-class _OldArtifactProperties(_ArtifactProperties):
-    protocol_version: str = "1.0.0"
+class _OutsideLineArtifactProperties(_ArtifactProperties):
+    protocol_version: str = "0.1.0"
 
 
 class _OwnProviderParams(ProviderParams):
@@ -262,8 +263,8 @@ class _NoExplicitArtifactEngine(_ArtifactEngine):
     declared_metadata = _NO_EXPLICIT_METADATA
 
 
-class _OldProtocolEngine(_ArtifactEngine):
-    properties: ClassVar[BaseProperties] = _OldArtifactProperties()
+class _OutsideLineEngine(_ArtifactEngine):
+    properties: ClassVar[BaseProperties] = _OutsideLineArtifactProperties()
     declared_metadata = cast("DeclaredEngineMetadata", None)
 
 
@@ -1094,13 +1095,44 @@ def test_new_required_nonready_requirement_in_final_report_is_failure() -> None:
     ]
 
 
+def test_artifact_guard_survives_the_feature_table_freeze(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Freeze-day counterexample (review round 23): the guard must not depend
+    # on the feature table, whose artifact entry the first stable release
+    # removes. Under frozen constants -- and an EMPTY table -- the guard
+    # admits the stable line and its additive minors, and rejects the
+    # pre-stable line.
+    import standard_asr.contract.protocol_version as protocol_version_module
+
+    monkeypatch.setattr(protocol_version_module, "SUPPORTED_PROTOCOL_MAJOR", 1)
+    monkeypatch.setattr(protocol_version_module, "CURRENT_PROTOCOL_VERSION", "1.0.0")
+    monkeypatch.setattr(
+        protocol_version_module,
+        "PROTOCOL_FEATURE_MINIMUMS",
+        MappingProxyType(dict[str, str]()),
+    )
+
+    class _Holder:
+        properties: BaseProperties
+
+    for accepted in ("1.0.0", "1.1.0"):
+        stub = _Holder()
+        stub.properties = _ArtifactProperties(protocol_version=accepted)
+        assert require_artifact_protocol(stub) is None
+    stub = _Holder()
+    stub.properties = _ArtifactProperties(protocol_version="0.2.0")
+    with pytest.raises(ProtocolCompatibilityError):
+        require_artifact_protocol(stub)
+
+
 @pytest.mark.parametrize("operation", ["status", "acquire"])
-def test_protocol_1_0_guard_precedes_metadata_and_hooks(operation: str) -> None:
-    engine = _OldProtocolEngine((_requirement(),))
+def test_outside_line_guard_precedes_metadata_and_hooks(operation: str) -> None:
+    engine = _OutsideLineEngine((_requirement(),))
     with pytest.raises(ProtocolCompatibilityError) as caught:
         if operation == "status":
             engine.artifact_status()
         else:
             engine.acquire_artifacts()
-    assert caught.value.protocol_version == "1.0.0"
+    assert caught.value.protocol_version == "0.1.0"
     assert engine.status_calls == 0

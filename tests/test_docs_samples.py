@@ -155,4 +155,4 @@ def test_guide_minimal_engine_pins_its_protocol_version() -> None:
     )
 
     assert "CURRENT_PROTOCOL_VERSION" not in source
-    assert 'protocol_version: str = "1.1.0"' in source
+    assert 'protocol_version: str = "0.2.0"' in source

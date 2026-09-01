@@ -12,10 +12,12 @@ releases may include breaking changes.
 
 ### Added
 
-- **Inference-artifact lifecycle protocol.** Protocol 1.1 adds typed static
+- **Inference-artifact lifecycle protocol.** Protocol 0.2 adds typed static
   declarations, configured-instance status reports, explicit acquisition with
   refresh and progress, structured operator actions, and distinct availability
-  errors. The CLI can inspect and pull artifacts without triggering a fake
+  errors. The protocol version line is its own pre-stable `0.x` series --
+  independent of the package version, with the minor as the breaking axis --
+  and the first stable release promotes the then-current contract to `1.0.0`. The CLI can inspect and pull artifacts without triggering a fake
   transcription, and the reference server exposes per-model declared metadata
   without importing plugins during bulk model listing.
 - **Speaker diarization ("who said what").** An opt-in, per-request

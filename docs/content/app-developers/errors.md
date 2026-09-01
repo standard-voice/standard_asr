@@ -26,7 +26,7 @@ StandardASRError
 |   +-- UnsupportedFeatureError  unsupported feature (always) or parameter (strict mode)
 |   +-- InvalidProviderParamError  wrong engine's provider_params passed
 +-- ArtifactProgressCallbackError  acquisition succeeded, but its observer failed
-+-- ProtocolCompatibilityError  engine protocol cannot provide a requested feature
++-- ProtocolCompatibilityError  engine and core on different protocol lines, or a requested feature missing
 +-- AudioProcessingError       audio decode / size / sample-rate failure
 |   +-- IncompatibleAudioInputError  no conversion path exists
 |   |   +-- UnsafeAudioUrlError   AudioUrl failed the SSRF policy (non-HTTPS, private IP)
@@ -52,7 +52,7 @@ StandardASRError
 | `ArtifactUnavailableError` | `transcribe()`, `prepare()`, or entering a streaming session | Required inference artifacts are missing, incomplete, corrupt, unknown, action-blocked, or blocked by the download policy. Inspect `.reason` and `.report`. |
 | `ArtifactAcquisitionError` | `acquire_artifacts()`, or an engine's implicit acquisition path (including session entry) | Acquisition is disabled, needs an external action, is unsupported for the context, is busy, or failed. Inspect `.reason`, `.report`, `.required_actions`, and `.retriable_after`. |
 | `ArtifactProgressCallbackError` | `acquire_artifacts()` | Acquisition and final status inspection succeeded, but the progress callback failed. The final report is available as `.report`. |
-| `ProtocolCompatibilityError` | `artifact_status()` / `acquire_artifacts()`, or a toolchain metadata operation | The installed engine protocol predates the requested feature or uses an incompatible protocol major. |
+| `ProtocolCompatibilityError` | `create()`, `transcribe()` / `start_transcription()`, `artifact_status()` / `acquire_artifacts()`, or a toolchain metadata operation | The installed engine and this core do not share a protocol line -- the engine declares a different `0.MINOR` generation (older or newer), an unsupported major, or a version that predates a requested feature. The message names the direction and the fix. |
 | `UnsupportedFeatureError` | `start_transcription()` always for an unsupported streaming axis or wire format; `transcribe()` / `start_transcription()` in strict mode for an unsupported parameter | Requested streaming on a batch-only engine, or word timestamps (strict) on an engine that does not support them. |
 | `InvalidProviderParamError` | `transcribe()` or `start_transcription()` | Passed faster-whisper's `provider_params` to an OpenAI engine (swap-safety). |
 | `AudioProcessingError` | `transcribe()` / `start_transcription(audio=...)` | Corrupt audio file, missing sample rate, unsupported format without `[audio]` extra. |

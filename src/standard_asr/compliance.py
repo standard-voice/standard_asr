@@ -29,6 +29,7 @@ from standard_asr.contract.exceptions import (
     EngineContractError,
     EntrypointValidationError,
     InvalidProviderParamError,
+    ProtocolCompatibilityError,
     UnsupportedFeatureError,
 )
 from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
@@ -41,10 +42,8 @@ from standard_asr.contract.params import (
 from standard_asr.contract.properties import BaseProperties
 from standard_asr.contract.protocol_version import (
     CURRENT_PROTOCOL_VERSION,
-    PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE,
-    PROTOCOL_FEATURE_MINIMUMS,
-    SUPPORTED_PROTOCOL_MAJOR,
     parse_protocol_version,
+    require_supported_protocol,
 )
 from standard_asr.contract.results import Segment, TranscriptionResult, Word
 from standard_asr.plugins.discovery import (
@@ -905,6 +904,33 @@ def _check_instance_properties(
             )
         )
         return
+    # One authoritative declaration: discovery, `show`, and the metadata
+    # endpoint read the CLASS properties, while every runtime gate (registry
+    # creation, the inference entries, the artifact guard) reads the
+    # INSTANCE. An instance that shadows the class declaration -- an honest
+    # rebuild-from-config or wrong-preset mistake -- splits those surfaces:
+    # class-level compliance can certify a protocol line the runtime then
+    # refuses on the same object. Equality of the whole frozen model is the
+    # root-cause check; per-field comparisons would only chase symptoms.
+    try:
+        class_properties = inspect.getattr_static(spec.engine_class(), "properties", None)
+    except Exception:  # noqa: BLE001 - the class-level pass already reported this
+        class_properties = None
+    if isinstance(class_properties, BaseProperties) and class_properties != properties:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="instance_properties_diverge",
+                message=(
+                    "Instance properties do not equal the class-level declaration. "
+                    "Discovery and metadata surfaces read the class while the "
+                    "runtime gates read the instance, so a divergent instance is "
+                    "certified by one and refused by the other. Declare properties "
+                    "once, as a ClassVar."
+                ),
+                model=name,
+            )
+        )
     if properties.model_id != spec.model_id:
         issues.append(
             ComplianceIssue(
@@ -1643,35 +1669,6 @@ _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on th
         )
 
 
-def _declares_unsupported_protocol_major(properties: BaseProperties) -> bool:
-    """Return whether the declared protocol major is outside this core's.
-
-    Args:
-        properties: Class-level engine properties.
-
-    Returns:
-        ``True`` when the engine declares a protocol major this core cannot
-        interpret. The properties model validates the version's syntax at
-        construction, so this parse does not guard it -- the same stance
-        :func:`_uses_artifact_lifecycle` takes on the same field.
-    """
-    return parse_protocol_version(properties.protocol_version)[0] != SUPPORTED_PROTOCOL_MAJOR
-
-
-def _uses_artifact_lifecycle(properties: BaseProperties) -> bool:
-    """Return whether properties target the protocol 1.1 artifact surface.
-
-    Args:
-        properties: Class-level engine properties.
-
-    Returns:
-        ``True`` for protocol 1.1 or later in the supported protocol major.
-    """
-    declared = parse_protocol_version(properties.protocol_version)
-    minimum = parse_protocol_version(PROTOCOL_FEATURE_MINIMUMS[PROTOCOL_FEATURE_ARTIFACT_LIFECYCLE])
-    return declared[0] == SUPPORTED_PROTOCOL_MAJOR and declared >= minimum
-
-
 def _mro_member_owner(engine_class: type[object], member: str) -> type[object] | None:
     """Return the first class that authors a member in an engine's MRO.
 
@@ -1805,7 +1802,7 @@ def _check_artifact_method_surface(
     name: str,
     issues: list[ComplianceIssue],
 ) -> None:
-    """Check the protocol 1.1 artifact methods without invoking descriptors.
+    """Check the artifact-lifecycle methods without invoking descriptors.
 
     Args:
         engine_class: Engine class to inspect.
@@ -1820,7 +1817,7 @@ def _check_artifact_method_surface(
                 ComplianceIssue(
                     level="error",
                     code="missing_artifact_method",
-                    message=(f"Protocol 1.1 engine class is missing a callable {method}() method."),
+                    message=(f"Engine class is missing a callable {method}() method."),
                     model=name,
                 )
             )
@@ -1838,7 +1835,7 @@ def _check_artifact_method_surface(
                     level="error",
                     code="artifact_method_not_synchronous",
                     message=(
-                        f"{method}() is an async function; protocol 1.1 requires a "
+                        f"{method}() is an async function; the protocol pins it as a "
                         "synchronous artifact method."
                     ),
                     model=name,
@@ -1883,11 +1880,16 @@ def _check_artifact_declaration(
     name: str,
     issues: list[ComplianceIssue],
 ) -> None:
-    """Check protocol 1.1 metadata authorship and hook consistency.
+    """Check artifact metadata authorship and hook consistency.
+
+    The caller's version gate already admitted the engine, so the checks
+    below apply unconditionally -- except the extension-namespace check,
+    which honors the tolerant-reader rule for a producer on a newer minor
+    (see the comment at that check).
 
     Args:
         engine_class: Engine class to inspect.
-        protocol_version: Protocol version declared by the engine.
+        protocol_version: Protocol version the engine declares (gate-passed).
         name: Model key for issue attribution.
         issues: Mutable issue list to append to.
     """
@@ -1901,7 +1903,7 @@ def _check_artifact_declaration(
                 level="error",
                 code="missing_declared_metadata",
                 message=(
-                    "Protocol 1.1 engine class does not author declared_metadata "
+                    "Engine class does not author declared_metadata "
                     "in its plugin-owned class hierarchy."
                 ),
                 model=name,
@@ -1914,7 +1916,7 @@ def _check_artifact_declaration(
                 level="error",
                 code="declared_metadata_core_placeholder",
                 message=(
-                    "Protocol 1.1 engine class inherits the EngineBase "
+                    "Engine class inherits the EngineBase "
                     "declared_metadata placeholder. Author a DeclaredEngineMetadata "
                     "value in the plugin class hierarchy."
                 ),
@@ -1927,9 +1929,7 @@ def _check_artifact_declaration(
             ComplianceIssue(
                 level="error",
                 code="declared_metadata_invalid",
-                message=(
-                    "Protocol 1.1 declared_metadata is not a DeclaredEngineMetadata instance."
-                ),
+                message=("declared_metadata is not a DeclaredEngineMetadata instance."),
                 model=name,
             )
         )
@@ -1949,7 +1949,7 @@ def _check_artifact_declaration(
                 level="error",
                 code="declared_metadata_invalid",
                 message=(
-                    "Protocol 1.1 declared_metadata.artifacts must contain three "
+                    "declared_metadata.artifacts must contain three "
                     "exact boolean values in an ArtifactDeclaration."
                 ),
                 model=name,
@@ -1965,7 +1965,7 @@ def _check_artifact_declaration(
                 level="error",
                 code="declared_metadata_invalid",
                 message=(
-                    "Protocol 1.1 declared_metadata fails re-validation: "
+                    "declared_metadata fails re-validation: "
                     f"{sanitized_validation_message(exc, prefix='ValidationError')}"
                 ),
                 model=name,
@@ -1978,17 +1978,24 @@ def _check_artifact_declaration(
                 level="error",
                 code="declared_metadata_invalid",
                 message=(
-                    "Protocol 1.1 declared_metadata could not be re-validated: "
-                    f"{safe_exception_summary(exc)}"
+                    f"declared_metadata could not be re-validated: {safe_exception_summary(exc)}"
                 ),
                 model=name,
             )
         )
         return
 
-    declared_version = parse_protocol_version(protocol_version)
-    current_version = parse_protocol_version(CURRENT_PROTOCOL_VERSION)
-    if declared_version[:2] == current_version[:2]:
+    # Tolerant reader: a producer on a NEWER minor within the supported
+    # major may carry standard sections this reader does not know yet, and
+    # the protocol promises older readers preserve them -- flagging them as vendor
+    # extensions missing the namespace would punish legal additive evolution.
+    # The namespace obligation is only enforceable against a producer whose
+    # generation this reader fully knows. During protocol major 0 the line
+    # gate never admits a newer minor, so the skip is dormant; the
+    # synthetic-constants freeze test proves it under a stable major.
+    declared_line = parse_protocol_version(protocol_version)[:2]
+    current_line = parse_protocol_version(CURRENT_PROTOCOL_VERSION)[:2]
+    if declared_line <= current_line:
         for key in normalized.model_extra or {}:
             if _VENDOR_METADATA_KEY_PATTERN.fullmatch(key) is None:
                 issues.append(
@@ -1997,7 +2004,7 @@ def _check_artifact_declaration(
                         code="declared_metadata_extension_not_namespaced",
                         message=(
                             f"declared_metadata contains unknown section {key!r}; "
-                            "protocol 1.1 producers must namespace extension sections "
+                            "producers must namespace extension sections "
                             "as x_<vendor>_<name>."
                         ),
                         model=name,
@@ -2112,30 +2119,28 @@ def _check_class_level_metadata(spec: ModelSpec, name: str, issues: list[Complia
         )
 
     if isinstance(properties, BaseProperties):
-        if _declares_unsupported_protocol_major(properties):
-            # A false "no artifact lifecycle here" and a false "this plugin is
-            # compliant" are different answers, and _uses_artifact_lifecycle
-            # returns the same False for both: legitimately pre-1.1 (AR.1 keeps
-            # those discoverable and able to transcribe) and a major this core
-            # cannot interpret at all. Only the first is a reason to stay
-            # silent. Left conflated, an engine declaring major 2 passed every
-            # check while require_protocol_feature() rejects it at runtime --
-            # compliance certifying a plugin whose artifact tooling cannot run.
+        # Compliance runs the SAME line gate the runtime runs at engine
+        # creation, inference entry, and artifact-member lookup, so it can
+        # never certify an engine those seams refuse. There is no legitimate
+        # older line to stay silent for: within protocol major 0 the minor is
+        # the breaking axis, so every supported engine carries the artifact
+        # lifecycle and the declaration checks below are unconditional.
+        try:
+            require_supported_protocol(properties.protocol_version)
+        except ProtocolCompatibilityError as exc:
             issues.append(
                 ComplianceIssue(
                     level="error",
-                    code="protocol_major_unsupported",
+                    code="protocol_version_unsupported",
                     message=(
-                        f"Engine declares protocol_version "
-                        f"{properties.protocol_version!r}, which this core cannot "
-                        f"interpret: it supports protocol major "
-                        f"{SUPPORTED_PROTOCOL_MAJOR}. Artifact tooling rejects the "
-                        "engine at runtime with ProtocolCompatibilityError."
+                        f"{exc} Registry creation, inference, and artifact "
+                        "tooling reject this engine at runtime with "
+                        "ProtocolCompatibilityError."
                     ),
                     model=name,
                 )
             )
-        elif _uses_artifact_lifecycle(properties):
+        else:
             _check_artifact_declaration(engine_class, properties.protocol_version, name, issues)
 
     config_type = inspect.getattr_static(engine_class, "config_type", None)

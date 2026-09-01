@@ -43,6 +43,8 @@ from pydantic.errors import PydanticInvalidForJsonSchema
 
 from standard_asr.contract.exceptions import EntrypointValidationError, FactoryLoadError
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
+from standard_asr.contract.properties import BaseProperties
+from standard_asr.contract.protocol_version import require_supported_protocol
 from standard_asr.runtime.config import BaseConfig
 from standard_asr.runtime.redaction import (
     config_error_from_validation,
@@ -630,6 +632,14 @@ class ModelRegistry:
         Raises:
             EntrypointValidationError: Model not found.
             FactoryLoadError: Entry point failed to load or is not callable.
+            ProtocolCompatibilityError: The constructed engine declares a
+                protocol line this core does not support (AR.1). The gate
+                runs here -- the one construction path every toolchain
+                consumer shares -- so a mismatched installed plugin fails
+                loudly at creation instead of transcribing with possibly
+                drifted semantics. An engine whose ``properties`` is not a
+                ``BaseProperties`` instance is not gated here; compliance
+                owns that defect.
             ConfigError: The model needs configuration that was missing or
                 invalid (a required credential, a bad ``default_language``, and so on).
                 A construction-time pydantic ``ValidationError`` -- whether from
@@ -669,7 +679,7 @@ class ModelRegistry:
                 engine_id,
             )
         try:
-            return factory(*args, **kwargs)
+            engine = factory(*args, **kwargs)
         except ValidationError as exc:
             # An engine that builds its config via the bare constructor (not
             # Config.from_env) raises a raw pydantic ValidationError; wrap it as
@@ -679,6 +689,11 @@ class ModelRegistry:
             raise config_error_from_validation(
                 exc, prefix=f"Invalid configuration for {name!r}"
             ) from exc
+        properties = getattr(engine, "properties", None)
+        if isinstance(properties, BaseProperties):
+            # AR.1 line gate at the shared construction seam (see Raises).
+            require_supported_protocol(properties.protocol_version)
+        return engine
 
     def __len__(self) -> int:  # pragma: no cover
         return len(self._specs)

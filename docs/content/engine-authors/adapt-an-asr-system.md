@@ -26,7 +26,7 @@ Subclass `EngineBase` and provide:
 2. `declared_capabilities: ClassVar[DeclaredCapabilities]` — what you support,
    per mode (`batch` / `streaming`). Omit what you don't support (fail-closed).
 3. `declared_metadata: ClassVar[DeclaredEngineMetadata]` — static metadata for
-   the model preset. Protocol 1.1 requires an authored `artifacts` section.
+   the model preset. The protocol requires an authored `artifacts` section.
    Use `NO_ARTIFACT_LIFECYCLE` only when no supported context has an
    inference-artifact lifecycle.
 4. `provider_params_type: ClassVar[type[ProviderParams] | None]` — your typed
@@ -91,7 +91,7 @@ class MyConfig(LanguageConfigMixin, BaseConfig[Literal["my-engine"]]):
 class MyProps(BaseProperties):
     engine_id: str = "my-engine"
     model_name: str = "base"
-    protocol_version: str = "1.1.0"  # AR.1: the protocol this engine implements
+    protocol_version: str = "0.2.0"  # AR.1: the protocol this engine implements
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] = [16000]
