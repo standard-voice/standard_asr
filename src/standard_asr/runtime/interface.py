@@ -101,6 +101,17 @@ class StandardASR(Protocol):
     engine raises :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` from
     it. Because the surface is complete, callers (for example, the server) can type an
     engine as ``StandardASR`` and call the streaming entry point without a cast.
+
+    Gate ownership: the ``ProtocolCompatibilityError`` raises documented on
+    the members below are the standard's guarantee, owned by its boundaries --
+    not an intrinsic obligation on every structural method body.
+    ``ModelRegistry.create()`` refuses an engine on an unsupported protocol
+    line before callers can reach these members, and ``EngineBase`` re-checks
+    at each semantic entry as defense in depth; a structural implementation
+    is not required to reproduce those checks. A host that obtains an engine
+    without the registry (direct construction, a custom loader, injection)
+    MUST run :func:`require_engine_protocol` on the object once before any
+    semantic use (AR.1).
     """
 
     properties: ClassVar[BaseProperties]
@@ -799,6 +810,7 @@ class EngineBase(ABC):
         """
         return self.declared_capabilities
 
+    @final
     def supports(self, dot_path: str) -> bool:
         """Return whether a capability is supported at runtime (fail-closed).
 
@@ -1978,6 +1990,7 @@ class EngineBase(ABC):
         # engines without reaching for this method.
         ensure_wire_format_supported(self.properties, audio_format)
 
+    @final
     def recommended_wire_format(self) -> AudioFormat | None:
         """Return a minimal wire :class:`AudioFormat` to open a streaming session.
 

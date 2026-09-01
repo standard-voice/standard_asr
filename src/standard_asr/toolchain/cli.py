@@ -1523,9 +1523,10 @@ def _run_instance_checks(
             return []
         except EngineContractError:
             # An unreadable class declaration (missing/untyped properties) is
-            # already an entry-point-layer error; the instance remains the
-            # only declaration the gate can rule on, so construction proceeds
-            # and the arm below classifies its verdict.
+            # already an entry-point-layer error; ``create()`` below runs the
+            # same class preflight and refuses before construction, so the
+            # typed arm classifies that verdict without a duplicate diagnosis
+            # here.
             pass
 
     try:
@@ -1555,9 +1556,9 @@ def _run_instance_checks(
         # A typed declaration/contract rejection -- normally create()'s
         # shared engine gate, the same root cause the entry point checks
         # already reported (protocol_version_unsupported /
-        # missing_class_properties / instance_properties_diverge; a factory
-        # raising its own contract error lands there as
-        # entrypoint_factory_failed). Re-wrapping it as
+        # missing_class_properties / factory_return_class_mismatch /
+        # instance_properties_diverge; a factory raising its own contract
+        # error lands there as entrypoint_factory_failed). Re-wrapping it as
         # engine_construction_failed would give one defect two fault
         # identities and send the author chasing a construction bug that
         # does not exist.

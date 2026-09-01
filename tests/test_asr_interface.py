@@ -205,7 +205,7 @@ def test_engine_base_refuses_inference_when_properties_are_untyped() -> None:
 )
 def test_every_public_template_is_statically_final() -> None:
     # The @final markers are the promised pyright-time guard against
-    # overriding a public template (AR.1 names all five). A decorator landing
+    # overriding a public template (AR.1 names all seven). A decorator landing
     # on the StandardASR Protocol stub instead of the EngineBase template
     # satisfies neither pyright nor this assertion.
     for method_name in _PUBLIC_TEMPLATE_METHODS:

@@ -624,6 +624,44 @@ def _check_engine_unguarded(
         )
         return
 
+    # Bind the returned instance to the class the class-level checks
+    # certified (AR.1). Those verdicts -- declared metadata, artifact hook
+    # obligations, public-template ownership -- were rendered for the
+    # DECLARED class, and none of the instance checks below re-read them,
+    # so a factory returning any other class (an ordinary covariant
+    # return: a subclass carrying its own declarations) could be certified
+    # under one class contract and executed under another. Exact identity,
+    # not isinstance: a subclass may override any class-level contract
+    # surface. ``ModelRegistry.create()`` enforces the same invariant at
+    # the shared construction seam.
+    try:
+        declared_class: type[StandardASR] | None = spec.engine_class()
+    except FactoryLoadError:
+        # Already reported as class_metadata_unreadable: with no declared
+        # class resolvable, the returned instance is the only class the
+        # checks below can rule on.
+        declared_class = None
+    if declared_class is not None and type(instance) is not declared_class:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="factory_return_class_mismatch",
+                message=(
+                    f"Factory returned an instance of {safe_type_name(instance)!r}, "
+                    f"not the declared class {safe_class_name(declared_class)!r} "
+                    "the entry point resolves to. The class-level checks certify "
+                    "the declared class, so a divergent returned class would be "
+                    "certified under one contract and executed under another; "
+                    "instance probing stops here. Annotate the factory with, "
+                    "and return, exactly the one concrete engine class. "
+                    "ModelRegistry.create() refuses this engine at runtime with "
+                    "EngineContractError."
+                ),
+                model=name,
+            )
+        )
+        return
+
     # The instance is a separate declaration source (the factory may hand
     # back anything), so the shared gate runs on IT unconditionally -- a
     # class-compatible engine whose instance shadows a wrong line would
@@ -1922,15 +1960,33 @@ def _enginebase_hook_is_overridden(engine_class: type[object], hook: str) -> boo
 
 #: EngineBase's public template methods. The templates own the protocol-line
 #: gate, gating, negotiation, and the sync-result boundary; a subclass that
-#: overrides one of them (instead of the documented protected hook) owns the
-#: whole call and silently bypasses all of that.
+#: overrides one of them (instead of the documented extension point) owns the
+#: whole call and silently bypasses all of that. The two negotiation members
+#: belong here for the same reason as the inference and artifact entries:
+#: they carry the shared engine gate, and a capability answer or wire
+#: recommendation is a semantic reading of the declaration (AR.1).
 _PUBLIC_TEMPLATE_METHODS: Final = (
     "transcribe",
     "transcribe_async",
     "start_transcription",
     "artifact_status",
     "acquire_artifacts",
+    "supports",
+    "recommended_wire_format",
 )
+
+#: The documented extension point an author uses instead of overriding each
+#: public template -- named in the ``public_template_overridden`` message so
+#: the report points at the fix, not only the defect.
+_TEMPLATE_EXTENSION_POINTS: Final = {
+    "transcribe": "the protected _transcribe() hook",
+    "transcribe_async": "the protected _transcribe() hook (the async template bridges it)",
+    "start_transcription": "the protected _start_transcription() hook",
+    "artifact_status": "the protected _artifact_requirements() hook",
+    "acquire_artifacts": "the protected _acquire_artifacts() hook",
+    "supports": "the effective_capabilities narrowing",
+    "recommended_wire_format": "the Properties declarations the template derives from",
+}
 
 
 def _check_public_templates(
@@ -1963,7 +2019,8 @@ def _check_public_templates(
                         f"Engine class overrides the public EngineBase template "
                         f"{method}() (owned by {owner.__name__}). The template "
                         "carries the protocol-line gate and the standard "
-                        "pipeline; override the protected hook instead."
+                        f"pipeline; use {_TEMPLATE_EXTENSION_POINTS[method]} "
+                        "instead."
                     ),
                     model=name,
                 )

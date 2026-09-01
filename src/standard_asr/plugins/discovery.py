@@ -50,6 +50,7 @@ from standard_asr.contract.identifiers import validate_engine_id, validate_model
 from standard_asr.contract.properties import BaseProperties
 from standard_asr.runtime.config import BaseConfig
 from standard_asr.runtime.interface import require_engine_protocol
+from standard_asr.runtime.protocol_boundary import safe_class_name, safe_type_name
 from standard_asr.runtime.redaction import (
     config_error_from_validation,
     safe_exception_summary,
@@ -421,6 +422,28 @@ class ModelSpec:
         return typing.cast("type[StandardASR]", cls)
 
 
+def _missing_class_declaration_error(name: str) -> EngineContractError:
+    """Build the error for an engine class without a typed ``properties`` ClassVar.
+
+    :meth:`ModelRegistry.create` raises it from two seams: the class preflight
+    (class resolvable, declaration untyped -- construction never starts) and
+    the post-construction check (class unresolvable without construction, so
+    the verdict lands on ``type(engine)``). One builder keeps both seams
+    telling the author the same thing.
+
+    Args:
+        name: Model key named in the message.
+
+    Returns:
+        The typed contract error, ready to raise.
+    """
+    return EngineContractError(
+        f"Engine {name!r} does not declare class-level 'properties' "
+        "as a BaseProperties ClassVar readable without instantiation. "
+        "Declare properties once, as a ClassVar."
+    )
+
+
 @final
 class ModelRegistry:
     """Container for discovered ASR engine factories.
@@ -535,6 +558,10 @@ class ModelRegistry:
     def get_factory(self, name: str) -> ASRFactory:
         """Get the factory callable for a model (without instantiating).
 
+        This is a raw accessor: the returned callable and anything it
+        constructs have not passed the engine gate or the create-time
+        contract checks. :meth:`create` is the admitted construction path.
+
         Args:
             name: Model key in ``engine_id/model_name`` format.
 
@@ -554,7 +581,10 @@ class ModelRegistry:
         ``declared_metadata``, ``properties``, ``provider_params_type``) for
         discovery, UI generation, and REST endpoints without paying the cost or
         authentication requirements of constructing the engine. See
-        :meth:`ModelSpec.engine_class`.
+        :meth:`ModelSpec.engine_class`. This is a raw accessor: resolution
+        does not run the engine gate, so the gated consumers (:meth:`create`,
+        the per-model projections, compliance) apply it to the result
+        themselves.
 
         Args:
             name: Model key in ``engine_id/model_name`` format.
@@ -656,7 +686,13 @@ class ModelRegistry:
                 be established, which is less knowable than a wrong line,
                 so creation fails closed), the class does not declare typed
                 ``properties`` as a ClassVar (the class declaration is the
-                authoritative one every class-read surface consumes), or the
+                authoritative one every class-read surface consumes; when
+                the class is resolvable without construction this is
+                refused BEFORE the factory runs, for the same masking
+                reason as the line preflight), the factory returned an
+                instance of a class other than the resolved declared class
+                (the class-read surfaces project the declared class, so
+                the runtime class must be exactly it), or the
                 instance properties do not
                 equal the class-level declaration (a divergent instance
                 splits the class-read surfaces from the runtime gates).
@@ -698,26 +734,28 @@ class ModelRegistry:
                 name,
                 engine_id,
             )
-        # Class-level line preflight (AR.1): when the engine class is
-        # resolvable without construction, its protocol line is checked
-        # BEFORE the factory runs. Gating only after construction let a
+        # Class-level contract preflight (AR.1): when the engine class is
+        # resolvable without construction, its declaration is judged BEFORE
+        # the factory runs. Gating only after construction let a
         # construction-time fault -- a missing credential, say -- mask the
-        # line mismatch: the operator was sent debugging configuration for
-        # an engine this core cannot use at all. An unreadable declaration
-        # (untyped class properties) defers to the post-construction checks
-        # below for their more precise verdicts, and an unresolvable class
-        # (a factory without a concrete return annotation -- itself a
-        # class-metadata contract violation compliance reports) falls
-        # through to the instance gate.
+        # verdict: the operator was sent debugging configuration for an
+        # engine this core cannot use at all. The masking argument covers
+        # the whole class contract, not only the line: an untyped class
+        # declaration is certain to be refused by the checks below, so
+        # running the factory first could only trade that certain verdict
+        # for an irrelevant construction failure. Only an unresolvable
+        # class (a factory without a concrete return annotation -- itself
+        # a class-metadata contract violation compliance reports) falls
+        # through to the post-construction checks.
         try:
-            preflight_class: object | None = self.spec(name).engine_class()
+            preflight_class: type[StandardASR] | None = self.spec(name).engine_class()
         except FactoryLoadError:
             preflight_class = None
         if preflight_class is not None:
             try:
                 require_engine_protocol(preflight_class)
-            except EngineContractError:
-                pass
+            except EngineContractError as exc:
+                raise _missing_class_declaration_error(name) from exc
         try:
             engine = factory(*args, **kwargs)
         except ValidationError as exc:
@@ -729,6 +767,25 @@ class ModelRegistry:
             raise config_error_from_validation(
                 exc, prefix=f"Invalid configuration for {name!r}"
             ) from exc
+        if preflight_class is not None and type(engine) is not preflight_class:
+            # Bind the returned instance to the class the preflight judged
+            # (AR.1). Every class-read surface (show, compliance, the
+            # per-model endpoints) projects the DECLARED class, so a factory
+            # returning any other class -- an ordinary covariant return: a
+            # subclass carrying its own declarations -- would have one class
+            # certified and projected while another executes. Exact identity,
+            # not isinstance: a subclass may override any class-level
+            # contract surface (declared_metadata, capabilities, templates).
+            raise EngineContractError(
+                f"Engine {name!r} factory returned an instance of "
+                f"{safe_type_name(engine)!r}, not the declared class "
+                f"{safe_class_name(preflight_class)!r} its entry point "
+                "resolves to. The class-read surfaces project the declared "
+                "class while the runtime executes the returned one, so any "
+                "class-level divergence between the two splits certification "
+                "from execution. Annotate the factory with, and return, "
+                "exactly the one concrete engine class."
+            )
         # AR.1 line gate at the shared construction seam (see Raises):
         # fail-closed, including a missing or untyped declaration -- an
         # engine whose protocol line cannot be established is less knowable
@@ -741,11 +798,9 @@ class ModelRegistry:
             # instantiation, so an engine whose typed declaration exists only
             # on the instance would be creatable here yet rejected by every
             # class-read surface -- the same split fail-open would reopen.
-            raise EngineContractError(
-                f"Engine {name!r} does not declare class-level 'properties' "
-                "as a BaseProperties ClassVar readable without instantiation. "
-                "Declare properties once, as a ClassVar."
-            )
+            # Reachable only through an unresolvable class (preflight refused
+            # the resolvable untyped case before construction).
+            raise _missing_class_declaration_error(name)
         if class_properties != properties:
             # One authoritative declaration: discovery/show/metadata read the
             # CLASS while the runtime gates read the INSTANCE, so an instance

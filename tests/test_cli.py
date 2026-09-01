@@ -724,7 +724,7 @@ def _batch_only_factory() -> _BatchOnlyEngine:  # pyright: ignore[reportUnusedFu
 class _BatchOnlyBadWireEngine(_BatchOnlyEngine):
     """Batch-only engine whose wire recommendation its own Properties reject."""
 
-    def recommended_wire_format(self) -> AudioFormat | None:
+    def recommended_wire_format(self) -> AudioFormat | None:  # pyright: ignore[reportIncompatibleMethodOverride]
         """Recommend a rate outside the engine's accepted set.
 
         Returns:
@@ -912,7 +912,7 @@ class _BrokenWireEngine(_GatingStreamEngine):
     def __init__(self) -> None:
         self.config = _BrokenWireConfig(engine="brokenwire")
 
-    def recommended_wire_format(self) -> AudioFormat | None:
+    def recommended_wire_format(self) -> AudioFormat | None:  # pyright: ignore[reportIncompatibleMethodOverride]
         raise RuntimeError("wire format derivation exploded")
 
 

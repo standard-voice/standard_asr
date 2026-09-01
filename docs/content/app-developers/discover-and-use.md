@@ -26,6 +26,18 @@ for name in registry.names():
 engine = registry.create("faster-whisper/large-v3", device="cpu")
 ```
 
+`create()` also verifies the plugin and this core share a protocol
+generation, so a stale installation fails here with a typed
+`ProtocolCompatibilityError` naming the fix. If you obtain an engine some
+other way -- direct construction, your own loader, dependency injection --
+run that check yourself once before using the object:
+
+```python
+from standard_asr import require_engine_protocol
+
+require_engine_protocol(engine)  # raises ProtocolCompatibilityError on a mismatch
+```
+
 ### Inspect and acquire inference artifacts
 
 Engines report the persistent artifacts needed by a configured

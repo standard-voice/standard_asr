@@ -10,7 +10,10 @@ before publishing; applications can also run `check_entrypoints()` at startup to
 catch broken installations early.
 
 The default entry-point check validates the authored declared
-metadata, artifact method signatures, and `EngineBase` hook obligations. It does
+metadata, artifact method signatures, and `EngineBase` hook obligations. Those
+class-level verdicts bind to the runtime: the factory must return an instance
+of exactly the resolved declared class, or the check fails with
+`factory_return_class_mismatch`. It does
 not call `artifact_status()` or `acquire_artifacts()`. Runtime status and real
 acquisition remain deferred opt-in profiles because they can observe or change
 external state.

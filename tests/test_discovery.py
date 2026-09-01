@@ -115,6 +115,14 @@ def _dummy_factory(**kwargs: Any) -> _DummyASR:  # pyright: ignore[reportUnusedF
     return _DummyASR(**kwargs)
 
 
+class _CovariantDummyASR(_DummyASR):
+    """Subclass an honest covariant factory returns instead of its annotation."""
+
+
+def _covariant_dummy_factory(**kwargs: Any) -> _DummyASR:  # pyright: ignore[reportUnusedFunction]
+    return _CovariantDummyASR(**kwargs)
+
+
 class _OutsideLineDummyProperties(_DummyProperties):
     protocol_version: str = "0.1.0"
 
@@ -177,10 +185,30 @@ class _InstanceOnlyPropertiesASR:
         return TranscriptionResult(text="instance-only")
 
 
+#: Construction ledger for the class-declaration preflight test: an engine
+#: whose resolvable class declaration is untyped must be refused BEFORE its
+#: factory runs -- the same masking rationale as the line preflight.
+_instance_only_constructions: list[str] = []
+
+
 def _instance_only_properties_factory() -> (  # pyright: ignore[reportUnusedFunction]
     _InstanceOnlyPropertiesASR
 ):
+    _instance_only_constructions.append("dummy/instance-only")
     return _InstanceOnlyPropertiesASR()
+
+
+def _opaque_instance_only_factory(**kwargs: Any) -> Any:  # pyright: ignore[reportUnusedFunction]
+    # Opaque return annotation: the class is unresolvable without calling the
+    # factory, so the class-declaration verdict cannot preflight and must land
+    # on type(engine) after construction (the fallthrough seam).
+    return _InstanceOnlyPropertiesASR()
+
+
+def _opaque_duck_factory(**kwargs: Any) -> Any:  # pyright: ignore[reportUnusedFunction]
+    # Nothing is resolvable statically AND the instance declaration is
+    # untyped: the last net is the instance gate inside create().
+    return _DuckPropertiesASR()
 
 
 class _NotAnEngine:
@@ -1595,6 +1623,8 @@ def test_create_refuses_untyped_properties() -> None:
     # Fail closed: strictly less information must never earn strictly more
     # permission. A typed engine declaring "9.9.9" is refused, so a dict
     # declaration quacking the same field cannot be handed back transcribing.
+    # The class is resolvable, so the preflight lands the precise class-level
+    # verdict before construction.
     eps = [
         EntryPoint(
             name="dummy/duck",
@@ -1603,8 +1633,24 @@ def test_create_refuses_untyped_properties() -> None:
         )
     ]
     registry = discover_models(eps=eps, strict=True)
-    with pytest.raises(EngineContractError, match="cannot be established"):
+    with pytest.raises(EngineContractError, match="class-level 'properties'"):
         registry.create("dummy/duck")
+
+
+def test_create_refuses_untyped_properties_behind_an_opaque_factory() -> None:
+    # With nothing resolvable statically and an untyped instance declaration,
+    # the instance gate inside create() is the last net -- fail closed there
+    # too, with the gate's own establishment message.
+    eps = [
+        EntryPoint(
+            name="dummy/opaque-duck",
+            value="tests.test_discovery:_opaque_duck_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        registry.create("dummy/opaque-duck")
 
 
 class _ShadowedDummyASR(_DummyASR):
@@ -1646,7 +1692,9 @@ def test_create_refuses_a_typed_instance_without_a_class_declaration() -> None:
     # passed the instance gate while the equality check silently skipped --
     # creation handed back an engine that show, compliance, and the
     # per-model endpoints all fail closed on (AR.1: the class declaration
-    # is the authoritative one).
+    # is the authoritative one). The class is resolvable, so the refusal is
+    # certain before construction -- running the factory first could only
+    # mask this verdict behind a construction fault, so it must never run.
     eps = [
         EntryPoint(
             name="dummy/instance-only",
@@ -1655,5 +1703,44 @@ def test_create_refuses_a_typed_instance_without_a_class_declaration() -> None:
         )
     ]
     registry = discover_models(eps=eps, strict=True)
+    _instance_only_constructions.clear()
     with pytest.raises(EngineContractError, match="class-level 'properties'"):
         registry.create("dummy/instance-only")
+    assert _instance_only_constructions == []
+
+
+def test_create_refuses_an_untyped_class_declaration_behind_an_opaque_factory() -> None:
+    # The preflight needs a resolvable class; an opaque factory defers the
+    # class-declaration verdict to the post-construction checks, which must
+    # reach the same fail-closed refusal on type(engine).
+    eps = [
+        EntryPoint(
+            name="dummy/opaque-instance-only",
+            value="tests.test_discovery:_opaque_instance_only_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(EngineContractError, match="class-level 'properties'"):
+        registry.create("dummy/opaque-instance-only")
+
+
+def test_create_refuses_a_factory_returning_an_undeclared_class() -> None:
+    # The class-read surfaces (show, compliance, the per-model endpoints)
+    # project the class the entry point resolves to; the runtime executes
+    # what the factory returns. create() binds the two with exact identity:
+    # a subclass may override any class-level contract surface
+    # (declared_metadata, capabilities, a public template), so isinstance
+    # would re-open the certification/execution split (round-28 review, B2).
+    eps = [
+        EntryPoint(
+            name="dummy/covariant",
+            value="tests.test_discovery:_covariant_dummy_factory",
+            group="standard_asr.models",
+        )
+    ]
+    registry = discover_models(eps=eps, strict=True)
+    with pytest.raises(EngineContractError, match="not the declared class") as excinfo:
+        registry.create("dummy/covariant")
+    assert "_CovariantDummyASR" in str(excinfo.value)
+    assert "_DummyASR" in str(excinfo.value)

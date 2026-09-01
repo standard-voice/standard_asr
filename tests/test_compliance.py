@@ -396,6 +396,29 @@ def structural_axis_no_default_factory() -> (  # pyright: ignore[reportUnusedFun
     return _StructuralAxisNoDefaultASR()
 
 
+class _AdvertisedNoLifecycleASR(_GoodASR):
+    """Declared class a covariant factory's annotation resolves to."""
+
+
+class _ReturnedLifecycleASR(_AdvertisedNoLifecycleASR):
+    # The honest covariant-return accident (round-28 review, B2): the
+    # returned subclass authors a DIFFERENT artifact declaration
+    # (applicable, operator-supplied), so the class-level verdicts --
+    # rendered for the advertised class -- certify a contract the runtime
+    # object does not carry.
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=ArtifactDeclaration(
+            applicable=True,
+            supports_explicit_acquisition=False,
+            may_acquire_during_inference=False,
+        )
+    )
+
+
+def _covariant_return_factory() -> _AdvertisedNoLifecycleASR:  # pyright: ignore[reportUnusedFunction]
+    return _ReturnedLifecycleASR()
+
+
 def _registry(factory: str, key: str = "dummy/demo") -> ModelRegistry:
     eps = [
         EntryPoint(
@@ -653,6 +676,23 @@ def test_instance_properties_check_tolerates_an_unresolvable_class() -> None:
     report = check_entrypoints(registry=_registry("unannotated_factory"))
     assert any("not readable without instantiation" in i.message for i in report.issues)
     assert not any(i.code == "instance_properties_diverge" for i in report.issues)
+
+
+def test_check_entrypoints_binds_the_returned_class_to_the_declared_class() -> None:
+    # Round-28 review (B2): the class-level checks certified the ADVERTISED
+    # class (no artifact lifecycle, hook not required) while the factory
+    # returned a subclass declaring an applicable lifecycle -- with identical
+    # inherited properties every instance check passed, so compliance
+    # certified an engine whose class projections and runtime contract
+    # disagree. Exact identity is the root-cause bind, and probing stops at
+    # the mismatch so the report carries the one root cause instead of a
+    # cascade measured against the wrong class.
+    report = check_entrypoints(registry=_registry("_covariant_return_factory"))
+    assert report.passed is False
+    errors = [i for i in report.issues if i.level == "error"]
+    assert [i.code for i in errors] == ["factory_return_class_mismatch"]
+    assert "_ReturnedLifecycleASR" in errors[0].message
+    assert "_AdvertisedNoLifecycleASR" in errors[0].message
 
 
 def test_check_entrypoints_no_instantiate_skips_invocation() -> None:
@@ -1154,7 +1194,7 @@ def test_gating_conditional_async_supports_on_second_axis_is_flagged() -> None:
     """
 
     class _ConditionalAsyncSupports(_GatingStreamEngine):
-        def supports(self, dot_path: str) -> Any:
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             if dot_path == "streaming_input":
                 return True
 
@@ -1175,7 +1215,7 @@ def test_gating_async_supports_on_probe_path_is_flagged() -> None:
     """
 
     class _ProbePathAsyncSupports(_GatingStreamEngine):
-        def supports(self, dot_path: str) -> Any:
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             if dot_path in ("streaming_input", "streaming_output"):
                 return True
 
@@ -1216,7 +1256,7 @@ def test_gating_non_bool_supports_is_wrong_return_type_not_supported() -> None:
     """
 
     class _StringSupports(_GatingStreamEngine):
-        def supports(self, dot_path: str) -> Any:
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             return "false"
 
     report = check_streaming_param_gating(cast(StandardASR, _StringSupports(strict=True)))
@@ -1530,21 +1570,23 @@ def test_supports_sweep_skips_when_no_valid_tree_is_reachable() -> None:
     assert "supports_disagrees_with_capabilities" not in codes
 
 
-def lying_supports_factory() -> _GoodASR:  # pyright: ignore[reportUnusedFunction]
+class _LyingSupportsASR(_GoodASR):
+    """Engine whose supports() diverges from its capability tree."""
+
+    def supports(self, dot_path: str) -> bool:
+        # Claims an undeclared feature -- the divergence the sweep exists
+        # to catch (a single-path shape probe could never see it).
+        if dot_path == "batch.diarization":
+            return True
+        return self.declared_capabilities.supports(dot_path)
+
+
+def lying_supports_factory() -> _LyingSupportsASR:  # pyright: ignore[reportUnusedFunction]
     """Build an engine whose supports() diverges from its capability tree.
 
     Returns:
         The counterexample engine.
     """
-
-    class _LyingSupportsASR(_GoodASR):
-        def supports(self, dot_path: str) -> bool:
-            # Claims an undeclared feature -- the divergence the sweep exists
-            # to catch (a single-path shape probe could never see it).
-            if dot_path == "batch.diarization":
-                return True
-            return self.declared_capabilities.supports(dot_path)
-
     return _LyingSupportsASR()
 
 
@@ -1981,7 +2023,7 @@ def test_sync_bridge_hanging_supports_probe_is_reported_not_misclassified() -> N
     release = threading.Event()
 
     class _HangingSupportsEngine(_OutputOnlyStreamEngine):
-        def supports(self, dot_path: str) -> bool:
+        def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
             release.wait(timeout=30.0)
             return False  # pragma: no cover - the check must not wait this out
 
@@ -2192,7 +2234,7 @@ def test_sync_bridge_broken_supports_cannot_buy_the_not_applicable_pass() -> Non
     """
 
     class _BrokenSupportsEngine(_OutputOnlyStreamEngine):
-        def supports(self, dot_path: str) -> bool:
+        def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise RuntimeError("capability tree exploded")
 
     report = check_sync_bridge(
@@ -2621,7 +2663,7 @@ def test_recommended_wire_format_raising_is_reported() -> None:
     # If recommended_wire_format() itself raises, that is surfaced as an error
     # rather than crashing the compliance run.
     class _RaisingEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise RuntimeError("boom")
 
     report = check_recommended_wire_format(_RaisingEngine())
@@ -2646,7 +2688,7 @@ def test_recommended_wire_format_duck_object_is_wrong_return_type() -> None:
         sample_rate = 16000
 
     class _DuckEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             return _DuckFormat()
 
     report = check_recommended_wire_format(_DuckEngine())
@@ -2654,7 +2696,7 @@ def test_recommended_wire_format_duck_object_is_wrong_return_type() -> None:
     assert [i.code for i in report.issues] == ["protocol_member_wrong_return_type"]
 
     class _DictEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             return {"encoding": "pcm_s16le", "channels": 1, "sample_rate": 16000}
 
     dict_report = check_recommended_wire_format(_DictEngine())
@@ -2664,22 +2706,24 @@ def test_recommended_wire_format_duck_object_is_wrong_return_type() -> None:
     )
 
 
-def batch_only_bad_wire_factory() -> _GoodASR:  # pyright: ignore[reportUnusedFunction]
+class _BatchOnlyBadWireASR(_GoodASR):
+    """Batch-only engine with a self-inconsistent wire recommendation."""
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        """Recommend a format the engine's own Properties reject.
+
+        Returns:
+            A format at a rate outside ``accepted_sample_rates``.
+        """
+        return AudioFormat(encoding="pcm_s16le", sample_rate=4321)
+
+
+def batch_only_bad_wire_factory() -> _BatchOnlyBadWireASR:  # pyright: ignore[reportUnusedFunction]
     """Build a batch-only engine with a self-inconsistent wire recommendation.
 
     Returns:
         The counterexample engine (batch-only: no streaming axis declared).
     """
-
-    class _BatchOnlyBadWireASR(_GoodASR):
-        def recommended_wire_format(self) -> AudioFormat | None:
-            """Recommend a format the engine's own Properties reject.
-
-            Returns:
-                A format at a rate outside ``accepted_sample_rates``.
-            """
-            return AudioFormat(encoding="pcm_s16le", sample_rate=4321)
-
     return _BatchOnlyBadWireASR()
 
 
@@ -2741,7 +2785,7 @@ def test_recommended_wire_format_issues_carry_the_model_key() -> None:
     """
 
     class _RaisingEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise RuntimeError("boom")
 
     raised = check_recommended_wire_format(_RaisingEngine(), model="a/x")
@@ -4417,7 +4461,7 @@ def test_gating_probe_context_unbuildable_is_reported() -> None:
     # takes), report it rather than crash. The engine's declaration is typed
     # and on the current line, so the shared engine gate is NOT what fails.
     class _NoFormatEngine(_FailLoudOnMissingFormatEngine):
-        def recommended_wire_format(self) -> AudioFormat | None:
+        def recommended_wire_format(self) -> AudioFormat | None:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise RuntimeError("no native rate")
 
     report = check_streaming_param_gating(_NoFormatEngine(strict=True))
@@ -4776,7 +4820,7 @@ def test_sync_bridge_base_exception_from_supports_is_not_a_timeout_verdict() -> 
     """
 
     class _CancelledSupportsEngine(_OutputOnlyStreamEngine):
-        def supports(self, dot_path: str) -> bool:
+        def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise asyncio.CancelledError()
 
     report = check_sync_bridge(
@@ -4998,6 +5042,61 @@ def public_template_override_factory() -> (  # pyright: ignore[reportUnusedFunct
     _PublicTemplateOverrideEngine
 ):
     return _PublicTemplateOverrideEngine()
+
+
+class _SupportsOverrideEngine(_ArtifactCorePlaceholderEngine):
+    # The honest accident round-29 F2 names: config-dependent support
+    # expressed by overriding the template instead of narrowing
+    # effective_capabilities -- the override owns the call and bypasses the
+    # engine gate the template carries.
+    def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return dot_path == "batch.language.runtime_override"
+
+
+def supports_override_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _SupportsOverrideEngine
+):
+    return _SupportsOverrideEngine()
+
+
+class _WireFormatOverrideEngine(_ArtifactCorePlaceholderEngine):
+    # The wire-preference accident: a hand-rolled recommendation instead of
+    # declaring the preference through Properties (wire_encodings ordering,
+    # sample-rate fields), bypassing the same gate.
+    def recommended_wire_format(self) -> AudioFormat | None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+
+
+def wire_format_override_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WireFormatOverrideEngine
+):
+    return _WireFormatOverrideEngine()
+
+
+@pytest.mark.parametrize(
+    ("factory", "member", "extension_point"),
+    [
+        ("supports_override_factory", "supports", "effective_capabilities"),
+        (
+            "wire_format_override_factory",
+            "recommended_wire_format",
+            "Properties declarations",
+        ),
+    ],
+)
+def test_check_entrypoints_flags_negotiation_template_overrides(
+    factory: str, member: str, extension_point: str
+) -> None:
+    # Round-29 F2: the two negotiation members carry the same engine gate as
+    # the inference and artifact templates, so the template inventory must
+    # include them -- an override compliance accepted here would pass while
+    # bypassing the gate on direct-use paths. The message points at the
+    # member's own extension point, not a hook it does not have.
+    report = check_entrypoints(registry=_registry(factory), instantiate=False)
+    issue = next(i for i in report.issues if i.code == "public_template_overridden")
+    assert issue.level == "error"
+    assert f"{member}()" in issue.message
+    assert extension_point in issue.message
 
 
 def test_check_entrypoints_flags_public_template_overrides() -> None:

@@ -104,7 +104,13 @@ def create_turbo(**kwargs: Any) -> TurboASR:
 > a **factory function**; an entry point that is the engine class itself needs
 > no annotation, because the class is returned directly. Compliance checks the
 > outcome either way, reporting `class_metadata_unreadable` when neither form
-> resolves.
+> resolves. The factory must also return an instance of **exactly** its
+> annotated class: discovery and the metadata surfaces project the annotated
+> class while the runtime executes the returned one, so
+> `ModelRegistry.create()` refuses any other returned class
+> (`EngineContractError`) and compliance reports it as
+> `factory_return_class_mismatch`. A factory that picks between engine
+> subclasses needs one entry point, with one annotated class, per preset.
 
 Discovery validates each declaration:
 
