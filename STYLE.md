@@ -67,7 +67,11 @@ This standard governs English **prose**:
 - test prose: docstrings, comments, and assertion labels in `tests/`;
 - new `CHANGELOG.md` entries from now on (by review: the mechanical gate
   cannot separate a new entry from the pre-standard history, so
-  `CHANGELOG.md` stays outside `scripts/vale.sh`).
+  `CHANGELOG.md` stays outside `scripts/vale.sh`);
+- writing that goes on GitHub: issue bodies and comments, pull request
+  descriptions, and the prose in a commit message. Review owns these,
+  because Vale cannot read GitHub. A tracking issue is often the first
+  thing a reader sees.
 
 Scope is not coverage. This standard governs every item above; the mechanical
 gate reaches a subset of them, and "Enforcement" states exactly which. Prose
@@ -90,8 +94,7 @@ This standard does **not** govern, and must never change:
   `CancelledError`).
 - **Chinese documents** — `docs/content/specification/protocol.md` (the
   normative spec) and the Chinese files under `docs/internal/`
-  (`design-notes/`, `research/`, `work_doc/`, `misc.md`). Do not translate or
-  edit them. Read `docs/content/specification/protocol.md` as the source of
+  (`design-notes/`, `research/`, `work_doc/`, `misc.md`). Do not translate or restyle them; they change when their content changes. Read `docs/content/specification/protocol.md` as the source of
   truth; the other Chinese documents are background context, ranked by the
   authority order in "Fact-check every meaning change" below.
 - **reStructuredText roles and code spans** — `:class:`, `:func:`, `:meth:`,
@@ -157,6 +160,15 @@ tool reads the text, never what good prose is.
   `TERMINOLOGY.md` names every sense in use. Use a listed sense, make the
   sense clear from the sentence, and never introduce a sense the table does
   not list.
+- **Define it, or do not use it.** Write for a reader who knows software but
+  does not know this project. Every term must be one of three things: a word
+  that reader already knows, a term `TERMINOLOGY.md` defines, or a name that
+  appears in the code. Explain anything else where you first use it, or pick
+  a plainer word. Inventing a phrase is the usual way this goes wrong. "The
+  gate is the enforcement topology for every selected-engine surface" sounds
+  precise and tells the reader nothing; "the core checks the protocol version
+  in the same way everywhere" says the thing. No checker catches this, so
+  review owns it.
 - **Sentence-length targets.** Keep a user-facing sentence short — about 20
   words for an instruction, about 25 for a description. Keep the docstring
   **summary line** short. The dropped limits are in "The two tiers" above. (A
@@ -205,6 +217,7 @@ tool reads the text, never what good prose is.
   addresses**, not everyone who may read the sentence — a rendered docstring
   has many readers, and its MUST still addresses the engine author. Where the
   obligation addresses an **operator** or an **end user**, use a plain verb.
+- **No column wrap in Markdown.** Do not break lines inside a paragraph at a column width. Let the editor wrap. If a paragraph looks too long as one line, split the paragraph organically. Do not reflow a paragraph you are not otherwise editing. Docstrings and comments live in code and keep the code's line length.
 
 ### Divergences where this repo overrides the baseline
 
@@ -371,6 +384,8 @@ Three layers, weakest claim first:
 ## Checklist before you commit prose
 
 - Each concept uses its canonical term from `TERMINOLOGY.md`.
+- Every term is one the reader knows, one `TERMINOLOGY.md` defines, or one
+  the sentence explains.
 - Spelling is American; no British forms in prose.
 - No emoji anywhere; no non-ASCII symbol in a runtime string.
 - User-facing sentences are short and active.
