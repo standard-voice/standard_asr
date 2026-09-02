@@ -8,6 +8,12 @@ We use [uv](https://docs.astral.sh/uv/) for dependency, environment, and build m
 uv sync --all-groups --all-extras
 ```
 
+`git blame` skips the commits listed in `.git-blame-ignore-revs`, mechanical rewrites that changed no words, after you point Git at the file once. GitHub's blame view reads the file on its own.
+
+```sh
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ## Git hooks (prek)
 
 We use [**prek**](https://github.com/j178/prek) — a fast, drop-in-compatible reimplementation of `pre-commit` — to run lint, format, type-check, and a GitHub Actions security audit before each commit (and the test suite before each push). The config lives in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
