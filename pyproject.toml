@@ -173,11 +173,23 @@ addopts = [
     "--cov-report=xml",
 ]
 testpaths = ["tests"]
-# Warnings-as-errors so OUR deprecations/bugs fail the suite. No third-party
-# ignores at present: the last two (classic-httpx TestClient deprecations) left
-# with the httpx2 migration. Any new ignore must be targeted and justified here.
+# Warnings-as-errors so OUR deprecations/bugs fail the suite. A third-party
+# ignore is as narrow as the filter allows (message, category, and the module
+# the warning is attributed to, when that is stable) and is justified here,
+# with the condition for dropping it.
 filterwarnings = [
     "error",
+    # anyio 4.15.0 (2026-09-02, agronholm/anyio#1169) made its top-level imports
+    # lazy and warns when a caller names the `anyio.abc.BlockingPortal` alias.
+    # `starlette/testclient.py` names it in a type alias at import, in every
+    # release from our floor 1.3.1 through 1.6.0 (Kludex/starlette#3497), so
+    # every test that builds a TestClient fails under warnings-as-errors once
+    # anyio 4.15.0 is installed. anyio attributes the warning to the module
+    # that names the alias, so the module field limits this ignore to
+    # Starlette's test helper; the alias named anywhere else still fails. Drop
+    # this entry when the Starlette floor rises past the release that stops
+    # naming it.
+    'ignore:The anyio\.abc\.BlockingPortal alias is deprecated:DeprecationWarning:starlette\.testclient$',
 ]
 
 [tool.coverage.run]
