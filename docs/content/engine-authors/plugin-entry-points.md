@@ -96,7 +96,7 @@ def create_turbo(**kwargs: Any) -> TurboASR:
 
 > **Annotate the factory with your concrete engine class, not the `StandardASR`
 > protocol.** Discovery reads class-level metadata (`declared_capabilities`,
-> `properties`, `provider_params_type`) *without instantiating or authenticating*
+> `declared_metadata`, `properties`, `provider_params_type`) *without instantiating or authenticating*
 > the engine, by resolving the factory's **return annotation**
 > (`ModelRegistry.engine_class`). A concrete class (`-> FasterWhisperASR`) exposes
 > those `ClassVar`s; the `StandardASR` protocol does not, so annotating the
@@ -104,7 +104,14 @@ def create_turbo(**kwargs: Any) -> TurboASR:
 > a **factory function**; an entry point that is the engine class itself needs
 > no annotation, because the class is returned directly. Compliance checks the
 > outcome either way, reporting `class_metadata_unreadable` when neither form
-> resolves.
+> resolves. The factory must also return an instance of **exactly** its
+> annotated class: discovery, `show`, and the server's per-model endpoints
+> describe the annotated class, while the returned class is what actually
+> runs, so
+> `ModelRegistry.create()` refuses any other returned class
+> (`EngineContractError`) and compliance reports it as
+> `factory_return_class_mismatch`. A factory that picks between engine
+> subclasses needs one entry point, with one annotated class, per preset.
 
 Discovery validates each declaration:
 
@@ -136,6 +143,12 @@ subclass) that exposes:
 
 - `properties`: a `BaseProperties` instance (class attribute / `ClassVar`).
 - `declared_capabilities`: a `DeclaredCapabilities` instance (`ClassVar`).
+- `declared_metadata`: a `DeclaredEngineMetadata` instance (`ClassVar`). Its
+  required `artifacts` section must be authored by the
+  plugin class hierarchy, not inherited from the core fail-loud placeholder.
+  Additional producer sections use the
+  `x_<vendor>_<name>` namespace. A future protocol version can add standard
+  sections without the `x_` prefix, which older readers preserve.
 - `config`: a `BaseConfig` instance (captured at initialization).
 - `transcribe(audio, params)` returning `TranscriptionResult`, where `params` is
   an optional `RuntimeParams`. Subclassing `EngineBase` gives you this
@@ -281,6 +294,8 @@ The `standard_asr.compliance.check_entrypoints()` helper powers the compliance s
 2. Factories load successfully.
 3. Factories that can be invoked without arguments produce an object exposing `transcribe`.
 4. `properties.model_id` matches the entry point key.
+5. The engine authors valid declared metadata and the required
+   artifact methods without executing status or acquisition.
 
 Plugin authors can integrate the check into their CI:
 
@@ -304,7 +319,7 @@ also importable from `standard_asr.compliance`:
 
 | Check | What it asserts | How to run |
 | --- | --- | --- |
-| `check_entrypoints` | Entry-point metadata, capability declarations, the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
+| `check_entrypoints` | Entry-point metadata, capability and declared-metadata declarations, the artifact methods, and the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
 | `check_provider_params_swap_safety(engine)` | An engine rejects another engine's `provider_params` rather than silently misreading them (spec Runtime R3 / §5.4) | `standard-asr compliance run` (per zero-arg engine) |
 | `check_streaming_param_gating(engine)` | A streaming engine gates an unsupported standard parameter per its strict/best_effort policy | `standard-asr compliance run` (per zero-arg streaming engine) |
 | `check_recommended_wire_format(engine)` | `recommended_wire_format()` returns `AudioFormat \| None` and any returned format passes the engine's own session-establishment rule — the member is unconditional (spec §3.1: Properties-pure, capability-blind), so this holds for **every** engine, batch-only included | `standard-asr compliance run` (per zero-arg engine, inside the entrypoint instance checks) |
@@ -316,7 +331,10 @@ also importable from `standard_asr.compliance`:
 `check_event_sequence` and `check_transcription_result` for you. It runs the
 entrypoint instance checks (including the wire-format round-trip) and
 `check_provider_params_swap_safety` for each zero-arg engine, then
-`check_streaming_param_gating` for each streaming engine (no-billing probes). It
+`check_streaming_param_gating` for each streaming engine. These probes are
+designed to fail at the standard gate, but a noncompliant engine can enter its
+real pipeline, load artifacts, connect to a service, or incur a charge. Use
+staging credentials or `--no-instantiate` when that risk matters. The command
 also runs `check_sync_bridge` when you opt in via `--include-bridge` (it opens a
 session). `check_event_sequence` needs an author-recorded event stream, and
 `check_transcription_result` an author-recorded batch result. The CLI cannot

@@ -14,13 +14,13 @@ Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
 
 ## 1. Security & limits
 
-- **No per-endpoint authentication.** v1 targets localhost / trusted-LAN use.
+- **No per-endpoint authentication.** The server targets localhost / trusted-LAN use.
   Transcription is CPU/GPU-expensive and there is no quota or rate limiting.
   Before exposing beyond localhost, operators **MUST** front the server with a
   reverse proxy providing authentication and rate limiting.
-- The capability and params-schema endpoints are deliberately readable without
-  auth (spec §3.1 / §C: declared metadata is discoverable without instantiation
-  or authentication).
+- The declared-metadata, capability, and schema endpoints are deliberately
+  readable without authentication. They expose declarations, not configured
+  values or artifact status.
 - **Validation errors never echo request input VALUES.** Every REST **422** that
   originates from a pydantic validation failure of the CLIENT's own request
   material — the global `RequestValidationError` handler **and** the
@@ -129,7 +129,7 @@ sendable**:
   mis-routed.
 
 > The long-term JSON-Schema-over-wire path (validating `provider_params` against
-> the discovered schema) is **deferred**; for v1 the escape hatch is in-process
+> the discovered schema) is **deferred**; today the escape hatch is in-process
 > only (pass it to `transcribe(...)` / `start_transcription(...)` directly).
 
 ## 3. REST endpoints
@@ -140,6 +140,46 @@ Returns `{"status": "ok"}`.
 ### 3.2 `GET /v1/models`
 Returns a list of `ModelInfo`:
 `{"key": "<engine/model>", "engine_id": "...", "model_name": "..."}`.
+
+This bulk endpoint reads entry-point identity only. It does not import every
+installed plugin and does not include declared metadata or artifact status.
+
+### 3.2.1 `GET /v1/metadata/{model}`
+
+Returns the engine class's `DeclaredEngineMetadata` as canonical JSON. The endpoint
+loads only the selected model's engine class and does not instantiate it. The
+initial `artifacts` section exposes three independent static upper bounds:
+artifact-lifecycle applicability, explicit-acquisition support, and possible
+acquisition during inference.
+
+An unknown model key returns **404**. A registered plugin that cannot load, an
+invalid declaration, or a protocol line this core does not support (older or
+newer) is a deployment fault and returns a scrubbed **500**. The endpoint never
+fabricates `NO_ARTIFACT_LIFECYCLE` for an engine on an unsupported line. The
+same protocol gate guards every per-model class-metadata endpoint --
+`/v1/capabilities`, `/v1/params-schema`, and `/v1/config-schema` map an
+unsupported line to the same scrubbed 500: a mismatched declaration is not
+safely interpretable under this core's semantics. Only `/v1/models`
+(import-free inventory) is ungated.
+
+The `/v1` path component versions the HTTP transport envelope;
+`properties.protocol_version` versions the application-to-engine semantic
+contract. Neither number derives from the other. A wire-API revision must
+state which semantic protocol generations it can faithfully project, and
+that declaration is normative -- without it, `/v1` would silently mean
+"whatever contract the installed core happens to implement," re-coupling
+the two axes.
+
+**Wire API `/v1` projects exactly the semantic protocol `0.2` line.**
+Moving the core to a semantically incompatible protocol line under the
+same `/v1` envelope requires a revision of this declaration that names the
+new set together with a design for how a wire client tells the
+generations apart; absent that design, an incompatible generation
+requires a new wire revision. The stable freeze revises this declaration
+in the same release: when the wire representation is unchanged, `/v1` adds
+the `1.0.x` line to its declared set (the freeze promotes the contract's
+semantics verbatim, so this is the expected outcome); otherwise the core
+opens a new wire revision.
 
 ### 3.3 `POST /v1/transcribe` (multipart form)
 Transcribe an uploaded file.
@@ -210,7 +250,7 @@ the form collects. Secret fields carry `format: password` / `writeOnly: true`
 markers, so schema-driven UIs render them safely. The schema describes field
 *shapes* only and never contains configured values, so — like capabilities and
 params-schema — it is deliberately readable without authentication. Note that
-the server itself does not accept engine construction over the wire in v1; the
+the server itself does not accept engine construction over the wire; the
 collected config is consumed by the operator-side process that constructs the
 engine (for example, `registry.create(key, **values)`).
 
@@ -227,6 +267,7 @@ The transcribe endpoints map errors from **both** engine construction
 | Unknown / unparseable model key (`EntrypointValidationError` — the caller's key does not exist or is malformed) | **404** (authored detail: the caller's own key + available keys) |
 | Registered model whose plugin fails to load/resolve (`FactoryLoadError` — the key resolved, a server-installed plugin is broken) | **500** (scrubbed generic detail; plugin import/annotation internals are safe-logged only — a 404 would blame the caller for a fault it cannot fix) |
 | Required configuration absent from the SERVER environment (`ConfigurationRequiredError` — for example, a credential env var not set), at construction OR discovered lazily at call time | **503** (stable generic detail; the absent field names are deployment detail, safe-logged only) |
+| Required inference artifacts are unavailable (`ArtifactUnavailableError`) or their acquisition failed (`ArtifactAcquisitionError`) | **503** (stable generic detail; reports, paths, actions, source URLs, and native error text are deployment detail) |
 | Any other construction failure (`ConfigError`, `InvalidProviderParamError`, `ValidationError`, anything unexpected) | **500** (scrubbed) |
 | Engine config/contract fault during transcription (`ConfigError` — for example, a bad `default_language` value; `EngineContractError` — for example, a malformed declared language tag or a missing IC.6 `default_language`; `InvalidProviderParamError`; a bare engine-side `ValidationError`) | **500** (scrubbed) |
 | Unsupported standard feature / non-selectable language requested, strict mode (`UnsupportedFeatureError`) | **422** |
@@ -243,9 +284,10 @@ so `ConfigError` and `InvalidProviderParamError` are UNREACHABLE from a
 request: wherever they surface (construction, transcription, session
 establishment) they are engine/deployment faults, mirroring the compliance
 suite's classification of the same states. Absent required config
-(`ConfigurationRequiredError`, the state compliance *skips*) is an
-operator-side availability state → **503**, whether hit at construction or
-lazily at call time; every other `ConfigError`/`EngineContractError`/
+(`ConfigurationRequiredError`, the state compliance *skips*) and an
+inference-artifact failure are operator-side availability states → **503**,
+whether hit at construction or lazily at call time. Every other
+`ConfigError`/`EngineContractError`/
 `InvalidProviderParamError` (the states compliance *fails*) → scrubbed
 **500**. Client-caused rejections
 each have their own type and status: `UnsupportedFeatureError` → 422,
@@ -271,7 +313,7 @@ the raw exception text is logged server-side only, never returned (avoids
 leaking internal paths or upstream/credential material).
 
 **Metadata fault boundary (normative).** The discovery endpoints
-(`/v1/capabilities/{model}`, `/v1/params-schema/{model}`,
+(`/v1/metadata/{model}`, `/v1/capabilities/{model}`, `/v1/params-schema/{model}`,
 `/v1/config-schema/{model}`) MUST wrap the WHOLE operation — class
 resolution, the descriptor read, `canonical_json()` /
 `model_json_schema()`, and the JSON projection — in ONE fault boundary,
@@ -385,8 +427,9 @@ Bridges a WebSocket to an engine streaming session (the incremental
      closes. (A conformant server does **not** parse a binary first frame as
      config; relying on that leniency breaks against strict implementations.)
 
-2. **Initial diagnostics frame (server → client).** Immediately after the
-   session starts — *before* any audio is sent — the server forwards the
+2. **Initial diagnostics frame (server → client).** Immediately after
+   `start_transcription` returns — *before* the bridge enters the session, and
+   *before* any audio is sent — the server forwards the
    standard-layer diagnostics attached at session establishment (best-effort
    parameter degrade, language resolution, audio conversion), so the client learns
    **why** a parameter was dropped or changed (the REST path returns these on the
@@ -450,11 +493,22 @@ Client authors MUST handle **both**:
     (`EntrypointValidationError` only — a registered model whose plugin
     fails to LOAD is an engine/deployment fault and maps to the scrubbed
     `internal_error` frame, mirroring the REST 404/500 split).
-  - `service_unavailable`: required configuration absent from the server
-    environment (`ConfigurationRequiredError`), whether at engine
-    construction or discovered lazily at session establishment — the WS twin
-    of the REST 503 (§3.7): an operator-side state, stable generic
-    `message`, never the absent field names.
+  - `service_unavailable`: required configuration is absent from the server
+    environment, or an inference-artifact failure prevents session
+    establishment. Establishment covers session OPEN as well: an engine that
+    acquires artifacts or checks credentials when the session opens (the
+    `_open` hook) reaches the client through this same frame. On that one path
+    the client may already hold the §4.1.2 diagnostics frame, because
+    establishment succeeded and attached its diagnostics before the open
+    failed: both facts are true and both are delivered. "Sent as a single
+    frame" describes the error's own shape, not a promise that it is the first
+    frame on the socket, so a client MUST dispatch on `type` rather than treat
+    frame one as the verdict. Every earlier pre-bridge failure returns before
+    the diagnostics frame is built, so there the error is the only frame. The
+    open failure reaches the client here because no event channel exists yet.
+    This is the WebSocket twin of the REST 503 (§3.7): an
+    operator-side state with a stable generic `message`, never field names,
+    artifact reports, paths, actions, URLs, or native error text.
   - `unsupported`: engine cannot start a streaming session for this request
     (`UnsupportedFeatureError` — the only caller-fixable establishment
     rejection; by establishment every client input is already validated, so
@@ -478,6 +532,15 @@ Client authors MUST handle **both**:
   ```
   (It carries the full `TranscriptionEvent` field set; other fields are `null`
   or defaults.)
+
+  `artifact_unavailable` and `artifact_acquisition_failed` are distinct
+  terminal codes when an inference-artifact failure occurs while the engine is
+  producing events. Both set `recoverable=false`. `artifact_unavailable` has no
+  retry delay; `artifact_acquisition_failed` can retain a nonnegative
+  `retriable_after`, but the client must open a new session for a retry. A
+  failure before the first event — construction, establishment, or session
+  open — cannot use these event fields and remains the coarser
+  `service_unavailable` shape above.
 
   > **Non-leak (mirrors the REST 500 contract, §3.7).** For `error` events the
   > server **drops the `extra` payload** before sending (it is emptied to `{}`).
@@ -511,13 +574,13 @@ Client authors MUST handle **both**:
   > `extra` is the engine-specific, non-portable event slot defined in the
   > in-process protocol (`protocol.md` §4.1). Only `error` events scrub it.
 
-### 4.3 Scope limit (v1)
+### 4.3 Scope limit
 
 The WebSocket surface supports **only** the incremental `audio_format` path
 (declare format, push raw PCM frames, receive live events). The
 **whole-input + streaming-output** path
 (`start_transcription(audio=...)`, OpenAI SSE style, spec §7.3) is **NOT**
-exposed over WebSocket in v1. For those engines, use the batch REST endpoints
+exposed over WebSocket. For those engines, use the batch REST endpoints
 (`POST /v1/transcribe` or `POST /v1/transcribe:json`).
 
 ### 4.4 Frame / session byte caps (DoS bound)

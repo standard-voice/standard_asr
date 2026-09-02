@@ -50,7 +50,12 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from standard_asr.contract.exceptions import InvalidSessionUseError, StreamClosedError
+from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactUnavailableError,
+    InvalidSessionUseError,
+    StreamClosedError,
+)
 from standard_asr.contract.results import (
     DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
     Diagnostic,
@@ -130,6 +135,15 @@ DEFAULT_MAX_GUARD_DIAGNOSTICS = 1000
 #: -- can recognize a truncated diagnostic stream.
 DIAGNOSTICS_TRUNCATED_CODE = "diagnostics_truncated"
 
+#: Terminal event code emitted when required inference artifacts are not usable.
+#: The error ends the current session and makes no retry-timing claim.
+ARTIFACT_UNAVAILABLE_CODE = "artifact_unavailable"
+
+#: Terminal event code emitted when inference-artifact acquisition fails.
+#: The error ends the current session, but can carry a retry delay for a new
+#: session when the source exception provides one.
+ARTIFACT_ACQUISITION_FAILED_CODE = "artifact_acquisition_failed"
+
 #: Seconds per wait slice of the sync bridge's event pump. Event waits are
 #: unbounded by design (a live, fed session may legitimately go arbitrarily
 #: long between events); the pump polls in slices purely to detect the death
@@ -145,6 +159,8 @@ _SYNC_PUMP_POLL_SECONDS = 5.0
 _SYNC_BRIDGE_LOOP_THREAD_NAME = "standard-asr-sync-bridge-loop"
 
 _INPUT_SOURCE_ERROR_DETAIL = "Audio input source failed during streaming."
+_ARTIFACT_UNAVAILABLE_DETAIL = "Required inference artifacts are unavailable."
+_ARTIFACT_ACQUISITION_FAILED_DETAIL = "Inference-artifact acquisition failed."
 
 #: Diagnostic codes the streaming layer emits (the lifecycle guard's event
 #: admission verdicts). Like the ``DIAG_*`` constants in
@@ -559,7 +575,7 @@ class TranscriptionEvent(BaseModel):
         *cardinality* of the re-segmentation (which ids retire, which appear)
         but not a per-old->per-new mapping. On a merge+split (many->many) a UI
         cannot tell which specific old segment a given new segment descends
-        from. This is a documented v1 limitation; the spec does not
+        from. This is a documented limitation of the current generation; the spec does not
         require a pairwise mapping, and the frozen-prefix-preservation invariant
         is enforced over the concatenated prefixes, not per pair. Per-pair
         edit-ops/diffs are a possible future direction (additive later).
@@ -1115,7 +1131,7 @@ class StreamReducer:
         # Strip each segment and drop empties so a segment carrying edge
         # whitespace (or an empty committed segment) does not inject a double
         # space / stray separator into the reduced transcript. Segments are
-        # space-joined as the v1 default; a no-space-language (CJK) separator is a
+        # space-joined as the standard default; a no-space-language (CJK) separator is a
         # separate spec question, not silently changed here.
         text = " ".join(part for part in (segment.text.strip() for segment in segments) if part)
         diagnostics: list[Diagnostic] = list(self._suppressions)
@@ -2960,6 +2976,23 @@ class TranscriptionSession(ABC):
         except _InputSourceError:
             self._drain_pending_reconnects()
             self._force_error("input_source_error", _INPUT_SOURCE_ERROR_DETAIL)
+        except ArtifactUnavailableError:
+            self._drain_pending_reconnects()
+            # Do not project the exception message or its structured report.
+            # Both can contain an operator path or an external-action URL.
+            # The fixed detail is already safe at the producer boundary, before
+            # the reference server drops operator detail from its wire frame.
+            self._force_error(ARTIFACT_UNAVAILABLE_CODE, _ARTIFACT_UNAVAILABLE_DETAIL)
+        except ArtifactAcquisitionError as exc:
+            self._drain_pending_reconnects()
+            # Only the standard retry delay crosses the projection boundary.
+            # The report, required actions, exception message, and native cause
+            # remain on the in-process exception and never enter the event.
+            self._force_error(
+                ARTIFACT_ACQUISITION_FAILED_CODE,
+                _ARTIFACT_ACQUISITION_FAILED_DETAIL,
+                retriable_after=exc.retriable_after,
+            )
         except Exception as exc:  # noqa: BLE001 - surfaced as an error event
             self._drain_pending_reconnects()
             # The detail string outlives the exception object (it rides the
@@ -2976,7 +3009,13 @@ class TranscriptionSession(ABC):
             self._drain_pending_reconnects()
             self._buffer.close()
 
-    def _force_error(self, code: str, detail: str) -> None:
+    def _force_error(
+        self,
+        code: str,
+        detail: str,
+        *,
+        retriable_after: float | None = None,
+    ) -> None:
         """Append a terminal error bypassing the buffer bound (drop-proof path).
 
         Used when the normal bounded buffer cannot accept more events (overflow)
@@ -2987,11 +3026,15 @@ class TranscriptionSession(ABC):
         Args:
             code: The error code.
             detail: Human-readable detail stored under ``extra["detail"]``.
+            retriable_after: Suggested delay before a new session attempt.
         """
         self._buffer.put_forced(
             self._terminate(
                 TranscriptionEvent.make_error(
-                    code=code, recoverable=False, extra={"detail": detail}
+                    code=code,
+                    recoverable=False,
+                    retriable_after=retriable_after,
+                    extra={"detail": detail},
                 )
             )
         )
@@ -3714,6 +3757,8 @@ class SyncSession:
 
 
 __all__ = [
+    "ARTIFACT_ACQUISITION_FAILED_CODE",
+    "ARTIFACT_UNAVAILABLE_CODE",
     "DEFAULT_AUDIO_HISTORY_MAXLEN",
     "DEFAULT_AUDIO_QUEUE_MAXSIZE",
     "DEFAULT_DONE_TIMEOUT",

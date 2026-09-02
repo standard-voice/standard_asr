@@ -19,6 +19,7 @@
     "---API reference---",
     "reference/index",
     "reference/engine",
+    "reference/artifacts",
     "reference/compliance",
     "reference/streaming",
     "reference/results",

@@ -285,15 +285,51 @@ Then verify:
 - **Yanking:** If a release is broken, yank it on PyPI and ship a new patch.
   Never reuse a version number.
 
-## First release (`v0.1.0`)
+### Protocol generations
 
-The changelog already contains a drafted `0.1.0` section, but there is no
-published GitHub Release or PyPI upload yet. For the first release:
+The package version above is not the protocol version:
+`properties.protocol_version` names the engine-protocol contract generation,
+an independent version line governed by spec AR.1
+(`docs/content/specification/protocol.md`). These obligations land at
+release time:
 
-1. Confirm `pyproject.toml` still has `version = "0.1.0"`.
-2. Confirm `CHANGELOG.md` accurately describes the release.
-3. Run the TestPyPI dry-run.
-4. Publish GitHub Release `v0.1.0` and approve `pypi`.
+- The first public core release carrying a new `0.MINOR` protocol generation
+  **freezes that generation** (AR.1's generation freeze point). Public
+  includes pre-releases: an alpha, beta, or RC artifact on PyPI freezes the
+  generation it carries exactly as a stable release does (a TestPyPI dry-run
+  is a rehearsal, not a public release). Before publishing, confirm
+  `CURRENT_PROTOCOL_VERSION` in
+  `src/standard_asr/contract/protocol_version.py` names the contract you
+  intend to freeze; after the release, a breaking change to that contract
+  requires a new minor.
+- The first generation-freezing release also **establishes the protocol
+  ledger** -- the generation-ledger appendix of
+  `docs/content/specification/protocol.md` -- recording the frozen token,
+  freeze date, spec snapshot commit, and compatibility classification; every
+  later freeze appends its row. The package changelog is never the source of
+  truth for protocol history.
+- The first stable release (protocol `1.0.0`) must execute AR.1's freeze plan
+  and record its three freeze-day decisions: the frozen `0.N` alias policy,
+  the multi-major support policy, and the `1.0.0` promotion row in the
+  ledger. The RC window has no mutable period: a `1.0.0rcN` package declares,
+  and freezes, the newest `0.N` generation; a breaking change during the RC
+  series opens a new `0.MINOR`; the final release promotes the last frozen
+  generation verbatim. Rehearse that promotion on a branch before tagging:
+  flip the constants and the feature floors, point the first-party plugins
+  at `1.0.0`, and run their compliance suites against that core. The
+  stable token cannot appear in a public artifact before the release that
+  freezes it, so the rehearsal is the only full-system test the promotion
+  gets. The same release revises the `/v1` projection
+  declaration in `docs/content/specification/server-api.md`: `/v1` adds the
+  `1.0.x` line when the wire representation is unchanged (the expected
+  outcome), or the core opens a new wire revision. Without that step, the
+  statement that `/v1` projects exactly `0.2` becomes false the moment
+  engines declare `1.0.0`.
+- Before shipping protocol `1.1` (the first stable additive minor), decide
+  how an older core's `/v1` projects an engine on a newer minor -- project
+  only the understood intersection, filter unknown requestable capabilities,
+  or require a core floor -- and revise the projection declaration in
+  `docs/content/specification/server-api.md` in the same release.
 
 ## Troubleshooting
 

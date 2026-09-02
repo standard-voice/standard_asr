@@ -245,7 +245,7 @@ def execute_plan(
     if target is InputKind.FETCHABLE_URL:
         url = _narrow(provided, AudioUrl)
         # Validate HTTPS + non-private address before forwarding the
-        # literal URL to the engine. The standard never fetches it (v1).
+        # literal URL to the engine. The standard never fetches it.
         validate_fetchable_url(url.value, allow_private_addresses=allow_private_addresses)
         return PreparedAudio(kind=target, url=url.value, diagnostics=diags)
 

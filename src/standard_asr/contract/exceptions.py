@@ -14,7 +14,12 @@ mistake (bad params, unsupported feature) from an engine/runtime fault.
 
 from __future__ import annotations
 
-from typing import Any
+import math
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, Final, Literal
+
+if TYPE_CHECKING:
+    from standard_asr.contract.artifacts import ArtifactAction, ArtifactReport
 
 
 class StandardASRError(Exception):
@@ -67,6 +72,39 @@ class StructuredError(StandardASRError):
         self.param = param
         self.hint = hint
         self.details = details
+        super().__init__(message)
+
+
+class ProtocolCompatibilityError(StandardASRError):
+    """Raised when an engine's declared protocol cannot be used by this core.
+
+    The error reports a version compatibility boundary, not a missing Python
+    attribute. It covers both directions: an engine on an older protocol line
+    than the core supports, and an engine on a newer one. Generic consumers
+    raise it before they inspect a member the declared protocol does not
+    define.
+
+    Args:
+        message: Human-readable description of the incompatibility.
+        protocol_version: Protocol version declared by the engine.
+        feature: Stable feature identifier requested by the consumer, or
+            ``None`` when the incompatibility is at the protocol-line level
+            rather than about one feature.
+        required_protocol_version: Earliest protocol version that defines the
+            feature, if known.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        protocol_version: str,
+        feature: str | None = None,
+        required_protocol_version: str | None = None,
+    ) -> None:
+        self.protocol_version = protocol_version
+        self.feature = feature
+        self.required_protocol_version = required_protocol_version
         super().__init__(message)
 
 
@@ -192,6 +230,226 @@ class TranscriptionError(StructuredError):
         super().__init__(message, param=param, hint=hint, details=details)
 
 
+class ArtifactStatusError(StructuredError):
+    """Raised when artifact status inspection fails unexpectedly."""
+
+    pass
+
+
+#: Closed availability vocabulary; MUST mirror the ``reason`` ``Literal`` on
+#: :class:`ArtifactUnavailableError`. Enforced at construction because the
+#: annotation alone does not run: consumers branch on the token (the CLI exit
+#: split, wire mappings), so a typo'd or wrong-typed value from an engine's
+#: ``raise`` would misclassify the failure silently -- and a value that cannot
+#: be hashed crashes the consumer's membership test instead of the engine hook
+#: that authored it.
+_ARTIFACT_UNAVAILABLE_REASONS: Final = frozenset(
+    {"missing", "incomplete", "corrupt", "unknown", "action_required", "downloads_disabled"}
+)
+
+#: Closed acquisition vocabulary; MUST mirror the ``reason`` ``Literal`` on
+#: :class:`ArtifactAcquisitionError` (protocol.md AR.5 keeps it portable).
+_ARTIFACT_ACQUISITION_REASONS: Final = frozenset(
+    {"downloads_disabled", "action_required", "unsupported", "busy", "failed"}
+)
+
+
+def _check_artifact_reason(reason: object, allowed: frozenset[str]) -> None:
+    """Require a closed-vocabulary artifact ``reason`` token at construction.
+
+    Args:
+        reason: Engine-supplied reason token.
+        allowed: The closed vocabulary the owning exception declares.
+
+    Returns:
+        None.
+
+    Raises:
+        TypeError: If ``reason`` is not a string.
+        ValueError: If ``reason`` is not in the closed vocabulary.
+    """
+    if not isinstance(reason, str):
+        raise TypeError(f"reason must be one of {sorted(allowed)}, not {type(reason).__name__}.")
+    if reason not in allowed:
+        raise ValueError(f"reason {reason!r} is not one of {sorted(allowed)}.")
+
+
+def _checked_artifact_report(report: object) -> ArtifactReport:
+    """Re-validate an artifact ``report`` payload at construction.
+
+    Consumers dereference the report structurally (the CLI renders
+    ``report.requirements``, and each requirement's actions, inside its
+    exception handler), so a wrong-typed payload would crash the reporting
+    boundary instead of the code that attached it. An ``isinstance`` check
+    proves the class, not the contents: ``model_copy(update=...)`` skips
+    validation by design, so an engine that adjusts one field of a status
+    report can attach an ``ArtifactReport`` whose ``requirements`` never met a
+    validator. The report is therefore rebuilt from a plain-data dump of its
+    fields. A bare ``model_validate(report)`` would not do: pydantic reruns
+    only the model-level validator on an existing instance, and that validator
+    itself reads the requirements.
+
+    Args:
+        report: Engine-supplied report payload.
+
+    Returns:
+        The re-validated report.
+
+    Raises:
+        TypeError: If the payload is not an ``ArtifactReport``.
+        ValueError: If the report fails re-validation (pydantic's
+            ``ValidationError``).
+    """
+    # Imported here, not at module top: the exception hierarchy is the bottom
+    # layer of the contract package and must stay importable without pulling
+    # in the artifact data models (which is also why the top-level import is
+    # TYPE_CHECKING-only). The exception constructors are cold paths.
+    from standard_asr.contract.artifacts import ArtifactReport
+
+    if report is None:
+        raise TypeError("report must be an ArtifactReport, not None.")
+    if not isinstance(report, ArtifactReport):
+        raise TypeError(f"report must be an ArtifactReport, not {type(report).__name__}.")
+    # ``warnings=False`` on the intermediate dump only, for the reason
+    # DeclaredEngineMetadata.canonical_json() gives: serializing a field whose
+    # value is not its declared type emits a pydantic serializer warning, and
+    # the ValidationError below carries everything that warning would.
+    return ArtifactReport.model_validate(report.model_dump(mode="python", warnings=False))
+
+
+def _checked_required_actions(actions: Iterable[object]) -> tuple[ArtifactAction, ...]:
+    """Re-validate directly attached artifact actions at construction.
+
+    ``ArtifactAction`` re-validates itself when nested in a report, but an
+    action attached straight to an exception crosses no model boundary: a
+    ``model_copy(update=...)`` value that skipped the HTTPS/user-information
+    validators would otherwise ride the error into the CLI's action rendering
+    (protocol.md AR.8: an artifact error's actions must never carry
+    credentials).
+
+    Args:
+        actions: Engine-supplied actions.
+
+    Returns:
+        The re-validated actions as a tuple.
+
+    Raises:
+        TypeError: If ``actions`` is not iterable or an item is not an
+            ``ArtifactAction``.
+        ValueError: If an action fails re-validation (pydantic's
+            ``ValidationError``).
+    """
+    # See _checked_artifact_report for why this import is function-local.
+    from standard_asr.contract.artifacts import ArtifactAction
+
+    validated: list[ArtifactAction] = []
+    for action in tuple(actions):
+        if not isinstance(action, ArtifactAction):
+            raise TypeError(
+                f"required_actions items must be ArtifactAction, not {type(action).__name__}."
+            )
+        validated.append(ArtifactAction.model_validate(action))
+    return tuple(validated)
+
+
+class ArtifactUnavailableError(StructuredError):
+    """Raised when required artifacts cannot support inference or warm-up.
+
+    Args:
+        message: Human-readable description of the unavailable artifacts.
+        reason: Machine-readable availability reason.
+        report: Status report that established the unavailable state.
+        hint: Actionable guidance, if any.
+
+    Raises:
+        TypeError: If ``reason`` is not a string or ``report`` is not an
+            ``ArtifactReport``.
+        ValueError: If ``reason`` is not in the closed availability
+            vocabulary, or ``report`` fails re-validation.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: Literal[
+            "missing",
+            "incomplete",
+            "corrupt",
+            "unknown",
+            "action_required",
+            "downloads_disabled",
+        ],
+        report: ArtifactReport,
+        hint: str | None = None,
+    ) -> None:
+        _check_artifact_reason(reason, _ARTIFACT_UNAVAILABLE_REASONS)
+        self.reason = reason
+        self.report = _checked_artifact_report(report)
+        super().__init__(message, hint=hint)
+
+
+class ArtifactAcquisitionError(StructuredError):
+    """Raised when an explicit or implicit artifact acquisition fails.
+
+    Args:
+        message: Human-readable description of the acquisition failure.
+        reason: Machine-readable acquisition reason.
+        report: Latest available artifact status report, if any.
+        required_actions: External actions discovered by the failed attempt.
+        retriable_after: Suggested nonnegative delay before another attempt.
+        hint: Actionable guidance, if any.
+
+    Raises:
+        TypeError: If ``reason`` is not a string, ``report`` is not an
+            ``ArtifactReport`` or ``None``, or a required action is not an
+            ``ArtifactAction``.
+        ValueError: If ``reason`` is not in the closed acquisition
+            vocabulary, ``retriable_after`` is negative or non-finite, or the
+            report or a required action fails re-validation.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: Literal[
+            "downloads_disabled",
+            "action_required",
+            "unsupported",
+            "busy",
+            "failed",
+        ],
+        report: ArtifactReport | None = None,
+        required_actions: tuple[ArtifactAction, ...] = (),
+        retriable_after: float | None = None,
+        hint: str | None = None,
+    ) -> None:
+        if retriable_after is not None and (
+            not math.isfinite(retriable_after) or retriable_after < 0
+        ):
+            raise ValueError("retriable_after must be finite and nonnegative.")
+        _check_artifact_reason(reason, _ARTIFACT_ACQUISITION_REASONS)
+        self.reason = reason
+        self.report = None if report is None else _checked_artifact_report(report)
+        self.required_actions = _checked_required_actions(required_actions)
+        self.retriable_after = retriable_after
+        super().__init__(message, hint=hint)
+
+
+class ArtifactProgressCallbackError(StandardASRError):
+    """Raised after acquisition succeeds but its progress callback fails.
+
+    Args:
+        message: Human-readable description of the callback failure.
+        report: Final artifact report produced by the successful operation.
+    """
+
+    def __init__(self, message: str, *, report: ArtifactReport) -> None:
+        self.report = report
+        super().__init__(message)
+
+
 class AudioProcessingError(StandardASRError):
     """Raised when an error occurs during audio loading or processing.
 
@@ -266,11 +524,11 @@ class EngineContractError(StandardASRError):
 
     The runtime counterpart of a compliance failure, in two shapes:
 
-    * **Runtime behavior**: a SYNCHRONOUS ``StandardASR`` member
+    * **Runtime behavior**: a synchronous ``StandardASR`` member
       (``transcribe`` / ``start_transcription`` / ``supports`` /
-      ``recommended_wire_format`` / ``prepare``) returned an awaitable (an
-      ``async def`` implementation, or a sync wrapper delegating to one) or
-      a value outside its protocol-pinned return type. Raised by
+      ``recommended_wire_format`` / ``artifact_status`` /
+      ``acquire_artifacts``), or the optional ``prepare`` engine method,
+      returned an awaitable or a value outside its pinned return type. Raised by
       :func:`standard_asr.runtime.protocol_boundary.require_sync_result` at
       the consumer call sites (CLI, reference server) so the defect is loud
       at the boundary instead of surfacing as a confusing secondary
@@ -406,6 +664,10 @@ class FactoryLoadError(DiscoveryError, ImportError):
 
 __all__ = [
     "AudioProcessingError",
+    "ArtifactAcquisitionError",
+    "ArtifactProgressCallbackError",
+    "ArtifactStatusError",
+    "ArtifactUnavailableError",
     "ConfigError",
     "ConfigurationRequiredError",
     "DiscoveryError",
@@ -417,6 +679,7 @@ __all__ = [
     "IncompatibleAudioInputError",
     "InvalidProviderParamError",
     "InvalidSessionUseError",
+    "ProtocolCompatibilityError",
     "StandardASRError",
     "StreamClosedError",
     "StructuredError",

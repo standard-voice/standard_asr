@@ -9,13 +9,13 @@ single process -- most importantly the numpy 1.x-vs-2.x split. It
 never resolves or installs anything; it only diagnoses and suggests remediation
 (out-of-process isolation when a conflict is real).
 
-Scope (v1): doctor diagnoses ``numpy`` ONLY. numpy is the single shared native
+Scope: doctor diagnoses ``numpy`` ONLY. numpy is the single shared native
 dependency the standard itself has, and its 1.x-vs-2.x break is a clean C-ABI
 split whose conflict is fully encoded in version specifiers -- so a version-range
 intersection decides it. Other shared native libraries (torch CUDA build
 variants; onnxruntime vs onnxruntime-gpu package identity) have fundamentally
 different conflict models that version intersection cannot decide, so they are
-explicitly known-uncovered in v1; their hard conflicts fall under the general
+explicitly known-uncovered today; their hard conflicts fall under the general
 out-of-process isolation guidance.
 See the per-library seam in :func:`_numpy_spec_for` for the rationale.
 """

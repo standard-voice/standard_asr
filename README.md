@@ -91,6 +91,14 @@ the people who know each engine best, and the core never becomes the bottleneck.
 - **Audio negotiation, batteries included.** Hand over what you have — a file path, raw
   bytes, a NumPy array, a URL — and the framework negotiates and converts to whatever form
   the engine accepts, loudly reporting anything lossy. No more sample-rate guesswork.
+- **See what a model needs before it runs.** Engines declare their inference artifacts —
+  weights, tokenizers, compiled graphs, installed operating-system assets — so your app (or
+  `standard-asr status`) can ask what is on disk without loading anything, and
+  `standard-asr pull` acquires what is missing without faking a transcription to warm a
+  cache. A gated license, an absent credential, or a disabled download policy comes back as
+  a structured, machine-readable verdict you can act on — a blocker naming why acquisition
+  cannot run, plus the operator actions where actions exist — not a stack trace on the first
+  request.
 - **No dependency hell, no licensing traps.** Each engine is its own pip-installable
   plugin, so restrictive licenses and heavy dependencies stay in the packages that carry
   them. Hard dependency conflicts (for example, numpy 1.x vs 2.x) cannot share one environment —
@@ -171,6 +179,37 @@ Unsupported parameters never degrade silently: depending on policy, they either 
 (`strict`) or are dropped with a structured diagnostic telling you exactly what was
 ignored and why (`best_effort`).
 
+### Check and acquire inference artifacts
+
+Weights, tokenizers, compiled graphs, installed operating-system assets — whatever a model
+needs to exist before it can run. Ask first, then acquire on purpose:
+
+```python
+from standard_asr import ARTIFACTS_READY, ArtifactAcquisitionError
+
+report = engine.artifact_status()  # side-effect-free: loads nothing, no network request
+if report.readiness != ARTIFACTS_READY:
+    try:
+        # Downloads, copies, extracts, verifies, or invokes a native installer —
+        # and never transcribes audio just to warm a cache.
+        report = engine.acquire_artifacts(progress=lambda event: print(event.phase))
+    except ArtifactAcquisitionError as exc:
+        # Blocked, not broken: a license to accept, a sign-in, downloads turned off.
+        # Read the structured fields — never parse the message.
+        if exc.report is not None:
+            report = exc.report
+
+for requirement in report.requirements:
+    print(requirement.label, requirement.state, requirement.required_for_inference)
+    for action in requirement.required_actions:
+        # Something only a person can do: accept a license, sign in, request access.
+        print(action.kind, action.message, action.url)
+```
+
+An engine that carries no artifacts (a cloud API, for example) reports `not_applicable`
+rather than pretending. `standard-asr status` and `standard-asr pull` are the same
+operations on the command line.
+
 ### Stream
 
 **Full-duplex streaming** — feed audio while receiving live results. Requires a
@@ -232,6 +271,8 @@ see the streaming guide's "Finality" section).
 ```bash
 standard-asr list                                              # what's installed?
 standard-asr show faster-whisper/large-v3                      # properties, capabilities, config schema
+standard-asr status faster-whisper/large-v3                    # which inference artifacts are on disk?
+standard-asr pull faster-whisper/large-v3                      # acquire the ones inference needs
 standard-asr transcribe faster-whisper/large-v3 audio.wav      # quick transcription
 standard-asr serve                                             # expose engines over HTTP/WS
 standard-asr doctor                                            # diagnose plugin dependency conflicts

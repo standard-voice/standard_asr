@@ -21,9 +21,9 @@ Flags:
   (default: `warn_keep_first`).
 
 ### `standard-asr show <engine/model>`
-Show metadata about a specific model entry point. The output has three sections:
-identity (engine/model, module, attribute, entry-point value), the declared
-**capabilities**, and the init-**config schema**.
+Show metadata about a specific model entry point. The output has four sections:
+identity (engine/model, module, attribute, entry-point value), declared
+**capabilities**, declared **metadata**, and the init-**config schema**.
 
 If the model is registered but its plugin cannot be imported, `show` prints
 everything it could read plus a sanitized `Capabilities: <unavailable: ...>` line
@@ -36,6 +36,15 @@ derived `supported` boolean at every node. CLI and wire output can therefore be
 compared field-for-field (spec §C R6; the two layers share one capability model).
 If an engine mis-declares its `declared_capabilities` (for example, as a raw dict), the
 capabilities line reports the problem and the rest of the metadata still renders.
+
+Declared metadata is rendered as canonical JSON for supported engines. For
+an engine on an unsupported protocol line, `show` prints the entry-point
+identity lines (facts, not interpretations), then stops: capabilities,
+metadata, and the config schema would all have to be interpreted under this
+core's contract, which it cannot vouch for on that line, so none renders and the command exits 2 through the shared
+compatibility arm. A missing or invalid declaration on the supported line
+is shown as invalid. `show` resolves only the selected plugin.
+`standard-asr list` remains entry-point-only and does not import plugins.
 
 The config schema is the JSON Schema of the engine's class-level `config_type` —
 the same schema the REST `GET /v1/config-schema/...` endpoint returns — read from
@@ -55,23 +64,80 @@ Flags:
 - `--strict-discovery`: fail on invalid plugin entry points during discovery.
 
 ### `standard-asr cache [--ensure]`
-Display (and optionally create, `--ensure`) the Standard ASR model cache
-directory.
+Display and optionally create (`--ensure`) the Standard ASR fallback cache
+directory. This path is not a claim that every engine stores inference
+artifacts there. Use `status` to inspect effective locations when an engine can
+report them.
+
+### `standard-asr status <engine/model>`
+
+Construct the selected engine and inspect inference-artifact readiness without
+acquiring artifacts or running inference.
+
+Flags:
+
+- `--strict-discovery`: Fail on invalid plugin entry points during discovery.
+- `--config JSON` and repeatable `--set KEY=VALUE`: Supply init config with the
+  same precedence as `transcribe` and `prepare`.
+- `--json`: Print the canonical `ArtifactReport` JSON.
+- `--require-ready`: Exit 1 unless aggregate readiness is `ready` or
+  `not_applicable`.
+
+A valid report exits 0 by default, including one with a `missing` requirement or
+aggregate readiness of `unavailable` or `unknown`. Status does not use the exit
+code as a hidden readiness value; scripts that require a ready deployment opt
+in with `--require-ready` or parse the JSON report.
+
+Both `status` and `pull` render the report's diagnostics to stderr in the
+default text view, so a caveat about an unreadable cache index is never silent.
+`--json` omits that stderr rendering: the report on stdout already carries
+`diagnostics`, and one run must not describe the same diagnostic twice. This is
+the rule `transcribe` follows for its result.
+
+### `standard-asr pull <engine/model>`
+
+Explicitly acquire every non-ready inference artifact that the configured
+engine can acquire now. The command does not transcribe audio, accept terms,
+authenticate an account, or open a browser. It prints known external actions
+for the operator.
+
+Flags:
+
+- `--strict-discovery`: Fail on invalid plugin entry points during discovery.
+- `--config JSON` and repeatable `--set KEY=VALUE`: Supply init config.
+- `--json`: Print the final canonical `ArtifactReport` JSON.
+- `--refresh`: Request re-resolution for mutable sources. An immutable revision,
+  digest, operator path, or installed asset is a no-op. Refresh widens the set
+  that reaches the engine hook rather than narrowing it: the non-ready
+  requirements a plain `pull` already targets, plus every unblocked mutable
+  requirement, `ready` ones included. Plain `pull` does not check a ready
+  floating source for updates.
+
+Pull exits 0 when every required artifact is ready. An optional blocked artifact
+produces a warning and still exits 0. A disabled network path or known required
+operator action exits 2; an unsupported protocol line also exits 2 because the
+fix is invoker-owned -- install a core and plugin that share a protocol line.
+A native acquisition failure, busy or
+unsupported required acquisition, status failure, or progress callback failure
+exits 1. `pull --refresh` exits 2 when downloads are disabled and a mutable
+source exists.
 
 ### `standard-asr prepare <engine/model>`
 Flags:
 - `--strict-discovery`: fail on invalid plugin entry points during discovery
-  (the same flag as `list` / `show` / `transcribe` / `compliance`; `serve`
+  (the same flag as `list` / `show` / `status` / `pull` / `transcribe` /
+  `compliance`; `serve`
   deliberately has no discovery flags -- the server always discovers leniently
   so one broken co-installed plugin cannot take every other engine's endpoint
   down with it). On this command the name matters doubly: `--set strict=...`
   configures the engine's parameter-gating policy on the same command line.
 
-Warm up a model by loading or downloading weights. `prepare` is best-effort and
-maps onto the optional `prepare()` hook (spec IC.11): an engine that does not
+Warm up process-local engine state. `prepare` is best-effort and maps onto the
+optional `prepare()` hook (spec IC.11): an engine that does not
 override the `EngineBase` default no-op is a reported no-op ("nothing to warm
-up") and never transcribes, so a cloud engine is never billed for a stand-in
-request. The hook MUST be a synchronous, zero-argument method; a coroutine
+up") and never transcribes, so a remote inference service is never billed for a
+stand-in request. Persistent inference-artifact acquisition belongs to `pull`.
+The hook MUST be a synchronous, zero-argument method; a coroutine
 `prepare` (or a non-callable / parameter-requiring `prepare` attribute) is
 rejected as an ENGINE fault — `EngineContractError`, exit 1 — because no flag
 or env var the invoker controls can fix a declaration (it would otherwise be
@@ -101,7 +167,7 @@ Engine **init-config** flags (also on `transcribe`):
 
 ### `standard-asr compliance entrypoints`
 Validate entry points and factories: entry-point metadata, class-level
-capability declarations, and — by default — instantiation of each zero-arg
+capability and declared-metadata declarations, and — by default — instantiation of each zero-arg
 factory to verify the instance surface. Instantiation includes one
 **behavioral probe**: an engine declaring no streaming axis has
 `start_transcription()` called once with no arguments and MUST raise
@@ -109,6 +175,11 @@ factory to verify the instance surface. Instantiation includes one
 before constructing anything; a returned session is never entered, but a
 non-compliant implementation may still run arbitrary author code in the
 method body). Flags:
+
+The class-level pass also checks the two synchronous artifact
+method signatures, plugin-owned metadata authorship, declaration invariants,
+and required `EngineBase` hook overrides. The default check never calls
+`artifact_status()` or `acquire_artifacts()`.
 - `--strict-discovery`: fail on invalid plugin entry points at discovery time.
 - `--no-instantiate`: skip instantiation attempts (avoids loading models —
   and skips the batch-only refusal probe with them).
@@ -217,6 +288,18 @@ are rendered to **stderr**, so stdout stays a clean, pipeable transcript while a
 degrade is never silent. `--json` prints the full
 result (diagnostics included) to stdout.
 
+Before transcribing, the command runs the protocol-line gate and then an
+advisory artifact status inspection. An engine on an unsupported protocol
+line exits 2 without transcribing: its inference semantics are not
+interpretable by this core, so the compatibility error is never downgraded
+to a warning. If required artifacts are not ready and inference can acquire them,
+stderr explains that the first transcription can acquire artifacts and points
+to `standard-asr pull`. An unknown state uses “may acquire” wording. An
+`ArtifactStatusError` at this advisory step becomes a scrubbed warning and
+transcription continues; configuration, caller-input, and contract errors keep
+their normal fail-loud behavior. This advisory is CLI-only: the Python
+`transcribe()` method does not run a status inspection before every call.
+
 ### `standard-asr serve`
 Launch the FastAPI server (requires `standard-asr[server]`). Flags:
 - `--host` (default `127.0.0.1`), `--port` (default `8000`): bind address.
@@ -258,7 +341,8 @@ is nothing to analyze). Does not resolve or install anything.
   redirect defaulting to the ANSI code page), so non‑Latin transcripts print
   losslessly rather than raising `UnicodeEncodeError`. Transcript text is never
   silently replaced.
-- JSON output for transcription with `--json`.
+- JSON output for transcription, artifact status, and artifact pull with
+  `--json`.
 - Clear error messages on failure (stderr).
 - Exit codes: `0` success, `1` runtime/transcription failures **and engine
   faults**, `2` usage or validation errors *the invoker can fix*. The split
@@ -269,7 +353,10 @@ is nothing to analyze). Does not resolve or install anything.
   - **Exit 2 (invoker-actionable).** A mis-typed flag; an unknown/malformed
     model key; a bad `--options` payload (validated by `_parse_options`
     before the engine runs); a strict-mode `UnsupportedFeatureError`; a bad
-    audio input; and every `ConfigError` -- configuration is invoker-owned
+    audio input; a plugin on an unsupported protocol line selected for
+    transcription or an artifact command; a
+    required `downloads_disabled` or `action_required` artifact state; and
+    every `ConfigError` -- configuration is invoker-owned
     at the CLI *whichever seam it surfaces at*, including a factory
     rejecting a supplied value and a deferred credential check raising
     `ConfigurationRequiredError` at first transcribe. (The same errors are
@@ -291,7 +378,9 @@ is nothing to analyze). Does not resolve or install anything.
     `EngineContractError` (broken sync-call boundary, or a declaration
     defect -- a coroutine/non-callable/parameter-requiring `prepare`, a
     malformed declared language tag, a missing IC.6 `default_language`);
-    and `TranscriptionError` / other runtime failures.
+    `ArtifactStatusError`, a native or unsupported artifact acquisition,
+    `ArtifactProgressCallbackError`, and `TranscriptionError` / other runtime
+    failures.
   The one in-band residual is documented on `ConfigError` itself: an engine
   that raises it (or lets a non-config internal `ValidationError` escape its
   factory, which `create()` wraps) for a fault that is NOT about the

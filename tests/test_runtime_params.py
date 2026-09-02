@@ -289,7 +289,7 @@ def test_wire_params_is_frozen_and_forbids_extra() -> None:
 
 
 def test_diarization_request_is_empty_frozen_marker() -> None:
-    # The v1 marker deliberately carries NO fields: presence = enable is the
+    # The current marker deliberately carries NO fields: presence = enable is the
     # whole state space, and the param_gating import-time assert relies on the
     # empty field set to keep the diarization gate feature-level only.
     assert DiarizationRequest.model_fields == {}

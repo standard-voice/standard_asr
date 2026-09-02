@@ -41,9 +41,16 @@ from typing import (
 from pydantic import ValidationError
 from pydantic.errors import PydanticInvalidForJsonSchema
 
-from standard_asr.contract.exceptions import EntrypointValidationError, FactoryLoadError
+from standard_asr.contract.exceptions import (
+    EngineContractError,
+    EntrypointValidationError,
+    FactoryLoadError,
+)
 from standard_asr.contract.identifiers import validate_engine_id, validate_model_name
+from standard_asr.contract.properties import BaseProperties
 from standard_asr.runtime.config import BaseConfig
+from standard_asr.runtime.interface import require_engine_protocol
+from standard_asr.runtime.protocol_boundary import safe_class_name, safe_type_name
 from standard_asr.runtime.redaction import (
     config_error_from_validation,
     safe_exception_summary,
@@ -237,7 +244,8 @@ class ModelSpec:
         """Resolve the engine **class** without instantiating it.
 
         This enables reading class-level ``ClassVar`` metadata
-        (``declared_capabilities``, ``properties``, ``provider_params_type``)
+        (``declared_capabilities``, ``declared_metadata``, ``properties``,
+        ``provider_params_type``)
         without calling the factory -- which the standard requires to be
         possible "without instantiation or authentication". Instantiating a
         cloud engine would force credential resolution and a heavy ``__init__``,
@@ -366,12 +374,13 @@ class ModelSpec:
         ``AttributeError``.
 
         The check is intentionally narrow: per-attribute completeness (a class
-        that has ``transcribe`` but is missing ``declared_capabilities`` /
-        ``properties``) is the job of the compliance suite, which emits precise
-        diagnostics; and metadata readers consume those attributes defensively
-        via ``getattr``, so a degenerate-but-intentional engine is still
-        tolerated. The check rejects only classes that lack the defining engine method,
-        plus the one machine-identifiable always-wrong case below.
+        that has ``transcribe`` but is missing ``declared_capabilities``,
+        ``declared_metadata``, or ``properties``) is the job of the compliance
+        suite, which emits precise diagnostics. Metadata readers consume those
+        attributes defensively through ``getattr``, so a degenerate but
+        intentional engine is still tolerated. The check rejects only classes
+        that lack the defining engine method, plus the one identifiable
+        always-wrong case below.
 
         The :class:`~standard_asr.runtime.interface.StandardASR` protocol is rejected
         explicitly. It is ``runtime_checkable`` so its ``transcribe`` is a real
@@ -398,8 +407,8 @@ class ModelSpec:
             raise FactoryLoadError(
                 f"Entry point {self.model_id!r} resolves to the {cls.__name__!r} "
                 "Protocol, not a concrete engine class. A protocol exposes no "
-                "class-level metadata (declared_capabilities / properties / "
-                "config_type), so discovery cannot read it. Annotate the factory "
+                "class-level metadata (declared_capabilities / declared_metadata / "
+                "properties / config_type), so discovery cannot read it. Annotate the factory "
                 "with your concrete engine class (for example, '-> FasterWhisperASR'), "
                 "not the StandardASR protocol (see plugin-entry-points.md)."
             )
@@ -411,6 +420,28 @@ class ModelSpec:
                 "the engine's Config or Properties class instead of the engine)."
             )
         return typing.cast("type[StandardASR]", cls)
+
+
+def _missing_class_declaration_error(name: str) -> EngineContractError:
+    """Build the error for an engine class without a typed ``properties`` ClassVar.
+
+    :meth:`ModelRegistry.create` raises it from two seams: the class preflight
+    (class resolvable, declaration untyped -- construction never starts) and
+    the post-construction check (class unresolvable without construction, so
+    the verdict lands on ``type(engine)``). One builder keeps both seams
+    telling the author the same thing.
+
+    Args:
+        name: Model key named in the message.
+
+    Returns:
+        The typed contract error, ready to raise.
+    """
+    return EngineContractError(
+        f"Engine {name!r} does not declare class-level 'properties' "
+        "as a BaseProperties ClassVar readable without instantiation. "
+        "Declare properties once, as a ClassVar."
+    )
 
 
 @final
@@ -527,6 +558,11 @@ class ModelRegistry:
     def get_factory(self, name: str) -> ASRFactory:
         """Get the factory callable for a model (without instantiating).
 
+        This is a raw accessor: the returned callable and anything it
+        constructs have not passed the engine gate or ``create()``'s
+        contract checks. Use :meth:`create` to construct an engine with
+        those checks applied.
+
         Args:
             name: Model key in ``engine_id/model_name`` format.
 
@@ -543,9 +579,13 @@ class ModelRegistry:
         """Resolve a model's engine class without instantiating it.
 
         Use this to read class-level metadata (``declared_capabilities``,
-        ``properties``, ``provider_params_type``) for discovery, UI generation,
-        and REST endpoints without paying the cost (or auth requirements) of
-        constructing the engine. See :meth:`ModelSpec.engine_class`.
+        ``declared_metadata``, ``properties``, ``provider_params_type``) for
+        discovery, UI generation, and REST endpoints without paying the cost or
+        authentication requirements of constructing the engine. See
+        :meth:`ModelSpec.engine_class`. This is a raw accessor: resolution
+        does not run the engine gate, so the callers that need the gate
+        (:meth:`create`, the per-model server endpoints, compliance) run it
+        on the result themselves.
 
         Args:
             name: Model key in ``engine_id/model_name`` format.
@@ -584,8 +624,14 @@ class ModelRegistry:
                 cannot be determined without calling the factory,
                 ``config_type`` is not a ``BaseConfig`` subclass, or its JSON
                 Schema cannot be generated.
+            EngineContractError: The engine class does not declare typed
+                ``properties`` (AR.1 fail-closed line gate).
+            ProtocolCompatibilityError: The engine class declares a protocol
+                line this core does not support -- its config semantics are
+                not interpretable, so no schema is projected.
         """
         engine_class = self.engine_class(name)
+        require_engine_protocol(engine_class)
         config_type = getattr(engine_class, "config_type", None)
         if config_type is None:
             return None
@@ -627,6 +673,32 @@ class ModelRegistry:
         Raises:
             EntrypointValidationError: Model not found.
             FactoryLoadError: Entry point failed to load or is not callable.
+            ProtocolCompatibilityError: The engine declares a protocol line
+                this core does not support (AR.1). The gate runs here -- the
+                one construction path every toolchain consumer shares -- so a
+                mismatched installed plugin fails loudly at creation instead
+                of transcribing with possibly drifted semantics; when the
+                engine class is resolvable without construction, the line is
+                checked BEFORE the factory runs, so a construction-time fault
+                (a missing credential, say) cannot mask the mismatch behind a
+                configuration diagnosis.
+            EngineContractError: The engine's ``properties`` is missing or
+                not a ``BaseProperties`` instance (its protocol line cannot
+                be established, which is less knowable than a wrong line,
+                so creation fails closed), the class does not declare typed
+                ``properties`` as a ClassVar (the class declaration is the
+                authoritative copy that ``show``, compliance, and the
+                per-model endpoints read without constructing the engine;
+                when the class is resolvable without construction this is
+                refused BEFORE the factory runs, for the same masking
+                reason as the line preflight), the factory returned an
+                instance of a class other than the resolved declared class
+                (those class readers describe the declared class, so the
+                class that runs must be exactly it), or the
+                instance properties do not
+                equal the class-level declaration (a divergent instance
+                would let the class readers and the running engine
+                disagree).
             ConfigError: The model needs configuration that was missing or
                 invalid (a required credential, a bad ``default_language``, and so on).
                 A construction-time pydantic ``ValidationError`` -- whether from
@@ -665,8 +737,30 @@ class ModelRegistry:
                 name,
                 engine_id,
             )
+        # Class-level contract preflight (AR.1): when the engine class is
+        # resolvable without construction, its declaration is judged BEFORE
+        # the factory runs. Gating only after construction let a
+        # construction-time fault -- a missing credential, say -- mask the
+        # verdict: the operator was sent debugging configuration for an
+        # engine this core cannot use at all. The masking argument covers
+        # the whole class contract, not only the line: an untyped class
+        # declaration is certain to be refused by the checks below, so
+        # running the factory first could only trade that certain verdict
+        # for an irrelevant construction failure. Only an unresolvable
+        # class (a factory without a concrete return annotation -- itself
+        # a class-metadata contract violation compliance reports) falls
+        # through to the post-construction checks.
         try:
-            return factory(*args, **kwargs)
+            preflight_class: type[StandardASR] | None = self.spec(name).engine_class()
+        except FactoryLoadError:
+            preflight_class = None
+        if preflight_class is not None:
+            try:
+                require_engine_protocol(preflight_class)
+            except EngineContractError as exc:
+                raise _missing_class_declaration_error(name) from exc
+        try:
+            engine = factory(*args, **kwargs)
         except ValidationError as exc:
             # An engine that builds its config via the bare constructor (not
             # Config.from_env) raises a raw pydantic ValidationError; wrap it as
@@ -676,6 +770,51 @@ class ModelRegistry:
             raise config_error_from_validation(
                 exc, prefix=f"Invalid configuration for {name!r}"
             ) from exc
+        if preflight_class is not None and type(engine) is not preflight_class:
+            # Bind the returned instance to the class the preflight judged
+            # (AR.1). Every class-read surface (show, compliance, the
+            # per-model endpoints) projects the DECLARED class, so a factory
+            # returning any other class -- an ordinary covariant return: a
+            # subclass carrying its own declarations -- would have one class
+            # certified and projected while another executes. Exact identity,
+            # not isinstance: a subclass may override any class-level
+            # contract surface (declared_metadata, capabilities, templates).
+            raise EngineContractError(
+                f"Engine {name!r} factory returned an instance of "
+                f"{safe_type_name(engine)!r}, not the declared class "
+                f"{safe_class_name(preflight_class)!r} its entry point "
+                "resolves to. Discovery, show, compliance, and the "
+                "per-model endpoints describe the declared class, but the "
+                "returned class is what runs -- when the two differ, what "
+                "was checked is not what runs. Annotate the factory with, "
+                "and return, exactly one concrete engine class."
+            )
+        # AR.1 line gate at the shared construction seam (see Raises):
+        # fail-closed, including a missing or untyped declaration -- an
+        # engine whose protocol line cannot be established is less knowable
+        # than one on a wrong line.
+        properties = require_engine_protocol(engine)
+        class_properties = inspect.getattr_static(type(engine), "properties", None)
+        if not isinstance(class_properties, BaseProperties):
+            # The CLASS declaration is the authoritative one (AR.1): show,
+            # compliance, and the per-model endpoints read it without
+            # instantiation, so an engine whose typed declaration exists only
+            # on the instance would be creatable here yet rejected by every
+            # class-read surface -- the same split fail-open would reopen.
+            # Reachable only through an unresolvable class (preflight refused
+            # the resolvable untyped case before construction).
+            raise _missing_class_declaration_error(name)
+        if class_properties != properties:
+            # One authoritative declaration: discovery/show/metadata read the
+            # CLASS while the runtime gates read the INSTANCE, so an instance
+            # that shadows the class declaration (an honest
+            # rebuild-from-config mistake) would split those surfaces.
+            raise EngineContractError(
+                f"Engine {name!r} instance properties do not equal its "
+                "class-level declaration. Declare properties once, as a "
+                "ClassVar."
+            )
+        return engine
 
     def __len__(self) -> int:  # pragma: no cover
         return len(self._specs)

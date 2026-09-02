@@ -17,37 +17,49 @@ Subclass `EngineBase` and provide:
 
 1. `properties: ClassVar[BaseProperties]` — static identity and I/O boundaries
    (`accepted_input`, `native_sample_rate`, `accepted_sample_rates`,
-   `selectable_languages`, …).
+   `selectable_languages`, …). Pin `protocol_version` to the protocol the
+   engine implements, never to the installed `standard-asr` version
+   (spec AR.1). Bump it only after the engine fully implements the newer
+   contract. It is not a package requirement either: declare the
+   `standard-asr` version range your code imports from in your project
+   metadata, because the two move independently.
 2. `declared_capabilities: ClassVar[DeclaredCapabilities]` — what you support,
    per mode (`batch` / `streaming`). Omit what you don't support (fail-closed).
-3. `provider_params_type: ClassVar[type[ProviderParams] | None]` — your typed
+3. `declared_metadata: ClassVar[DeclaredEngineMetadata]` — static metadata for
+   the model preset. The protocol requires an authored `artifacts` section.
+   Use `NO_ARTIFACT_LIFECYCLE` only when no supported context has an
+   inference-artifact lifecycle.
+4. `provider_params_type: ClassVar[type[ProviderParams] | None]` — your typed
    escape-hatch model, or `None`. Publish your own **terminal** subclass: the
    bare `ProviderParams` base, a non-subclass, or a model that is not closed
    (`extra="forbid"`) is a compliance error
    (`provider_params_type_is_bare_base` / `_not_subclass` / `_not_closed`).
-4. `__init__` — capture config only. **Keep it pure**: no filesystem, GPU, or
+5. `__init__` — capture config only. **Keep it pure**: no filesystem, GPU, or
    network (spec IC.9). Load weights lazily in `_ensure_model_loaded`.
-5. `_transcribe(prepared, params) -> TranscriptionResult` — run your model on
+6. `_transcribe(prepared, params) -> TranscriptionResult` — run your model on
    already-negotiated audio (`prepared.kind` is one of your `accepted_input`).
-6. (Streaming) override
+7. (Streaming) override
    `_start_transcription(*, gated_params, audio_format, prepared_audio)`
    returning a `TranscriptionSession` subclass.
-7. `config_type: ClassVar[type[BaseConfig]]` — your config class. It is read
+8. `config_type: ClassVar[type[BaseConfig]]` — your config class. It is read
    from the class, so a settings UI can render the schema without constructing
    the engine. Without it, `registry.config_schema()` returns `None`,
    `GET /v1/config-schema/{model}` returns an empty schema, `standard-asr show`
    reports no init config, and compliance warns (`missing_config_type`).
-8. If your `properties` declare `selectable_languages`, your config MUST carry a
+9. If your `properties` declare `selectable_languages`, your config MUST carry a
    usable `default_language` (spec IC.6). Inherit `LanguageConfigMixin` to get
    the field. Without it, every `transcribe()` raises `EngineContractError` and
    compliance reports the error `language_config_invalid`.
-9. If you set `effective_capabilities`, it MUST narrow `declared_capabilities`,
+10. If you set `effective_capabilities`, it MUST narrow `declared_capabilities`,
    never widen it. Compliance reports a widening as the error
    `effective_widens_declared`.
-10. If your engine loads weights, override `prepare()` (spec IC.11). Keep it
-    synchronous and zero-argument, and apply the same `allow_downloads()` gate
-    as transcription. Compliance rejects a coroutine or an argument-taking hook
-    (`prepare_hook_is_coroutine` / `prepare_hook_requires_args`).
+11. If `declared_metadata.artifacts.applicable` is `True`, implement
+    `_artifact_requirements()`; if `supports_explicit_acquisition` is also
+    `True`, implement `_acquire_artifacts()`. Compliance reports a missing
+    hook as the error `artifact_requirements_hook_missing` or
+    `artifact_acquisition_hook_missing`. Keep this work separate from
+    `prepare()`, which remains an optional process-local warm-up hook. See
+    [Inference artifacts](../reference/artifacts.md).
 
 ## Minimal batch engine
 
@@ -58,11 +70,13 @@ from standard_asr.engine import (
     BaseProperties,
     BatchCapabilities,
     DeclaredCapabilities,
+    DeclaredEngineMetadata,
     EngineBase,
     FlagCap,
     InputKind,
     LanguageCaps,
     LanguageConfigMixin,
+    NO_ARTIFACT_LIFECYCLE,
     PreparedAudio,
     RuntimeParams,
     TranscriptionResult,
@@ -77,7 +91,7 @@ class MyConfig(LanguageConfigMixin, BaseConfig[Literal["my-engine"]]):
 class MyProps(BaseProperties):
     engine_id: str = "my-engine"
     model_name: str = "base"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"  # AR.1: the protocol this engine implements
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] = [16000]
@@ -92,6 +106,9 @@ class MyEngine(EngineBase):
         batch=BatchCapabilities(
             language=LanguageCaps(runtime_override=FlagCap(supported=True)),
         )
+    )
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=NO_ARTIFACT_LIFECYCLE,
     )
 
     def __init__(self, **kw: object) -> None:
@@ -115,7 +132,7 @@ class MyEngine(EngineBase):
   `candidate_languages`, `word_timestamps`, `diarization`, `prompt`,
   `phrase_hints`. Map them onto your model's native arguments. For
   `diarization`, presence means enable: map `params.diarization is not None`
-  onto your native enable switch (the v1 `DiarizationRequest` marker carries no
+  onto your native enable switch (the current `DiarizationRequest` marker carries no
   fields). An engine that declares `diarization.supported=True` MUST actually
   diarize when the request passes the gate. The standard layer cannot verify
   this. Silently ignoring a gated-and-passed request is the cardinal sin: a
@@ -185,11 +202,11 @@ calls your hook. Before your hook runs, the base has already:
   check is then skipped, so an encoding you never declared reaches you unchecked.
   This is the one fail-open concession in the check; compliance warns about it
   (`streaming_input_without_wire_encodings`). It rejects an
-  `audio_format.channels` other than 1: v1 streaming wire input is mono-only,
+  `audio_format.channels` other than 1: streaming wire input is mono-only,
   because the standard layer does not downmix incremental frames the way the batch
   path does. Downmix to mono before feeding. It also rejects a wire `sample_rate`
-  you do not accept. Per spec R7's v1 note, the standard does **not** resample streaming wire
-  frames in v1 (only the batch `transcribe` path resamples), so an unreachable
+  you do not accept. Per spec R7's implementation note, the standard does **not** resample streaming wire
+  frames (only the batch `transcribe` path resamples), so an unreachable
   wire rate is a loud error. When `required_input_sample_rate` is set, the wire
   rate MUST equal it — even when another rate appears in `accepted_sample_rates`.
   That list describes the batch path, which resamples to the required rate before
@@ -213,7 +230,7 @@ calls your hook. Before your hook runs, the base has already:
 
 Your hook receives the **already-gated, frozen** `gated_params` (spec R5: streaming
 params are frozen at `start_transcription` and MUST NOT change mid-stream, except a
-guidance channel declared `mutable_mid_stream` — a reserved declaration in v1). Use them
+guidance channel declared `mutable_mid_stream` — a reserved declaration in the current generation). Use them
 directly — do not re-gate or re-accept raw params. The signature is
 keyword-only: `gated_params`, `audio_format` (the wire format, or `None`), and
 `prepared_audio` (the negotiated whole input, or `None`).

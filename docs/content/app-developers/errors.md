@@ -20,8 +20,13 @@ StandardASRError
 |   +-- ConfigError            invalid config (bad language, bad value, ...)
 |   |   +-- ConfigurationRequiredError  required config ABSENT (for example, credential not set)
 |   +-- TranscriptionError     engine failed during transcription
+|   +-- ArtifactStatusError    inference-artifact inspection failed
+|   +-- ArtifactUnavailableError  required inference artifacts are unavailable
+|   +-- ArtifactAcquisitionError  artifact acquisition is blocked or failed
 |   +-- UnsupportedFeatureError  unsupported feature (always) or parameter (strict mode)
 |   +-- InvalidProviderParamError  wrong engine's provider_params passed
++-- ArtifactProgressCallbackError  acquisition succeeded, but its observer failed
++-- ProtocolCompatibilityError  engine and core on different protocol lines, or a requested feature missing
 +-- AudioProcessingError       audio decode / size / sample-rate failure
 |   +-- IncompatibleAudioInputError  no conversion path exists
 |   |   +-- UnsafeAudioUrlError   AudioUrl failed the SSRF policy (non-HTTPS, private IP)
@@ -43,6 +48,11 @@ StandardASRError
 | `ConfigError` | `create()`, `transcribe()`, or `start_transcription()` | Invalid config value — bad pydantic validation, or a `default_language` that is malformed / not selectable. Fixable by whoever supplies the config. |
 | `ConfigurationRequiredError` | `create()` / `from_env()`, or lazily at the first `transcribe()` / session when the engine defers its credential check | A required field (for example, an API key) is absent from both explicit config and the environment — set it and retry; compliance treats this as a skip, not a failure. |
 | `TranscriptionError` | `transcribe()` / `start_transcription()` | Engine crashed or returned an invalid result. |
+| `ArtifactStatusError` | `artifact_status()` or acquisition finalization | Side-effect-free inference-artifact inspection failed. |
+| `ArtifactUnavailableError` | `transcribe()`, `prepare()`, or entering a streaming session | Required inference artifacts are missing, incomplete, corrupt, unknown, action-blocked, or blocked by the download policy. Inspect `.reason` and `.report`. |
+| `ArtifactAcquisitionError` | `acquire_artifacts()`, or an engine's implicit acquisition path (including session entry) | Acquisition is disabled, needs an external action, is unsupported for the context, is busy, or failed. Inspect `.reason`, `.report`, `.required_actions`, and `.retriable_after`. |
+| `ArtifactProgressCallbackError` | `acquire_artifacts()` | Acquisition and final status inspection succeeded, but the progress callback failed. The final report is available as `.report`. |
+| `ProtocolCompatibilityError` | `create()`, `transcribe()` / `start_transcription()`, `artifact_status()` / `acquire_artifacts()`, or a toolchain metadata operation | The installed engine and this core do not share a protocol line -- the engine declares a different `0.MINOR` generation (older or newer), an unsupported major, or a version that predates a requested feature. The message names the direction and the fix. |
 | `UnsupportedFeatureError` | `start_transcription()` always for an unsupported streaming axis or wire format; `transcribe()` / `start_transcription()` in strict mode for an unsupported parameter | Requested streaming on a batch-only engine, or word timestamps (strict) on an engine that does not support them. |
 | `InvalidProviderParamError` | `transcribe()` or `start_transcription()` | Passed faster-whisper's `provider_params` to an OpenAI engine (swap-safety). |
 | `AudioProcessingError` | `transcribe()` / `start_transcription(audio=...)` | Corrupt audio file, missing sample rate, unsupported format without `[audio]` extra. |
@@ -105,6 +115,10 @@ engine when a feature is unsupported) without parsing message strings. Every
 exists — `ConfigError`, for example, puts the sanitized pydantic validation
 entries there (`UnsupportedFeatureError` leaves it `None`).
 
+Artifact errors add lifecycle-specific fields. The
+[inference-artifact reference](../reference/artifacts.md) defines their
+machine-readable meanings.
+
 ## Diagnostics (non-fatal)
 
 Not every problem is an exception. In `best_effort` mode, unsupported parameters
@@ -129,4 +143,6 @@ human-readable. Applications should key on `code` for programmatic handling.
 
 - [API Reference: exceptions](../reference/exceptions.md) -- full type
   signatures and docstrings.
+- [Inference artifacts](../reference/artifacts.md) -- status, acquisition, and
+  structured lifecycle errors.
 - [Specification](../specification/protocol.md) -- the normative error contract.

@@ -28,6 +28,15 @@ recommendation is derived from the engine's static Properties; whether a
 bare-frame session can be opened at all is a capability question -- gate on
 `engine.supports("streaming_input")` first.
 
+Entering the `async with` block is where the engine opens its resources, so it
+is also where an inference-artifact failure surfaces: `ArtifactUnavailableError`
+when a required artifact is gone, `ArtifactAcquisitionError` when an acquisition
+the engine was allowed to attempt failed. Both are raised rather than delivered
+as events, because no event stream exists yet; the `artifact_unavailable` and
+`artifact_acquisition_failed` codes below carry the same failures once the
+engine is producing events. See
+[Inference artifacts](../reference/artifacts.md).
+
 > **Known pre-1.0 limitation.** The recommendation is a format the engine's
 > session-establishment *validator* accepts -- for the rare self-managed-wire
 > engine (an engine that manages its own wire format and opens sessions with
@@ -81,7 +90,7 @@ Every streaming session emits a sequence of `TranscriptionEvent` objects. The
 | `supersede` | The engine re-segmented: one or more previously emitted segments are **replaced**. The replacement segments' own `partial`/`final` events arrive afterwards -- a `supersede` always precedes any event of its `new_ids`. | `None` | `None` (check `old_ids`). | `None` |
 | `progress` | A progress heartbeat (for example, audio position). No transcript content. | `None` | `None`, or the segment it reports on. | `None` |
 | `done` | The session is complete. No more events follow. | `None` | `None` | `None` |
-| `error` | An engine error mid-stream. Machine-readable code in `event.code`; when the standard layer synthesized the error from an exception, human detail in `event.extra.get("detail")` (deadline and engine-authored errors may carry no detail); `event.recoverable` says whether the session may continue. | `None` | `None`, or the segment the error concerns. | `None` |
+| `error` | An engine error mid-stream. Machine-readable code in `event.code`; when the standard layer synthesized the error from an exception, human detail in `event.extra.get("detail")` (deadline and engine-authored errors may carry no detail); `event.recoverable` says whether the session may continue. Inference-artifact failures use `artifact_unavailable` or `artifact_acquisition_failed`, not `engine_error`. | `None` | `None`, or the segment the error concerns. | `None` |
 
 Request diarization when opening the session (`RuntimeParams(diarization=DIARIZE)`,
 gated by `streaming.diarization`); `event.speaker` then carries the segment-level

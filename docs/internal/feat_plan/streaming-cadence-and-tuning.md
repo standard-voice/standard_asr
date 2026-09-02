@@ -1,3 +1,8 @@
+> **Superseded numbering.** This record predates the protocol re-base: read
+> its "protocol 1.1" as the artifact-lifecycle generation, now **protocol
+> 0.2** on the pre-stable 0.x line. Spec AR.1
+> (docs/content/specification/protocol.md) is authoritative.
+
 # Streaming Cadence & Tuning (Design Case)
 
 **Status:** Design settled 2026-07-05 (decisions recorded below; engine facts
@@ -24,8 +29,9 @@ Builds on and must stay consistent with:
   freeze, IC.7 init/runtime boundary, §9 capability table, §10 ship/defer.
 - `docs/internal/research/3 streaming 补充调查 2026-06-05.md` §3.1/§3.7 and
   `docs/internal/design-notes/6–8` — the original design record.
-- `docs/internal/feat_plan/model-management.md` — the *other* pending
-  properties/capabilities growth wave (see D7).
+- `docs/internal/feat_plan/model-management.md` — the *other* metadata growth
+  wave, since landed as the `declared_metadata` surface (see D7 and
+  `engine-metadata-surface.md`).
 
 ---
 
@@ -148,11 +154,15 @@ emitting `stable_until=0` everywhere = declared-honest, behaviorally dishonest
 
 **D7 — Rollout: standalone wave, ahead of the metadata wave.** This design is
 capabilities-centric with one properties field; it lands on its own and
-unblocks streaming DX + resolves #33's pacing question now. Locality
-(model-management) + hardware (#8) + model card (#19) form a second,
-coordinated properties/spec wave (#19 design pending). Whichever lands first
-must not paint the other into a corner; both waves update the spec §9 table,
-params/gating docs, and every plugin.
+unblocks streaming DX + resolves #33's pacing question now. The second,
+coordinated metadata wave has since landed its shared home: the artifact
+lifecycle (model-management, protocol 1.1) introduced the typed
+`declared_metadata` surface, and hardware (#8) and model card (#19) must add
+sibling sections there rather than new properties fields or class variables
+(`engine-metadata-surface.md`). The locality preset that this paragraph
+originally named was rejected in that design. The corner-painting constraint
+held; both waves still update the spec §9 table, params/gating docs, and every
+plugin.
 
 ---
 

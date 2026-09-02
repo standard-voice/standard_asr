@@ -36,6 +36,12 @@ from standard_asr.compliance import (
     check_transcription_result,
     validate_bridge_timeout,
 )
+from standard_asr.contract.artifacts import (
+    ArtifactContext,
+    ArtifactProgressCallback,
+    ArtifactReport,
+    ArtifactRequirement,
+)
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
@@ -55,6 +61,7 @@ from standard_asr.contract.exceptions import (
     InvalidProviderParamError,
     UnsupportedFeatureError,
 )
+from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
 from standard_asr.contract.params import (
     ProviderParams,
     RuntimeParams,
@@ -113,6 +120,29 @@ class _GoodASR:
     declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
     effective_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _GoodParams
+    # The supported protocol line carries the artifact lifecycle, so a
+    # compliant structural engine authors the metadata and exposes both
+    # lifecycle methods -- the same reason this fixture implements
+    # recommended_wire_format.
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=ArtifactDeclaration(
+            applicable=False,
+            supports_explicit_acquisition=False,
+            may_acquire_during_inference=False,
+        )
+    )
+
+    def artifact_status(self, context: ArtifactContext | None = None) -> ArtifactReport:
+        return ArtifactReport.from_requirements(mode="batch", applicable=False)
+
+    def acquire_artifacts(
+        self,
+        context: ArtifactContext | None = None,
+        *,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        return self.artifact_status(context)
 
     def __init__(self) -> None:
         self.config = _Config(engine="dummy")
@@ -185,6 +215,36 @@ class _BypassedPropsASR(_GoodASR):
 
 def bypassed_props_factory() -> _BypassedPropsASR:  # pyright: ignore[reportUnusedFunction]
     return _BypassedPropsASR()
+
+
+class _FutureMajorProps(_Props):
+    protocol_version: str = "2.0.0"
+
+
+class _ShadowedPropertiesASR(_GoodASR):
+    # Class declares the supported line; __init__ rebuilds properties on the
+    # instance with a divergent SAME-LINE copy -- the honest
+    # rebuild-from-config mistake that splits the class-read surfaces from
+    # the instance-read runtime gates. (A wrong-LINE shadow is the instance
+    # gate's case, pinned separately.)
+    def __init__(self) -> None:
+        super().__init__()
+        self.properties = _Props(model_name="shadow")  # type: ignore[misc]
+
+
+def shadowed_properties_factory() -> _ShadowedPropertiesASR:  # pyright: ignore[reportUnusedFunction]
+    return _ShadowedPropertiesASR()
+
+
+class _FutureMajorASR(_GoodASR):
+    # A protocol major this core cannot interpret. Nothing about the engine is
+    # syntactically wrong, so every shape check passes; only the version says
+    # the artifact tooling refuses it at runtime.
+    properties: ClassVar[BaseProperties] = _FutureMajorProps()
+
+
+def future_major_factory() -> _FutureMajorASR:  # pyright: ignore[reportUnusedFunction]
+    return _FutureMajorASR()
 
 
 class _WidenedASR(_GoodASR):
@@ -336,6 +396,29 @@ def structural_axis_no_default_factory() -> (  # pyright: ignore[reportUnusedFun
     return _StructuralAxisNoDefaultASR()
 
 
+class _AdvertisedNoLifecycleASR(_GoodASR):
+    """Declared class a covariant factory's annotation resolves to."""
+
+
+class _ReturnedLifecycleASR(_AdvertisedNoLifecycleASR):
+    # The honest covariant-return accident (round-28 review, B2): the
+    # returned subclass authors a DIFFERENT artifact declaration
+    # (applicable, operator-supplied), so the class-level verdicts --
+    # rendered for the advertised class -- certify a contract the runtime
+    # object does not carry.
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=ArtifactDeclaration(
+            applicable=True,
+            supports_explicit_acquisition=False,
+            may_acquire_during_inference=False,
+        )
+    )
+
+
+def _covariant_return_factory() -> _AdvertisedNoLifecycleASR:  # pyright: ignore[reportUnusedFunction]
+    return _ReturnedLifecycleASR()
+
+
 def _registry(factory: str, key: str = "dummy/demo") -> ModelRegistry:
     eps = [
         EntryPoint(
@@ -380,6 +463,39 @@ def test_check_entrypoints_bypassed_properties_fail_revalidation() -> None:
     report = check_entrypoints(registry=_registry("bypassed_props_factory"))
     assert report.passed is False
     assert any("fail re-validation" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_unsupported_protocol_major_is_an_error() -> None:
+    # An engine declaring a major this core cannot interpret must NOT be
+    # certified. Compliance runs the same line gate the runtime runs, so it
+    # can never pass a plugin that registry creation, inference, and the
+    # artifact tooling refuse at runtime through require_engine_protocol().
+    report = check_entrypoints(registry=_registry("future_major_factory"))
+    assert report.passed is False
+    issue = next(i for i in report.issues if i.code == "protocol_version_unsupported")
+    assert issue.level == "error"
+    assert "2.0.0" in issue.message
+
+
+def test_check_entrypoints_flags_instance_properties_that_shadow_the_class() -> None:
+    # Review round 24: the class-level gate reads the class declaration while
+    # every runtime gate reads the instance, so compliance certified an
+    # engine whose instance shadowed the declared line and which the runtime
+    # then refused on creation. The equality check closes that split.
+    report = check_entrypoints(registry=_registry("shadowed_properties_factory"))
+    assert report.passed is False
+    issue = next(i for i in report.issues if i.code == "instance_properties_diverge")
+    assert issue.level == "error"
+    # The class-level gate saw the supported line, so no version error fires;
+    # the divergence itself is the one reported root cause.
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
+
+
+def test_check_entrypoints_current_line_engine_has_no_version_error() -> None:
+    # The compliant engine declares the core's exact pre-stable line, so the
+    # shared version gate stays silent for it.
+    report = check_entrypoints(registry=_registry("good_factory"))
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
 
 
 def test_check_entrypoints_runtime_params_not_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -521,6 +637,30 @@ def unannotated_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[re
     return _GoodASR()
 
 
+class _UntypedClassPropertiesASR(_GoodASR):
+    """Resolvable class whose ``properties`` is untyped; other declarations invalid too."""
+
+    properties: ClassVar[Any] = {"engine_id": "dummy", "protocol_version": "0.2.0"}
+    declared_capabilities: ClassVar[Any] = None
+    config_type: ClassVar[Any] = _NotProviderParams
+
+
+_UNTYPED_CLASS_FACTORY_CALLS: list[str] = []
+
+
+def untyped_class_properties_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _UntypedClassPropertiesASR
+):
+    _UNTYPED_CLASS_FACTORY_CALLS.append("called")
+    return _UntypedClassPropertiesASR()
+
+
+def unannotated_untyped_factory():  # type: ignore[no-untyped-def]  # pyright: ignore[reportUnusedFunction]
+    # Unresolvable class (no return annotation) whose returned instance
+    # carries an untyped declaration: only the instance gate can rule on it.
+    return _UntypedClassPropertiesASR()
+
+
 def test_check_entrypoints_class_metadata_unreadable() -> None:
     # The factory loads, but the engine class is unresolvable without
     # instantiation; the class-level metadata check surfaces that as an error.
@@ -528,11 +668,60 @@ def test_check_entrypoints_class_metadata_unreadable() -> None:
     assert any("not readable without instantiation" in i.message for i in report.issues)
 
 
+def test_instance_properties_check_tolerates_an_unresolvable_class() -> None:
+    # With an unresolvable engine class the divergence check has no class
+    # declaration to compare against; the class-level pass already reported
+    # the resolution failure, so the instance pass must not pile a spurious
+    # divergence (or a crash) on top of it.
+    report = check_entrypoints(registry=_registry("unannotated_factory"))
+    assert any("not readable without instantiation" in i.message for i in report.issues)
+    assert not any(i.code == "instance_properties_diverge" for i in report.issues)
+
+
+def test_check_entrypoints_binds_the_returned_class_to_the_declared_class() -> None:
+    # Round-28 review (B2): the class-level checks certified the ADVERTISED
+    # class (no artifact lifecycle, hook not required) while the factory
+    # returned a subclass declaring an applicable lifecycle -- with identical
+    # inherited properties every instance check passed, so compliance
+    # certified an engine whose class projections and runtime contract
+    # disagree. Exact identity is the root-cause bind, and probing stops at
+    # the mismatch so the report carries the one root cause instead of a
+    # cascade measured against the wrong class.
+    report = check_entrypoints(registry=_registry("_covariant_return_factory"))
+    assert report.passed is False
+    errors = [i for i in report.issues if i.level == "error"]
+    assert [i.code for i in errors] == ["factory_return_class_mismatch"]
+    assert "_ReturnedLifecycleASR" in errors[0].message
+    assert "_AdvertisedNoLifecycleASR" in errors[0].message
+
+
 def test_check_entrypoints_no_instantiate_skips_invocation() -> None:
     # instantiate=False must still validate class metadata but never call the
     # factory; the good engine passes its class-level checks.
     report = check_entrypoints(registry=_registry("good_factory"), instantiate=False)
     assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_undeclared_class_is_refused_before_its_factory_runs() -> None:
+    # Mirrors ModelRegistry.create()'s class preflight: a resolvable class
+    # without a typed properties declaration is refused before the factory
+    # runs, so compliance must neither run plugin code the runtime never
+    # runs nor read the other declarations under a generation it could not
+    # establish. One root-cause error, no cascade, no construction.
+    _UNTYPED_CLASS_FACTORY_CALLS.clear()
+    report = check_entrypoints(registry=_registry("untyped_class_properties_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"missing_class_properties"}
+    assert _UNTYPED_CLASS_FACTORY_CALLS == []
+
+
+def test_unresolvable_class_falls_through_to_the_instance_declaration_check() -> None:
+    # With no class to preflight, the returned instance is the only
+    # declaration the gate can rule on -- and an untyped one is a
+    # declaration-shape defect, not a version this core does not support.
+    report = check_entrypoints(registry=_registry("unannotated_untyped_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"class_metadata_unreadable", "missing_instance_properties"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1005,7 +1194,7 @@ def test_gating_conditional_async_supports_on_second_axis_is_flagged() -> None:
     """
 
     class _ConditionalAsyncSupports(_GatingStreamEngine):
-        def supports(self, dot_path: str) -> Any:
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             if dot_path == "streaming_input":
                 return True
 
@@ -1026,7 +1215,7 @@ def test_gating_async_supports_on_probe_path_is_flagged() -> None:
     """
 
     class _ProbePathAsyncSupports(_GatingStreamEngine):
-        def supports(self, dot_path: str) -> Any:
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             if dot_path in ("streaming_input", "streaming_output"):
                 return True
 
@@ -1067,7 +1256,7 @@ def test_gating_non_bool_supports_is_wrong_return_type_not_supported() -> None:
     """
 
     class _StringSupports(_GatingStreamEngine):
-        def supports(self, dot_path: str) -> Any:
+        def supports(self, dot_path: str) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             return "false"
 
     report = check_streaming_param_gating(cast(StandardASR, _StringSupports(strict=True)))
@@ -1381,21 +1570,23 @@ def test_supports_sweep_skips_when_no_valid_tree_is_reachable() -> None:
     assert "supports_disagrees_with_capabilities" not in codes
 
 
-def lying_supports_factory() -> _GoodASR:  # pyright: ignore[reportUnusedFunction]
+class _LyingSupportsASR(_GoodASR):
+    """Engine whose supports() diverges from its capability tree."""
+
+    def supports(self, dot_path: str) -> bool:
+        # Claims an undeclared feature -- the divergence the sweep exists
+        # to catch (a single-path shape probe could never see it).
+        if dot_path == "batch.diarization":
+            return True
+        return self.declared_capabilities.supports(dot_path)
+
+
+def lying_supports_factory() -> _LyingSupportsASR:  # pyright: ignore[reportUnusedFunction]
     """Build an engine whose supports() diverges from its capability tree.
 
     Returns:
         The counterexample engine.
     """
-
-    class _LyingSupportsASR(_GoodASR):
-        def supports(self, dot_path: str) -> bool:
-            # Claims an undeclared feature -- the divergence the sweep exists
-            # to catch (a single-path shape probe could never see it).
-            if dot_path == "batch.diarization":
-                return True
-            return self.declared_capabilities.supports(dot_path)
-
     return _LyingSupportsASR()
 
 
@@ -1832,7 +2023,7 @@ def test_sync_bridge_hanging_supports_probe_is_reported_not_misclassified() -> N
     release = threading.Event()
 
     class _HangingSupportsEngine(_OutputOnlyStreamEngine):
-        def supports(self, dot_path: str) -> bool:
+        def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
             release.wait(timeout=30.0)
             return False  # pragma: no cover - the check must not wait this out
 
@@ -2043,7 +2234,7 @@ def test_sync_bridge_broken_supports_cannot_buy_the_not_applicable_pass() -> Non
     """
 
     class _BrokenSupportsEngine(_OutputOnlyStreamEngine):
-        def supports(self, dot_path: str) -> bool:
+        def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise RuntimeError("capability tree exploded")
 
     report = check_sync_bridge(
@@ -2472,7 +2663,7 @@ def test_recommended_wire_format_raising_is_reported() -> None:
     # If recommended_wire_format() itself raises, that is surfaced as an error
     # rather than crashing the compliance run.
     class _RaisingEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise RuntimeError("boom")
 
     report = check_recommended_wire_format(_RaisingEngine())
@@ -2497,7 +2688,7 @@ def test_recommended_wire_format_duck_object_is_wrong_return_type() -> None:
         sample_rate = 16000
 
     class _DuckEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             return _DuckFormat()
 
     report = check_recommended_wire_format(_DuckEngine())
@@ -2505,7 +2696,7 @@ def test_recommended_wire_format_duck_object_is_wrong_return_type() -> None:
     assert [i.code for i in report.issues] == ["protocol_member_wrong_return_type"]
 
     class _DictEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             return {"encoding": "pcm_s16le", "channels": 1, "sample_rate": 16000}
 
     dict_report = check_recommended_wire_format(_DictEngine())
@@ -2515,22 +2706,24 @@ def test_recommended_wire_format_duck_object_is_wrong_return_type() -> None:
     )
 
 
-def batch_only_bad_wire_factory() -> _GoodASR:  # pyright: ignore[reportUnusedFunction]
+class _BatchOnlyBadWireASR(_GoodASR):
+    """Batch-only engine with a self-inconsistent wire recommendation."""
+
+    def recommended_wire_format(self) -> AudioFormat | None:
+        """Recommend a format the engine's own Properties reject.
+
+        Returns:
+            A format at a rate outside ``accepted_sample_rates``.
+        """
+        return AudioFormat(encoding="pcm_s16le", sample_rate=4321)
+
+
+def batch_only_bad_wire_factory() -> _BatchOnlyBadWireASR:  # pyright: ignore[reportUnusedFunction]
     """Build a batch-only engine with a self-inconsistent wire recommendation.
 
     Returns:
         The counterexample engine (batch-only: no streaming axis declared).
     """
-
-    class _BatchOnlyBadWireASR(_GoodASR):
-        def recommended_wire_format(self) -> AudioFormat | None:
-            """Recommend a format the engine's own Properties reject.
-
-            Returns:
-                A format at a rate outside ``accepted_sample_rates``.
-            """
-            return AudioFormat(encoding="pcm_s16le", sample_rate=4321)
-
     return _BatchOnlyBadWireASR()
 
 
@@ -2592,7 +2785,7 @@ def test_recommended_wire_format_issues_carry_the_model_key() -> None:
     """
 
     class _RaisingEngine(_GatingStreamEngine):
-        def recommended_wire_format(self) -> Any:
+        def recommended_wire_format(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise RuntimeError("boom")
 
     raised = check_recommended_wire_format(_RaisingEngine(), model="a/x")
@@ -3254,7 +3447,7 @@ class _GatingStreamEngine(EngineBase):
 class _UngatedStreamEngine(_GatingStreamEngine):
     """Non-compliant: overrides the PUBLIC start_transcription, bypassing gating."""
 
-    def start_transcription(
+    def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
         audio_format: Any = None,
@@ -3382,7 +3575,7 @@ def test_streaming_gating_pins_the_session_type_like_the_server() -> None:
             ]
 
     class _DuckSessionEngine(_GatingStreamEngine):
-        def start_transcription(
+        def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             *,
             audio_format: Any = None,
@@ -3472,7 +3665,7 @@ def test_streaming_gating_structural_engine_without_effective_caps_not_failed() 
 def test_streaming_gating_best_effort_engine_raising_fails() -> None:
     # A best_effort engine that wrongly RAISES for the unsupported param fails.
     class _RaisingBestEffortEngine(_GatingStreamEngine):
-        def start_transcription(
+        def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             *,
             audio_format: Any = None,
@@ -3491,7 +3684,7 @@ def test_streaming_gating_engine_crash_is_reported_not_raised() -> None:
     # A non-UnsupportedFeatureError exception (an engine bug)
     # MUST surface as a compliance error, never crash the whole compliance run.
     class _CrashingEngine(_GatingStreamEngine):
-        def start_transcription(
+        def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             *,
             audio_format: Any = None,
@@ -3552,7 +3745,7 @@ def test_streaming_gating_sub_constraint_prompt_best_effort_passes() -> None:
 class _UngatedPromptConstrainedEngine(_PromptConstrainedStreamEngine):
     """Bypasses the template: accepts the over-budget prompt without gating."""
 
-    def start_transcription(
+    def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
         audio_format: Any = None,
@@ -3633,7 +3826,7 @@ class _DiarizationUnsupportedStreamEngine(_GatingStreamEngine):
 class _UngatedDiarizationEngine(_DiarizationUnsupportedStreamEngine):
     """Bypasses the template: accepts the diarization request without gating."""
 
-    def start_transcription(
+    def start_transcription(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
         audio_format: Any = None,
@@ -3985,11 +4178,21 @@ def test_check_entrypoints_plain_config_error_factory_is_config_defect() -> None
 
 
 class _CrashingPropsASR(_GoodASR):
-    """A buggy @property properties that raises a NON-AttributeError."""
+    """A buggy @property (``config``) that raises a NON-AttributeError.
+
+    The class-level declaration stays typed, so the class gate passes and the
+    crash happens on an instance read the orchestrator performs after the
+    instance gate (a crashing ``properties`` would now stop at the class
+    preflight, like ``ModelRegistry.create()``, and never be constructed).
+    """
+
+    def __init__(self) -> None:
+        # The base assigns self.config; the crashing property has no setter.
+        pass
 
     @property
-    def properties(self) -> _Props:  # type: ignore[override]
-        raise RuntimeError("properties exploded")
+    def config(self) -> _Config:  # type: ignore[override]
+        raise RuntimeError("config exploded")
 
 
 def crashing_props_factory() -> _CrashingPropsASR:  # pyright: ignore[reportUnusedFunction]
@@ -4253,27 +4456,42 @@ def test_gating_best_effort_streaming_input_probe_is_side_effect_free() -> None:
 
 
 def test_gating_probe_context_unbuildable_is_reported() -> None:
-    # If a legal wire audio_format cannot be synthesized from Properties (a broken
-    # native_sample_rate read), report it rather than crash.
+    # If a legal wire audio_format cannot be synthesized (the recommendation
+    # itself raises -- the shape a structural engine's own broken derivation
+    # takes), report it rather than crash. The engine's declaration is typed
+    # and on the current line, so the shared engine gate is NOT what fails.
     class _NoFormatEngine(_FailLoudOnMissingFormatEngine):
+        def recommended_wire_format(self) -> AudioFormat | None:  # pyright: ignore[reportIncompatibleMethodOverride]
+            raise RuntimeError("no native rate")
+
+    report = check_streaming_param_gating(_NoFormatEngine(strict=True))
+    assert report.passed is False
+    assert any(i.code == "gating_probe_context_unbuildable" for i in report.issues)
+
+
+def test_gating_probe_gate_refusal_is_contained_as_selection_raise() -> None:
+    # An EngineBase engine whose properties are untyped is refused by the
+    # shared engine gate at the FIRST semantic probe (supports() is gated,
+    # AR.1): the check's Raises-None promise contains that refusal as
+    # gating_probe_selection_raised instead of crashing the run. The
+    # orchestrated compliance flow never reaches this state (the instance
+    # gate stops first); this pins the direct-library-call behavior.
+    class _UntypedPropertiesEngine(_FailLoudOnMissingFormatEngine):
         @property
         def properties(self) -> _StreamProps:  # type: ignore[override]
             class _Bad:
                 required_input_sample_rate = None
                 engine_id = "broken"
 
-                @property
-                def native_sample_rate(self) -> int:
-                    raise RuntimeError("no native rate")
-
             return _Bad()  # type: ignore[return-value]
 
     # cast: the fixture is DELIBERATELY malformed (a raising @property where
     # the protocol pins a ClassVar), so structural typing rightly rejects it;
     # the runtime containment is exactly what this test asserts.
-    report = check_streaming_param_gating(cast(StandardASR, _NoFormatEngine(strict=True)))
+    report = check_streaming_param_gating(cast(StandardASR, _UntypedPropertiesEngine(strict=True)))
     assert report.passed is False
-    assert any(i.code == "gating_probe_context_unbuildable" for i in report.issues)
+    issue = next(i for i in report.issues if i.code == "gating_probe_selection_raised")
+    assert "cannot be established" in issue.message
 
 
 def test_gating_probe_context_unbuildable_when_no_sample_rate() -> None:
@@ -4304,11 +4522,12 @@ def test_safe_engine_id_contains_raising_properties() -> None:
         is None
     )
     # The gating check still returns a report (Raises: None) despite the broken
-    # properties: synthesis reads properties, so it surfaces a contained error
-    # rather than crashing the run. The key invariant is that it does NOT raise.
+    # properties: the gated supports() probe reads properties first, so the
+    # raise surfaces as a contained selection error rather than crashing the
+    # run. The key invariant is that it does NOT raise.
     report = check_streaming_param_gating(cast(StandardASR, engine))
     assert report.passed is False
-    assert any(i.code == "gating_probe_context_unbuildable" for i in report.issues)
+    assert any(i.code == "gating_probe_selection_raised" for i in report.issues)
 
 
 def test_safe_engine_id_handles_missing_properties() -> None:
@@ -4354,7 +4573,7 @@ def test_provider_params_swap_safety_best_effort_passes() -> None:
 class _SwapUnsafeEngine(_SwapSafeEngine):
     """Bypasses the template's transcribe and forgets the provider_params check."""
 
-    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:
+    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:  # pyright: ignore[reportIncompatibleMethodOverride]
         # Silently accepts ANY provider_params -- the swap bug swap-safety makes loud.
         return TranscriptionResult(text="ok")
 
@@ -4368,7 +4587,7 @@ def test_provider_params_swap_safety_accepted_fails() -> None:
 class _SwapWrongErrorEngine(_SwapSafeEngine):
     """Bypasses the template and raises the WRONG exception type for swap."""
 
-    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:
+    def transcribe(self, audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:  # pyright: ignore[reportIncompatibleMethodOverride]
         raise RuntimeError("not the contractual InvalidProviderParamError")
 
 
@@ -4601,7 +4820,7 @@ def test_sync_bridge_base_exception_from_supports_is_not_a_timeout_verdict() -> 
     """
 
     class _CancelledSupportsEngine(_OutputOnlyStreamEngine):
-        def supports(self, dot_path: str) -> bool:
+        def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
             raise asyncio.CancelledError()
 
     report = check_sync_bridge(
@@ -4613,3 +4832,857 @@ def test_sync_bridge_base_exception_from_supports_is_not_a_timeout_verdict() -> 
     assert "sync_bridge_raised" in codes
     assert "sync_bridge_did_not_terminate" not in codes
     assert "supports() raised" in report.issues[0].message
+
+
+# --------------------------------------------------------------------------- #
+# Inference-artifact static compliance.
+# --------------------------------------------------------------------------- #
+class _ArtifactProps(_Props):
+    protocol_version: str = "0.2.0"
+
+
+class _OutsideLineArtifactProps(_Props):
+    protocol_version: str = "0.1.0"
+
+
+class _FutureArtifactProps(_Props):
+    protocol_version: str = "0.3.0"
+
+
+_NO_ARTIFACT_METADATA = DeclaredEngineMetadata(
+    artifacts=ArtifactDeclaration(
+        applicable=False,
+        supports_explicit_acquisition=False,
+        may_acquire_during_inference=False,
+    )
+)
+_EXPLICIT_ARTIFACT_METADATA = DeclaredEngineMetadata(
+    artifacts=ArtifactDeclaration(
+        applicable=True,
+        supports_explicit_acquisition=True,
+        may_acquire_during_inference=False,
+    )
+)
+_INFERENCE_ONLY_ARTIFACT_METADATA = DeclaredEngineMetadata(
+    artifacts=ArtifactDeclaration(
+        applicable=True,
+        supports_explicit_acquisition=False,
+        may_acquire_during_inference=True,
+    )
+)
+
+_ARTIFACT_METHOD_CALLS: list[str] = []
+
+
+class _OutsideLineArtifactASR(_GoodASR):
+    properties: ClassVar[BaseProperties] = _OutsideLineArtifactProps()
+
+
+def outside_line_artifact_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _OutsideLineArtifactASR
+):
+    return _OutsideLineArtifactASR()
+
+
+class _OutsideLineBrokenDeclarationsASR(_GoodASR):
+    """Wrong line, and every other class-level declaration is invalid under 0.2.
+
+    Each of these declarations may be legitimate under the generation the
+    engine actually implements, so the line verdict must be the only error.
+    """
+
+    properties: ClassVar[BaseProperties] = _OutsideLineArtifactProps()
+    declared_capabilities: ClassVar[Any] = None
+    config_type: ClassVar[Any] = _NotProviderParams
+    provider_params_type: ClassVar[Any] = ProviderParams
+
+
+def outside_line_broken_declarations_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _OutsideLineBrokenDeclarationsASR
+):
+    return _OutsideLineBrokenDeclarationsASR()
+
+
+class _WrongLineInstanceASR(_GoodASR):
+    """Class on the supported line; the factory shadows a wrong-line copy."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.properties = _OutsideLineArtifactProps()  # type: ignore[misc]
+
+
+def wrong_line_instance_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WrongLineInstanceASR
+):
+    return _WrongLineInstanceASR()
+
+
+class _ArtifactStructuralBase(_GoodASR):
+    """Plugin-owned structural base with side-effect sentinels."""
+
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
+
+    def artifact_status(self, context: ArtifactContext | None = None) -> ArtifactReport:
+        _ARTIFACT_METHOD_CALLS.append("status")
+        raise AssertionError("compliance called artifact_status")
+
+    def acquire_artifacts(
+        self,
+        context: ArtifactContext | None = None,
+        *,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        _ARTIFACT_METHOD_CALLS.append("acquire")
+        raise AssertionError("compliance called acquire_artifacts")
+
+
+class _ArtifactStructuralPreset(_ArtifactStructuralBase):
+    """Preset inheriting artifact metadata from its plugin-owned base."""
+
+
+def artifact_structural_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactStructuralPreset
+):
+    return _ArtifactStructuralPreset()
+
+
+class _ArtifactMissingSurfaceASR(_GoodASR):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
+    # Mask the base fixture's lifecycle methods: this double models an engine
+    # that never authored them.
+    artifact_status: ClassVar[None] = None  # type: ignore[assignment]
+    acquire_artifacts: ClassVar[None] = None  # type: ignore[assignment]
+
+
+def artifact_missing_surface_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactMissingSurfaceASR
+):
+    return _ArtifactMissingSurfaceASR()
+
+
+class _ArtifactBadSurfaceASR(_ArtifactStructuralBase):
+    async def artifact_status(  # type: ignore[override]
+        self, context: ArtifactContext | None = None
+    ) -> ArtifactReport:
+        raise AssertionError("compliance called async artifact_status")
+
+    def acquire_artifacts(  # type: ignore[override]
+        self,
+        context: ArtifactContext | None = None,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        raise AssertionError("compliance called bad acquire_artifacts")
+
+
+def artifact_bad_surface_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactBadSurfaceASR
+):
+    return _ArtifactBadSurfaceASR()
+
+
+class _ArtifactInvalidMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[Any] = {"artifacts": {}}
+
+
+def artifact_invalid_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactInvalidMetadataASR
+):
+    return _ArtifactInvalidMetadataASR()
+
+
+class _ArtifactNoMetadataASR:
+    # Deliberately NOT a _GoodASR subclass: the base fixture now authors
+    # declared_metadata, and this double models an engine whose whole
+    # hierarchy never authored it.
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="ok")
+
+
+def artifact_no_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactNoMetadataASR
+):
+    return _ArtifactNoMetadataASR()
+
+
+class _ArtifactCorePlaceholderEngine(EngineBase):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+
+def artifact_core_placeholder_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactCorePlaceholderEngine
+):
+    return _ArtifactCorePlaceholderEngine()
+
+
+class _PublicTemplateOverrideEngine(_ArtifactCorePlaceholderEngine):
+    def transcribe(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, audio: Any, params: Any = None
+    ) -> TranscriptionResult:
+        return TranscriptionResult(text="bypassed")
+
+
+def public_template_override_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _PublicTemplateOverrideEngine
+):
+    return _PublicTemplateOverrideEngine()
+
+
+class _SupportsOverrideEngine(_ArtifactCorePlaceholderEngine):
+    # The honest accident round-29 F2 names: config-dependent support
+    # expressed by overriding the template instead of narrowing
+    # effective_capabilities -- the override owns the call and bypasses the
+    # engine gate the template carries.
+    def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return dot_path == "batch.language.runtime_override"
+
+
+def supports_override_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _SupportsOverrideEngine
+):
+    return _SupportsOverrideEngine()
+
+
+class _WireFormatOverrideEngine(_ArtifactCorePlaceholderEngine):
+    # The wire-preference accident: a hand-rolled recommendation instead of
+    # declaring the preference through Properties (wire_encodings ordering,
+    # sample-rate fields), bypassing the same gate.
+    def recommended_wire_format(self) -> AudioFormat | None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+
+
+def wire_format_override_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WireFormatOverrideEngine
+):
+    return _WireFormatOverrideEngine()
+
+
+@pytest.mark.parametrize(
+    ("factory", "member", "extension_point"),
+    [
+        ("supports_override_factory", "supports", "effective_capabilities"),
+        (
+            "wire_format_override_factory",
+            "recommended_wire_format",
+            "Properties declarations",
+        ),
+    ],
+)
+def test_check_entrypoints_flags_negotiation_template_overrides(
+    factory: str, member: str, extension_point: str
+) -> None:
+    # Round-29 F2: the two negotiation members carry the same engine gate as
+    # the inference and artifact templates, so the template inventory must
+    # include them -- an override compliance accepted here would pass while
+    # bypassing the gate on direct-use paths. The message points at the
+    # member's own extension point, not a hook it does not have.
+    report = check_entrypoints(registry=_registry(factory), instantiate=False)
+    issue = next(i for i in report.issues if i.code == "public_template_overridden")
+    assert issue.level == "error"
+    assert f"{member}()" in issue.message
+    assert extension_point in issue.message
+
+
+def test_check_entrypoints_flags_public_template_overrides() -> None:
+    # Round-25 M1: an EngineBase subclass overriding a PUBLIC template owns
+    # the whole call and silently bypasses the line gate, gating, and the
+    # sync-result boundary. Compliance names the member and the owner.
+    report = check_entrypoints(
+        registry=_registry("public_template_override_factory"), instantiate=False
+    )
+    issue = next(i for i in report.issues if i.code == "public_template_overridden")
+    assert issue.level == "error"
+    assert "transcribe()" in issue.message
+    assert "_PublicTemplateOverrideEngine" in issue.message
+
+
+_BYPASSED_ARTIFACT_METADATA = DeclaredEngineMetadata.model_construct(
+    artifacts=ArtifactDeclaration.model_construct(
+        applicable=False,
+        supports_explicit_acquisition=True,
+        may_acquire_during_inference=False,
+    )
+)
+
+
+class _ArtifactBypassedMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _BYPASSED_ARTIFACT_METADATA
+
+
+def artifact_bypassed_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactBypassedMetadataASR
+):
+    return _ArtifactBypassedMetadataASR()
+
+
+_UNTYPED_BOOLEAN_ARTIFACT_METADATA = DeclaredEngineMetadata.model_construct(
+    artifacts=ArtifactDeclaration.model_construct(
+        applicable=1,
+        supports_explicit_acquisition=0,
+        may_acquire_during_inference=0,
+    )
+)
+
+
+class _ArtifactUntypedBooleanASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _UNTYPED_BOOLEAN_ARTIFACT_METADATA
+
+
+def artifact_untyped_boolean_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUntypedBooleanASR
+):
+    return _ArtifactUntypedBooleanASR()
+
+
+class _ArtifactUnnamespacedMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
+        {
+            "artifacts": _NO_ARTIFACT_METADATA.artifacts,
+            "future_section": {"enabled": True},
+        }
+    )
+
+
+def artifact_unnamespaced_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactUnnamespacedMetadataASR
+):
+    return _ArtifactUnnamespacedMetadataASR()
+
+
+class _ArtifactNamespacedMetadataASR(_ArtifactStructuralBase):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
+        {
+            "artifacts": _NO_ARTIFACT_METADATA.artifacts,
+            "x_vendor_future": {"enabled": True},
+        }
+    )
+
+
+def artifact_namespaced_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactNamespacedMetadataASR
+):
+    return _ArtifactNamespacedMetadataASR()
+
+
+class _ArtifactFutureMetadataASR(_ArtifactStructuralBase):
+    properties: ClassVar[BaseProperties] = _FutureArtifactProps()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata.model_validate(
+        {
+            "artifacts": _NO_ARTIFACT_METADATA.artifacts,
+            "future_section": {"enabled": True},
+        }
+    )
+
+
+def artifact_future_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactFutureMetadataASR
+):
+    return _ArtifactFutureMetadataASR()
+
+
+class _ArtifactHookBase(EngineBase):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _EXPLICIT_ARTIFACT_METADATA
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+    def _artifact_requirements(
+        self, context: ArtifactContext
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        return True, (), ()
+
+    def _acquire_artifacts(
+        self,
+        context: ArtifactContext,
+        requirements: tuple[ArtifactRequirement, ...],
+        refresh: bool,
+        progress: ArtifactProgressCallback | None,
+    ) -> None:
+        return None
+
+
+class _ArtifactHookPreset(_ArtifactHookBase):
+    """Preset inheriting its declaration and hooks from plugin-owned code."""
+
+
+def artifact_hook_preset_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactHookPreset
+):
+    return _ArtifactHookPreset()
+
+
+class _ArtifactWrongAritySignatureHook(_ArtifactHookBase):
+    """Overrides the hook, but not with a shape the core can call.
+
+    The public artifact methods are inherited from EngineBase and therefore
+    always pass their own signature check, so nothing but a hook-level check
+    catches this before the plugin ships.
+    """
+
+    # The incompatible override IS the fixture: it is what compliance must
+    # catch, so the type checker's objection is the behavior under test.
+    def _artifact_requirements(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        return True, (), ()
+
+
+def artifact_wrong_arity_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactWrongAritySignatureHook
+):
+    return _ArtifactWrongAritySignatureHook()
+
+
+class _ArtifactAsyncAcquisitionHook(_ArtifactHookBase):
+    """Declares explicit acquisition with a coroutine hook the core never awaits."""
+
+    async def _acquire_artifacts(  # type: ignore[override]
+        self,
+        context: ArtifactContext,
+        requirements: tuple[ArtifactRequirement, ...],
+        refresh: bool,
+        progress: ArtifactProgressCallback | None,
+    ) -> None:
+        return None
+
+
+def artifact_async_acquisition_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactAsyncAcquisitionHook
+):
+    return _ArtifactAsyncAcquisitionHook()
+
+
+class _ArtifactMissingRequirementsHook(EngineBase):
+    properties: ClassVar[BaseProperties] = _ArtifactProps()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _EXPLICIT_ARTIFACT_METADATA
+
+    def __init__(self) -> None:
+        self.config = _Config(engine="dummy")
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+
+def artifact_missing_requirements_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactMissingRequirementsHook
+):
+    return _ArtifactMissingRequirementsHook()
+
+
+class _ArtifactMissingAcquisitionHook(_ArtifactMissingRequirementsHook):
+    def _artifact_requirements(
+        self, context: ArtifactContext
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        return True, (), ()
+
+
+def artifact_missing_acquisition_hook_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactMissingAcquisitionHook
+):
+    return _ArtifactMissingAcquisitionHook()
+
+
+class _ArtifactInferenceOnlyEngine(_ArtifactMissingAcquisitionHook):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _INFERENCE_ONLY_ARTIFACT_METADATA
+
+
+def artifact_inference_only_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactInferenceOnlyEngine
+):
+    return _ArtifactInferenceOnlyEngine()
+
+
+class _ArtifactNotApplicableEngine(_ArtifactMissingRequirementsHook):
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _NO_ARTIFACT_METADATA
+
+
+def artifact_not_applicable_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _ArtifactNotApplicableEngine
+):
+    return _ArtifactNotApplicableEngine()
+
+
+def test_static_artifact_check_is_side_effect_free() -> None:
+    _ARTIFACT_METHOD_CALLS.clear()
+    report = check_entrypoints(registry=_registry("artifact_structural_factory"))
+    assert report.passed is True, [issue.message for issue in report.issues]
+    assert _ARTIFACT_METHOD_CALLS == []
+
+
+def test_outside_line_engine_is_refused_not_silently_skipped() -> None:
+    # There is no legitimate older line within protocol major 0: an engine
+    # declaring the previous 0.MINOR generation is refused loudly instead of
+    # being certified with the artifact checks silently skipped.
+    report = check_entrypoints(
+        registry=_registry("outside_line_artifact_factory"), instantiate=False
+    )
+    assert report.passed is False
+    issue = next(i for i in report.issues if i.code == "protocol_version_unsupported")
+    assert "0.1.0" in issue.message
+    assert not any("artifact" in i.code for i in report.issues)
+
+
+def test_compliance_requires_both_artifact_methods() -> None:
+    report = check_entrypoints(
+        registry=_registry("artifact_missing_surface_factory"), instantiate=False
+    )
+    issues = [issue for issue in report.issues if issue.code == "missing_artifact_method"]
+    assert len(issues) == 2
+    assert any("artifact_status" in issue.message for issue in issues)
+    assert any("acquire_artifacts" in issue.message for issue in issues)
+
+
+def test_compliance_requires_sync_exact_artifact_method_shapes() -> None:
+    report = check_entrypoints(
+        registry=_registry("artifact_bad_surface_factory"), instantiate=False
+    )
+    assert any(issue.code == "artifact_method_not_synchronous" for issue in report.issues)
+    assert any(issue.code == "artifact_method_signature_invalid" for issue in report.issues)
+
+
+def test_compliance_requires_typed_authored_metadata() -> None:
+    invalid = check_entrypoints(
+        registry=_registry("artifact_invalid_metadata_factory"), instantiate=False
+    )
+    placeholder = check_entrypoints(
+        registry=_registry("artifact_core_placeholder_factory"), instantiate=False
+    )
+    missing = check_entrypoints(
+        registry=_registry("artifact_no_metadata_factory"), instantiate=False
+    )
+    assert any(issue.code == "declared_metadata_invalid" for issue in invalid.issues)
+    assert any(issue.code == "declared_metadata_core_placeholder" for issue in placeholder.issues)
+    assert any(issue.code == "missing_declared_metadata" for issue in missing.issues)
+
+
+def test_compliance_revalidates_bypassed_artifact_metadata() -> None:
+    invariant = check_entrypoints(
+        registry=_registry("artifact_bypassed_metadata_factory"), instantiate=False
+    )
+    booleans = check_entrypoints(
+        registry=_registry("artifact_untyped_boolean_factory"), instantiate=False
+    )
+    assert any(issue.code == "declared_metadata_invalid" for issue in invariant.issues)
+    assert any(issue.code == "declared_metadata_invalid" for issue in booleans.issues)
+
+
+def test_compliance_contains_unexpected_metadata_projection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_model_dump(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        raise RuntimeError("metadata projection failed")
+
+    monkeypatch.setattr(DeclaredEngineMetadata, "model_dump", fail_model_dump)
+    report = check_entrypoints(registry=_registry("artifact_structural_factory"), instantiate=False)
+    assert any(issue.code == "declared_metadata_invalid" for issue in report.issues)
+
+
+def test_compliance_requires_metadata_extension_namespace() -> None:
+    unnamespaced = check_entrypoints(
+        registry=_registry("artifact_unnamespaced_metadata_factory"), instantiate=False
+    )
+    namespaced = check_entrypoints(
+        registry=_registry("artifact_namespaced_metadata_factory"), instantiate=False
+    )
+    assert any(
+        issue.code == "declared_metadata_extension_not_namespaced" for issue in unnamespaced.issues
+    )
+    assert namespaced.passed is True, [issue.message for issue in namespaced.issues]
+
+
+def test_frozen_reader_tolerates_newer_minor_standard_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Freeze-day counterexample (review round 23): under a STABLE major a
+    # newer-minor producer passes the line gate, and its unknown standard
+    # sections are the tolerant-reader case the protocol promises to
+    # preserve -- flagging them as vendor extensions missing the namespace would
+    # punish legal additive evolution. Dormant during major 0 (the line gate
+    # never admits a newer minor), proven here under synthetic constants.
+    import standard_asr.compliance as compliance_module
+    import standard_asr.contract.protocol_version as protocol_version_module
+
+    monkeypatch.setattr(protocol_version_module, "SUPPORTED_PROTOCOL_MAJOR", 1)
+    monkeypatch.setattr(protocol_version_module, "CURRENT_PROTOCOL_VERSION", "1.0.0")
+    monkeypatch.setattr(compliance_module, "CURRENT_PROTOCOL_VERSION", "1.0.0")
+    monkeypatch.setattr(
+        _ArtifactFutureMetadataASR, "properties", _ArtifactProps(protocol_version="1.1.0")
+    )
+
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
+    assert not any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_newer_patch_producer_standard_sections_are_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Round-25 B2: AR.1's PATCH rule lets a 0.2.1 producer add sections a
+    # 0.2.0 reader safely ignores. Truncating the tolerant-reader compare to
+    # the (major, minor) line rejected that legal producer.
+    monkeypatch.setattr(
+        _ArtifactFutureMetadataASR, "properties", _ArtifactProps(protocol_version="0.2.1")
+    )
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+    assert not any(i.code == "protocol_version_unsupported" for i in report.issues)
+    assert not any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_older_patch_reader_enforces_the_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The mirror direction: a 0.2.0 producer's unknown section is fully
+    # within a 0.2.1 reader's knowledge, so the namespace obligation binds.
+    import standard_asr.compliance as compliance_module
+    import standard_asr.contract.protocol_version as protocol_version_module
+
+    monkeypatch.setattr(protocol_version_module, "CURRENT_PROTOCOL_VERSION", "0.2.1")
+    monkeypatch.setattr(compliance_module, "CURRENT_PROTOCOL_VERSION", "0.2.1")
+    monkeypatch.setattr(
+        _ArtifactFutureMetadataASR, "properties", _ArtifactProps(protocol_version="0.2.0")
+    )
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+    assert any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_unsupported_line_short_circuits_instantiation() -> None:
+    # Round-25 M2: after the shared gate refuses the class, instantiating and
+    # probing the engine would measure it against the wrong generation and
+    # run plugin code the verdict already declared uninterpretable. One
+    # root-cause error, no migration noise.
+    report = check_entrypoints(registry=_registry("outside_line_artifact_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"protocol_version_unsupported"}
+    # Generation-independent bootstrap diagnostics (warnings) may remain;
+    # no behavior probe or artifact check ran.
+    assert not any("artifact" in i.code for i in report.issues)
+
+
+def test_unsupported_line_is_the_only_class_level_error() -> None:
+    # Every class-level check reads the class under THIS core's generation. A
+    # wrong-line engine whose capabilities, config type, and provider-params
+    # type are also invalid under 0.2 may be legitimate under the generation
+    # it implements, so once the gate refuses the line nothing else may be
+    # measured against the wrong line -- not even the checks that used to run
+    # before the gate.
+    report = check_entrypoints(registry=_registry("outside_line_broken_declarations_factory"))
+    errors = {i.code for i in report.issues if i.level == "error"}
+    assert errors == {"protocol_version_unsupported"}
+
+
+def test_wrong_line_instance_short_circuits_behavior_probes() -> None:
+    # The instance is a separate declaration source: a class-compatible
+    # engine whose factory shadows a wrong-line instance must get the
+    # canonical version verdict, not a cascade of mismatched-line probe
+    # failures from the EngineBase gates.
+    report = check_entrypoints(registry=_registry("wrong_line_instance_factory"))
+    version_errors = [i for i in report.issues if i.code == "protocol_version_unsupported"]
+    assert len(version_errors) == 1
+    assert "Instance properties fail the protocol gate" in version_errors[0].message
+    assert not any(i.code == "missing_required_method" for i in report.issues)
+
+
+def test_future_line_is_refused_before_metadata_checks() -> None:
+    # Within protocol major 0 a NEWER minor is just as unsupported as an
+    # older one -- each 0.MINOR generation may change the contract -- so the
+    # version gate refuses the engine before any metadata check can certify
+    # or mis-flag its sections.
+    report = check_entrypoints(
+        registry=_registry("artifact_future_metadata_factory"), instantiate=False
+    )
+    assert report.passed is False
+    assert any(i.code == "protocol_version_unsupported" for i in report.issues)
+    assert not any(i.code == "declared_metadata_extension_not_namespaced" for i in report.issues)
+
+
+def test_compliance_accepts_plugin_owned_metadata_and_hook_inheritance() -> None:
+    report = check_entrypoints(
+        registry=_registry("artifact_hook_preset_factory"), instantiate=False
+    )
+    assert report.passed is True, [issue.message for issue in report.issues]
+
+
+def test_compliance_accepts_descriptor_methods_with_the_same_call_shape() -> None:
+    class _DescriptorSurface:
+        @staticmethod
+        def artifact_status(context: ArtifactContext | None = None) -> ArtifactReport:
+            raise AssertionError("shape check called artifact_status")
+
+        @classmethod
+        def acquire_artifacts(
+            cls,
+            context: ArtifactContext | None = None,
+            *,
+            refresh: bool = False,
+            progress: ArtifactProgressCallback | None = None,
+        ) -> ArtifactReport:
+            raise AssertionError("shape check called acquire_artifacts")
+
+    assert compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        inspect.getattr_static(_DescriptorSurface, "artifact_status"), "artifact_status"
+    )
+    assert compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        inspect.getattr_static(_DescriptorSurface, "acquire_artifacts"), "acquire_artifacts"
+    )
+
+
+def test_compliance_rejects_uninspectable_and_receiverless_method_shapes() -> None:
+    def receiverless() -> ArtifactReport:
+        raise AssertionError("shape check called receiverless")
+
+    class _DefaultReceiver:
+        def artifact_status(
+            self: _DefaultReceiver | None = None,
+            context: ArtifactContext | None = None,
+        ) -> ArtifactReport:
+            raise AssertionError("shape check called default receiver")
+
+    assert not compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        type, "artifact_status"
+    )
+    assert not compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        receiverless, "artifact_status"
+    )
+    assert not compliance_module._artifact_method_matches_signature(  # pyright: ignore[reportPrivateUsage]
+        inspect.getattr_static(_DefaultReceiver, "artifact_status"), "artifact_status"
+    )
+
+
+def test_hook_check_fails_closed_on_shapes_it_cannot_prove() -> None:
+    # Two shapes that slipped through while the check failed open. An async
+    # ``__call__`` is invisible to ``iscoroutinefunction`` on the object itself,
+    # so a callable instance reported as synchronous and the core would store
+    # the coroutine instead of running it. An unreadable signature proves
+    # nothing at all, and the sibling checker for the PUBLIC methods already
+    # treats that condition as a defect -- staying silent here certified
+    # exactly the hooks least likely to be a plain reviewed ``def``.
+    class _AsyncCallable:
+        async def __call__(self, context: ArtifactContext) -> None:
+            raise AssertionError("hook check called the hook")
+
+    async_defect = compliance_module._artifact_hook_call_defect(  # pyright: ignore[reportPrivateUsage]
+        _AsyncCallable(), "_artifact_requirements"
+    )
+    assert async_defect is not None
+    assert "coroutine" in async_defect
+
+    unreadable = compliance_module._artifact_hook_call_defect(  # pyright: ignore[reportPrivateUsage]
+        type, "_artifact_requirements"
+    )
+    assert unreadable is not None
+    assert "cannot read" in unreadable
+
+
+def test_public_check_rejects_an_async_callable_object() -> None:
+    # ``iscoroutinefunction`` answers False for a callable OBJECT whose
+    # ``__call__`` is async, so the public-method check certified a surface
+    # the runtime then rejects (``require_sync_result`` refuses the coroutine
+    # it returns) -- while the protected-hook checker already fails the same
+    # shape closed.
+    class _AsyncStatusCallable:
+        async def __call__(self, context: ArtifactContext | None = None) -> None:
+            raise AssertionError("surface check called artifact_status")
+
+    class _AsyncCallableSurface:
+        artifact_status = _AsyncStatusCallable()
+
+        def acquire_artifacts(
+            self,
+            context: ArtifactContext | None = None,
+            *,
+            refresh: bool = False,
+            progress: ArtifactProgressCallback | None = None,
+        ) -> ArtifactReport:
+            raise AssertionError("surface check called acquire_artifacts")
+
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_artifact_method_surface(  # pyright: ignore[reportPrivateUsage]
+        _AsyncCallableSurface, "dummy/demo", issues
+    )
+    assert [issue.code for issue in issues] == ["artifact_method_not_synchronous"]
+    assert "artifact_status()" in issues[0].message
+
+
+def test_compliance_rejects_a_hook_the_core_cannot_call() -> None:
+    # Overriding is not implementing. Compliance pins the PUBLIC artifact
+    # methods' signatures, but an EngineBase subclass inherits those, so that
+    # check passes for free while the hooks the plugin actually wrote go
+    # unchecked. Before this, a wrong-arity hook was certified compliant and
+    # then surfaced on the first real status call as an ArtifactStatusError
+    # blaming the engine's native inspection -- the wrong fault, reported at
+    # the wrong time, to the wrong person.
+    wrong_arity = check_entrypoints(
+        registry=_registry("artifact_wrong_arity_hook_factory"), instantiate=False
+    )
+    issue = next(i for i in wrong_arity.issues if i.code == "artifact_hook_signature_invalid")
+    assert issue.level == "error"
+    assert "_artifact_requirements()" in issue.message
+    assert "positional" in issue.message
+
+    coroutine_hook = check_entrypoints(
+        registry=_registry("artifact_async_acquisition_hook_factory"), instantiate=False
+    )
+    async_issue = next(
+        i for i in coroutine_hook.issues if i.code == "artifact_hook_signature_invalid"
+    )
+    assert "_acquire_artifacts()" in async_issue.message
+    assert "coroutine" in async_issue.message
+
+    # A correctly shaped pair stays silent, including one that inherits its
+    # hooks from a plugin-owned base rather than authoring them locally.
+    good = check_entrypoints(registry=_registry("artifact_hook_preset_factory"), instantiate=False)
+    assert not any(i.code == "artifact_hook_signature_invalid" for i in good.issues)
+
+
+def test_compliance_requires_hooks_promised_by_static_booleans() -> None:
+    missing_status = check_entrypoints(
+        registry=_registry("artifact_missing_requirements_hook_factory"), instantiate=False
+    )
+    missing_acquisition = check_entrypoints(
+        registry=_registry("artifact_missing_acquisition_hook_factory"), instantiate=False
+    )
+    inference_only = check_entrypoints(
+        registry=_registry("artifact_inference_only_factory"), instantiate=False
+    )
+    not_applicable = check_entrypoints(
+        registry=_registry("artifact_not_applicable_factory"), instantiate=False
+    )
+    assert any(
+        issue.code == "artifact_requirements_hook_missing" for issue in missing_status.issues
+    )
+    assert any(
+        issue.code == "artifact_acquisition_hook_missing" for issue in missing_acquisition.issues
+    )
+    assert not any(
+        issue.code == "artifact_acquisition_hook_missing" for issue in inference_only.issues
+    )
+    assert inference_only.passed is True, [issue.message for issue in inference_only.issues]
+    assert not_applicable.passed is True, [issue.message for issue in not_applicable.issues]

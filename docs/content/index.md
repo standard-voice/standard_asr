@@ -28,6 +28,8 @@ and reach every application. Think USB-C for ASR inference.
 - **[Installation](./installation.md)** -- install options and optional extras.
 - **[Discover & Use](./app-developers/discover-and-use.md)** -- the full
   app-developer guide.
+- **[Inference artifacts](./reference/artifacts.md)** -- see what a model needs
+  on disk, and acquire it before the first request.
 - **[Adapt an ASR System](./engine-authors/adapt-an-asr-system.md)** -- build a compliant
   plugin.
 - **[API Reference](./reference/index.md)** -- the complete public surface.

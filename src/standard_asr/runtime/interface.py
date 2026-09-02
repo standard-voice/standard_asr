@@ -23,9 +23,10 @@ The negotiation / conversion / gating pipeline runs in the standard layer
 from __future__ import annotations
 
 import asyncio
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
-from typing import TYPE_CHECKING, ClassVar, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, final, runtime_checkable
 
 from pydantic import ValidationError
 
@@ -34,10 +35,27 @@ from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioInput, AudioInputLike, coerce_audio_input
 from standard_asr.audio.negotiation import negotiate_or_raise
 from standard_asr.audio.wire import CANONICAL_WIRE_ENCODING
+from standard_asr.contract.artifacts import (
+    ARTIFACT_BLOCKER_ACTION_REQUIRED,
+    ARTIFACT_BLOCKER_DOWNLOADS_DISABLED,
+    ARTIFACT_PROGRESS_FINALIZING,
+    ARTIFACT_PROGRESS_RESOLVING,
+    ARTIFACT_READY,
+    ArtifactAction,
+    ArtifactContext,
+    ArtifactProgress,
+    ArtifactProgressCallback,
+    ArtifactReport,
+    ArtifactRequirement,
+)
 from standard_asr.contract.capabilities import DeclaredCapabilities
 from standard_asr.contract.exceptions import (
+    ArtifactAcquisitionError,
+    ArtifactProgressCallbackError,
+    ArtifactStatusError,
     ConfigError,
     EngineContractError,
+    InvalidProviderParamError,
     TranscriptionError,
     UnsupportedFeatureError,
 )
@@ -50,8 +68,10 @@ from standard_asr.contract.language import (
     effective_language,
     normalize_bcp47,
 )
+from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
 from standard_asr.contract.params import ProviderParams, RuntimeParams
 from standard_asr.contract.properties import BaseProperties, sample_rate_accepted
+from standard_asr.contract.protocol_version import require_supported_protocol
 from standard_asr.contract.results import (
     ChannelResult,
     Diagnostic,
@@ -60,8 +80,9 @@ from standard_asr.contract.results import (
     synthesize_segment_speaker,
 )
 from standard_asr.runtime.config import BaseConfig
+from standard_asr.runtime.downloads import allow_downloads
 from standard_asr.runtime.gating import Mode, gate_params
-from standard_asr.runtime.protocol_boundary import require_sync_result
+from standard_asr.runtime.protocol_boundary import require_sync_result, safe_type_name
 from standard_asr.runtime.streaming import TranscriptionSession
 
 if TYPE_CHECKING:
@@ -80,10 +101,22 @@ class StandardASR(Protocol):
     engine raises :class:`~standard_asr.contract.exceptions.UnsupportedFeatureError` from
     it. Because the surface is complete, callers (for example, the server) can type an
     engine as ``StandardASR`` and call the streaming entry point without a cast.
+
+    Gate ownership: the ``ProtocolCompatibilityError`` raises documented on
+    the members below are kept by the standard's own checks -- they are not
+    a duty every implementation's method body carries.
+    ``ModelRegistry.create()`` refuses an engine on an unsupported protocol
+    line before callers can reach these members, and ``EngineBase`` checks
+    again at each entry as a second net; an implementation built directly on
+    this protocol does not have to repeat those checks. A host that obtains
+    an engine without the registry (direct construction, a custom loader,
+    injection) MUST run :func:`require_engine_protocol` on the object once
+    before using it (AR.1).
     """
 
     properties: ClassVar[BaseProperties]
     declared_capabilities: ClassVar[DeclaredCapabilities]
+    declared_metadata: ClassVar[DeclaredEngineMetadata]
 
     @property
     def config(self) -> BaseConfig[str]:
@@ -118,6 +151,8 @@ class StandardASR(Protocol):
             The transcription result.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ConfigError: On an invalid language configuration VALUE
                 (``default_language`` malformed or not selectable) -- fixable
                 by whoever supplies the config.
@@ -134,6 +169,10 @@ class StandardASR(Protocol):
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
             ValueError: On a malformed or ``"auto"`` candidate-language entry
                 (a caller code bug; raises independent of strict/best_effort).
+            ArtifactUnavailableError: When required inference artifacts cannot
+                support recognition under the current policy.
+            ArtifactAcquisitionError: When an allowed implicit acquisition
+                attempt fails before recognition.
             TranscriptionError: On an engine-execution failure.
         """
         ...
@@ -185,6 +224,8 @@ class StandardASR(Protocol):
             A streaming session.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ValueError: If both ``audio_format`` and ``audio`` are provided, or
                 on a malformed/``auto`` candidate-language entry (a caller code
                 bug; always raises, independent of strict/best_effort).
@@ -205,6 +246,10 @@ class StandardASR(Protocol):
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
+            ArtifactUnavailableError: When required inference artifacts cannot
+                support session establishment under the current policy.
+            ArtifactAcquisitionError: When an allowed implicit acquisition
+                attempt fails during session establishment.
             TranscriptionError: When a pydantic ``ValidationError`` escapes the
                 engine's session-construction hook (an invalid model
                 construction is an engine fault, never a request error).
@@ -219,6 +264,80 @@ class StandardASR(Protocol):
 
         Returns:
             ``True`` if supported.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine declares a protocol
+                line the core does not support -- a capability answer is a
+                semantic interpretation of the declaration and must not be
+                given for a mismatched line.
+        """
+        ...
+
+    def artifact_status(
+        self,
+        context: ArtifactContext | None = None,
+    ) -> ArtifactReport:
+        """Inspect inference-artifact readiness without acquiring anything.
+
+        The report describes the moment it was taken -- ready today does
+        not mean ready tomorrow. A ``ready`` artifact can become ``missing``
+        with no action from the application (a cleared cache, an asset the
+        OS cleaned up, a disconnected drive). Check again by calling again:
+        while nothing external changes, repeated calls return the same
+        report (AR.2), so a changed report means something outside the
+        application really changed.
+
+        Args:
+            context: Optional request context. ``None`` resolves an engine mode
+                and uses default runtime parameters.
+
+        Returns:
+            A point-in-time artifact report for the resolved context.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core.
+            InvalidProviderParamError: If provider params belong to another
+                engine.
+            ValueError: If request language data is malformed or the explicit
+                mode is not supported by the engine.
+            ConfigError: If engine configuration is invalid.
+            EngineContractError: If engine declarations or hook results violate
+                the protocol.
+            ArtifactStatusError: If native status inspection fails.
+        """
+        ...
+
+    def acquire_artifacts(
+        self,
+        context: ArtifactContext | None = None,
+        *,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        """Acquire inference artifacts explicitly and return fresh status.
+
+        Args:
+            context: Optional request context.
+            refresh: Whether to re-resolve unblocked mutable source references.
+            progress: Optional synchronous progress observer.
+
+        Returns:
+            A newly inspected artifact report.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core.
+            ArtifactStatusError: If preflight or final status inspection fails.
+            ArtifactAcquisitionError: If acquisition is blocked or fails.
+            ArtifactProgressCallbackError: After successful acquisition and
+                status inspection, if the observer failed.
+            EngineContractError: If the engine violates the operation contract.
+            InvalidProviderParamError: If provider params belong to another
+                engine.
+            ConfigError: If engine configuration is invalid.
+            ValueError: If request language data is malformed or the explicit
+                mode is not supported by the engine.
         """
         ...
 
@@ -243,6 +362,12 @@ class StandardASR(Protocol):
         Returns:
             A wire format the engine's session-establishment guard accepts, or
             ``None`` when no bare-frame streaming format can be recommended.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine declares a protocol
+                line the core does not support -- the recommendation is
+                derived from the declaration and must not be interpreted
+                for a mismatched line.
         """
         ...
 
@@ -410,9 +535,9 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     Raises:
         UnsupportedFeatureError: If ``wire_encodings`` is declared and the
             requested encoding is not among them, if the wire ``channels`` is
-            not ``1`` (v1 streaming wire is mono-only), or if the wire sample
-            rate is not reachable for the engine (fail-closed; v1 does not
-            resample streaming wire frames).
+            not ``1`` (streaming wire input is mono-only), or if the wire sample
+            rate is not reachable for the engine (fail-closed; the standard
+            does not resample streaming wire frames).
     """
     props = properties
     wire = props.wire_encodings
@@ -427,7 +552,7 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
 
     if audio_format.channels != 1:
         raise UnsupportedFeatureError(
-            f"Streaming wire format declares channels={audio_format.channels}; v1 "
+            f"Streaming wire format declares channels={audio_format.channels}; "
             "streaming wire input is mono-only. The standard layer does not process "
             "incremental wire frames, so it cannot downmix multi-channel frames the "
             "way the batch path does. Downmix to mono before feeding.",
@@ -440,13 +565,13 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     required = props.required_input_sample_rate
     # A hard-required wire rate binds regardless of accepted_sample_rates:
     # "any" + required_input_sample_rate is constructible (the declaration
-    # reachability validator only checks concrete lists), and v1 does not
+    # reachability validator only checks concrete lists), and the standard does not
     # resample streaming wire frames, so a differing rate fails closed here.
     if required is not None and rate != required:
         raise UnsupportedFeatureError(
             f"Streaming wire sample_rate {rate} Hz does not match the "
             f"required_input_sample_rate={required} Hz that engine "
-            f"{props.engine_id!r} hard-requires. v1 does not resample streaming "
+            f"{props.engine_id!r} hard-requires. The standard does not resample streaming "
             "wire frames, so the required rate is enforced at session "
             "establishment even when accepted_sample_rates is 'any'.",
             param="audio_format.sample_rate",
@@ -457,7 +582,7 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
     if accepted != "any" and not sample_rate_accepted(accepted, rate):
         raise UnsupportedFeatureError(
             f"Streaming wire sample_rate {rate} Hz is not accepted by engine "
-            f"{props.engine_id!r} (accepted_sample_rates={accepted!r}). v1 does "
+            f"{props.engine_id!r} (accepted_sample_rates={accepted!r}). The standard does "
             "not resample streaming wire frames, so an unreachable rate is "
             "rejected at session establishment rather than silently "
             "mistranscribed. Open the session at an accepted rate.",
@@ -467,19 +592,151 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
         )
 
 
+def require_engine_protocol(engine: object) -> BaseProperties:
+    """Require an engine or engine class to be on the supported protocol line.
+
+    The one fail-closed gate every selected-engine surface shares: registry
+    creation, the ``EngineBase`` inference and artifact entries, the CLI's
+    ``show`` and transcribe preflight, and the per-model metadata endpoints
+    all call it before interpreting anything the engine declares. Consumers
+    that look up ``artifact_status`` or ``acquire_artifacts`` call it FIRST,
+    so an engine on an unsupported line gets a typed compatibility error
+    instead of a missing-attribute error -- and an unsupported line MUST NOT
+    be read as ``NO_ARTIFACT_LIFECYCLE``. Missing or untyped ``properties``
+    fails closed too: an engine whose protocol line cannot be established is
+    less knowable than one on a wrong line, never more trustworthy. The check
+    is the general line gate
+    (:func:`~standard_asr.contract.protocol_version.require_supported_protocol`),
+    not a feature-table lookup: every supported line carries the artifact
+    lifecycle, so no per-feature minimum survives to gate it -- which also
+    keeps the first stable release's feature-table rewrite from breaking
+    this guard.
+
+    Args:
+        engine: Engine instance or engine class whose declared protocol
+            version is inspected.
+
+    Returns:
+        The validated ``BaseProperties`` declaration.
+
+    Raises:
+        EngineContractError: If the engine does not declare ``properties`` as
+            a ``BaseProperties`` instance.
+        ProtocolCompatibilityError: If its declared protocol line is not
+            supported by this core.
+    """
+    properties = getattr(engine, "properties", None)
+    if not isinstance(properties, BaseProperties):
+        raise EngineContractError(
+            "Engine protocol compatibility cannot be established: 'properties' "
+            "is missing or is not a BaseProperties instance."
+        )
+    require_supported_protocol(properties.protocol_version)
+    return properties
+
+
+class _ArtifactProgressObserver:
+    """Serialize progress delivery and retain the first observer failure."""
+
+    def __init__(self, callback: ArtifactProgressCallback) -> None:
+        self._callback = callback
+        self._lock = threading.Lock()
+        self.callback_error: BaseException | None = None
+        self.contract_error: EngineContractError | None = None
+
+    def __call__(self, event: ArtifactProgress) -> None:
+        """Validate and deliver one event without canceling acquisition.
+
+        Args:
+            event: Engine-authored progress event.
+
+        Returns:
+            None.
+        """
+        with self._lock:
+            if self.callback_error is not None or self.contract_error is not None:
+                return
+            if type(event) is not ArtifactProgress:
+                self.contract_error = EngineContractError(
+                    "_acquire_artifacts progress callback received a value that "
+                    f"is not ArtifactProgress (got {safe_type_name(event)})."
+                )
+                return
+            try:
+                validated = ArtifactProgress.model_validate(event.model_dump(mode="python"))
+            except Exception as exc:  # noqa: BLE001 - retained as a contract-error cause
+                self.contract_error = EngineContractError(
+                    "_acquire_artifacts progress callback received an invalid "
+                    "ArtifactProgress value."
+                )
+                self.contract_error.__cause__ = exc
+                return
+            try:
+                result = self._callback(validated)
+                require_sync_result(
+                    result,
+                    "artifact progress callback",
+                    expected_type=type(None),
+                )
+            except asyncio.CancelledError as exc:
+                self.callback_error = exc
+            except Exception as exc:  # noqa: BLE001 - reported after acquisition succeeds
+                self.callback_error = exc
+
+
+def _artifact_blocker_reason(
+    requirements: tuple[ArtifactRequirement, ...],
+) -> Literal["downloads_disabled", "action_required", "unsupported"]:
+    """Project blockers onto the portable acquisition-error reason.
+
+    Args:
+        requirements: Blocked requirements.
+
+    Returns:
+        The portable reason, using the contract precedence. Unknown blocker
+        tokens conservatively project to ``"unsupported"``.
+    """
+    blockers = {requirement.acquisition_blocker for requirement in requirements}
+    if ARTIFACT_BLOCKER_ACTION_REQUIRED in blockers:
+        return "action_required"
+    if ARTIFACT_BLOCKER_DOWNLOADS_DISABLED in blockers:
+        return "downloads_disabled"
+    return "unsupported"
+
+
+def _artifact_required_actions(
+    requirements: tuple[ArtifactRequirement, ...],
+) -> tuple[ArtifactAction, ...]:
+    """Flatten actions from requirements while preserving report order.
+
+    Args:
+        requirements: Requirements whose actions are collected.
+
+    Returns:
+        The ordered action tuple.
+    """
+    return tuple(action for requirement in requirements for action in requirement.required_actions)
+
+
 class EngineBase(ABC):
     """Abstract base implementing the standard transcribe pipeline.
 
-    Subclasses MUST set :attr:`properties` and :attr:`declared_capabilities` as
-    class attributes, assign :attr:`config` in ``__init__`` (which MUST stay
-    pure -- no filesystem, GPU, or network access), and implement
-    :meth:`_transcribe`. Streaming engines additionally override
+    Subclasses MUST set :attr:`properties`,
+    :attr:`declared_capabilities`, and :attr:`declared_metadata` as class
+    attributes, assign :attr:`config` in ``__init__`` (which MUST stay pure --
+    no filesystem, GPU, or network access), and implement :meth:`_transcribe`.
+    Streaming engines additionally override
     :meth:`_start_transcription` (the streaming template hook); the public
     :meth:`start_transcription` runs the standard gating pipeline for them.
     """
 
     properties: ClassVar[BaseProperties]
     declared_capabilities: ClassVar[DeclaredCapabilities]
+    #: Fail-loud placeholder, not a usable default. Compliance requires a
+    #: plugin-owned :class:`DeclaredEngineMetadata` value; an engine that
+    #: inherits this placeholder gets the typed declaration error from the
+    #: artifact methods instead of a bare ``AttributeError``.
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = cast("DeclaredEngineMetadata", None)
     #: The engine's expected ``provider_params`` type, or ``None``.
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
     #: The engine's init-config model type, or ``None`` when not declared.
@@ -561,6 +818,7 @@ class EngineBase(ABC):
         """
         return self.declared_capabilities
 
+    @final
     def supports(self, dot_path: str) -> bool:
         """Return whether a capability is supported at runtime (fail-closed).
 
@@ -569,37 +827,601 @@ class EngineBase(ABC):
 
         Returns:
             ``True`` if supported by the effective capabilities.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core -- a mismatched line's
+                capability tree is not interpretable under this core's
+                semantics, and a capability answer steers engine selection
+                and request shaping, so it must not be given (AR.1).
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed).
         """
+        require_engine_protocol(self)
         return self.effective_capabilities.supports(dot_path)
 
     def prepare(self) -> None:
-        """Warm up the engine (download / load weights) without transcribing.
+        """Warm up process-local engine state without transcribing.
 
-        The optional, **synchronous, idempotent** pre-warm hook,
-        invoked by ``standard-asr prepare`` and by production / CI
-        pre-warming to move the lazy side effects
-        (weight download / model load) off the first transcription to one
-        billing-free, transcription-free call. The base implementation is a
-        no-op: an engine with nothing to warm up inherits it unchanged and the
-        toolchain reports a no-op rather than failing.
+        This optional, synchronous hook moves process-local loading
+        or initialization off the first transcription; calling it more than
+        once is safe. Persistent
+        inference-artifact acquisition belongs to :meth:`acquire_artifacts`.
+        An engine can call that operation before continuing its warm-up when the
+        native library cannot separate the two steps. The base implementation is
+        a no-op, which the toolchain reports without fabricating an inference
+        request.
 
-        Engines that load weights MUST override this to materialize them (for example,
-        call ``_ensure_model_loaded``), and that path MUST honor the same
-        download gate as transcription: check
-        :func:`~standard_asr.runtime.downloads.allow_downloads` and raise
-        :class:`~standard_asr.contract.exceptions.DiscoveryError` when downloads are
-        disabled and weights are missing. An override MUST remain a zero-argument
-        synchronous method -- never an ``async def`` (a coroutine function would
-        be called but never awaited, silently reporting a false success); the
-        compliance suite and the CLI reject a coroutine ``prepare``.
+        An override must remain a zero-argument synchronous method, never an
+        ``async def``. A coroutine function would be called but never awaited
+        and would silently report a false success. The compliance suite and the
+        CLI reject that declaration.
 
         Returns:
             None.
 
         Raises:
-            DiscoveryError: An override SHOULD raise this when downloads are
-                disabled and the weights are not already present (the base no-op
-                never raises).
+            ArtifactUnavailableError: If required inference artifacts cannot
+                support warm-up under the current policy.
+            ArtifactAcquisitionError: If an allowed acquisition attempt fails.
+        """
+
+    def _artifact_declaration(self) -> ArtifactDeclaration:
+        """Return the engine's authored artifact declaration.
+
+        Returns:
+            The engine's artifact declaration.
+
+        Raises:
+            EngineContractError: If the required metadata is absent or invalid.
+        """
+        metadata = cast("object", type(self).declared_metadata)
+        if not isinstance(metadata, DeclaredEngineMetadata):
+            raise EngineContractError(
+                "Engine metadata must be a DeclaredEngineMetadata "
+                "instance with an authored artifacts section."
+            )
+        # The outer isinstance proves the CLASS, not the section's type. The
+        # section can still hold a raw mapping -- ``model_copy(update=...)``
+        # stores whatever it is given -- and every caller below reads
+        # ``.applicable`` off the result. Without this check that is
+        # a bare AttributeError escaping a public lifecycle method, where this
+        # method's own contract (and AR.2) says an invalid declaration is an
+        # EngineContractError.
+        declaration = cast("object", metadata.artifacts)
+        if not isinstance(declaration, ArtifactDeclaration):
+            raise EngineContractError(
+                "declared_metadata.artifacts must be an "
+                f"ArtifactDeclaration (got {safe_type_name(declaration)})."
+            )
+        # The isinstance proves the section's class, not its values: a
+        # ``model_copy(update=...)`` declaration stores whatever it was given,
+        # and every consumer of the result gates on plain truthiness -- a
+        # truthy non-bool such as the string "false" would enable an
+        # acquisition path here while ``canonical_json()`` publishes ``false``
+        # for the same metadata (two verdicts for one declaration).
+        # Re-validation applies the model's own construction semantics
+        # (``revalidate_instances``): a value the constructor would coerce
+        # behaves exactly as if it had been authored there, and a value it
+        # would reject becomes the EngineContractError this method promises.
+        try:
+            return ArtifactDeclaration.model_validate(declaration)
+        except ValidationError as exc:
+            raise EngineContractError("declared_metadata.artifacts fails re-validation.") from exc
+
+    def _resolve_artifact_mode(self, requested: Mode | None, *, applicable: bool) -> Mode:
+        """Resolve an omitted artifact mode without inventing engine support.
+
+        Args:
+            requested: Caller-selected mode, or ``None``.
+            applicable: Whether artifact acquisition can apply to this model.
+
+        Returns:
+            A concrete mode for gating and the report.
+
+        Raises:
+            ConfigError: If several non-batch modes would make an omitted mode
+                ambiguous.
+            ValueError: If an explicit mode has no inference domain on the
+                engine.
+        """
+        capabilities = self.effective_capabilities
+        if requested is not None:
+            if getattr(capabilities, requested) is None:
+                raise ValueError(
+                    f"ArtifactContext.mode {requested!r} is not supported by this engine."
+                )
+            return requested
+        if capabilities.batch is not None:
+            return "batch"
+        available: list[Mode] = []
+        if capabilities.streaming is not None:
+            available.append("streaming")
+        if len(available) == 1:
+            return available[0]
+        if not available and not applicable:
+            return "batch"
+        raise ConfigError(
+            "ArtifactContext.mode is required because this engine has no "
+            "unambiguous default inference mode."
+        )
+
+    def _resolve_artifact_context(
+        self,
+        context: ArtifactContext | None,
+        *,
+        applicable: bool,
+    ) -> tuple[ArtifactContext, list[Diagnostic]]:
+        """Resolve mode, gate params, and resolve language for introspection.
+
+        Args:
+            context: Caller context, or ``None`` for defaults.
+            applicable: Whether artifact acquisition can apply to this model.
+
+        Returns:
+            The resolved context and ordered standard-layer diagnostics.
+
+        Raises:
+            ConfigError: On invalid engine configuration or ambiguous mode.
+            EngineContractError: On malformed declarations.
+            InvalidProviderParamError: On wrong-engine provider params.
+            ValueError: On malformed request language data or an explicit mode
+                the engine does not support.
+        """
+        requested_context = context or ArtifactContext()
+        mode = self._resolve_artifact_mode(requested_context.mode, applicable=applicable)
+        request = requested_context.params
+        self._validate_language_config()
+        gated, gate_diagnostics = gate_params(
+            request,
+            self.effective_capabilities,
+            mode,
+            strict=False,
+            expected_provider_type=self.provider_params_type,
+        )
+        gated, language_diagnostics = self._resolve_language_axis(
+            gated,
+            mode,
+            requested_language=request.language,
+            strict=False,
+        )
+        return (
+            ArtifactContext(mode=mode, params=gated),
+            [*gate_diagnostics, *language_diagnostics],
+        )
+
+    @staticmethod
+    def _artifact_hook_output(
+        value: object,
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        """Validate the protected status hook's exact return shape.
+
+        Args:
+            value: Hook return value.
+
+        Returns:
+            The typed applicability, requirements, and diagnostics tuple, with
+            the diagnostics re-validated.
+
+        Raises:
+            EngineContractError: If any part has the wrong type or a
+                diagnostic fails re-validation.
+        """
+        require_sync_result(value, "_artifact_requirements()", expected_type=tuple)
+        if type(value) is not tuple:
+            raise EngineContractError(
+                "_artifact_requirements() must return a three-item tuple: "
+                "(applicable, requirements, diagnostics)."
+            )
+        items = cast("tuple[object, ...]", value)
+        if len(items) != 3:
+            raise EngineContractError(
+                "_artifact_requirements() must return a three-item tuple: "
+                "(applicable, requirements, diagnostics)."
+            )
+        applicable, requirements, diagnostics = items
+        if type(applicable) is not bool:
+            raise EngineContractError("_artifact_requirements() applicable must be an exact bool.")
+        if type(requirements) is not tuple:
+            raise EngineContractError(
+                "_artifact_requirements() requirements must be a tuple of "
+                "ArtifactRequirement values."
+            )
+        requirement_items = cast("tuple[object, ...]", requirements)
+        if any(type(requirement) is not ArtifactRequirement for requirement in requirement_items):
+            raise EngineContractError(
+                "_artifact_requirements() requirements must be a tuple of "
+                "ArtifactRequirement values."
+            )
+        if type(diagnostics) is not tuple:
+            raise EngineContractError(
+                "_artifact_requirements() diagnostics must be a tuple of Diagnostic values."
+            )
+        diagnostic_items = cast("tuple[object, ...]", diagnostics)
+        if any(type(diagnostic) is not Diagnostic for diagnostic in diagnostic_items):
+            raise EngineContractError(
+                "_artifact_requirements() diagnostics must be a tuple of Diagnostic values."
+            )
+        # The exact-class checks above prove the SHAPE, not the values. The
+        # requirements need no more: they re-validate when the report nests
+        # them (``revalidate_instances``). Plain ``Diagnostic`` deliberately
+        # keeps the framework-wide 1.0 config, so a ``model_copy(update=...)``
+        # diagnostic would cross the report boundary verbatim: an invalid
+        # level token would publish through every projection, a NaN
+        # ``provided`` would silently become JSON ``null``, and a value with
+        # no JSON form would crash the wire projection long after this seam --
+        # where AR.2 makes invalid hook output an EngineContractError.
+        # Same dump/validate round-trip as the progress observer;
+        # ``warnings=False`` because the python-mode dump of a smuggled
+        # non-JSON value warns before re-validation rejects it.
+        validated_diagnostics: list[Diagnostic] = []
+        for diagnostic in cast("tuple[Diagnostic, ...]", diagnostics):
+            try:
+                validated_diagnostics.append(
+                    Diagnostic.model_validate(diagnostic.model_dump(mode="python", warnings=False))
+                )
+            except ValidationError as exc:
+                raise EngineContractError(
+                    "_artifact_requirements() produced an invalid Diagnostic."
+                ) from exc
+        return (
+            applicable,
+            cast("tuple[ArtifactRequirement, ...]", requirements),
+            tuple(validated_diagnostics),
+        )
+
+    @staticmethod
+    def _artifact_report_matches_declaration(
+        report: ArtifactReport,
+        declaration: ArtifactDeclaration,
+    ) -> None:
+        """Enforce that dynamic status only narrows static artifact metadata.
+
+        Args:
+            report: Validated dynamic report.
+            declaration: Static artifact declaration.
+
+        Returns:
+            None.
+
+        Raises:
+            EngineContractError: If the report widens a static fact.
+        """
+        if report.applicable and not declaration.applicable:
+            raise EngineContractError(
+                "Artifact status reports applicability that declared metadata does not allow."
+            )
+        if any(requirement.can_acquire_now for requirement in report.requirements) and not (
+            declaration.supports_explicit_acquisition
+        ):
+            raise EngineContractError(
+                "Artifact status reports explicit acquisition that declared metadata "
+                "does not allow."
+            )
+        if (
+            any(requirement.may_acquire_during_inference for requirement in report.requirements)
+            and not declaration.may_acquire_during_inference
+        ):
+            raise EngineContractError(
+                "Artifact status reports inference acquisition that declared metadata "
+                "does not allow."
+            )
+
+    @final
+    def artifact_status(
+        self,
+        context: ArtifactContext | None = None,
+    ) -> ArtifactReport:
+        """Inspect inference-artifact readiness without side effects.
+
+        The report describes the moment it was taken -- ready today does
+        not mean ready tomorrow. A ``ready`` artifact can become ``missing``
+        with no action from the application (a cleared cache, an asset the
+        OS cleaned up, a disconnected drive). Check again by calling again:
+        while nothing external changes, repeated calls return the same
+        report (AR.2).
+
+        Args:
+            context: Optional request context.
+
+        Returns:
+            A point-in-time artifact report.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine declares an unsupported protocol line.
+            InvalidProviderParamError: On wrong-engine provider params.
+            ValueError: On malformed request language data or an explicit mode
+                the engine does not support.
+            ConfigError: On invalid configuration or ambiguous mode.
+            EngineContractError: On invalid declarations or hook results.
+            ArtifactStatusError: On unexpected native inspection failure.
+        """
+        require_engine_protocol(self)
+        declaration = self._artifact_declaration()
+        resolved_context, standard_diagnostics = self._resolve_artifact_context(
+            context,
+            applicable=declaration.applicable,
+        )
+        mode = cast("Mode", resolved_context.mode)
+        if not declaration.applicable:
+            return ArtifactReport.from_requirements(
+                mode=mode,
+                applicable=False,
+                diagnostics=standard_diagnostics,
+            )
+        if type(self)._artifact_requirements is EngineBase._artifact_requirements:
+            raise EngineContractError(
+                "An engine declaring an applicable artifact lifecycle must "
+                "override _artifact_requirements()."
+            )
+        try:
+            raw = self._artifact_requirements(resolved_context)
+        except (ArtifactStatusError, ConfigError, EngineContractError, InvalidProviderParamError):
+            raise
+        except Exception as exc:
+            raise ArtifactStatusError(
+                f"Artifact status inspection failed inside the engine hook ({safe_type_name(exc)})."
+            ) from exc
+        applicable, requirements, engine_diagnostics = self._artifact_hook_output(raw)
+        try:
+            report = ArtifactReport.from_requirements(
+                mode=mode,
+                applicable=applicable,
+                requirements=requirements,
+                diagnostics=[*standard_diagnostics, *engine_diagnostics],
+            )
+        except ValidationError as exc:
+            raise EngineContractError(
+                "_artifact_requirements() produced an invalid artifact report."
+            ) from exc
+        self._artifact_report_matches_declaration(report, declaration)
+        return report
+
+    def _artifact_requirements(
+        self,
+        context: ArtifactContext,
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[Diagnostic, ...]]:
+        """Inspect native artifact requirements (override point).
+
+        An engine whose declaration says acquisition applies MUST override this;
+        the base body never runs for one, because :meth:`artifact_status`
+        refuses an applicable declaration that left the hook in place.
+
+        Args:
+            context: Resolved, best-effort-gated request context.
+
+        Returns:
+            ``(applicable, requirements, diagnostics)``. ``applicable`` is this
+            configured instance's dynamic answer to "does an inference-artifact
+            lifecycle apply here", and it MUST only narrow the static
+            declaration -- a report cannot claim applicability the class-level
+            metadata withholds. ``requirements`` lists every logical
+            dependency of the resolved context, one entry per requirement, and
+            ``diagnostics`` carries the non-fatal notes the inspection made.
+            Aggregate readiness is not returned: the core derives it. The base
+            implementation returns ``(False, (), ())``, the no-artifact shape.
+        """
+        return False, (), ()
+
+    @staticmethod
+    def _raise_artifact_blockers(
+        requirements: tuple[ArtifactRequirement, ...],
+        report: ArtifactReport,
+    ) -> None:
+        """Raise the portable error for blocked required requirements.
+
+        Args:
+            requirements: Blocked required requirements.
+            report: Latest report retained on the error.
+
+        Raises:
+            ArtifactAcquisitionError: Always when ``requirements`` is nonempty.
+        """
+        if not requirements:
+            return
+        reason = _artifact_blocker_reason(requirements)
+        raise ArtifactAcquisitionError(
+            "Required inference artifacts cannot be acquired under the current policy.",
+            reason=reason,
+            report=report,
+            required_actions=_artifact_required_actions(requirements),
+        )
+
+    @final
+    def acquire_artifacts(
+        self,
+        context: ArtifactContext | None = None,
+        *,
+        refresh: bool = False,
+        progress: ArtifactProgressCallback | None = None,
+    ) -> ArtifactReport:
+        """Acquire inference artifacts explicitly and return fresh status.
+
+        Args:
+            context: Optional request context.
+            refresh: Whether to re-resolve unblocked mutable source references.
+            progress: Optional synchronous progress observer.
+
+        Returns:
+            A newly inspected artifact report.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine declares an unsupported protocol line.
+            ArtifactStatusError: If preflight or final status inspection fails.
+            ArtifactAcquisitionError: If acquisition is blocked or fails.
+            ArtifactProgressCallbackError: After successful acquisition and
+                final status, if the observer failed.
+            EngineContractError: On invalid declarations, progress, or hook
+                behavior.
+            InvalidProviderParamError: On wrong-engine provider params.
+            ConfigError: On invalid engine configuration.
+            ValueError: On malformed request language data.
+        """
+        # Independent line gate: the preflight below dispatches through the
+        # virtual `self.artifact_status`, so an override of that PUBLIC
+        # member would otherwise leave this entry without the gate.
+        require_engine_protocol(self)
+        preflight = self.artifact_status(context)
+        declaration = self._artifact_declaration()
+        if (
+            declaration.supports_explicit_acquisition
+            and type(self)._acquire_artifacts is EngineBase._acquire_artifacts
+        ):
+            raise EngineContractError(
+                "An engine declaring explicit artifact acquisition must override "
+                "_acquire_artifacts()."
+            )
+        if not preflight.applicable:
+            return preflight
+        resolved_context, _ = self._resolve_artifact_context(
+            context,
+            applicable=declaration.applicable,
+        )
+        mutable = tuple(
+            requirement for requirement in preflight.requirements if requirement.source_is_mutable
+        )
+        if refresh and mutable and not allow_downloads():
+            raise ArtifactAcquisitionError(
+                "Mutable artifact sources cannot be refreshed while downloads are disabled.",
+                reason="downloads_disabled",
+                report=preflight,
+                required_actions=_artifact_required_actions(mutable),
+            )
+
+        runnable = tuple(
+            requirement
+            for requirement in preflight.requirements
+            if requirement.state != ARTIFACT_READY and requirement.can_acquire_now
+        )
+        refresh_targets = (
+            tuple(requirement for requirement in mutable if requirement.acquisition_blocker is None)
+            if refresh
+            else ()
+        )
+        targets_by_id = {requirement.artifact_id: requirement for requirement in runnable}
+        for requirement in refresh_targets:
+            targets_by_id.setdefault(requirement.artifact_id, requirement)
+        targets = tuple(targets_by_id.values())
+
+        blocked_required = tuple(
+            requirement
+            for requirement in preflight.requirements
+            if requirement.required_for_inference
+            and requirement.state != ARTIFACT_READY
+            and not requirement.can_acquire_now
+        )
+        if not targets:
+            self._raise_artifact_blockers(blocked_required, preflight)
+            return preflight
+        if not declaration.supports_explicit_acquisition:
+            raise ArtifactAcquisitionError(
+                "This configured engine cannot explicitly acquire or refresh artifacts.",
+                reason="unsupported",
+                report=preflight,
+            )
+        observer = _ArtifactProgressObserver(progress) if progress is not None else None
+        hook_progress: ArtifactProgressCallback | None = observer
+        if observer is not None:
+            observer(ArtifactProgress(phase=ARTIFACT_PROGRESS_RESOLVING))
+        try:
+            result = self._acquire_artifacts(
+                resolved_context,
+                targets,
+                refresh,
+                hook_progress,
+            )
+            require_sync_result(result, "_acquire_artifacts()", expected_type=type(None))
+        except ArtifactAcquisitionError as exc:
+            if exc.report is None:
+                # AR.5: the error preserves the full report. A hook-level
+                # helper may raise without one (no preflight in its scope);
+                # the template has it, so backfill rather than surface a
+                # structured error stripped of its status context
+                # (round-16 review).
+                exc.report = preflight
+            raise
+        except EngineContractError:
+            raise
+        except Exception as exc:
+            raise ArtifactAcquisitionError(
+                f"Artifact acquisition failed inside the engine hook ({safe_type_name(exc)}).",
+                reason="failed",
+                report=preflight,
+            ) from exc
+        if observer is not None:
+            observer(ArtifactProgress(phase=ARTIFACT_PROGRESS_FINALIZING))
+        try:
+            final_report = self.artifact_status(context)
+        except ArtifactStatusError as exc:
+            raise ArtifactStatusError(
+                "Artifact acquisition completed, but final status inspection failed."
+            ) from exc
+
+        final_by_id = {
+            requirement.artifact_id: requirement for requirement in final_report.requirements
+        }
+        attempted_target_ids = {requirement.artifact_id for requirement in targets}
+        missing_target_ids = tuple(
+            artifact_id for artifact_id in attempted_target_ids if artifact_id not in final_by_id
+        )
+        if missing_target_ids:
+            raise EngineContractError(
+                "Final artifact status omitted a target from the configured artifact lifecycle."
+            )
+        attempted_failures = tuple(
+            artifact_id
+            for artifact_id in attempted_target_ids
+            if final_by_id[artifact_id].state != ARTIFACT_READY
+        )
+        if attempted_failures:
+            raise ArtifactAcquisitionError(
+                "Artifact acquisition returned without making an attempted requirement ready.",
+                reason="failed",
+                report=final_report,
+            )
+        final_blocked_required = tuple(
+            requirement
+            for requirement in final_report.requirements
+            if requirement.required_for_inference
+            and requirement.state != ARTIFACT_READY
+            and not requirement.can_acquire_now
+        )
+        self._raise_artifact_blockers(final_blocked_required, final_report)
+        if any(
+            requirement.required_for_inference and requirement.state != ARTIFACT_READY
+            for requirement in final_report.requirements
+        ):
+            raise ArtifactAcquisitionError(
+                "Required inference artifacts remain unavailable after acquisition.",
+                reason="failed",
+                report=final_report,
+            )
+        if observer is not None and observer.contract_error is not None:
+            raise observer.contract_error
+        if observer is not None and observer.callback_error is not None:
+            raise ArtifactProgressCallbackError(
+                "Artifact acquisition succeeded, but its progress callback failed.",
+                report=final_report,
+            ) from observer.callback_error
+        return final_report
+
+    def _acquire_artifacts(
+        self,
+        context: ArtifactContext,
+        requirements: tuple[ArtifactRequirement, ...],
+        refresh: bool,
+        progress: ArtifactProgressCallback | None,
+    ) -> None:
+        """Perform native artifact acquisition (override point).
+
+        Args:
+            context: Resolved artifact context.
+            requirements: Runnable acquisition and refresh targets.
+            refresh: Whether mutable targets must be re-resolved.
+            progress: Validating serialized progress observer, if requested.
+
+        Returns:
+            None.
         """
 
     @property
@@ -629,6 +1451,7 @@ class EngineBase(ABC):
         """
         return bool(getattr(self.config, "allow_private_urls", False))
 
+    @final
     def transcribe(
         self, audio: AudioInputLike, params: RuntimeParams | None = None
     ) -> TranscriptionResult:
@@ -655,10 +1478,14 @@ class EngineBase(ABC):
             diagnostics attached.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ConfigError: If the engine's ``default_language`` VALUE is
                 malformed or not in ``selectable_languages`` -- fixable by
                 whoever supplies the config.
-            EngineContractError: On an engine-declaration defect -- a
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed before any work), or on an
+                engine-declaration defect -- a
                 declared language axis with no ``default_language`` (IC.6),
                 or a malformed declared selectable/detectable tag.
             IncompatibleAudioInputError: If no conversion path exists.
@@ -675,12 +1502,24 @@ class EngineBase(ABC):
             ValueError: On a malformed candidate tag or one containing ``auto``
                 -- a caller code bug, raised **always** (independent of
                 strict/best_effort).
+            ArtifactUnavailableError: When required inference artifacts cannot
+                support recognition under the current policy.
+            ArtifactAcquisitionError: When an allowed implicit acquisition
+                attempt fails before recognition.
             TranscriptionError: On an engine-execution failure inside
                 :meth:`_transcribe` -- including a pydantic ``ValidationError``
                 escaping it (an invalid result construction is an engine
                 fault; the template wraps it here so it can never masquerade
                 as a client-input validation error).
         """
+        # The full engine gate runs before any work: AR.1 makes each 0.MINOR
+        # generation potentially contract-breaking, so running a
+        # mismatched-line engine could return a structurally valid but
+        # semantically drifted transcript -- a silent wrong result -- and an
+        # engine whose properties cannot even be typed is less knowable
+        # still. A parse and tuple comparison is negligible next to
+        # inference.
+        require_engine_protocol(self)
         request = params or RuntimeParams()
         # Fail fast: validate config + params (no audio needed) before decode.
         self._validate_language_config()
@@ -836,7 +1675,12 @@ class EngineBase(ABC):
             )
 
     def _resolve_language_axis(
-        self, params: RuntimeParams, mode: Mode, *, requested_language: str | None = None
+        self,
+        params: RuntimeParams,
+        mode: Mode,
+        *,
+        requested_language: str | None = None,
+        strict: bool | None = None,
     ) -> tuple[RuntimeParams, list[Diagnostic]]:
         """Resolve and validate the effective language axis.
 
@@ -856,6 +1700,9 @@ class EngineBase(ABC):
                 ``effective=None``, but the engine actually transcribes with its
                 ``default_language``. Pass the un-gated ``RuntimeParams.language``;
                 defaults to ``None`` for direct callers that never gated.
+            strict: Unsupported-language policy override. ``None`` uses the
+                engine config. Artifact introspection passes ``False`` so the
+                entire read-only path converges through diagnostics.
 
         Returns:
             A ``(params, diagnostics)`` pair containing the effective runtime
@@ -870,6 +1717,7 @@ class EngineBase(ABC):
         """
         if not self.properties.has_language_axis:
             return params, []
+        strict_policy = self._strict if strict is None else strict
         caps = self.effective_capabilities
         runtime_override_supported = caps.supports(f"{mode}.language.runtime_override")
         # default_language is non-None here: _validate_language_config (always run
@@ -935,7 +1783,7 @@ class EngineBase(ABC):
         assert eff_lang is not None
         matched = _selectable_match(eff_lang, selectable)
         if matched is None:
-            if self._strict:
+            if strict_policy:
                 raise UnsupportedFeatureError(
                     f"language {eff_lang!r} is not selectable in {mode} mode "
                     f"for engine {self.properties.engine_id!r} "
@@ -990,7 +1838,7 @@ class EngineBase(ABC):
             candidate_supported=caps.supports(f"{mode}.language.candidate_languages"),
             detectable_languages=detectable,
             max_count=constraints,
-            strict=self._strict,
+            strict=strict_policy,
             mode=mode,
         )
         diagnostics.extend(candidate_diags)
@@ -1015,6 +1863,7 @@ class EngineBase(ABC):
         cap = domain.language.candidate_languages
         return cap.constraints.max if cap.constraints is not None else None
 
+    @final
     async def transcribe_async(
         self, audio: AudioInputLike, params: RuntimeParams | None = None
     ) -> TranscriptionResult:
@@ -1034,12 +1883,15 @@ class EngineBase(ABC):
                 a :class:`~standard_asr.contract.results.TranscriptionResult`
                 -- or propagated a declaration defect from :meth:`transcribe`
                 (a missing IC.6 default, a malformed declared tag).
-            Exception: The same exception set as :meth:`transcribe` (it runs that
-                method): ``ConfigError``, ``IncompatibleAudioInputError``,
-                ``UnsafeAudioUrlError``, ``AudioProcessingError``,
-                ``UnsupportedFeatureError``, ``InvalidProviderParamError``,
-                ``ValueError``, and ``TranscriptionError``.
+            Exception: The same exception set as :meth:`transcribe` because it
+                runs that method. This includes artifact availability and
+                acquisition errors without wrapping them as
+                ``TranscriptionError``.
         """
+        # Same line gate as transcribe(): `self.transcribe` below is virtual
+        # dispatch, so a subclass that overrode the PUBLIC method would
+        # otherwise carry a mismatched line straight past the template.
+        require_engine_protocol(self)
         result = await asyncio.to_thread(self.transcribe, audio, params)
         # This bridge is a real CONSUMER of the synchronous protocol member,
         # exactly like the CLI and the server's REST path: `self.transcribe`
@@ -1069,12 +1921,15 @@ class EngineBase(ABC):
             standard layer's).
 
         Raises:
-            TranscriptionError: On any engine-execution failure (model inference,
-                network call, or SDK error). Implementations MUST wrap the native
-                exception as ``raise TranscriptionError(...) from exc`` so an
-                application can catch one portable type across every engine
-                instead of each engine's native exception. This
-                is the batch counterpart of the streaming ``engine_error`` event.
+            ArtifactUnavailableError: When the engine knows before recognition
+                that required inference artifacts cannot resolve under the
+                current policy. Do not wrap this error.
+            ArtifactAcquisitionError: When an allowed implicit acquisition was
+                attempted and failed before recognition. Do not wrap this error.
+            TranscriptionError: On every other engine-execution failure, such as
+                model inference, a network inference call, or an SDK error.
+                Implementations must preserve the native exception as the cause
+                so applications can catch one portable execution-error type.
         """
         raise NotImplementedError  # pragma: no cover
 
@@ -1123,8 +1978,8 @@ class EngineBase(ABC):
         ``wire_encodings`` unset, since that skip is where a forgotten
         declaration would let a non-PCM frame be misframed.
 
-        Wire **sample rate**: the standard's v1 implementation note is explicit
-        that v1 does **NOT** resample streaming bare frames in the standard layer
+        Wire **sample rate**: the spec's implementation note is explicit
+        that streaming bare frames are **NOT** resampled in the standard layer
         (unlike the batch ``transcribe`` path, which resamples). Therefore, until
         standard-layer streaming resampling lands, a wire ``sample_rate`` that the
         engine does not accept MUST be rejected here rather than forwarded as
@@ -1142,15 +1997,16 @@ class EngineBase(ABC):
         Raises:
             UnsupportedFeatureError: If ``wire_encodings`` is declared and the
                 requested encoding is not among them, if the wire ``channels`` is
-                not ``1`` (v1 streaming wire is mono-only), or if the wire sample
-                rate is not reachable for the engine (fail-closed; v1 does not
-                resample streaming wire frames).
+                not ``1`` (streaming wire input is mono-only), or if the wire sample
+                rate is not reachable for the engine (fail-closed; the
+                standard does not resample streaming wire frames).
         """
         # Delegates to the module-level pure rule so the compliance suite can
         # validate the identical semantics for structural (non-EngineBase)
         # engines without reaching for this method.
         ensure_wire_format_supported(self.properties, audio_format)
 
+    @final
     def recommended_wire_format(self) -> AudioFormat | None:
         """Return a minimal wire :class:`AudioFormat` to open a streaming session.
 
@@ -1169,7 +2025,7 @@ class EngineBase(ABC):
         * ``encoding`` = the first declared ``wire_encodings`` entry, else the
           canonical ``pcm_s16le`` (used only when ``wire_encodings`` is
           unconstrained, where the engine accepts any encoding).
-        * ``channels`` = 1 (v1 streaming wire is mono-only).
+        * ``channels`` = 1 (streaming wire input is mono-only).
 
         The derivation is deliberately capability-blind (Properties only):
         whether a bare-frame session can be opened at all is decided by the
@@ -1182,8 +2038,17 @@ class EngineBase(ABC):
             A wire format the engine's session-establishment guard accepts, or
             ``None`` when the engine declares no usable (positive) sample rate, so
             no bare-frame streaming format can be recommended.
+
+        Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core -- the recommendation is
+                derived from the declared Properties, and a mismatched
+                line's declaration must not be interpreted under this
+                core's semantics (AR.1).
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed).
         """
-        props = self.properties
+        props = require_engine_protocol(self)
         # required_input_sample_rate (int | None) wins when set; else the native
         # rate. ``or`` also treats a 0 required-rate as unset. The result is typed
         # ``int``; a non-positive rate (a malformed declaration) yields no
@@ -1210,6 +2075,7 @@ class EngineBase(ABC):
         """
         return type(self)._start_transcription is not EngineBase._start_transcription
 
+    @final
     def start_transcription(
         self,
         *,
@@ -1264,12 +2130,16 @@ class EngineBase(ABC):
             A streaming session with gating / language diagnostics attached.
 
         Raises:
+            ProtocolCompatibilityError: If the engine's declared protocol
+                line is not supported by this core (checked before any work).
             ValueError: If both ``audio_format`` and ``audio`` are provided, or
                 on a malformed/``auto`` candidate-language entry (a caller code
                 bug; always raises, independent of strict/best_effort).
             ConfigError: If the engine's ``default_language`` VALUE is
                 malformed or not in ``selectable_languages``.
-            EngineContractError: On an engine-declaration defect -- a
+            EngineContractError: If ``properties`` is missing or untyped
+                (the shared gate fails closed before any work), or on an
+                engine-declaration defect -- a
                 declared language axis with no ``default_language`` (IC.6),
                 or a malformed declared selectable/detectable tag.
             UnsupportedFeatureError: When the requested streaming input/output
@@ -1284,11 +2154,18 @@ class EngineBase(ABC):
             AudioProcessingError: On a decode / size / missing-sample-rate
                 failure for a whole-input ``audio`` value.
             InvalidProviderParamError: On wrong ``provider_params`` (swap-safety).
+            ArtifactUnavailableError: When required inference artifacts cannot
+                support session establishment under the current policy.
+            ArtifactAcquisitionError: When an allowed implicit acquisition
+                attempt fails during session establishment.
             TranscriptionError: When a pydantic ``ValidationError`` escapes the
                 engine's ``_start_transcription`` hook (an invalid model
                 construction is an engine fault; wrapped here so it can never
                 masquerade as a client-input validation error).
         """
+        # Same full engine gate as transcribe(), for the same reason: a
+        # mismatched-line engine's streaming semantics are unknowable.
+        require_engine_protocol(self)
         self.ensure_stream_inputs_exclusive(audio_format, audio)
         if audio_format is not None and not self.effective_capabilities.supports("streaming_input"):
             raise UnsupportedFeatureError(
@@ -1451,4 +2328,9 @@ class EngineBase(ABC):
         )
 
 
-__all__ = ["EngineBase", "StandardASR", "ensure_wire_format_supported"]
+__all__ = [
+    "EngineBase",
+    "StandardASR",
+    "ensure_wire_format_supported",
+    "require_engine_protocol",
+]

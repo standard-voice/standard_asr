@@ -48,8 +48,8 @@ def allow_downloads(env_var: str = "STANDARD_ASR_ALLOW_DOWNLOAD") -> bool:
     for example, a ``VAR=`` line in docker-compose, or a typo like ``on``) disables them
     fail-closed -- an unrecognized value must never silently enable downloads.
 
-    Because the engine that later raises ``DiscoveryError`` cannot see that the
-    toggle held an unrecognized value (it only sees this boolean), an
+    Because the engine that later reports a ``downloads_disabled`` blocker
+    cannot see that the toggle held an unrecognized value, an
     unrecognized non-disable value is logged here on every read so the operator can trace
     a surprising "downloads disabled" back to the real cause -- the explicit,
     logged explanation the philosophy requires instead of a silent degrade.
@@ -147,7 +147,7 @@ def resolve_download_root(
     """Resolve an engine's model download root per the standard precedence.
 
     Implements the normative four-level chain engines MUST follow when picking
-    where model artifacts land: **explicit** config (the engine's
+    where inference artifacts land: **explicit** config (the engine's
     ``download_root`` field) > the ``STANDARD_ASR_MODEL_DIR`` environment
     override > the underlying ASR library's **own default cache** (when it has one;
     expressed as a ``None`` passthrough, see below) > the shared Standard ASR
@@ -164,7 +164,7 @@ def resolve_download_root(
     engine forwards it unchanged. Substituting a concrete directory here would
     delete the spec's third tier: every unconfigured install's models would
     relocate away from the library's existing cache, breaking offline loads of
-    already-downloaded models and silently re-downloading them.
+    already-present artifacts and silently downloading them again.
 
     Args:
         explicit: Explicitly configured download root (highest priority); a

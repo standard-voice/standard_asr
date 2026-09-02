@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import ClassVar, Literal, cast
 
 import numpy as np
@@ -24,6 +26,9 @@ from standard_asr import (
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioArray, AudioPath, AudioUrl, InputKind
 from standard_asr.audio.negotiation import UnsafeAudioUrlError
+from standard_asr.compliance import (
+    _PUBLIC_TEMPLATE_METHODS,  # pyright: ignore[reportPrivateUsage]
+)
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
     CandidateLanguagesCap,
@@ -38,6 +43,7 @@ from standard_asr.contract.exceptions import (
     EngineContractError,
     IncompatibleAudioInputError,
     InvalidProviderParamError,
+    ProtocolCompatibilityError,
     TranscriptionError,
     UnsupportedFeatureError,
 )
@@ -62,7 +68,7 @@ class _Config(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
 class _ArrayProps(BaseProperties):
     engine_id: str = "arr"
     model_name: str = "echo"
-    protocol_version: str = "1.0.0"
+    protocol_version: str = "0.2.0"
     accepted_input: set[InputKind] = {InputKind.ARRAY}
     native_sample_rate: int = 16000
     accepted_sample_rates: list[int] | SampleRateRange | Literal["any"] = [16000]
@@ -117,6 +123,93 @@ def _audio() -> AudioArray:
 
 def test_engine_is_standard_asr() -> None:
     assert isinstance(_ArrayEngine(), StandardASR)
+
+
+class _OutsideLineProps(_ArrayProps):
+    protocol_version: str = "0.1.0"
+
+
+class _OutsideLineEngine(_ArrayEngine):
+    properties: ClassVar[BaseProperties] = _OutsideLineProps()
+
+
+def test_public_override_cannot_bypass_the_line_gate_on_dispatch_seams() -> None:
+    # Round-25 M1: transcribe_async and acquire_artifacts dispatch through
+    # VIRTUAL public members (self.transcribe / self.artifact_status), so a
+    # subclass overriding those public members would otherwise carry a mismatched
+    # line straight past the template. Both entries gate independently.
+    class _PublicOverrideEngine(_OutsideLineEngine):
+        def transcribe(  # pyright: ignore[reportIncompatibleMethodOverride]
+            self, audio: object, params: object = None
+        ) -> TranscriptionResult:
+            return TranscriptionResult(text="bypassed")
+
+    engine = _PublicOverrideEngine()
+    with pytest.raises(ProtocolCompatibilityError):
+        asyncio.run(engine.transcribe_async(_audio()))
+
+
+def test_engine_base_refuses_inference_on_an_unsupported_line() -> None:
+    # AR.1: each 0.MINOR generation may change the contract incompatibly, so
+    # the template refuses to run inference for a mismatched line instead of
+    # returning a structurally valid but possibly drifted transcript. All
+    # three inference entries share the gate (transcribe_async delegates to
+    # transcribe in a worker thread).
+    engine = _OutsideLineEngine()
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.transcribe(_audio())
+    with pytest.raises(ProtocolCompatibilityError):
+        asyncio.run(engine.transcribe_async(_audio()))
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.start_transcription()
+
+
+def test_engine_base_refuses_semantic_negotiation_on_an_unsupported_line() -> None:
+    # supports() and recommended_wire_format() are the two public
+    # negotiation surfaces the application guide teaches callers to consult
+    # BEFORE opening a session. Answering them from a mismatched line's
+    # declaration would steer engine selection, UI state, and audio setup
+    # by semantics this core cannot interpret (AR.1) -- the caller would
+    # only learn of the mismatch when inference finally refused.
+    engine = _OutsideLineEngine()
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.supports("streaming_input")
+    with pytest.raises(ProtocolCompatibilityError):
+        engine.recommended_wire_format()
+
+
+def test_engine_base_refuses_inference_when_properties_are_untyped() -> None:
+    # The three inference entries run the FULL engine gate (AR.1), not only
+    # the line comparison: with properties that quack the current version
+    # string without being a BaseProperties, the protocol line cannot be
+    # established -- less knowable than a wrong line, never more trustworthy.
+    # Gating only two of the three entries gave one declaration shape two
+    # different verdicts.
+    class _DuckPropertiesEngine(_ArrayEngine):
+        properties: ClassVar[BaseProperties] = cast(
+            BaseProperties, SimpleNamespace(protocol_version="0.2.0")
+        )
+
+    engine = _DuckPropertiesEngine()
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        engine.transcribe(_audio())
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        asyncio.run(engine.transcribe_async(_audio()))
+    with pytest.raises(EngineContractError, match="cannot be established"):
+        engine.start_transcription()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="typing.final records __final__ only on Python 3.11+",
+)
+def test_every_public_template_is_statically_final() -> None:
+    # The @final markers are the promised pyright-time guard against
+    # overriding a public template (AR.1 names all seven). A decorator landing
+    # on the StandardASR Protocol stub instead of the EngineBase template
+    # satisfies neither pyright nor this assertion.
+    for method_name in _PUBLIC_TEMPLATE_METHODS:
+        assert getattr(getattr(EngineBase, method_name), "__final__", False), method_name
 
 
 def test_engine_with_narrowed_config_is_assignable_without_cast() -> None:
@@ -297,7 +390,7 @@ def test_transcribe_async_returns_result_identity() -> None:
     captured: list[TranscriptionResult] = []
 
     class _Capturing(_ArrayEngine):
-        def transcribe(
+        def transcribe(  # pyright: ignore[reportIncompatibleMethodOverride]
             self, audio: object, params: RuntimeParams | None = None
         ) -> TranscriptionResult:
             result = super().transcribe(cast("AudioArray", audio), params)
@@ -1144,7 +1237,7 @@ def test_ensure_stream_format_supported_matches_encoding_case_insensitively() ->
 
 
 def test_ensure_stream_format_supported_rejects_multichannel_wire() -> None:
-    # v1 streaming wire is mono-only: the standard layer does not process
+    # Streaming wire input is mono-only: the standard layer does not process
     # incremental wire frames, so it cannot downmix multi-channel frames the way
     # the batch path does. A stereo wire format is rejected at session start.
     from standard_asr.audio.format import AudioFormat
@@ -1222,7 +1315,7 @@ def test_recommended_wire_format_none_when_no_usable_sample_rate() -> None:
 
 
 def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> None:
-    # v1 does NOT resample streaming wire frames, so a wire sample_rate
+    # The standard does NOT resample streaming wire frames, so a wire sample_rate
     # the engine does not accept must be rejected (fail-closed), not forwarded as
     # frames the engine never declared (silent mistranscription). _ArrayProps
     # accepts only [16000] and declares no required_input_sample_rate.
@@ -1239,7 +1332,7 @@ def test_ensure_stream_format_supported_rejects_unreachable_sample_rate() -> Non
 def test_ensure_stream_format_supported_range_admits_in_range_rate() -> None:
     # A streaming engine declaring accepted_sample_rates as a range
     # accepts any wire sample_rate inside [min, max] at session start, and rejects
-    # one outside it (v1 does not resample streaming wire frames).
+    # one outside it (the standard does not resample streaming wire frames).
     from standard_asr.audio.format import AudioFormat
 
     class _RangeProps(_ArrayProps):
@@ -1299,7 +1392,7 @@ def test_ensure_stream_format_supported_enforces_required_rate_under_any() -> No
     # required_input_sample_rate + accepted_sample_rates="any"
     # is constructible (the declaration-time reachability validator only checks
     # concrete lists), so the session guard must still fail-closed on a wire
-    # rate that differs from the hard-required one -- v1 does not resample
+    # rate that differs from the hard-required one -- the standard does not resample
     # streaming wire frames.
     from standard_asr.audio.format import AudioFormat
 
@@ -1323,7 +1416,7 @@ def test_ensure_stream_format_supported_required_rate_beats_accepted_list() -> N
     # required_input_sample_rate binds even when the wire rate IS in
     # the concrete accepted_sample_rates list. accepted_sample_rates describes
     # the batch path (which resamples to the required rate before the engine);
-    # v1 does not resample streaming wire frames, so a 16 kHz wire against a
+    # The standard does not resample streaming wire frames, so a 16 kHz wire against a
     # 24 kHz-required engine would be interpreted as 24 kHz frames -- a silent
     # mistranscription. The deliberate semantics: hard-reject at establishment.
     from standard_asr.audio.format import AudioFormat

@@ -31,6 +31,17 @@ def _base_kwargs() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize(
+    "protocol_version",
+    ["1", "1.1", "01.1.0", "1.01.0", "1.1.00", "v1.1.0", "1.1.0rc1"],
+)
+def test_protocol_version_requires_canonical_triplet(protocol_version: str) -> None:
+    data = _base_kwargs()
+    data["protocol_version"] = protocol_version
+    with pytest.raises(ValidationError, match="MAJOR.MINOR.PATCH"):
+        BaseProperties(**data)
+
+
 def test_selectable_language_normalization() -> None:
     data = _base_kwargs()
     data["selectable_languages"] = ["EN_us", "auto"]

@@ -1,6 +1,6 @@
 [project]
 name = "standard-asr"
-version = "0.1.1"
+version = "0.2.0.dev0"
 description = "The open standard interface between apps and speech-to-text engines"
 readme = "README.md"
 requires-python = ">=3.10"

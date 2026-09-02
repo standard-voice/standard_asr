@@ -33,11 +33,12 @@ _transcribe
 aiter
 json.loads
 kind
+pathlib.Path.home
 pydantic.JsonValue
-resolve_cache_dir
 standard_asr.audio
 standard_asr.audio.negotiation
 standard_asr.audio.negotiation.validate_fetchable_url
+standard_asr.contract.protocol_version.require_supported_protocol
 standard_asr.runtime.gating
 standard_asr.runtime.protocol_boundary.require_sync_result
 standard_asr.runtime.streaming._LifecycleGuard
