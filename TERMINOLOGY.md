@@ -3,31 +3,17 @@
 
 # Terminology
 
-This file is the terminology database for Standard ASR. It gives one canonical
-term per concept so that prose across the code, the messages, and the docs reads
-as one voice. [`STYLE.md`](STYLE.md) requires it. Every contributor and every AI
-agent must use these terms.
+This file is the terminology database for Standard ASR. It gives one canonical term per concept so that prose across the code, the messages, and the docs reads as one voice. [`STYLE.md`](STYLE.md) requires it. Every contributor and every AI agent must use these terms.
 
-Each row gives the canonical term, a one-line definition, the approved usage,
-and the forbidden synonyms. A forbidden synonym is a word you must not use for
-that concept. It does not forbid the word for its own, separate meaning:
-"backend" is wrong for an engine, but correct for an audio decode library.
+Each row gives the canonical term, a one-line definition, the approved usage, and the forbidden synonyms. A forbidden synonym is a word you must not use for that concept. It does not forbid the word for its own, separate meaning: "backend" is wrong for an engine, but correct for an audio decode library.
 
-A few words carry more than one meaning in this domain — *model*, *frame*,
-*adapter*, *provider*. Their rows name **every sense in use**. Use a listed
-sense, write the sentence so the sense is clear, and never introduce a sense the
-table does not list. This is what `STYLE.md`'s "one word, one meaning" rule
-means here: not that a word has exactly one sense, but that every sense it has
-is written down.
+A few words carry more than one meaning in this domain — *model*, *frame*, *adapter*, *provider*. Their rows name **every sense in use**. Use a listed sense, write the sentence so the sense is clear, and never introduce a sense the table does not list. This is what `STYLE.md`'s "one word, one meaning" rule means here: not that a word has exactly one sense, but that every sense it has is written down.
 
 ## Spelling
 
-Use **American English** in all prose: `normalize`, `behavior`, `initialize`,
-`serialize`, `analyze`, `color`, `canceled`, `canceling`, `modeling`.
+Use **American English** in all prose: `normalize`, `behavior`, `initialize`, `serialize`, `analyze`, `color`, `canceled`, `canceling`, `modeling`.
 
-One exception: never re-spell a verbatim identifier. A prose sentence that names
-the standard library exception `CancelledError` keeps that spelling, even though
-the same sentence writes the verb "canceled". See `STYLE.md`, "Spelling".
+One exception: never re-spell a verbatim identifier. A prose sentence that names the standard library exception `CancelledError` keeps that spelling, even though the same sentence writes the verb "canceled". See `STYLE.md`, "Spelling".
 
 ## Core terms
 
@@ -66,44 +52,19 @@ the same sentence writes the verb "canceled". See `STYLE.md`, "Spelling".
 
 ## Two level scales (do not unify)
 
-Two data models carry a `level` field with **different** value sets. This is
-deliberate. Do not "fix" one to match the other. (These two value sets are this
-file's one deliberate excerpt from the code; update them with the code.)
+Two data models carry a `level` field with **different** value sets. This is deliberate. Do not "fix" one to match the other. (These two value sets are this file's one deliberate excerpt from the code; update them with the code.)
 
-- `Diagnostic.level` is `Literal["info", "warning"]`
-  (`contract/results.py`). A diagnostic never carries "error", because an error
-  raises an exception instead.
-- `ComplianceIssue.level` is `Literal["error", "warning"]`
-  (`compliance.py`). A compliance issue never carries "info", because a finding
-  is either a hard failure or a soft warning.
+- `Diagnostic.level` is `Literal["info", "warning"]` (`contract/results.py`). A diagnostic never carries "error", because an error raises an exception instead.
+- `ComplianceIssue.level` is `Literal["error", "warning"]` (`compliance.py`). A compliance issue never carries "info", because a finding is either a hard failure or a soft warning.
 
 ## Controlled code vocabularies (single source of truth)
 
-The following vocabularies live in the code. This file points to them and does
-not duplicate them, so they cannot drift. Add or rename a member only at its
-source.
+The following vocabularies live in the code. This file points to them and does not duplicate them, so they cannot drift. Add or rename a member only at its source.
 
-- **Diagnostic codes** — the `DIAG_*` module constants, in
-  `contract/results.py`, `contract/language.py`, `runtime/gating.py`,
-  `audio/conversion.py`, and `runtime/streaming.py`. Codes are `snake_case`.
-  Most read `<subject>_<past-tense-verb>` (`language_fell_back`,
-  `prompt_truncated`, `frozen_prefix_rewritten`); the `lifecycle_*` and
-  `supersede_*` families instead name the illegal transition or the superseding
-  operation (`lifecycle_partial_after_final`, `supersede_cross_speaker_merge`).
-  Match the family you are adding to.
-- **Compliance codes** — the `ComplianceIssue(code=...)` string literals in
-  `compliance.py` and `toolchain/cli.py` (the CLI mints report-level codes such
-  as `unknown_model`), same `snake_case` pattern.
-- **Enums** — `InputKind` (`audio/input.py`), `ConversionOp`
-  (`audio/negotiation.py`), `WordTimestampGranularity` (`contract/params.py`),
-  and `Satisfiability` (`toolchain/doctor.py`).
-- **Literal sets** — `EventType` (`runtime/streaming.py`) and `ModeName`
-  (`contract/capabilities.py`, re-exported as `Mode` from `runtime/gating.py`).
-- **Inference-artifact codes** — the `ARTIFACT_*` and `ARTIFACTS_*` constants in
-  `contract/artifacts.py`. These cover requirement states, aggregate readiness,
-  blockers, required-action kinds, progress phases, and progress units.
-- **Exception classes** — the hierarchy rooted at `StandardASRError` in
-  `contract/exceptions.py` (one public member, `UnsafeAudioUrlError`, lives
-  with its subject in `audio/negotiation.py`).
-- **Public API surface** — the `__all__` list in `src/standard_asr/__init__.py`
-  is the authoritative set of application-developer names.
+- **Diagnostic codes** — the `DIAG_*` module constants, in `contract/results.py`, `contract/language.py`, `runtime/gating.py`, `audio/conversion.py`, and `runtime/streaming.py`. Codes are `snake_case`. Most read `<subject>_<past-tense-verb>` (`language_fell_back`, `prompt_truncated`, `frozen_prefix_rewritten`); the `lifecycle_*` and `supersede_*` families instead name the illegal transition or the superseding operation (`lifecycle_partial_after_final`, `supersede_cross_speaker_merge`). Match the family you are adding to.
+- **Compliance codes** — the `ComplianceIssue(code=...)` string literals in `compliance.py` and `toolchain/cli.py` (the CLI mints report-level codes such as `unknown_model`), same `snake_case` pattern.
+- **Enums** — `InputKind` (`audio/input.py`), `ConversionOp` (`audio/negotiation.py`), `WordTimestampGranularity` (`contract/params.py`), and `Satisfiability` (`toolchain/doctor.py`).
+- **Literal sets** — `EventType` (`runtime/streaming.py`) and `ModeName` (`contract/capabilities.py`, re-exported as `Mode` from `runtime/gating.py`).
+- **Inference-artifact codes** — the `ARTIFACT_*` and `ARTIFACTS_*` constants in `contract/artifacts.py`. These cover requirement states, aggregate readiness, blockers, required-action kinds, progress phases, and progress units.
+- **Exception classes** — the hierarchy rooted at `StandardASRError` in `contract/exceptions.py` (one public member, `UnsafeAudioUrlError`, lives with its subject in `audio/negotiation.py`).
+- **Public API surface** — the `__all__` list in `src/standard_asr/__init__.py` is the authoritative set of application-developer names.

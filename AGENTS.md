@@ -30,46 +30,17 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 
 ## Rules
 
-- Python 3.10+, cross-platform (macOS, Windows, Linux). A platform- or
-  hardware-specific feature must be optional: the core runs everywhere, and
-  where the feature is unavailable the user gets a graceful fallback or a
-  clear error.
-- Modern typing syntax: `str | None` and built-in generics (`list[int]`),
-  never `typing.Optional` or `typing.List`. PEP 8 naming: `snake_case`
-  functions and variables, `PascalCase` classes, descriptive names.
-- Use `uv` for dependencies, Pydantic v2 for data models, and FastAPI for
-  the server. A new dependency needs a compatible license, active
-  maintenance, and scrutiny of its supply chain; prefer the standard
-  library and existing dependencies (`CONTRIBUTING.md`, "Dependency
-  policy").
-- Every change passes `ruff`, strict `pyright`, and `pytest` with a 100%
-  coverage target. `ruff` rule `NPY201` stays enabled, and CI tests numpy
-  1.26 and the latest 2.x, because the library supports both numpy
-  generations.
+- Python 3.10+, cross-platform (macOS, Windows, Linux). A platform- or hardware-specific feature must be optional: the core runs everywhere, and where the feature is unavailable the user gets a graceful fallback or a clear error.
+- Modern typing syntax: `str | None` and built-in generics (`list[int]`), never `typing.Optional` or `typing.List`. PEP 8 naming: `snake_case` functions and variables, `PascalCase` classes, descriptive names.
+- Use `uv` for dependencies, Pydantic v2 for data models, and FastAPI for the server. A new dependency needs a compatible license, active maintenance, and scrutiny of its supply chain; prefer the standard library and existing dependencies (`CONTRIBUTING.md`, "Dependency policy").
+- Every change passes `ruff`, strict `pyright`, and `pytest` with a 100% coverage target. `ruff` rule `NPY201` stays enabled, and CI tests numpy 1.26 and the latest 2.x, because the library supports both numpy generations.
 - Google-style docstrings, in English: summary, args, returns, raises.
-- English for all code, comments, and logs. Use the `logging` module,
-  never `print`.
-- Prose covers every docstring, user-facing string, governed Markdown file, issue, PR description, and commit message. Governed means text people read as documentation; `STYLE.md` ("Scope") lists exactly which files. Exempt, each for a reason: the Chinese specification, because the standard and its checker are built for English; old changelog entries, because they are history; `docs/internal/`, because it holds working notes. Write plain language, for a
-  reader who knows
-  software but has never seen this project. Every term is one that reader
-  already knows, one [`TERMINOLOGY.md`](TERMINOLOGY.md) defines, or one
-  the code names; explain anything else, or choose a plainer word. One
-  fact per sentence, about 20 words. No emoji; a runtime string stays
-  ASCII. In Markdown, do not break lines inside a paragraph at a column width. Let the editor wrap. If a paragraph looks too long as one line, split the paragraph organically. Check every claim about the code against the code — a remembered
-  fact is not a fact. A meaning change states its defect and its authority
-  (path and line) in the commit message. `scripts/vale.sh --gate` enforces
-  the mechanical layer; when the gate or a reviewer disputes a sentence,
-  [`STYLE.md`](STYLE.md) is the ruling text. Before writing a diagnostic,
-  a warning, or a docstring that uses MUST or SHOULD, read the "Deltas"
-  section of `STYLE.md`.
+- English for all code, comments, and logs. Use the `logging` module, never `print`.
+- Prose covers every docstring, user-facing string, governed Markdown file, issue, PR description, and commit message. Governed means text people read as documentation; `STYLE.md` ("Scope") lists exactly which files. Exempt, each for a reason: the Chinese specification, because the standard and its checker are built for English; old changelog entries, because they are history; `docs/internal/`, because it holds working notes. Write plain language, for a reader who knows software but has never seen this project. Every term is one that reader already knows, one [`TERMINOLOGY.md`](TERMINOLOGY.md) defines, or one the code names; explain anything else, or choose a plainer word. One fact per sentence, about 20 words. No emoji; a runtime string stays ASCII. In Markdown, do not break lines inside a paragraph at a column width. Let the editor wrap. If a paragraph looks too long as one line, split the paragraph organically. Check every claim about the code against the code — a remembered fact is not a fact. A meaning change states its defect and its authority (path and line) in the commit message. `scripts/vale.sh --gate` enforces the mechanical layer; when the gate or a reviewer disputes a sentence, [`STYLE.md`](STYLE.md) is the ruling text. Before writing a diagnostic, a warning, or a docstring that uses MUST or SHOULD, read the "Deltas" section of `STYLE.md`.
 - SPDX license header on every `.py` file:
   ```python
   # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
   # SPDX-License-Identifier: Apache-2.0
   ```
-- Documentation lives in `docs/`. `docs/content/` is the published site
-  content: every Markdown file under it ships, each page needs a
-  frontmatter `title`, links between pages use explicit relative paths
-  (`./other-page.md`), and raw HTML fails the build. `docs/internal/` never ships. The documentation website is its own program under `docs/site/` (TypeScript; Node and pnpm; its own linters in CI), so the prose standard does not apply to it. It generates the API reference from docstrings, so a docstring or function change needs nothing from it. A new Python module that should appear in the reference needs two things: an entry in `MODULE_PAGES` (`docs/site/scripts/dump_api.py`) and a page under `docs/content/reference/` naming it in `api_module`; the build fails if either is missing. Read `docs/site/README.md` before changing the site itself.
-- Write commit messages in the imperative mood, and keep them concise. One
-  logical change per commit.
+- Documentation lives in `docs/`. `docs/content/` is the published site content: every Markdown file under it ships, each page needs a frontmatter `title`, links between pages use explicit relative paths (`./other-page.md`), and raw HTML fails the build. `docs/internal/` never ships. The documentation website is its own program under `docs/site/` (TypeScript; Node and pnpm; its own linters in CI), so the prose standard does not apply to it. It generates the API reference from docstrings, so a docstring or function change needs nothing from it. A new Python module that should appear in the reference needs two things: an entry in `MODULE_PAGES` (`docs/site/scripts/dump_api.py`) and a page under `docs/content/reference/` naming it in `api_module`; the build fails if either is missing. Read `docs/site/README.md` before changing the site itself.
+- Write commit messages in the imperative mood, and keep them concise. One logical change per commit.
