@@ -4561,7 +4561,7 @@ def test_cli_compliance_run_named_subset_scopes_probes_at_the_source(
 ) -> None:
     # `compliance run <named>` on a machine with a co-installed plugin must
     # scope the per-engine checks AT THE SOURCE, not filter the report
-    # afterwards: the instance checks execute engine code (construction, the
+    # afterward: the instance checks execute engine code (construction, the
     # supports() sweep, the start_transcription() refusal probe -- a model
     # load; for a cloud engine a billable call), and the old post-hoc filter
     # discarded only the verdicts while the user still paid those side

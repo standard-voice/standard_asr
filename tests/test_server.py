@@ -3752,7 +3752,7 @@ class _BestEffortOpenFaultEngine(_SessionLifecycleEngine):
 
     The only shape that puts a diagnostics frame and a pre-bridge error frame on
     the same socket: establishment has to succeed far enough to attach a
-    diagnostic, and the open hook has to fail afterwards.
+    diagnostic, and the open hook has to fail afterward.
     """
 
     session_type: ClassVar[type[TranscriptionSession]] = _ArtifactUnavailableOpenSession

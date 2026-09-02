@@ -1947,7 +1947,7 @@ def test_sync_bridge_late_session_after_timeout_is_torn_down_not_leaked() -> Non
     """A session that finishes establishing after the timeout report is closed.
 
     The check returns promptly with sync_bridge_did_not_terminate, but the
-    bounded establish worker may still complete afterwards; the session it
+    bounded establish worker may still complete afterward; the session it
     builds (which for a real engine can hold connections and state) must be torn
     down best-effort, never silently leaked in a long-running host process.
     """

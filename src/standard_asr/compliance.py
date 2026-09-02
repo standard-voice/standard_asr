@@ -352,7 +352,7 @@ def check_entrypoints(
             (RuntimeParams closedness, engine-identity collisions,
             no-entry-points) always evaluate the whole environment -- they
             are environment facts, not per-engine verdicts. Pass the user's
-            named subset here rather than filtering the report afterwards:
+            named subset here rather than filtering the report afterward:
             the instance checks EXECUTE engine code (construction, a
             ``supports()`` sweep, the ``start_transcription()`` refusal
             probe -- a model load, for a cloud engine potentially a billable
