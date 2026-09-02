@@ -1361,7 +1361,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
     # Scope the per-engine checks -- including the instance BEHAVIORAL probes
     # (construction, the supports() sweep, the start_transcription() refusal
     # probe: a model load; for a cloud engine, potentially a billable call) --
-    # to the named subset AT THE SOURCE. Filtering the report afterwards
+    # to the named subset AT THE SOURCE. Filtering the report afterward
     # discarded only the verdicts while the user still paid the probes' side
     # effects on co-installed plugins they never named. Registry-global
     # invariants (engine-identity collisions, RuntimeParams closedness) still

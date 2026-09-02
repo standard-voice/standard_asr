@@ -97,7 +97,7 @@ Standard ASR is infrastructure others build on, so we manage dependencies around
 
 - **New direct dependency:** add it to `[project.dependencies]` with a lower bound you have actually verified the code needs (not "whatever is latest"). No upper cap. Then run `uv lock` and commit the lock with the change.
 - **New dev/test/lint/typing tool:** add it to the appropriate PEP 735 group in `[dependency-groups]`, not to `[project.dependencies]`.
-- **Raising a lower bound:** only when the code genuinely starts relying on a newer feature, or a security floor forces it. The lower-bounds CI lane must stay green afterwards.
+- **Raising a lower bound:** only when the code genuinely starts relying on a newer feature, or a security floor forces it. The lower-bounds CI lane must stay green afterward.
 - **Adding an upper cap:** don't, unless it is a real incompatibility. If it is, record it in `docs/compatibility-advisories.md` (issue link + revisit date) and prefer a `[tool.uv] constraint-dependencies` dev-only pin if the breakage is dev/test-only rather than a downstream problem.
 - **Routine version bumps** are Dependabot's job — it rewrites `uv.lock`, not the contract. Don't hand-bump the lock just to chase latest.
 

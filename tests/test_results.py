@@ -1169,7 +1169,7 @@ def test_vtt_label_sanitized_for_voice_tag() -> None:
 
 def test_vtt_voice_tag_injected_after_text_sanitization() -> None:
     # The payload is escaped by _sanitize_cue_text; the voice tag is injected
-    # AFTERWARDS so it is not itself escaped away.
+    # AFTERWARD so it is not itself escaped away.
     seg = Segment(start=0.0, end=1.0, text="<unk> token", speaker="A")
     vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
     assert "<v A>&lt;unk&gt; token" in vtt
