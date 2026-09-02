@@ -4,8 +4,7 @@ title: "Discover & Use"
 
 # Discover and use an engine (app developers)
 
-> Authoritative reference: [`docs/content/specification/protocol.md`](../specification/protocol.md).
-> This guide shows the common app-developer flow on the current API.
+> Authoritative reference: [`docs/content/specification/protocol.md`](../specification/protocol.md). This guide shows the common app-developer flow on the current API.
 
 ## 1. Discover installed engines
 
@@ -26,11 +25,7 @@ for name in registry.names():
 engine = registry.create("faster-whisper/large-v3", device="cpu")
 ```
 
-`create()` also verifies the plugin and this core share a protocol
-generation, so a stale installation fails here with a typed
-`ProtocolCompatibilityError` naming the fix. If you obtain an engine some
-other way -- direct construction, your own loader, dependency injection --
-run that check yourself once before using the object:
+`create()` also verifies the plugin and this core share a protocol generation, so a stale installation fails here with a typed `ProtocolCompatibilityError` naming the fix. If you obtain an engine some other way -- direct construction, your own loader, dependency injection -- run that check yourself once before using the object:
 
 ```python
 from standard_asr import require_engine_protocol
@@ -40,8 +35,7 @@ require_engine_protocol(engine)  # raises ProtocolCompatibilityError on a mismat
 
 ### Inspect and acquire inference artifacts
 
-Engines report the persistent artifacts needed by a configured
-inference path:
+Engines report the persistent artifacts needed by a configured inference path:
 
 ```python
 from standard_asr import ArtifactAcquisitionError
@@ -63,23 +57,13 @@ if any(
             report = exc.report
 ```
 
-Status inspection is side-effect-free. Explicit acquisition never fabricates a
-transcription request. A manual prerequisite, such as accepting terms or
-providing files, appears as a structured `ArtifactAction`; an engine that can
-only acquire during first inference reports that limitation explicitly.
-`acquire_artifacts()` can still raise after completing runnable work when a
-different required artifact remains blocked. The error carries the final
-report and any newly discovered `required_actions`, which is why the sample
-reads them from the exception instead of parsing its message.
+Status inspection is side-effect-free. Explicit acquisition never fabricates a transcription request. A manual prerequisite, such as accepting terms or providing files, appears as a structured `ArtifactAction`; an engine that can only acquire during first inference reports that limitation explicitly. `acquire_artifacts()` can still raise after completing runnable work when a different required artifact remains blocked. The error carries the final report and any newly discovered `required_actions`, which is why the sample reads them from the exception instead of parsing its message.
 
-These facts do not classify an engine as local or remote. See
-[Inference artifacts](../reference/artifacts.md) for states, refresh behavior,
-progress, and errors.
+These facts do not classify an engine as local or remote. See [Inference artifacts](../reference/artifacts.md) for states, refresh behavior, progress, and errors.
 
 ## 3. Pass audio — whatever you have
 
-`transcribe` accepts a discriminated `AudioInput` union; bare values are coerced.
-A bare `str` is **always** a local path (never a URL — wrap URLs explicitly).
+`transcribe` accepts a discriminated `AudioInput` union; bare values are coerced. A bare `str` is **always** a local path (never a URL — wrap URLs explicitly).
 
 ```python
 from standard_asr import AudioArray, AudioUrl
@@ -89,9 +73,7 @@ engine.transcribe((samples, 16000))  # -> AudioArray(samples, sr)
 engine.transcribe(AudioUrl("https://.../a.flac"))  # explicit URL (engine-fetched)
 ```
 
-The standard layer negotiates and converts to whatever the engine accepts
-(decode, encode-to-WAV, read-file, resample) and reports any lossy step in
-`result.diagnostics`.
+The standard layer negotiates and converts to whatever the engine accepts (decode, encode-to-WAV, read-file, resample) and reports any lossy step in `result.diagnostics`.
 
 ## 4. Per-request parameters (portable + escape hatch)
 
@@ -110,12 +92,9 @@ result = engine.transcribe(
 )
 ```
 
-`diarization` is an on/off request marker: pass `DIARIZE` (or
-`DiarizationRequest()`) to enable it, leave it `None` to skip it. Gate it first
-with `engine.supports("batch.diarization")`.
+`diarization` is an on/off request marker: pass `DIARIZE` (or `DiarizationRequest()`) to enable it, leave it `None` to skip it. Gate it first with `engine.supports("batch.diarization")`.
 
-Engine-specific options go through `provider_params` (typed, swap-safe — passing
-the wrong engine's params raises `InvalidProviderParamError`).
+Engine-specific options go through `provider_params` (typed, swap-safe — passing the wrong engine's params raises `InvalidProviderParamError`).
 
 ## 5. Check capabilities before relying on a feature
 
@@ -140,19 +119,9 @@ with open("out.srt", "w", encoding="utf-8") as f:
     f.write(to_srt(result))
 ```
 
-A segment renders as a *visible* cue only if it carries a measured `start`/`end`
-span. Some engines omit timestamps — check `seg.timestamp_status`. The span must
-also survive the output grid: a span that quantizes to zero milliseconds fails,
-because players silently drop `T --> T` cues. When a segment cannot render, the
-renderers raise `SubtitleRenderingError`. They do not silently drop text, hide
-text, or fabricate timing. To choose the loss yourself, pass
-`on_unrenderable="omit"` to keep only the renderable cues, or `"collapse"` for
-one whole-text cue.
+A segment renders as a *visible* cue only if it carries a measured `start`/`end` span. Some engines omit timestamps — check `seg.timestamp_status`. The span must also survive the output grid: a span that quantizes to zero milliseconds fails, because players silently drop `T --> T` cues. When a segment cannot render, the renderers raise `SubtitleRenderingError`. They do not silently drop text, hide text, or fabricate timing. To choose the loss yourself, pass `on_unrenderable="omit"` to keep only the renderable cues, or `"collapse"` for one whole-text cue.
 
-`segment.speaker` carries the speaker label when diarization was requested and
-supported (`word.speaker` gives the same detail at word level). Engines whose
-diarization is `always_on` may label speakers even without a request. A `None`
-label means "not attributed", never "unsupported" — capabilities answer support.
+`segment.speaker` carries the speaker label when diarization was requested and supported (`word.speaker` gives the same detail at word level). Engines whose diarization is `always_on` may label speakers even without a request. A `None` label means "not attributed", never "unsupported" — capabilities answer support.
 
 ## 7. Streaming
 

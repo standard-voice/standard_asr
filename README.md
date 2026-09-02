@@ -4,40 +4,19 @@
 
 # Standard ASR
 
-**The open standard interface between applications and speech-recognition engines.**
-_Apps integrate speech-to-text once and gain every engine. Engines implement once and reach every app._
+**The open standard interface between applications and speech-recognition engines.** _Apps integrate speech-to-text once and gain every engine. Engines implement once and reach every app._
 
 <!-- Package & community -->
-[![PyPI](https://img.shields.io/pypi/v/standard-asr?label=PyPI&logo=pypi&logoColor=white&color=blue)](https://pypi.org/project/standard-asr/)
-[![Python versions](https://img.shields.io/pypi/pyversions/standard-asr)](https://pypi.org/project/standard-asr/)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/standard-voice/standard_asr/blob/main/LICENSE)
-[![Chat on Zulip](https://img.shields.io/badge/Join%20Chat-Zulip?style=flat&logo=zulip&label=Zulip&color=blue)](https://standard-voice.zulipchat.com)
-[![CI](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml)
-[![Canary](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml/badge.svg)](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml)
-[![codecov](https://codecov.io/gh/standard-voice/standard_asr/graph/badge.svg)](https://codecov.io/gh/standard-voice/standard_asr)
-[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/standard-voice/standard_asr?label=OpenSSF%20Scorecard)](https://scorecard.dev/viewer/?uri=github.com/standard-voice/standard_asr)
-[![pyright strict](https://img.shields.io/badge/pyright-strict-2ea44f)](https://microsoft.github.io/pyright/)
+[![PyPI](https://img.shields.io/pypi/v/standard-asr?label=PyPI&logo=pypi&logoColor=white&color=blue)](https://pypi.org/project/standard-asr/) [![Python versions](https://img.shields.io/pypi/pyversions/standard-asr)](https://pypi.org/project/standard-asr/) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/standard-voice/standard_asr/blob/main/LICENSE) [![Chat on Zulip](https://img.shields.io/badge/Join%20Chat-Zulip?style=flat&logo=zulip&label=Zulip&color=blue)](https://standard-voice.zulipchat.com) [![CI](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/standard-voice/standard_asr/actions/workflows/ci.yml) [![Canary](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml/badge.svg)](https://github.com/standard-voice/standard_asr/actions/workflows/canary.yml) [![codecov](https://codecov.io/gh/standard-voice/standard_asr/graph/badge.svg)](https://codecov.io/gh/standard-voice/standard_asr) [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/standard-voice/standard_asr?label=OpenSSF%20Scorecard)](https://scorecard.dev/viewer/?uri=github.com/standard-voice/standard_asr) [![pyright strict](https://img.shields.io/badge/pyright-strict-2ea44f)](https://microsoft.github.io/pyright/)
 
 </div>
 
 > [!WARNING]
-> **Alpha — the core protocol works, but major pieces are still missing.** The standard
-> interface is functional and exercised by real engine plugins (interface-level
-> compliance; end-to-end runtime verification is still being built), but features like
-> hardware metadata and model cards are not yet part of the protocol.
-> Developer tooling is also incomplete. Expect breaking changes.
-> For production use, wait for a stable release. We follow semantic versioning.
-> See the [Roadmap](https://github.com/standard-voice/standard_asr/issues/27) for what's planned.
+> **Alpha — the core protocol works, but major pieces are still missing.** The standard interface is functional and exercised by real engine plugins (interface-level compliance; end-to-end runtime verification is still being built), but features like hardware metadata and model cards are not yet part of the protocol. Developer tooling is also incomplete. Expect breaking changes. For production use, wait for a stable release. We follow semantic versioning. See the [Roadmap](https://github.com/standard-voice/standard_asr/issues/27) for what's planned.
 
 ![Standard ASR concept](https://raw.githubusercontent.com/standard-voice/standard_asr/main/docs/assets/concept.jpg)
 
-**A preview of the current state.**
-[standard-asr-live](https://github.com/standard-voice/standard-asr-live) is an experimental
-terminal app written against Standard ASR alone — it never imports a concrete engine. In the
-clip below it starts with no engines installed, so it has nothing to transcribe with. One
-`pip install std-mlx-audio` later, the same command offers every model that plugin ships, and
-picking one streams live transcription onto the screen. Nothing about the app changed — installing
-the engine _was_ the integration.
+**A preview of the current state.** [standard-asr-live](https://github.com/standard-voice/standard-asr-live) is an experimental terminal app written against Standard ASR alone — it never imports a concrete engine. In the clip below it starts with no engines installed, so it has nothing to transcribe with. One `pip install std-mlx-audio` later, the same command offers every model that plugin ships, and picking one streams live transcription onto the screen. Nothing about the app changed — installing the engine _was_ the integration.
 
 https://github.com/user-attachments/assets/528f5545-4c79-4a5b-a7fd-562cbf833938
 
@@ -45,69 +24,24 @@ https://github.com/user-attachments/assets/528f5545-4c79-4a5b-a7fd-562cbf833938
 
 ## The problem
 
-Speech recognition never got its standard interface. Every ASR library and cloud API ships
-its own calling convention, its own audio-input rules, its own streaming protocol.
-Integrating one engine means writing an adapter; integrating five means maintaining five.
-So most applications hard-wire two or three engines. Their users then get only the languages
-and domains those engines handle well, and wait for an "official support" release that usually
-never comes. Meanwhile the model that would serve them best already exists.
+Speech recognition never got its standard interface. Every ASR library and cloud API ships its own calling convention, its own audio-input rules, its own streaming protocol. Integrating one engine means writing an adapter; integrating five means maintaining five. So most applications hard-wire two or three engines. Their users then get only the languages and domains those engines handle well, and wait for an "official support" release that usually never comes. Meanwhile the model that would serve them best already exists.
 
-**Standard ASR** removes that tax: one vendor-neutral interface that both sides implement.
-Applications code against the protocol and gain every compliant engine, cloud API, or local
-model. Engines implement it once and reach every application. Switching engines becomes a
-one-line model-key change — not another adapter.
+**Standard ASR** removes that tax: one vendor-neutral interface that both sides implement. Applications code against the protocol and gain every compliant engine, cloud API, or local model. Engines implement it once and reach every application. Switching engines becomes a one-line model-key change — not another adapter.
 
 ## "Nice idea — but how does a protocol with no adopters get adopted?"
 
-**Standard ASR does not need any vendor's cooperation to be useful today.** For existing
-engines, compliance is a thin adapter — not a rewrite — and the result ships as an ordinary
-pip-installable plugin package that anyone can publish. An application developer gets the
-payoff — one interface, swappable engines — from day one, before any engine vendor
-officially adopts the protocol. If the protocol earns an ecosystem, engine authors gain an organic incentive to ship
-native compliance: one interface implemented means every Standard ASR application is a
-potential user, plus a CLI, an HTTP/WebSocket server, and a compliance test suite for free.
-But nothing waits on that flywheel to start turning.
+**Standard ASR does not need any vendor's cooperation to be useful today.** For existing engines, compliance is a thin adapter — not a rewrite — and the result ships as an ordinary pip-installable plugin package that anyone can publish. An application developer gets the payoff — one interface, swappable engines — from day one, before any engine vendor officially adopts the protocol. If the protocol earns an ecosystem, engine authors gain an organic incentive to ship native compliance: one interface implemented means every Standard ASR application is a potential user, plus a CLI, an HTTP/WebSocket server, and a compliance test suite for free. But nothing waits on that flywheel to start turning.
 
-**"Why a protocol and plugins, and not another all-in-one package?"** Because the
-all-in-one shape has been tried, repeatedly, and it structurally fails: a monolith that
-bundles adapters for every engine becomes a maintenance bottleneck (new models outpace any
-single team), a dependency minefield (engines pin conflicting numpy/torch versions in one
-process), and a licensing trap (GPL/AGPL engines can't be bundled with permissive ones).
-Model creators won't open pull requests against someone else's mega-repo. Standard ASR
-inverts the structure: the core defines the protocol and toolchain; every engine lives in
-its own independently maintained, independently licensed package. Maintenance stays with
-the people who know each engine best, and the core never becomes the bottleneck.
+**"Why a protocol and plugins, and not another all-in-one package?"** Because the all-in-one shape has been tried, repeatedly, and it structurally fails: a monolith that bundles adapters for every engine becomes a maintenance bottleneck (new models outpace any single team), a dependency minefield (engines pin conflicting numpy/torch versions in one process), and a licensing trap (GPL/AGPL engines can't be bundled with permissive ones). Model creators won't open pull requests against someone else's mega-repo. Standard ASR inverts the structure: the core defines the protocol and toolchain; every engine lives in its own independently maintained, independently licensed package. Maintenance stays with the people who know each engine best, and the core never becomes the bottleneck.
 
 ## Why build on Standard ASR?
 
-- **Write once, run with any engine.** Code against the protocol, not the vendor. Switching
-  from a cloud API to a local model (or the reverse) is a one-line model-key change — your
-  integration work survives every vendor decision you'll make later.
-- **One streaming model for every engine.** Real-time ASR has no shared conventions: some
-  engines rewrite their interim results, some never revise a token, some merge already-emitted
-  segments after a second decoding pass. Standard ASR unifies all of it under one event
-  protocol with explicit stability guarantees — designed against an in-repo survey of 30+
-  real engine APIs ([`docs/internal/research/`](docs/internal/research/)).
-- **Audio negotiation, batteries included.** Hand over what you have — a file path, raw
-  bytes, a NumPy array, a URL — and the framework negotiates and converts to whatever form
-  the engine accepts, loudly reporting anything lossy. No more sample-rate guesswork.
-- **See what a model needs before it runs.** Engines declare their inference artifacts —
-  weights, tokenizers, compiled graphs, installed operating-system assets — so your app (or
-  `standard-asr status`) can ask what is on disk without loading anything, and
-  `standard-asr pull` acquires what is missing without faking a transcription to warm a
-  cache. A gated license, an absent credential, or a disabled download policy comes back as
-  a structured, machine-readable verdict you can act on — a blocker naming why acquisition
-  cannot run, plus the operator actions where actions exist — not a stack trace on the first
-  request.
-- **No dependency hell, no licensing traps.** Each engine is its own pip-installable
-  plugin, so restrictive licenses and heavy dependencies stay in the packages that carry
-  them. Hard dependency conflicts (for example, numpy 1.x vs 2.x) cannot share one environment —
-  `standard-asr doctor` surfaces them instead of letting them hide. Process isolation is
-  the escape hatch for plugin-vs-plugin conflicts; a plugin incompatible with the core's
-  own numpy floor cannot run anywhere, and doctor reports that as its own conflict.
-- **The choice goes to the user.** End users — especially for under-served languages and
-  domains — install the engine that serves them best and use it immediately, without
-  waiting for the app author to add support.
+- **Write once, run with any engine.** Code against the protocol, not the vendor. Switching from a cloud API to a local model (or the reverse) is a one-line model-key change — your integration work survives every vendor decision you'll make later.
+- **One streaming model for every engine.** Real-time ASR has no shared conventions: some engines rewrite their interim results, some never revise a token, some merge already-emitted segments after a second decoding pass. Standard ASR unifies all of it under one event protocol with explicit stability guarantees — designed against an in-repo survey of 30+ real engine APIs ([`docs/internal/research/`](docs/internal/research/)).
+- **Audio negotiation, batteries included.** Hand over what you have — a file path, raw bytes, a NumPy array, a URL — and the framework negotiates and converts to whatever form the engine accepts, loudly reporting anything lossy. No more sample-rate guesswork.
+- **See what a model needs before it runs.** Engines declare their inference artifacts — weights, tokenizers, compiled graphs, installed operating-system assets — so your app (or `standard-asr status`) can ask what is on disk without loading anything, and `standard-asr pull` acquires what is missing without faking a transcription to warm a cache. A gated license, an absent credential, or a disabled download policy comes back as a structured, machine-readable verdict you can act on — a blocker naming why acquisition cannot run, plus the operator actions where actions exist — not a stack trace on the first request.
+- **No dependency hell, no licensing traps.** Each engine is its own pip-installable plugin, so restrictive licenses and heavy dependencies stay in the packages that carry them. Hard dependency conflicts (for example, numpy 1.x vs 2.x) cannot share one environment — `standard-asr doctor` surfaces them instead of letting them hide. Process isolation is the escape hatch for plugin-vs-plugin conflicts; a plugin incompatible with the core's own numpy floor cannot run anywhere, and doctor reports that as its own conflict.
+- **The choice goes to the user.** End users — especially for under-served languages and domains — install the engine that serves them best and use it immediately, without waiting for the app author to add support.
 
 ---
 
@@ -151,8 +85,7 @@ print(result.text)
 
 The **same app code** runs against any other compliant engine — only the model key changes.
 
-Results always have the **same shape** — no format flags that turn the return value into a
-string, no fields that appear and disappear. Render subtitles from any engine's result:
+Results always have the **same shape** — no format flags that turn the return value into a string, no fields that appear and disappear. Render subtitles from any engine's result:
 
 ```python
 from standard_asr import to_srt, to_vtt
@@ -175,14 +108,11 @@ registry.config_schema("faster-whisper/large-v3")  # the engine's init-config JS
 # instantiating (secrets are marked)
 ```
 
-Unsupported parameters never degrade silently: depending on policy, they either raise
-(`strict`) or are dropped with a structured diagnostic telling you exactly what was
-ignored and why (`best_effort`).
+Unsupported parameters never degrade silently: depending on policy, they either raise (`strict`) or are dropped with a structured diagnostic telling you exactly what was ignored and why (`best_effort`).
 
 ### Check and acquire inference artifacts
 
-Weights, tokenizers, compiled graphs, installed operating-system assets — whatever a model
-needs to exist before it can run. Ask first, then acquire on purpose:
+Weights, tokenizers, compiled graphs, installed operating-system assets — whatever a model needs to exist before it can run. Ask first, then acquire on purpose:
 
 ```python
 from standard_asr import ARTIFACTS_READY, ArtifactAcquisitionError
@@ -206,14 +136,11 @@ for requirement in report.requirements:
         print(action.kind, action.message, action.url)
 ```
 
-An engine that carries no artifacts (a cloud API, for example) reports `not_applicable`
-rather than pretending. `standard-asr status` and `standard-asr pull` are the same
-operations on the command line.
+An engine that carries no artifacts (a cloud API, for example) reports `not_applicable` rather than pretending. `standard-asr status` and `standard-asr pull` are the same operations on the command line.
 
 ### Stream
 
-**Full-duplex streaming** — feed audio while receiving live results. Requires a
-streaming-capable engine:
+**Full-duplex streaming** — feed audio while receiving live results. Requires a streaming-capable engine:
 
 ```python
 # Ask the engine for the PCM wire format it wants (sample rate + encoding), and
@@ -242,17 +169,9 @@ async with engine.start_transcription(audio_format=audio_format) as session:
 print(session.result().text)  # collapse the session into a TranscriptionResult
 ```
 
-Those branches (packaged as `standard_asr.runtime.streaming.reduce_event`) are the
-**complete core reduce** — handle them and your app is safe on
-every compliant engine, including ones that rewrite interim text or merge segments after the
-fact. Engines that never do these things simply never emit those events. Voice agents can go
-further and act on `event.stable_until`, the engine's guarantee of how much of the text is
-frozen against further recognition (a terminal `closed` restatement may still reformat it —
-see the streaming guide's "Finality" section).
+Those branches (packaged as `standard_asr.runtime.streaming.reduce_event`) are the **complete core reduce** — handle them and your app is safe on every compliant engine, including ones that rewrite interim text or merge segments after the fact. Engines that never do these things simply never emit those events. Voice agents can go further and act on `event.stable_until`, the engine's guarantee of how much of the text is frozen against further recognition (a terminal `closed` restatement may still reformat it — see the streaming guide's "Finality" section).
 
-> Not async? `SyncSession` wraps any streaming session behind a blocking iterator.
-> See [`docs/content/specification/`](docs/content/specification/) for the full streaming contract — segment lifecycle,
-> stability guarantees, reconnect semantics, and backpressure rules.
+> Not async? `SyncSession` wraps any streaming session behind a blocking iterator. See [`docs/content/specification/`](docs/content/specification/) for the full streaming contract — segment lifecycle, stability guarantees, reconnect semantics, and backpressure rules.
 
 ---
 
@@ -308,9 +227,7 @@ uv add "standard-asr[audio,server]"
 
 ### Optional extras
 
-The **core package is intentionally light** — only `numpy` and `pydantic`. Everything heavy
-is an **opt-in extra**, so you install exactly the capabilities you need and nothing else.
-This is how Standard ASR stays a clean protocol layer instead of a dependency monster.
+The **core package is intentionally light** — only `numpy` and `pydantic`. Everything heavy is an **opt-in extra**, so you install exactly the capabilities you need and nothing else. This is how Standard ASR stays a clean protocol layer instead of a dependency monster.
 
 | Extra      | What it adds                                                                                                                                                                                                       | Pulls in                                                                                          |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
@@ -320,13 +237,7 @@ This is how Standard ASR stays a clean protocol layer instead of a dependency mo
 | **docs**   | Generates the API reference data for the documentation site (`docs/site`, a Node application). _(For maintainers/contributors.)_                                                                                   | `griffelib`                                                                                 |
 
 > [!NOTE]
-> **Why the `audio` extra matters.** Audio wrangling — formats, sample rates, channels — is one
-> of the most painful parts of using ASR. Standard ASR absorbs that pain: pass what you have,
-> and the framework gets it into the shape the engine needs. The canonical array format is
-> `float32`, mono, **16 kHz by default** (a safe, universal target for ASR); when an engine
-> wants a different rate or only accepts files, the conversion happens automatically — and
-> never silently: every lossy conversion is surfaced as a structured diagnostic. The heavy
-> decoders stay optional — basic WAV works with zero extra installs.
+> **Why the `audio` extra matters.** Audio wrangling — formats, sample rates, channels — is one of the most painful parts of using ASR. Standard ASR absorbs that pain: pass what you have, and the framework gets it into the shape the engine needs. The canonical array format is `float32`, mono, **16 kHz by default** (a safe, universal target for ASR); when an engine wants a different rate or only accepts files, the conversion happens automatically — and never silently: every lossy conversion is surfaced as a structured diagnostic. The heavy decoders stay optional — basic WAV works with zero extra installs.
 
 ### FastAPI server
 
@@ -335,24 +246,15 @@ This is how Standard ASR stays a clean protocol layer instead of a dependency mo
 standard-asr serve --host 0.0.0.0 --port 8000
 ```
 
-See [`docs/content/specification/server-api.md`](docs/content/specification/server-api.md) for the full HTTP/WebSocket API contract,
-and [`docs/content/specification/`](docs/content/specification/) for the protocol specification. The WebSocket endpoint covers
-the incremental-streaming path (declare an `audio_format`, push raw PCM frames, receive live
-events); whole-input engines use the batch HTTP endpoints.
+See [`docs/content/specification/server-api.md`](docs/content/specification/server-api.md) for the full HTTP/WebSocket API contract, and [`docs/content/specification/`](docs/content/specification/) for the protocol specification. The WebSocket endpoint covers the incremental-streaming path (declare an `audio_format`, push raw PCM frames, receive live events); whole-input engines use the batch HTTP endpoints.
 
 ---
 
 ## Building an engine plugin
 
-An engine plugin is an ordinary pip-installable package that subclasses `EngineBase`,
-declares its **properties** (what audio it accepts), **capabilities** (what features it
-supports), and **config** (its typed, UI-discoverable settings model), and registers a
-`standard_asr.models` entry point. The standard layer handles audio negotiation, parameter
-gating, language resolution, and the sync/async bridge — you implement the model call, and
-the CLI, the HTTP/WebSocket server, and the compliance checks come for free.
+An engine plugin is an ordinary pip-installable package that subclasses `EngineBase`, declares its **properties** (what audio it accepts), **capabilities** (what features it supports), and **config** (its typed, UI-discoverable settings model), and registers a `standard_asr.models` entry point. The standard layer handles audio negotiation, parameter gating, language resolution, and the sync/async bridge — you implement the model call, and the CLI, the HTTP/WebSocket server, and the compliance checks come for free.
 
-See [`docs/content/engine-authors/`](docs/content/engine-authors/) for the plugin authoring guide, then check
-your implementation with the full suite:
+See [`docs/content/engine-authors/`](docs/content/engine-authors/) for the plugin authoring guide, then check your implementation with the full suite:
 
 ```bash
 standard-asr compliance run
@@ -364,28 +266,17 @@ standard-asr compliance run
 
 > **Why support different engines? Why not just use Whisper?**
 
-- Different languages have different state-of-the-art models; Whisper is strong in some, weak
-  in others.
+- Different languages have different state-of-the-art models; Whisper is strong in some, weak in others.
 - GPU/hardware acceleration support varies across platforms.
-- The field moves fast — today's state-of-the-art model gets replaced. Write once against Standard ASR, and
-  countless engines (present and future) are supported automatically.
+- The field moves fast — today's state-of-the-art model gets replaced. Write once against Standard ASR, and countless engines (present and future) are supported automatically.
 
 ---
 
 ## Project status & design
 
-**Alpha.** The core protocol — engine interface, audio negotiation, capability discovery,
-streaming events, plugin system — is shipped and exercised by four engine plugins; the
-compliance suite checks the interface contract (runtime inference verification is
-tracked separately). The toolchain (CLI, FastAPI server, compliance suite) works. What's
-missing: features like hardware metadata and model cards are not yet part of the protocol.
-A richer CLI and a plugin starter template are also not done yet.
-See the open issues for what's planned.
+**Alpha.** The core protocol — engine interface, audio negotiation, capability discovery, streaming events, plugin system — is shipped and exercised by four engine plugins; the compliance suite checks the interface contract (runtime inference verification is tracked separately). The toolchain (CLI, FastAPI server, compliance suite) works. What's missing: features like hardware metadata and model cards are not yet part of the protocol. A richer CLI and a plugin starter template are also not done yet. See the open issues for what's planned.
 
-Built with a normative, RFC-style specification (`docs/content/specification/`),
-Pydantic v2 models, `pyright --strict`, 100% test coverage, and CI across numpy 1.x/2.x
-and Python 3.10–3.14. Design decisions are grounded in an in-repo survey of 30+ real ASR
-engines and APIs (`docs/internal/research/`). The authoritative material lives in-repo:
+Built with a normative, RFC-style specification (`docs/content/specification/`), Pydantic v2 models, `pyright --strict`, 100% test coverage, and CI across numpy 1.x/2.x and Python 3.10–3.14. Design decisions are grounded in an in-repo survey of 30+ real ASR engines and APIs (`docs/internal/research/`). The authoritative material lives in-repo:
 
 - `docs/content/specification/` — the protocol specification.
 - `docs/internal/research/` — the engine surveys the design is tested against.

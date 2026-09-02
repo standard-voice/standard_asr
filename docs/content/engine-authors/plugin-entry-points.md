@@ -33,27 +33,11 @@ Multiple models per engine are encouraged. Give each preset its own entry point.
 
 Leaving `model_name` empty (key written as `engine_id/`) denotes the engine’s canonical default. The discovery API accepts empty names and logs a warning so authors remember to document what the default does. An explicit default is allowed but discouraged; if you publish one, document what it selects.
 
-A plugin **key** MUST contain the `/`: only `<engine_id>/<model_name>` and the
-explicit default `<engine_id>/` are valid declaration forms. A slash-less key
-(for example, `faster-whisper` instead of `faster-whisper/`) is **not** a third valid
-form — it is almost always a typo that dropped `/<model_name>`. Discovery
-rejects it. The library call `discover_models(strict=True)` **raises**
-`EntrypointValidationError`. `standard-asr compliance entrypoints
---strict-discovery` **reports** it as an `entrypoint_invalid` compliance error
-and exits non-zero (a compliance check always returns a report, never raises).
-Default discovery logs a warning naming the fix and skips the key. The trailing
-slash is required only on the *declaration*
-side; the *lookup* helpers below accept the bare engine id as a convenience
-alias for its default model.
+A plugin **key** MUST contain the `/`: only `<engine_id>/<model_name>` and the explicit default `<engine_id>/` are valid declaration forms. A slash-less key (for example, `faster-whisper` instead of `faster-whisper/`) is **not** a third valid form — it is almost always a typo that dropped `/<model_name>`. Discovery rejects it. The library call `discover_models(strict=True)` **raises** `EntrypointValidationError`. `standard-asr compliance entrypoints --strict-discovery` **reports** it as an `entrypoint_invalid` compliance error and exits non-zero (a compliance check always returns a report, never raises). Default discovery logs a warning naming the fix and skips the key. The trailing slash is required only on the *declaration* side; the *lookup* helpers below accept the bare engine id as a convenience alias for its default model.
 
-If you publish an explicit default (`engine_id/`), the factory MUST return an
-instance whose `properties.model_id` is exactly `engine_id/`. Compliance checks
-this invariant (`properties_key_mismatch`).
+If you publish an explicit default (`engine_id/`), the factory MUST return an instance whose `properties.model_id` is exactly `engine_id/`. Compliance checks this invariant (`properties_key_mismatch`).
 
-An `engine_id` MUST be unique across installed distributions: two
-distributions that provide the same id (even through PEP 503 folding, such as
-`my_engine` and `my-engine`) are an identity collision, reported as the
-compliance error `engine_id_collision` even on a default run.
+An `engine_id` MUST be unique across installed distributions: two distributions that provide the same id (even through PEP 503 folding, such as `my_engine` and `my-engine`) are an identity collision, reported as the compliance error `engine_id_collision` even on a default run.
 
 ## Declaring entry points
 
@@ -64,10 +48,7 @@ compliance error `engine_id_collision` even on a default run.
 "faster-whisper/turbo" = "std_faster_whisper.entrypoint:create_turbo"
 ```
 
-Your callable can be a function or a class constructor. Each preset selects its
-model by which class it instantiates — never by passing a size name through an
-init `model` field (spec IC.7). The model identity lives on the engine class so
-discovery can read it without instantiating:
+Your callable can be a function or a class constructor. Each preset selects its model by which class it instantiates — never by passing a size name through an init `model` field (spec IC.7). The model identity lives on the engine class so discovery can read it without instantiating:
 
 ```python
 # std_faster_whisper/entrypoint.py
@@ -94,24 +75,7 @@ def create_turbo(**kwargs: Any) -> TurboASR:
     return TurboASR(**kwargs)
 ```
 
-> **Annotate the factory with your concrete engine class, not the `StandardASR`
-> protocol.** Discovery reads class-level metadata (`declared_capabilities`,
-> `declared_metadata`, `properties`, `provider_params_type`) *without instantiating or authenticating*
-> the engine, by resolving the factory's **return annotation**
-> (`ModelRegistry.engine_class`). A concrete class (`-> FasterWhisperASR`) exposes
-> those `ClassVar`s; the `StandardASR` protocol does not, so annotating the
-> factory `-> StandardASR` breaks instantiation-free discovery. This applies to
-> a **factory function**; an entry point that is the engine class itself needs
-> no annotation, because the class is returned directly. Compliance checks the
-> outcome either way, reporting `class_metadata_unreadable` when neither form
-> resolves. The factory must also return an instance of **exactly** its
-> annotated class: discovery, `show`, and the server's per-model endpoints
-> describe the annotated class, while the returned class is what actually
-> runs, so
-> `ModelRegistry.create()` refuses any other returned class
-> (`EngineContractError`) and compliance reports it as
-> `factory_return_class_mismatch`. A factory that picks between engine
-> subclasses needs one entry point, with one annotated class, per preset.
+> **Annotate the factory with your concrete engine class, not the `StandardASR` protocol.** Discovery reads class-level metadata (`declared_capabilities`, `declared_metadata`, `properties`, `provider_params_type`) *without instantiating or authenticating* the engine, by resolving the factory's **return annotation** (`ModelRegistry.engine_class`). A concrete class (`-> FasterWhisperASR`) exposes those `ClassVar`s; the `StandardASR` protocol does not, so annotating the factory `-> StandardASR` breaks instantiation-free discovery. This applies to a **factory function**; an entry point that is the engine class itself needs no annotation, because the class is returned directly. Compliance checks the outcome either way, reporting `class_metadata_unreadable` when neither form resolves. The factory must also return an instance of **exactly** its annotated class: discovery, `show`, and the server's per-model endpoints describe the annotated class, while the returned class is what actually runs, so `ModelRegistry.create()` refuses any other returned class (`EngineContractError`) and compliance reports it as `factory_return_class_mismatch`. A factory that picks between engine subclasses needs one entry point, with one annotated class, per preset.
 
 Discovery validates each declaration:
 
@@ -138,36 +102,20 @@ Helper APIs:
 
 ## Required metadata
 
-Your factory MUST return a compliant engine (typically an `EngineBase`
-subclass) that exposes:
+Your factory MUST return a compliant engine (typically an `EngineBase` subclass) that exposes:
 
 - `properties`: a `BaseProperties` instance (class attribute / `ClassVar`).
 - `declared_capabilities`: a `DeclaredCapabilities` instance (`ClassVar`).
-- `declared_metadata`: a `DeclaredEngineMetadata` instance (`ClassVar`). Its
-  required `artifacts` section must be authored by the
-  plugin class hierarchy, not inherited from the core fail-loud placeholder.
-  Additional producer sections use the
-  `x_<vendor>_<name>` namespace. A future protocol version can add standard
-  sections without the `x_` prefix, which older readers preserve.
+- `declared_metadata`: a `DeclaredEngineMetadata` instance (`ClassVar`). Its required `artifacts` section must be authored by the plugin class hierarchy, not inherited from the core fail-loud placeholder. Additional producer sections use the `x_<vendor>_<name>` namespace. A future protocol version can add standard sections without the `x_` prefix, which older readers preserve.
 - `config`: a `BaseConfig` instance (captured at initialization).
-- `transcribe(audio, params)` returning `TranscriptionResult`, where `params` is
-  an optional `RuntimeParams`. Subclassing `EngineBase` gives you this
-  `transcribe` template for free; you implement only `_transcribe(prepared,
-  params)`.
-- Engine-specific parameters live in a typed `ProviderParams` subclass declared as
-  `provider_params_type` — never as extra top-level `RuntimeParams` fields
-  (`RuntimeParams` is closed). See
-  [`adapt-an-asr-system.md`](./adapt-an-asr-system.md) for the full contract.
+- `transcribe(audio, params)` returning `TranscriptionResult`, where `params` is an optional `RuntimeParams`. Subclassing `EngineBase` gives you this `transcribe` template for free; you implement only `_transcribe(prepared, params)`.
+- Engine-specific parameters live in a typed `ProviderParams` subclass declared as `provider_params_type` — never as extra top-level `RuntimeParams` fields (`RuntimeParams` is closed). See [`adapt-an-asr-system.md`](./adapt-an-asr-system.md) for the full contract.
 
 These are validated by `standard-asr compliance entrypoints`.
 
 ## CLI support
 
-Install your plugin in the same environment and use the CLI. The
-transcript below was captured live against
-[std-faster-whisper](https://github.com/standard-voice/std-faster-whisper);
-nested JSON blocks are abridged with `...` — run the commands yourself for
-the full output (exact values depend on the plugin version):
+Install your plugin in the same environment and use the CLI. The transcript below was captured live against [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper); nested JSON blocks are abridged with `...` — run the commands yourself for the full output (exact values depend on the plugin version):
 
 ```bash
 $ standard-asr list
@@ -267,9 +215,7 @@ $ standard-asr compliance run faster-whisper/large-v3
 
 ### Local testing with a plugin
 
-Install a plugin (for example,
-[std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)) and
-run the checks end‑to‑end:
+Install a plugin (for example, [std-faster-whisper](https://github.com/standard-voice/std-faster-whisper)) and run the checks end‑to‑end:
 
 ```bash
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
@@ -279,11 +225,8 @@ standard-asr compliance entrypoints
 
 Flags of interest:
 
-- `--strict-discovery` reports malformed entry points as `entrypoint_invalid`
-  errors (non-zero exit; the report still covers the valid engines).
-- `--no-instantiate` skips smoke-instantiation. A missing credential already
-  downgrades to a graceful skip (`factory_requires_config`); use this flag to
-  avoid instantiation cost or side effects entirely.
+- `--strict-discovery` reports malformed entry points as `entrypoint_invalid` errors (non-zero exit; the report still covers the valid engines).
+- `--no-instantiate` skips smoke-instantiation. A missing credential already downgrades to a graceful skip (`factory_requires_config`); use this flag to avoid instantiation cost or side effects entirely.
 - `--on-conflict replace` helps debug when multiple packages expose the same model id.
 
 ## Compliance testing
@@ -294,8 +237,7 @@ The `standard_asr.compliance.check_entrypoints()` helper powers the compliance s
 2. Factories load successfully.
 3. Factories that can be invoked without arguments produce an object exposing `transcribe`.
 4. `properties.model_id` matches the entry point key.
-5. The engine authors valid declared metadata and the required
-   artifact methods without executing status or acquisition.
+5. The engine authors valid declared metadata and the required artifact methods without executing status or acquisition.
 
 Plugin authors can integrate the check into their CI:
 
@@ -313,9 +255,7 @@ The Standard ASR compliance suite imports this helper to keep the ecosystem pred
 
 ### The full compliance surface
 
-`check_entrypoints()` covers entry-point metadata and class-level declarations.
-The standard defines **seven** compliance dimensions; the remaining checks are
-also importable from `standard_asr.compliance`:
+`check_entrypoints()` covers entry-point metadata and class-level declarations. The standard defines **seven** compliance dimensions; the remaining checks are also importable from `standard_asr.compliance`:
 
 | Check | What it asserts | How to run |
 | --- | --- | --- |
@@ -327,18 +267,7 @@ also importable from `standard_asr.compliance`:
 | `check_event_sequence(events)` | A recorded streaming event stream obeys the segment/event-order contract | library API only — drive it from your own tests with recorded events |
 | `check_transcription_result(result, capabilities=...)` | A recorded batch result carries no speaker labels beyond the declared `batch.diarization` capability (code `result_exceeds_diarization`) | library API only — drive it from your own tests with a recorded result |
 
-`standard-asr compliance run` orchestrates every check except
-`check_event_sequence` and `check_transcription_result` for you. It runs the
-entrypoint instance checks (including the wire-format round-trip) and
-`check_provider_params_swap_safety` for each zero-arg engine, then
-`check_streaming_param_gating` for each streaming engine. These probes are
-designed to fail at the standard gate, but a noncompliant engine can enter its
-real pipeline, load artifacts, connect to a service, or incur a charge. Use
-staging credentials or `--no-instantiate` when that risk matters. The command
-also runs `check_sync_bridge` when you opt in via `--include-bridge` (it opens a
-session). `check_event_sequence` needs an author-recorded event stream, and
-`check_transcription_result` an author-recorded batch result. The CLI cannot
-synthesize these, so wire them into your test suite:
+`standard-asr compliance run` orchestrates every check except `check_event_sequence` and `check_transcription_result` for you. It runs the entrypoint instance checks (including the wire-format round-trip) and `check_provider_params_swap_safety` for each zero-arg engine, then `check_streaming_param_gating` for each streaming engine. These probes are designed to fail at the standard gate, but a noncompliant engine can enter its real pipeline, load artifacts, connect to a service, or incur a charge. Use staging credentials or `--no-instantiate` when that risk matters. The command also runs `check_sync_bridge` when you opt in via `--include-bridge` (it opens a session). `check_event_sequence` needs an author-recorded event stream, and `check_transcription_result` an author-recorded batch result. The CLI cannot synthesize these, so wire them into your test suite:
 
 ```python
 import pytest
@@ -399,12 +328,8 @@ def test_batch_result_within_capabilities() -> None:
 
 - [ ] Choose a PEP 503–friendly engine id (ideally your package name).
 - [ ] List every shipped preset as `<engine_id>/<model_name>`.
-- [ ] Skip the explicit default (`engine_id/`) unless you need one; if you
-      publish it, document what it selects.
+- [ ] Skip the explicit default (`engine_id/`) unless you need one; if you publish it, document what it selects.
 - [ ] Ensure factories accept keyword arguments for configurable options.
-- [ ] Run `standard-asr compliance run` before publishing (and cover the
-      recorded-data checks in your tests: `check_event_sequence` for a
-      streaming engine, `check_transcription_result` for a batch engine — see
-      *The full compliance surface* above).
+- [ ] Run `standard-asr compliance run` before publishing (and cover the recorded-data checks in your tests: `check_event_sequence` for a streaming engine, `check_transcription_result` for a batch engine — see *The full compliance surface* above).
 
 Following this guide gives downstream users a consistent discovery experience and keeps the Standard ASR catalog healthy.
