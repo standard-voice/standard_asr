@@ -106,6 +106,8 @@ A change that alters the conveyed meaning is allowed only when both gates below 
 
 Where the original is ambiguous, find the true intended meaning first, then write it. Never guess. Never encode a wrong meaning to gain a shorter sentence. Many names and statements are intentional and correct — prefer to clarify them rather than change them. When no authority settles the point, leave the text alone and open an issue: an unresolved question is cheaper than a confident error.
 
+This gate compares prose with something that already exists: the code, the protocol, or a test. Changing the behavior itself is a design decision, not a fact-check, and so is adding or changing a rule about how to work in this repository, in this file or any other. No older source can be cited for a decision, so the commit message states the decision and its reason, and the changed spec, code, or rule is the authority for every text that describes it.
+
 ## Terminology
 
 Every domain term follows [`TERMINOLOGY.md`](TERMINOLOGY.md): one canonical term per concept, a short definition, the approved usage, and the forbidden synonyms. The controlled code vocabularies (the `DIAG_*` codes, the compliance codes, the enums, and the `Literal` sets) have a single source of truth in the code; `TERMINOLOGY.md` points to it and does not duplicate it (its one deliberate excerpt, the two `level` scales, is quoted for contrast and moves with the code).
@@ -128,7 +130,7 @@ Three layers, weakest claim first:
 - No emoji anywhere; no non-ASCII symbol in a runtime string.
 - User-facing sentences are short and active.
 - Instructions and hints are imperative, and name an action the reader can take.
-- Every meaning change states its defect and its authority in the commit message.
+- Every change to what a text says about the code or the protocol states its defect and its authority in the commit message; a design decision states its reason.
 - Every claim about the code was checked against the code, not remembered.
 - Code spans, roles, and identifiers are unchanged.
 - `uv run ruff check` passes (pydocstyle included).
