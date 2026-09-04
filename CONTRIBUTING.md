@@ -109,18 +109,18 @@ Standard ASR is infrastructure others build on, so we manage dependencies around
 
 ### CI channels
 
-Four channels keep both contracts honest. Only the first gates a PR:
+Four channels keep both contracts honest. The first two gate a PR:
 
 | Channel | Where | Resolution | Gates merge? | Catches |
 |---------|-------|-----------|--------------|---------|
 | **PR CI** | `ci.yml` | committed `uv.lock` (`--locked`) | **Yes** (`checks-complete`) | regressions in the exact, reproducible env |
-| **Lower bounds** | `ci.yml` (`lower-bounds` job) | `--resolution lowest-direct`, py3.10 | **Yes** (part of `checks-complete`) | a declared floor that is actually too low |
+| **Lower bounds** | `ci.yml` (`lower-bounds` job) | `--resolution lowest-direct`, py3.10 | **Yes** (part of `checks-complete`) | a floor that is too low, or a new transitive release that fails with the floors |
 | **Dependabot** | `dependabot.yml` | newest in-range → new `uv.lock` PRs | via PR CI | staying current; security fixes |
 | **Canary** | `canary.yml` (daily) | `uv lock --upgrade` (+ `--prerelease allow`) | No (opens an issue) | upstream breakage before/just-after it ships |
 
 ### When a dependency change breaks CI
 
-- **Lower-bounds lane red:** a declared floor is too low for the code as written. Either lower the code's requirement, or raise the bound in `[project.dependencies]` to the version that actually works (and `uv lock`).
+- **Lower-bounds lane red:** the lane installs each direct dependency at its floor and every transitive dependency at its newest, so it can go red with no change on our side. Read the resolved versions in the job log first. A declared floor that is too low for the code as written: either lower the code's requirement, or raise the bound in `[project.dependencies]` to the version that actually works (and `uv lock`). A transitive dependency that moved: handle it like a canary red. A new third-party warning that warnings-as-errors turns into a failure gets a targeted ignore in `pyproject.toml`, with its reason and its removal condition beside it.
 - **Canary red:** a newer (or pre-release) version broke us. Inspect the run's `lock-drift-*` artifact to see what moved, then either adapt our code (best), raise a lower bound if the old version is genuinely unsupportable, or — only for a real, tracked incompatibility — add a capped constraint with an entry in `docs/compatibility-advisories.md`. The canary's tracking issue is the place to record the decision.
 - **Dependabot PR red:** treat it like any failing PR; the change is gated by the same PR CI as everything else.
 
