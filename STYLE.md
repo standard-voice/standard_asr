@@ -97,16 +97,16 @@ Use American spelling in prose: `normalize`, `behavior`, `initialize`, `serializ
 
 This is the core rule for correctness. It applies to a rename **and** to a rewritten message.
 
+A meaning change is one of two things, and each is justified in its own way. A change to what a text says about something that already exists — the code, the protocol, a test — is a fact-check, and the two gates below apply to it. Changing the behavior itself is a design decision, and so is adding or changing a rule about how to work in this repository, in this file or any other. No older source can be cited for a decision, so its commit message states the decision and its reason, and the changed spec, code, or rule becomes the authority for every text that describes it. The rest of this section is about the fact-check.
+
 A rewrite is allowed to change what a text means, and it should where the original is wrong, ambiguous, or misleading. Removing wrong or confusing copy is a goal of this standard, not a risk to avoid. (The modal verbs in this section are ordinary English, not RFC-2119 keywords; the delta above reserves the uppercase forms for that.)
 
-A change that alters the conveyed meaning is allowed only when both gates below hold, and **you state both in the commit message**. A gate you cannot write down is a gate you have not passed.
+A fact-check that alters the conveyed meaning is allowed only when both gates below hold, and **you state both in the commit message**. A gate you cannot write down is a gate you have not passed.
 
 1. **Defect.** Name what is wrong with the original: it states a fact the code contradicts, it reads two ways, or it misleads about behavior. Quote the original. If you cannot name a defect, do not change the meaning — a pure style pass keeps the meaning and needs no gate.
 2. **Authority.** Cite the source that establishes the new text, by path and line. Use whichever applies, in this order: the normative spec documents where they speak — `docs/content/specification/protocol.md`, and the English `docs/content/specification/` pages for the surfaces they contract (the server wire API, the CLI, the download policy); otherwise the code path, a test that pins the behavior, or a design note. Much of the toolchain — an exit code, an `argparse` help string, a CLI marker — has no spec text; there the code and its tests are the authority.
 
 Where the original is ambiguous, find the true intended meaning first, then write it. Never guess. Never encode a wrong meaning to gain a shorter sentence. Many names and statements are intentional and correct — prefer to clarify them rather than change them. When no authority settles the point, leave the text alone and open an issue: an unresolved question is cheaper than a confident error.
-
-This gate compares prose with something that already exists: the code, the protocol, or a test. Changing the behavior itself is a design decision, not a fact-check, and so is adding or changing a rule about how to work in this repository, in this file or any other. No older source can be cited for a decision, so the commit message states the decision and its reason, and the changed spec, code, or rule is the authority for every text that describes it.
 
 ## Terminology
 
