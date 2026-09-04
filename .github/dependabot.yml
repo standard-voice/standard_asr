@@ -38,9 +38,10 @@ updates:
   # permitted the new version), which silently narrows the contract for any
   # runtime dep it touches.
   #
-  # Floors are human-owned and CI-verified instead: the `lower-bounds` lane in
-  # ci.yml re-resolves at each declared floor (`--resolution lowest-direct`), so a
-  # floor moves only when a maintainer raises it deliberately and CI re-proves it.
+  # Floors are human-owned and CI-checked instead: the `lower-bounds` lane in
+  # ci.yml re-resolves the direct dependencies to their lowest jointly compatible
+  # versions (`--resolution lowest-direct`), so a floor moves only when a
+  # maintainer raises it deliberately and CI re-checks it.
   #
   # The sanctioned exception is Dependabot *security* updates (a separate channel,
   # enabled in repo settings): they still run. For an uncapped lower-bound dep the
