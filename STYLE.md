@@ -124,12 +124,21 @@ Three layers, weakest claim first:
 
 ## Checklist before you commit prose
 
+This list names every rule in this file, one line each, so that it is the whole pre-read; the section a line comes from is the ruling text when a line is unclear or disputed.
+
+- Text inside a code span, a role, a fenced block, or a doctest is unchanged ("The two tiers").
+- A `#` comment keeps its reason, even in a long sentence; a directive comment is not prose ("The two tiers").
 - Each concept uses its canonical term from `TERMINOLOGY.md`.
 - Every term is one the reader knows, one `TERMINOLOGY.md` defines, or one the sentence explains.
 - Spelling is American; no British forms in prose.
 - No emoji anywhere; no non-ASCII symbol in a runtime string.
-- User-facing sentences are short and active.
+- User-facing sentences are short and active; prose uses articles, and only an `argparse` help string or a `Field(description=...)` may be telegraphic.
+- A new noun cluster has at most three words, hyphenated to read as one unit.
 - Instructions and hints are imperative, and name an action the reader can take.
+- A warning or caution states the hazard, then the action.
+- MUST and SHOULD stay uppercase only where the sentence states a rule to the party who can break the spec ("Deltas", RFC-2119 keywords by audience).
+- A Markdown paragraph is one source line; a paragraph you are not editing keeps its line.
+- House style: spaced em dashes; punctuation outside a quoted literal; "is not" over "isn't" in reference prose; "we" only in the project-voice files; a capital after a run-in label's colon ("Divergences").
 - Every change an existing authority settles states its defect and that authority in the commit message; a design decision states its reason and changes the authority itself.
 - Every claim about the code was checked against the code, not remembered.
 - Code spans, roles, and identifiers are unchanged.
