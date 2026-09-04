@@ -5,7 +5,7 @@ Standard ASR is a **Python library that defines and enforces a universal interfa
 **What this repo contains:**
 - A **runtime library** (`standard-asr`). `contract` holds the protocol data model every party shares. `runtime` runs each request against the chosen engine. `audio` turns any user input into engine-ready audio. `plugins` finds installed engines through entry points. Each package docstring says what it holds. `README.md` shows what the library does today.
 - A **toolchain**, in the `toolchain` package and `compliance.py`: a CLI (its `doctor` subcommand diagnoses the local environment), a FastAPI server that exposes any engine over HTTP and WebSocket, and a compliance test suite.
-- **No ASR models.** Each engine is a separate pip-installable plugin package (for example, `std-faster-whisper`, `std-openai`) that implements the standard interface. Standard ASR discovers installed plugins automatically.
+- **No ASR models.** Each engine is a separate pip-installable plugin package (for example, `std-faster-whisper`, `std-mlx-audio`) that implements the standard interface. Standard ASR discovers installed plugins automatically.
 
 **What this repo does not contain:** speech recognition code, model weights, or training. We build the bridge, not the endpoints.
 
