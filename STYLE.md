@@ -97,7 +97,7 @@ Use American spelling in prose: `normalize`, `behavior`, `initialize`, `serializ
 
 This is the core rule for correctness. It applies to a rename **and** to a rewritten message.
 
-A meaning change is one of two things, and each is justified in its own way. A change to what a text says about something that already exists — the code, the protocol, a test — is a fact-check, and the two gates below apply to it. Changing the behavior itself is a design decision, and so is adding or changing a rule about how to work in this repository, in this file or any other. No older source can be cited for a decision, so its commit message states the decision and its reason, and the changed spec, code, or rule becomes the authority for every text that describes it. The rest of this section is about the fact-check.
+A meaning change is one of two things, and what separates them is whether an authority already settles the point, not whether the edit touches a text or the code. Where an authority exists — the protocol, the code, a test — the change is a fact-check, and the two gates below apply to it: a text that describes the behavior wrongly is corrected to match, and so is a behavior that violates the protocol, with the same defect and authority in the commit message. Where no authority settles the point, the change is a design decision: a new behavior, a deliberate change to a settled one, or a rule about how to work in this repository, in this file or any other. A decision has no older source to cite, so its commit message states the decision and its reason, and it changes the authority itself — the spec, the code, or the rule — so that every text describing it follows. A behavior that contradicts the protocol is a defect until the protocol is changed with it; landing the code does not make it the authority. The rest of this section is about the fact-check.
 
 A rewrite is allowed to change what a text means, and it should where the original is wrong, ambiguous, or misleading. Removing wrong or confusing copy is a goal of this standard, not a risk to avoid. (The modal verbs in this section are ordinary English, not RFC-2119 keywords; the delta above reserves the uppercase forms for that.)
 
@@ -130,7 +130,7 @@ Three layers, weakest claim first:
 - No emoji anywhere; no non-ASCII symbol in a runtime string.
 - User-facing sentences are short and active.
 - Instructions and hints are imperative, and name an action the reader can take.
-- Every change to what a text says about the code or the protocol states its defect and its authority in the commit message; a design decision states its reason.
+- Every change an existing authority settles states its defect and that authority in the commit message; a design decision states its reason and changes the authority itself.
 - Every claim about the code was checked against the code, not remembered.
 - Code spans, roles, and identifiers are unchanged.
 - `uv run ruff check` passes (pydocstyle included).
