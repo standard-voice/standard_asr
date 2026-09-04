@@ -21,7 +21,7 @@ This standard governs English **prose**:
 
 - docstrings (module, class, function, attribute), in `src/` and in `tests/`;
 - user-facing runtime strings (see the tier test below);
-- English Markdown under `docs/`. The tree says which is which: `docs/content/` is the published documentation and is fully governed; `docs/internal/` holds Chinese documents, historical pages, and working notes, and `docs/site/` is the documentation application's own code tree — both are exempt, like `work/`;
+- English Markdown under `docs/`. The tree says which is which: `docs/content/` is the published documentation and is fully governed; `docs/internal/` holds Chinese documents, historical pages, and working notes, and `docs/site/` is the documentation application's own code tree — both are exempt, like `work/`, except the English the application renders on its own pages, which the front-door paragraph below covers;
 - English Markdown at the repository root: `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`. Working notes under `work/` are exempt;
 - internal `#` comments (clarity tier only — see below), in any language the repository uses. The Python ones are linted; the shell, workflow, and config ones are review-owned (see "Enforcement" for why the gate cannot read them);
 - test prose: docstrings, comments, and assertion labels in `tests/`;
@@ -30,7 +30,7 @@ This standard governs English **prose**:
 
 Scope is not coverage. This standard governs every item above; the mechanical gate reaches a subset of them, and "Enforcement" states exactly which. Prose outside the gate's reach is not less governed — it is governed by review, and a reviewer is owed a precise list of what they own rather than a false sense that a green gate covered it.
 
-`README.md`, `docs/content/index.md`, and the `AGENTS.md` preamble are the project's front door. They are governed for **accuracy and terminology** like everything else, but they may use a wider register than reference prose: a longer sentence, a rhetorical structure, or an established figure of speech ("USB-C for ASR", "the cardinal sin") is acceptable there when it carries a true claim. Reference prose keeps the no-idiom rule as written.
+`README.md`, `docs/content/index.md`, the `AGENTS.md` preamble, and the home page the documentation application renders from `docs/site/app/(home)/page.tsx` are the project's front door. They are governed for **accuracy and terminology** like everything else, but they may use a wider register than reference prose: a longer sentence, a rhetorical structure, or an established figure of speech ("USB-C for ASR", "the cardinal sin") is acceptable there when it carries a true claim. Reference prose keeps the no-idiom rule as written. The home page is the one front-door surface Vale cannot read, because it is TypeScript, so review owns it: its code samples, feature copy, and page metadata make claims about the API, and a claim there is checked against the code like any other.
 
 This standard does **not** govern, and must never change:
 
