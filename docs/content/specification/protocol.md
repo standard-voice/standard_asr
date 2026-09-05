@@ -811,7 +811,7 @@ init = 实例存续期固定、属安装/部署选择（权重/路径、device�
 nested 引擎声明 submodel（按 model-family）表达多文件 bundle 的 init 配置；标准**不**标准化 bundle 形状。工件的就绪、布局与完整性判定**归引擎所有**（[§推理工件生命周期](#artifact-lifecycle)）：核心 MAY 提供路径拼接类的可选便利 helper，但它不是存在性/checksum 的权威——早先「标准 artifact 路径解析 helper（存在性、可选 checksum）」的承诺已按审批撤回（决策记录：`model-management`，docs/internal/feat_plan/，审批项 12）。多文件依赖对外呈现为**逻辑需求**：一个可用的识别器可能需要多个协调文件（如 sherpa-onnx 的 tokens/encoder/decoder/joiner），路径存在不等于就绪，引擎报告逻辑依赖而非逐文件清单。
 
 ## IC.9 lazy 纯度不变量
-`__init__` 捕获 config MUST 纯——无 FS 创建 / 路径探测 / GPU init / 网络。cache-dir、凭证仅在 `_ensure_model_loaded` 材料化，受 `allow_downloads()` 门控。download/cache 走 `DownloadConfigMixin`（`resolve_download_root()` 优先级：显式 `download_root` > `STANDARD_ASR_MODEL_DIR` > 库默认缓存——引擎声明 `has_library_default=True` 时以 **`None` 透传**给原生库，零配置情形因此并**不**使用共享缓存目录 > `resolve_cache_dir()` 共享缓存；与 download-policy.md §3 同一契约）。该纯度不变量正是实例级 `artifact_status()` 可行的前提：构造廉价且无副作用，观测才能落在配置解析之后（[§推理工件生命周期 AR.2](#artifact-lifecycle)）。
+`__init__` 捕获 config MUST 纯——无 FS 创建 / 路径探测 / GPU init / 网络。后续副作用 MUST 落在其所属路径：工件的状态观察与获取服从 AR.2 至 AR.9，进程内预热服从 `prepare()`，推理路径 MAY 惰性加载。插件 MAY 用自有的私有守卫复用加载逻辑；第一方插件惯例命名为 `_ensure_model_loaded`，它不是 core hook。`allow_downloads()` 只门控 AR.9 定义的网络获取，不阻断已在本地的工件的读取、校验、复制、解压、转换或加载。download/cache 走 `DownloadConfigMixin`（`resolve_download_root()` 优先级：显式 `download_root` > `STANDARD_ASR_MODEL_DIR` > 库默认缓存——引擎声明 `has_library_default=True` 时以 **`None` 透传**给原生库，零配置情形因此并**不**使用共享缓存目录 > `resolve_cache_dir()` 共享缓存；与 download-policy.md §3 同一契约）。该纯度不变量正是实例级 `artifact_status()` 可行的前提：构造廉价且无副作用，观测才能落在配置解析之后（[§推理工件生命周期 AR.2](#artifact-lifecycle)）。
 
 ## IC.10 `bias_resource` 归这里
 注册词表/模型句柄（Aliyun `vocabulary_id`、Tencent `HotwordId`…）= 引擎声明 init 字段（账户级资源）；如需 per-request 选择，薄 `provider_params` 旋钮（资源**身份**仍在 init）。
