@@ -220,7 +220,7 @@ jobs:
     # impractical: pydantic's floor lacks cp313 wheels). So we pin numpy to its
     # py3.13 floor against the locked rest and run the suite, keeping that floor
     # honest (ADR D4).
-    name: numpy floor (py3.13, numpy 2.1)
+    name: numpy floor (py3.13, exact floor)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -238,12 +238,43 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - name: Install locked deps, then pin numpy to the py3.13 floor (>=2.1)
+      - name: Install locked deps, then pin numpy to its declared py3.13 floor
+        # The floor comes from the installed package metadata, the same way the
+        # core-floor lane reads its floors, so this step cannot drift from
+        # pyproject.toml. `numpy==2.1.*` would let the resolver pick a later
+        # 2.1.x and never prove 2.1.0.
         run: |
           uv sync --locked --all-extras --all-groups
-          uv pip install "numpy==2.1.*"
-      - name: Show numpy version
-        run: uv run --no-sync python -c "import numpy; print('numpy', numpy.__version__)"
+          FLOOR="$(uv run --no-sync python - <<'PY'
+          from importlib.metadata import requires
+          from packaging.requirements import Requirement
+          for raw in requires("standard-asr") or []:
+              req = Requirement(raw)
+              if req.name == "numpy" and (req.marker is None or req.marker.evaluate()):
+                  print(next(s.version for s in req.specifier if s.operator == ">="))
+                  break
+          PY
+          )"
+          echo "declared numpy floor: $FLOOR"
+          uv pip install "numpy==$FLOOR"
+      - name: Assert numpy sits at its declared floor
+        run: |
+          uv run --no-sync python - <<'PY'
+          import sys
+          from importlib.metadata import requires, version
+          from packaging.requirements import Requirement
+          from packaging.version import Version
+          floor = next(
+              Version(next(s.version for s in req.specifier if s.operator == ">="))
+              for req in map(Requirement, requires("standard-asr") or [])
+              if req.name == "numpy" and (req.marker is None or req.marker.evaluate())
+          )
+          got = Version(version("numpy"))
+          print(f"numpy {got} (declared floor {floor})")
+          if got != floor:
+              print(f"::error::numpy is {got}, not the declared floor {floor}")
+              sys.exit(1)
+          PY
       - name: Run tests
         run: uv run --no-sync pytest
 
