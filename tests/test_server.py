@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import builtins
 import io
 import json
 import logging
@@ -75,10 +74,11 @@ if TYPE_CHECKING:
     import httpx2
 
 
-# Every test in this module drives the app through Starlette's TestClient, so
-# it needs the [server] extra; skip the module rather than fail collection. The
-# one test that is about a missing FastAPI runs without the extra and lives in
-# test_server_without_fastapi.py.
+# The tests in this module build the app or drive it through Starlette's
+# TestClient, so they need the [server] extra; skip the module rather than fail
+# collection. The tests that run without the extra (a missing FastAPI, the
+# uvicorn launcher, the packaging contract) live in
+# test_server_without_extras.py.
 pytest.importorskip("fastapi")
 
 
@@ -1063,61 +1063,6 @@ def test_transcribe_body_is_the_single_wire_projection_verbatim() -> None:
     )
     assert "中文轉錄測試" in cjk_body  # UTF-8 passthrough...
     assert "\\u4e2d" not in cjk_body  # ...never an ASCII escape
-
-
-def test_run_handles_missing_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_import = builtins.__import__
-
-    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "uvicorn":
-            raise ImportError("uvicorn not installed")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    with pytest.raises(ImportError):
-        server_module.run()
-
-
-def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
-    import types
-
-    uvicorn_stub = types.ModuleType("uvicorn")
-    setattr(uvicorn_stub, "called", False)
-    setattr(uvicorn_stub, "kwargs", {})
-
-    def _run(app: Any, **kwargs: Any) -> None:
-        setattr(uvicorn_stub, "called", True)
-        setattr(uvicorn_stub, "kwargs", kwargs)
-
-    uvicorn_stub.run = _run  # type: ignore[attr-defined]
-
-    monkeypatch.setitem(__import__("sys").modules, "uvicorn", uvicorn_stub)
-
-    create_app_kwargs: dict[str, Any] = {}
-
-    def _create_app(**kwargs: Any) -> str:
-        create_app_kwargs.update(kwargs)
-        return "app"
-
-    monkeypatch.setattr(server_module, "create_app", _create_app)
-
-    server_module.run(
-        host="127.0.0.1",
-        port=9999,
-        log_level="warning",
-        max_ws_frame_bytes=4096,
-    )
-
-    assert getattr(uvicorn_stub, "called") is True
-    kwargs = getattr(uvicorn_stub, "kwargs")
-    assert kwargs["host"] == "127.0.0.1"
-    assert kwargs["port"] == 9999
-    # The WS per-frame cap is wired to uvicorn's transport ws_max_size so the
-    # app-level bound and the transport bound match.
-    assert kwargs["ws_max_size"] == 4096
-    # The same cap is propagated to the app it builds.
-    assert create_app_kwargs["max_ws_frame_bytes"] == 4096
 
 
 def test_declared_metadata_endpoint_is_canonical_and_does_not_instantiate() -> None:
@@ -4431,27 +4376,6 @@ def test_bridge_stream_unexpected_send_failure_is_logged(
     # attempted the generic internal_error frame before tearing down.
     assert any("event forwarding failed" in rec.getMessage().lower() for rec in caplog.records)
     assert websocket.send_attempts == 2
-
-
-def test_server_extra_declares_a_websocket_library() -> None:
-    # Drift guard: server.md promises a WebSocket
-    # streaming endpoint, but bare uvicorn ships no WS protocol implementation.
-    # The documented `pip install standard-asr[server]` must therefore pull one
-    # in, or /v1/stream answers 404 on upgrade in every user install while the
-    # in-process TestClient suite stays green.
-    import re
-    from pathlib import Path
-
-    pyproject = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(
-        encoding="utf-8"
-    )
-    match = re.search(r"^server\s*=\s*\[(?P<deps>[^\]]*)\]", pyproject, re.MULTILINE)
-    assert match is not None, "pyproject.toml must declare the [server] extra"
-    deps = match.group("deps")
-    assert "websockets" in deps or "wsproto" in deps, (
-        "The [server] extra must include a WebSocket protocol library "
-        "(websockets or wsproto); bare uvicorn cannot serve /v1/stream."
-    )
 
 
 # --------------------------------------------------------------------------- #
