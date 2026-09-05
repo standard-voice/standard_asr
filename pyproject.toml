@@ -41,8 +41,12 @@ classifiers = [
 ]
 dependencies = [
     # Direct dependencies declare a meaningful, verified lower bound and NO
-    # speculative upper cap. Interpreter-conditional numpy floor: numpy 1.x has
-    # no cp313 wheel, so 3.13+ needs numpy 2.x.
+    # speculative upper cap. The `core-floor` CI lane installs the floors that
+    # are active on Python 3.10 and fails if any of them is not the version it
+    # resolves; the `numpy-floor` lane pins the Python 3.13 numpy floor the same
+    # way. So the promise made to a bare `pip install standard-asr` stays tested.
+    # Interpreter-conditional numpy floor: numpy 1.x has no cp313 wheel, so
+    # 3.13+ needs numpy 2.x.
     "numpy>=1.26; python_version < '3.13'",
     "numpy>=2.1; python_version >= '3.13'",
     "pydantic>=2.5",
@@ -61,9 +65,16 @@ Changelog = "https://github.com/standard-voice/standard_asr/blob/main/CHANGELOG.
 # PEP 735 dependency groups. `dev` aggregates the focused groups so a single
 # `uv sync` (dev is uv's default group) installs everything for local work + CI.
 [dependency-groups]
+# `test` holds only what the core suite needs, so the core-floor CI lane can
+# install it with no extras and reach the declared `pydantic` floor.
 test = [
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
+]
+# The server suite's own tools. Kept out of `test` because every one of them
+# pulls fastapi, whose `pydantic>=2.7.0` would raise the core pydantic floor
+# out of reach of the core-floor lane.
+test-server = [
     # The FastAPI server tests drive it via Starlette's `TestClient`, which since
     # Starlette 1.2 runs on the `httpx2` transport; httpx2>=2.0 is that transport.
     # fastapi>=0.133 mirrors the [server] extra's security floor (see the GHSA
@@ -86,6 +97,7 @@ lint = ["ruff>=0.12.11"]
 typing = ["pyright>=1.1.405"]
 dev = [
     { include-group = "test" },
+    { include-group = "test-server" },
     { include-group = "lint" },
     { include-group = "typing" },
 ]
