@@ -1330,7 +1330,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 ```python
 async for event in session:
     if event.type == "partial" and event.stable_until and event.stable_until > 0:
-        frozen_prefix = grapheme_clusters(event.text)[: event.stable_until]
+        frozen_prefix = event.text[: event.stable_until]
         maybe_start_responding_to(frozen_prefix)
 ```
 
