@@ -135,6 +135,70 @@ jobs:
       - name: Run tests
         run: uv run --no-sync pytest
 
+  core-floor:
+    # The lower-bounds lane cannot reach the core `pydantic>=2.5` floor: uv
+    # resolves one universal set for the whole project, and the [server] extra's
+    # fastapi requires pydantic>=2.7.0, so that lane always installs 2.7 (#80).
+    # This lane installs the bare `standard-asr` shape instead -- the core
+    # dependencies plus the `test` group, no extras -- which is exactly the
+    # install every application gets from `pip install standard-asr`. It uses
+    # `uv pip install` rather than `uv sync` on purpose: `uv sync` resolves the
+    # universal lock first and only then picks what to install, so no group or
+    # extra selection can keep fastapi's constraint out of the resolution.
+    name: Core floor (py3.10, no extras)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.10"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Resolve the core dependencies at their lowest compatible versions
+        run: |
+          uv venv
+          uv pip install --resolution lowest-direct --editable . --group test
+      - name: Assert every core dependency sits at its declared floor
+        # The floors come from the installed package metadata, so this lane
+        # cannot drift from pyproject.toml the way its name once drifted from
+        # what it installed.
+        run: |
+          uv run --no-sync python - <<'PY'
+          import sys
+          from importlib.metadata import requires, version
+
+          from packaging.requirements import Requirement
+          from packaging.version import Version
+
+          drift = []
+          for raw in requires("standard-asr") or []:
+              req = Requirement(raw)
+              if req.marker is not None and not req.marker.evaluate():
+                  continue
+              floors = [s.version for s in req.specifier if s.operator == ">="]
+              if len(floors) != 1:
+                  drift.append(f"{req.name}: expected one >= bound, found '{req.specifier}'")
+                  continue
+              got, floor = Version(version(req.name)), Version(floors[0])
+              print(f"{req.name} {got} (declared floor {floor})")
+              if got.release[: len(floor.release)] != floor.release:
+                  drift.append(f"{req.name} is {got}, not the declared floor {floor}")
+          for line in drift:
+              print(f"::error::{line}")
+          sys.exit(1 if drift else 0)
+          PY
+      - name: Run tests
+        run: uv run --no-sync pytest --no-cov
+
   numpy-floor:
     # The lower-bounds lane runs on py3.10, where the active numpy floor is
     # `numpy>=1.26`. The OTHER declared floor — `numpy>=2.1` for py>=3.13 — would
@@ -423,7 +487,7 @@ jobs:
     # new job above automatically tightens the gate via `needs`.
     name: checks-complete
     if: always()
-    needs: [lock-check, lint, test, lower-bounds, numpy-floor, build, actionlint, vale, coverage, zizmor, docs]
+    needs: [lock-check, lint, test, lower-bounds, core-floor, numpy-floor, build, actionlint, vale, coverage, zizmor, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

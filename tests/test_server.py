@@ -23,9 +23,8 @@ from collections.abc import AsyncIterator
 from importlib.metadata import EntryPoint
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
-import httpx2
 import numpy as np
 import pytest
 
@@ -71,6 +70,14 @@ from standard_asr.plugins.discovery import ModelRegistry, discover_models
 from standard_asr.runtime.config import LanguageConfigMixin
 from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 from standard_asr.toolchain import server as server_module
+
+if TYPE_CHECKING:
+    import httpx2
+
+
+# The server suite needs the [server] extra; without it every test here is
+# meaningless, so skip the whole module rather than fail collection.
+pytest.importorskip("fastapi")
 
 
 class _DummyConfig(BaseConfig[str]):
