@@ -163,6 +163,15 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - name: Install FFmpeg
+        # The bare package decodes audio with the stdlib `wave` module for .wav
+        # paths and falls back to FFmpeg for everything else; the `[audio]` extra
+        # is deliberately absent here so its soundfile and scipy constraints stay
+        # out of the resolution this lane proves. FFmpeg is a system tool, not a
+        # Python dependency, so installing it keeps the resolution bare.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Resolve the core dependencies at their lowest compatible versions
         run: |
           uv venv
@@ -190,7 +199,9 @@ jobs:
                   continue
               got, floor = Version(version(req.name)), Version(floors[0])
               print(f"{req.name} {got} (declared floor {floor})")
-              if got.release[: len(floor.release)] != floor.release:
+              # Exact equality: Version("2.5") == Version("2.5.0"), and 2.5.1
+              # is a drift this lane exists to catch.
+              if got != floor:
                   drift.append(f"{req.name} is {got}, not the declared floor {floor}")
           for line in drift:
               print(f"::error::{line}")
