@@ -984,7 +984,7 @@ start_transcription(
 | Capability | 含义 | 示例 |
 |---|---|---|
 | `streaming_input` | 引擎能否在说话的同时**逐块接收**音频、并据此影响转写 | ElevenLabs realtime ✓、Qwen3 vLLM ✓、OpenAI Audio API ✗ |
-| `streaming_output` | 引擎能否在**全部输入到达之前**就开始返回结果（partial 或 final） | 上述三个都 ✓ |
+| `streaming_output` | 引擎能否在**转写完成之前**就开始逐步返回结果（partial 或 final），与输入是否已全部到达无关 | 上述三个都 ✓ |
 
 **注意一个容易搞混的点**：OpenAI Audio API 的 `stream=true` 需要先上传完整文件（`streaming_input=false`），但它**会**在转写完成前就开始返回 delta 事件（`streaming_output=true`）。
 
