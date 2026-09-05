@@ -33,9 +33,9 @@ Subclass `EngineBase` and provide:
    escape-hatch model, or `None`. Publish your own **terminal** subclass: the
    bare `ProviderParams` base, a non-subclass, or a model that is not closed
    (`extra="forbid"`) is a compliance error
-   (`provider_params_type_is_bare_base` / `_not_subclass` / `_not_closed`).
+   (`provider_params_type_is_bare_base`, `provider_params_type_not_subclass`, or `provider_params_type_not_closed`).
 5. `__init__` — capture config only. **Keep it pure**: no filesystem, GPU, or
-   network (spec IC.9). Load weights lazily in `_ensure_model_loaded`.
+   network (spec IC.9). Load weights lazily, in a method of your own; the first-party plugins call theirs `_ensure_model_loaded`.
 6. `_transcribe(prepared, params) -> TranscriptionResult` — run your model on
    already-negotiated audio (`prepared.kind` is one of your `accepted_input`).
 7. (Streaming) override

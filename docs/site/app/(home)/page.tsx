@@ -31,7 +31,7 @@ result = engine.transcribe("meeting.wav")
 print(result.text)
 
 # Switching engines is a one-line change:
-engine = registry.create("std-openai/gpt-4o-transcribe")`;
+engine = registry.create("mlx-audio/qwen3-asr-0.6b")`;
 
 const ENGINE_DEV_CODE = `from standard_asr.engine import EngineBase, PreparedAudio
 
