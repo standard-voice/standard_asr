@@ -13,6 +13,8 @@ drift away from the library without a red test.
 from __future__ import annotations
 
 import re
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +55,7 @@ def _python_block_under_heading(markdown: str, heading: str) -> str:
 
 
 @pytest.fixture
-def minimal_engine_namespace() -> dict[str, Any]:
+def minimal_engine_namespace(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Execute the guide's minimal-engine sample and return its namespace.
 
     Returns:
@@ -64,21 +66,23 @@ def minimal_engine_namespace() -> dict[str, Any]:
     )
 
     # The sample calls a placeholder for the author's own inference code.
-    # __name__ lets pydantic resolve the sample's annotations, and
-    # dont_inherit keeps this module's `from __future__ import annotations`
-    # out of the sample -- an author who copies the block does not get it.
+    # The sample runs in a real module registered in sys.modules, the way a
+    # reader runs it. __name__ lets pydantic resolve the sample's annotations,
+    # and pydantic looks that name up in sys.modules when it parameterizes a
+    # generic model such as BaseConfig[Literal["my-engine"]]. dont_inherit keeps
+    # this module's `from __future__ import annotations` out of the sample -- an
+    # author who copies the block does not get it.
     def my_model_infer(audio: object) -> str:
         return "hello"
 
-    namespace: dict[str, Any] = {
-        "__name__": "guide_sample",
-        "my_model_infer": my_model_infer,
-    }
+    module = types.ModuleType("guide_sample")
+    module.__dict__["my_model_infer"] = my_model_infer
+    monkeypatch.setitem(sys.modules, "guide_sample", module)
     exec(  # noqa: S102
         compile(source, str(_GUIDE), "exec", dont_inherit=True),
-        namespace,
+        module.__dict__,
     )
-    return namespace
+    return module.__dict__
 
 
 def test_guide_minimal_engine_transcribes(minimal_engine_namespace: dict[str, Any]) -> None:
