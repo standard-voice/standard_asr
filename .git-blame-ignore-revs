@@ -1,0 +1,6 @@
+# Commits that git blame skips: mechanical rewrites that changed no words.
+# GitHub's blame view reads this file on its own. Locally, run once:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# docs: unwrap governed Markdown to one source line per paragraph
+f826851f111cf7130d05f365abdee71b696cb4b2

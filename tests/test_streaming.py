@@ -563,7 +563,7 @@ def test_feed_rejects_str_with_actionable_typeerror() -> None:
 def test_feed_str_rejection_does_not_claim_feed_mode() -> None:
     # Rejecting a str is a pure argument-type error and MUST NOT
     # mutate session state -- the caller can still drive the session correctly
-    # afterwards (for example, via manual send_audio).
+    # afterward (for example, via manual send_audio).
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession()
         with pytest.raises(TypeError):
@@ -2412,7 +2412,7 @@ def test_guard_speaker_none_to_x_after_freeze_allowed() -> None:
 def test_guard_speaker_floats_before_freeze() -> None:
     # Pins the PRIOR-frontier semantics: while nothing is frozen the speaker
     # floats freely (A->B admitted); a same-event freeze+speaker-set is legal
-    # (the frontier read predates the event's own freeze); only afterwards is
+    # (the frontier read predates the event's own freeze); only afterward is
     # the last accepted speaker locked.
     guard = _LifecycleGuard()
     assert guard.admit(TranscriptionEvent.partial("s0", "he", speaker="A")) is not None
@@ -3670,7 +3670,7 @@ def test_sync_pump_detects_dead_loop_thread(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_sync_pump_after_teardown_raises_stream_closed() -> None:
     # A prior lifecycle timeout tears the bridge down; pumping events
-    # afterwards must fail with the contracted StreamClosedError, not hang or
+    # afterward must fail with the contracted StreamClosedError, not hang or
     # raise an unrelated loop error.
     sync = SyncSession(_HangEndAudioSession(), submit_timeout=0.1)
     with pytest.raises(TimeoutError):

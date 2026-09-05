@@ -1,65 +1,41 @@
 # Releasing Standard ASR
 
-This is the maintainer runbook for publishing the **`standard-asr`** core
-package. It covers one-time PyPI/TestPyPI setup, the recurring release flow, and
-the safeguards built into `.github/workflows/release.yml`.
+This is the maintainer runbook for publishing the **`standard-asr`** core package. It covers one-time PyPI/TestPyPI setup, the recurring release flow, and the safeguards built into `.github/workflows/release.yml`.
 
-The release process follows the project mission: explicit contracts, secure
-defaults, and a low-surprise developer experience. Releases are built with
-Astral uv, published with PyPI Trusted Publishing, and guarded so a bad tag or a
-non-green commit fails loudly before anything reaches PyPI.
+The release process follows the project mission: explicit contracts, secure defaults, and a low-surprise developer experience. Releases are built with Astral uv, published with PyPI Trusted Publishing, and guarded so a bad tag or a non-green commit fails loudly before anything reaches PyPI.
 
 ## Summary
 
 After the one-time setup exists, every release is:
 
 1. Land the release commit on `main` with `checks-complete` green.
-2. Bump `version` in `pyproject.toml`, update `CHANGELOG.md`, and merge
-   `chore(release): vX.Y.Z`.
-3. Dry-run the exact artifact path on TestPyPI: Actions -> **Release** -> **Run
-   workflow** from `main`.
+2. Bump `version` in `pyproject.toml`, update `CHANGELOG.md`, and merge `chore(release): vX.Y.Z`.
+3. Dry-run the exact artifact path on TestPyPI: Actions -> **Release** -> **Run workflow** from `main`.
 4. Verify the TestPyPI install.
-5. Publish a GitHub Release tagged `vX.Y.Z` at the release commit. Approve the
-   protected `pypi` environment.
+5. Publish a GitHub Release tagged `vX.Y.Z` at the release commit. Approve the protected `pypi` environment.
 6. Verify PyPI, attestations, and the GitHub Release.
 
-There are no long-lived PyPI API tokens. Production PyPI publishing is only
-triggered by a GitHub Release; manual dispatch publishes only to TestPyPI.
+There are no long-lived PyPI API tokens. Production PyPI publishing is only triggered by a GitHub Release; manual dispatch publishes only to TestPyPI.
 
 ## Release architecture
 
 ### What publishes
 
-This repo publishes exactly one distribution: **`standard-asr`**. Engine plugins
-live in their own repositories (for example, `std-faster-whisper`, `std-mlx-audio`),
-each with its own PyPI project, trusted publisher, and release cadence. That
-keeps engine dependencies and licenses isolated from the core package.
+This repo publishes exactly one distribution: **`standard-asr`**. Engine plugins live in their own repositories (for example, `std-faster-whisper`, `std-mlx-audio`), each with its own PyPI project, trusted publisher, and release cadence. That keeps engine dependencies and licenses isolated from the core package.
 
 ### Toolchain choices
 
-- **Build frontend:** `uv build --package standard-asr --no-sources --out-dir
-  dist --clear`. `--no-sources` is intentional: it proves the package builds
-  from standards-compliant publishable metadata instead of accidentally relying
-  on workspace or local source overrides.
-- **Build backend:** `uv_build`, capped to the current minor series in
-  `pyproject.toml`. The cap is on the build tool, not a runtime dependency.
-- **Publish action:** `pypa/gh-action-pypi-publish`, using PyPI Trusted
-  Publishing and PEP 740 attestations. uv can publish packages, but the PyPA
-  action is PyPI's recommended GitHub Actions path for tokenless publishing and
-  attestation upload. uv remains the source of truth for building and smoke
-  testing the artifacts.
-- **Version source:** static `project.version` in `pyproject.toml`. The git tag
-  mirrors it as `vX.Y.Z`; the workflow fails if they differ.
+- **Build frontend:** `uv build --package standard-asr --no-sources --out-dir dist --clear`. `--no-sources` is intentional: it proves the package builds from standards-compliant publishable metadata instead of accidentally relying on workspace or local source overrides.
+- **Build backend:** `uv_build`, capped to the current minor series in `pyproject.toml`. The cap is on the build tool, not a runtime dependency.
+- **Publish action:** `pypa/gh-action-pypi-publish`, using PyPI Trusted Publishing and PEP 740 attestations. uv can publish packages, but the PyPA action is PyPI's recommended GitHub Actions path for tokenless publishing and attestation upload. uv remains the source of truth for building and smoke testing the artifacts.
+- **Version source:** static `project.version` in `pyproject.toml`. The git tag mirrors it as `vX.Y.Z`; the workflow fails if they differ.
 
 ### Trust boundaries
 
 The workflow separates build and publish:
 
-1. `build` has no OIDC publish permission. It checks the ref, builds artifacts,
-   smoke-tests the wheel and sdist in isolated uv environments, and uploads a
-   workflow artifact.
-2. `publish-testpypi` / `publish-pypi` have `id-token: write`, but they only
-   download the already-verified artifact and upload it to the configured index.
+1. `build` has no OIDC publish permission. It checks the ref, builds artifacts, smoke-tests the wheel and sdist in isolated uv environments, and uploads a workflow artifact.
+2. `publish-testpypi` / `publish-pypi` have `id-token: write`, but they only download the already-verified artifact and upload it to the configured index.
 
 This keeps the high-privilege OIDC publish jobs small and auditable.
 
@@ -74,15 +50,11 @@ The `build` job refuses to continue unless:
 - The wheel contains only package source files (`.py`, `.pyi`, `py.typed`).
 - Both wheel and sdist import correctly outside the project workspace.
 
-The build artifacts are published only to PyPI (the canonical channel for a pip
-package) with PEP 740 attestations; the GitHub Release carries the notes and
-GitHub's auto-generated source archives. The workflow never uploads wheels or
-sdists to the Release, so it stays compatible with immutable releases.
+The build artifacts are published only to PyPI (the canonical channel for a pip package) with PEP 740 attestations; the GitHub Release carries the notes and GitHub's auto-generated source archives. The workflow never uploads wheels or sdists to the Release, so it stays compatible with immutable releases.
 
 ## One-time setup
 
-Do this once per index. These are external settings and cannot be committed to
-the repo.
+Do this once per index. These are external settings and cannot be committed to the repo.
 
 ### 1. Prerequisites
 
@@ -90,9 +62,7 @@ the repo.
 - Administrator access to `standard-voice/standard_asr`.
 - The workflow file committed at `.github/workflows/release.yml`.
 
-Use pending publishers if the `standard-asr` project does not exist yet. A
-pending publisher creates the project on first successful upload, but it does
-not reserve the name before that first upload.
+Use pending publishers if the `standard-asr` project does not exist yet. A pending publisher creates the project on first successful upload, but it does not reserve the name before that first upload.
 
 ### 2. Configure the PyPI trusted publisher
 
@@ -106,13 +76,11 @@ On <https://pypi.org/manage/account/publishing/> add a pending GitHub publisher:
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
-If the project already exists, add the same publisher under the project's
-settings instead of the account-level pending publisher page.
+If the project already exists, add the same publisher under the project's settings instead of the account-level pending publisher page.
 
 ### 3. Configure the TestPyPI trusted publisher
 
-Repeat the same setup on <https://test.pypi.org/manage/account/publishing/>,
-but set:
+Repeat the same setup on <https://test.pypi.org/manage/account/publishing/>, but set:
 
 | Field | Value |
 | --- | --- |
@@ -133,9 +101,7 @@ Do not add PyPI secrets. Trusted Publishing does not use them.
 
 ### 5. Protect `main`
 
-Branch protection for `main` should require exactly the aggregate
-`checks-complete` status. The release workflow uses that same status to prove a
-release candidate is CI-green.
+Branch protection for `main` should require exactly the aggregate `checks-complete` status. The release workflow uses that same status to prove a release candidate is CI-green.
 
 ## How the workflow runs
 
@@ -194,9 +160,7 @@ Wait for `checks-complete` to pass on `main`.
 
 ### Step 4 - dry run to TestPyPI
 
-The manual dispatch runs the same CI-green guard as a real release, so
-`checks-complete` must already be green on the `main` commit (Step 3) -- the
-build job fails fast otherwise.
+The manual dispatch runs the same CI-green guard as a real release, so `checks-complete` must already be green on the `main` commit (Step 3) -- the build job fails fast otherwise.
 
 1. GitHub -> **Actions** -> **Release** -> **Run workflow**.
 2. Select the `main` branch and run it. There are no inputs.
@@ -205,13 +169,7 @@ build job fails fast otherwise.
 
 ### Step 5 - verify TestPyPI
 
-TestPyPI does not mirror all dependencies, so let TestPyPI provide
-`standard-asr` while real PyPI provides the dependencies. uv defaults to a
-`first-index` strategy (a dependency-confusion safeguard): when a dependency such
-as `numpy` also exists on TestPyPI at an incompatible version, uv does not fall
-back to PyPI and resolution fails loudly. Pass `--index-strategy
-unsafe-best-match` so uv considers every index -- safe here because both indexes
-are trusted:
+TestPyPI does not mirror all dependencies, so let TestPyPI provide `standard-asr` while real PyPI provides the dependencies. uv defaults to a `first-index` strategy (a dependency-confusion safeguard): when a dependency such as `numpy` also exists on TestPyPI at an incompatible version, uv does not fall back to PyPI and resolution fails loudly. Pass `--index-strategy unsafe-best-match` so uv considers every index -- safe here because both indexes are trusted:
 
 ```bash
 uv venv /tmp/standard-asr-testpypi
@@ -239,8 +197,7 @@ pip install \
   "standard-asr==X.Y.Z"
 ```
 
-Confirm the TestPyPI page renders the README, classifiers, project URLs, and
-metadata correctly.
+Confirm the TestPyPI page renders the README, classifiers, project URLs, and metadata correctly.
 
 ### Step 6 - publish to PyPI
 
@@ -252,9 +209,7 @@ metadata correctly.
 6. Publish the GitHub Release.
 7. Approve the `pypi` environment when the workflow pauses.
 
-The workflow then uploads the verified sdist/wheel to PyPI with PEP 740
-attestations. Artifacts are not attached to the GitHub Release -- PyPI is the
-canonical distribution channel for the package.
+The workflow then uploads the verified sdist/wheel to PyPI with PEP 740 attestations. Artifacts are not attached to the GitHub Release -- PyPI is the canonical distribution channel for the package.
 
 ### Step 7 - verify PyPI
 
@@ -276,60 +231,19 @@ Then verify:
 
 `pyproject.toml` is the single source of truth. Tags mirror it as `vX.Y.Z`.
 
-- **Pre-1.0:** Minor releases may contain breaking changes; patch releases are
-  backward-compatible fixes. Call out breaking changes clearly in the changelog.
+- **Pre-1.0:** Minor releases may contain breaking changes; patch releases are backward-compatible fixes. Call out breaking changes clearly in the changelog.
 - **Post-1.0:** Standard SemVer.
-- **Pre-releases:** Use PEP 440-compatible versions such as `0.2.0a1`,
-  `0.2.0b1`, or `0.2.0rc1`, tagged as `v0.2.0a1`, `v0.2.0b1`, or
-  `v0.2.0rc1`.
-- **Yanking:** If a release is broken, yank it on PyPI and ship a new patch.
-  Never reuse a version number.
+- **Pre-releases:** Use PEP 440-compatible versions such as `0.2.0a1`, `0.2.0b1`, or `0.2.0rc1`, tagged as `v0.2.0a1`, `v0.2.0b1`, or `v0.2.0rc1`.
+- **Yanking:** If a release is broken, yank it on PyPI and ship a new patch. Never reuse a version number.
 
 ### Protocol generations
 
-The package version above is not the protocol version:
-`properties.protocol_version` names the engine-protocol contract generation,
-an independent version line governed by spec AR.1
-(`docs/content/specification/protocol.md`). These obligations land at
-release time:
+The package version above is not the protocol version: `properties.protocol_version` names the engine-protocol contract generation, an independent version line governed by spec AR.1 (`docs/content/specification/protocol.md`). These obligations land at release time:
 
-- The first public core release carrying a new `0.MINOR` protocol generation
-  **freezes that generation** (AR.1's generation freeze point). Public
-  includes pre-releases: an alpha, beta, or RC artifact on PyPI freezes the
-  generation it carries exactly as a stable release does (a TestPyPI dry-run
-  is a rehearsal, not a public release). Before publishing, confirm
-  `CURRENT_PROTOCOL_VERSION` in
-  `src/standard_asr/contract/protocol_version.py` names the contract you
-  intend to freeze; after the release, a breaking change to that contract
-  requires a new minor.
-- The first generation-freezing release also **establishes the protocol
-  ledger** -- the generation-ledger appendix of
-  `docs/content/specification/protocol.md` -- recording the frozen token,
-  freeze date, spec snapshot commit, and compatibility classification; every
-  later freeze appends its row. The package changelog is never the source of
-  truth for protocol history.
-- The first stable release (protocol `1.0.0`) must execute AR.1's freeze plan
-  and record its three freeze-day decisions: the frozen `0.N` alias policy,
-  the multi-major support policy, and the `1.0.0` promotion row in the
-  ledger. The RC window has no mutable period: a `1.0.0rcN` package declares,
-  and freezes, the newest `0.N` generation; a breaking change during the RC
-  series opens a new `0.MINOR`; the final release promotes the last frozen
-  generation verbatim. Rehearse that promotion on a branch before tagging:
-  flip the constants and the feature floors, point the first-party plugins
-  at `1.0.0`, and run their compliance suites against that core. The
-  stable token cannot appear in a public artifact before the release that
-  freezes it, so the rehearsal is the only full-system test the promotion
-  gets. The same release revises the `/v1` projection
-  declaration in `docs/content/specification/server-api.md`: `/v1` adds the
-  `1.0.x` line when the wire representation is unchanged (the expected
-  outcome), or the core opens a new wire revision. Without that step, the
-  statement that `/v1` projects exactly `0.2` becomes false the moment
-  engines declare `1.0.0`.
-- Before shipping protocol `1.1` (the first stable additive minor), decide
-  how an older core's `/v1` projects an engine on a newer minor -- project
-  only the understood intersection, filter unknown requestable capabilities,
-  or require a core floor -- and revise the projection declaration in
-  `docs/content/specification/server-api.md` in the same release.
+- The first public core release carrying a new `0.MINOR` protocol generation **freezes that generation** (AR.1's generation freeze point). Public includes pre-releases: an alpha, beta, or RC artifact on PyPI freezes the generation it carries exactly as a stable release does (a TestPyPI dry-run is a rehearsal, not a public release). Before publishing, confirm `CURRENT_PROTOCOL_VERSION` in `src/standard_asr/contract/protocol_version.py` names the contract you intend to freeze; after the release, a breaking change to that contract requires a new minor.
+- The first generation-freezing release also **establishes the protocol ledger** -- the generation-ledger appendix of `docs/content/specification/protocol.md` -- recording the frozen token, freeze date, spec snapshot commit, and compatibility classification; every later freeze appends its row. The package changelog is never the source of truth for protocol history.
+- The first stable release (protocol `1.0.0`) must execute AR.1's freeze plan and record its three freeze-day decisions: the frozen `0.N` alias policy, the multi-major support policy, and the `1.0.0` promotion row in the ledger. The RC window has no mutable period: a `1.0.0rcN` package declares, and freezes, the newest `0.N` generation; a breaking change during the RC series opens a new `0.MINOR`; the final release promotes the last frozen generation verbatim. Rehearse that promotion on a branch before tagging: flip the constants and the feature floors, point the first-party plugins at `1.0.0`, and run their compliance suites against that core. The stable token cannot appear in a public artifact before the release that freezes it, so the rehearsal is the only full-system test the promotion gets. The same release revises the `/v1` projection declaration in `docs/content/specification/server-api.md`: `/v1` adds the `1.0.x` line when the wire representation is unchanged (the expected outcome), or the core opens a new wire revision. Without that step, the statement that `/v1` projects exactly `0.2` becomes false the moment engines declare `1.0.0`.
+- Before shipping protocol `1.1` (the first stable additive minor), decide how an older core's `/v1` projects an engine on a newer minor -- project only the understood intersection, filter unknown requestable capabilities, or require a core floor -- and revise the projection declaration in `docs/content/specification/server-api.md` in the same release.
 
 ## Troubleshooting
 
@@ -347,16 +261,14 @@ release time:
 
 ## Future plugin releases
 
-When adding a new engine plugin, do not add it to this release workflow. Create
-a separate plugin repository and copy this pattern:
+When adding a new engine plugin, do not add it to this release workflow. Create a separate plugin repository and copy this pattern:
 
 - Independent PyPI project and trusted publishers.
 - Independent `release.yml`, changelog, and SemVer line.
 - Dependency on `standard-asr>=...` from PyPI.
 - Plugin-specific compliance checks before publish.
 
-This preserves Standard ASR's core/plugin separation while keeping every
-compliant engine installable by applications without extra integration work.
+This preserves Standard ASR's core/plugin separation while keeping every compliant engine installable by applications without extra integration work.
 
 ## References
 

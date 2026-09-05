@@ -3,69 +3,44 @@
 Standard ASR is a **Python library that defines and enforces a universal interface protocol for ASR (speech-to-text) inference**. Think USB-C for speech recognition, or what the OpenAI Chat Completion API did for LLMs: once a protocol becomes the common language, any new engine that adopts it is **instantly usable by every application in the ecosystem** — and any application that speaks it can use **any compliant engine** without changing a line of code.
 
 **What this repo contains:**
-- A **runtime library** (`standard-asr`): audio input negotiation & conversion, capability discovery & gating, structured diagnostics, streaming session management, plugin discovery via entry points.
-- A **toolchain**: CLI, FastAPI server (expose any engine over HTTP/WS), compliance test suite.
-- **No ASR models.** Each engine is a separate pip-installable plugin package (for example, `std-faster-whisper`, `std-openai`) that implements the standard interface. Standard ASR discovers installed plugins automatically.
+- A **runtime library** (`standard-asr`). `contract` holds the protocol data model every party shares. `runtime` runs each request against the chosen engine. `audio` turns any user input into engine-ready audio. `plugins` finds installed engines through entry points. Each package docstring says what it holds. `README.md` shows what the library does today.
+- A **toolchain**, in the `toolchain` package and `compliance.py`: a CLI (its `doctor` subcommand diagnoses the local environment), a FastAPI server that exposes any engine over HTTP and WebSocket, and a compliance test suite.
+- **No ASR models.** Each engine is a separate pip-installable plugin package (for example, `std-faster-whisper`, `std-mlx-audio`) that implements the standard interface. Standard ASR discovers installed plugins automatically.
 
-**What this repo does NOT contain:** speech recognition code, model weights, or training. We build the bridge, not the endpoints.
+**What this repo does not contain:** speech recognition code, model weights, or training. We build the bridge, not the endpoints.
 
 **We are in the pre-release stage.** Always choose the long-term optimal design over backwards compatibility.
 
 ## Stakeholders — consider all three in every decision
 
-- **App developers** (primary users): one stable interface for all engines. No vendor lock-in. Zero-config discovery.
-- **ASR engine authors**: low barrier to publish a compliant plugin. Implement one interface → get CLI, reference server, compliance tests for free — and your engine is instantly compatible with every Standard ASR application, no per-app integration needed. Focus on models, not plumbing.
-- **End users**: choose the best ASR for their language or domain — install a plugin, use it immediately, no app changes needed.
+- **App developers** (primary users): one stable interface for every engine, no vendor lock-in, zero-config discovery.
+- **ASR engine authors**: a low barrier to publishing a compliant plugin. Implement one interface, and the CLI, the reference server, and the compliance tests come for free — the engine works with every Standard ASR application, with no per-app integration. Focus on models, not plumbing.
+- **End users**: choose the best ASR for their language or domain — install a plugin and use it immediately, with no app changes.
 
 ## Philosophy
 
-- **Code is the contract.** Public API signatures, types, and docstrings are promises. A developer should understand behavior from the code alone. Every name is a design decision.
-- **DX above all.** Optimize for the app developer. Zero-config, zero-surprise, zero-ambiguity. Battery-included where it helps (audio loading, SRT/VTT renderers), but keep heavy deps optional (`[audio]`, `[server]`).
-- **Explicit > implicit.** Silent wrong results are the cardinal sin. When in doubt, fail loudly or emit a structured diagnostic — never silently degrade. When DX convenience and explicitness conflict, **correctness wins** (a loud error the developer can fix beats a silent wrong transcript).
-- **Standard-library rigor.** This is infrastructure others build on for 10 years. Types complete, boundaries sharp, error paths explicit, no implicit behavior.
-- **Security by default.** Credentials use `SecretStr`. URLs validated (HTTPS, no SSRF). Unsafe options require explicit opt-in.
-- **Trust model: plugins are trusted code. The security layer defends against ACCIDENTS, not adversaries.** An installed engine plugin runs arbitrary in-process code — it can already read `os.environ` and open sockets, so no in-library boundary can contain a malicious plugin, and we do not build one. What we DO defend against is the honest mistake: a mis-pasted credential echoed back by pydantic's `input_value=...`, a secret riding inside an exception message into a log or a wire response. The whole defense is three cheap rules — scrub validation-error echoes, wrap credentials in `SecretStr`, never format a raw exception chain into operator logs or client responses. **Hard budget:** no proofs about third-party code, no introspection of pydantic/CPython internals, no machinery against hostile metaclasses / forged markings / subverted C slots — those attackers don't need our log path. A defense that needs its own review rounds to stay correct is a defect source, not a defense. Reviewers: do not file findings that assume an adversarial plugin author; they are out of scope by this definition.
+- **Single source of truth.** Every fact has one authority. Another surface restates it only where a reader needs it there, says no more than that reader needs, links to the authority, and is checked against it; two unchecked versions of one fact drift apart. Terms live in `TERMINOLOGY.md`, numbers and defaults in one constant, the protocol, the wire API, the CLI, and downloads in the pages under `docs/content/specification/`, and the rest of the Python API in its type signatures and docstrings. When two places disagree, do not settle it by citing this rule: reason from first principles about which one is the intended design, and if the design itself missed a case, say so.
+- **App developer first.** When the three stakeholders pull in different directions, the app developer wins. Zero-config, zero-surprise, zero-ambiguity. Batteries included where they help (audio loading, SRT/VTT renderers), but heavy dependencies stay optional (`[audio]`, `[server]`).
+- **Explicit > implicit.** Whatever happens, show it: no swallowed errors, no silent degradation, no fake success, no hidden data flows. Silent wrong results are the cardinal sin. When in doubt, fail loudly or emit a structured diagnostic. A warning says what can go wrong and what to do about it, in a tone that matches the real risk: never soften a real hazard, never dramatize a small one. When convenience and explicitness conflict, **correctness wins**: a loud error the developer can fix beats a silent wrong transcript.
+- **Standard-library rigor.** This is infrastructure others build on for 10 years. Write it like the standard library: complete types, sharp boundaries, explicit error paths, no implicit behavior. A developer should be able to learn the behavior from the signature and the docstring alone, without reading the implementation. Every name is a design decision.
+- **Long-term optimum.** Choose the design that is best for the app developer's experience, correctness, consistency, maintainability, and performance over the next ten years, for all three stakeholders. Never keep a worse design because the better one is more work; effort estimates are always wrong. But the complexity a design keeps forever is part of the design, not part of the effort. So before choosing the bigger design, name the smallest one that also solves the problem and say what it gets wrong; if nothing, the smaller design is the better one. The optimum sets the destination, not the step size: land the work in small, reviewable steps.
+- **Reason from first principles.** To make, understand, review, or revisit a technical decision, start from the problem it solves, not from the pattern that looks familiar. "Why is it designed this way?" is a legitimate question at any time — ask it, and challenge the answer. Every unclear premise must be resolved, not worked around. This questioning is welcome: it leads to better decisions and finds real problems. That includes the rules in this file: a rule followed against its own reason is a defect, so when a rule and its reason part ways, say so and fix the rule.
+- **Security by default.** Credentials are wrapped in `SecretStr`. A URL is checked before it is forwarded: HTTPS only, and no private, loopback, or link-local target. Because the engine resolves the name again when it fetches, the check is advisory against DNS rebinding (`docs/content/mission.md`, "Security by default"). Unsafe options require explicit opt-in.
+- **Trust model: plugins are trusted code. The security layer defends against accidents, not adversaries.** An installed engine plugin runs arbitrary code inside the application's process: it can already read `os.environ` and open sockets. No boundary inside the library can contain a malicious plugin, so we do not build one. What we *do* defend against is the honest mistake: a mis-pasted credential echoed back by pydantic's `input_value=...`, or a secret riding an exception message into a log or a wire response. The whole defense is three cheap rules: scrub the values that pydantic echoes in a validation error, wrap credentials in `SecretStr`, and never format a raw exception chain into an operator log or a client response. **Hard budget:** no proofs about third-party code, no introspection of pydantic or CPython internals, no machinery against hostile metaclasses, forged markings, or subverted C slots — an attacker that sophisticated does not need our log path. A defense that needs its own review rounds to stay correct is a defect source, not a defense. Reviewers: do not file findings that assume an adversarial plugin author; this trust model puts them out of scope.
 
 ## Rules
 
-- Python 3.10+. Cross-platform (macOS, Windows, Linux). A platform- or
-  hardware-specific feature must be optional: the core runs everywhere, with a
-  graceful fallback or a clear error where the extra is absent.
-- Modern typing syntax: `str | None` and built-in generics (`list[int]`), never
-  `typing.Optional` / `typing.List`. PEP 8 naming: `snake_case` functions and
-  variables, `PascalCase` classes, descriptive names.
-- `uv` for deps. Pydantic v2 for data models. FastAPI for server. A new
-  dependency needs a compatible license, active maintenance, and scrutiny of
-  its supply chain; prefer the standard library and existing dependencies
-  (`CONTRIBUTING.md`, "Dependency policy").
-- `ruff` + `pyright` strict + `pytest` with 100% coverage target.
-- `ruff` rule `NPY201` enabled. CI tests against numpy 1.26 AND latest 2.x.
-- Google-style docstrings (English): summary, args, returns, raises.
-- English for all code, comments, logs. `logging` module — no `print`.
-- Prose follows [`STYLE.md`](STYLE.md) (the Google developer documentation
-  style guide as the baseline, plus this repo's deltas) and
-  [`TERMINOLOGY.md`](TERMINOLOGY.md) (canonical terms, American spelling). **Read
-  both before you edit a docstring, a user-facing string, or a Markdown file.**
-  Tier: text inside a role, a code span, a `::` literal block, a fenced code
-  block, or a doctest is verbatim; a `#` comment is the clarity tier (the full
-  standard minus the sentence-length cap); **everything else is the full
-  standard** — every docstring, every string that can reach a user, and every
-  governed Markdown file (`STYLE.md` defines the scope; this file is in it). No
-  emoji, and no non-ASCII symbol in a runtime string. A meaning change must
-  state its **defect** and its **authority** (spec section, code path, test, or
-  design note — by path and line) in the commit message; prefer clarifying an
-  intentional name over changing it. Check every claim about the code against
-  the code — a remembered fact is not a fact.
+- Python 3.10+, cross-platform (macOS, Windows, Linux). A platform- or hardware-specific feature must be optional: the core runs everywhere, and where the feature is unavailable the user gets a graceful fallback or a clear error.
+- Modern typing syntax: `str | None` and built-in generics (`list[int]`), never `typing.Optional` or `typing.List`. PEP 8 naming: `snake_case` functions and variables, `PascalCase` classes, descriptive names.
+- Use `uv` for dependencies, Pydantic v2 for data models, and FastAPI for the server. A new dependency needs a compatible license, active maintenance, and scrutiny of its supply chain; prefer the standard library and existing dependencies (`CONTRIBUTING.md`, "Dependency policy").
+- Every change passes `ruff`, strict `pyright`, and `pytest` with a 100% coverage target. `ruff` rule `NPY201` stays enabled, and CI tests numpy 1.26 and the latest 2.x, because the library supports both numpy generations.
+- Google-style docstrings, in English: summary, args, returns, raises.
+- English for all code, comments, and logs. A diagnostic goes through the `logging` module, never `print`. The CLI's output is its interface: `toolchain/cli.py` prints results to stdout and errors to stderr, and no log line goes to stdout.
+- Prose covers every docstring, user-facing string, governed Markdown file, issue, PR description, and commit message. Governed means text people read as documentation; `STYLE.md` ("Scope") lists exactly which files. Exempt, each for a reason: the Chinese specification, because the standard and its checker are built for English; old changelog entries, because they are history; `docs/internal/`, because it holds working notes. Write plain language, for a reader who knows software but has never seen this project. Every term is one that reader already knows, one [`TERMINOLOGY.md`](TERMINOLOGY.md) defines, or one the code names; explain anything else, or choose a plainer word. One fact per sentence, about 20 words. No emoji; a runtime string stays ASCII. In Markdown, do not break lines inside a paragraph at a column width. Let the editor wrap. If a paragraph looks too long as one line, split the paragraph organically. Check every claim about the code against the code — a remembered fact is not a fact. A change that an existing authority settles — a text corrected to match the code or the protocol, or a behavior corrected to match the protocol — states its defect and its authority (path and line) in the commit message. A design decision is a change no authority settles; its commit message states the decision and its reason, and it changes the authority itself, because a code change never becomes the authority just by landing. Before you change governed prose, read the checklist at the end of [`STYLE.md`](STYLE.md): it names every rule in one line each, most of which no tool checks. `scripts/vale.sh --gate` enforces the mechanical layer; when the gate or a reviewer disputes a sentence, the `STYLE.md` section the checklist line names is the ruling text. Before writing a diagnostic, a warning, or a docstring that uses MUST or SHOULD, read the "Deltas" section of `STYLE.md` as well.
 - SPDX license header on every `.py` file:
   ```python
   # SPDX-FileCopyrightText: 2026 Standard Voice Contributors
   # SPDX-License-Identifier: Apache-2.0
   ```
-- Documentation lives in `docs/`. `docs/content/` is the published site
-  content: every Markdown file under it ships, a page needs a frontmatter
-  `title`, sibling links use explicit relative paths (`./other-page.md`),
-  and raw HTML fails the build. `docs/internal/` never ships. `docs/site/`
-  is the site application (Node and pnpm; oxlint and oxfmt gate its code,
-  and lychee link-checks the export in CI) — Python development never
-  needs it. Read `docs/site/README.md` before changing the site.
-- Commits: imperative mood, concise. One logical change per commit.
+- Documentation lives in `docs/`. `docs/content/` is the published site content: every Markdown file under it ships, each page needs a frontmatter `title`, links between pages use explicit relative paths (`./other-page.md`), and raw HTML fails the build. `docs/internal/` never ships. The documentation website is its own program under `docs/site/` (TypeScript; Node and pnpm; its own linters in CI), so the prose standard does not apply to its code. The English it renders on its own pages, such as the home page's copy and code samples, is a front-door surface: governed for accuracy and terminology by review, because Vale cannot read TypeScript (`STYLE.md`, "Scope"). It generates the API reference from docstrings, so a docstring or function change needs nothing from it. A new Python module that should appear in the reference needs two things: an entry in `MODULE_PAGES` (`docs/site/scripts/dump_api.py`) and a page under `docs/content/reference/` naming it in `api_module`; the build fails if either is missing. Read `docs/site/README.md` before changing the site itself.
+- Write commit messages in the imperative mood, and keep them concise. One logical change per commit.

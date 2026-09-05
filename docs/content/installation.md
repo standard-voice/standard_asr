@@ -18,8 +18,7 @@ uv pip install standard-asr
 uv add standard-asr
 ```
 
-The core is intentionally light: only `numpy` and `pydantic`. Everything heavy is
-an opt-in extra.
+The core is intentionally light: only `numpy` and `pydantic`. Everything heavy is an opt-in extra.
 
 ## Optional extras
 
@@ -36,9 +35,7 @@ pip install "standard-asr[audio,server]"
 
 ## Install an engine plugin
 
-Standard ASR discovers engines automatically via entry points. Install a plugin
-and it appears in `standard-asr list`. Each engine is its own package;
-experimental plugins install from their repo until they publish to PyPI:
+Standard ASR discovers engines automatically via entry points. Install a plugin and it appears in `standard-asr list`. Each engine is its own package; experimental plugins install from their repo until they publish to PyPI:
 
 ```bash
 pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-faster-whisper.git"
@@ -46,15 +43,13 @@ pip install "std-faster-whisper @ git+https://github.com/standard-voice/std-fast
 
 ## Install from source
 
-To try unreleased changes, install the core straight from the repository (this
-pulls a snapshot of `main`, not an editable checkout):
+To try unreleased changes, install the core straight from the repository (this pulls a snapshot of `main`, not an editable checkout):
 
 ```bash
 pip install "standard-asr @ git+https://github.com/standard-voice/standard_asr.git"
 ```
 
-To work on Standard ASR itself, clone the repository and follow
-[CONTRIBUTING.md](https://github.com/standard-voice/standard_asr/blob/main/CONTRIBUTING.md).
+To work on Standard ASR itself, clone the repository and follow [CONTRIBUTING.md](https://github.com/standard-voice/standard_asr/blob/main/CONTRIBUTING.md).
 
 ## Verify
 

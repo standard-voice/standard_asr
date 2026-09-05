@@ -4,15 +4,11 @@ title: "Errors & Diagnostics"
 
 # Errors & diagnostics
 
-Standard ASR follows "explicit > implicit": when something goes wrong, you get a
-specific exception with machine-readable context -- never silent degradation.
+Standard ASR follows "explicit > implicit": when something goes wrong, you get a specific exception with machine-readable context -- never silent degradation.
 
 ## Exception hierarchy
 
-Every *domain* exception inherits from `StandardASRError`, so a single
-`except StandardASRError` catches every domain error the runtime raises.
-Plain caller misuse and pydantic validation sit outside the hierarchy --
-see the section after the table.
+Every *domain* exception inherits from `StandardASRError`, so a single `except StandardASRError` catches every domain error the runtime raises. Plain caller misuse and pydantic validation sit outside the hierarchy -- see the section after the table.
 
 ```
 StandardASRError
@@ -67,28 +63,21 @@ StandardASRError
 
 ## What `StandardASRError` does not catch
 
-Building a model is pydantic's job, not the runtime's. A malformed field raises
-`pydantic.ValidationError`, which is a `ValueError` and **not** a
-`StandardASRError`:
+Building a model is pydantic's job, not the runtime's. A malformed field raises `pydantic.ValidationError`, which is a `ValueError` and **not** a `StandardASRError`:
 
 ```python
 RuntimeParams(language="english")  # ValidationError: not a BCP-47 tag
 RuntimeParams(candidate_languages=["auto"])
 ```
 
-Plain caller misuse raises a built-in the same way: `ValueError` for a bad
-value (passing both `audio` and `audio_format` to `start_transcription()`),
-`TypeError` for a wrong type (an unsupported input type to `transcribe()`).
-Catch the domain errors and the value mistakes together:
+Plain caller misuse raises a built-in the same way: `ValueError` for a bad value (passing both `audio` and `audio_format` to `start_transcription()`), `TypeError` for a wrong type (an unsupported input type to `transcribe()`). Catch the domain errors and the value mistakes together:
 
 ```python
 except (StandardASRError, ValueError):   # ValidationError is a ValueError
     ...
 ```
 
-A `TypeError` stays outside both families on purpose: a wrong input type is a
-code bug to fix, not a state to handle. The sync bridge's no-hang contract can
-also raise the built-in `TimeoutError` for a hung engine.
+A `TypeError` stays outside both families on purpose: a wrong input type is a code bug to fix, not a state to handle. The sync bridge's no-hang contract can also raise the built-in `TimeoutError` for a hung engine.
 
 ## Structured error context
 
@@ -109,20 +98,13 @@ except ConfigError as exc:
     print(exc.details)  # sanitized [{"type", "loc", "msg"}, ...] entries
 ```
 
-These fields let you build programmatic error handling (for example, fall back to another
-engine when a feature is unsupported) without parsing message strings. Every
-`StructuredError` also carries `.details`, populated where structured context
-exists — `ConfigError`, for example, puts the sanitized pydantic validation
-entries there (`UnsupportedFeatureError` leaves it `None`).
+These fields let you build programmatic error handling (for example, fall back to another engine when a feature is unsupported) without parsing message strings. Every `StructuredError` also carries `.details`, populated where structured context exists — `ConfigError`, for example, puts the sanitized pydantic validation entries there (`UnsupportedFeatureError` leaves it `None`).
 
-Artifact errors add lifecycle-specific fields. The
-[inference-artifact reference](../reference/artifacts.md) defines their
-machine-readable meanings.
+Artifact errors add lifecycle-specific fields. The [inference-artifact reference](../reference/artifacts.md) defines their machine-readable meanings.
 
 ## Diagnostics (non-fatal)
 
-Not every problem is an exception. In `best_effort` mode, unsupported parameters
-are **dropped** with a structured `Diagnostic` instead of raising:
+Not every problem is an exception. In `best_effort` mode, unsupported parameters are **dropped** with a structured `Diagnostic` instead of raising:
 
 ```python
 result = engine.transcribe("audio.wav", RuntimeParams(word_timestamps="word"))
@@ -136,13 +118,10 @@ Diagnostics surface:
 - Audio conversion steps (lossy resampling, format changes).
 - Engine-authored messages during streaming (`session.diagnostics()`).
 
-The `code` field is a stable, machine-readable identifier; the `message` is
-human-readable. Applications should key on `code` for programmatic handling.
+The `code` field is a stable, machine-readable identifier; the `message` is human-readable. Applications should key on `code` for programmatic handling.
 
 ## Further reading
 
-- [API Reference: exceptions](../reference/exceptions.md) -- full type
-  signatures and docstrings.
-- [Inference artifacts](../reference/artifacts.md) -- status, acquisition, and
-  structured lifecycle errors.
+- [API Reference: exceptions](../reference/exceptions.md) -- full type signatures and docstrings.
+- [Inference artifacts](../reference/artifacts.md) -- status, acquisition, and structured lifecycle errors.
 - [Specification](../specification/protocol.md) -- the normative error contract.

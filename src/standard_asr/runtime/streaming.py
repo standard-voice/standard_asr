@@ -2382,7 +2382,7 @@ class TranscriptionSession(ABC):
 
         The reserved-attribute guard treats any post-``__init__`` rebind of a
         reserved name as a subclass clobber. This is the one supported way to
-        override one afterwards: it updates the snapshot so the override is tracked
+        override one afterward: it updates the snapshot so the override is tracked
         rather than flagged. It exists for the library's own white-box tests (for example,
         injecting a deterministic clock into ``_monotonic``); it is NOT part of the
         engine-author contract -- engine authors configure via the ``__init__`` bounds,
@@ -3662,7 +3662,7 @@ class SyncSession:
                         unresponsive_probes += 1
                         continue
                     # Capture the failure mode BEFORE teardown: _shutdown joins
-                    # the thread, so is_alive() afterwards always reports dead.
+                    # the thread, so is_alive() afterward always reports dead.
                     frozen = self._thread.is_alive()
                     future.cancel()
                     self._shutdown()
