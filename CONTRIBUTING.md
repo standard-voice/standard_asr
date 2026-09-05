@@ -115,6 +115,7 @@ Four channels keep both contracts honest. The first two gate a PR:
 |---------|-------|-----------|--------------|---------|
 | **PR CI** | `ci.yml` | committed `uv.lock` (`--locked`) | **Yes** (`checks-complete`) | regressions in the exact, reproducible env |
 | **Lower bounds** | `ci.yml` (`lower-bounds` job) | `--resolution lowest-direct`, py3.10 | **Yes** (part of `checks-complete`) | a floor that is too low, or a new transitive release that fails with the floors |
+| **Core floor** | `ci.yml` (`core-floor` job) | `uv pip install --resolution lowest-direct`, no extras, py3.10 | **Yes** (part of `checks-complete`) | a core floor the server extra hides from the lower-bounds lane: fastapi needs pydantic 2.7, so that lane never installs the declared pydantic 2.5 |
 | **Dependabot** | `dependabot.yml` | newest in-range → new `uv.lock` PRs | via PR CI | staying current; security fixes |
 | **Canary** | `canary.yml` (daily) | `uv lock --upgrade` (+ `--prerelease allow`) | No (opens an issue) | upstream breakage before/just-after it ships |
 
