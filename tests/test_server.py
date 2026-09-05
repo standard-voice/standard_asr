@@ -75,8 +75,10 @@ if TYPE_CHECKING:
     import httpx2
 
 
-# The server suite needs the [server] extra; without it every test here is
-# meaningless, so skip the whole module rather than fail collection.
+# Every test in this module drives the app through Starlette's TestClient, so
+# it needs the [server] extra; skip the module rather than fail collection. The
+# one test that is about a missing FastAPI runs without the extra and lives in
+# test_server_without_fastapi.py.
 pytest.importorskip("fastapi")
 
 
@@ -850,20 +852,6 @@ def _registry_for(factory: str):
         )
     ]
     return discover_models(eps=eps, strict=True)
-
-
-def test_create_app_missing_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_import = builtins.__import__
-
-    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "fastapi":
-            raise ImportError("fastapi not installed")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    with pytest.raises(ImportError):
-        server_module.create_app()
 
 
 def test_create_app_empty_registry_exposes_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
