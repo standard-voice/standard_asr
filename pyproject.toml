@@ -41,9 +41,10 @@ classifiers = [
 ]
 dependencies = [
     # Direct dependencies declare a meaningful, verified lower bound and NO
-    # speculative upper cap. The `core-floor` CI lane installs exactly these
-    # floors and fails if any of them is not the version it resolves, so the
-    # promise made to a bare `pip install standard-asr` stays tested.
+    # speculative upper cap. The `core-floor` CI lane installs the floors that
+    # are active on Python 3.10 and fails if any of them is not the version it
+    # resolves; the `numpy-floor` lane pins the Python 3.13 numpy floor the same
+    # way. So the promise made to a bare `pip install standard-asr` stays tested.
     # Interpreter-conditional numpy floor: numpy 1.x has no cp313 wheel, so
     # 3.13+ needs numpy 2.x.
     "numpy>=1.26; python_version < '3.13'",

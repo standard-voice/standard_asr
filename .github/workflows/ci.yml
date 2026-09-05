@@ -2,9 +2,12 @@ name: CI
 
 # Primary pull-request gate (dependency-policy channel 1). Everything here runs
 # against the committed uv.lock (`--locked`), so CI is byte-for-byte reproducible
-# and a stale lock fails loudly. The lower-bounds lane additionally re-resolves
-# at each direct dependency's floor (`--resolution lowest-direct`) to keep the
-# declared lower bounds honest. Branch protection requires the single aggregate
+# and a stale lock fails loudly. Three lanes keep the declared lower bounds
+# honest, each proving a different thing: `lower-bounds` re-resolves the whole
+# project at the lowest jointly compatible direct versions (`--resolution
+# lowest-direct`); `core-floor` installs the bare package at each core floor
+# active on Python 3.10; `numpy-floor` pins the Python 3.13 numpy floor
+# exactly. Branch protection requires the single aggregate
 # check `checks-complete` (ADR D8); do NOT add path filters here — a skipped
 # required check would block merges forever.
 
@@ -494,8 +497,9 @@ jobs:
             'docs/site/out/**/*.html'
 
   checks-complete:
-    # Single aggregate status required by branch protection (ADR D8). Adding a
-    # new job above automatically tightens the gate via `needs`.
+    # Single aggregate status required by branch protection (ADR D8). A new
+    # required job must be added to `needs` below; the gate does not discover
+    # jobs on its own.
     name: checks-complete
     if: always()
     needs: [lock-check, lint, test, lower-bounds, core-floor, numpy-floor, build, actionlint, vale, coverage, zizmor, docs]
