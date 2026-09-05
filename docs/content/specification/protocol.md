@@ -802,7 +802,7 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 可选标准字段用 **capability-bearing config mixin**（`DeviceConfigMixin`/`LanguageConfigMixin`/`DownloadConfigMixin`…）：**字段出现在模型里 ⇒ 适用**——auto-UI 据此渲染正确表单，无需逐字段隐藏。「缺失 ⇒ 不适用」；「present-with-default ⇒ 适用-默认」。
 
 ## IC.6 `default_language`（解与语言设计的矛盾）
-**适用 ⇒ 必填或标准默认**：引擎声明语言能力（非 trivial `selectable_languages` 或 `language.runtime_override`）则 MUST 供 `default_language`（可为 `auto`）——保 `effective_language` 算法 total。D7 **不**放松已定稿语言设计（取代原「对所有引擎非强制」表述）。
+**适用 ⇒ 必填或标准默认**：按语言设计 R1，只要引擎暴露语言轴（`selectable_languages` 非空，哪怕只含一种语言或仅含 `["auto"]`），Init Config 就 MUST 提供 `default_language`（可为 `auto`）——保 `effective_language` 算法 total。`<mode>.language.runtime_override` 只决定单次请求能否覆盖默认语言，不决定语言轴是否存在。D7 **不**放松已定稿语言设计（取代原「对所有引擎非强制」表述）。
 
 ## IC.7 init / runtime 边界
 init = 实例存续期固定、属安装/部署选择（权重/路径、device、凭证、batch size、aligner 装配、默认语言）；runtime = 每请求可变。**Tie-breaker：能按请求变 ⇒ runtime（`provider_params`），不进 init**（即便引擎也接受构造期传）。模型选择 = **entrypoint preset**，非 init `model` 字段。
