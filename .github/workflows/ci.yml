@@ -142,9 +142,9 @@ jobs:
     # The lower-bounds lane cannot reach the core `pydantic>=2.5` floor: uv
     # resolves one universal set for the whole project, and the [server] extra's
     # fastapi requires pydantic>=2.7.0, so that lane always installs 2.7 (#80).
-    # This lane installs the bare `standard-asr` shape instead -- the core
-    # dependencies plus the `test` group, no extras -- which is exactly the
-    # install every application gets from `pip install standard-asr`. It uses
+    # This lane installs the same package set a bare `pip install standard-asr`
+    # resolves, at the lowest versions the declared floors allow, plus pytest
+    # (the `test` group) and no extras. It uses
     # `uv pip install` rather than `uv sync` on purpose: `uv sync` resolves the
     # universal lock first and only then picks what to install, so no group or
     # extra selection can keep fastapi's constraint out of the resolution.
@@ -182,7 +182,8 @@ jobs:
       - name: Assert every core dependency sits at its declared floor
         # The floors come from the installed package metadata, so this lane
         # cannot drift from pyproject.toml the way its name once drifted from
-        # what it installed.
+        # what it installed. `packaging` arrives with pytest; the bare package
+        # does not depend on it.
         run: |
           uv run --no-sync python - <<'PY'
           import sys
@@ -246,13 +247,19 @@ jobs:
         run: |
           uv sync --locked --all-extras --all-groups
           FLOOR="$(uv run --no-sync python - <<'PY'
+          import sys
           from importlib.metadata import requires
           from packaging.requirements import Requirement
-          for raw in requires("standard-asr") or []:
-              req = Requirement(raw)
-              if req.name == "numpy" and (req.marker is None or req.marker.evaluate()):
-                  print(next(s.version for s in req.specifier if s.operator == ">="))
-                  break
+          floors = [
+              s.version
+              for req in map(Requirement, requires("standard-asr") or [])
+              if req.name == "numpy" and (req.marker is None or req.marker.evaluate())
+              for s in req.specifier
+              if s.operator == ">="
+          ]
+          if len(floors) != 1:
+              sys.exit(f"expected exactly one active numpy >= bound, found {floors}")
+          print(floors[0])
           PY
           )"
           echo "declared numpy floor: $FLOOR"
@@ -264,19 +271,32 @@ jobs:
           from importlib.metadata import requires, version
           from packaging.requirements import Requirement
           from packaging.version import Version
-          floor = next(
-              Version(next(s.version for s in req.specifier if s.operator == ">="))
+          floors = [
+              Version(s.version)
               for req in map(Requirement, requires("standard-asr") or [])
               if req.name == "numpy" and (req.marker is None or req.marker.evaluate())
-          )
+              for s in req.specifier
+              if s.operator == ">="
+          ]
+          if len(floors) != 1:
+              print(f"::error::expected exactly one active numpy >= bound, found {floors}")
+              sys.exit(1)
+          floor = floors[0]
           got = Version(version("numpy"))
           print(f"numpy {got} (declared floor {floor})")
           if got != floor:
               print(f"::error::numpy is {got}, not the declared floor {floor}")
               sys.exit(1)
           PY
+      - name: Check the pinned numpy against every other locked package
+        # `uv pip install numpy==<floor>` resolves numpy alone; nothing else
+        # verifies that the rest of the locked environment still accepts that
+        # version. Today it does (scipy is the only real constraint). This step
+        # fails loudly the day a future lock needs a newer numpy, instead of
+        # letting the lane test an environment no resolver would produce.
+        run: uv pip check
       - name: Run tests
-        run: uv run --no-sync pytest
+        run: uv run --no-sync pytest --no-cov
 
   build:
     # Packaging-hygiene gate (ADR D1): build the wheel and assert it ships ONLY
