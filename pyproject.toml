@@ -49,6 +49,10 @@ dependencies = [
     # 3.13+ needs numpy 2.x.
     "numpy>=1.26; python_version < '3.13'",
     "numpy>=2.1; python_version >= '3.13'",
+    # The pydantic floor is reachable on Python 3.10 to 3.12 only: pydantic-core
+    # 2.14.1, its companion, has no wheel for 3.13. A resolver on a newer
+    # interpreter picks a later pydantic; the core-floor lane proves the floor
+    # on 3.10.
     "pydantic>=2.5",
 ]
 
@@ -71,9 +75,10 @@ test = [
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
 ]
-# The server suite's own tools. Kept out of `test` because every one of them
-# pulls fastapi, whose `pydantic>=2.7.0` would raise the core pydantic floor
-# out of reach of the core-floor lane.
+# The server suite's own tools. Kept out of `test` because the suite they serve
+# needs the [server] extra: fastapi's own pydantic floor would raise the core
+# pydantic floor out of reach of the core-floor lane, and the other four tools
+# are only used alongside it.
 test-server = [
     # The FastAPI server tests drive it via Starlette's `TestClient`, which since
     # Starlette 1.2 runs on the `httpx2` transport; httpx2>=2.0 is that transport.
