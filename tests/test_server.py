@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import builtins
 import io
 import json
 import logging
@@ -72,14 +73,6 @@ from standard_asr.toolchain import server as server_module
 
 if TYPE_CHECKING:
     import httpx2
-
-
-# The tests in this module build the app or drive it through Starlette's
-# TestClient, so they need the [server] extra; skip the module rather than fail
-# collection. The tests that run without the extra (a missing FastAPI, the
-# uvicorn launcher, the packaging contract) live in
-# test_server_without_extras.py.
-pytest.importorskip("fastapi")
 
 
 class _DummyConfig(BaseConfig[str]):
@@ -854,6 +847,20 @@ def _registry_for(factory: str):
     return discover_models(eps=eps, strict=True)
 
 
+def test_create_app_missing_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "fastapi":
+            raise ImportError("fastapi not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(ImportError):
+        server_module.create_app()
+
+
 def test_create_app_empty_registry_exposes_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
     # An explicitly passed empty ModelRegistry must expose ZERO models and MUST
     # NOT fall back to plugin discovery (a bare `registry or discover_models()`
@@ -1063,6 +1070,61 @@ def test_transcribe_body_is_the_single_wire_projection_verbatim() -> None:
     )
     assert "中文轉錄測試" in cjk_body  # UTF-8 passthrough...
     assert "\\u4e2d" not in cjk_body  # ...never an ASCII escape
+
+
+def test_run_handles_missing_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "uvicorn":
+            raise ImportError("uvicorn not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(ImportError):
+        server_module.run()
+
+
+def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    uvicorn_stub = types.ModuleType("uvicorn")
+    setattr(uvicorn_stub, "called", False)
+    setattr(uvicorn_stub, "kwargs", {})
+
+    def _run(app: Any, **kwargs: Any) -> None:
+        setattr(uvicorn_stub, "called", True)
+        setattr(uvicorn_stub, "kwargs", kwargs)
+
+    uvicorn_stub.run = _run  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(__import__("sys").modules, "uvicorn", uvicorn_stub)
+
+    create_app_kwargs: dict[str, Any] = {}
+
+    def _create_app(**kwargs: Any) -> str:
+        create_app_kwargs.update(kwargs)
+        return "app"
+
+    monkeypatch.setattr(server_module, "create_app", _create_app)
+
+    server_module.run(
+        host="127.0.0.1",
+        port=9999,
+        log_level="warning",
+        max_ws_frame_bytes=4096,
+    )
+
+    assert getattr(uvicorn_stub, "called") is True
+    kwargs = getattr(uvicorn_stub, "kwargs")
+    assert kwargs["host"] == "127.0.0.1"
+    assert kwargs["port"] == 9999
+    # The WS per-frame cap is wired to uvicorn's transport ws_max_size so the
+    # app-level bound and the transport bound match.
+    assert kwargs["ws_max_size"] == 4096
+    # The same cap is propagated to the app it builds.
+    assert create_app_kwargs["max_ws_frame_bytes"] == 4096
 
 
 def test_declared_metadata_endpoint_is_canonical_and_does_not_instantiate() -> None:
@@ -2795,6 +2857,7 @@ def test_body_size_middleware_passes_non_http_scope() -> None:
 
 
 def test_body_size_middleware_counts_streamed_bytes_and_suppresses_app_response() -> None:
+    pytest.importorskip("fastapi")
     # The true-cap layer: an oversize body delivered as multiple chunks (no
     # honest Content-Length) is rejected with 413 the moment the cumulative count
     # exceeds the cap; the app keeps reading past the breach (covering the
@@ -2842,6 +2905,7 @@ def test_body_size_middleware_counts_streamed_bytes_and_suppresses_app_response(
 
 
 def test_body_size_middleware_within_cap_streamed_passes_through() -> None:
+    pytest.importorskip("fastapi")
     # A streamed body within the cap passes through untouched: the app reads all
     # frames and its own response is delivered (no 413, no suppression).
     import asyncio
@@ -4378,6 +4442,27 @@ def test_bridge_stream_unexpected_send_failure_is_logged(
     assert websocket.send_attempts == 2
 
 
+def test_server_extra_declares_a_websocket_library() -> None:
+    # Drift guard: server.md promises a WebSocket
+    # streaming endpoint, but bare uvicorn ships no WS protocol implementation.
+    # The documented `pip install standard-asr[server]` must therefore pull one
+    # in, or /v1/stream answers 404 on upgrade in every user install while the
+    # in-process TestClient suite stays green.
+    import re
+    from pathlib import Path
+
+    pyproject = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"^server\s*=\s*\[(?P<deps>[^\]]*)\]", pyproject, re.MULTILINE)
+    assert match is not None, "pyproject.toml must declare the [server] extra"
+    deps = match.group("deps")
+    assert "websockets" in deps or "wsproto" in deps, (
+        "The [server] extra must include a WebSocket protocol library "
+        "(websockets or wsproto); bare uvicorn cannot serve /v1/stream."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Round-5 H1: a registered model whose plugin fails to LOAD is an engine
 # fault (scrubbed 500 / internal_error), never an "unknown model" 404.
@@ -4834,54 +4919,6 @@ def test_error_event_drops_extra_before_serializing() -> None:
     assert payload["code"] == "engine_error"
     assert payload["recoverable"] is True
     assert payload["type"] == "error"
-
-
-def test_wire_visible_slots_reject_values_with_no_json_form() -> None:
-    # G5.2: the Python objects and the JSON documents are the same protocol
-    # seen twice, so a wire-visible slot may only hold what a JSON document
-    # can hold. Declared `Any`, these constructed happily and then failed the
-    # projection AFTER an endpoint had committed to a response.
-    from pydantic import JsonValue, ValidationError
-
-    from standard_asr.contract.params import DIARIZE
-    from standard_asr.contract.results import Diagnostic, Segment, Word, to_json_value
-
-    for kwargs in (
-        {"code": "x", "message": "m", "provided": object()},
-        {"code": "x", "message": "m", "effective": object()},
-    ):
-        with pytest.raises(ValidationError):
-            Diagnostic(**kwargs)  # pyright: ignore[reportArgumentType]
-
-    with pytest.raises(ValidationError):
-        TranscriptionResult(text="x", extra={"opaque": object()})  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValidationError):
-        TranscriptionEvent.make_error(code="engine_error", extra={"o": object()})
-    with pytest.raises(ValidationError):
-        Word(start=0.0, end=1.0, text="w", extra={"o": object()})  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValidationError):
-        Segment(start=0.0, end=1.0, text="s", extra={"o": object()})  # pyright: ignore[reportArgumentType]
-
-    # Non-finite floats are Python floats but NOT JSON: admitting them would
-    # emit a document no conforming parser accepts.
-    with pytest.raises(ValidationError):
-        Diagnostic(code="x", message="m", provided=float("nan"))
-    with pytest.raises(ValidationError):
-        TranscriptionResult(text="x", extra={"ratio": float("inf")})
-
-    # Everything a JSON document CAN hold still passes, nested arbitrarily.
-    nested: JsonValue = {"a": [1, 2.5, "s", True, None, {"b": []}]}
-    assert TranscriptionResult(text="x", extra={"a": nested}).extra == {"a": nested}
-    assert Diagnostic(code="x", message="m", provided=nested).provided == nested
-
-    # A TYPED container is JSON data but `list` is invariant, so a checker
-    # rejects it where list[JsonValue] is expected. `to_json_value` absorbs
-    # that once -- an engine author hands it a list[str] instead of writing a
-    # cast at every call site -- and a structured value is dumped by the same
-    # helper. Runtime validation is unaffected either way.
-    hints: list[str] = ["Anthropic", "Claude"]
-    assert Diagnostic(code="x", message="m", provided=to_json_value(hints)).provided == hints
-    assert to_json_value(DIARIZE) == DIARIZE.model_dump(mode="json")
 
 
 def test_rest_projection_failure_is_a_scrubbed_500_not_an_asgi_crash(

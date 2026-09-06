@@ -1491,3 +1491,51 @@ def test_string_key_walk_is_cycle_safe() -> None:
     cyclic_bad[b"bad"] = 1
     with pytest.raises(Exception, match="JSON object keys must be strings"):
         results_module.require_json_string_keys(cyclic_bad)
+
+
+def test_wire_visible_slots_reject_values_with_no_json_form() -> None:
+    # G5.2: the Python objects and the JSON documents are the same protocol
+    # seen twice, so a wire-visible slot may only hold what a JSON document
+    # can hold. Declared `Any`, these constructed happily and then failed the
+    # projection AFTER an endpoint had committed to a response.
+    from pydantic import JsonValue
+
+    from standard_asr.contract.params import DIARIZE
+    from standard_asr.contract.results import to_json_value
+
+    for kwargs in (
+        {"code": "x", "message": "m", "provided": object()},
+        {"code": "x", "message": "m", "effective": object()},
+    ):
+        with pytest.raises(ValidationError):
+            Diagnostic(**kwargs)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(ValidationError):
+        TranscriptionResult(text="x", extra={"opaque": object()})  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValidationError):
+        TranscriptionEvent.make_error(code="engine_error", extra={"o": object()})
+    with pytest.raises(ValidationError):
+        Word(start=0.0, end=1.0, text="w", extra={"o": object()})  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValidationError):
+        Segment(start=0.0, end=1.0, text="s", extra={"o": object()})  # pyright: ignore[reportArgumentType]
+
+    # Non-finite floats are Python floats but NOT JSON: admitting them would
+    # emit a document no conforming parser accepts.
+    with pytest.raises(ValidationError):
+        Diagnostic(code="x", message="m", provided=float("nan"))
+    with pytest.raises(ValidationError):
+        TranscriptionResult(text="x", extra={"ratio": float("inf")})
+
+    # Everything a JSON document CAN hold still passes, nested arbitrarily.
+    nested: JsonValue = {"a": [1, 2.5, "s", True, None, {"b": []}]}
+    assert TranscriptionResult(text="x", extra={"a": nested}).extra == {"a": nested}
+    assert Diagnostic(code="x", message="m", provided=nested).provided == nested
+
+    # A TYPED container is JSON data but `list` is invariant, so a checker
+    # rejects it where list[JsonValue] is expected. `to_json_value` absorbs
+    # that once -- an engine author hands it a list[str] instead of writing a
+    # cast at every call site -- and a structured value is dumped by the same
+    # helper. Runtime validation is unaffected either way.
+    hints: list[str] = ["Anthropic", "Claude"]
+    assert Diagnostic(code="x", message="m", provided=to_json_value(hints)).provided == hints
+    assert to_json_value(DIARIZE) == DIARIZE.model_dump(mode="json")
