@@ -626,7 +626,7 @@ result = engine_b.transcribe(
 #   继承不豁免 swap 安全，否则 A 独有旋钮会被引擎 B 静默忽略。）
 ```
 
-合规套件提供 swap 安全探针 `check_provider_params_swap_safety`：以一个**外来** `provider_params` 子类（私有于套件、永不与引擎声明类型重合）调 `transcribe`，断言无论 strict / best_effort 都抛 `InvalidProviderParamError`。因 R3 规定 `provider_params` 先于音频解码校验（快失败），该探针在触达模型前即返回，**无计费副作用**——抓的是绕过 `EngineBase` 模板又忘了校验的引擎。
+合规套件提供 swap 安全探针 `check_provider_params_swap_safety`：以一个**外来** `provider_params` 子类（私有于套件、永不与引擎声明类型重合）调 `transcribe`，断言无论 strict / best_effort 都抛 `InvalidProviderParamError`。因 R3 规定 `provider_params` 先于音频解码校验（快失败），对合规引擎，该探针在触达模型前即返回，**无计费副作用**；它抓的正是绕过 `EngineBase` 模板又忘了校验的引擎，而那样的引擎可能在探针上真的跑起模型或发出收费调用（见 cli.md「Probe honesty」）。
 
 ## 6. 附注与理由
 
