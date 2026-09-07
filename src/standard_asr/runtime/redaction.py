@@ -39,9 +39,8 @@ into their own message *and then* discards the chain, or a sensitive value
 that happens to be shaped exactly like a field name, can still reach a log.
 Closing those residuals required proving properties of third-party code and
 introspecting pydantic internals -- machinery whose own complexity produced
-more defects than the residuals it closed (the AGENTS.md hard budget exists
-because of that history). If one of these residuals bites in practice, the
-answer is a targeted rule here, not a prover.
+more defects than the residuals it closed. If one of these residuals bites in
+practice, the answer is a targeted rule here, not a prover.
 """
 
 from __future__ import annotations

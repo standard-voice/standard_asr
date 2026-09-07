@@ -3,7 +3,7 @@
 
 """Tests for the accident-model scrubber (runtime/redaction.py).
 
-The module's contract is three cheap rules (see AGENTS.md's trust model):
+The module's contract is three cheap rules, listed in its module docstring:
 validation-error detail never echoes the input, exception text destined for
 an operator surface goes through the chain summary, and a full traceback is
 logged only when the chain carries no ``ValidationError``.
