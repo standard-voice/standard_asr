@@ -30,7 +30,8 @@ caller picks the loss explicitly (``"omit"`` / ``"collapse"``). The nullable
 from __future__ import annotations
 
 import re
-from typing import Iterable, Literal, NamedTuple
+from collections.abc import Iterable
+from typing import Literal, NamedTuple
 
 from standard_asr.contract.exceptions import SubtitleRenderingError
 from standard_asr.contract.results import Segment, TranscriptionResult

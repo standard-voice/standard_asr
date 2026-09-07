@@ -8,8 +8,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import runpy
+from collections.abc import AsyncIterator
 from importlib.metadata import EntryPoint, EntryPoints
-from typing import Any, AsyncIterator, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 import pytest
 from pydantic import ConfigDict

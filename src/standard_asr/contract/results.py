@@ -18,8 +18,8 @@ Null rules (disambiguation):
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Annotated, Literal, Sequence, cast
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Literal, cast
 
 from pydantic import (
     BaseModel,

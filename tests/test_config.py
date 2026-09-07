@@ -610,7 +610,7 @@ def test_self_referential_submodel_does_not_loop() -> None:
     class _Node(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        child: "_Node | None" = None
+        child: _Node | None = None
 
     _Node.model_rebuild()
 
@@ -1733,8 +1733,8 @@ def test_secret_exactness_holds_for_custom_read_only_mapping() -> None:
     Covers both carriers, str/bytes/bytearray inputs, and alias keys --
     the full wrap matrix, through the Mapping path.
     """
-    from pydantic import AliasChoices as _AC
-    from pydantic import Field as _F
+    from pydantic import AliasChoices as _AliasChoices
+    from pydantic import Field as _Field
 
     cfg = _BytesFidelityCfg.model_validate(
         _ReadOnlyMapping({"engine": "bf", "str_token": b"  by \tte  ", "bytes_token": " raw str "})
@@ -1746,9 +1746,9 @@ def test_secret_exactness_holds_for_custom_read_only_mapping() -> None:
 
     class _AliasedMapCfg(BaseConfig[Literal["amc"]]):
         engine: Literal["amc"] = "amc"
-        token: SecretStr | None = _F(
+        token: SecretStr | None = _Field(
             default=None,
-            validation_alias=_AC("token", "xi-token"),
+            validation_alias=_AliasChoices("token", "xi-token"),
             json_schema_extra={"format": "password", "writeOnly": True, "secret": True},
         )
 
@@ -2062,7 +2062,7 @@ def test_secret_extraction_is_the_closure_boundary() -> None:
         note: str = ""
 
         @model_validator(mode="after")
-        def _copy_out(self) -> "_CopiedCfg":
+        def _copy_out(self) -> _CopiedCfg:
             object.__setattr__(self, "note", "Bearer " + self.api_key.get_secret_value())
             return self
 
@@ -2074,7 +2074,7 @@ def test_secret_extraction_is_the_closure_boundary() -> None:
             note: str = ""
 
             @model_validator(mode="after")
-            def _copy_out(self) -> "_NaiveCfg":
+            def _copy_out(self) -> _NaiveCfg:
                 self.note = "x"  # plain assignment: frozen rejects it loudly
                 return self
 
@@ -2109,7 +2109,7 @@ def test_secret_extraction_is_the_closure_boundary() -> None:
             return _LeakyPath(cast("Any", value))
 
         @model_validator(mode="after")
-        def _copy_out(self) -> "_SmuggledCfg":
+        def _copy_out(self) -> _SmuggledCfg:
             cast("Any", self.model_dir).leaked = self.api_key.get_secret_value()
             return self
 

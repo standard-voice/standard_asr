@@ -16,7 +16,7 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 
 ## Git hooks (prek)
 
-We use [**prek**](https://github.com/j178/prek) — a fast, drop-in-compatible reimplementation of `pre-commit` — to run lint, format, type-check, and a GitHub Actions security audit before each commit (and the test suite before each push). The config lives in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
+We use [**prek**](https://github.com/j178/prek) — a fast, drop-in-compatible reimplementation of `pre-commit` — to run lint, format, type-check, Vale, and a GitHub Actions security audit before each commit, and all of that again plus the test suite before each push. The config lives in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
 
 Install the tool and the git hooks once:
 
@@ -25,10 +25,11 @@ uv tool install prek      # or: pipx install prek
 prek install              # installs the pre-commit AND pre-push hooks
 ```
 
-Run everything manually at any time:
+Run the hooks manually at any time, and the test suite with them before you call a change done; the test suite is a push hook, so `prek run` does not run it:
 
 ```sh
 prek run --all-files
+uv run pytest
 ```
 
 What runs **on commit** (fast):
@@ -39,9 +40,10 @@ What runs **on commit** (fast):
 | ruff (format) | `uv run ruff format` | |
 | **pyright (strict typecheck)** | `uv run pyright` | reads scope from `pyproject.toml` |
 | zizmor | `zizmorcore/zizmor-pre-commit` | audits `.github/workflows/` |
+| vale (writing standard) | `uv run bash scripts/vale.sh --gate` | the pinned Vale binary, fetched by `scripts/fetch_vale.py` on first use |
 | generic hygiene | `pre-commit/pre-commit-hooks` | trailing whitespace, EOF, YAML/TOML, etc. |
 
-What runs **on push**: the full test suite (`uv run pytest`).
+What runs **on push**: every hook above again, then the full test suite (`uv run pytest`). A hook that declares no `stages` runs at every installed stage; only pytest is limited to push.
 
 > The lint/format/typecheck hooks are **local** hooks that call `uv run`, so they execute the exact tool versions pinned in `uv.lock` — identical to CI, with no drift between a pinned hook revision and the project's tools.
 
@@ -72,7 +74,7 @@ scripts/vale.sh          # human view: pretty output, all levels (keep at zero)
 scripts/vale.sh --gate   # what CI enforces: fails on any alert at any level
 ```
 
-Like `actionlint`, Vale is not a Python dependency: CI downloads a pinned binary and verifies its checksum; for local use, install it with your system package manager (or set `VALE=/path/to/vale`).
+Vale is not a Python dependency. The wrapper fetches the pinned version on first use, verifies its SHA256, and caches it under `.tools/vale/`; the pin and the digests live in `scripts/fetch_vale.py`, and CI runs the same path. `prek` runs the gate before each commit. Set `VALE=/path/to/vale` to use another binary, for example on an air-gapped machine. On Windows the wrapper is a bash script, so run `prek` from Git Bash.
 
 ### Adding documentation
 

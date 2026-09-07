@@ -70,7 +70,7 @@ _OPEN_UPPER_SENTINEL = "100000.0.0"
 _JUST_BELOW_FILL = 99999
 
 
-def _empty_plugins() -> list["PluginNumpy"]:
+def _empty_plugins() -> list[PluginNumpy]:
     """Return an empty plugin list (typed factory for dataclass default).
 
     Returns:
@@ -381,7 +381,7 @@ def _emptiness_candidates(combined: SpecifierSet) -> set[str]:
     return candidates
 
 
-def _segment_neighbor_candidates(parsed: "Version") -> set[str]:
+def _segment_neighbor_candidates(parsed: Version) -> set[str]:
     """Derive witnesses adjacent to a version's pre/dev/post segment.
 
     For an edge version carrying a pre-release, development, or post-release

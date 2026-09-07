@@ -29,6 +29,7 @@ releases may include breaking changes.
 
 ### Changed (breaking — pre-1.0 policy: long-term design over compatibility)
 
+- **`EventBufferOverflow` is renamed `EventBufferOverflowError`.** Every other exception the library raises ends in `Error`, and the `ruff` naming rules (`N`) now enforce the suffix.
 - **Credential safety is redesigned around a pinned trust model: plugins are
   trusted code, and the security layer defends against ACCIDENTS, not
   adversaries** (AGENTS.md). What ships is a set of cheap, total rules

@@ -9,8 +9,9 @@ import inspect
 import math
 import re
 import threading
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Callable, ClassVar, Final, Iterable, Literal, Protocol, Sequence, cast
+from typing import ClassVar, Final, Literal, Protocol, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError

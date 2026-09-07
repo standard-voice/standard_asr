@@ -40,7 +40,8 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from typing import Any, Coroutine, Literal, cast
+from collections.abc import Coroutine
+from typing import Any, Literal, cast
 
 from standard_asr.contract.exceptions import EngineContractError
 

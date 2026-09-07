@@ -66,7 +66,7 @@ class _CrossFieldEcho(BaseModel):
     b: str
 
     @model_validator(mode="after")
-    def _reject(self) -> "_CrossFieldEcho":
+    def _reject(self) -> _CrossFieldEcho:
         raise ValueError(f"mismatch: {self.b}")
 
 
@@ -299,11 +299,11 @@ def test_summary_is_one_bounded_line() -> None:
 
 
 def test_summary_degrades_on_raising_or_empty_str() -> None:
-    class _HostileStr(Exception):
+    class _HostileStrError(Exception):
         def __str__(self) -> str:
             raise RuntimeError("boom")
 
-    assert "HostileStr: <exception str() failed>" in safe_exception_summary(_HostileStr())
+    assert "HostileStrError: <exception str() failed>" in safe_exception_summary(_HostileStrError())
     # An empty message renders the bare type name, no dangling colon.
     assert safe_exception_summary(RuntimeError()) == "RuntimeError"
 

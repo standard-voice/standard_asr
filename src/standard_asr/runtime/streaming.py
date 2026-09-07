@@ -1168,7 +1168,7 @@ class StreamReducer:
         )
 
 
-class EventBufferOverflow(Exception):
+class EventBufferOverflowError(Exception):
     """Internal signal: the bounded send-side event buffer overflowed.
 
     Never propagates to applications; the producer converts it into a terminal
@@ -1215,7 +1215,7 @@ class _CoalescingBuffer:
     its kind, and a coalesced partial reuses its slot instead of consuming
     another. The budget decides which puts are REFUSED, never which events
     exist. A NEW partial slot (a not-yet-pending segment) or a ``progress``
-    heartbeat raises :class:`EventBufferOverflow` when the budget is spent,
+    heartbeat raises :class:`EventBufferOverflowError` when the budget is spent,
     and the producer turns that into a terminal ``backpressure`` error.
     ``final`` / ``supersede`` (like ``done`` / ``error`` via
     :meth:`put_forced`) MUST never be dropped, so they are appended even
@@ -1280,7 +1280,7 @@ class _CoalescingBuffer:
             reduction consumes what the consumer actually sees.
 
         Raises:
-            EventBufferOverflow: If the buffer is at capacity and the event is a
+            EventBufferOverflowError: If the buffer is at capacity and the event is a
                 NEW partial for a not-yet-pending segment (growing the buffer)
                 or a ``progress`` heartbeat. Raised before any mutation.
         """
@@ -1422,10 +1422,10 @@ class _CoalescingBuffer:
         """Ensure room for one more live event.
 
         Raises:
-            EventBufferOverflow: If already at capacity.
+            EventBufferOverflowError: If already at capacity.
         """
         if self._live_count >= self._capacity:
-            raise EventBufferOverflow
+            raise EventBufferOverflowError
 
     def close(self) -> None:
         """Signal that no further events are coming."""
@@ -2967,7 +2967,7 @@ class TranscriptionSession(ABC):
             self._buffer.put_forced(self._terminate(TranscriptionEvent.done()))
         except asyncio.CancelledError:  # pragma: no cover - teardown path
             raise
-        except EventBufferOverflow:
+        except EventBufferOverflowError:
             self._drain_pending_reconnects()
             self._force_error(
                 "backpressure",

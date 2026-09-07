@@ -27,8 +27,8 @@ dot-path; missing keys are *fail-closed* (return ``False``).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, Iterator, Literal, Sequence, cast
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 

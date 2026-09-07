@@ -48,7 +48,7 @@ from standard_asr.runtime.streaming import (
     DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
     DIAG_SUPERSEDE_REINTRODUCES_SEGMENT,
     DIAG_SUPERSEDE_UNKNOWN_OLD_ID,
-    EventBufferOverflow,
+    EventBufferOverflowError,
     StreamDeadlines,
     StreamReducer,
     SyncSession,
@@ -1198,7 +1198,7 @@ def test_event_buffer_overflow_raises() -> None:
     buf = _CoalescingBuffer(capacity=2)
     buf.put(TranscriptionEvent.partial("s0", "a"))
     buf.put(TranscriptionEvent.partial("s1", "b"))
-    with pytest.raises(EventBufferOverflow):
+    with pytest.raises(EventBufferOverflowError):
         buf.put(TranscriptionEvent.partial("s2", "c"))
 
 
@@ -1231,7 +1231,7 @@ def test_drop_proof_slots_consume_the_shared_budget() -> None:
     buf = _CoalescingBuffer(capacity=4)
     for i in range(5):
         buf.put(TranscriptionEvent.final(f"s{i}", "x"))
-    with pytest.raises(EventBufferOverflow):
+    with pytest.raises(EventBufferOverflowError):
         buf.put(TranscriptionEvent.partial("p0", "hi"))
 
 
@@ -1250,7 +1250,7 @@ def test_undelivered_segment_holds_two_slots() -> None:
     buf.put(TranscriptionEvent.final("s1", "aa"))  # partial kept: s1 undeclared
     buf.put(TranscriptionEvent.partial("s2", "b"))
     buf.put(TranscriptionEvent.final("s2", "bb"))  # budget now fully spent
-    with pytest.raises(EventBufferOverflow):
+    with pytest.raises(EventBufferOverflowError):
         buf.put(TranscriptionEvent.partial("s3", "c"))
 
 
@@ -1262,7 +1262,7 @@ def test_final_supersede_never_dropped_at_capacity() -> None:
         buf.put(TranscriptionEvent.partial("s0", "a"))
         buf.put(TranscriptionEvent.partial("s1", "b"))  # at capacity now
         # A NEW distinct-segment partial would overflow ...
-        with pytest.raises(EventBufferOverflow):
+        with pytest.raises(EventBufferOverflowError):
             buf.put(TranscriptionEvent.partial("s2", "c"))
         # ... but final / supersede MUST bypass the bound.
         buf.put(TranscriptionEvent.final("s3", "f"))

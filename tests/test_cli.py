@@ -835,7 +835,7 @@ def _duck_class_properties_factory() -> (  # pyright: ignore[reportUnusedFunctio
     return _DuckClassPropertiesASR()
 
 
-class _ArbitraryFactoryFault(Exception):
+class _ArbitraryFactoryFaultError(Exception):
     """A plugin-authored fault type the registry does not wrap."""
 
 
@@ -852,7 +852,7 @@ def _os_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedF
 
 
 def _authored_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
-    raise _ArbitraryFactoryFault("plugin said no")
+    raise _ArbitraryFactoryFaultError("plugin said no")
 
 
 def _keyboard_interrupt_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]

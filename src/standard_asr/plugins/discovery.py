@@ -25,15 +25,12 @@ import inspect
 import logging
 import re
 import typing
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, EntryPoints, entry_points
 from typing import (
     TYPE_CHECKING,
     Any,
-    Iterable,
-    Iterator,
-    Mapping,
-    MutableMapping,
     Protocol,
     final,
 )
@@ -76,7 +73,7 @@ class ASRFactory(Protocol):
         ...     return MyASREngine(**kwargs)
     """
 
-    def __call__(self, *args: Any, **kwargs: Any) -> "StandardASR":
+    def __call__(self, *args: Any, **kwargs: Any) -> StandardASR:
         """Create and return a ``StandardASR`` engine instance."""
         ...
 
@@ -240,7 +237,7 @@ class ModelSpec:
             )
         return target  # type: ignore[return-value]
 
-    def engine_class(self) -> type["StandardASR"]:
+    def engine_class(self) -> type[StandardASR]:
         """Resolve the engine **class** without instantiating it.
 
         This enables reading class-level ``ClassVar`` metadata
@@ -358,7 +355,7 @@ class ModelSpec:
                 "a concrete engine return type."
             ) from exc
 
-    def _ensure_engine_class(self, cls: type) -> type["StandardASR"]:
+    def _ensure_engine_class(self, cls: type) -> type[StandardASR]:
         """Validate ``cls`` is recognizably an engine class, then cast.
 
         ``StandardASR`` is a ``runtime_checkable`` :class:`typing.Protocol` with
@@ -575,7 +572,7 @@ class ModelRegistry:
         """
         return self.spec(name).load_factory()
 
-    def engine_class(self, name: str) -> type["StandardASR"]:
+    def engine_class(self, name: str) -> type[StandardASR]:
         """Resolve a model's engine class without instantiating it.
 
         Use this to read class-level metadata (``declared_capabilities``,
@@ -656,7 +653,7 @@ class ModelRegistry:
                 f"GET /v1/config-schema/...). Underlying error: {exc}"
             ) from exc
 
-    def create(self, name: str, /, *args: Any, **kwargs: Any) -> "StandardASR":
+    def create(self, name: str, /, *args: Any, **kwargs: Any) -> StandardASR:
         """Create an ASR engine instance.
 
         This is the **primary method** for instantiating ASR engines. It loads the

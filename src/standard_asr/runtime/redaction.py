@@ -49,7 +49,8 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from typing import Any, Sequence, cast
+from collections.abc import Sequence
+from typing import Any, cast
 
 from pydantic import ValidationError
 
