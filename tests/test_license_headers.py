@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Every Python file carries the SPDX license header."""
@@ -14,8 +14,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 #: to the project.
 _SOURCE_ROOTS = ("src", "tests", "docs/site/scripts", "scripts", "docs/internal")
 _HEADER = (
-    "# SPDX-FileCopyrightText: 2026 Standard Voice Contributors\n"
-    "# SPDX-License-Identifier: Apache-2.0\n"
+    "# SPDX-FileCopyrightText: The Standard ASR Authors\n# SPDX-License-Identifier: Apache-2.0\n"
 )
 
 
