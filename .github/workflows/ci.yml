@@ -3,8 +3,9 @@ name: CI
 # Primary pull-request gate (dependency-policy channel 1). Everything here runs
 # against the committed uv.lock (`--locked`), so CI is byte-for-byte reproducible
 # and a stale lock fails loudly. The lower-bounds lane additionally re-resolves
-# at each direct dependency's floor (`--resolution lowest-direct`) to keep the
-# declared lower bounds honest. Branch protection requires the single aggregate
+# the direct dependencies at their lowest jointly compatible versions
+# (`--resolution lowest-direct`) to keep the declared lower bounds honest; a
+# floor another range raises is not reached (CONTRIBUTING.md, "CI channels"). Branch protection requires the single aggregate
 # check `checks-complete` (ADR D8); do NOT add path filters here — a skipped
 # required check would block merges forever.
 
@@ -128,9 +129,9 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - name: Resolve at each direct dependency's floor and install
-        # No --locked: this lane deliberately re-resolves to the lowest
-        # compatible direct versions to prove the declared lower bounds work.
+      - name: Resolve the direct dependencies at their lowest compatible versions and install
+        # No --locked: this lane deliberately re-resolves the direct dependencies
+        # to the lowest versions that satisfy every declared range together.
         run: uv sync --resolution lowest-direct --all-extras --all-groups
       - name: Run tests
         run: uv run --no-sync pytest

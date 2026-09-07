@@ -8,6 +8,12 @@ We use [uv](https://docs.astral.sh/uv/) for dependency, environment, and build m
 uv sync --all-groups --all-extras
 ```
 
+`git blame` skips the commits listed in `.git-blame-ignore-revs`, mechanical rewrites that changed no words, after you point Git at the file once. GitHub's blame view reads the file on its own.
+
+```sh
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ## Git hooks (prek)
 
 We use [**prek**](https://github.com/j178/prek) — a fast, drop-in-compatible reimplementation of `pre-commit` — to run lint, format, type-check, and a GitHub Actions security audit before each commit (and the test suite before each push). The config lives in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
@@ -97,24 +103,24 @@ Standard ASR is infrastructure others build on, so we manage dependencies around
 
 - **New direct dependency:** add it to `[project.dependencies]` with a lower bound you have actually verified the code needs (not "whatever is latest"). No upper cap. Then run `uv lock` and commit the lock with the change.
 - **New dev/test/lint/typing tool:** add it to the appropriate PEP 735 group in `[dependency-groups]`, not to `[project.dependencies]`.
-- **Raising a lower bound:** only when the code genuinely starts relying on a newer feature, or a security floor forces it. The lower-bounds CI lane must stay green afterward.
+- **Raising a lower bound:** only when the code genuinely starts relying on a newer feature, or a security floor forces it. Both floor lanes (lower-bounds and numpy-floor) must stay green afterward.
 - **Adding an upper cap:** don't, unless it is a real incompatibility. If it is, record it in `docs/compatibility-advisories.md` (issue link + revisit date) and prefer a `[tool.uv] constraint-dependencies` dev-only pin if the breakage is dev/test-only rather than a downstream problem.
 - **Routine version bumps** are Dependabot's job — it rewrites `uv.lock`, not the contract. Don't hand-bump the lock just to chase latest.
 
 ### CI channels
 
-Four channels keep both contracts honest. Only the first gates a PR:
+Four channels keep both contracts honest. The first two gate a PR:
 
 | Channel | Where | Resolution | Gates merge? | Catches |
 |---------|-------|-----------|--------------|---------|
 | **PR CI** | `ci.yml` | committed `uv.lock` (`--locked`) | **Yes** (`checks-complete`) | regressions in the exact, reproducible env |
-| **Lower bounds** | `ci.yml` (`lower-bounds` job) | `--resolution lowest-direct`, py3.10 | **Yes** (part of `checks-complete`) | a declared floor that is actually too low |
+| **Lower bounds** | `ci.yml` (`lower-bounds` job) | `--resolution lowest-direct`, py3.10 | **Yes** (part of `checks-complete`) | a floor that is too low, or a new transitive release that fails with the floors |
 | **Dependabot** | `dependabot.yml` | newest in-range → new `uv.lock` PRs | via PR CI | staying current; security fixes |
 | **Canary** | `canary.yml` (daily) | `uv lock --upgrade` (+ `--prerelease allow`) | No (opens an issue) | upstream breakage before/just-after it ships |
 
 ### When a dependency change breaks CI
 
-- **Lower-bounds lane red:** a declared floor is too low for the code as written. Either lower the code's requirement, or raise the bound in `[project.dependencies]` to the version that actually works (and `uv lock`).
+- **Lower-bounds lane red:** the lane installs the lowest versions of the direct dependencies that satisfy every declared range together, with all extras and groups, and every transitive dependency at the newest version those allow, so it can go red with no change on our side. A floor that another range raises is not tested: with the server extra installed, fastapi 0.133 requires pydantic 2.7, so the lane never runs pydantic 2.5, the core floor (#80). Read the resolved versions in the job log first. A declared floor that is too low for the code as written: either lower the code's requirement, or raise the bound in `[project.dependencies]` to the version that actually works (and `uv lock`). A transitive dependency that moved: handle it like a canary red. A new warning that warnings-as-errors turns into a failure is evidence, not an exemption: a warning our own call triggers is fixed at the call, and a range that admits a version we cannot run is fixed in the contract. Only a warning raised inside a dependency, at every version the floors allow, gets a targeted ignore in `pyproject.toml`, under the conditions the comment above `filterwarnings` states.
 - **Canary red:** a newer (or pre-release) version broke us. Inspect the run's `lock-drift-*` artifact to see what moved, then either adapt our code (best), raise a lower bound if the old version is genuinely unsupportable, or — only for a real, tracked incompatibility — add a capped constraint with an entry in `docs/compatibility-advisories.md`. The canary's tracking issue is the place to record the decision.
 - **Dependabot PR red:** treat it like any failing PR; the change is gated by the same PR CI as everything else.
 
