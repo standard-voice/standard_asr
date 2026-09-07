@@ -11,7 +11,7 @@
 # holds the rules. The --glob exemption exists because Vale cannot exempt
 # whole files from inside .vale.ini (an empty "BasedOnStyles =" section does
 # not clear styles). Chinese documents, historical files, working notes, and
-# the pre-standard CHANGELOG entries are exempt per STYLE.md.
+# CHANGELOG.md are exempt per STYLE.md.
 #
 # Usage:
 #   scripts/vale.sh                # human view: pretty output, all levels

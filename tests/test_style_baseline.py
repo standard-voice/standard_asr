@@ -101,7 +101,7 @@ def test_appendix_status_matches_the_active_configuration() -> None:
     per_file_off = _per_file_disabled_google_rules()
     for rule, status in _appendix_rows().items():
         if rule in md_off:
-            expected = "Off — house delta"
+            expected = "Off"
         elif rule in py_off:
             expected = "Off in Python only"
         else:
