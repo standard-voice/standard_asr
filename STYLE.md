@@ -1,419 +1,181 @@
-<!-- SPDX-FileCopyrightText: 2026 Standard Voice Contributors -->
+<!-- SPDX-FileCopyrightText: The Standard ASR Authors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Writing standard
 
-This file defines how to write English prose in Standard ASR. The baseline is
-the Google developer documentation style guide, adopted here as the **pinned
-copy vendored in this repository** (`.vale/styles/Google`, errata-ai/Google
-v0.7.1) rather than as the live website. This file holds the scope, the tier
-system, the repo's deltas from that baseline, and the fact-check gate for
-meaning changes. Every contributor and every AI agent that works in this
-repository must follow it. `AGENTS.md` points here; the term rules live in
-[`TERMINOLOGY.md`](TERMINOLOGY.md).
+Write so a reader understands the behavior and can act on it without reading the implementation. Your reader knows software and has never seen this project. Give them the facts they need, in the order they need them.
 
-Precedence: where this file speaks, it wins; where it is silent, the pinned
-baseline applies (its rules are listed in the appendix, so no network access
-is needed to know what it asks for); where both are silent, match the
-surrounding prose. Where any prose rule conflicts with a code fact (an
-identifier, a domain term, a cross-reference role), the code fact wins.
+Accuracy comes before style: no writing preference justifies changing a fact, hiding a limit, or respelling an identifier. When a writing rule meets a code fact, the code fact wins.
 
-The baseline is pinned on purpose. A live URL cannot be a contract source: the
-[published guide](https://developers.google.com/style/) can change under us,
-so the same commit would mean one thing today and another next month, while CI
-kept enforcing the version it vendored. Treat the published guide as
-explanatory reading — helpful for the reasoning behind a rule, never the
-authority for whether prose is compliant. Upgrading the baseline is a
-deliberate commit: re-vendor the package, record the version here and in
-`.vale/styles/README.md`, and update the appendix (a test enforces that it
-matches).
+This file governs English writing here and wins wherever it differs from the baseline, the vendored `errata-ai/Google` Vale package under `.vale/styles/Google`, which checks part of the Google developer documentation style guide. The appendix lists every rule in that package. Where neither settles a choice, match what the surrounding text does.
 
-The goal is one thing: a reader understands the behavior from the prose alone,
-with the least possible room for misunderstanding. Prose is part of the
-contract, so we hold it to the same rigor as the code.
+## Scope
 
-## Why this baseline
+This standard covers:
 
-The Google guide is written for developer documentation — API references,
-code samples, error messages — so it answers the questions this repo actually
-has (headings, lists, code font, link text, UI text). Its guide text is public
-under CC BY 4.0 and its Vale implementation is MIT, so the baseline can be
-vendored and read in place — an agent follows a rule it can open, not one it
-has to remember or fetch (see the appendix for the full list). That
-[Vale](https://vale.sh) implementation is maintained, so most of the baseline
-is enforced mechanically rather than by review (see "Enforcement" below). A few rules of
-ASD-STE100, the standard this repo adapted first, survive as deltas because
-they serve a contract-grade voice better than the baseline does; they are
-listed below, not implied.
+- Docstrings, comments, and assertion messages in `src/` and `tests/`.
+- English comments in the rest of the repository, including scripts, workflows, and configuration files.
+- Text the library or the toolchain shows a person: errors, logs, warnings, diagnostics, CLI help, schema descriptions, server messages. What matters is where a string ends up, not where it is written, so an argument to `raise`, a `Field(description=...)`, and a WebSocket message frame all count.
+- English Markdown under `docs/`, except `docs/internal/` and `docs/site/`.
+- The root documents `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, `TERMINOLOGY.md`, this file, and new `CHANGELOG.md` entries.
+- What you write for this project on GitHub: issues and their comments, pull request descriptions, and commit messages.
 
-## Scope: what this governs
+`README.md`, `docs/content/index.md`, the part of `AGENTS.md` above its first `##` section, and the home page rendered from `docs/site/app/(home)/page.tsx` are the project's **front-door surfaces**: the first thing a reader meets. They may use a longer sentence and a settled figure of speech such as "USB-C for ASR", and the claim underneath still has to be true. The site is its own program with its own rules ([`docs/site/README.md`](docs/site/README.md)): this standard reaches the English it renders, not its code, and review is what checks that.
 
-This standard governs English **prose**:
+Outside this standard: Chinese documents, the working notes under `docs/internal/` and `work/`, license text, SPDX headers, and the `CHANGELOG.md` entries written before it. Keep a Chinese document in Chinese unless someone approves the translation; a wrong translation of a specification is worse than a late one. The writing rules in [`AGENTS.md`](AGENTS.md#writing) still cover every line you add to one.
 
-- docstrings (module, class, function, attribute), in `src/` and in `tests/`;
-- user-facing runtime strings (see the tier test below);
-- English Markdown under `docs/`. The tree says which is which:
-  `docs/content/` is the published documentation and is fully governed;
-  `docs/internal/` holds Chinese documents, historical pages, and working
-  notes, and `docs/site/` is the documentation application's own code tree
-  — both are exempt, like `work/`;
-- English Markdown at the repository root: `README.md`, `CONTRIBUTING.md`,
-  `AGENTS.md`, `RELEASING.md`, this file, and `TERMINOLOGY.md`. Working notes
-  under `work/` are exempt;
-- internal `#` comments (clarity tier only — see below), in any language the
-  repository uses. The Python ones are linted; the shell, workflow, and
-  config ones are review-owned (see "Enforcement" for why the gate cannot
-  read them);
-- test prose: docstrings, comments, and assertion labels in `tests/`;
-- new `CHANGELOG.md` entries from now on (by review: the mechanical gate
-  cannot separate a new entry from the pre-standard history, so
-  `CHANGELOG.md` stays outside `scripts/vale.sh`).
+Scope and tool coverage are different questions. "Enforcement" says what each tool reads. Text no tool reaches is governed all the same.
 
-Scope is not coverage. This standard governs every item above; the mechanical
-gate reaches a subset of them, and "Enforcement" states exactly which. Prose
-outside the gate's reach is not less governed — it is governed by review, and
-a reviewer is owed a precise list of what they own rather than a false sense
-that a green gate covered it.
+## Three tiers
 
-`README.md`, `docs/content/index.md`, and the `AGENTS.md` preamble are the project's
-front door. They are governed for **accuracy and terminology** like everything
-else, but they may use a wider register than reference prose: a longer
-sentence, a rhetorical structure, or an established figure of speech ("USB-C
-for ASR", "the cardinal sin") is acceptable there when it carries a true claim.
-Reference prose keeps the no-idiom rule as written.
+Read the three tiers in order and stop at the first that matches.
 
-This standard does **not** govern, and must never change:
+1. **Exact text.** Identifiers, literal values, cross-reference targets such as a `:class:` role, code spans, fenced blocks, and the lines of an example — the `>>>` and `...` lines and the expected output — keep their exact characters, and a wording pass never touches them. A `#` comment inside an example is the one exception: tier 2 claims it. Correct a wrong example as a deliberate change: run it again and update what its output shows. If a check flags words inside an example, fix the code the example runs; never edit expected output to quiet a checker.
+2. **Comments.** A comment gives the reason, the constraint, or the consequence a reader cannot see in the code beside it. Do not restate the code, and keep the comment next to what it explains. A tool directive such as `# noqa` or `# pragma: no cover` keeps the exact syntax the tool needs; words you add around it are an ordinary comment. A comment inside an example is a comment too: edit it here, then run the example again.
+3. **Everything else.** The rest of this file applies in full. This tier is the default, so anything the first two do not claim lands here: every docstring, public or private, every string a person can see, and every governed Markdown file.
 
-- **Code identifiers** — names are the contract. A prose rule never renames a
-  symbol. American spelling applies to prose, not to a third-party or standard
-  library name (write "the task is canceled" in prose; keep the symbol
-  `CancelledError`).
-- **Chinese documents** — `docs/content/specification/protocol.md` (the
-  normative spec) and the Chinese files under `docs/internal/`
-  (`design-notes/`, `research/`, `work_doc/`, `misc.md`). Do not translate or
-  edit them. Read `docs/content/specification/protocol.md` as the source of
-  truth; the other Chinese documents are background context, ranked by the
-  authority order in "Fact-check every meaning change" below.
-- **reStructuredText roles and code spans** — `:class:`, `:func:`, `:meth:`,
-  `:mod:`, `:data:`, double-backtick code spans, and `::` literal blocks stay
-  verbatim. Never reflow or "simplify" the text inside them.
-- **SPDX headers**, license text, and historical `CHANGELOG.md` entries.
+## Write for the reader
 
-## The two tiers
+### Lead with the fact the reader came for
 
-The standard has two tiers. Apply these three steps **in order** and stop at the
-first that matches. They are ordered because one string can satisfy the first
-two — a `#` comment inside a doctest matches both — and step 3's own list names
-text the first two steps already claim; the first match wins.
+Start with the behavior, the result, or the action, then the conditions and the explanation that make it usable. Put an exception next to the rule it qualifies.
 
-1. **Verbatim (no tier applies).** Text inside a `:role:`, a `` `code span` ``,
-   a `::` literal block, a Markdown fenced code block, or a doctest example —
-   its `>>>`/`...` lines and its expected output — is never rewritten. Work
-   around it, never through it.
-2. **Internal (clarity tier).** A `#` comment. The clarity tier is the **full
-   standard with only the sentence-length limit removed**,
-   because a comment sometimes needs a long sentence to record a subtle reason.
-   Do not shorten rationale to hit a word count. Keep the "why". A directive
-   comment (`# noqa: ...`, `# pragma: no cover`, a section marker) is not prose
-   and is governed by nothing here.
-3. **User-facing (full standard).** Everything else in scope. This is the
-   default, so an unlisted case falls here rather than escaping the standard.
-   Among what it covers:
-   - every string that can reach a person who is not reading the source —
-     whichever way it is written: an argument to `raise ...Error(...)`,
-     `logger.*`, `warnings.warn`, or `print`; a `hint=` or `param=` field; and
-     a module-level constant that such a call later emits;
-   - `argparse` `help=`, `description=`, and `epilog=`;
-   - FastAPI and Pydantic text: `Field(description=...)`, `FastAPI(title=...)`,
-     route and OpenAPI docstrings, and WebSocket `{"message": ...}` frames;
-   - **every docstring**, public or private (the site's API reference
-     renders the public ones, and consumers read them all in the source);
-   - every governed Markdown file.
+Name the actor and what it does: the application supplies a parameter, the runtime checks it, the engine transcribes the audio. Use the passive voice when the actor is unknown, already named, or beside the point, and never invent one just to avoid it.
 
-**One length exception inside tier 3.** A docstring **body** paragraph that
-states a contract obligation, a precedence rule, or an error-ownership boundary
-is exempt from the sentence-length cap; nuance beats brevity there. The
-docstring **summary line** is never exempt.
+Keep a sentence to one idea. Past about 25 words, look for a place to split it, and keep the long sentence only when splitting it would separate a condition from what it qualifies. Write ordinary grammar, articles included. Two surfaces may drop articles and write a fragment, because they are labels: an `argparse` `help=` string and a pydantic `Field(description=...)`, as in "List discovered models."
 
-## Deltas from the Google guide
+### Use terms the reader can place
 
-Each delta below overrides the baseline. The mechanically checkable ones map
-one-to-one to Google rules disabled in `.vale.ini`; do not re-enable such a
-rule there without deleting its delta here, and do not add a delta here
-without tuning Vale to match. `.vale.ini` also carries a second kind of
-disable that is NOT a style delta and is documented inline there instead:
-mechanical adaptations of the checker itself — document-shaped rules turned
-off for docstrings (`Google.Headings`, `Google.HeadingPunctuation`),
-extraction artifacts (`Vale.Repetition`, `Google.DateFormat`), the
-`Vale.Spelling` replacement (`StandardASR.Spelling`), and doctest syntax read
-as prose (`Google.Ellipses` for `plugins/discovery.py`). Those change how the
-tool reads the text, never what good prose is.
+**One word, one meaning.** Use the term [`TERMINOLOGY.md`](TERMINOLOGY.md) gives for each concept, and none of the synonyms it forbids. Some words carry several senses here; that file lists each one, so use a listed sense and write the sentence so the reader can tell which. The controlled code vocabularies, such as the `DIAG_*` codes, live in the code that `TERMINOLOGY.md` points at. Do not rename a concept for variety.
 
-### Additions the baseline does not have
+Every term is one your reader knows, one `TERMINOLOGY.md` defines, or a name in the code. Explain anything else where it first appears, or pick a plainer word for it. Naming is not explaining: say what a code name does the first time a reader meets it. Expand an acronym your reader may not know, and leave the common ones alone.
 
-- **One word, one meaning.** Use the approved term for each concept from
-  `TERMINOLOGY.md`, and never a forbidden synonym. A few words carry more than
-  one meaning in this domain (*model*, *frame*, *adapter*, *provider*);
-  `TERMINOLOGY.md` names every sense in use. Use a listed sense, make the
-  sense clear from the sentence, and never introduce a sense the table does
-  not list.
-- **Sentence-length targets.** Keep a user-facing sentence short — about 20
-  words for an instruction, about 25 for a description. Keep the docstring
-  **summary line** short. The dropped limits are in "The two tiers" above. (A
-  numbered target is retained from ASD-STE100 because an agent can act on a
-  number; "keep it short" alone drifts.)
-- **Hazard first.** A warning or caution states the hazard, then the action.
-  Keep the `level`/`code`/`message` shape for diagnostics.
-- **Actionable instructions.** Instructions and `hint=` fields are imperative
-  and must name an action the reader can actually take: if the library offers
-  no way to do the thing, say what happens instead.
-- **Articles in prose.** Use *a*, *an*, and *the*. A telegraphic one-liner is
-  allowed only where the convention omits them: an `argparse` `help=` string
-  and a pydantic `Field(description=...)` ("List discovered models.").
-- **Noun clusters.** Keep new noun clusters to three words (soft cap).
-  Hyphenate a multi-word modifier so it reads as one unit ("frozen-prefix
-  boundary"). Established compound API terms are exempt. Never break an
-  identifier to meet the count.
-- **ASCII runtime strings.** No emoji or pictographs in any shipped text,
-  ever. Typographic and mathematical symbols (→, ⇒, ⊆, §, ±, ×) are allowed in
-  docs, docstrings, and comments, but **not** in a runtime string: a message
-  can be logged to a console that is not UTF-8, so keep `raise`, `logger.*`,
-  and wire text ASCII. The CLI's status markers are ASCII for this reason
-  (`[OK]`, `[FAIL]`, `[WARN]`, `[INFO]`).
+Keep the exact domain word even where a general word list prefers another one; the accepted vocabulary is `.vale/styles/config/vocabularies/StandardASR/accept.txt`, and a word the checker accepts is still not a reason to make a vague or inflated claim.
 
-  "Pictograph" is drawn by block, not by taste, and the **whole dingbats and
-  miscellaneous-symbols range is banned** — check marks, ballot marks, stars,
-  and the dingbat multiplication marks included. Several of those are not
-  emoji by Unicode's own property, so the ban is deliberately wider than
-  "emoji": a dingbat imitation of an operator has a real counterpart, and the
-  real one is the correct character anyway. Write × (U+00D7), never the
-  dingbat multiplication mark at U+2715; for a status column, use the ASCII
-  markers above rather than a check-and-cross pair. The permitted symbols
-  live in the arrow, math, and general-punctuation ranges, which the rule
-  leaves alone. (This paragraph names the banned characters by code point
-  for the same reason: the rule stays live here, so quoting one literally
-  would fail the gate.)
-- **RFC-2119 keywords by audience.** Keep "MUST", "MUST NOT", "SHOULD", and
-  "MAY" uppercase when the sentence states a rule to an **engine author** (for
-  example, a streaming event-construction error, or a docstring that cites the
-  spec); the Google guide's lowercase "must" applies everywhere else. Soften
-  to a plain verb when the sentence answers an **application developer** who
-  made an ordinary call mistake ("candidate_languages MUST NOT contain 'auto'"
-  becomes "candidate_languages cannot contain 'auto'"). The rule: state a spec
-  obligation to the party who can break the spec; speak plainly to the party
-  who made a normal mistake. The audience is the party the **obligation
-  addresses**, not everyone who may read the sentence — a rendered docstring
-  has many readers, and its MUST still addresses the engine author. Where the
-  obligation addresses an **operator** or an **end user**, use a plain verb.
+Unpack a pile of nouns when the relationship between them is unclear; three nouns in a row is the soft cap. "The limit on the size of an audio frame" is easier to read than "the audio frame size limit constraint". A hyphen can tie a modifier together, but it cannot rescue an invented phrase. Keep a settled term such as *streaming* or *diarization* when that is the concept you mean.
 
-### Divergences where this repo overrides the baseline
+### Cut filler, not meaning
 
-- **Spaced em dashes.** Write `word — word`, not `word—word`. House style
-  throughout. (Vale: `Google.EmDash` off.)
-- **Logical quoting.** Punctuation goes outside the closing quote when the
-  quoted text is an exact string, value, or message — which in this repo is
-  nearly always. Never move a period inside quotes at the cost of misquoting a
-  literal. (Vale: `Google.Quotes` off.)
-- **Passive voice for the runtime actor.** Write active voice; use passive
-  only when the actor is genuinely the runtime and naming it adds nothing
-  ("The request is rejected with 422."). (Vale: `Google.Passive` off.)
-- **Semicolons and parentheticals.** A semicolon may join tightly coupled
-  clauses, and a parenthetical may carry contract nuance. Prefer short
-  sentences first; do not delete nuance to satisfy a rhythm rule. (Vale:
-  `Google.Semicolons`, `Google.Parens` off.)
-- **Uncontracted verbs.** Prefer "is not" over "isn't" in reference and
-  contract prose; the baseline prefers contractions for warmth, which is not
-  this repo's register. Front-door surfaces may contract. (Vale:
-  `Google.Contractions` off.)
-- **No first-use acronym expansion for ubiquitous terms.** API, CLI, HTTP,
-  JSON, PCM, URL, WAV, and peers need no expansion; `TERMINOLOGY.md` and the
-  controlled code vocabularies govern domain terms. Expand a genuinely obscure
-  acronym on first use. (Vale: `Google.Acronyms` off.)
-- **Project voice.** "We" is allowed in the project-voice files (`README.md`,
-  `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, `docs/content/index.md`,
-  mission/goals/advisories); reference prose addresses the reader as "you"
-  and avoids "we". (Vale: `Google.We` off for those files.)
-- **Approved `-ing` names.** The domain's `-ing` subsystem names — *streaming,
-  gating, negotiation, diarization, resampling, coalescing, superseding* — are
-  approved technical names. Use them without hesitation; never "fix" them.
-- **Precise terms kept against the Google word list.** The project vocabulary
-  (`.vale/styles/config/vocabularies/StandardASR/accept.txt`) exempts words
-  the baseline's word list would rewrite but that are precise or canonical
-  here: *application* (protocol vocabulary; "app" is not), *file path*
-  (distinct from a URL path and a `data:` URI), *disable/disabled* (a
-  mechanical state), *abort*, *terminate*, and *kill* (three distinct failure
-  semantics; "stop" is weaker than any of them), *above* (a position in a
-  source file, or a numeric comparison), *touch* (the file-system sense),
-  *cloud* (product names and "cloud storage"), *best* and *guarantee*
-  ("best-effort" is canonical vocabulary; a stability guarantee is a protocol
-  commitment, not marketing), *latest* ("latest wins" is exact coalescing
-  semantics), and *sees*/*tells* (information-flow verbs for a code actor).
-  Marketing puffery stays banned — by review, not by word list.
-- **First person inside quotation marks.** A quoted first-person clause
-  voices a stakeholder's perspective ("my code drove the session
-  incorrectly", "use my own default cache") and is allowed; the
-  documentation's own voice stays second person. (Vale: `Google.FirstPerson`
-  off — its `i` token also misreads a loop index.)
-- **Capitals after label colons.** A run-in bold label (`**Pre-1.0:** Minor
-  releases may ...`), a goal ID (`G.1: Establish a ...`), and a stakeholder
-  lead-in (`**Plugin authors**: Learn how ...`) capitalize the first word
-  after the colon; a colon inside an ordinary sentence still introduces a
-  lowercase word, by review. (Vale: `Google.Colons` off.)
-- **Split test comments.** In `tests/`, one sentence may span two comments
-  that bracket the code under assertion (`# The invalid name was reported...`
-  above it, `# ...and the valid engine's checks still ran` below), keeping
-  each claim attached to the exact line it verifies. (Vale: `Google.Ellipses`
-  off in `tests/`; elided code in any comment still belongs in a code span.
-  The same rule is off for `plugins/discovery.py`, whose doctest `...` lines
-  are tier-1 verbatim syntax that Vale's docstring view reads as prose.)
-- **Numbered section headings.** Spec pages and step-by-step guides number
-  their headings ("## 3. REST endpoints"); the number is a stable
-  cross-reference anchor (§3, §4.2). (Vale: `Google.HeadingPunctuation` off
-  for those files.)
+Delete a sentence that announces an explanation, praises the design, or repeats what you just said. Replace a vague benefit with the behavior behind it. Do not manufacture jargon or slogans to make an ordinary fact sound big: "the gate is the enforcement topology for every selected-engine surface" hides the actor and the action, where "the core checks the protocol version the same way everywhere" says the thing.
+
+Keep every qualification that affects correctness: a limit, an uncertainty, a failure. A shorter sentence that drops one is worse than the long one. Skip jokes, cultural references, and idioms in an instruction, and keep the tone level: do not blame the reader or call an ordinary error a disaster.
+
+Use a paragraph for connected reasoning, a list for steps or parallel items, and a table for a comparison. Do not turn every sentence into a bullet.
+
+Do not wrap prose at a column width; let the editor wrap it. A docstring and a comment live in code and keep the code's line length.
+
+## What each surface needs
+
+### Docstrings
+
+Follow the Google docstring structure that `pyproject.toml` configures. Open with a short summary of what the thing does, then give what a caller needs to use it correctly: the inputs, the return value, the constraints, the side effects, and the errors. Say who owns a decision, and which rule wins, where a caller has to choose between them. Do not repeat a type annotation unless the sentence adds to it.
+
+Describe the promise, not the steps that implement it. A private docstring tells a maintainer what they need. A test docstring says what behavior the test pins; a test needs no docstring just to fill a template.
+
+### Messages and instructions
+
+An error says what failed and names the input or the operation it failed on, and adds the remedy when one exists and the recipient can reach it. An instruction, a `hint=` field included, names one concrete action, usually with an imperative verb. Never invent a recovery step: when nothing can be done, say what happens instead.
+
+A warning says what can go wrong, or what was lost, then what to do about it, in a tone that matches the real risk. Keep a structured diagnostic's fields and codes as they are: a better message never justifies changing the data model.
+
+Uppercase the RFC 2119 words `MUST`, `MUST NOT`, `SHOULD`, and `MAY` only in a sentence that states or quotes a rule of the specification, and make the obligated party plain. Uppercase does not make an ordinary error clearer: for a caller who made a mistake, the validator's `candidate_languages cannot contain 'auto'.` (`effective_candidate_languages`, in `src/standard_asr/contract/language.py`) is the right tone.
+
+### GitHub writing
+
+Open an issue or a pull request description with the problem and the behavior it produces, and give a reader who was not in the discussion enough to reproduce or check it. Say what you verified, and where that check stops. Leave out the history of your drafts unless it explains a decision. `AGENTS.md` holds the commit rules: one logical change per commit, with a concise imperative subject.
+
+## Spelling and characters
 
 ### Spelling
 
-Use American spelling in prose: `normalize`, `behavior`, `initialize`,
-`serialize`, `analyze`, `color`, `canceled`/`canceling` (see `TERMINOLOGY.md`,
-"Spelling"). The only exception is a verbatim identifier: the prose says
-"canceled"; the symbol stays `CancelledError`. A third-party symbol keeps its
-own spelling.
+Use American spelling: `normalize`, `behavior`, `canceled` (`TERMINOLOGY.md`, "Spelling"). Never respell an identifier: the sentence says "canceled" and the symbol stays `CancelledError`. A third-party name keeps its own.
 
-## Fact-check every meaning change
+### ASCII runtime strings
 
-This is the core rule for correctness. It applies to a rename **and** to a
-rewritten message.
+Keep the fixed text the library and the toolchain emit in ASCII, so a message survives a console that cannot decode Unicode. The CLI status markers are `[OK]`, `[FAIL]`, `[WARN]`, and `[INFO]`. Data passing through is untouched: a transcript, a path, or a value quoted back to the user keeps whatever characters it has. Show such a value in a code span, which the checker does not read inside.
 
-A rewrite is allowed to change what a text means, and it should where the
-original is wrong, ambiguous, or misleading. Removing wrong or confusing copy is
-a goal of this standard, not a risk to avoid. (The modal verbs in this section
-are ordinary English, not RFC-2119 keywords; the delta above reserves the
-uppercase forms for that.)
+Use no emoji and no pictograph in anything we write or ship. Typographic and mathematical symbols such as →, ⊆, §, ±, and × are fine in documentation, docstrings, and comments. `.vale/styles/StandardASR/Emoji.yml` holds the exact ranges the checker rejects, and it goes wider than emoji: three whole blocks of the Unicode table are out (U+2600 to U+27BF, U+2B00 to U+2BFF, U+1F000 to U+1FAFF), a plain dingbat check mark or multiplication mark (U+2715) included. Write the real multiplication sign (U+00D7) instead of the dingbat, and use the ASCII markers above for a column of passes and failures.
 
-A change that alters the conveyed meaning is allowed only when both gates below
-hold, and **you state both in the commit message**. A gate you cannot write down
-is a gate you have not passed.
+## Check facts and changes in meaning
 
-1. **Defect.** Name what is wrong with the original: it states a fact the code
-   contradicts, it reads two ways, or it misleads about behavior. Quote the
-   original. If you cannot name a defect, do not change the meaning — a pure
-   style pass keeps the meaning and needs no gate.
-2. **Authority.** Cite the source that establishes the new text, by path and
-   line. Use whichever applies, in this order: the normative spec documents
-   where they speak — `docs/content/specification/protocol.md`, and the English
-   `docs/content/specification/` pages for the surfaces they contract (the server wire API, the
-   CLI, the download policy); otherwise the code path, a
-   test that pins the behavior, or a design note. Much of the toolchain — an
-   exit code, an `argparse` help string, a CLI marker — has no spec text; there
-   the code and its tests are the authority.
+Check every claim about the code against the code, and take each fact from the source that owns it:
 
-Where the original is ambiguous, find the true intended meaning first, then
-write it. Never guess. Never encode a wrong meaning to gain a shorter sentence.
-Many names and statements are intentional and correct — prefer to clarify them
-rather than change them. When no authority settles the point, leave the text
-alone and open an issue: an unresolved question is cheaper than a confident
-error.
+- The pages under `docs/content/specification/` state what the protocol, the wire API, the CLI, and the download policy require.
+- A type signature and its docstring state what the Python API promises.
+- The implementation shows what the library does; a test is evidence for the behavior it exercises.
+- `TERMINOLOGY.md` owns the terms, and points at the code that owns each controlled vocabulary.
 
-## Terminology
+When two disagree, do not settle it by editing whichever is easiest to change. Work out which is wrong: the implementation breaks a requirement, the description is wrong, or the design needs to change. Behavior that contradicts the protocol is a defect until the protocol changes with it; landing the code does not make it the authority. A design note explains intent and never overrides the published contract.
 
-Every domain term follows [`TERMINOLOGY.md`](TERMINOLOGY.md): one canonical term
-per concept, a short definition, the approved usage, and the forbidden synonyms.
-The controlled code vocabularies (the `DIAG_*` codes, the compliance codes, the
-enums, and the `Literal` sets) have a single source of truth in the code;
-`TERMINOLOGY.md` points to it and does not duplicate it (its one deliberate
-excerpt, the two `level` scales, is quoted for contrast and moves with the
-code).
+Where an authority settles the change, name the defect in the commit message and cite that authority by path and line, quoting the original words where that makes the defect clear. Where none does, the change is a decision: state it and its reason, change the source that owns the fact, and carry the change into every description of it.
+
+A wording change that keeps the meaning needs no such note. Resolve an ambiguity that affects behavior before you rewrite the claim, and never guess at a contract to make a sentence read better. Where the decision is not yours, say what the open question is, leave that text alone, and make the edits that do not depend on it; open an issue when the question outlives the change.
+
+## Deltas from the Google guide
+
+A delta is a rule where this file overrides the baseline. Each one below names the Google rule it switches off in `.vale.ini`. Do not switch a rule back on without deleting its delta, and do not add a delta without changing `.vale.ini`.
+
+- **Spaced em dashes.** Write `word — word`, not `word—word`. (`Google.EmDash` off.)
+- **Logical quoting.** Punctuation goes outside the closing quote when the quoted text is an exact string, value, or message, which here it nearly always is. Never misquote a literal to move a period inside. (`Google.Quotes` off.)
+- **Passive voice where it serves.** The baseline asks for active voice everywhere; here the question is whether naming the actor adds anything. "The request is rejected with 422" is fine. (`Google.Passive` off.)
+- **Semicolons and parentheticals.** A semicolon may join two tightly coupled clauses, and a parenthetical may carry a nuance of the contract. Reach for a short sentence first, and never drop a nuance for rhythm. (`Google.Semicolons`, `Google.Parens` off.)
+- **Uncontracted verbs.** Write "is not", not "isn't": a negation in a contract has to be impossible to miss, and the baseline's contractions are warmer than a reference should sound. The front-door surfaces named in "Scope" may contract. (`Google.Contractions` off.)
+- **No first-use expansion for a common acronym.** API, CLI, HTTP, JSON, PCM, URL, WAV, and their peers need none. Expand one that is genuinely obscure. (`Google.Acronyms` off.)
+- **First person inside quotation marks.** A quoted first-person clause voices a stakeholder ("my code drove the session incorrectly"). The document's own voice stays second person. The rule cannot come back in any case: its `i` token also matches a loop index. (`Google.FirstPerson` off.)
+- **Capitals after a label colon.** A run-in bold label (`**Pre-1.0:** Minor releases`), a goal identifier (`G.1: Establish`), and a docstring section key (`Args:`) capitalize the next word. A colon inside an ordinary sentence still takes a lowercase word, and review owns that half. (`Google.Colons` off.)
+- **Project voice.** "We" belongs to the project-voice documents: `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `RELEASING.md`, `TERMINOLOGY.md`, this file, `docs/content/index.md`, the mission and goals pages, and `docs/compatibility-advisories.md`. Everywhere else, say "you" and name the actor. (`Google.We` off for those files.)
+- **Numbered section headings.** A specification page and a step-by-step guide number their headings ("## 3. REST endpoints"), because the number is a stable cross-reference. The exemption is per file: number a heading only in a file `.vale.ini` lists, adding the file there first if it belongs, and keep an existing number when you edit around it. (`Google.HeadingPunctuation` off for those files.)
+- **Split test comments.** In `tests/`, one sentence may span two comments that bracket the code under assertion, so each half sits on the line it verifies. Elided code inside a comment still belongs in a code span. (`Google.Ellipses` off in `tests/`, and in `plugins/discovery.py`, whose doctest continuation lines the checker reads as sentences.)
 
 ## Enforcement
 
-Three layers, weakest claim first:
+Run `prek run --all-files` and `uv run pytest` before you call a change done (`AGENTS.md`, and [`CONTRIBUTING.md`](CONTRIBUTING.md#git-hooks-prek)). The test suite is a push hook, so `prek run` does not run it, and neither the checks nor the tests replace review.
 
-- **`uv run ruff check`** enforces docstring structure (pydocstyle, Google
-  convention) in `src/`. Tests and docs sample code are exempt from the
-  structure rules (`pyproject.toml` per-file-ignores: a docstring is not
-  forced onto every test function); their prose stays governed by this
-  standard, checked by Vale and review like everything else.
-- **`scripts/vale.sh`** lints the prose itself — Markdown plus the comments
-  and docstrings in `src/` and `tests/` — against the vendored Google package
-  and the `StandardASR` style (the mechanizable subset of `TERMINOLOGY.md`).
-  The full run, warnings and suggestions included, is kept at zero, and the
-  CI gate enforces exactly that: `scripts/vale.sh --gate` fails on any alert
-  at any level, and `scripts/vale.sh --selfcheck` proves the gate composition
-  (config, exemption glob, target list) still flags a planted violation in
-  every target, root documents included, by mirroring the target layout into
-  a temporary directory rather than writing to the working tree. Three extraction gaps are known and disclosed —
-  prose that Vale never sees and review must own. Vale skips a module
-  docstring that follows the SPDX header; it never reads Python string
-  literals; and it skips attribute docstrings (the bare string under an
-  assignment, as on an enum member). Module docstrings, tier-3 runtime
-  strings, and attribute docstrings were each swept manually when the gate
-  landed.
+- `uv run ruff check` checks docstring structure, with pydocstyle under the Google convention. `pyproject.toml` exempts `tests/` and the sample code under `docs/` from the structure rules; what they say is governed all the same.
+- `scripts/vale.sh --gate` runs the vendored Google rules, the `StandardASR` rules, and Vale's own, and fails on any alert at any level, a suggestion included. The target and exemption arrays in that script are the one statement of what Vale reads.
+- `scripts/vale.sh --selfcheck` plants a violation in a temporary copy of the layout and proves the gate still catches it. Run it whenever you change the Vale configuration, a rule, or the target list.
+- `uv run pytest tests/test_style_baseline.py` checks that the appendix lists the vendored rules with the status `.vale.ini` gives each one.
 
-  The gate's corpus is Markdown plus `src/` and `tests/` Python
-  (`scripts/vale.sh`, `TARGETS`). Prose in **shell, workflow, and config
-  comments is in scope and review-owned**, not linted: Vale ships a comment
-  extractor for Python but not for those formats, so mapping them would read
-  their code as prose (measured on this repo: `esac`, `fi`, `printf`, and
-  `pipefail` come back as misspellings, drowning the two real defects in the
-  same run). Widening the corpus therefore waits for real extractor support;
-  until then a reviewer owns those comments, and the sweep that landed this
-  gate covered them once by hand. Two detector gaps are accepted rather than worked around: the serial comma is required
-  (the baseline agrees), but `Google.OxfordComma` is off because its pattern
-  cannot tell a two-item pair or an appositive from a list; and
-  `Google.Spacing` is off for Python files because a dotted exception name in
-  a Google-style `Raises:` key (`pydantic.ValidationError:`) is bare by
-  docstring convention and reads to the rule as a missing sentence space.
-  Review owns both.
-- **Review** carries everything a regular expression cannot see: the right actor, a claim
-  matching the code, the meaning-change gate above. Vale passing is not prose
-  passing.
+Vale reads the governed Markdown plus the comments and docstrings it can extract from `src/` and `tests/`. It cannot see a module docstring that follows the SPDX header, an attribute docstring, or any other Python string literal, and it does not read the site's rendered English, the comments in other file formats, or anything on GitHub. All of that belongs to review, and so does every `CHANGELOG.md` entry: the whole file sits outside the gate, because the gate cannot tell a new entry from the history written before this standard.
 
-## Checklist before you commit prose
+`.vale.ini` switches a rule off for one of two reasons, and says which: a delta declared above, or a workaround for a checker that misreads what it checks. A workaround leaves the writing rule standing: the serial comma is still required though `Google.OxfordComma` cannot tell a list from a pair, and a sentence still takes one space after its period though `Google.Spacing` misreads a Google-style `Raises:` key. Change this file, `.vale.ini`, and the appendix together. Fix a false positive at the narrowest scope that works, and never damage a correct sentence to quiet a checker.
 
-- Each concept uses its canonical term from `TERMINOLOGY.md`.
-- Spelling is American; no British forms in prose.
-- No emoji anywhere; no non-ASCII symbol in a runtime string.
-- User-facing sentences are short and active.
-- Instructions and hints are imperative, and name an action the reader can take.
-- Every meaning change states its defect and its authority in the commit message.
-- Every claim about the code was checked against the code, not remembered.
-- Code spans, roles, and identifiers are unchanged.
-- `uv run ruff check` passes (pydocstyle included).
-- `scripts/vale.sh --gate` passes (it fails on any alert at any level).
+Review carries what no regular expression can: the right actor, a claim that matches the code, the rules above about meaning, and every surface the tools cannot reach. A clean run of the checks establishes none of it.
+
+## Checklist before you commit
+
+Read the sections you need before you write. Use this on what you wrote.
+
+- Does the reader get the useful fact first, and every term they need to place it?
+- Did anything vague, decorative, or invented get in?
+- Is every claim about the code checked against the code, and every limit, condition, and literal still there?
+- Do comments explain reasons, docstrings explain promises, errors name what failed, and warnings state the risk first?
+- Do the conventions hold: American spelling, ASCII in emitted text, house punctuation, "we" only in a project-voice document, no column wrap in Markdown?
+- Is `MUST` or `SHOULD` uppercase only where the sentence states a rule of the specification, with the obligated party named?
+- Does the commit message name the defect and its authority, or state the decision and its reason?
+- Did `prek run --all-files` pass, along with the tests the change needs?
 
 ## Appendix: the pinned baseline, rule by rule
 
-The vendored package (`.vale/styles/Google`, errata-ai/Google v0.7.1) is the
-mechanized form of the baseline this standard adopts. It is listed here so
-that a contributor — or an agent with no network access — can see what the
-baseline asks for without leaving the repository, and so that an upgrade
-that adds or drops a rule cannot pass unnoticed:
-`tests/test_style_baseline.py` fails when this table and the vendored
-package disagree.
+The baseline is the vendored `errata-ai/Google` Vale package, v0.7.1, under `.vale/styles/Google`. It checks part of the Google developer documentation style guide, not the whole of it, and the published website is background reading, never the authority. The table is here so a contributor, or an agent with no network access, can read the baseline without leaving the repository.
 
-A rule marked **Off** is a deliberate house delta, explained in "Deltas from
-the Google guide" above and in `.vale.ini`; the standard still governs the
-underlying question, by review. **Off in Python only** marks a checker
-adaptation: the rule assumes a document and misreads docstrings. **Minus
-named files** means a per-file exception applies on top, for a reason
-`.vale.ini` records inline at that section.
-Note that the baseline is only the mechanized floor — this file wins wherever
-the two differ, and the rules in `.vale/styles/StandardASR` add what
-`TERMINOLOGY.md` requires on top.
+**Off** means the checker is disabled everywhere, as a delta declared above or because it misreads what it checks; `.vale.ini` gives the reason in each case. **Off in Python only** and **minus named files** mark narrower exceptions. A disabled checker does not retire the writing rule, and `.vale/styles/StandardASR` adds what `TERMINOLOGY.md` requires on top. The accepted vocabulary subtracts too: `accept.txt` holds `sees` and `tells`, the only two words `Anthropomorphism` looks for, so that checker catches nothing here; it also holds `best`, `guarantee`, and `latest`. Review owns every word the vocabulary lets through.
+
+Upgrade the vendored package in its own commit: re-vendor it, record the version in `.vale/styles/README.md` and here, and update this table. `tests/test_style_baseline.py` fails when the table and the package disagree on a rule or a status; only review can check that a summary is true.
 
 | Rule | What it asks for | Status here |
 | --- | --- | --- |
 | `AMPM` | Write clock times as `9:00 AM`, with a space before it. | Enforced |
-| `Acronyms` | Expand an unfamiliar acronym on first use. | Off — house delta |
-| `Anthropomorphism` | Do not give software human qualities (a service does not `think` or `want`). | Enforced |
-| `Colons` | Start lowercase after a colon. | Off — house delta |
-| `Contractions` | Prefer contractions in user-facing prose. | Off — house delta |
+| `Acronyms` | Expand an unfamiliar acronym on first use. | Off |
+| `Anthropomorphism` | Do not give software human qualities; the copy checks only `sees` and `tells`. | Enforced |
+| `Colons` | Start lowercase after a colon. | Off |
+| `Contractions` | Prefer a contraction to the spelled-out form. | Off |
 | `DateFormat` | Write dates as `July 31, 2016`. | Off in Python only |
-| `Ellipses` | Avoid ellipses in prose. | Enforced, minus named files |
-| `EmDash` | Set em dashes tight, with no surrounding spaces. | Off — house delta |
-| `ExcessiveClaims` | Drop unverifiable claims (`effortless`, `painless`). | Enforced |
+| `Ellipses` | Avoid an ellipsis in a sentence. | Enforced, minus named files |
+| `EmDash` | Set em dashes tight, with no surrounding spaces. | Off |
+| `ExcessiveClaims` | Drop an unverifiable claim: `best`, `simplest`, `fastest`, `guarantee`. | Enforced |
 | `Exclamation` | No exclamation points. | Enforced |
-| `FirstPerson` | Avoid first-person singular pronouns. | Off — house delta |
+| `FirstPerson` | Avoid first-person singular pronouns. | Off |
 | `Gender` | Do not use a gendered pronoun as the neutral one. | Enforced |
 | `GenderBias` | Use gender-neutral role nouns. | Enforced |
 | `HeadingPunctuation` | No period at the end of a heading. | Off in Python only, minus named files |
@@ -423,17 +185,17 @@ the two differ, and the rules in `.vale/styles/StandardASR` add what
 | `LyHyphens` | No hyphen after an adverb ending in *-ly*. | Enforced |
 | `OptionalPlurals` | No parenthesized plurals (`file(s)`). | Enforced |
 | `Ordinal` | Spell out ordinals in text. | Enforced |
-| `OxfordComma` | Use the serial comma. | Off — house delta |
-| `Parens` | Use parentheses judiciously. | Off — house delta |
-| `Passive` | Prefer active voice, naming the actor. | Off — house delta |
+| `OxfordComma` | Use the serial comma. | Off |
+| `Parens` | Use parentheses judiciously. | Off |
+| `Passive` | Prefer active voice, naming the actor. | Off |
 | `Periods` | No periods inside an acronym. | Enforced |
-| `Quotes` | Put commas and periods inside quotation marks. | Off — house delta |
-| `Ranges` | Write a numeric range without `from` or `between`. | Enforced |
-| `Semicolons` | Use semicolons judiciously. | Off — house delta |
+| `Quotes` | Put commas and periods inside quotation marks. | Off |
+| `Ranges` | Do not mix range forms: no `from` or `between` before a hyphenated range. | Enforced |
+| `Semicolons` | Use semicolons judiciously. | Off |
 | `Slang` | No internet slang abbreviations. | Enforced |
 | `Spacing` | One space after sentence-ending punctuation. | Off in Python only |
 | `Spelling` | Use American spelling. | Enforced |
-| `Timeless` | Avoid time-bound words (`currently`, `new`). | Enforced |
+| `Timeless` | Avoid a time-bound word: `currently`, `latest`, `soon`. | Enforced |
 | `Units` | No-break space between a number and its unit. | Enforced |
 | `We` | Avoid first-person plural. | Enforced, minus named files |
 | `Will` | Prefer the present tense over `will`. | Enforced |

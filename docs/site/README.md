@@ -83,7 +83,11 @@ lychee --offline --include-fragments --index-files index.html \
 
 - Published prose lives in `docs/content/` as plain Markdown, governed by
   `STYLE.md` and the Vale gate. This app directory is exempt from Vale
-  (`scripts/vale.sh`); keep governed prose out of it.
+  (`scripts/vale.sh`); keep documentation prose in `docs/content/`. The
+  English this app renders on its own pages, such as the home page's copy
+  and code samples, is still governed by `STYLE.md` for accuracy and
+  terminology, by review: a claim there is checked against the code like
+  any other.
 - `docs/content/meta.json` orders the sidebar. An unlisted page still
   publishes and appends at the end (the `...` entry); a stale entry fails
   the build (`scripts/check-content.mjs`).

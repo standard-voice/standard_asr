@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 
@@ -1470,7 +1470,7 @@ def _load_with_ffmpeg(
     the decoded output two ways: ffmpeg is given ``-fs <max_output_bytes>`` so it
     stops writing once the limit is reached (the OS buffer for ``capture_output``
     therefore cannot grow past it), and the captured stdout is re-checked against
-    the same ceiling afterwards and rejected if exceeded (defense in depth for an
+    the same ceiling afterward and rejected if exceeded (defense in depth for an
     ffmpeg build that ignores ``-fs``). The guarantee is an output-byte ceiling,
     not a streaming decoder; ``timeout`` still bounds wall-clock time.
 

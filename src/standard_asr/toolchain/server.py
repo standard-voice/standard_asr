@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """FastAPI server utilities for Standard ASR.
@@ -775,14 +775,14 @@ def create_app(
             request = StreamConfigRequest.model_validate(raw_config)
             audio_format = request.audio_format
             params = _build_params(request.options)
-        except _ConfigFrameTooLarge as exc:
+        except _ConfigFrameTooLargeError as exc:
             # The config/handshake frame is bounded by the app cap too (not just
             # the transport ws_max_size), so the documented DoS bound holds
             # regardless of the ASGI server in front. Reported like the audio
             # caps.
             await _abort_ws(websocket, "payload_too_large", str(exc))
             return
-        except _ConfigFrameNotText as exc:
+        except _ConfigFrameNotTextError as exc:
             # A malformed handshake (binary first frame): the caller's mistake,
             # reported with the standard-authored message.
             await _abort_ws(websocket, "bad_request", str(exc))
@@ -1031,11 +1031,11 @@ def create_app(
     return app
 
 
-class _ConfigFrameTooLarge(Exception):
+class _ConfigFrameTooLargeError(Exception):
     """The WebSocket config/handshake frame exceeded the app per-frame cap."""
 
 
-class _ConfigFrameNotText(Exception):
+class _ConfigFrameNotTextError(Exception):
     """The first WebSocket frame was not a JSON text frame.
 
     Binary frames are reserved for raw audio; a binary first frame is a
@@ -1065,8 +1065,8 @@ async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> A
         non-object frame).
 
     Raises:
-        _ConfigFrameTooLarge: If the raw config frame exceeds ``max_frame_bytes``.
-        _ConfigFrameNotText: If the first frame is not a text frame (for example, a
+        _ConfigFrameTooLargeError: If the raw config frame exceeds ``max_frame_bytes``.
+        _ConfigFrameNotTextError: If the first frame is not a text frame (for example, a
             binary frame); surfaced as ``bad_request`` by the caller.
         json.JSONDecodeError: If the text frame is not parseable JSON
             (surfaced as ``bad_request`` by the caller -- its message is
@@ -1083,12 +1083,12 @@ async def _receive_config_frame(websocket: WebSocket, max_frame_bytes: int) -> A
     # would not share -- a cross-implementation compatibility hazard for the
     # versioned wire protocol. Reject a non-text first frame explicitly.
     if not isinstance(raw, str):
-        raise _ConfigFrameNotText(
+        raise _ConfigFrameNotTextError(
             "Config frame must be a JSON text frame (binary frames are reserved for audio)."
         )
     payload: bytes = raw.encode()
     if len(payload) > max_frame_bytes:
-        raise _ConfigFrameTooLarge(
+        raise _ConfigFrameTooLargeError(
             f"Config frame too large: {len(payload)} bytes exceeds the "
             f"{max_frame_bytes}-byte per-frame limit."
         )

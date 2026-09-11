@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """CLI coverage for Standard ASR entrypoint tooling."""
@@ -835,7 +835,7 @@ def _duck_class_properties_factory() -> (  # pyright: ignore[reportUnusedFunctio
     return _DuckClassPropertiesASR()
 
 
-class _ArbitraryFactoryFault(Exception):
+class _ArbitraryFactoryFaultError(Exception):
     """A plugin-authored fault type the registry does not wrap."""
 
 
@@ -852,7 +852,7 @@ def _os_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedF
 
 
 def _authored_error_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
-    raise _ArbitraryFactoryFault("plugin said no")
+    raise _ArbitraryFactoryFaultError("plugin said no")
 
 
 def _keyboard_interrupt_factory() -> _GatingStreamEngine:  # pyright: ignore[reportUnusedFunction]
@@ -4561,7 +4561,7 @@ def test_cli_compliance_run_named_subset_scopes_probes_at_the_source(
 ) -> None:
     # `compliance run <named>` on a machine with a co-installed plugin must
     # scope the per-engine checks AT THE SOURCE, not filter the report
-    # afterwards: the instance checks execute engine code (construction, the
+    # afterward: the instance checks execute engine code (construction, the
     # supports() sweep, the start_transcription() refusal probe -- a model
     # load; for a cloud engine a billable call), and the old post-hoc filter
     # discarded only the verdicts while the user still paid those side

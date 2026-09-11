@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for the streaming protocol: events, reduce, session, sync bridge."""
@@ -48,7 +48,7 @@ from standard_asr.runtime.streaming import (
     DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
     DIAG_SUPERSEDE_REINTRODUCES_SEGMENT,
     DIAG_SUPERSEDE_UNKNOWN_OLD_ID,
-    EventBufferOverflow,
+    EventBufferOverflowError,
     StreamDeadlines,
     StreamReducer,
     SyncSession,
@@ -563,7 +563,7 @@ def test_feed_rejects_str_with_actionable_typeerror() -> None:
 def test_feed_str_rejection_does_not_claim_feed_mode() -> None:
     # Rejecting a str is a pure argument-type error and MUST NOT
     # mutate session state -- the caller can still drive the session correctly
-    # afterwards (for example, via manual send_audio).
+    # afterward (for example, via manual send_audio).
     async def run() -> list[TranscriptionEvent]:
         session = _EchoSession()
         with pytest.raises(TypeError):
@@ -1198,7 +1198,7 @@ def test_event_buffer_overflow_raises() -> None:
     buf = _CoalescingBuffer(capacity=2)
     buf.put(TranscriptionEvent.partial("s0", "a"))
     buf.put(TranscriptionEvent.partial("s1", "b"))
-    with pytest.raises(EventBufferOverflow):
+    with pytest.raises(EventBufferOverflowError):
         buf.put(TranscriptionEvent.partial("s2", "c"))
 
 
@@ -1231,7 +1231,7 @@ def test_drop_proof_slots_consume_the_shared_budget() -> None:
     buf = _CoalescingBuffer(capacity=4)
     for i in range(5):
         buf.put(TranscriptionEvent.final(f"s{i}", "x"))
-    with pytest.raises(EventBufferOverflow):
+    with pytest.raises(EventBufferOverflowError):
         buf.put(TranscriptionEvent.partial("p0", "hi"))
 
 
@@ -1250,7 +1250,7 @@ def test_undelivered_segment_holds_two_slots() -> None:
     buf.put(TranscriptionEvent.final("s1", "aa"))  # partial kept: s1 undeclared
     buf.put(TranscriptionEvent.partial("s2", "b"))
     buf.put(TranscriptionEvent.final("s2", "bb"))  # budget now fully spent
-    with pytest.raises(EventBufferOverflow):
+    with pytest.raises(EventBufferOverflowError):
         buf.put(TranscriptionEvent.partial("s3", "c"))
 
 
@@ -1262,7 +1262,7 @@ def test_final_supersede_never_dropped_at_capacity() -> None:
         buf.put(TranscriptionEvent.partial("s0", "a"))
         buf.put(TranscriptionEvent.partial("s1", "b"))  # at capacity now
         # A NEW distinct-segment partial would overflow ...
-        with pytest.raises(EventBufferOverflow):
+        with pytest.raises(EventBufferOverflowError):
             buf.put(TranscriptionEvent.partial("s2", "c"))
         # ... but final / supersede MUST bypass the bound.
         buf.put(TranscriptionEvent.final("s3", "f"))
@@ -2412,7 +2412,7 @@ def test_guard_speaker_none_to_x_after_freeze_allowed() -> None:
 def test_guard_speaker_floats_before_freeze() -> None:
     # Pins the PRIOR-frontier semantics: while nothing is frozen the speaker
     # floats freely (A->B admitted); a same-event freeze+speaker-set is legal
-    # (the frontier read predates the event's own freeze); only afterwards is
+    # (the frontier read predates the event's own freeze); only afterward is
     # the last accepted speaker locked.
     guard = _LifecycleGuard()
     assert guard.admit(TranscriptionEvent.partial("s0", "he", speaker="A")) is not None
@@ -3670,7 +3670,7 @@ def test_sync_pump_detects_dead_loop_thread(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_sync_pump_after_teardown_raises_stream_closed() -> None:
     # A prior lifecycle timeout tears the bridge down; pumping events
-    # afterwards must fail with the contracted StreamClosedError, not hang or
+    # afterward must fail with the contracted StreamClosedError, not hang or
     # raise an unrelated loop error.
     sync = SyncSession(_HangEndAudioSession(), submit_timeout=0.1)
     with pytest.raises(TimeoutError):

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for the shared runtime sync-call boundary.
@@ -14,7 +14,8 @@ the no-value-repr message guarantee.
 from __future__ import annotations
 
 import builtins
-from typing import Any, Generator
+from collections.abc import Generator
+from typing import Any
 
 import pytest
 

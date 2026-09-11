@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Command line entry point for Standard ASR utilities."""
@@ -11,7 +11,8 @@ import io
 import json
 import sys
 import traceback
-from typing import IO, Any, Callable, Iterable, cast
+from collections.abc import Callable, Iterable
+from typing import IO, Any, cast
 
 from pydantic import ValidationError
 
@@ -75,7 +76,7 @@ from standard_asr.runtime.redaction import (
 )
 
 
-class _EngineFault(Exception):
+class _EngineFaultError(Exception):
     """CLI-internal envelope: an ENGINE-side fault caught at the execution seam.
 
     ``main``'s top-level arms classify by exception class, but the
@@ -121,7 +122,7 @@ def _run_engine_call(invoke: Callable[[], Any]) -> Any:
         Whatever ``invoke`` returns.
 
     Raises:
-        _EngineFault: Wrapping any ``ValueError``-family escape that is not
+        _EngineFaultError: Wrapping any ``ValueError``-family escape that is not
             a ``ConfigError``.
         BaseException: Everything else, unchanged.
     """
@@ -130,7 +131,7 @@ def _run_engine_call(invoke: Callable[[], Any]) -> Any:
     except ConfigError:
         raise
     except ValueError as exc:
-        raise _EngineFault(exc) from exc
+        raise _EngineFaultError(exc) from exc
 
 
 #: ASCII status markers. The CLI prints transcripts and decorative status lines
@@ -604,7 +605,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             propagates so ``main`` reports the installation fault
             (exit 1). Reporting 0 here would tell a script the model is
             usable when nothing about the engine could be read.
-        _EngineFault: When reading the engine class's
+        _EngineFaultError: When reading the engine class's
             ``declared_capabilities`` runs a plugin descriptor that raises
             the ``ValueError`` family (exit 1).
         ProtocolCompatibilityError: When the engine class declares a protocol
@@ -660,7 +661,7 @@ def _print_declared_capabilities(engine_class: Any) -> None:
         None.
 
     Raises:
-        _EngineFault: When the class-level ``declared_capabilities`` lookup
+        _EngineFaultError: When the class-level ``declared_capabilities`` lookup
             executes a plugin descriptor that raises the ``ValueError``
             family -- the same engine-fault seam as an instance call.
     """
@@ -711,7 +712,7 @@ def _print_declared_metadata(engine_class: Any) -> None:
         None.
 
     Raises:
-        _EngineFault: If a plugin descriptor or canonical serializer raises a
+        _EngineFaultError: If a plugin descriptor or canonical serializer raises a
             ``ValueError`` family exception.
     """
     metadata = _run_engine_call(lambda: getattr(engine_class, "declared_metadata", None))
@@ -809,7 +810,7 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
             or any non-``None`` value). Declaration and behavior are the same
             fault owner: the engine author (exit 1) -- no flag or env var the
             CLI user controls can fix either.
-        _EngineFault: When the warm-up call itself escapes with a bare
+        _EngineFaultError: When the warm-up call itself escapes with a bare
             ``ValueError`` or raw ``ValidationError`` (the execution seam;
             exit 1 via ``main``'s envelope arm).
     """
@@ -937,7 +938,7 @@ def _artifact_operation(asr: Any, member: str) -> Callable[..., Any]:
     Raises:
         EngineContractError: If the engine omits the operation or
             exposes a non-callable value after passing the protocol guard.
-        _EngineFault: If plugin attribute lookup raises a ``ValueError`` family
+        _EngineFaultError: If plugin attribute lookup raises a ``ValueError`` family
             exception.
     """
     operation = _run_engine_call(lambda: getattr(asr, member, None))
@@ -1361,7 +1362,7 @@ def _cmd_compliance_run(args: argparse.Namespace) -> int:
     # Scope the per-engine checks -- including the instance BEHAVIORAL probes
     # (construction, the supports() sweep, the start_transcription() refusal
     # probe: a model load; for a cloud engine, potentially a billable call) --
-    # to the named subset AT THE SOURCE. Filtering the report afterwards
+    # to the named subset AT THE SOURCE. Filtering the report afterward
     # discarded only the verdicts while the user still paid the probes' side
     # effects on co-installed plugins they never named. Registry-global
     # invariants (engine-identity collisions, RuntimeParams closedness) still
@@ -1968,7 +1969,7 @@ def _static_inference_acquisition(asr: Any) -> bool:
         Whether declared metadata permits inference-time artifact acquisition.
 
     Raises:
-        _EngineFault: If plugin metadata lookup raises a ``ValueError`` family
+        _EngineFaultError: If plugin metadata lookup raises a ``ValueError`` family
             exception.
     """
     metadata = _run_engine_call(lambda: getattr(asr, "declared_metadata", None))
@@ -2061,7 +2062,7 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         ValueError: When ``--options`` is not a valid portable params object
             (raised by ``_parse_options`` BEFORE the engine runs -- the only
             usage-owned ``ValueError`` on this path; exit 2).
-        _EngineFault: When the engine call itself escapes with the
+        _EngineFaultError: When the engine call itself escapes with the
             ``ValueError`` family -- a bare SDK ``ValueError``, a raw
             ``ValidationError`` from an internal model, an
             ``InvalidProviderParamError`` the CLI user cannot have caused
@@ -2101,7 +2102,7 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     _transcribe_artifact_preflight(asr, name=args.name, params=effective_params)
     # The execution seam: what escapes the engine call here as a bare
     # ValueError / raw ValidationError is an engine fault (exit 1 through
-    # _EngineFault), never a usage error -- every caller-fixable input was
+    # _EngineFaultError), never a usage error -- every caller-fixable input was
     # already validated above (see _run_engine_call).
     result = _run_engine_call(lambda: asr.transcribe(args.audio, params))
     require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
@@ -2284,7 +2285,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_exception(exc)
         _debug_traceback(args)
         return 1
-    except _EngineFault as exc:
+    except _EngineFaultError as exc:
         # The execution seam already classified this (see _run_engine_call):
         # an engine-side fault the CLI user did not cause. Raw
         # ValidationError gets the operator-audience scrub (this line lands
@@ -2313,7 +2314,7 @@ def main(argv: list[str] | None = None) -> int:
         _debug_traceback(args)
         return 1
     except ValidationError as exc:
-        # BACKSTOP for a raw ValidationError from any seam the _EngineFault
+        # BACKSTOP for a raw ValidationError from any seam the _EngineFaultError
         # envelope does not wrap (the execution seam is enveloped above):
         # still an ENGINE fault, never usage -- every caller-originating
         # pydantic failure is classified upstream (--options by

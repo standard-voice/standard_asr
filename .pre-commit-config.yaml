@@ -74,6 +74,21 @@ repos:
     hooks:
       - id: zizmor
 
+  # --- writing standard (Vale, pinned by scripts/fetch_vale.py) ------------
+  - repo: local
+    hooks:
+      - id: vale
+        name: vale (writing standard)
+        # bash is named because uv runs a file that is not a Python script
+        # as an external command, and Windows cannot start a .sh file by
+        # itself.
+        entry: uv run bash scripts/vale.sh --gate
+        language: system
+        pass_filenames: false
+        # With pass_filenames off, `files` only decides whether the hook
+        # runs; it names every input that changes what the gate checks.
+        files: \.(md|py)$|^\.vale\.ini$|^\.vale/|^scripts/vale\.sh$
+
   # --- full test suite on push (too slow for every commit) -----------------
   - repo: local
     hooks:

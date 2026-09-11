@@ -1,5 +1,5 @@
 extends: existence
-message: "No emoji or pictographs in shipped text (STYLE.md, punctuation and symbols)."
+message: 'No emoji or pictograph in documentation, comments, docstrings, or emitted text (STYLE.md, "Spelling and characters").'
 link: https://github.com/standard-voice/standard_asr/blob/main/STYLE.md
 level: error
 nonword: true
@@ -16,7 +16,7 @@ nonword: true
 # 2717) carry Emoji=No, but they are dingbat imitations of marks that already
 # have correct counterparts -- write the real MULTIPLICATION SIGN (00D7), and
 # use the ASCII status markers for a check-and-cross column. STYLE.md,
-# "ASCII runtime strings", states the same boundary in prose; the two must
+# "Spelling and characters", states the same boundary in prose; the two must
 # not drift apart. Symbols outside these blocks (the plain arrows at
 # 2190-21FF, the math operators, the trademark sign) stay legal as
 # typography, and the U+FE0F token still catches the EMOJI presentation of
