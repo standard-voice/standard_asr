@@ -153,7 +153,7 @@ source-exclude = [".coverage", ".coverage.*"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src/standard_asr", "tests", "docs/site/scripts"]
+include = ["src/standard_asr", "tests", "docs/site/scripts", "scripts"]
 pythonVersion = "3.10"
 reportMissingModuleSource = "warning"
 reportUnusedVariable = "error"
@@ -205,7 +205,7 @@ line-length = 100
 # both numpy 1.x and 2.x. E/F/I/W are baseline lint + import order. D is
 # pydocstyle (Google convention) — it enforces the docstring structure that
 # STYLE.md requires.
-select = ["E", "F", "I", "W", "NPY201", "D"]
+select = ["E", "F", "I", "W", "UP", "N", "NPY201", "D", "T20"]
 # D107: the API reference merges __init__ into the class signature
 # (docs/site/scripts/dump_api.py), so it needs no separate docstring. D105:
 # trivial container dunders (__len__, __iter__, __repr__) need none either.
@@ -221,3 +221,10 @@ convention = "google"
 "tests/**" = ["D"]
 # Illustrative sample code under docs/ is not part of the shipped library.
 "docs/**" = ["D"]
+# T20 (no print) enforces the logging rule. The CLI's output is its interface
+# (results to stdout, errors to stderr), and the site's build scripts report
+# to stdout by design, so both keep print.
+"src/standard_asr/toolchain/cli.py" = ["T20"]
+"docs/site/scripts/**" = ["T20"]
+# A script's output is its interface, like the CLI's.
+"scripts/**" = ["T20"]

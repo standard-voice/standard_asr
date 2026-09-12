@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Dump the public API surface of ``standard_asr`` to neutral JSON.

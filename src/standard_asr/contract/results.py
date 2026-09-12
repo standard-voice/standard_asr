@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Standard ASR transcription result models (constant schema).
@@ -18,8 +18,8 @@ Null rules (disambiguation):
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Annotated, Literal, Sequence, cast
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Literal, cast
 
 from pydantic import (
     BaseModel,

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Security and native-decode tests for the audio loader.

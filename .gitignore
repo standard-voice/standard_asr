@@ -216,3 +216,5 @@ __marimo__/
 
 # Pinned CI tool binaries (actionlint, vale) downloaded into the tree.
 .tools/
+# Working notes (STYLE.md, "Scope"; scripts/vale.sh exempts them).
+work/

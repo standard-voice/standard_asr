@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Static engine properties (identity and I/O boundaries).
@@ -13,7 +13,7 @@ node).
 
 from __future__ import annotations
 
-from typing import Literal, Union
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -76,7 +76,7 @@ class SampleRateRange(BaseModel):
 #: range, or ``"any"`` (every rate). Use :func:`sample_rate_accepted` and
 #: :func:`nearest_accepted_sample_rate` to query/target it uniformly so a new
 #: variant can never be silently mishandled by a stray ``isinstance(..., list)``.
-AcceptedSampleRates = Union[list[int], SampleRateRange, Literal["any"]]
+AcceptedSampleRates = list[int] | SampleRateRange | Literal["any"]
 
 
 def sample_rate_accepted(accepted: AcceptedSampleRates, rate: int) -> bool:

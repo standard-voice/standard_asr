@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Essential tests for the audio loading utilities: key functionality and regressions."""
@@ -307,29 +307,3 @@ def test_invalid_base64_data_uri():
         assert False, "Should have raised AudioProcessingError"
     except AudioProcessingError:
         pass
-
-
-def main():
-    """Run basic tests manually if pytest not available."""
-    print("Running the basic audio-utility tests...")
-
-    test_audio_contract_dtype()
-    print("[OK] Audio contract dtype test passed")
-
-    test_single_sample_not_scalar()
-    print("[OK] Single sample regression test passed")
-
-    test_empty_audio_raises_error()
-    print("[OK] Empty audio error test passed")
-
-    test_nan_inf_cleanup()
-    print("[OK] NaN/Inf cleanup test passed")
-
-    test_invalid_parameters()
-    print("[OK] Invalid parameters test passed")
-
-    print("All basic tests passed.")
-
-
-if __name__ == "__main__":
-    main()
