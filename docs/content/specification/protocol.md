@@ -750,10 +750,11 @@ CI MUST 守住 numpy 1.x↔2.x 的兼容面,通过以下并行通道(实现见 `
 - **warnings-as-errors** —— `pytest` `filterwarnings=["error", …]`,把 numpy(及其他)的 deprecation 升级为失败(取代旧的逐 job `-W error`)。
 - **锁定通道**(`--locked`,py3.10–3.14):跑提交的 `uv.lock`,即当前 numpy 2.x。
 - **下界通道**(`--resolution lowest-direct`,py3.10):贴 `numpy>=1.26` 下界跑,守住 numpy 1.x 兼容面。
-- **numpy floor 通道**(py3.13 钉 `numpy==2.1.*`):守住 `numpy>=2.1` 这一 interpreter-conditional 下界(下界通道在 3.10 上不会触及它)。
+- **core floor 通道**(py3.10,不装任何 extra):按包元数据把每个核心依赖钉在声明的下界(今天是 `numpy==1.26.0` 与 `pydantic==2.5.0`)并跑核心测试。下界通道装着 server extra,fastapi 会把 pydantic 抬到 2.7,碰不到核心下界。
+- **numpy floor 通道**(py3.13 钉从包元数据读出的精确下界,今天是 `numpy==2.1.0`):守住 `numpy>=2.1` 这一 interpreter-conditional 下界(下界通道在 3.10 上不会触及它)。
 - **每日 canary**(两轴):`latest` 稳定 + `prerelease`(`uv lock --upgrade [--prerelease allow]`)。prerelease 轴是旧 **numpy-nightly canary 的后继**,提前捕捉 NEP 50 等尚未发布的上游行为变更;非 PR 门禁,失败仅开追踪 issue。
 
-> 旧表述「numpy 1.26 与最新 2.x 双测 + numpy-nightly canary lane」由上述锁定/下界/numpy-floor/canary 四通道等价替代(对应 D1/D4 与依赖管理规格)。
+> 旧表述「numpy 1.26 与最新 2.x 双测 + numpy-nightly canary lane」由上述锁定/下界/core-floor/numpy-floor/canary 五通道等价替代(对应 D1/D4 与依赖管理规格)。
 
 ## DEP.3 不强制 numpy 2+
 标准固定 **numpy-float32-ndarray 类型**，不固定版本；不排除仍绑 numpy 1 的引擎（如 FunASR）。

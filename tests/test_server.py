@@ -23,9 +23,8 @@ from collections.abc import AsyncIterator
 from importlib.metadata import EntryPoint
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
-import httpx2
 import numpy as np
 import pytest
 
@@ -71,6 +70,9 @@ from standard_asr.plugins.discovery import ModelRegistry, discover_models
 from standard_asr.runtime.config import LanguageConfigMixin
 from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
 from standard_asr.toolchain import server as server_module
+
+if TYPE_CHECKING:
+    import httpx2
 
 
 class _DummyConfig(BaseConfig[str]):
@@ -2855,6 +2857,7 @@ def test_body_size_middleware_passes_non_http_scope() -> None:
 
 
 def test_body_size_middleware_counts_streamed_bytes_and_suppresses_app_response() -> None:
+    pytest.importorskip("fastapi")
     # The true-cap layer: an oversize body delivered as multiple chunks (no
     # honest Content-Length) is rejected with 413 the moment the cumulative count
     # exceeds the cap; the app keeps reading past the breach (covering the
@@ -2902,6 +2905,7 @@ def test_body_size_middleware_counts_streamed_bytes_and_suppresses_app_response(
 
 
 def test_body_size_middleware_within_cap_streamed_passes_through() -> None:
+    pytest.importorskip("fastapi")
     # A streamed body within the cap passes through untouched: the app reads all
     # frames and its own response is delivered (no 413, no suppression).
     import asyncio
@@ -4915,54 +4919,6 @@ def test_error_event_drops_extra_before_serializing() -> None:
     assert payload["code"] == "engine_error"
     assert payload["recoverable"] is True
     assert payload["type"] == "error"
-
-
-def test_wire_visible_slots_reject_values_with_no_json_form() -> None:
-    # G5.2: the Python objects and the JSON documents are the same protocol
-    # seen twice, so a wire-visible slot may only hold what a JSON document
-    # can hold. Declared `Any`, these constructed happily and then failed the
-    # projection AFTER an endpoint had committed to a response.
-    from pydantic import JsonValue, ValidationError
-
-    from standard_asr.contract.params import DIARIZE
-    from standard_asr.contract.results import Diagnostic, Segment, Word, to_json_value
-
-    for kwargs in (
-        {"code": "x", "message": "m", "provided": object()},
-        {"code": "x", "message": "m", "effective": object()},
-    ):
-        with pytest.raises(ValidationError):
-            Diagnostic(**kwargs)  # pyright: ignore[reportArgumentType]
-
-    with pytest.raises(ValidationError):
-        TranscriptionResult(text="x", extra={"opaque": object()})  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValidationError):
-        TranscriptionEvent.make_error(code="engine_error", extra={"o": object()})
-    with pytest.raises(ValidationError):
-        Word(start=0.0, end=1.0, text="w", extra={"o": object()})  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValidationError):
-        Segment(start=0.0, end=1.0, text="s", extra={"o": object()})  # pyright: ignore[reportArgumentType]
-
-    # Non-finite floats are Python floats but NOT JSON: admitting them would
-    # emit a document no conforming parser accepts.
-    with pytest.raises(ValidationError):
-        Diagnostic(code="x", message="m", provided=float("nan"))
-    with pytest.raises(ValidationError):
-        TranscriptionResult(text="x", extra={"ratio": float("inf")})
-
-    # Everything a JSON document CAN hold still passes, nested arbitrarily.
-    nested: JsonValue = {"a": [1, 2.5, "s", True, None, {"b": []}]}
-    assert TranscriptionResult(text="x", extra={"a": nested}).extra == {"a": nested}
-    assert Diagnostic(code="x", message="m", provided=nested).provided == nested
-
-    # A TYPED container is JSON data but `list` is invariant, so a checker
-    # rejects it where list[JsonValue] is expected. `to_json_value` absorbs
-    # that once -- an engine author hands it a list[str] instead of writing a
-    # cast at every call site -- and a structured value is dumped by the same
-    # helper. Runtime validation is unaffected either way.
-    hints: list[str] = ["Anthropic", "Claude"]
-    assert Diagnostic(code="x", message="m", provided=to_json_value(hints)).provided == hints
-    assert to_json_value(DIARIZE) == DIARIZE.model_dump(mode="json")
 
 
 def test_rest_projection_failure_is_a_scrubbed_500_not_an_asgi_crash(

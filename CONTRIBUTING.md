@@ -105,30 +105,32 @@ Standard ASR is infrastructure others build on, so we manage dependencies around
 
 - **New direct dependency:** add it to `[project.dependencies]` with a lower bound you have actually verified the code needs (not "whatever is latest"). No upper cap. Then run `uv lock` and commit the lock with the change.
 - **New dev/test/lint/typing tool:** add it to the appropriate PEP 735 group in `[dependency-groups]`, not to `[project.dependencies]`.
-- **Raising a lower bound:** only when the code genuinely starts relying on a newer feature, or a security floor forces it. Both floor lanes (lower-bounds and numpy-floor) must stay green afterward.
+- **Raising a lower bound:** only when the code genuinely starts relying on a newer feature, or a security floor forces it. All three floor lanes (lower-bounds, core-floor, and numpy-floor) must stay green afterward.
 - **Adding an upper cap:** don't, unless it is a real incompatibility. If it is, record it in `docs/compatibility-advisories.md` (issue link + revisit date) and prefer a `[tool.uv] constraint-dependencies` dev-only pin if the breakage is dev/test-only rather than a downstream problem.
 - **Routine version bumps** are Dependabot's job — it rewrites `uv.lock`, not the contract. Don't hand-bump the lock just to chase latest.
 
 ### CI channels
 
-Four channels keep both contracts honest. The first two gate a PR:
+Five channels keep both contracts honest. The first three gate a PR:
 
 | Channel | Where | Resolution | Gates merge? | Catches |
 |---------|-------|-----------|--------------|---------|
 | **PR CI** | `ci.yml` | committed `uv.lock` (`--locked`) | **Yes** (`checks-complete`) | regressions in the exact, reproducible env |
 | **Lower bounds** | `ci.yml` (`lower-bounds` job) | `--resolution lowest-direct`, py3.10 | **Yes** (part of `checks-complete`) | a floor that is too low, or a new transitive release that fails with the floors |
+| **Core floor** | `ci.yml` (`core-floor` job) | `uv pip install --resolution lowest-direct`, no extras, py3.10 | **Yes** (part of `checks-complete`) | a core floor the server extra hides from the lower-bounds lane: fastapi needs pydantic 2.7, so that lane never installs the declared pydantic 2.5 |
 | **Dependabot** | `dependabot.yml` | newest in-range → new `uv.lock` PRs | via PR CI | staying current; security fixes |
 | **Canary** | `canary.yml` (daily) | `uv lock --upgrade` (+ `--prerelease allow`) | No (opens an issue) | upstream breakage before/just-after it ships |
 
 ### When a dependency change breaks CI
 
-- **Lower-bounds lane red:** the lane installs the lowest versions of the direct dependencies that satisfy every declared range together, with all extras and groups, and every transitive dependency at the newest version those allow, so it can go red with no change on our side. A floor that another range raises is not tested: with the server extra installed, fastapi 0.133 requires pydantic 2.7, so the lane never runs pydantic 2.5, the core floor (#80). Read the resolved versions in the job log first. A declared floor that is too low for the code as written: either lower the code's requirement, or raise the bound in `[project.dependencies]` to the version that actually works (and `uv lock`). A transitive dependency that moved: handle it like a canary red. A new warning that warnings-as-errors turns into a failure is evidence, not an exemption: a warning our own call triggers is fixed at the call, and a range that admits a version we cannot run is fixed in the contract. Only a warning raised inside a dependency, at every version the floors allow, gets a targeted ignore in `pyproject.toml`, under the conditions the comment above `filterwarnings` states.
+- **Lower-bounds lane red:** the lane installs the lowest versions of the direct dependencies that satisfy every declared range together, with all extras and groups, and every transitive dependency at the newest version those allow, so it can go red with no change on our side. A floor that another range raises is not tested here: with the server extra installed, fastapi 0.133 requires pydantic 2.7, so this lane never runs pydantic 2.5, the core floor; the core-floor lane installs it (#80). Read the resolved versions in the job log first. A declared floor that is too low for the code as written: either lower the code's requirement, or raise the bound in `[project.dependencies]` to the version that actually works (and `uv lock`). A transitive dependency that moved: handle it like a canary red. A new warning that warnings-as-errors turns into a failure is evidence, not an exemption: a warning our own call triggers is fixed at the call, and a range that admits a version we cannot run is fixed in the contract. Only a warning raised inside a dependency, at every version the floors allow, gets a targeted ignore in `pyproject.toml`, under the conditions the comment above `filterwarnings` states.
+- **Core-floor lane red:** the lane installs the core dependencies at their declared floors on Python 3.10, with no extras, asserts that each installed version equals its floor, and runs the suite. A failing test means the code relies on something newer than a floor promises: raise that floor, or change the code. A failing assertion means the declared floor did not install, usually because that version has no wheel for the interpreter: raise the floor to the lowest version that does.
 - **Canary red:** a newer (or pre-release) version broke us. Inspect the run's `lock-drift-*` artifact to see what moved, then either adapt our code (best), raise a lower bound if the old version is genuinely unsupportable, or — only for a real, tracked incompatibility — add a capped constraint with an entry in `docs/compatibility-advisories.md`. The canary's tracking issue is the place to record the decision.
 - **Dependabot PR red:** treat it like any failing PR; the change is gated by the same PR CI as everything else.
 
 ## CI
 
-GitHub Actions enforces the gates on every PR through a single workflow, [`ci.yml`](.github/workflows/ci.yml): lock-freshness (`uv lock --check`), ruff format + lint + pyright, the test suite across Python 3.10–3.14 on Linux plus macOS/Windows edges (all `--locked`), lower-bounds, the numpy-floor lane, package hygiene, actionlint, zizmor, and coverage. They roll up into one required aggregate check, **`checks-complete`** — the only status branch protection needs. A daily [`canary.yml`](.github/workflows/canary.yml) watches newest dependency resolutions outside the PR gate. All actions are pinned to commit SHAs (kept fresh by Dependabot) with least-privilege `permissions:`.
+GitHub Actions enforces the gates on every PR through a single workflow, [`ci.yml`](.github/workflows/ci.yml): lock-freshness (`uv lock --check`), ruff format + lint + pyright, the test suite across Python 3.10–3.14 on Linux plus macOS/Windows edges (all `--locked`), lower-bounds, core-floor, the numpy-floor lane, package hygiene, actionlint, zizmor, and coverage. They roll up into one required aggregate check, **`checks-complete`** — the only status branch protection needs. A daily [`canary.yml`](.github/workflows/canary.yml) watches newest dependency resolutions outside the PR gate. All actions are pinned to commit SHAs (kept fresh by Dependabot) with least-privilege `permissions:`.
 
 ## Releasing
 
