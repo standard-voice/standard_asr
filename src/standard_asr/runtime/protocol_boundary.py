@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """The runtime sync-call boundary of the StandardASR protocol surface.
@@ -40,7 +40,8 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from typing import Any, Coroutine, Literal, cast
+from collections.abc import Coroutine
+from typing import Any, Literal, cast
 
 from standard_asr.contract.exceptions import EngineContractError
 

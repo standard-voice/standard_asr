@@ -1,9 +1,9 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for the accident-model scrubber (runtime/redaction.py).
 
-The module's contract is three cheap rules (see AGENTS.md's trust model):
+The module's contract is three cheap rules, listed in its module docstring:
 validation-error detail never echoes the input, exception text destined for
 an operator surface goes through the chain summary, and a full traceback is
 logged only when the chain carries no ``ValidationError``.
@@ -66,7 +66,7 @@ class _CrossFieldEcho(BaseModel):
     b: str
 
     @model_validator(mode="after")
-    def _reject(self) -> "_CrossFieldEcho":
+    def _reject(self) -> _CrossFieldEcho:
         raise ValueError(f"mismatch: {self.b}")
 
 
@@ -299,11 +299,11 @@ def test_summary_is_one_bounded_line() -> None:
 
 
 def test_summary_degrades_on_raising_or_empty_str() -> None:
-    class _HostileStr(Exception):
+    class _HostileStrError(Exception):
         def __str__(self) -> str:
             raise RuntimeError("boom")
 
-    assert "HostileStr: <exception str() failed>" in safe_exception_summary(_HostileStr())
+    assert "HostileStrError: <exception str() failed>" in safe_exception_summary(_HostileStrError())
     # An empty message renders the bare type name, no dangling colon.
     assert safe_exception_summary(RuntimeError()) == "RuntimeError"
 

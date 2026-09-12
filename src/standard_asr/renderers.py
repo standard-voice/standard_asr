@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Subtitle renderers for transcription results (SRT / VTT).
@@ -30,7 +30,8 @@ caller picks the loss explicitly (``"omit"`` / ``"collapse"``). The nullable
 from __future__ import annotations
 
 import re
-from typing import Iterable, Literal, NamedTuple
+from collections.abc import Iterable
+from typing import Literal, NamedTuple
 
 from standard_asr.contract.exceptions import SubtitleRenderingError
 from standard_asr.contract.results import Segment, TranscriptionResult

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Compliance helpers for Standard ASR plugin authors."""
@@ -9,8 +9,9 @@ import inspect
 import math
 import re
 import threading
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Callable, ClassVar, Final, Iterable, Literal, Protocol, Sequence, cast
+from typing import ClassVar, Final, Literal, Protocol, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -352,7 +353,7 @@ def check_entrypoints(
             (RuntimeParams closedness, engine-identity collisions,
             no-entry-points) always evaluate the whole environment -- they
             are environment facts, not per-engine verdicts. Pass the user's
-            named subset here rather than filtering the report afterwards:
+            named subset here rather than filtering the report afterward:
             the instance checks EXECUTE engine code (construction, a
             ``supports()`` sweep, the ``start_transcription()`` refusal
             probe -- a model load, for a cloud engine potentially a billable

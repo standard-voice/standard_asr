@@ -11,13 +11,13 @@
 # holds the rules. The --glob exemption exists because Vale cannot exempt
 # whole files from inside .vale.ini (an empty "BasedOnStyles =" section does
 # not clear styles). Chinese documents, historical files, working notes, and
-# the pre-standard CHANGELOG entries are exempt per STYLE.md.
+# CHANGELOG.md are exempt per STYLE.md.
 #
 # Usage:
 #   scripts/vale.sh                # human view: pretty output, all levels
 #   scripts/vale.sh --gate         # CI gate: fails on ANY alert, any level
 #   scripts/vale.sh --selfcheck    # prove the gate sees what it claims to see
-#   VALE=/path/to/vale scripts/vale.sh
+#   VALE=/path/to/vale scripts/vale.sh   # skip the pinned fetch
 set -euo pipefail
 # An exported CDPATH makes every `cd <relative>` echo the resolved directory
 # to stdout, which corrupts the command substitutions below (the resolved
@@ -25,10 +25,41 @@ set -euo pipefail
 unset CDPATH
 cd "$(dirname "$0")/.."
 
-VALE="${VALE:-vale}"
+# The version pin lives in scripts/fetch_vale.py. Without an explicit VALE=,
+# the gate runs exactly that version from .tools/vale/<version>/ (fetched and
+# SHA256-verified on first use), never whatever `vale` is on PATH: a
+# distribution package of another version would otherwise win silently.
+if [[ -z "${VALE:-}" ]]; then
+    # Inside an active virtual environment, `python` is that environment's
+    # interpreter: uv puts it first on PATH, and on Windows the environment
+    # has no python3.exe, where Git Bash may find a Store stub by that name.
+    # Elsewhere python3 comes first, because `python` may still be Python 2.
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        candidates=(python python3)
+    else
+        candidates=(python3 python)
+    fi
+    python_bin=""
+    for candidate in "${candidates[@]}"; do
+        if python_bin="$(command -v "${candidate}")"; then
+            break
+        fi
+    done
+    if [[ -z "${python_bin}" ]]; then
+        echo "vale.sh: no python found; run through \`uv run bash scripts/vale.sh\`, or set VALE=/path/to/vale." >&2
+        exit 1
+    fi
+    # fetch_vale.py needs Python 3.10, the project's floor; a Python 2 or an
+    # older 3 would die inside it with a syntax error instead of this message.
+    if ! "${python_bin}" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+        echo "vale.sh: ${python_bin} is not Python 3.10 or newer; run through \`uv run bash scripts/vale.sh\`, or set VALE=/path/to/vale." >&2
+        exit 1
+    fi
+    VALE="$("${python_bin}" scripts/fetch_vale.py)"
+fi
 # --selfcheck runs Vale from a temporary mirror directory, so a relative
-# VALE path (CI passes .tools/vale/vale) has to be resolved here, while the
-# working directory is still the repo root. A bare name keeps its PATH lookup.
+# VALE path has to be resolved here, while the working directory is still
+# the repo root. A bare name keeps its PATH lookup.
 case "${VALE}" in
 */*) VALE="$(cd "$(dirname "${VALE}")" && pwd)/$(basename "${VALE}")" ;;
 esac
@@ -98,7 +129,10 @@ run_vale() {
     # bash 3.2 (macOS /bin/bash) treats expanding an empty array under
     # `set -u` as an unbound-variable error, so extra args are passed
     # explicitly by each caller instead of through a shared ARGS array.
-    "${VALE}" --glob="${EXEMPT}" "$@" "${TARGETS[@]}"
+    # --normalize prints every path with forward slashes, on Windows too, so
+    # the selfcheck can compare paths it composed with "/" (Vale 3.17.1,
+    # internal/lint/lint.go, Flags.Normalize; the flag is absent from --help).
+    "${VALE}" --normalize --glob="${EXEMPT}" "$@" "${TARGETS[@]}"
 }
 
 case "${1:-}" in

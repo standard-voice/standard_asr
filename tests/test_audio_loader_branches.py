@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Coverage-oriented tests for audio loader branches."""
@@ -21,7 +21,7 @@ import standard_asr.audio.loader as audio_loader
 from standard_asr.contract.exceptions import AudioProcessingError
 
 
-def _ffmpeg_native_returning(array: NDArray[np.float32], rate: int) -> "object":
+def _ffmpeg_native_returning(array: NDArray[np.float32], rate: int) -> object:
     """Build a typed stand-in for ``_decode_with_ffmpeg_native``."""
 
     def _decode(
@@ -302,7 +302,7 @@ def test_load_audio_from_path_wav_unsupported_sampwidth(
     sentinel: NDArray[np.float32] = np.zeros(1, dtype=np.float32)
 
     class _FakeWave:
-        def __enter__(self) -> "_FakeWave":
+        def __enter__(self) -> _FakeWave:
             return self
 
         def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -1011,7 +1011,7 @@ def test_decode_path_native_wav_unsupported_sampwidth_falls_back(
     # A 24-bit WAV is unsupported by the stdlib reader; decode falls through to
     # soundfile/ffmpeg. Here soundfile is absent and ffmpeg is stubbed.
     class _FakeWave:
-        def __enter__(self) -> "_FakeWave":
+        def __enter__(self) -> _FakeWave:
             return self
 
         def __exit__(self, *_: object) -> None:

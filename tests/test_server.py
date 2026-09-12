@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for FastAPI server helpers.
@@ -3756,7 +3756,7 @@ class _BestEffortOpenFaultEngine(_SessionLifecycleEngine):
 
     The only shape that puts a diagnostics frame and a pre-bridge error frame on
     the same socket: establishment has to succeed far enough to attach a
-    diagnostic, and the open hook has to fail afterwards.
+    diagnostic, and the open hook has to fail afterward.
     """
 
     session_type: ClassVar[type[TranscriptionSession]] = _ArtifactUnavailableOpenSession
@@ -4282,7 +4282,7 @@ def test_bridge_stream_pump_failure_is_logged_and_signalled(
             # session: it does not emit `done` until input is ended).
             self._ended = asyncio.Event()
 
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -4345,7 +4345,7 @@ def test_bridge_stream_tolerates_send_failure() -> None:
         def __init__(self) -> None:
             self.ended = False
 
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -4405,7 +4405,7 @@ def test_bridge_stream_unexpected_send_failure_is_logged(
         def __init__(self) -> None:
             self.ended = False
 
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -4693,7 +4693,7 @@ def test_bridge_forwards_final_diagnostics_delta_on_cap_violation() -> None:
         def __init__(self) -> None:
             self.ended = asyncio.Event()
 
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -4776,7 +4776,7 @@ def test_bridge_logs_a_multiline_detail_as_one_record(
             self.sent.append(data)
 
     class _FakeSession:
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -4856,7 +4856,7 @@ def test_bridge_never_logs_a_detail_installed_past_validation(
             self.sent.append(data)
 
     class _FakeSession:
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:

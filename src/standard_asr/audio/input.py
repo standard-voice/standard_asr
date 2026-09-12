@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Standard Voice Contributors
+# SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Audio input types for Standard ASR.
@@ -241,7 +241,7 @@ class AudioStorageUri:
 
 
 #: The discriminated union accepted by ``transcribe`` / ``start_transcription``.
-AudioInput = Union[AudioPath, AudioBytes, AudioArray, AudioUrl, AudioBase64, AudioStorageUri]
+AudioInput = AudioPath | AudioBytes | AudioArray | AudioUrl | AudioBase64 | AudioStorageUri
 
 #: Bare Python types accepted as a convenience and coerced to :data:`AudioInput`.
 AudioInputLike = Union[
