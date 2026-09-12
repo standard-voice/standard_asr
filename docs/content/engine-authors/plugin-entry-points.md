@@ -43,9 +43,9 @@ An `engine_id` MUST be unique across installed distributions: two distributions 
 
 ```toml
 [project.entry-points."standard_asr.models"]
-"faster-whisper/large-v3" = "std_faster_whisper.entrypoint:create"
+"faster-whisper/large-v3" = "std_faster_whisper.entrypoint:create_large_v3"
 "faster-whisper/distil-large-v3" = "std_faster_whisper.entrypoint:create_distil_large_v3"
-"faster-whisper/turbo" = "std_faster_whisper.entrypoint:create_turbo"
+"faster-whisper/large-v3-turbo" = "std_faster_whisper.entrypoint:create_turbo"
 ```
 
 Your callable can be a function or a class constructor. Each preset selects its model by which class it instantiates — never by passing a size name through an init `model` field (spec IC.7). The model identity lives on the engine class so discovery can read it without instantiating:
@@ -54,13 +54,13 @@ Your callable can be a function or a class constructor. Each preset selects its 
 # std_faster_whisper/entrypoint.py
 from typing import Any
 
-from .std_asr_faster_whisper import DistilLargeV3ASR, FasterWhisperASR, TurboASR
+from .engine import DistilLargeV3ASR, LargeV3ASR, TurboASR
 
 
-def create(**kwargs: Any) -> FasterWhisperASR:
+def create_large_v3(**kwargs: Any) -> LargeV3ASR:
     """Return the large-v3 multilingual preset."""
 
-    return FasterWhisperASR(**kwargs)
+    return LargeV3ASR(**kwargs)
 
 
 def create_distil_large_v3(**kwargs: Any) -> DistilLargeV3ASR:
