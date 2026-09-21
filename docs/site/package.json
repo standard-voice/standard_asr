@@ -17,7 +17,7 @@
     "fumadocs-core": "16.15.7",
     "fumadocs-mdx": "15.4.0",
     "fumadocs-ui": "npm:@fumadocs/base-ui@16.15.0",
-    "lucide-react": "^1.41.0",
+    "lucide-react": "^1.45.0",
     "next": "16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -28,17 +28,17 @@
     "shiki": "^4.4.3",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@types/mdast": "^4.0.4",
     "@types/mdx": "^2.0.14",
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.5.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
-    "oxfmt": "^0.66.0",
-    "oxlint": "^1.81.0",
+    "oxfmt": "^0.67.0",
+    "oxlint": "^1.82.0",
     "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2"
