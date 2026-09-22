@@ -18,17 +18,26 @@ not a substitute for a rate limiter.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioBase64, AudioBytes, AudioInput
+from standard_asr.contract.artifacts import (
+    ARTIFACTS_NOT_APPLICABLE,
+    ARTIFACTS_READY,
+    ArtifactReadiness,
+    ArtifactReport,
+)
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
+    ArtifactStatusError,
     ArtifactUnavailableError,
     AudioProcessingError,
     ConfigError,
@@ -39,9 +48,10 @@ from standard_asr.contract.exceptions import (
     UnsupportedFeatureError,
 )
 from standard_asr.contract.metadata import DeclaredEngineMetadata
-from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
+from standard_asr.contract.params import ProviderParams, RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import TranscriptionResult
 from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
+from standard_asr.runtime.engine_pool import EngineLease, EnginePool, EnginePoolClosedError
 from standard_asr.runtime.interface import require_engine_protocol
 from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
@@ -82,7 +92,7 @@ DEFAULT_MAX_WS_SESSION_BYTES: int = 256 * 1024 * 1024
 
 #: Stable client-facing detail for a model whose engine requires server-side
 #: configuration that is absent from this deployment
-#: (``ConfigurationRequiredError`` -- at zero-arg construction, or discovered
+#: (``ConfigurationRequiredError`` -- at operator-configured construction, or discovered
 #: lazily at transcription/session establishment). Deliberately
 #: generic: the absent FIELD NAMES are deployment detail (safe-logged for the
 #: operator), never sent to an unauthenticated caller. Shared verbatim by the
@@ -155,6 +165,29 @@ async def _abort_ws(websocket: WebSocket, code: str, message: str) -> None:
         pass
 
 
+def _release_lease_when_task_finishes(lease: EngineLease) -> None:
+    """Keep a WebSocket engine lease until its route task finishes.
+
+    The route has several terminal handshake and bridge paths. Binding release
+    to the ASGI task covers all of them, including cancellation, while the pool
+    makes shutdown wait until the scheduled release completes.
+
+    Args:
+        lease: Active engine lease owned by the route.
+
+    Returns:
+        None.
+
+    Raises:
+        RuntimeError: If called outside an asyncio task.
+    """
+    task = asyncio.current_task()
+    if task is None:  # pragma: no cover - FastAPI always runs a route in a task.
+        raise RuntimeError("A WebSocket engine lease requires an active route task.")
+
+    lease.release_when_done(task)
+
+
 # The credential-scrubbing of pydantic validation errors is shared with the CLI
 # (and any other transport that surfaces an `options` validation error) so the
 # two cannot drift on the "never echo the request input" rule. The single owner
@@ -176,7 +209,7 @@ def _sanitized_validation_detail(
     the **same** machine-readable shape: a list of ``{type, loc, msg}`` entries
     (the input is never echoed back). Keeping one body shape per status code means a
     cross-language client parses a single structure (and can branch on ``type``,
-    for example, ``extra_forbidden`` for a rejected ``provider_params`` key) rather than
+    for example, ``extra_forbidden`` for an unknown provider params member) rather than
     discriminating string-vs-list per code. The ``loc_prefix`` anchors a
     standalone error's model-relative ``loc`` under the request field it came
     from (for example, ``["options"]`` / ``["config"]``), replacing the prose label the
@@ -324,6 +357,24 @@ class ModelInfo(BaseModel):
     model_name: str = Field(..., description="Model preset name.")
 
 
+class ModelReadiness(BaseModel):
+    """Safe deployment-readiness response for one configured model.
+
+    Attributes:
+        model: Full model key.
+        ready: Whether inference artifacts are ready or not applicable.
+        readiness: Aggregate artifact-readiness token.
+        mode: Inference mode represented by the status report.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    model: str = Field(..., description="Model key in 'engine/model' format.")
+    ready: bool = Field(..., description="Whether the configured model is ready for inference.")
+    readiness: ArtifactReadiness = Field(..., description="Aggregate artifact readiness.")
+    mode: str = Field(..., description="Inference mode represented by this readiness check.")
+
+
 class TranscribeJsonRequest(BaseModel):
     """JSON payload for transcription requests.
 
@@ -394,6 +445,7 @@ class TranscribeResponse(BaseModel):
 def create_app(
     registry: ModelRegistry | None = None,
     *,
+    engine_configs: Mapping[str, Mapping[str, Any]] | None = None,
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     max_ws_frame_bytes: int = DEFAULT_MAX_WS_FRAME_BYTES,
     max_ws_session_bytes: int = DEFAULT_MAX_WS_SESSION_BYTES,
@@ -406,6 +458,8 @@ def create_app(
             explicitly passed registry is used as-is **even when empty** (an
             empty ``ModelRegistry({})`` exposes zero models; it does *not* fall
             back to discovery).
+        engine_configs: Optional operator-owned init config by full model key.
+            One effective config is fixed for each model for this app lifetime.
         max_body_bytes: Maximum accepted request-body size in bytes. Requests
             exceeding this are rejected with ``413`` *before* the body is
             decoded, bounding peak memory (see :data:`DEFAULT_MAX_BODY_BYTES`).
@@ -450,13 +504,22 @@ def create_app(
     # import itself stays lazy/optional.
     globals()["WebSocket"] = _WebSocket
 
-    app = FastAPI(title="Standard ASR")
     # Use the caller's registry when one is given -- even an empty one. A bare
     # ``registry or discover_models()`` would treat an explicitly passed empty
     # ``ModelRegistry({})`` as falsy (it is len 0) and silently fall back to
     # full plugin discovery, so an operator who wants to expose ZERO models would
     # instead expose every installed plugin. ``is not None`` honors the intent.
     model_registry = registry if registry is not None else discover_models()
+    engine_pool = EnginePool(model_registry, engine_configs=engine_configs)
+
+    @asynccontextmanager
+    async def _lifespan(_app: Any) -> AsyncGenerator[None, None]:
+        """Close pooled engines after the ASGI server drains active work."""
+        yield
+        await engine_pool.aclose()
+
+    app = FastAPI(title="Standard ASR", lifespan=_lifespan)
+    app.state.engine_pool = engine_pool
 
     # Pure-ASGI body-size guard (see _BodySizeLimitMiddleware): rejects over-large
     # bodies via Content-Length before they are read, without buffering the body.
@@ -502,6 +565,59 @@ def create_app(
             None.
         """
         return {"status": "ok"}
+
+    @app.get(
+        "/v1/readiness/{model:path}",
+        response_model=ModelReadiness,
+        responses={503: {"model": ModelReadiness}},
+    )
+    async def readiness(model: str) -> Response:  # pyright: ignore[reportUnusedFunction]
+        """Report whether one configured model is ready without acquiring artifacts.
+
+        The response excludes requirements, locations, actions, and diagnostics.
+        Operators use ``standard-asr status`` for that local detail. Ready and
+        not-applicable reports return 200; unavailable or unknown reports return
+        503 with the same stable response shape.
+
+        Args:
+            model: Full model key.
+
+        Returns:
+            A JSON readiness response.
+
+        Raises:
+            HTTPException: If model construction or status inspection fails.
+        """
+        lease = await _create_engine_or_http_error(engine_pool, model, HTTPException)
+        async with lease as asr:
+            try:
+                report = await asyncio.to_thread(asr.artifact_status)
+                require_sync_result(report, "artifact_status()", expected_type=ArtifactReport)
+            except ArtifactStatusError as exc:
+                log_exception_safely(
+                    logger, "Artifact readiness inspection failed for model %r", model
+                )
+                raise HTTPException(
+                    status_code=500, detail=_internal_error_message("artifact readiness")
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                log_exception_safely(logger, "Artifact readiness failed for model %r", model)
+                raise HTTPException(
+                    status_code=500, detail=_internal_error_message("artifact readiness")
+                ) from exc
+
+        ready = report.readiness in {ARTIFACTS_READY, ARTIFACTS_NOT_APPLICABLE}
+        payload = ModelReadiness(
+            model=model,
+            ready=ready,
+            readiness=report.readiness,
+            mode=report.mode,
+        )
+        return Response(
+            content=payload.model_dump_json(),
+            status_code=200 if ready else 503,
+            media_type="application/json",
+        )
 
     @app.get("/v1/models")
     def list_models() -> list[ModelInfo]:  # pyright: ignore[reportUnusedFunction]
@@ -586,27 +702,13 @@ def create_app(
         except Exception as exc:  # noqa: BLE001
             # Malformed options *syntax* (un-parseable JSON) is a bad request.
             raise HTTPException(status_code=400, detail=f"Invalid options JSON: {exc}") from exc
-        try:
-            params = _build_params(parsed_options)
-        except ValidationError as exc:
-            # A semantically invalid options object (bad value, unknown key, or a
-            # non-portable provider_params key) is an unprocessable entity.
-            # Return the structured, sanitized detail (same shape as the global
-            # RequestValidationError handler, anchored under ["options"]):
-            # pydantic's raw detail echoes the offending input value, so a
-            # mis-placed secret would otherwise be reflected.
-            raise HTTPException(
-                status_code=422,
-                detail=_sanitized_validation_detail(exc, loc_prefix=["options"]),
-            ) from exc
-
         # Hand the encoded bytes to the engine's own negotiation rather than
         # pre-decoding here. The standard layer then converts/resamples per the
         # engine's accepted_input (so an encoded-only engine gets bytes, an
         # array engine gets an array at its accepted rate -- the upload's true
         # sample rate is never silently overridden).
         body = await _run_transcription(
-            model_registry, model, AudioBytes(data=file), params, HTTPException
+            engine_pool, model, AudioBytes(data=file), parsed_options, HTTPException
         )
         return Response(content=body, media_type="application/json")
 
@@ -630,25 +732,16 @@ def create_app(
         # The request-body cap is enforced at the ASGI boundary by
         # _BodySizeLimitMiddleware (Content-Length *and* actual bytes), so the
         # encoded ``audio`` is already bounded by the time it materializes here.
-        try:
-            # `payload.options` is already a parsed object, so the only failure
-            # here is params validation (bad value, unknown key, or a non-portable
-            # provider_params key) -> 422. pydantic's raw detail echoes the
-            # offending input value (a mis-placed secret would be reflected), so
-            # return the structured, sanitized detail instead.
-            params = _build_params(payload.options)
-        except ValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=_sanitized_validation_detail(exc, loc_prefix=["options"]),
-            ) from exc
-
         # Pass the base64/data-URI payload straight to engine negotiation, which
         # decodes and converts per the engine's accepted_input (see the
         # multipart endpoint). Decode failures surface as AudioProcessingError
         # and map to 400 in _run_transcription.
         body = await _run_transcription(
-            model_registry, payload.model, AudioBase64(payload.audio), params, HTTPException
+            engine_pool,
+            payload.model,
+            AudioBase64(payload.audio),
+            payload.options,
+            HTTPException,
         )
         return Response(content=body, media_type="application/json")
 
@@ -686,10 +779,9 @@ def create_app(
     def params_schema(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """Return the JSON Schema for an engine's ``provider_params``.
 
-        Read from the engine **class** without instantiating it.
-        Note that ``provider_params`` cannot yet be *sent* over the wire
-        (the JSON/multipart transcribe endpoints accept only the portable
-        standard set); this schema is published for discovery and UI generation.
+        Read from the engine **class** without instantiating it. The JSON,
+        multipart, WebSocket, and CLI paths validate a submitted provider object
+        with this exact type before the engine receives ``RuntimeParams``.
 
         Args:
             model: Model key in ``engine/model`` format.
@@ -774,7 +866,6 @@ def create_app(
             raw_config = await _receive_config_frame(websocket, max_ws_frame_bytes)
             request = StreamConfigRequest.model_validate(raw_config)
             audio_format = request.audio_format
-            params = _build_params(request.options)
         except _ConfigFrameTooLargeError as exc:
             # The config/handshake frame is bounded by the app cap too (not just
             # the transport ws_max_size), so the documented DoS bound holds
@@ -813,7 +904,7 @@ def create_app(
             return
 
         try:
-            asr = await asyncio.to_thread(model_registry.create, model)
+            lease = await engine_pool.acquire(model)
         except EntrypointValidationError as exc:
             # The caller's model key does not exist or cannot be parsed --
             # genuinely caller-fixable; the authored message names only the
@@ -857,10 +948,17 @@ def create_app(
             )
             await _abort_ws(websocket, "service_unavailable", _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL)
             return
+        except EnginePoolClosedError:
+            await _abort_ws(
+                websocket,
+                "service_unavailable",
+                "The server is shutting down and is not accepting new streaming work.",
+            )
+            return
         except Exception:  # noqa: BLE001
             # Internal/unexpected construction fault (incl. ConfigError /
-            # InvalidProviderParamError / ValidationError from the zero-arg
-            # factory -- a deployment or plugin defect, never the caller's;
+            # InvalidProviderParamError / ValidationError from the
+            # operator-configured factory -- a deployment or plugin defect;
             # the old bad_request arm blamed the caller for faults it cannot
             # see or fix): never crash the route or leak detail. Log
             # server-side; send a single generic, non-leaking frame (mirrors
@@ -868,6 +966,22 @@ def create_app(
             log_exception_safely(logger, "Engine construction failed for streaming model %r", model)
             await _abort_ws(
                 websocket, "internal_error", _internal_error_message("model construction")
+            )
+            return
+
+        asr = lease.engine
+        _release_lease_when_task_finishes(lease)
+        try:
+            params = _build_params(request.options, _provider_params_type(asr))
+        except ValidationError as exc:
+            await _abort_ws(websocket, "bad_request", _sanitized_validation_message(exc))
+            return
+        except Exception:  # noqa: BLE001
+            log_exception_safely(
+                logger, "Provider params declaration failed for streaming model %r", model
+            )
+            await _abort_ws(
+                websocket, "internal_error", _internal_error_message("stream establishment")
             )
             return
 
@@ -913,9 +1027,9 @@ def create_app(
         except (ConfigError, InvalidProviderParamError):
             # An ENGINE fault, not a request error: the WS surface gives the
             # client no way to cause either -- engine init config never
-            # crosses the wire, `provider_params` is rejected by
-            # WireRuntimeParams in the config frame, and client-fixable
-            # rejections have their own types (UnsupportedFeatureError ->
+            # crosses the wire, the provider object already has the selected
+            # exact type, and client-fixable rejections have their own types
+            # (UnsupportedFeatureError ->
             # `unsupported`; frame/options ValidationError -> `bad_request`
             # at parse time). A ConfigError here is an engine
             # declaration/config defect (for example, a missing `default_language`)
@@ -1524,17 +1638,16 @@ async def _bridge_stream(
 
 
 async def _create_engine_or_http_error(
-    registry: ModelRegistry,
+    pool: EnginePool,
     model: str,
     http_exception: type[Exception],
-) -> Any:
-    """Instantiate the engine, mapping construction errors to HTTP status codes.
+) -> EngineLease:
+    """Acquire a pooled engine, mapping construction errors to HTTP status codes.
 
-    Construction is ``registry.create(model)`` -- ZERO-ARG: the client chooses
-    the model key and nothing else; every configuration input (credentials,
-    endpoints, engine settings) comes from the server's own environment. Fault
-    ownership follows from that, mirroring the compliance suite's
-    classification of the same states:
+    The client chooses the model key and nothing else; every init-config input
+    comes from the operator's ``engine_configs`` mapping or environment. Fault
+    ownership follows from that, mirroring the compliance suite's classification
+    of the same states:
 
     - an unknown or malformed model KEY (``EntrypointValidationError``) is a
       routing problem the caller can fix -> ``404``;
@@ -1553,25 +1666,25 @@ async def _create_engine_or_http_error(
       failed, is another operator-side availability state -> scrubbed ``503``;
     - anything else -- including a plain ``ConfigError`` /
       ``InvalidProviderParamError`` / ``ValidationError``, which from a
-      zero-arg factory is a broken deployment or plugin, exactly the state
+      operator-configured factory is a broken deployment or plugin, exactly the state
       compliance fails as ``engine_construction_failed`` -- is an internal
       fault -> a generic, scrubbed ``500`` (same non-leak contract as
       :func:`_run_transcription`). The old ``422`` mapping blamed the caller
       for faults the caller cannot see, reach, or fix.
 
     Args:
-        registry: The model registry.
+        pool: Application-lifetime engine pool.
         model: Model key in ``engine/model`` format.
         http_exception: The ``HTTPException`` class to raise.
 
     Returns:
-        The instantiated engine.
+        An active engine lease.
 
     Raises:
         Exception: ``http_exception`` with an appropriate status code.
     """
     try:
-        return await asyncio.to_thread(registry.create, model)
+        return await pool.acquire(model)
     except EntrypointValidationError as exc:
         # Unknown / unparseable model key: caller-fixable 404 with the
         # authored message (it names only the caller's key + available keys).
@@ -1600,9 +1713,12 @@ async def _create_engine_or_http_error(
         log_exception_safely(logger, "Engine %r has unavailable inference artifacts", model)
         detail = _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL
         raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
+    except EnginePoolClosedError as exc:
+        detail = "The server is shutting down and is not accepting new transcription work."
+        raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
     except Exception as exc:  # noqa: BLE001
         # Internal/unexpected construction fault (incl. ConfigError /
-        # ValidationError from the zero-arg factory: a deployment or plugin
+        # ValidationError from the operator-configured factory: a deployment or plugin
         # defect, never the caller's): log details, return a stable generic
         # message so the response never leaks internal paths or credential text.
         log_exception_safely(logger, "Engine construction failed for model %r", model)
@@ -1611,13 +1727,13 @@ async def _create_engine_or_http_error(
 
 
 async def _run_transcription(
-    registry: ModelRegistry,
+    pool: EnginePool,
     model: str,
     audio: AudioInput,
-    params: RuntimeParams | None,
+    options: dict[str, Any] | None,
     http_exception: type[Exception],
 ) -> str:
-    """Instantiate the engine, transcribe, and map errors to HTTP status codes.
+    """Use a pooled engine to transcribe and map errors to HTTP status codes.
 
     The audio is passed as an :data:`~standard_asr.audio.input.AudioInput` (not a
     pre-decoded array) so the engine's standard negotiation owns decoding and
@@ -1627,10 +1743,10 @@ async def _run_transcription(
     leaking internal paths or upstream credential material.
 
     Args:
-        registry: The model registry.
+        pool: Application-lifetime engine pool.
         model: Model key in ``engine/model`` format.
         audio: The audio input to negotiate and transcribe.
-        params: Parsed runtime parameters, or ``None``.
+        options: Untrusted JSON runtime options, or ``None``.
         http_exception: The ``HTTPException`` class to raise.
 
     Returns:
@@ -1642,129 +1758,129 @@ async def _run_transcription(
     Raises:
         Exception: ``http_exception`` with an appropriate status code.
     """
-    asr = await _create_engine_or_http_error(registry, model, http_exception)
+    lease = await _create_engine_or_http_error(pool, model, http_exception)
 
-    try:
-        result = await asyncio.to_thread(asr.transcribe, audio, params)
-        # asyncio.to_thread returns transcribe()'s RAW value: an `async def`
-        # implementation (or a sync wrapper delegating to one) hands back a
-        # coroutine object that to_thread never drives. Enforce the sync-call
-        # boundary here, and build the response INSIDE the fault-mapping
-        # region -- a malformed result would otherwise raise a bare pydantic
-        # ValidationError out of ``TranscribeResponse(...)`` past every arm below
-        # (echoing engine input text past the scrubbed-500 contract).
-        require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
-        response = TranscribeResponse(model=model, result=result)
-        # Finish the wire projection INSIDE the fault-mapping region -- and
-        # ONCE. The dump is encoded here (allow_nan=False: NaN/Infinity are
-        # Python floats but not JSON), so a result carrying a value with no
-        # JSON form (reachable past the JsonValue declarations by
-        # `model_construct` or by mutating an `extra` dict after
-        # construction) fails HERE, in its true fault class -- the scrubbed
-        # 500 below, safe-logged -- never in the ASGI encoder after the
-        # endpoint returned. The encoded document IS the body the routes
-        # send verbatim: encoding as a proof and then letting FastAPI
-        # validate and serialize the same object AGAIN roughly doubled
-        # response-serialization CPU and peak memory on every successful
-        # request (tens of MB of words[] for a long recording).
-        # Encoded the way the wire had it before this function owned the
-        # projection (starlette's JSONResponse kwargs): ensure_ascii=False
-        # ships a CJK/Cyrillic/Arabic transcript as UTF-8 instead of 6-byte
-        # \uXXXX escapes (~1.35-3x smaller bodies on non-ASCII text), and
-        # compact separators drop the per-element padding. allow_nan=False
-        # stays: NaN/Infinity are Python floats but not JSON.
-        return json.dumps(
-            response.model_dump(mode="json"),
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
+    async with lease as asr:
+        try:
+            params = _build_params(options, _provider_params_type(asr))
+        except ValidationError as exc:
+            http_error: Any = http_exception
+            raise http_error(
+                status_code=422,
+                detail=_sanitized_validation_detail(exc, loc_prefix=["options"]),
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            log_exception_safely(logger, "Provider params declaration failed for model %r", model)
+            detail = _internal_error_message("transcription")
+            raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+
+        try:
+            result = await asyncio.to_thread(asr.transcribe, audio, params)
+            # Enforce the synchronous call boundary before projecting the result.
+            require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
+            response = TranscribeResponse(model=model, result=result)
+            # Encode once inside the fault boundary so an unprojectable engine
+            # result becomes a scrubbed 500 before the ASGI response commits.
+            return json.dumps(
+                response.model_dump(mode="json"),
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        except ValidationError as exc:
+            # Client options are already typed. A ValidationError escaping the
+            # engine is an engine fault and must not echo its input.
+            log_exception_safely(logger, "Engine-side validation failure for model %r", model)
+            detail = _internal_error_message("transcription")
+            raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+        except ConfigurationRequiredError as exc:
+            # This subtype must precede ConfigError: absent operator config is
+            # an availability state, not a client request error.
+            log_exception_safely(
+                logger,
+                "Engine %r requires configuration absent from the server environment",
+                model,
+            )
+            detail = _ENGINE_CONFIG_ABSENT_DETAIL
+            raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
+        except (ArtifactUnavailableError, ArtifactAcquisitionError) as exc:
+            # Keep artifact reports, actions, paths, and native causes out of
+            # the unauthenticated response.
+            log_exception_safely(logger, "Engine %r has unavailable inference artifacts", model)
+            detail = _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL
+            raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
+        except (ConfigError, InvalidProviderParamError) as exc:
+            # The provider object already has the selected exact type. A later
+            # InvalidProviderParamError or ConfigError is an engine fault.
+            log_exception_safely(
+                logger, "Engine-side configuration/contract fault for model %r", model
+            )
+            detail = _internal_error_message("transcription")
+            raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+        except UnsupportedFeatureError as exc:
+            # The authored message describes a caller-fixable semantic request.
+            raise http_exception(status_code=422, detail=str(exc)) from exc  # type: ignore[call-arg]
+        except AudioProcessingError as exc:
+            raise http_exception(status_code=400, detail=str(exc)) from exc  # type: ignore[call-arg]
+        except Exception as exc:  # noqa: BLE001
+            # Log internal detail and return one stable, scrubbed response.
+            log_exception_safely(logger, "Transcription failed for model %r", model)
+            detail = _internal_error_message("transcription")
+            raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+
+
+def _provider_params_type(engine: Any) -> type[ProviderParams] | None:
+    """Read and validate one engine's published provider params type.
+
+    Args:
+        engine: Selected engine instance.
+
+    Returns:
+        The exact published type, or ``None``.
+
+    Raises:
+        EngineContractError: If the declaration is not a ProviderParams type.
+    """
+    params_type: Any = inspect.getattr_static(engine, "provider_params_type", None)
+    if params_type is None:
+        return None
+    if not (
+        isinstance(params_type, type)
+        and issubclass(params_type, ProviderParams)
+        and params_type is not ProviderParams
+        and params_type.model_config.get("extra") == "forbid"
+    ):
+        raise EngineContractError(
+            "The engine's provider_params_type must be a closed, concrete "
+            "ProviderParams subclass or None."
         )
-    except ValidationError as exc:
-        # An ENGINE fault, not a request error: by this point the client's
-        # options were already validated (WireRuntimeParams at the route) and
-        # promoted to a typed RuntimeParams, so a bare pydantic
-        # ValidationError escaping transcribe() can only come from the
-        # engine's own internals (for example, a structural engine constructing an
-        # invalid TranscriptionResult -- EngineBase wraps that seam as
-        # TranscriptionError, but the server cannot assume the base class).
-        # Mapping it to 422 blamed the client's options for a plugin bug;
-        # fault ownership must not depend on whether the engine inherits
-        # EngineBase. Scrubbed 500 (pydantic's message echoes input values) --
-        # and the LOG record is scrubbed the same way (the echo must not land
-        # in operator/CI logs either).
-        log_exception_safely(logger, "Engine-side validation failure for model %r", model)
-        detail = _internal_error_message("transcription")
-        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
-    except ConfigurationRequiredError as exc:
-        # Required config absent, discovered lazily at CALL time (an engine
-        # that defers its credential check past construction): the same
-        # operator-side availability state as the construction 503 -- the
-        # caller cannot fix it and must not be told the field names. MUST
-        # precede the ConfigError arm (subclass).
-        log_exception_safely(
-            logger, "Engine %r requires configuration absent from the server environment", model
-        )
-        detail = _ENGINE_CONFIG_ABSENT_DETAIL
-        raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
-    except (ArtifactUnavailableError, ArtifactAcquisitionError) as exc:
-        # The request cannot repair this deployment's inference-artifact
-        # state. Keep the attached report, actions, paths, and native cause out
-        # of the response.
-        log_exception_safely(logger, "Engine %r has unavailable inference artifacts", model)
-        detail = _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL
-        raise http_exception(status_code=503, detail=detail) from exc  # type: ignore[call-arg]
-    except (ConfigError, InvalidProviderParamError) as exc:
-        # An ENGINE fault, not a request error: the wire surface gives the
-        # client no way to cause either -- engine init config never crosses
-        # the wire (construction is zero-arg), `provider_params` is rejected
-        # by WireRuntimeParams before transcription, and every client-fixable
-        # rejection has its own type (UnsupportedFeatureError below; request
-        # ValidationError at the route). A ConfigError here is an engine
-        # declaration/config defect (for example, a bad `default_language`) whose
-        # authored message may carry server-side config detail. Scrubbed 500,
-        # specifics safe-logged for the operator.
-        log_exception_safely(logger, "Engine-side configuration/contract fault for model %r", model)
-        detail = _internal_error_message("transcription")
-        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
-    except UnsupportedFeatureError as exc:
-        # Client-caused: the request asked for a feature/language the engine
-        # does not support (strict mode). The authored message is written for
-        # the caller.
-        raise http_exception(status_code=422, detail=str(exc)) from exc  # type: ignore[call-arg]
-    except AudioProcessingError as exc:
-        raise http_exception(status_code=400, detail=str(exc)) from exc  # type: ignore[call-arg]
-    except Exception as exc:  # noqa: BLE001
-        # Internal/unexpected (including EngineContractError from the sync-call
-        # boundary above): log details, return a stable generic message so the
-        # client never sees internal paths or upstream/credential text.
-        log_exception_safely(logger, "Transcription failed for model %r", model)
-        detail = _internal_error_message("transcription")
-        raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+    return params_type
 
 
-def _build_params(options: dict[str, Any] | None) -> RuntimeParams | None:
-    """Build :class:`RuntimeParams` from an untyped JSON options object.
+def _build_params(
+    options: dict[str, Any] | None,
+    provider_params_type: type[ProviderParams] | None,
+) -> RuntimeParams | None:
+    """Build typed :class:`RuntimeParams` from a JSON options object.
 
-    Validation goes through :class:`WireRuntimeParams`, the **portable-only** wire
-    view, so a request that includes the engine-specific ``provider_params``
-    escape hatch is rejected with a clear validation error (``provider_params``
-    cannot be sent -- it is discover-only via the params-schema endpoint and is
-    not constructible from untyped wire JSON). The validated portable params are
-    then promoted to the internal :class:`RuntimeParams`.
+    Portable fields validate through :class:`WireRuntimeParams`. The provider
+    object validates with the selected engine's exact published type before the
+    internal model is constructed.
 
     Args:
         options: A JSON options object, or ``None``.
+        provider_params_type: Selected engine's params type, or ``None``.
 
     Returns:
         Parsed runtime parameters, or ``None``.
 
     Raises:
-        ValidationError: If ``options`` is not a valid portable params object
-            (including when it carries a ``provider_params`` key).
+        ValidationError: If ``options`` is invalid for the portable fields or
+            selected provider type.
     """
     if options is None:
         return None
-    return WireRuntimeParams.model_validate(options).to_runtime_params()
+    return WireRuntimeParams.model_validate(options).to_runtime_params(provider_params_type)
 
 
 def _engine_class_or_http_error(
@@ -1921,6 +2037,7 @@ def run(
     port: int = 8000,
     log_level: str = "info",
     *,
+    engine_configs: Mapping[str, Mapping[str, Any]] | None = None,
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     max_ws_frame_bytes: int = DEFAULT_MAX_WS_FRAME_BYTES,
     max_ws_session_bytes: int = DEFAULT_MAX_WS_SESSION_BYTES,
@@ -1948,6 +2065,7 @@ def run(
         host: Bind host.
         port: Bind port.
         log_level: Uvicorn log level.
+        engine_configs: Optional operator-owned init config by full model key.
         max_body_bytes: HTTP request-body cap (see :func:`create_app`).
         max_ws_frame_bytes: WebSocket per-frame cap; also passed to uvicorn as
             ``ws_max_size`` (see :func:`create_app`).
@@ -1969,6 +2087,7 @@ def run(
         ) from exc
 
     app = create_app(
+        engine_configs=engine_configs,
         max_body_bytes=max_body_bytes,
         max_ws_frame_bytes=max_ws_frame_bytes,
         max_ws_session_bytes=max_ws_session_bytes,
@@ -1984,6 +2103,7 @@ def run(
 
 __all__ = [
     "ModelInfo",
+    "ModelReadiness",
     "TranscribeJsonRequest",
     "TranscribeResponse",
     "create_app",

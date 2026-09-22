@@ -62,6 +62,7 @@ from standard_asr.contract.exceptions import (
     UnsupportedFeatureError,
 )
 from standard_asr.contract.metadata import ArtifactDeclaration, DeclaredEngineMetadata
+from standard_asr.contract.params import ProviderParams
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -1842,14 +1843,11 @@ def test_cli_transcribe_options_portable_keys(
     assert "dummy" in output
 
 
-def test_cli_transcribe_options_provider_params_rejected(
+def test_cli_transcribe_options_provider_params_rejected_when_engine_accepts_none(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Mirrors the server's untyped-wire rule: provider_params cannot be
-    # validated from untyped JSON, so the CLI rejects the key itself loudly as
-    # a usage / validation error (exit 2) instead of passing it to the engine.
-    # An empty object is the regression case: the old RuntimeParams path
-    # silently accepted it as a bare ProviderParams().
+    # The selected engine publishes no provider type, so a provider object is a
+    # usage error rather than a raw mapping passed into the engine.
     registry = _demo_registry()
 
     def _discover_models(**_: object) -> ModelRegistry:
@@ -1864,6 +1862,51 @@ def test_cli_transcribe_options_provider_params_rejected(
 
     assert exit_code == 2
     assert "provider_params" in captured.err
+
+
+def test_cli_transcribe_options_builds_selected_provider_type(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _CliParams(ProviderParams):
+        beam: int
+
+    registry = _demo_registry()
+    engine = registry.create("alpha/first")
+    monkeypatch.setattr(type(engine), "provider_params_type", _CliParams, raising=False)
+    observed: list[RuntimeParams | None] = []
+
+    def _transcribe(_audio: Any, params: RuntimeParams | None = None) -> TranscriptionResult:
+        observed.append(params)
+        return TranscriptionResult(text="dummy")
+
+    def _create(*_args: Any, **_kwargs: Any) -> StandardASR:
+        return engine
+
+    def _discover_models(**_kwargs: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(engine, "transcribe", _transcribe)
+    monkeypatch.setattr(registry, "create", _create)
+    monkeypatch.setattr(cli, "discover_models", _discover_models)
+
+    exit_code = cli.main(
+        [
+            "transcribe",
+            "alpha/first",
+            "dummy.wav",
+            "--options",
+            '{"provider_params":{"beam":5}}',
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert observed
+    recorded = observed[0]
+    assert recorded is not None
+    provider = recorded.provider_params
+    assert type(provider) is _CliParams
+    assert provider.beam == 5
 
 
 def test_cli_models_list_entrypoint_error(
@@ -2122,6 +2165,42 @@ def test_cli_serve_uses_server_module(monkeypatch: pytest.MonkeyPatch) -> None:
     assert exit_code == 0
     assert called["host"] == "0.0.0.0"
     assert called["port"] == 9001
+    assert called["engine_configs"] is None
+
+
+def test_cli_serve_loads_engine_configs_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = types.ModuleType("standard_asr.toolchain.server")
+    called: dict[str, object] = {}
+
+    def _run(**kwargs: object) -> None:
+        called.update(kwargs)
+
+    setattr(module, "run", _run)
+    monkeypatch.setitem(sys.modules, "standard_asr.toolchain.server", module)
+    config = tmp_path / "engines.json"
+    config.write_text('{"alpha/first":{"device":"cpu","strict":false}}')
+
+    exit_code = cli.main(["serve", "--engine-configs", str(config)])
+
+    assert exit_code == 0
+    assert called["engine_configs"] == {"alpha/first": {"device": "cpu", "strict": False}}
+
+
+def test_cli_serve_invalid_engine_configs_never_echoes_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = "sk-SERVER-CONFIG-SECRET"
+    config = tmp_path / "engines.json"
+    config.write_text(json.dumps({"alpha/first": secret}))
+
+    exit_code = cli.main(["serve", "--engine-configs", str(config)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert secret not in captured.err
+    assert "mapping model keys to config objects" in captured.err
 
 
 def test_cli_serve_missing_server_dependency(
@@ -2271,11 +2350,19 @@ def test_parse_options() -> None:
     with pytest.raises(ValueError):
         cli._parse_options("[1, 2, 3]")  # pyright: ignore[reportPrivateUsage]
 
-    # The non-portable provider_params key is rejected outright: even an
-    # empty object -- which the old RuntimeParams path silently accepted as a
-    # bare ProviderParams() -- must fail through WireRuntimeParams.
+    # The selected engine accepts no provider params, so the provider object is
+    # rejected during typed promotion.
     with pytest.raises(ValueError, match="provider_params"):
         cli._parse_options('{"provider_params": {}}')  # pyright: ignore[reportPrivateUsage]
+
+    class _CliParams(ProviderParams):
+        beam: int
+
+    typed = cli._parse_options(  # pyright: ignore[reportPrivateUsage]
+        '{"provider_params": {"beam": 3}}', provider_params_type=_CliParams
+    )
+    assert typed is not None and type(typed.provider_params) is _CliParams
+    assert typed.provider_params.beam == 3
 
 
 # ---------------------------------------------------------------------------
@@ -2297,6 +2384,20 @@ def test_parse_options_does_not_echo_secret_value() -> None:
     assert secret not in message
     # The field name (a credential token) is redacted in the message too.
     assert "[redacted]" in message
+
+
+def test_parse_provider_options_does_not_echo_secret_value() -> None:
+    class _CliParams(ProviderParams):
+        api_key: int
+
+    secret = "sk-PROVIDER-SECRET"
+    with pytest.raises(ValueError) as excinfo:
+        cli._parse_options(  # pyright: ignore[reportPrivateUsage]
+            '{"provider_params":{"api_key":"' + secret + '"}}',
+            provider_params_type=_CliParams,
+        )
+    assert secret not in str(excinfo.value)
+    assert "[redacted]" in str(excinfo.value)
 
 
 def test_cli_transcribe_invalid_options_no_secret_echo(

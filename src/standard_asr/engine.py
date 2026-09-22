@@ -164,7 +164,11 @@ from standard_asr.runtime.downloads import (
 )
 from standard_asr.runtime.gating import Mode
 from standard_asr.runtime.interface import EngineBase, StandardASR, ensure_wire_format_supported
-from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.runtime.streaming import (
+    SessionStatus,
+    TranscriptionEvent,
+    TranscriptionSession,
+)
 
 __all__ = [
     "AUTO",
@@ -243,6 +247,7 @@ __all__ = [
     "ReconnectCap",
     "RuntimeParams",
     "SampleRateRange",
+    "SessionStatus",
     "Segment",
     "StandardASR",
     "StreamTimestampsCap",

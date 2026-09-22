@@ -98,13 +98,13 @@ lang: zh-Hans
 
 **R2 — 引擎声明。** 每个引擎 MUST 在 Properties 中声明 `accepted_input`。
 
-**R3 — 协商与转换矩阵。** 有直接匹配时透传；无匹配走最低成本转换；无路径抛 `IncompatibleAudioInputError(provided, accepted, hint)`。
+**R3 — 协商与转换矩阵。** 有直接匹配时选择同形态交付；无匹配走最低成本转换；无路径抛 `IncompatibleAudioInputError(provided, accepted, hint)`。`AudioArray → array` 的同形态交付仍须执行 R6 的 canonicalization；“同形态”不等于把任意 shape/range 的 ndarray 原样交给引擎。
 
 | 应用提供 ↓ ╲ 引擎接受 → | `array` | `encoded_file/bytes` | `fetchable_url` | `storage_uri` |
 |---|---|---|---|---|
 | `AudioPath` | decode→array（需 `[audio]`） | 读文件→bytes，透传 | **FAIL** | **FAIL** |
 | `AudioBytes` | decode→array（需 `[audio]`） | 透传 | **FAIL** | **FAIL** |
-| `AudioArray` | 透传（+ 采样率 R6–R8） | encode→WAV bytes（R4） | **FAIL** | **FAIL** |
+| `AudioArray` | canonicalize→array（R6） | canonicalize→encode→WAV bytes（R4/R6） | **FAIL** | **FAIL** |
 | `AudioUrl` | **当前: FAIL**（R5）；未来修订: fetch→decode | **当前: FAIL**（R5）；未来修订: fetch→bytes | 透传 | **FAIL** |
 | `AudioBase64` | b64decode→decode→array | b64decode→bytes | **FAIL** | **FAIL** |
 | `AudioStorageUri` | **FAIL**（R5.2） | **FAIL**（R5.2） | **FAIL**（R5.2） | 透传（零转换） |
@@ -116,7 +116,7 @@ lang: zh-Hans
 
 **R4 — 数组→编码文件 encoder。** 当 `AudioArray` 遇到只接受文件的引擎时：输出 MUST 为内存 `BytesIO`（MUST NOT 落磁盘）；canonical 编码 = WAV/16-bit PCM LE/mono；多声道 MUST 降混+diagnostic；float32→int16 有损 MUST 发 diagnostic；编码后 MUST 预检 `max_file_size`，超限抛清晰本地错误。
 
-> **canonical 量化约定（normative，钉死跨语言一致性）**：float32→int16 的量化 MUST 为：先 clip 到 `[-1.0, 1.0]`，再 `round_half(sample × 32767)`（四舍五入到最近整数，**MUST NOT** 向零截断——截断使量化误差上界从 0.5 LSB 翻倍到 1 LSB 并引入向零偏置），写为 little-endian int16。非有限样本（NaN/±Inf）在 cast 前 MUST 被消毒为 `0`/`±1`（int16 无法表示 NaN，cast 是未定义行为），且该消毒 MUST 发 `non_finite_audio` diagnostic（与数组直达路径同 code，使编码路径与数组路径对该输入的可观测性一致）。解码侧的反向缩放为 `÷32768`；编解码往返因此有一个 `32767/32768`（≈ −0.00027 dB）的有意衰减，可接受。钉死此约定是为了让 wire 协议的其他语言实现产生逐字节一致的 PCM，避免一致性测试出现 ±1 LSB 噪声。
+> **canonical 量化约定（normative，钉死跨语言一致性）**：float32→int16 的量化 MUST 为：先按 R6 canonicalization 处理 shape/非有限值/range，再 `round_half(sample × 32767)`（四舍五入到最近整数，**MUST NOT** 向零截断——截断使量化误差上界从 0.5 LSB 翻倍到 1 LSB 并引入向零偏置），写为 little-endian int16。解码侧的反向缩放为 `÷32768`；编解码往返因此有一个 `32767/32768`（≈ −0.00027 dB）的有意衰减，可接受。钉死此约定是为了让 wire 协议的其他语言实现产生逐字节一致的 PCM，避免一致性测试出现 ±1 LSB 噪声。
 
 **R5 — `AudioUrl` 安全策略。**
 - **引擎/云自取**：转发前 MUST 校验 HTTPS-only + 默认拒绝私网/环回/link-local IP 段（RFC1918、127/8、169.254/16、::1、fc00::/7；可显式 opt-in）+ 重定向上限+每跳重校验。**opt-in 入口**：私网拒绝的显式放宽是 **Init Config 级**部署开关 `allow_private_urls: bool`（`BaseConfig`，默认 `False`），由标准转写管线（`EngineBase._prepare_audio`）透传给校验器；HTTPS 要求**不**可放宽。它属部署属性而非请求属性，故归 Init Config 而非 `RuntimeParams`（不随请求漂移），且与 `strict` 同列 `_ENV_EXCLUDED_FIELDS`——环境变量 MUST NOT 静默放宽该安全策略。
@@ -129,7 +129,14 @@ lang: zh-Hans
 - MUST NOT 经过 R5 的 HTTPS / public-IP SSRF 校验器（storage URI 不是 HTTPS-fetchable，标准无 SSRF 攻击面）。
 - 协商：仅当引擎接受 `storage_uri` 时透传（零转换）；其余一律 **FAIL**（标准不是 upload-broker）。
 
-**R6 — 采样率。** canonical = 16 kHz mono。裸数组无采样率时：strict MUST 抛错（"pass AudioArray(samples, sample_rate)"）；best_effort MAY 假定 16k 但 MUST 每次发 `assumed_sample_rate` diagnostic。**绝不静默假定。** `sample_rate`：batch 选填；bare-PCM streaming 必填（会话锁定）；header-bearing buffered 输入（OpenAI SSE）自描述豁免。
+**R6 — canonical array 与采样率。** 每个交给 `InputKind.ARRAY` 引擎的 payload MUST 是 nonempty、finite、mono、contiguous `float32`，shape 为 `(n_samples,)`，值域为 `[-1, 1]`。该保证对 direct `AudioArray` 与 path/bytes/base64 decode 路径完全相同；输入 carrier 不得改变 engine boundary。canonicalization 顺序固定为：
+
+1. 输入 shape 只接受 mono `(n_samples,)` 或 multi-channel `(n_samples, n_channels)`，且 `n_samples > 0`、`n_channels > 0`；scalar、3D+、empty 或 zero-channel array MUST 在 engine hook 前抛 `AudioProcessingError`。
+2. 仅接受 floating dtype（integer PCM 已由 `AudioArray` 构造器 fail-loud 拒绝）；NaN→`0`、`+Inf`→`1`、`-Inf`→`-1`，并 MUST 发 `non_finite_audio` warning diagnostic，携被替换的 sample 数。
+3. finite 值逐 sample clip 到 `[-1, 1]`；只要有值改变，MUST 发 `audio_clipped` warning diagnostic，携被 clip 的 sample 数。选择 clip 而非 reject，是为了与 encoded decoder、WAV/PCM encoder 和既有 `normalize_audio` 的 canonical range policy 一致；diagnostic 使 loss 显式，不允许静默修复。
+4. multi-channel 按 channel 算术平均 downmix 到 mono，并 MUST 发 `audio_conversion` warning diagnostic，携输入/输出 channel 数；`(n_samples, 1)` 只 squeeze，不是有损 downmix，不发该 warning。
+
+采样率 canonical default = 16 kHz。裸数组无采样率时：strict MUST 抛错（"pass AudioArray(samples, sample_rate)"）；best_effort MAY 假定 16k 但 MUST 每次发 `assumed_sample_rate` diagnostic。**绝不静默假定。** `sample_rate`：batch 选填；bare-PCM streaming 必填（会话锁定）；header-bearing buffered 输入（OpenAI SSE）自描述豁免。canonicalization 在 resample 前完成，避免 NaN/Inf 污染 resampler；duration 始终以 mono sample axis `/ sample_rate` 计算。
 
 **R7 — 重采样责任。** `accepted_sample_rates` **始终权威**，不论 `self_resamples`：输入 ∉ accepted 且 ≠ `required_input_sample_rate` → 标准 MUST 重采样；无可达目标 = 定义错误，MUST NOT 静默透传。8 kHz 电话 = 独立原生模型，MUST 经 entrypoint preset 选择，MUST NOT 升采样原生率输入。24 kHz realtime = `required_input_sample_rate`，标准重采样；流式缺 `[audio]` 时 MUST 在会话建立时报错。**可达性不变量**：`required_input_sample_rate`（若设）MUST 被 `accepted_sample_rates` 接受（当后者为具体列表**或区间**时，即非 `"any"`；按上文统一隶属判定）——重采样目标必须可达；同理 `native_sample_rate` MUST 被 `accepted_sample_rates` 接受（非 `"any"` 时）——否则引擎自身的原生率输入会被静默重采样（如 8 kHz 电话模型被升采样到 16k），而 8 kHz 是独立原生模型而非低采样率变体。两条不变量均在 Properties **声明期**即校验（`BaseProperties`），而非延迟到会话建立。
 
@@ -144,6 +151,8 @@ lang: zh-Hans
 **R9 — 内存与大媒体。** `AudioBytes`/`AudioArray` = 装得下内存的形态；大媒体 SHOULD 用 `AudioPath`/`AudioUrl`；标准读文件/URL 给文件型引擎时 SHOULD 流式不全缓冲。
 
 **R10 — 新增 Properties。** `accepted_input`/`max_file_size`/`max_audio_duration`/`native_sample_rate`/`accepted_sample_rates`/`required_input_sample_rate`/`wire_encodings` MUST 落在 §C 的层级化模型内。关于 `supported_input_formats`（容器格式协商）：当前由 `accepted_input` + encoder 容器选择间接覆盖，后续可 additive 补充。`max_audio_duration` **强制点**：标准仅在输入**已解码为数组**（时长可测）时校验并 fail-loud；编码透传（file/bytes passthrough）MUST NOT 为测时长而强制全解码（见 R9），改由 `max_file_size` 作本地护栏 + 引擎自行兜底。
+
+**R10.1 — mode-aware effective duration。** Properties 的 `max_audio_duration` 仍是免实例化可读的静态边界。已加载 bundle、init config 或 mode 本身可能收窄它时，`EngineBase` 子类 MAY 覆写 `_max_audio_duration(mode)`，让 batch 和 whole-input streaming 在音频准备期各自应用实际的非放宽上限。该 hook MUST NOT 改写 class-level Properties；它是实例内执行约束，不是新的 discoverable Properties。
 
 ## 5. 示例
 
@@ -366,6 +375,7 @@ capabilities:
     emits_partials:         { supported }
     re_segments:            { supported }        # 是否可能发 supersede 事件
     word_stability:         { supported }        # 是否提供有意义的 stable_until
+    audio_progress:         { supported }        # 是否提供 audio_processed_until 处理游标
     reconnect:              { mode: seamless | lossy | unsupported }
     finality_level:         { mode: final | closed }
     timestamps:             { mode: native_frame_aligned | post_align | none }
@@ -501,6 +511,8 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 | `provider_params` | `<EngineParams> \| None` | 引擎发布的 typed pydantic 模型（`extra="forbid"`）。传错引擎的 params 模型 = 校验错误（swap 安全）。 |
 
 **类型匹配是精确的（normative）**：swap 安全用**精确类型**核对（`type(provided) is <EngineParams>`），**不是** `isinstance`。`isinstance` 会静默接受 `<EngineParams>` 的**子类**——而同 vendor 引擎家族用继承复用参数模型是自然写法（`EngineBParams(EngineAParams)`），于是把 B 的 params 传给引擎 A 会通过，B 独有的旋钮被静默忽略（正是头号大罪）。因此**每个引擎 MUST 发布独立的终端 params 类型**；继承不是声明跨引擎兼容的通道。引擎 MUST NOT 把裸基类 `ProviderParams` 声明为其 `provider_params` 类型（裸基类无字段、对任何 params 都放行，使 swap 安全归零——合规套件 SHOULD 对此报 error）；调用方传裸基类实例（或被强转成裸基类的 mapping）在构造期即被 `RuntimeParams` 拒绝。
+
+**Wire 构造（normative）**：无类型 JSON transport 先把 `provider_params` 保留为封闭顶层 `WireRuntimeParams` 中的 object；选定 model 后，transport MUST 用该 engine 发布的**精确、封闭、终端** `ProviderParams` 子类验证并构造它，再创建 `RuntimeParams`。原始 mapping MUST NOT 到达 engine。未发布 params 类型的 engine 收到非 null object、未知嵌套键、类型/范围错误时，transport MUST 在推理前以调用方 validation error 拒绝；错误位置保留 `provider_params` 前缀，错误消息不得回显提交值。
 
 要点：错误**始终抛异常**（独立于 best_effort——代码契约，非能力协商）；schema MUST 作 **JSON Schema** 暴露（`GET .../params-schema`，可移植契约是 JSON Schema 非 Python 类）；auto-UI MUST 隔离标注"engine-specific：用了锁定 {engine}"并默认折叠；治理：≥N 独立引擎语义等价 → minor 版本提升为标准集（单向）。
 
@@ -679,7 +691,9 @@ Word:    start:float  end:float  text:str
 - `probability ∈ [0,1]`；若引擎给 logprob，**另立字段**，不与 probability 混。
 - **`Segment` 时间可空（normative）**：`start`/`end` 为 **`float | null`**，`null` = 引擎**未测量**该时间——是数据，不是缺字段；合法形状仅三种：`(float, float)`（**measured**，`end >= start`）、`(float, null)`（**start_only**，有真实起点但无可用区间）、`(null, null)`（**unavailable**）；`(null, float)`（有终点无起点）**不可表示**，构造期拒绝。衍生只读属性 `Segment.timestamp_status ∈ {"measured","start_only","unavailable"}` 由值派生（**不存储**，因此永不与值矛盾）。流式归约器把引擎的测量**原样存入**（绝不伪造 `0.0`），任一保留段非 measured 时结果级另发 `segment_timestamps_unavailable` diagnostic 作聚合披露；**逐段真相就是可空值本身**——消费者（含标准 SRT/VTT 渲染器）MUST 读值判定，MUST NOT 嗅探 `0.0` 或依赖任何 `extra` 标记（历史上的保留键 `timestamp_placeholder` 已删除；`Segment.extra` 完全归引擎所有，标准不保留任何键）。`TranscriptionEvent` 的 `partial`/`final` 同样拒绝 `(null, float)` 形状（两层同一不变量）。标准渲染器的策略针对**不可渲染（unrenderable）段**、由调用者显式选择：一个段不可渲染，当且仅当其无 measured span，**或** measured span 在输出毫秒格上量化为零（`_to_millis(end) <= _to_millis(start)`——`T --> T` cue 被播放器静默丢弃，渲染成功字符串却无人看见文本）。`to_srt`/`to_vtt` 的 `on_unrenderable ∈ {"error", "omit", "collapse"}`（`"error"` 为默认，抛 `SubtitleRenderingError`（携 `.unrenderable`/`.total` 计数）；`"omit"` 仅渲染可渲染段；`"collapse"` 整文单 cue；未知值响亮拒绝——Literal 不在运行时强制）。渲染器 MUST NOT 自行加宽 span（如捏造 1 ms）——那是未经授权的时间伪造；可渲染性是**渲染器属性**（取决于输出量化格），与模型的 `timestamp_status`（报告测量了什么）语义分离——无声丢字、无声隐藏与无声伪造时间皆为 cardinal sin，默认必须响亮。
 - **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_until` 等）加在**事件包装层**，不污染共享子模型。
-- **`session.result() -> TranscriptionResult`**：流式会话可归约为最终结果（反映 `final`；late `closed` 重格式化可更新它）。
+- **`session.status() -> SessionStatus`**：返回 `running` / `succeeded` / `failed` / `closed`。`succeeded` 与 `failed` 带 terminal event；`closed` 表示应用在 terminal 前退出 context。它让应用在 error 终态后读取 code/retriable_after，而不必解析异常文本。
+- **`session.partial_result() -> TranscriptionResult`**：显式读取当前归约快照；它可能是进行中的文本，也可能是失败前保留的部分文本。已测得的完整输入时长写入 `duration`，诊断也保留在该快照中。
+- **`session.result() -> TranscriptionResult`**：只返回成功终态的最终结果（反映 `final`；late `closed` 重格式化可更新它）。running 时 MUST 抛 `InvalidSessionUseError`；error 终态时 MUST 抛 `StreamFailedError`；context 提前退出的 `closed` 状态 MUST 抛 `StreamClosedError`，绝不把 partial 当作成功结果。
 
 ## TR.3 时间戳粒度
 `word_timestamps` 枚举 `word|segment|char`；char 级 reserve（additive）。
@@ -941,7 +955,7 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 | `final` 事件 | 引擎**不再因新音频改变**该段文本。表示一个语句/段落的转写已确定。 |
 | `supersede` 事件 | 引擎用一组新段**替换**一组旧段（用于两遍重打分等场景，详见 §5）。是**核心事件**，每个 compliant 应用都 MUST 处理。 |
 | `stable_until` | 一个非负整数，标明 `text` 的前多少个 **codepoint** 已冻结、不会再变（`text[:stable_until]` 即冻结前缀）。适配器 SHOULD 使该值落在字素簇 (grapheme cluster) 边界上。简单应用可忽略它；语音助手用它判断"前缀中哪些字已安全可以行动"。**冻结的范围是进行中的识别**：段终态的 `closed` 事件 MAY 对已冻结文本做一次后处理定稿改写（补标点/ITN/大小写，§6 豁免条款）——基于冻结前缀做**不可逆**动作（写库、发消息、触发工具）的应用 MUST 以识别语义为界，预期 `closed` 可能改写呈现形式。 |
-| `audio_processed_until` | 浮点数，表示引擎已处理到的音频时间点（秒），原点 = 本次会话的第一个音频采样。 |
+| `audio_processed_until` | 浮点数，表示引擎已处理到的音频时间点（秒），原点 = 本次会话的第一个音频采样。它是处理进度，不是文本/词的对齐时间；仅 `streaming.audio_progress` 为 true 的引擎可发。 |
 
 ---
 
@@ -955,6 +969,8 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 |---|---|---|
 | `transcribe(audio, params)` | 整段音频、等全部转写完 | `TranscriptionResult` |
 | `start_transcription(…)` | 任何需要"流式输出"的场景 | `TranscriptionSession` |
+
+每个 `StandardASR` 还 MUST 提供同步 `close() -> None`。应用在停止复用一个 engine、且没有活动请求或会话时调用它，释放进程内模型、worker 或加速器资源。没有此类资源的 engine 用 no-op；close 抛错时调用方 MUST NOT 假定资源已释放。
 
 `start_transcription` 的签名（修复验证 C-1：增量输入与整段输入共存）：
 
@@ -1106,7 +1122,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 
 ### 4.4 音频时间游标与心跳
 
-每个事件可以携带 `audio_processed_until`（浮点秒数），表示引擎**已经处理到**的音频时间点。
+每个事件可以携带 `audio_processed_until`（浮点秒数），表示引擎**已经处理到**的音频时间点。它受 `streaming.audio_progress` flag 门控；`timestamps` capability 仍只说明 segment/word alignment 的来源。
 
 - 原点 = 本次会话的**第一个音频采样**的时刻（音频时间 t=0），与 [§结果模型](#transcription-result) 中 `Segment.start/end` 的原点相同。
 - MUST **单调递增**（不回退）；跨重连窗口期保持旧值（见 §7.3）。
@@ -1115,7 +1131,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 - 在两种情形下适配器 **SHOULD** 发 `progress`：
   - 原生协议在接收侧本来就有活动信号（Deepgram 的空 Results、Azure 的 NoMatch、Speechmatics 的 ack 等）时，SHOULD 将其镜像为携带真实游标的 `progress`——免费的活性信息不应被适配器吞掉；
   - 适配器处于**长时间无事件的真实工作期**——整段输入会话的长静默计算（无增量消费信号可作锚点，见 §6.1）、feed 暂停期间适配器主动向引擎发原生 keepalive、重连尝试耗时较长（§6.3）——时，SHOULD 周期性发 `progress` 反映该真实活动。
-- `progress` 心跳 MUST NOT 携带捏造的 `audio_processed_until`（引擎并未实际处理到的时间点）；没有可靠游标就不携带该字段。标准层 MUST NOT 替引擎合成心跳——事件流上的每个事件都来自适配器对引擎真实行为的翻译，这是协议诚实性的底线。
+- `progress` 心跳 MUST NOT 携带捏造的 `audio_processed_until`（引擎并未实际处理到的时间点）；没有可靠游标就不携带该字段。标准层 MUST NOT 替引擎合成心跳——事件流上的每个事件都来自适配器对引擎真实行为的翻译，这是协议诚实性的底线。已声明 `audio_progress=false` 却发 cursor 是 declaration drift：默认 lifecycle guard 去掉 cursor 并发 diagnostic，`strict_lifecycle` 抛错；adapter 必须改正 declaration 或输出，不能依赖该兼容防线。
 
 ---
 
@@ -1370,6 +1386,7 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 | `streaming.emits_partials` | flag `{supported}` | 是否发 partial 事件（false = 只发段末 final） |
 | `streaming.re_segments` | flag `{supported}` | 是否可能发 supersede |
 | `streaming.word_stability` | flag `{supported}` | 是否提供有意义的 `stable_until` |
+| `streaming.audio_progress` | flag `{supported}` | 是否提供单调 `audio_processed_until` 处理游标；与 alignment timestamps 独立 |
 | `streaming.diarization` | bounded `{supported, always_on: {supported}, constraints: {max_speakers?}}` | 流式说话人分离（与 batch 分别声明；`always_on` 语义见 [§能力系统 3.2](#capabilities)，结果/事件语义见 [§结果模型 TR.5](#transcription-result) 与 §4.1/§4.2） |
 | `streaming.reconnect` | enum `{mode: seamless\|lossy\|unsupported}` | 重连能力 |
 | `streaming.finality_level` | enum `{mode: final\|closed}` | 能保证到哪级终态 |
@@ -1384,5 +1401,3 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 **当前世代包含**：`partial`/`final`/`supersede`/`progress`/`done`/`error` + 稳定 `segment_id` + 保守 `stable_until`(codepoints, SHOULD 字素簇边界) + `end_audio` + 两级终态标志 + 正交 input/output 能力 + `reconnect(lossy,gap)` + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。
 
 **defer（additive-later）**：运行时 `target_latency` 调整（当前仅构造期固定；流式节奏与延迟调优已有已定案设计——见 `docs/internal/feat_plan/streaming-cadence-and-tuning.md` D1–D7，实现落地时将其规范文本与 rationale 并入本 spec）；`update_guidance()` 中途改引导（当前保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（当前声明 lossy）；多通道流式展开。
-
-

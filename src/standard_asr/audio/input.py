@@ -96,8 +96,11 @@ class AudioArray:
     instances therefore compare by identity.
 
     Args:
-        samples: Waveform samples. Canonical form is ``float32`` mono in
-            ``[-1, 1]``; multi-channel is ``(n_samples, n_channels)``.
+        samples: Floating waveform samples. Mono is ``(n_samples,)``;
+            multi-channel is ``(n_samples, n_channels)``. The conversion layer
+            downmixes multi-channel input, sanitizes non-finite values, clips
+            finite values to ``[-1, 1]``, and delivers finite mono ``float32``
+            to an array engine. Every lossy repair emits a diagnostic.
         sample_rate: Sample rate in Hz, or ``None`` if unknown.
     """
 
@@ -107,11 +110,11 @@ class AudioArray:
     def __post_init__(self) -> None:
         """Reject a non-floating dtype or a non-positive sample rate at construction.
 
-        Both downstream paths assume floating samples in ``[-1, 1]``: array
-        passthrough delivers them unscaled, and WAV encoding scales by full
-        int16 range. An integer array (for example, ``int16`` PCM) would be silently
-        mis-scaled by either path -- a wrong-audio result, the cardinal sin --
-        so it is rejected at construction with an actionable message.
+        Both downstream paths require a floating waveform. An integer array
+        (for example, ``int16`` PCM) would be silently mis-scaled as amplitude
+        values instead of PCM codes, so it is rejected at construction with an
+        actionable message. The conversion layer canonicalizes shape, finite
+        values, and amplitude range before engine delivery.
 
         A ``sample_rate`` of ``0`` or a negative value is likewise rejected here.
         Otherwise an engine declaring ``accepted_sample_rates="any"`` would be
@@ -122,10 +125,10 @@ class AudioArray:
         construction makes the application bug (a unit/shape mix-up) loud and
         engine-independent, matching ``AudioFormat.sample_rate``'s ``gt=0`` and
         the dtype check above. ``None`` (rate unknown) stays valid: it is
-        resolved by the strict/best_effort sample-rate policy downstream. The number of
-        samples is **not** constrained here -- an empty array can be a legitimate
-        passthrough boundary input, so emptiness is handled (where it actually
-        matters) at resample time, not rejected at construction.
+        resolved by the strict/best_effort sample-rate policy downstream. Shape
+        and emptiness are validated by the conversion layer, which owns
+        canonical array delivery and raises ``AudioProcessingError`` before an
+        engine hook.
 
         Raises:
             TypeError: If ``samples`` does not have a floating dtype.

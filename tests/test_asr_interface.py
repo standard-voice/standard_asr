@@ -49,6 +49,7 @@ from standard_asr.contract.exceptions import (
 )
 from standard_asr.contract.language import AUTO, DIAG_CANDIDATE_LANGUAGES_IGNORED
 from standard_asr.contract.params import ProviderParams, WordTimestampGranularity
+from standard_asr.contract.results import Diagnostic
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -57,6 +58,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.runtime.config import LanguageConfigMixin
+from standard_asr.runtime.gating import Mode
 from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionEvent, TranscriptionSession
 
 
@@ -121,8 +123,56 @@ def _audio() -> AudioArray:
     return AudioArray(np.zeros(8, dtype=np.float32), 16000)
 
 
+def test_prepared_request_manual_path_matches_transcribe_template() -> None:
+    """A native multi-input wrapper gets the exact single-input result path."""
+    engine = _ArrayEngine()
+    params = RuntimeParams(language="en-US", provider_params=_MyParams(beam=3))
+
+    request = engine._prepare_transcription_request(  # pyright: ignore[reportPrivateUsage]
+        _audio(), params
+    )
+    manual = engine._finalize_transcription_result(  # pyright: ignore[reportPrivateUsage]
+        engine._transcribe(request.audio, request.params),  # pyright: ignore[reportPrivateUsage]
+        request,
+    )
+
+    assert manual == engine.transcribe(_audio(), params)
+    assert request.params.language == "en-US"
+    assert any(d.code == "language_refinement_accepted" for d in request.diagnostics)
+
+
+def test_prepared_request_rejects_swapped_provider_before_audio_preparation() -> None:
+    """The advanced hook retains the normal provider swap-safety boundary."""
+
+    class _OtherParams(ProviderParams):
+        value: int = 1
+
+    with pytest.raises(InvalidProviderParamError):
+        _ArrayEngine()._prepare_transcription_request(  # pyright: ignore[reportPrivateUsage]
+            AudioPath("/does/not/exist.wav"),
+            RuntimeParams(provider_params=_OtherParams()),
+        )
+
+
+def test_prepared_request_canonicalizes_audio_and_keeps_its_diagnostics() -> None:
+    """A native batch wrapper receives the same canonical audio as transcribe."""
+    request = _ArrayEngine()._prepare_transcription_request(  # pyright: ignore[reportPrivateUsage]
+        AudioArray(np.array([[2.0, 0.4], [-2.0, 0.2]], dtype=np.float64), 16000)
+    )
+
+    assert request.audio.kind is InputKind.ARRAY
+    assert request.audio.array is not None
+    assert request.audio.array.dtype == np.float32
+    assert request.audio.array.ndim == 1
+    np.testing.assert_allclose(request.audio.array, np.array([0.7, -0.4], dtype=np.float32))
+    assert any(d.code == "audio_conversion" for d in request.diagnostics)
+    assert any(d.code == "audio_clipped" for d in request.diagnostics)
+
+
 def test_engine_is_standard_asr() -> None:
-    assert isinstance(_ArrayEngine(), StandardASR)
+    engine = _ArrayEngine()
+    assert isinstance(engine, StandardASR)
+    assert engine.close() is None
 
 
 class _OutsideLineProps(_ArrayProps):
@@ -1502,6 +1552,56 @@ class _StreamEngine(_ArrayEngine):
         return _StreamSession()
 
 
+class _ModeLimitedStreamEngine(_StreamEngine):
+    """Uses a stricter batch duration than its whole-input stream limit."""
+
+    def _max_audio_duration(self, mode: Mode) -> float | None:
+        return 0.0001 if mode == "batch" else None
+
+
+class _StaticDurationProps(_ArrayProps):
+    max_audio_duration: float | None = 1.0
+
+
+class _WidenedModeLimitEngine(_StreamEngine):
+    properties: ClassVar[BaseProperties] = _StaticDurationProps()
+
+    def _max_audio_duration(self, mode: Mode) -> float | None:
+        del mode
+        return None
+
+
+class _CursorSession(TranscriptionSession):
+    """Emits a real processing cursor without alignment timestamps."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.progress(audio_processed_until=0.5)
+
+
+class _AudioProgressEngine(_StreamEngine):
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        ),
+        streaming=StreamingCapabilities(
+            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            audio_progress=FlagCap(supported=True),
+        ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        del gated_params, audio_format, prepared_audio
+        return _CursorSession()
+
+
 class _NoStreamingInputEngine(_StreamEngine):
     """Streaming hook is present, but incremental input is not declared."""
 
@@ -1657,6 +1757,37 @@ def test_declared_streaming_output_allows_whole_input_session() -> None:
 
     assert _NoStreamingInputEngine.hook_called is True
     assert _NoStreamingInputEngine.received_prepared_audio is not None
+
+
+def test_effective_audio_limit_can_differ_by_mode_without_mutating_properties() -> None:
+    audio = AudioArray(np.zeros(8, dtype=np.float32), 16000)
+    engine = _ModeLimitedStreamEngine()
+
+    with pytest.raises(AudioProcessingError, match="duration"):
+        engine.transcribe(audio)
+
+    session = engine.start_transcription(audio=audio)
+    assert engine.properties.max_audio_duration is None
+    assert session.partial_result().duration == pytest.approx(8 / 16000)
+
+
+def test_effective_audio_limit_cannot_widen_a_declared_static_boundary() -> None:
+    with pytest.raises(EngineContractError, match="widens"):
+        _WidenedModeLimitEngine().transcribe(_audio())
+
+
+def test_engine_base_configures_audio_progress_independently_of_timestamps() -> None:
+    async def collect() -> tuple[list[TranscriptionEvent], list[Diagnostic]]:
+        session = _AudioProgressEngine().start_transcription(
+            audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000)
+        )
+        async with session:
+            events = [event async for event in session]
+        return events, session.diagnostics()
+
+    events, diagnostics = asyncio.run(collect())
+    assert events[0].audio_processed_until == 0.5
+    assert not diagnostics
 
 
 def test_whole_input_streaming_audio_url_rejected_by_ssrf_before_hook() -> None:

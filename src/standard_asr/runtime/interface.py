@@ -26,6 +26,7 @@ import asyncio
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, final, runtime_checkable
 
 from pydantic import ValidationError
@@ -368,6 +369,21 @@ class StandardASR(Protocol):
                 line the core does not support -- the recommendation is
                 derived from the declaration and must not be interpreted
                 for a mismatched line.
+        """
+        ...
+
+    def close(self) -> None:
+        """Release process-local engine resources.
+
+        An engine may retain model handles, worker processes, or accelerator
+        allocations across requests. Applications that pool an engine call this
+        method after their last active request. Implementations must be
+        synchronous and return ``None``; a no-op is valid for engines that own
+        no process-local resources.
+
+        Raises:
+            Exception: An engine-specific cleanup failure. Callers must not
+                treat a failed close as successful resource release.
         """
         ...
 
@@ -718,6 +734,51 @@ def _artifact_required_actions(
     return tuple(action for requirement in requirements for action in requirement.required_actions)
 
 
+@dataclass(frozen=True)
+class PreparedTranscriptionRequest:
+    """One batch request after the standard pre-inference pipeline.
+
+    This protected helper value lets an :class:`EngineBase` subclass submit
+    several independent inputs to a native multi-input API without reproducing
+    parameter gating, language resolution, audio conversion, or diagnostic
+    ownership. It is intentionally not a public request model: callers use
+    :meth:`EngineBase.transcribe`; optimized engine wrappers use the protected
+    prepare/finalize hooks on their own instances.
+
+    Attributes:
+        audio: Audio converted into a shape accepted by the engine.
+        params: Runtime parameters after the batch gate and language resolver.
+        diagnostics: Standard-layer diagnostics accrued before inference.
+    """
+
+    audio: PreparedAudio
+    params: RuntimeParams
+    diagnostics: list[Diagnostic]
+
+
+def _invalid_transcription_result_error(exc: ValidationError) -> TranscriptionError:
+    """Map an engine-hook validation failure onto the portable error surface.
+
+    Args:
+        exc: The validation failure that escaped an engine result boundary.
+
+    Returns:
+        The portable engine-fault exception, ready to chain from ``exc``.
+    """
+    return TranscriptionError(
+        "Engine produced an invalid result (or raised an unwrapped "
+        "validation error) inside _transcribe -- an engine/plugin "
+        "fault, not a request error. See the chained ValidationError "
+        "for the offending fields (for example, a field the result model no "
+        "longer accepts).",
+        hint=(
+            "Report this to the engine plugin's author; a core/plugin "
+            "version mismatch (the plugin building a result with "
+            "removed or invalid fields) is the usual cause."
+        ),
+    )
+
+
 class EngineBase(ABC):
     """Abstract base implementing the standard transcribe pipeline.
 
@@ -864,6 +925,17 @@ class EngineBase(ABC):
             ArtifactUnavailableError: If required inference artifacts cannot
                 support warm-up under the current policy.
             ArtifactAcquisitionError: If an allowed acquisition attempt fails.
+        """
+
+    def close(self) -> None:
+        """Release process-local resources (default: no-op).
+
+        Engines that retain native model handles or worker resources override
+        this synchronous method. The base owns no such resources, so a
+        batch-only or stateless engine remains compliant without an override.
+
+        Returns:
+            None.
         """
 
     def _artifact_declaration(self) -> ArtifactDeclaration:
@@ -1512,6 +1584,50 @@ class EngineBase(ABC):
                 fault; the template wraps it here so it can never masquerade
                 as a client-input validation error).
         """
+        request = self._prepare_transcription_request(audio, params)
+        try:
+            result = self._transcribe(request.audio, request.params)
+        except ValidationError as exc:
+            # A pydantic ValidationError escaping _transcribe is an ENGINE
+            # fault (params were validated before this point; the usual cause
+            # is the engine constructing a TranscriptionResult/Segment the
+            # model rejects -- for example, a field removed from the contract, or an
+            # invalid timestamp). Without this wrap it masquerades as a
+            # client-input validation error: the server's ValidationError
+            # clause turned it into a 422 blaming the request's options.
+            # Wrapping enforces the spec's portable batch error contract
+            # (engine-execution failure -> TranscriptionError, original
+            # exception preserved as __cause__) at the one template seam that
+            # can see it.
+            raise _invalid_transcription_result_error(exc) from exc
+        return self._finalize_transcription_result(result, request)
+
+    def _prepare_transcription_request(
+        self, audio: AudioInputLike, params: RuntimeParams | None = None
+    ) -> PreparedTranscriptionRequest:
+        """Run the common batch pre-inference pipeline for one input.
+
+        Native multi-input wrappers call this once per input, then pass
+        :attr:`PreparedTranscriptionRequest.audio` and
+        :attr:`PreparedTranscriptionRequest.params` to their optimized native
+        batch entry point. The matching
+        :meth:`_finalize_transcription_result` call is required for every
+        successful native result so diagnostics and speaker synthesis remain
+        identical to :meth:`transcribe`.
+
+        Args:
+            audio: The caller's audio input.
+            params: Per-request runtime parameters.
+
+        Returns:
+            The converted audio, gated parameters, and pre-inference
+            diagnostics.
+
+        Raises:
+            Exception: The pre-inference subset of :meth:`transcribe`'s
+                documented errors, in the same order and with the same
+                semantics.
+        """
         # The full engine gate runs before any work: AR.1 makes each 0.MINOR
         # generation potentially contract-breaking, so running a
         # mismatched-line engine could return a structurally valid but
@@ -1534,9 +1650,34 @@ class EngineBase(ABC):
             gated, "batch", requested_language=request.language
         )
         # Audio decode/resample only after parameters are known-good.
-        prepared = self._prepare_audio(audio)
+        prepared = self._prepare_audio(audio, mode="batch")
+        return PreparedTranscriptionRequest(
+            audio=prepared,
+            params=gated,
+            diagnostics=[*gate_diags, *lang_diags, *prepared.diagnostics],
+        )
+
+    def _finalize_transcription_result(
+        self, result: object, request: PreparedTranscriptionRequest
+    ) -> TranscriptionResult:
+        """Apply the common batch post-inference pipeline to one result.
+
+        Args:
+            result: The native result returned for ``request``.
+            request: The matching prepared request from
+                :meth:`_prepare_transcription_request`.
+
+        Returns:
+            The validated result with standard diagnostics and synthesized
+            segment speakers.
+
+        Raises:
+            EngineContractError: If ``result`` is awaitable or not a
+                :class:`~standard_asr.contract.results.TranscriptionResult`.
+            TranscriptionError: If result validation raises a pydantic
+                ``ValidationError``.
+        """
         try:
-            result = self._transcribe(prepared, gated)
             # The boundary belongs HERE, at the author hook, not only on the
             # public method a consumer sees: the template consumes this value
             # immediately (speaker synthesis, then .diagnostics), so an
@@ -1547,42 +1688,34 @@ class EngineBase(ABC):
             # delegates to, so no surface-level modality check can see this.
             require_sync_result(result, "_transcribe()", expected_type=TranscriptionResult)
         except ValidationError as exc:
-            # A pydantic ValidationError escaping _transcribe is an ENGINE
-            # fault (params were validated before this point; the usual cause
-            # is the engine constructing a TranscriptionResult/Segment the
-            # model rejects -- for example, a field removed from the contract, or an
-            # invalid timestamp). Without this wrap it masquerades as a
-            # client-input validation error: the server's ValidationError
-            # clause turned it into a 422 blaming the request's options.
-            # Wrapping enforces the spec's portable batch error contract
-            # (engine-execution failure -> TranscriptionError, original
-            # exception preserved as __cause__) at the one template seam that
-            # can see it.
-            raise TranscriptionError(
-                "Engine produced an invalid result (or raised an unwrapped "
-                "validation error) inside _transcribe -- an engine/plugin "
-                "fault, not a request error. See the chained ValidationError "
-                "for the offending fields (for example, a field the result model no "
-                "longer accepts).",
-                hint=(
-                    "Report this to the engine plugin's author; a core/plugin "
-                    "version mismatch (the plugin building a result with "
-                    "removed or invalid fields) is the usual cause."
-                ),
-            ) from exc
+            raise _invalid_transcription_result_error(exc) from exc
+        typed_result = cast("TranscriptionResult", result)
         # Standard-layer diarization synthesis: the streaming
         # reducer applies the same shared rule, so batch and streaming yield
         # the same Segment.speaker for the same engine output.
-        result = _synthesize_result_speakers(result)
-        merged = [
-            *gate_diags,
-            *lang_diags,
-            *prepared.diagnostics,
-            *result.diagnostics,
-        ]
-        return result.model_copy(update={"diagnostics": merged})
+        typed_result = _synthesize_result_speakers(typed_result)
+        return typed_result.model_copy(
+            update={"diagnostics": [*request.diagnostics, *typed_result.diagnostics]}
+        )
 
-    def _prepare_audio(self, audio: AudioInputLike) -> PreparedAudio:
+    def _max_audio_duration(self, mode: Mode) -> float | None:
+        """Return the effective audio-duration limit for one inference mode.
+
+        Properties keep the static, discoverable boundary. An engine with a
+        narrower configured or loaded-bundle limit overrides this query without
+        mutating class-level Properties. The default preserves the declared
+        limit for both batch and whole-input streaming audio.
+
+        Args:
+            mode: The batch or streaming execution mode.
+
+        Returns:
+            The maximum duration in seconds, or ``None`` when unbounded.
+        """
+        del mode
+        return self.properties.max_audio_duration
+
+    def _prepare_audio(self, audio: AudioInputLike, *, mode: Mode) -> PreparedAudio:
         """Decode, negotiate, and resample an audio input (shared pipeline).
 
         The single owner of the audio-conversion arguments threaded into
@@ -1594,6 +1727,8 @@ class EngineBase(ABC):
 
         Args:
             audio: The caller's audio input (path, bytes, URL, array, and so on).
+            mode: The batch or streaming execution mode whose effective limit
+                applies.
 
         Returns:
             The prepared audio (decoded / resampled per the engine's properties),
@@ -1604,6 +1739,16 @@ class EngineBase(ABC):
         """
         provided: AudioInput = coerce_audio_input(audio)
         plan = negotiate_or_raise(provided, set(self.properties.accepted_input))
+        effective_duration = self._max_audio_duration(mode)
+        declared_duration = self.properties.max_audio_duration
+        if declared_duration is not None and (
+            effective_duration is None or effective_duration > declared_duration
+        ):
+            raise EngineContractError(
+                f"_max_audio_duration({mode!r}) returned {effective_duration!r}, which widens "
+                f"the declared max_audio_duration={declared_duration!r}. Set Properties to the "
+                "widest static boundary and return only an equal or narrower effective limit."
+            )
         return execute_plan(
             provided,
             plan,
@@ -1611,7 +1756,7 @@ class EngineBase(ABC):
             native_sample_rate=self.properties.native_sample_rate,
             required_input_sample_rate=self.properties.required_input_sample_rate,
             max_file_size=self.properties.max_file_size,
-            max_audio_duration=self.properties.max_audio_duration,
+            max_audio_duration=effective_duration,
             strict=self._strict,
             allow_private_addresses=self._allow_private_urls,
         )
@@ -2241,7 +2386,7 @@ class EngineBase(ABC):
         )
         prepared: PreparedAudio | None = None
         if audio is not None:
-            prepared = self._prepare_audio(audio)
+            prepared = self._prepare_audio(audio, mode="streaming")
         try:
             session = self._start_transcription(
                 gated_params=gated, audio_format=audio_format, prepared_audio=prepared
@@ -2275,6 +2420,12 @@ class EngineBase(ABC):
         # state (for example, its own self._buffer) fails loudly here, not as a
         # cryptic crash deep in the producer.
         session._ensure_reserved_attrs_checked()  # pyright: ignore[reportPrivateUsage]
+        session._configure_audio_progress(  # pyright: ignore[reportPrivateUsage]
+            self.effective_capabilities.supports("streaming.audio_progress")
+        )
+        if prepared is not None and prepared.array is not None:
+            assert prepared.sample_rate is not None
+            session.set_input_duration(len(prepared.array) / prepared.sample_rate)
         # Friend API: the base engine seeds the session's standard-layer
         # diagnostics so they surface through the session's own diagnostics().
         session._attach_initial_diagnostics(  # pyright: ignore[reportPrivateUsage]

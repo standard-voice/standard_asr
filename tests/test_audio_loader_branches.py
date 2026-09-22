@@ -1178,7 +1178,14 @@ def test_decode_with_ffmpeg_native_success(monkeypatch: pytest.MonkeyPatch) -> N
     def _probe(_source: str | bytes) -> audio_loader._ProbeOutcome:  # pyright: ignore[reportPrivateUsage]
         return audio_loader._ProbeOutcome(32000)  # pyright: ignore[reportPrivateUsage]
 
-    def _load(_source: str | bytes, _sr: int, _ch: int | None) -> NDArray[np.float32]:
+    def _load(
+        _source: str | bytes,
+        _sr: int,
+        _ch: int | None,
+        *,
+        canonicalize_output: bool = True,
+    ) -> NDArray[np.float32]:
+        assert canonicalize_output
         return np.zeros(5, dtype=np.float32)
 
     monkeypatch.setattr(audio_loader, "_probe_sample_rate_with_ffprobe", _probe)
@@ -1186,6 +1193,50 @@ def test_decode_with_ffmpeg_native_success(monkeypatch: pytest.MonkeyPatch) -> N
     arr, sr = audio_loader._decode_with_ffmpeg_native(b"data", 1)  # pyright: ignore[reportPrivateUsage]
     assert sr == 32000
     assert arr.shape[0] == 5
+
+
+def test_decode_audio_for_array_reports_soundfile_repairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoded = np.array([[2.0, np.nan], [-2.0, np.inf]], dtype=np.float32)
+
+    def read_soundfile(_source: object) -> tuple[NDArray[np.float32], int]:
+        return decoded, 16000
+
+    monkeypatch.setattr(audio_loader, "_read_with_soundfile", read_soundfile)
+    array, sample_rate, report = audio_loader.decode_audio_for_array(b"encoded")
+    assert sample_rate == 16000
+    np.testing.assert_array_equal(array, np.array([0.5, 0.0], dtype=np.float32))
+    assert report.input_channels == 2
+    assert report.downmixed
+    assert report.sanitized_non_finite == 2
+    assert report.clipped_samples == 2
+
+
+def test_decode_audio_for_array_keeps_ffmpeg_repairs_observable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_soundfile(_source: object) -> None:
+        return None
+
+    monkeypatch.setattr(audio_loader, "_read_with_soundfile", reject_soundfile)
+
+    def decode(
+        _source: str | bytes,
+        channels: int | None,
+        *,
+        canonicalize_output: bool,
+    ) -> tuple[NDArray[np.float32], int]:
+        assert channels is None
+        assert not canonicalize_output
+        return np.array([np.nan, 1.5], dtype=np.float32), 8000
+
+    monkeypatch.setattr(audio_loader, "_decode_with_ffmpeg_native", decode)
+    array, sample_rate, report = audio_loader.decode_audio_for_array(b"encoded")
+    assert sample_rate == 8000
+    np.testing.assert_array_equal(array, np.array([0.0, 1.0], dtype=np.float32))
+    assert report.sanitized_non_finite == 1
+    assert report.clipped_samples == 1
 
 
 def test_decode_with_ffmpeg_native_no_rate_raises(monkeypatch: pytest.MonkeyPatch) -> None:

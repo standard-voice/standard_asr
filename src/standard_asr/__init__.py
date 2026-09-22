@@ -100,6 +100,7 @@ from standard_asr.contract.exceptions import (
     ProtocolCompatibilityError,
     StandardASRError,
     StreamClosedError,
+    StreamFailedError,
     StructuredError,
     SubtitleRenderingError,
     TranscriptionError,
@@ -123,6 +124,7 @@ from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_mo
 from standard_asr.renderers import UnrenderablePolicy, to_srt, to_vtt
 from standard_asr.runtime.interface import StandardASR, require_engine_protocol
 from standard_asr.runtime.streaming import (
+    SessionStatus,
     StreamDeadlines,
     SyncSession,
     TranscriptionEvent,
@@ -210,6 +212,8 @@ __all__ = [
     "StandardASRError",
     "StreamClosedError",
     "StreamDeadlines",
+    "StreamFailedError",
+    "SessionStatus",
     "StructuredError",
     "SubtitleRenderingError",
     "SyncSession",

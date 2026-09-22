@@ -608,6 +608,28 @@ class StreamClosedError(StandardASRError):
     pass
 
 
+class StreamFailedError(StandardASRError):
+    """Raised when a terminal streaming error prevents a final result.
+
+    A streaming engine reports runtime failure through a terminal ``error``
+    event so a live consumer receives the same failure that ends the session.
+    :meth:`~standard_asr.runtime.streaming.TranscriptionSession.result` raises
+    this type after that event instead of returning a partial transcript as if
+    it were final. Inspect the session's ``status()`` for the terminal event,
+    or call ``partial_result()`` when partial text is useful to the application.
+
+    Args:
+        code: The terminal error event's machine-readable code.
+        retriable_after: Suggested delay before starting a new session, if the
+            terminal event carries one.
+    """
+
+    def __init__(self, code: str, *, retriable_after: float | None = None) -> None:
+        self.code = code
+        self.retriable_after = retriable_after
+        super().__init__(f"Streaming session ended with error code {code!r}.")
+
+
 class InvalidSessionUseError(StandardASRError, ValueError):
     """Raised when a streaming session is driven incorrectly while still live.
 
@@ -682,6 +704,7 @@ __all__ = [
     "ProtocolCompatibilityError",
     "StandardASRError",
     "StreamClosedError",
+    "StreamFailedError",
     "StructuredError",
     "SubtitleRenderingError",
     "TranscriptionError",

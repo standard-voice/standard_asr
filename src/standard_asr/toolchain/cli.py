@@ -12,6 +12,7 @@ import json
 import sys
 import traceback
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import IO, Any, cast
 
 from pydantic import ValidationError
@@ -58,7 +59,7 @@ from standard_asr.contract.exceptions import (
     UnsupportedFeatureError,
 )
 from standard_asr.contract.metadata import DeclaredEngineMetadata
-from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
+from standard_asr.contract.params import ProviderParams, RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
 from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
@@ -101,10 +102,10 @@ def _run_engine_call(invoke: Callable[[], Any]) -> Any:
     engine-side: ``--options`` content was already validated by
     ``_parse_options`` (its usage errors are raised before the engine runs),
     audio input problems have their own type (``AudioProcessingError``),
-    strict-mode rejections theirs (``UnsupportedFeatureError``), and the CLI
-    user cannot supply ``provider_params`` at all (the wire view rejects
-    them), so an ``InvalidProviderParamError`` here is engine misbehavior
-    too. A raw ``ValidationError`` is the structural-engine
+    strict-mode rejections theirs (``UnsupportedFeatureError``), and a supplied
+    provider object was already constructed as the selected engine's exact
+    type. An ``InvalidProviderParamError`` here is therefore engine misbehavior.
+    A raw ``ValidationError`` is the structural-engine
     invalid-internal-model case the server maps to a scrubbed 500. The one
     exception is :class:`ConfigError` (with its
     :class:`ConfigurationRequiredError` subtype): configuration is
@@ -465,6 +466,15 @@ def _add_serve_subcommand(subparsers: Any) -> None:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")
+    parser.add_argument(
+        "--engine-configs",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "JSON file mapping model keys to operator-owned init-config objects. "
+            "The server fixes one config per model for its lifetime."
+        ),
+    )
     # No --reload: uvicorn's auto-reload requires an import-string app, but
     # serve() passes a configured FastAPI instance (so byte caps are honored),
     # which uvicorn rejects under reload by exiting. A flag that can only fail is
@@ -2064,9 +2074,8 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
             usage-owned ``ValueError`` on this path; exit 2).
         _EngineFaultError: When the engine call itself escapes with the
             ``ValueError`` family -- a bare SDK ``ValueError``, a raw
-            ``ValidationError`` from an internal model, an
-            ``InvalidProviderParamError`` the CLI user cannot have caused
-            (the wire view rejects ``provider_params``). The execution seam
+            ``ValidationError`` from an internal model, or an
+            ``InvalidProviderParamError`` after typed provider construction. The execution seam
             classifies these as engine faults (exit 1).
         ConfigError: On an invalid language configuration value, a malformed
             ``--config`` / ``--set``, or when the engine factory rejects its
@@ -2097,7 +2106,18 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     registry = discover_models(strict=args.strict_discovery)
     asr = registry.create(args.name, **_parse_init_config(args))
 
-    params = _parse_options(args.options)
+    provider_params_type = getattr(type(asr), "provider_params_type", None)
+    if provider_params_type is not None and not (
+        isinstance(provider_params_type, type)
+        and issubclass(provider_params_type, ProviderParams)
+        and provider_params_type is not ProviderParams
+        and provider_params_type.model_config.get("extra") == "forbid"
+    ):
+        raise EngineContractError(
+            "The engine's provider_params_type must be a closed, concrete "
+            "ProviderParams subclass or None."
+        )
+    params = _parse_options(args.options, provider_params_type=provider_params_type)
     effective_params = params or RuntimeParams()
     _transcribe_artifact_preflight(asr, name=args.name, params=effective_params)
     # The execution seam: what escapes the engine call here as a bare
@@ -2166,8 +2186,14 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         )
         return 1
 
+    engine_configs = _load_engine_configs(args.engine_configs)
     try:
-        run(host=args.host, port=args.port, log_level=args.log_level)
+        run(
+            host=args.host,
+            port=args.port,
+            log_level=args.log_level,
+            engine_configs=engine_configs,
+        )
     except ImportError as exc:
         _debug_traceback(args)
         _print_error(str(exc))
@@ -2175,15 +2201,56 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_options(raw: str | None) -> RuntimeParams | None:
+def _load_engine_configs(path: Path | None) -> dict[str, dict[str, Any]] | None:
+    """Load the server's operator-owned model config mapping.
+
+    Values remain untyped until the pooled engine is first constructed. The
+    selected engine's closed ``config_type`` then validates them through the
+    normal registry path. This loader checks only the outer transport shape and
+    never includes a submitted key or value in an error message.
+
+    Args:
+        path: JSON file path, or ``None`` to use engine environment defaults.
+
+    Returns:
+        Model-key-to-config mapping, or ``None``.
+
+    Raises:
+        ConfigError: If the file cannot be read, parsed, or has the wrong outer
+            shape.
+    """
+    if path is None:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ConfigError(
+            "--engine-configs must name a readable UTF-8 JSON file containing an object."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ConfigError(
+            "--engine-configs must contain an object mapping model keys to config objects."
+        )
+    mapping = cast("dict[object, object]", payload)
+    if any(
+        not isinstance(model, str) or not model or not isinstance(config, dict)
+        for model, config in mapping.items()
+    ):
+        raise ConfigError(
+            "--engine-configs must contain an object mapping model keys to config objects."
+        )
+    return cast("dict[str, dict[str, Any]]", payload)
+
+
+def _parse_options(
+    raw: str | None, *, provider_params_type: type[ProviderParams] | None = None
+) -> RuntimeParams | None:
     """Parse a JSON options string into :class:`RuntimeParams`.
 
-    Mirrors the server's untyped-wire rule: validation goes through
-    :class:`WireRuntimeParams`, the portable-only wire view, so an options
-    object that includes the engine-specific ``provider_params`` escape hatch
-    is rejected with a clear validation error -- it is not constructible from
-    untyped JSON and must never reach the engine unvalidated. The validated
-    portable params are then promoted to the internal :class:`RuntimeParams`.
+    Validation first closes the top-level wire object through
+    :class:`WireRuntimeParams`. It then validates ``provider_params`` with the
+    selected engine's exact published type before constructing
+    :class:`RuntimeParams`.
 
     The pydantic ``ValidationError`` raised by an invalid options object is
     **not** surfaced verbatim: ``str(ValidationError)`` echoes the offending
@@ -2196,15 +2263,16 @@ def _parse_options(raw: str | None) -> RuntimeParams | None:
 
     Args:
         raw: Raw JSON string.
+        provider_params_type: The selected engine's published provider params
+            type, or ``None`` when it accepts none.
 
     Returns:
         Parsed runtime parameters, or ``None``.
 
     Raises:
         ValueError: If JSON does not decode to an object, or the object is not
-            a valid portable params object (including when it carries a
-            ``provider_params`` key). The message never echoes the submitted
-            value.
+            valid for the portable fields and selected provider type. The
+            message never echoes the submitted value.
     """
     if raw is None:
         return None
@@ -2213,11 +2281,11 @@ def _parse_options(raw: str | None) -> RuntimeParams | None:
         raise ValueError("Options JSON must decode to an object.")
     try:
         validated = WireRuntimeParams.model_validate(cast(dict[str, Any], payload))
+        return validated.to_runtime_params(provider_params_type)
     except ValidationError as exc:
         # Marked input-echo-free: the message is the sanitized loc/msg summary,
         # so the safe error boundary keeps it instead of withholding it.
         raise ValueError(sanitized_validation_message(exc)) from exc
-    return validated.to_runtime_params()
 
 
 def main(argv: list[str] | None = None) -> int:

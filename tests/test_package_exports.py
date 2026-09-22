@@ -198,6 +198,7 @@ _DELIBERATE_DUAL_EXPORTS: frozenset[str] = (
             "DiarizationRequest",
             "RuntimeParams",
             "Segment",
+            "SessionStatus",
             "StandardASR",
             "TranscriptionEvent",
             "TranscriptionResult",

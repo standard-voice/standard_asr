@@ -136,9 +136,8 @@ def test_array_accepts_none_sample_rate() -> None:
 
 
 def test_array_allows_empty_samples_at_construction() -> None:
-    # (per the verdict): emptiness is NOT rejected at construction --
-    # an empty array can be a legitimate passthrough boundary input. It is
-    # handled where it matters (resample time), not here.
+    # Construction checks dtype and sample-rate metadata. The conversion
+    # boundary rejects an empty waveform before an engine hook.
     assert AudioArray(np.zeros(0, dtype=np.float32), 16000).samples.size == 0
 
 

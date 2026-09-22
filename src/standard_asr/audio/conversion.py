@@ -30,10 +30,12 @@ from standard_asr.audio.input import (
     InputKind,
 )
 from standard_asr.audio.loader import (
+    ArrayCanonicalizationReport,
     _base64_payload,  # pyright: ignore[reportPrivateUsage]
     _decode_base64_payload,  # pyright: ignore[reportPrivateUsage]
     _estimate_payload_decoded_size,  # pyright: ignore[reportPrivateUsage]
-    decode_audio,
+    canonicalize_array,
+    decode_audio_for_array,
 )
 from standard_asr.audio.negotiation import ConversionOp, ConversionPlan, validate_fetchable_url
 from standard_asr.audio.resampling import resample_with_backend
@@ -56,6 +58,7 @@ ASSUMED_SAMPLE_RATE = 16000
 #: are emitted from more than one site in this module, where a repeated literal
 #: could silently drift.
 DIAG_AUDIO_CONVERSION = "audio_conversion"
+DIAG_AUDIO_CLIPPED = "audio_clipped"
 DIAG_NON_FINITE_AUDIO = "non_finite_audio"
 DIAG_RESAMPLED_WITH = "resampled_with"
 DIAG_ASSUMED_SAMPLE_RATE = "assumed_sample_rate"
@@ -114,7 +117,8 @@ class PreparedAudio:
 
     Args:
         kind: The accepted shape this payload represents.
-        array: Waveform (for ``ARRAY``).
+        array: Finite mono contiguous float32 waveform in ``[-1, 1]`` (for
+            ``ARRAY``).
         sample_rate: Sample rate of ``array`` in Hz (for ``ARRAY``).
         data: Encoded bytes (for ``ENCODED_BYTES``).
         container: Optional container hint for ``data``.
@@ -132,6 +136,54 @@ class PreparedAudio:
     url: str | None = None
     storage_uri: str | None = None
     diagnostics: list[Diagnostic] = field(default_factory=_empty_diagnostics)
+
+
+def _append_canonicalization_diagnostics(
+    report: ArrayCanonicalizationReport, diags: list[Diagnostic]
+) -> None:
+    """Append structured diagnostics for every lossy canonicalization step."""
+    if report.downmixed:
+        diags.append(
+            Diagnostic(
+                level="warning",
+                code=DIAG_AUDIO_CONVERSION,
+                message=(
+                    f"Downmixed {report.input_channels}-channel audio to mono by "
+                    "averaging channels."
+                ),
+                param="audio",
+                provided=report.input_channels,
+                effective=1,
+            )
+        )
+    if report.sanitized_non_finite:
+        diags.append(
+            Diagnostic(
+                level="warning",
+                code=DIAG_NON_FINITE_AUDIO,
+                message=(
+                    f"Sanitized {report.sanitized_non_finite} non-finite sample(s) "
+                    "(NaN/Inf) to 0/+/-1 for canonical array delivery."
+                ),
+                param="audio",
+                provided=report.sanitized_non_finite,
+                effective="finite",
+            )
+        )
+    if report.clipped_samples:
+        diags.append(
+            Diagnostic(
+                level="warning",
+                code=DIAG_AUDIO_CLIPPED,
+                message=(
+                    f"Clipped {report.clipped_samples} finite sample(s) outside "
+                    "[-1, 1] to the canonical amplitude range."
+                ),
+                param="audio",
+                provided=report.clipped_samples,
+                effective="[-1, 1]",
+            )
+        )
 
 
 def _target_array_sample_rate(
@@ -233,8 +285,9 @@ def execute_plan(
         The :class:`PreparedAudio` with any conversion diagnostics attached.
 
     Raises:
-        AudioProcessingError: On a missing sample rate in strict mode, an
-            oversize encode/payload, or a decode failure.
+        AudioProcessingError: On malformed or empty array audio, a missing
+            sample rate in strict mode, an oversize encode/payload, or a decode
+            failure.
         UnsafeAudioUrlError: When a ``FETCHABLE_URL`` target fails the SSRF
             policy (not HTTPS, or a private/reserved address).
     """
@@ -283,7 +336,6 @@ def execute_plan(
         diags,
     )
     _check_duration(array, sample_rate, max_audio_duration)
-    _diagnose_non_finite(array, diags)
     return PreparedAudio(
         kind=InputKind.ARRAY,
         array=array,
@@ -356,13 +408,15 @@ def _prepare_encoded(
         )
     if ConversionOp.ENCODE_WAV in ops:
         array_in = _narrow(provided, AudioArray)
+        samples, report = canonicalize_array(array_in.samples)
+        _append_canonicalization_diagnostics(report, diags)
         # Resolve a missing rate (strict raises, best_effort assumes +
         # diagnoses) and resample the array to an accepted rate BEFORE encoding,
         # so an encoded-input engine that declares a restricted
         # accepted_sample_rates never receives off-rate WAV content. The bare
         # array path enforces the identical policy via the same helper.
         samples, sr = _apply_sample_rate(
-            array_in.samples,
+            samples,
             array_in.sample_rate,
             accepted_sample_rates,
             native_sample_rate,
@@ -382,32 +436,6 @@ def _prepare_encoded(
                 effective="encoded_bytes",
             )
         )
-        if result.downmixed:
-            diags.append(
-                Diagnostic(
-                    level="warning",
-                    code=DIAG_AUDIO_CONVERSION,
-                    message="Downmixed multi-channel audio to mono for encoding.",
-                    param="audio",
-                )
-            )
-        if result.sanitized_non_finite:
-            # The WAV encoder MUST sanitize NaN/Inf (int16 cannot represent them),
-            # but that mutation MUST be visible to the caller -- the array-delivery
-            # path emits the same ``non_finite_audio`` diagnostic, so encode-path
-            # engines are not silently denied a signal the array path surfaces
-            # (explicit over implicit).
-            diags.append(
-                Diagnostic(
-                    level="warning",
-                    code=DIAG_NON_FINITE_AUDIO,
-                    message=(
-                        f"Sanitized {result.sanitized_non_finite} non-finite "
-                        "sample(s) (NaN/Inf) to 0/+-1 during WAV encoding."
-                    ),
-                    param="audio",
-                )
-            )
         return PreparedAudio(kind=InputKind.ENCODED_BYTES, data=result.data, container="wav")
     if ConversionOp.B64_DECODE in ops:  # base64 -> bytes
         decoded = _decode_base64_bounded(_narrow(provided, AudioBase64).value, max_file_size)
@@ -447,36 +475,6 @@ def _decode_base64_bounded(value: str, max_file_size: int | None) -> bytes:
     decoded = _decode_base64_payload(payload)
     _check_payload_size(len(decoded), max_file_size)
     return decoded
-
-
-def _diagnose_non_finite(array: NDArray[np.float32], diags: list[Diagnostic]) -> None:
-    """Diagnose -- never sanitize -- non-finite samples in an array delivery.
-
-    NaN/Inf in application-provided float audio is forwarded unchanged: clipping
-    or zeroing here would silently mutate audio the application may have shaped
-    deliberately, and the decode paths already sanitize their own output. The
-    structured warning makes the condition visible to the caller instead of
-    letting it degrade transcription silently (explicit > implicit).
-
-    Args:
-        array: The waveform about to be delivered (passthrough or resampled).
-        diags: Diagnostics accumulator.
-    """
-    finite = np.isfinite(array)
-    if bool(finite.all()):
-        return
-    bad = int(np.count_nonzero(~finite))
-    diags.append(
-        Diagnostic(
-            level="warning",
-            code=DIAG_NON_FINITE_AUDIO,
-            message=(
-                f"Array delivery contains {bad} non-finite sample(s) (NaN/Inf); "
-                "forwarded unchanged."
-            ),
-            param="audio",
-        )
-    )
 
 
 def _check_duration(
@@ -580,7 +578,7 @@ def _prepare_array(
     max_file_size: int | None,
     diags: list[Diagnostic],
 ) -> tuple[NDArray[np.float32], int | None]:
-    """Produce a waveform array from the provided input.
+    """Produce a canonical waveform array from the provided input.
 
     The decode path returns the source's **native** sample rate -- it does NOT
     resample. The single authoritative resampling decision is made later by
@@ -594,13 +592,14 @@ def _prepare_array(
         diags: Diagnostics accumulator.
 
     Returns:
-        A ``(array, sample_rate)`` pair; ``sample_rate`` may be ``None`` for a
-        bare array that omitted its rate.
+        A finite mono contiguous float32 ``(array, sample_rate)`` pair;
+        ``sample_rate`` may be ``None`` for a bare array that omitted its rate.
     """
     if ConversionOp.PASSTHROUGH in ops:
         array_src = _narrow(provided, AudioArray)
-        # Use np.asarray, not astype(copy=False), for consistent numpy 1.x/2.x behavior.
-        return np.asarray(array_src.samples, dtype=np.float32), array_src.sample_rate
+        canonical, report = canonicalize_array(array_src.samples)
+        _append_canonicalization_diagnostics(report, diags)
+        return canonical, array_src.sample_rate
 
     # Decode path: AudioPath / AudioBytes / AudioBase64 -> array.
     if isinstance(provided, AudioPath):
@@ -623,7 +622,7 @@ def _prepare_array(
         raise AudioProcessingError("Cannot decode this input to an array.")
 
     # Decode at the NATIVE rate; the sample-rate stage owns any resampling.
-    array, native_sr = decode_audio(source, target_channels=1, max_bytes=max_file_size)
+    array, native_sr, report = decode_audio_for_array(source, max_bytes=max_file_size)
     diags.append(
         Diagnostic(
             level="info",
@@ -633,6 +632,7 @@ def _prepare_array(
             effective="array",
         )
     )
+    _append_canonicalization_diagnostics(report, diags)
     return array, native_sr
 
 
@@ -735,7 +735,13 @@ def _apply_sample_rate(
                 effective=backend,
             )
         )
-    return resampled, target
+    # A mathematically valid resampler can ring slightly past full scale, and a
+    # broken optional backend could return a non-finite value. Re-apply the same
+    # canonical boundary after resampling so the engine guarantee does not depend
+    # on which backend ran. Any repair remains visible through the shared codes.
+    canonical, report = canonicalize_array(resampled)
+    _append_canonicalization_diagnostics(report, diags)
+    return canonical, target
 
 
 def _assumed_sample_rate_diag() -> Diagnostic:
@@ -755,10 +761,13 @@ def _assumed_sample_rate_diag() -> Diagnostic:
 
 __all__ = [
     "ASSUMED_SAMPLE_RATE",
+    "ArrayCanonicalizationReport",
     "DIAG_ASSUMED_SAMPLE_RATE",
+    "DIAG_AUDIO_CLIPPED",
     "DIAG_AUDIO_CONVERSION",
     "DIAG_NON_FINITE_AUDIO",
     "DIAG_RESAMPLED_WITH",
     "PreparedAudio",
+    "canonicalize_array",
     "execute_plan",
 ]

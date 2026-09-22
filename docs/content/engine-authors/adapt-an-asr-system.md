@@ -106,6 +106,34 @@ class MyEngine(EngineBase):
 
 You never write decode/resample/encode glue — declare `accepted_input` and the standard layer delivers the right shape (and attaches conversion diagnostics).
 
+### Advanced: native multi-input batches
+
+Keep `transcribe()` as the public single-input entry point. When a native SDK
+can infer several independent inputs in one call, an `EngineBase` subclass can
+reuse the exact standard batch pipeline for each item through its protected
+hooks:
+
+```python
+requests = [self._prepare_transcription_request(audio, params) for audio in inputs]
+native_results = self._native_transcribe_many(
+    [(request.audio, request.params) for request in requests]
+)
+results = [
+    self._finalize_transcription_result(native, request)
+    for native, request in zip(native_results, requests, strict=True)
+]
+```
+
+`_prepare_transcription_request()` performs the same protocol compatibility
+check, provider-parameter gate, capability degradation, language resolution,
+audio negotiation, conversion, and pre-inference diagnostic collection as
+`transcribe()`. `_finalize_transcription_result()` checks that each native
+return is a synchronous `TranscriptionResult`, applies standard speaker
+synthesis, and merges that request's diagnostics. Keep the request/result
+pairing intact and isolate an individual native failure before finalizing the
+other successful items. These are protected `EngineBase` hooks for an adapter's
+own optimized wrapper; they do not add a second public Standard ASR operation.
+
 ## Streaming
 
 **Declare the transport axis first.** Set `streaming_input=FlagCap(supported=True)` if you accept incremental PCM frames, `streaming_output=FlagCap(supported=True)` if you return results incrementally, or both. These are engine-global flags, and either one may be supported only when you also declare a `streaming` domain. A `streaming` domain with neither axis is a streaming engine nobody can call: every `start_transcription()` raises `UnsupportedFeatureError`, and compliance reports the error `streaming_domain_without_axis`.
@@ -174,6 +202,10 @@ If you genuinely need an arbitrary in-process object, keep it in your own engine
 
 The base `TranscriptionSession` owns the pump, backpressure (bounded buffers), the done-timeout/idle deadlines, the sync bridge, lifecycle suppression (`strict_lifecycle=True` to raise instead of diagnose), and `stable_until` monotonicity clamping. **You** must: emit cumulative/replace `text`; set `stable_until` conservatively (0 if you have no right-context); and for reconnect, detect the disconnect, re-establish, replay `self.replay_buffer()`, keep `segment_id`/timestamps/language continuous, and call `self.note_reconnect(gap_start, gap_end, content_lost=...)`. The base always emits the `progress(reconnect)` event. It emits a trailing **non-terminal** `content_lost` error (`recoverable=true` — a fidelity warning; the session stays alive and events keep flowing) **only if you pass `content_lost=True`**. That is your own determination that the reconnect and replay could not cover the gap, and that unreplayable audio was permanently lost. The base does **not** infer loss from rolling-buffer eviction (a live ring is always evicting, so that would falsely claim loss on every long session); you decide, because only you know whether the replay actually bridged the gap.
 
+When an incremental producer knows that it has received the complete input, call `session.set_input_duration(seconds)`. The method is idempotent for the identical measurement and feeds `duration` into both a successful result and an explicit partial snapshot. Do not substitute `audio_processed_until`: a cursor only says how far the recognizer processed, and does not prove that the input ended. For whole-input streaming, `EngineBase` records the prepared audio duration itself. Override `_max_audio_duration(mode)` only when the configured engine has a narrower mode-specific limit than its static Properties; keep Properties unchanged for discovery.
+
+Override synchronous `close()` when your engine retains process-local model handles, workers, or accelerator resources. The base implementation is a no-op. Do not implement `async def close()`: applications and pools call it after active work drains, and a coroutine return would report a false cleanup success.
+
 **`error` events fail closed to terminal.** An `error` event with `recoverable` unset is normalized to `recoverable=false` (terminal) at construction: unknown recoverability must not leave consumers waiting on a stream that may never continue. If you emit an advisory, non-fatal error (the session keeps going), set `recoverable=True` explicitly — otherwise your event ends the session.
 
 **Surface non-fatal notes via `emit_diagnostic`.** Call `self.emit_diagnostic(code=..., message=..., level="info"|"warning")` from `_produce` to report a best-effort degradation, an assumed parameter, or a lossy fallback through the session's `diagnostics()` channel — the streaming counterpart of the batch path's `result.diagnostics`. It is bounded (spec ST.6.4, like the guard's own diagnostics) and the server forwards it to a WS client as a mid-stream `diagnostics` frame. Keep `error` events for *fatal* conditions.
@@ -185,12 +217,14 @@ The base `TranscriptionSession` owns the pump, backpressure (bounded buffers), t
 Beyond lifecycle transitions and monotonic `stable_until`, the base `_LifecycleGuard` also enforces two further per-stream invariants on every event you yield, so a slipped engine still cannot emit a wrong transcript:
 
 - **Monotonic audio cursor** — a decreasing `audio_processed_until` is clamped to the prior value (the cursor never moves backwards; ST §4.4), with an `audio_cursor_decreased` diagnostic (or a raise in `strict_lifecycle`).
+- **Declared audio progress** — emit `audio_processed_until` only when `streaming.audio_progress` is supported. The cursor is processing progress, not a segment/word alignment timestamp. An undeclared cursor is removed with an `audio_progress_undeclared` diagnostic (or raises in `strict_lifecycle`).
 - **Frozen-prefix immutability** — an event that rewrites a segment's already-frozen prefix (`text[:stable_until]` changed) is suppressed with a `frozen_prefix_rewritten` diagnostic (ST §4.2). One exemption, from that same section: a terminal `closed` final MAY restate frozen text once (post-processing punctuation / ITN / casing) and MAY shrink `stable_until`; the guard admits it and never clamps it back.
 
 The full set of standard-layer diagnostic codes the guard can emit (read them off the session with `session.diagnostics()`):
 
 - `stable_until_clamped` — a decreasing or invalid `stable_until` was clamped.
 - `audio_cursor_decreased` — a decreasing `audio_processed_until` was clamped.
+- `audio_progress_undeclared` — an event carried a cursor without declared `audio_progress`; the non-strict guard removed it.
 - `frozen_prefix_rewritten` — an event rewriting a frozen prefix was suppressed.
 - `frozen_speaker_rewritten` — an event changing (X→Y) or retracting (X→None) a frozen segment's already-accepted `speaker` was suppressed. First assignment after freezing (None→X, the delay-to-final strategy) stays legal, and a `closed` final is exempt (terminal correction).
 - `lifecycle_after_terminal` — a `partial`/`final` after the segment became `closed`/`superseded` was suppressed.
@@ -214,11 +248,11 @@ Four streaming capabilities each gate one event field. Your declared `streaming`
 | If you emit…                     | …declare                                            |
 | -------------------------------- | --------------------------------------------------- |
 | a non-zero `stable_until`        | `streaming.word_stability = FlagCap(supported=True)` |
-| an `audio_processed_until` cursor | `streaming.timestamps.mode` ≠ `"none"`              |
+| an `audio_processed_until` cursor | `streaming.audio_progress = FlagCap(supported=True)` |
 | per-word `words`                 | `streaming.word_timestamps = WordTimestampsCap(supported=True, …)` |
 | a segment- or word-level `speaker` | `streaming.diarization = DiarizationCap(supported=True)` — add `always_on=FlagCap(supported=True)` if your model is architecturally unable to disable it |
 
-The coherent **no-timestamp streaming profile** is the all-defaults combination: leave `word_stability`, `timestamps` (mode `"none"`), `word_timestamps`, and `diarization` unsupported, and emit none of those fields (use `stable_until=0`, omit `audio_processed_until`, `words`, and `speaker`). A mismatch — for example, declaring `word_stability` unsupported while emitting `stable_until>0` — is a capability⇄stream desync a client trusting your capabilities would mishandle. Record a real session and assert it with `check_event_sequence(events, capabilities=engine.declared_capabilities)`. The cross-check fails on any field your declaration does not back (codes `stream_exceeds_word_stability` / `stream_exceeds_timestamps` / `stream_exceeds_word_timestamps` / `stream_exceeds_diarization`). The standard layer does **not** clamp these at runtime — clamping would hide the bug; the contract is yours to keep.
+The coherent **no-alignment-timestamp streaming profile** can still declare `audio_progress` when the engine knows how much audio it consumed. Leave `timestamps` at `"none"` unless you emit actual segment/word alignment; use `stable_until=0`, omit `words` and `speaker` when their capabilities are unsupported. A mismatch — for example, declaring `audio_progress` unsupported while emitting a cursor — is a capability⇄stream desync a client trusting your capabilities would mishandle. Record a real session and assert it with `check_event_sequence(events, capabilities=engine.declared_capabilities)`. The cross-check fails on any field your declaration does not back (codes `stream_exceeds_word_stability` / `stream_exceeds_audio_progress` / `stream_exceeds_word_timestamps` / `stream_exceeds_diarization`). The non-strict runtime guard removes an undeclared cursor and reports it, but the adapter must still correct its declaration or output.
 
 ### Testing: assert invariants, not partial counts
 

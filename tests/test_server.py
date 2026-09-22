@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
 import pytest
+from pydantic import field_validator
 
 from standard_asr import (
     DiarizationRequest,
@@ -115,9 +116,45 @@ class _DummyASR:
     def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
         return TranscriptionResult(text="dummy")
 
+    def close(self) -> None:
+        pass
+
 
 def _dummy_factory() -> _DummyASR:  # pyright: ignore[reportUnusedFunction]
     return _DummyASR()
+
+
+_LIFECYCLE_ENGINES: list[_LifecycleASR] = []
+
+
+class _LifecycleASR(_DummyASR):
+    """Records server construction and deterministic shutdown."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_calls = 0
+        _LIFECYCLE_ENGINES.append(self)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def _lifecycle_factory() -> _LifecycleASR:  # pyright: ignore[reportUnusedFunction]
+    return _LifecycleASR()
+
+
+class _ConfigurableASR(_DummyASR):
+    """Records operator init config supplied by create_app."""
+
+    def __init__(self, **config: Any) -> None:
+        self.config = _DummyConfig(engine="dummy", **config)
+        _RECORDED["engine_config"] = self.config
+
+
+def _configurable_factory(  # pyright: ignore[reportUnusedFunction]
+    **config: Any,
+) -> _ConfigurableASR:
+    return _ConfigurableASR(**config)
 
 
 class _FailASR(_DummyASR):
@@ -138,6 +175,43 @@ def _cjk_factory() -> _CjkASR:  # pyright: ignore[reportUnusedFunction]
 
 def _fail_factory() -> _FailASR:  # pyright: ignore[reportUnusedFunction]
     return _FailASR()
+
+
+class _BrokenProviderDeclarationASR(_DummyASR):
+    """Declares a provider params object that is not a ProviderParams type."""
+
+    provider_params_type: ClassVar[Any] = dict
+
+
+def _broken_provider_declaration_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _BrokenProviderDeclarationASR
+):
+    return _BrokenProviderDeclarationASR()
+
+
+class _EchoProviderParams(ProviderParams):
+    token: str
+
+    @field_validator("token")
+    @classmethod
+    def _reject_token(cls, value: str) -> str:
+        raise ValueError(f"rejected token {value}")
+
+
+class _EchoProviderASR(_DummyASR):
+    provider_params_type: ClassVar[type[ProviderParams] | None] = _EchoProviderParams
+
+
+def _echo_provider_factory() -> _EchoProviderASR:  # pyright: ignore[reportUnusedFunction]
+    return _EchoProviderASR()
+
+
+class _NoProviderASR(_DummyASR):
+    provider_params_type: ClassVar[type[ProviderParams] | None] = None
+
+
+def _no_provider_factory() -> _NoProviderASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoProviderASR()
 
 
 class _AsyncTranscribeASR(_DummyASR):
@@ -482,6 +556,25 @@ def _artifact_acquisition_error() -> ArtifactAcquisitionError:
         ),
         retriable_after=3.0,
     )
+
+
+_readiness_report: ArtifactReport | None = None
+
+
+class _ReadinessASR(_DummyASR):
+    """Reports operator-selected readiness without transcribing."""
+
+    def artifact_status(self, context: Any = None) -> ArtifactReport:
+        _RECORDED["readiness_context"] = context
+        assert _readiness_report is not None
+        return _readiness_report
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        raise AssertionError("Readiness must not transcribe")
+
+
+def _readiness_factory() -> _ReadinessASR:  # pyright: ignore[reportUnusedFunction]
+    return _ReadinessASR()
 
 
 class _ArtifactUnavailableOnConstructASR(_DummyASR):
@@ -847,6 +940,30 @@ def _registry_for(factory: str):
     return discover_models(eps=eps, strict=True)
 
 
+async def _run_transcription_direct(
+    registry: ModelRegistry, model: str, audio: Any, options: dict[str, Any] | None, error: type
+) -> str:
+    """Run the server helper with an application-owned pool.
+
+    Args:
+        registry: Registry exposed by the test app.
+        model: Full model key.
+        audio: Standard ASR audio input.
+        options: Untyped wire options.
+        error: HTTP exception type used by the helper.
+
+    Returns:
+        Encoded transcription response.
+    """
+    pool = server_module.EnginePool(registry)
+    try:
+        return await server_module._run_transcription(  # pyright: ignore[reportPrivateUsage]
+            pool, model, audio, options, error
+        )
+    finally:
+        await pool.aclose()
+
+
 def test_create_app_missing_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
     real_import = builtins.__import__
 
@@ -903,6 +1020,96 @@ def test_create_app_endpoints() -> None:
     transcribe: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert transcribe.status_code == 200
     assert transcribe.json()["result"]["text"] == "dummy"
+
+
+def test_server_reuses_engine_and_closes_it_at_lifespan_exit() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _LIFECYCLE_ENGINES.clear()
+    app = server_module.create_app(registry=_registry_for("_lifecycle_factory"))
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    with TestClient(app) as client:
+        assert client.post("/v1/transcribe:json", json=payload).status_code == 200
+        assert client.post("/v1/transcribe:json", json=payload).status_code == 200
+        assert len(_LIFECYCLE_ENGINES) == 1
+        assert _LIFECYCLE_ENGINES[0].close_calls == 0
+
+    assert _LIFECYCLE_ENGINES[0].close_calls == 1
+
+
+def test_create_app_supplies_fixed_operator_config() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _RECORDED.clear()
+    app = server_module.create_app(
+        registry=_registry_for("_configurable_factory"),
+        engine_configs={"dummy/echo": {"strict": False}},
+    )
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    with TestClient(app) as client:
+        assert client.post("/v1/transcribe:json", json=payload).status_code == 200
+
+    assert _RECORDED["engine_config"].strict is False
+
+
+def test_lazy_engine_config_validation_is_scrubbed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    secret = "sk-ENGINE-CONFIG-SECRET"
+    app = server_module.create_app(
+        registry=_registry_for("_configurable_factory"),
+        engine_configs={"dummy/echo": {"api_key": secret}},
+    )
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    with caplog.at_level("ERROR"), TestClient(app) as client:
+        response: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert response.status_code == 500
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+
+def test_readiness_reports_safe_status_without_inference() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    global _readiness_report
+    _RECORDED.clear()
+    _readiness_report = _artifact_error_report()
+    app = server_module.create_app(registry=_registry_for("_readiness_factory"))
+    with TestClient(app) as client:
+        response: httpx2.Response = client.get("/v1/readiness/dummy/echo")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "model": "dummy/echo",
+        "ready": False,
+        "readiness": "unavailable",
+        "mode": "batch",
+    }
+    assert _ARTIFACT_ERROR_PATH not in response.text
+    assert _ARTIFACT_ERROR_SECRET not in response.text
+    assert _RECORDED["readiness_context"] is None
+
+
+def test_readiness_accepts_ready_or_not_applicable_report() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    global _readiness_report
+    _readiness_report = ArtifactReport.from_requirements(mode="batch", applicable=False)
+    app = server_module.create_app(registry=_registry_for("_readiness_factory"))
+    with TestClient(app) as client:
+        response: httpx2.Response = client.get("/v1/readiness/dummy/echo")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["readiness"] == "not_applicable"
 
 
 def test_server_array_engine_keeps_native_rate_through_negotiation() -> None:
@@ -998,6 +1205,19 @@ def test_transcribe_json_internal_error_maps_to_500() -> None:
     assert resp.status_code == 500
 
 
+def test_transcribe_broken_provider_declaration_maps_to_scrubbed_500() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_broken_provider_declaration_factory"))
+    client = TestClient(app)
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode()}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Internal transcription error. See server logs for details."
+
+
 def test_transcribe_file_success_and_internal_error() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -1037,7 +1257,7 @@ def test_transcribe_body_is_the_single_wire_projection_verbatim() -> None:
 
     registry = _registry()
     expected_body = asyncio.run(
-        server_module._run_transcription(  # pyright: ignore[reportPrivateUsage]
+        _run_transcription_direct(
             registry, "dummy/echo", AudioBytes(data=b"fake"), None, HTTPException
         )
     )
@@ -1060,7 +1280,7 @@ def test_transcribe_body_is_the_single_wire_projection_verbatim() -> None:
     # CJK/Cyrillic/Arabic bodies ~1.35-3x.
     assert b'": ' not in response.content  # compact separators
     cjk_body = asyncio.run(
-        server_module._run_transcription(  # pyright: ignore[reportPrivateUsage]
+        _run_transcription_direct(
             _registry_for("_cjk_factory"),
             "dummy/echo",
             AudioBytes(data=b"fake"),
@@ -1113,6 +1333,7 @@ def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
         host="127.0.0.1",
         port=9999,
         log_level="warning",
+        engine_configs={"dummy/echo": {"strict": False}},
         max_ws_frame_bytes=4096,
     )
 
@@ -1125,6 +1346,7 @@ def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kwargs["ws_max_size"] == 4096
     # The same cap is propagated to the app it builds.
     assert create_app_kwargs["max_ws_frame_bytes"] == 4096
+    assert create_app_kwargs["engine_configs"] == {"dummy/echo": {"strict": False}}
 
 
 def test_declared_metadata_endpoint_is_canonical_and_does_not_instantiate() -> None:
@@ -1590,9 +1812,9 @@ def test_transcribe_engine_config_error_maps_to_500_scrubbed() -> None:
 def test_transcribe_provider_param_error_maps_to_500_scrubbed() -> None:
     """``InvalidProviderParamError`` from the wire path is an engine fault.
 
-    ``WireRuntimeParams`` rejects ``provider_params`` before transcription,
-    so no wire client can legally trigger this error -- it escaping
-    transcribe() means the server/engine contract broke. Scrubbed 500.
+    The wire path constructs the selected engine's exact provider type before
+    transcription. This later exception means the server/engine contract broke.
+    Scrubbed 500.
     """
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -2498,14 +2720,14 @@ def test_transcribe_file_options_validation_error_is_sanitized() -> None:
     assert any("api_key" in entry["loc"] for entry in resp.json()["detail"])
 
 
-def test_transcribe_json_rejects_provider_params_over_wire() -> None:
-    # provider_params is discover-only, never sendable. A request whose
-    # options carry it must be rejected with a clear 422 (not silently dropped
-    # or mis-routed into the internal model).
+def test_transcribe_json_builds_published_provider_params_type() -> None:
+    # The JSON object must become the selected engine's exact closed type before
+    # it reaches transcribe.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    app = server_module.create_app(registry=_registry())
+    _RECORDED.clear()
+    app = server_module.create_app(registry=_registry_for("_recording_options_factory"))
     client = TestClient(app)
     payload = {
         "model": "dummy/echo",
@@ -2513,27 +2735,82 @@ def test_transcribe_json_rejects_provider_params_over_wire() -> None:
         "options": {"language": "en", "provider_params": {"beam": 5}},
     }
     resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
-    assert resp.status_code == 422
-    # The rejected key is named in a loc entry; cross-language clients
-    # can also branch on the machine-readable type (``extra_forbidden``).
-    detail = resp.json()["detail"]
-    assert any("provider_params" in entry["loc"] for entry in detail)
-    assert any(entry["type"] == "extra_forbidden" for entry in detail)
+    assert resp.status_code == 200
+    options = _RECORDED["options"]
+    assert type(options.provider_params) is _DummyParams
+    assert options.provider_params.beam == 5
 
 
-def test_transcribe_file_rejects_provider_params_over_wire() -> None:
-    # The multipart endpoint enforces the same portable-only wire contract.
+def test_transcribe_file_builds_published_provider_params_type() -> None:
+    # Multipart options use the same typed provider promotion as JSON.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    app = server_module.create_app(registry=_registry())
+    _RECORDED.clear()
+    app = server_module.create_app(registry=_registry_for("_recording_options_factory"))
     client = TestClient(app)
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     data = {"model": "dummy/echo", "options": json.dumps({"provider_params": {"beam": 5}})}
     resp: httpx2.Response = client.post("/v1/transcribe", data=data, files=files)
+    assert resp.status_code == 200
+    assert type(_RECORDED["options"].provider_params) is _DummyParams
+
+
+def test_transcribe_provider_params_validation_is_sanitized() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    secret = "sk-PROVIDER-SECRET"
+    app = server_module.create_app(registry=_registry())
+    client = TestClient(app)
+    payload = {
+        "model": "dummy/echo",
+        "audio": "Zm9v",
+        "options": {"provider_params": {"beam": secret, "api_key": secret}},
+    }
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert resp.status_code == 422
-    # Structured list (same shape as the JSON endpoint).
-    assert any("provider_params" in entry["loc"] for entry in resp.json()["detail"])
+    assert secret not in resp.text
+    assert {tuple(item["loc"]) for item in resp.json()["detail"]} == {
+        ("options", "provider_params", "beam"),
+        ("options", "provider_params", "api_key"),
+    }
+
+
+def test_provider_object_is_rejected_when_selected_engine_accepts_none() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_no_provider_factory"))
+    client = TestClient(app)
+    payload: dict[str, Any] = {
+        "model": "dummy/echo",
+        "audio": "Zm9v",
+        "options": {"provider_params": {}},
+    }
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["type"] == "standard_asr_provider_params_unsupported"
+
+
+def test_provider_validator_message_cannot_reflect_input() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    secret = "sk-CUSTOM-VALIDATOR-SECRET"
+    app = server_module.create_app(registry=_registry_for("_echo_provider_factory"))
+    client = TestClient(app)
+    payload = {
+        "model": "dummy/echo",
+        "audio": "Zm9v",
+        "options": {"provider_params": {"token": secret}},
+    }
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+
+    assert resp.status_code == 422
+    assert secret not in resp.text
+    assert resp.json()["detail"][0]["msg"] == "[redacted]"
 
 
 def test_transcribe_json_portable_params_still_work() -> None:
@@ -2559,12 +2836,12 @@ def test_transcribe_json_portable_params_still_work() -> None:
     assert resp.json()["result"]["text"] == "dummy"
 
 
-def test_ws_rejects_provider_params_over_wire() -> None:
-    # The WS config-frame path shares _build_params; provider_params in its
-    # options must be rejected (bad_request), never reach the session.
+def test_ws_builds_published_provider_params_type() -> None:
+    # WebSocket options use the same exact provider type as REST.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
+    _RECORDED.clear()
     app = server_module.create_app(registry=_registry_for("_stream_echo_factory"))
     client = TestClient(app)
     with client.websocket_connect("/v1/stream/dummy/echo") as ws:
@@ -2574,10 +2851,12 @@ def test_ws_rejects_provider_params_over_wire() -> None:
                 "options": {"provider_params": {"beam": 5}},
             }
         )
-        err = ws.receive_json()
-    assert err["type"] == "error"
-    assert err["code"] == "bad_request"
-    assert "provider_params" in err["message"]
+        ws.send_text("end")
+        event = ws.receive_json()
+    assert event["type"] == "done"
+    params = _RECORDED["stream_params"]
+    assert type(params.provider_params) is _DummyParams
+    assert params.provider_params.beam == 5
 
 
 def test_validation_error_with_non_string_loc_index_is_handled() -> None:
@@ -3059,6 +3338,7 @@ class _StreamEchoEngine(EngineBase):
         streaming_input=FlagCap(supported=True),
         streaming_output=FlagCap(supported=True),
     )
+    provider_params_type: ClassVar[type[ProviderParams] | None] = _DummyParams
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="stream")
@@ -3073,11 +3353,33 @@ class _StreamEchoEngine(EngineBase):
         audio_format: Any = None,
         prepared_audio: PreparedAudio | None = None,
     ) -> TranscriptionSession:
+        _RECORDED["stream_params"] = gated_params
         return _StreamEchoSession()
 
 
 def _stream_echo_factory() -> _StreamEchoEngine:  # pyright: ignore[reportUnusedFunction]
     return _StreamEchoEngine()
+
+
+_STREAM_LIFECYCLE_ENGINES: list[_StreamLifecycleEngine] = []
+
+
+class _StreamLifecycleEngine(_StreamEchoEngine):
+    """Records reuse across WebSocket connections and server shutdown."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_calls = 0
+        _STREAM_LIFECYCLE_ENGINES.append(self)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def _stream_lifecycle_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _StreamLifecycleEngine
+):
+    return _StreamLifecycleEngine()
 
 
 class _UnprojectableDiagSession(_StreamEchoSession):
@@ -3224,6 +3526,29 @@ def test_ws_stream_happy_path() -> None:
                 break
     finals = {e["text"] for e in events if e["type"] == "final"}
     assert finals == {"abc", "de"}
+
+
+def test_ws_connections_reuse_engine_and_release_before_shutdown() -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    _STREAM_LIFECYCLE_ENGINES.clear()
+    app = server_module.create_app(registry=_registry_for("_stream_lifecycle_factory"))
+    with TestClient(app) as client:
+        for _ in range(2):
+            with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+                ws.send_json(
+                    {
+                        "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                        "options": None,
+                    }
+                )
+                ws.send_text("end")
+                assert ws.receive_json()["type"] == "done"
+        assert len(_STREAM_LIFECYCLE_ENGINES) == 1
+        assert _STREAM_LIFECYCLE_ENGINES[0].close_calls == 0
+
+    assert _STREAM_LIFECYCLE_ENGINES[0].close_calls == 1
 
 
 def test_ws_event_carries_speaker() -> None:
@@ -3981,9 +4306,9 @@ def _stream_ippe_factory() -> _StreamIPPEEngine:  # pyright: ignore[reportUnused
 def test_ws_stream_establishment_provider_param_error_is_internal() -> None:
     """``InvalidProviderParamError`` at establishment is an engine fault.
 
-    ``WireRuntimeParams`` rejects ``provider_params`` in the config frame, so
-    no WS client can legally cause this error -- it reaching the route means
-    the server/engine contract broke. Scrubbed ``internal_error``; the
+    The config-frame path constructs the selected engine's exact provider type.
+    This later error means the server/engine contract broke. Scrubbed
+    ``internal_error``; the
     authored message (which may embed provider payload text) never crosses.
     """
     pytest.importorskip("fastapi")
@@ -4247,7 +4572,7 @@ def test_ws_stream_within_caps_still_works() -> None:
 def test_create_app_rejects_nonpositive_ws_caps(kwargs: dict[str, int]) -> None:
     pytest.importorskip("fastapi")
     with pytest.raises(ValueError):
-        server_module.create_app(registry=_registry(), **kwargs)
+        server_module.create_app(registry=_registry(), **cast("dict[str, Any]", kwargs))
 
 
 def test_bridge_stream_pump_failure_is_logged_and_signalled(

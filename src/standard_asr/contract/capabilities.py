@@ -590,6 +590,7 @@ class StreamingCapabilities(_Container):
         emits_partials: Whether partial events are emitted.
         re_segments: Whether supersede events may occur.
         word_stability: Whether a meaningful ``stable_until`` is provided.
+        audio_progress: Whether events may carry an audio-processing cursor.
         reconnect: Reconnect capability mode.
         finality_level: Finality level guaranteed.
         timestamps: Source of streaming timestamps.
@@ -612,6 +613,7 @@ class StreamingCapabilities(_Container):
     emits_partials: FlagCap = Field(default_factory=FlagCap)
     re_segments: FlagCap = Field(default_factory=FlagCap)
     word_stability: FlagCap = Field(default_factory=FlagCap)
+    audio_progress: FlagCap = Field(default_factory=FlagCap)
     reconnect: ReconnectCap = Field(default_factory=ReconnectCap)
     finality_level: FinalityCap = Field(default_factory=FinalityCap)
     timestamps: StreamTimestampsCap = Field(default_factory=StreamTimestampsCap)

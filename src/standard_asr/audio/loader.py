@@ -36,8 +36,9 @@ because `scipy` is absent. FFmpeg is reached only when the earlier decoders in
 the path's ladder cannot decode the container (stdlib `wave` is tried for file
 paths only; bytes go `soundfile` then FFmpeg).
 
-All functions emit clear exceptions with actionable messages and log helpful
-warnings when quality-affecting fallbacks are used.
+Functions raise clear exceptions with actionable messages. Convenience loaders
+log quality-affecting fallbacks; canonical array delivery returns a structured
+repair report so the conversion layer can emit protocol diagnostics.
 """
 
 import base64
@@ -48,6 +49,7 @@ import pathlib
 import shutil
 import subprocess
 import wave
+from dataclasses import dataclass
 from typing import Any, BinaryIO, Literal, NamedTuple, TypeGuard, cast, overload
 
 import numpy as np
@@ -79,6 +81,85 @@ _DEFAULT_MAX_DECODE_BYTES = 2 * 1024 * 1024 * 1024
 _FFMPEG_FS_BLOCK = 4096
 
 # --- Public API ---
+
+
+@dataclass(frozen=True)
+class ArrayCanonicalizationReport:
+    """Describe every lossy repair made while preparing an array for an engine.
+
+    Attributes:
+        input_channels: Number of channels in the provided array.
+        downmixed: Whether two or more channels were averaged to mono.
+        sanitized_non_finite: Number of NaN or infinite samples replaced.
+        clipped_samples: Number of finite samples clipped to ``[-1, 1]``.
+    """
+
+    input_channels: int
+    downmixed: bool
+    sanitized_non_finite: int
+    clipped_samples: int
+
+
+def canonicalize_array(
+    samples: NDArray[np.floating[Any]],
+) -> tuple[NDArray[np.float32], ArrayCanonicalizationReport]:
+    """Convert a floating waveform to finite mono float32 in ``[-1, 1]``.
+
+    A one-dimensional array is mono. A two-dimensional array uses
+    ``(n_samples, n_channels)`` and is averaged across channels. Non-finite
+    values are replaced with the same mapping as the canonical PCM encoder:
+    NaN becomes 0, positive infinity becomes 1, and negative infinity becomes
+    -1. Finite values outside the canonical amplitude range are clipped.
+
+    The returned report makes every lossy repair observable. This helper does
+    not emit diagnostics itself, so conversion callers can attach the report to
+    their own result surface.
+
+    Args:
+        samples: A floating mono or multi-channel waveform.
+
+    Returns:
+        The canonical waveform and a report of the repairs applied.
+
+    Raises:
+        AudioProcessingError: If the array is empty, has a non-floating dtype,
+            or is not shaped as mono or ``(n_samples, n_channels)`` audio.
+    """
+    source = np.asarray(samples)
+    if not np.issubdtype(source.dtype, np.floating):
+        raise AudioProcessingError(
+            "Audio array must have a floating dtype before canonical delivery."
+        )
+    if source.ndim not in (1, 2):
+        raise AudioProcessingError(
+            f"Audio array must be 1D mono or 2D (n_samples, n_channels); got shape {source.shape}."
+        )
+    if source.shape[0] == 0:
+        raise AudioProcessingError("Audio array must contain at least one sample.")
+    if source.ndim == 2 and source.shape[1] == 0:
+        raise AudioProcessingError("A 2D audio array must contain at least one channel.")
+
+    input_channels = 1 if source.ndim == 1 else int(source.shape[1])
+    finite = np.isfinite(source)
+    sanitized = int(np.count_nonzero(~finite))
+    clipped = int(np.count_nonzero(finite & ((source < -1.0) | (source > 1.0))))
+    canonical: NDArray[np.float32] = np.asarray(
+        np.nan_to_num(source, nan=0.0, posinf=1.0, neginf=-1.0),
+        dtype=np.float32,
+    )
+    canonical.clip(-1.0, 1.0, out=canonical)
+    downmixed = source.ndim == 2 and input_channels > 1
+    if source.ndim == 2:
+        if downmixed:
+            canonical = canonical.mean(axis=1, dtype=np.float32)
+        else:
+            canonical = canonical[:, 0]
+    return np.ascontiguousarray(canonical, dtype=np.float32), ArrayCanonicalizationReport(
+        input_channels=input_channels,
+        downmixed=downmixed,
+        sanitized_non_finite=sanitized,
+        clipped_samples=clipped,
+    )
 
 
 def decode_base64_audio(value: str) -> bytes:
@@ -1302,6 +1383,54 @@ def decode_audio(
     return _decode_bytes_native(data, target_channels)
 
 
+def decode_audio_for_array(
+    source: str | bytes | bytearray | memoryview | pathlib.Path,
+    *,
+    max_bytes: int | None = None,
+) -> tuple[NDArray[np.float32], int, ArrayCanonicalizationReport]:
+    """Decode native-rate audio for canonical ``InputKind.ARRAY`` delivery.
+
+    Unlike :func:`decode_audio`, this function preserves the decoded channel
+    layout and raw float values until :func:`canonicalize_array` can
+    report every downmix, non-finite replacement, and amplitude clip. The
+    returned waveform is finite mono contiguous float32 in ``[-1, 1]``.
+
+    Args:
+        source: A local file path or encoded bytes.
+        max_bytes: Maximum encoded payload size, or ``None`` for no caller cap.
+
+    Returns:
+        The canonical waveform, native sample rate, and repair report.
+
+    Raises:
+        AudioProcessingError: Decoding or canonicalization failed.
+        FFmpegNotFoundError: FFmpeg fallback was needed but is unavailable.
+        FFprobeNotFoundError: FFmpeg fallback could not inspect the source.
+        TypeError: ``source`` has an unsupported type.
+    """
+    if isinstance(source, str):
+        path = _validate_local_source_path(source)
+        _enforce_path_decode_size(path, max_bytes)
+        audio, sample_rate = _decode_path_native_unprocessed(path, max_bytes)
+    elif isinstance(source, pathlib.Path):
+        path = _validate_local_source_path(str(source))
+        _enforce_path_decode_size(path, max_bytes)
+        audio, sample_rate = _decode_path_native_unprocessed(path, max_bytes)
+    else:
+        data = _coerce_encoded_bytes(source)
+        _enforce_decode_size(len(data), max_bytes)
+        audio, sample_rate = _decode_bytes_native_unprocessed(data)
+    canonical, report = canonicalize_array(audio)
+    return canonical, sample_rate, report
+
+
+def _coerce_encoded_bytes(value: object) -> bytes:
+    """Copy a dynamic bytes-like audio value into immutable bytes."""
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        raise TypeError(f"Unsupported audio source type: {type(value)}")
+    return value.tobytes() if isinstance(value, memoryview) else bytes(value)
+
+
 def decode_audio_from_data_uri(
     value: str,
     *,
@@ -1385,6 +1514,19 @@ def _decode_path_native(
     return _decode_with_ffmpeg_native(path, target_channels)
 
 
+def _decode_path_native_unprocessed(
+    path: str, max_bytes: int | None = None
+) -> tuple[NDArray[np.float32], int]:
+    """Decode a validated path without hiding canonicalization repairs."""
+    wav = _read_wav_stdlib(path, max_bytes)
+    if wav is not None:
+        return wav
+    decoded = _read_with_soundfile(path)
+    if decoded is not None:
+        return decoded
+    return _decode_with_ffmpeg_native(path, None, canonicalize_output=False)
+
+
 def _decode_bytes_native(
     data: bytes, target_channels: int | None
 ) -> tuple[NDArray[np.float32], int]:
@@ -1411,14 +1553,26 @@ def _decode_bytes_native(
     return _decode_with_ffmpeg_native(data, target_channels)
 
 
+def _decode_bytes_native_unprocessed(data: bytes) -> tuple[NDArray[np.float32], int]:
+    """Decode bytes without hiding canonicalization repairs."""
+    decoded = _read_with_soundfile(io.BytesIO(data))
+    if decoded is not None:
+        return decoded
+    return _decode_with_ffmpeg_native(data, None, canonicalize_output=False)
+
+
 def _decode_with_ffmpeg_native(
-    source: str | bytes, target_channels: int | None
+    source: str | bytes,
+    target_channels: int | None,
+    *,
+    canonicalize_output: bool = True,
 ) -> tuple[NDArray[np.float32], int]:
     """Decode via FFmpeg preserving the native sample rate.
 
     Args:
         source: A validated local file path, or raw bytes.
         target_channels: Output channels, or ``None`` to preserve.
+        canonicalize_output: Whether to sanitize and clip the decoded values.
 
     Returns:
         The decoded ``float32`` waveform and its native sample rate.
@@ -1451,7 +1605,12 @@ def _decode_with_ffmpeg_native(
             f"the source but reported no usable rate ({probe.detail}). Run "
             "ffprobe on the source directly to see why."
         ) from probe.cause
-    array = _load_with_ffmpeg(source, probe.value, target_channels)
+    array = _load_with_ffmpeg(
+        source,
+        probe.value,
+        target_channels,
+        canonicalize_output=canonicalize_output,
+    )
     return array, probe.value
 
 
@@ -1461,6 +1620,8 @@ def _load_with_ffmpeg(
     target_channels: int | None,
     timeout: float = 120.0,
     max_output_bytes: int | None = _DEFAULT_MAX_DECODE_BYTES,
+    *,
+    canonicalize_output: bool = True,
 ) -> NDArray[np.float32]:
     """Decode audio via FFmpeg subprocess (internal fallback).
 
@@ -1481,6 +1642,9 @@ def _load_with_ffmpeg(
         timeout: Max seconds before aborting. Default: ``120.0``.
         max_output_bytes: Ceiling on the decoded PCM output, in bytes. ``None``
             disables it (unbounded). Defaults to the 2 GiB module ceiling.
+        canonicalize_output: Whether to sanitize non-finite values and clip the
+            amplitude range. The canonical array conversion path sets this to
+            ``False`` so its structured report can describe those repairs.
 
     Returns:
         Waveform as ``np.float32``, shape ``(n_samples,)`` or ``(n_samples, n_channels)``.
@@ -1626,17 +1790,19 @@ def _load_with_ffmpeg(
                     "FFmpeg produced too few samples to form a complete multi-channel frame."
                 )
 
-        # Contract guarantee: clean up any NaN/Inf values from FFmpeg
-        if not np.isfinite(audio).all():
-            bad_count = (~np.isfinite(audio)).sum()
-            logger.warning(
-                "Detected %d invalid samples (NaN/Inf) from FFmpeg; replacing with safe values.",
-                int(bad_count),
-            )
-            audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
+        if canonicalize_output:
+            # Contract guarantee: clean up any NaN/Inf values from FFmpeg.
+            if not np.isfinite(audio).all():
+                bad_count = (~np.isfinite(audio)).sum()
+                logger.warning(
+                    "Detected %d invalid samples (NaN/Inf) from FFmpeg; "
+                    "replacing with safe values.",
+                    int(bad_count),
+                )
+                audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        # Contract guarantee: ensure values are in [-1, 1] range
-        audio = np.clip(audio, -1.0, 1.0)
+            # Contract guarantee: ensure values are in [-1, 1] range.
+            audio = np.clip(audio, -1.0, 1.0)
 
         # Respect contract: mono->1D, multi->2D even if n_samples==1
         if final_target_channels == 1:

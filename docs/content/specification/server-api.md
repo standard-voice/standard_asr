@@ -6,19 +6,19 @@ title: Server API
 
 Standard ASR ships an optional FastAPI server (`standard-asr[server]`) that exposes any discovered, compliant engine over HTTP, plus a WebSocket endpoint for incremental streaming. This document is the authoritative contract for that server; the implementation in `standard_asr.toolchain.server` conforms to it (any divergence is a bug in the implementation, not the spec).
 
-Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
+Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`. Operators can supply explicit per-model init config through `standard-asr serve --engine-configs PATH` or the `engine_configs` argument to `run`/`create_app`.
 
 ## 1. Security & limits
 
 - **No per-endpoint authentication.** The server targets localhost / trusted-LAN use. Transcription is CPU/GPU-expensive and there is no quota or rate limiting. Before exposing beyond localhost, operators **MUST** front the server with a reverse proxy providing authentication and rate limiting.
-- The declared-metadata, capability, and schema endpoints are deliberately readable without authentication. They expose declarations, not configured values or artifact status.
+- The declared-metadata, capability, and schema endpoints are deliberately readable without authentication. They expose declarations, not configured values. The readiness endpoint exposes only a safe aggregate artifact verdict; local paths, actions, and diagnostics remain operator-local.
 - **Validation errors never echo request input VALUES.** Every REST **422** that originates from a pydantic validation failure of the CLIENT's own request material — the global `RequestValidationError` handler **and** the standalone-`ValidationError` path for the `options` build — returns the **same** structured body and strips the offending `input` value (which FastAPI / pydantic echo by default) and **redacts credential-looking fields** (`api_key`, `token`, `secret`, `password`, `authorization`, …). This prevents a mis-placed secret (for example, an API key put in the JSON body or `options`) from being reflected back into the client, an intermediary proxy, or a copied bug report. **`loc` carries caller text too** — a rejected `extra_forbidden` key, a `dict[str, T]` field's mapping key, a non-string key's `repr` — so every component is filtered: one shaped like a field name (an identifier-ish token of ≤ 32 chars) or a pydantic structural marker (`[key]`) survives; anything longer or non-identifier-shaped — the structural signature of pasted credential MATERIAL (real key formats run 40+ characters or carry base64 padding) — becomes `[redacted-key]`. Naming a surviving key is deliberate DX on the **caller** surface (this 422 body, the WS `bad_request` message, CLI stderr): it points at a typo (`"optinos"`) or a mis-placed credential FIELD (`"api_key"`, whose name is not the secret; the value is stripped), and the sender already has whatever they sent. **Operator** surfaces (server/CI logs, compliance reports, `ConfigError` text) drop a rejected unknown key entirely even when it is field-name-shaped: the operator did not send it, cannot act on it, and those are the sinks IC.3 names. The body is
 
   ```json
   { "detail": [ { "type": "...", "loc": [ ... ], "msg": "..." }, ... ] }
   ```
 
-  The safe structured fields (`type`, `loc`, `msg`) are preserved so the caller can still fix the request (and branch on the machine-readable `type`, for example, `extra_forbidden` for a rejected `provider_params` key). A standalone error's `loc` is anchored under the request field it came from (`["options", ...]` for the wire options). Keeping **one body shape per validation 422** means a cross-language client parses a single structure rather than discriminating string-vs-list per code. (A pydantic `ValidationError` from ENGINE construction or engine-side re-validation is **not** a 422 at all — the client cannot cause it, so §3.7 maps it to a scrubbed 500.)
+  The safe structured fields (`type`, `loc`, `msg`) are preserved so the caller can still fix the request (and branch on the machine-readable `type`, for example, `extra_forbidden` for an unknown member inside `provider_params`). A standalone error's `loc` is anchored under the request field it came from (`["options", ...]` for the wire options). Keeping **one body shape per validation 422** means a cross-language client parses a single structure rather than discriminating string-vs-list per code. (A pydantic `ValidationError` from ENGINE construction or engine-side re-validation is **not** a 422 at all — the client cannot cause it, so §3.7 maps it to a scrubbed 500.)
 
   > A 422 that instead carries an engine-/standard-**authored** semantic message (`UnsupportedFeatureError` — the only caller-fixable semantic rejection; see §3.7, where `ConfigError` / `InvalidProviderParamError` map to a scrubbed 500 because no wire request can cause them) has no pydantic `loc`/`type` to expose and returns the string form `{ "detail": "<authored message>" }`. These messages are written for the caller (never a raw `input` echo). The two 422 forms are disjoint by cause: **pydantic validation → list**, **authored semantic error → string**.
 - **Request-body cap.** `DEFAULT_MAX_BODY_BYTES` = `16 * 1024 * 1024` (16 MiB), overridable per app via `create_app(max_body_bytes=...)`. Enforced by a pure-ASGI middleware in two layers, *before* the body is parsed:
@@ -31,23 +31,32 @@ Launch with `standard-asr serve` or `standard_asr.toolchain.server.run(...)`.
   - Exceeding any of these closes the socket with a `payload_too_large` policy error frame (see §4.4) and logs the violation.
   - The WebSocket **transport** also imposes its own `ws_max_size` (uvicorn's default is 16 MiB), so the effective per-frame bound is `min(max_ws_frame_bytes, transport ws_max_size)`. `run()` passes `ws_max_size=max_ws_frame_bytes` so the app cap and transport cap match; behind another ASGI server the config-frame check still enforces the app cap.
 
+### 1.1 Engine lifetime
+
+The server owns one configured engine instance per model for the FastAPI application lifetime. Concurrent first requests share one construction; later REST requests and WebSocket connections reuse the same instance. Before publishing a constructed instance, the pool requires a callable, synchronously declared `close` member; a missing, non-callable, or async member is an engine contract fault and no request receives that engine. Each request or connection holds an active lease through its complete operation, including streaming-session teardown. Application shutdown stops new leases, waits for active work, then calls `close() -> None` exactly once. The return boundary still rejects a synchronous wrapper that returns an awaitable. A close failure is safe-logged and does not prevent the server from attempting to close the remaining engines.
+
+`create_app(engine_configs=...)` can supply one operator-owned init-config mapping per model. The pool recursively snapshots the mapping at app creation and copies a fresh snapshot for every factory attempt, so caller mutation and a failed factory's mutation cannot change a later attempt. The mapping and environment defaults establish that model's effective server config; clients cannot change it over the wire. The pool is bounded by the registry's discovered model set.
+
 ## 2. Audio is **not** pre-decoded
 
 The server **does not decode audio**. The upload is forwarded as an `AudioInput` (`AudioBytes` for multipart, `AudioBase64` for JSON) directly into the engine's own negotiation. The standard layer then decodes/resamples per the engine's `accepted_input`, so per-engine sample-rate requirements are honored and encoded-only / URL-only engines remain servable. The upload's true sample rate is never silently overridden.
 
-### 2.1 Runtime params: portable-only over the wire (D5)
+### 2.1 Runtime params and selected-engine provider params
 
-Over the wire the server accepts **only** the portable standard `RuntimeParams` set, modeled by `WireRuntimeParams` (the portable fields, `extra="forbid"`). The portable set is exactly the fields in [protocol.md §3.1](./protocol.md) — `language`, `candidate_languages`, `word_timestamps`, `diarization`, `prompt`, `phrase_hints`, and the `on_unsupported` guidance-degradation policy field — so a cross-language client can express the opt-in `on_unsupported="degrade_to_prompt"` over the wire. `diarization` follows the three-way wire mapping of protocol.md §RT 3.4: `{"diarization": {}}` requests diarization, `null` or an absent key means not requested, and any nested key inside the marker object is rejected with a 422 (REST) / `bad_request` (WS). The engine-specific `provider_params` escape hatch is **discover-only, not sendable**:
+`WireRuntimeParams` is a closed JSON object with the same top-level field names as `RuntimeParams`. Portable fields validate directly: `language`, `candidate_languages`, `word_timestamps`, `diarization`, `prompt`, `phrase_hints`, and `on_unsupported`. `diarization` follows the three-way mapping of protocol.md §RT 3.4: `{"diarization": {}}` requests diarization, `null` or an absent key means not requested, and any nested key inside the marker object is rejected with a 422 (REST) / `bad_request` (WS).
 
-- It can be **discovered** — its JSON Schema is published at §3.6 for UI generation and tooling.
-- It **cannot be sent.** It is not constructible from untyped wire JSON without the engine's params type, and accepting a raw object would let it reach the engine untyped and unvalidated. A request whose `options` (REST) or config `options` (WebSocket) include a `provider_params` key is therefore **rejected with a clear 422** (REST) / `bad_request` (WS) rather than silently dropped or mis-routed.
-
-> The long-term JSON-Schema-over-wire path (validating `provider_params` against the discovered schema) is **deferred**; today the escape hatch is in-process only (pass it to `transcribe(...)` / `start_transcription(...)` directly).
+The optional `provider_params` value is a JSON object. After model selection, the server validates it with that engine's exact published, closed `ProviderParams` subclass and places the resulting typed instance in `RuntimeParams`. A raw mapping never reaches the engine. An engine that publishes no provider type rejects a non-null object. Unknown nested keys, wrong value types, bounds errors, and a missing provider type are caller validation failures: REST returns a sanitized 422 and WebSocket returns `bad_request`. Validation locations retain the `provider_params` prefix, and neither surface echoes submitted values.
 
 ## 3. REST endpoints
 
 ### 3.1 `GET /v1/health`
 Returns `{"status": "ok"}`.
+
+### 3.1.1 `GET /v1/readiness/{model}`
+
+Inspects the configured engine's default artifact context without acquiring artifacts, loading model weights, initializing an accelerator, or running inference. The safe response contains `model`, `ready`, aggregate `readiness`, and the report's `mode`. It excludes artifact requirements, locations, actions, and diagnostics.
+
+Readiness `ready` and `not_applicable` return **200** with `ready: true`. `unavailable` and `unknown` return **503** with `ready: false`. An unknown model returns 404; construction and status-hook faults follow the scrubbed server fault rules. Use `standard-asr status` on the host for the complete operator report.
 
 ### 3.2 `GET /v1/models`
 Returns a list of `ModelInfo`: `{"key": "<engine/model>", "engine_id": "...", "model_name": "..."}`.
@@ -71,13 +80,13 @@ Transcribe an uploaded file.
 |---|---|---|---|
 | `model` | form string | yes | Model key in `engine/model` format. |
 | `file` | file upload | yes | Encoded audio payload (forwarded as `AudioBytes`). |
-| `options` | form string | no | JSON object mapping onto the portable `WireRuntimeParams` set (§2.1). |
+| `options` | form string | no | JSON object mapping onto `WireRuntimeParams` (§2.1). |
 
 Returns a `TranscribeResponse`: `{"model": "<engine/model>", "result": <TranscriptionResult>}`.
 
 Wire note on segment timing: `result.segments[*].start`/`end` are **number-or-null** (spec TR.2): `null` means the engine measured no such time (`(start, null)` = start-only; `(null, null)` = unavailable; `(null, number)` never occurs — it is construction-rejected). There is no reserved `Segment.extra` key on the wire; the nullable values are the timing truth.
 
-Un-parseable `options` JSON (malformed syntax) → **400**. A *semantically* invalid `options` object — a bad value, an unknown key, or a non-portable `provider_params` key (§2.1) — → **422**, before transcription.
+Un-parseable `options` JSON (malformed syntax) → **400**. A *semantically* invalid `options` object — a bad portable value, an unknown key, or a provider object rejected by the selected engine's published type (§2.1) — → **422**, before transcription.
 
 ### 3.4 `POST /v1/transcribe:json` (JSON body)
 Transcribe a base64 / data-URI payload.
@@ -91,7 +100,7 @@ Transcribe a base64 / data-URI payload.
 ```
 
 - `audio` is forwarded as `AudioBase64`; decode failures surface as `AudioProcessingError` → **400** (see §3.7).
-- `options` may be `null`. It is validated against the portable `WireRuntimeParams` set (§2.1); unknown keys and a non-portable `provider_params` key are rejected (`extra="forbid"`).
+- `options` may be `null`. It is validated as `WireRuntimeParams`; a `provider_params` object is additionally validated with the selected engine's published type (§2.1).
 - A semantically invalid `options` object → **422** before transcription.
 
 Returns a `TranscribeResponse` (same shape as §3.3).
@@ -100,18 +109,18 @@ Returns a `TranscribeResponse` (same shape as §3.3).
 Returns the engine's declared capability tree as `canonical_json()` — read from the engine **class** without instantiation. Every node carries a derived `supported` field. **404** if the model key is unknown or declares no capabilities; a registered model whose plugin fails to LOAD is an engine/deployment fault → scrubbed **500** (§3.7), never a caller-blaming 404.
 
 ### 3.6 `GET /v1/params-schema/{model}`
-Returns the JSON Schema of the engine's `provider_params` (read from the engine class, for discovery / UI generation), or `{}` if the engine declares none. **404** if the model key is unknown (a plugin that fails to load → scrubbed **500**, §3.7). Note these params cannot yet be sent over the transcribe endpoints (§2).
+Returns the JSON Schema of the engine's `provider_params` (read from the engine class, for discovery / UI generation and request construction), or `{}` if the engine declares none. **404** if the model key is unknown (a plugin that fails to load → scrubbed **500**, §3.7). The REST, WebSocket, and CLI option paths validate a submitted provider object with this exact type (§2.1).
 
 ### 3.6.1 `GET /v1/config-schema/{model}`
 Returns the JSON Schema of the engine's **init config** (read from the engine class's `config_type`, without instantiation), or `{}` if the engine declares no `config_type`. **404** if the model key is unknown (a plugin that fails to load → scrubbed **500**, §3.7).
 
-This is the wire-side discovery path for settings UIs (G.3.1): a client can render an engine's configuration form **before** the engine is constructed — construction may require the very values (credentials, `default_language`) the form collects. Secret fields carry `format: password` / `writeOnly: true` markers, so schema-driven UIs render them safely. The schema describes field *shapes* only and never contains configured values, so — like capabilities and params-schema — it is deliberately readable without authentication. Note that the server itself does not accept engine construction over the wire; the collected config is consumed by the operator-side process that constructs the engine (for example, `registry.create(key, **values)`).
+This is the wire-side discovery path for settings UIs (G.3.1): a client can render an engine's configuration form **before** the engine is constructed — construction may require the very values (credentials, `default_language`) the form collects. Secret fields carry `format: password` / `writeOnly: true` markers, so schema-driven UIs render them safely. The schema describes field *shapes* only and never contains configured values, so — like capabilities and params-schema — it is deliberately readable without authentication. The server does not accept engine construction over the wire; the operator supplies config through `create_app(engine_configs=...)` or the engine's environment convention.
 
 > The `{model}` path segment matches the full `engine/model` key (it may contain a slash).
 
 ### 3.7 Error → HTTP status mapping
 
-The transcribe endpoints map errors from **both** engine construction (`model_registry.create`) and the `transcribe` call as follows:
+The transcribe endpoints map errors from pooled engine acquisition and the `transcribe` call as follows:
 
 | Condition | Status |
 |---|---|
@@ -124,10 +133,10 @@ The transcribe endpoints map errors from **both** engine construction (`model_re
 | Unsupported standard feature / non-selectable language requested, strict mode (`UnsupportedFeatureError`) | **422** |
 | Audio decode/processing failure (`AudioProcessingError`) | **400** |
 | Un-parseable `options` JSON syntax (multipart, before transcription) | **400** |
-| Semantically invalid `options` / non-portable `provider_params` (`WireRuntimeParams` build, before transcription) | **422** |
+| Semantically invalid portable options or provider object (`WireRuntimeParams` and selected provider type, before transcription) | **422** |
 | Any other / unexpected error during transcription | **500** |
 
-**Fault ownership (normative).** The wire surface gives the client exactly two inputs: the model key and the portable request (`options` + audio). Engine construction is `registry.create(model)` — **zero-arg** — and `provider_params` never crosses the wire (`WireRuntimeParams` rejects it), so `ConfigError` and `InvalidProviderParamError` are UNREACHABLE from a request: wherever they surface (construction, transcription, session establishment) they are engine/deployment faults, mirroring the compliance suite's classification of the same states. Absent required config (`ConfigurationRequiredError`, the state compliance *skips*) and an inference-artifact failure are operator-side availability states → **503**, whether hit at construction or lazily at call time. Every other `ConfigError`/`EngineContractError`/ `InvalidProviderParamError` (the states compliance *fails*) → scrubbed **500**. Client-caused rejections each have their own type and status: `UnsupportedFeatureError` → 422, request-model `ValidationError` → 422, `AudioProcessingError` → 400. Engine faults never return field names, authored config detail, or validation detail to the caller — those are safe-logged for the operator.
+**Fault ownership (normative).** The wire surface gives the client the model key, audio, portable options, and an optional provider object. The standard layer validates the provider object into the selected engine's exact type before the engine call. Invalid client data therefore raises request-side `ValidationError` → 422; an `InvalidProviderParamError` escaping the later engine gate means the typed value and selected engine declaration disagree, so it remains an engine/deployment fault → scrubbed 500. Absent required config (`ConfigurationRequiredError`, the state compliance *skips*) and an inference-artifact failure are operator-side availability states → **503**, whether hit at construction or lazily at call time. Every other `ConfigError`/`EngineContractError`/`InvalidProviderParamError` (the states compliance *fails*) → scrubbed **500**. Client-caused rejections each have their own type and status: `UnsupportedFeatureError` → 422, request-model `ValidationError` → 422, `AudioProcessingError` → 400. Engine faults never return field names, authored config detail, or validation detail to the caller — those are safe-logged for the operator.
 
 **422 body shape (§1).** The 422 rows above split by cause into two disjoint body forms: a pydantic `ValidationError` from the client's own request material (the `options` build, the request models) returns the **structured list** `{ "detail": [ { "type", "loc", "msg" }, ... ] }` (with the offending `input` stripped and credential fields redacted; `loc` anchored under `["options"]`), while the authored `UnsupportedFeatureError` returns the **string** form `{ "detail": "<authored message>" }`. The string-form messages are written for the caller and carry no `input` echo. (An engine-side `ValidationError` is never a 422: it maps to the scrubbed 500 above.)
 

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import math
 import threading
 import time
 import unicodedata
@@ -55,6 +56,7 @@ from standard_asr.contract.exceptions import (
     ArtifactUnavailableError,
     InvalidSessionUseError,
     StreamClosedError,
+    StreamFailedError,
 )
 from standard_asr.contract.results import (
     DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
@@ -189,6 +191,7 @@ DIAG_FROZEN_PREFIX_REWRITTEN = "frozen_prefix_rewritten"
 DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE = "frozen_prefix_rewritten_supersede"
 DIAG_FROZEN_SPEAKER_REWRITTEN = "frozen_speaker_rewritten"
 DIAG_AUDIO_CURSOR_DECREASED = "audio_cursor_decreased"
+DIAG_AUDIO_PROGRESS_UNDECLARED = "audio_progress_undeclared"
 DIAG_STABLE_UNTIL_CLAMPED = "stable_until_clamped"
 DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED = "supersede_obligation_unfulfilled"
 
@@ -645,6 +648,51 @@ class TranscriptionEvent(BaseModel):
             An ``error`` event.
         """
         return cls(type="error", code=code, recoverable=recoverable, **kw)
+
+
+class SessionStatus(BaseModel):
+    """The terminal state of a streaming session.
+
+    A session stays ``"running"`` until it produces its terminal event. A
+    terminal ``done`` makes it ``"succeeded"``. A non-recoverable terminal
+    ``error`` makes it ``"failed"``. Leaving the context before either event
+    makes it ``"closed"``. The terminal event is retained so an application
+    can inspect its code and retry guidance without parsing an exception
+    message.
+
+    Attributes:
+        state: Whether the session is running, succeeded, failed, or closed
+            before a terminal event.
+        terminal_event: The terminal event for a succeeded or failed session.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    state: Literal["running", "succeeded", "failed", "closed"]
+    terminal_event: TranscriptionEvent | None = None
+
+    @model_validator(mode="after")
+    def _terminal_matches_state(self) -> SessionStatus:
+        """Require a terminal event exactly when the session is complete.
+
+        Returns:
+            The validated status.
+
+        Raises:
+            ValueError: If the state and terminal event disagree.
+        """
+        terminal = self.terminal_event
+        if self.state in ("running", "closed"):
+            if terminal is not None:
+                raise ValueError("A running or closed session cannot have a terminal event.")
+            return self
+        if terminal is None or not terminal.is_terminal:
+            raise ValueError("A completed session requires a terminal event.")
+        if self.state == "succeeded" and terminal.type != "done":
+            raise ValueError("A succeeded session requires a done event.")
+        if self.state == "failed" and terminal.type != "error":
+            raise ValueError("A failed session requires a terminal error event.")
+        return self
 
 
 class _ReadingOrderLedger:
@@ -1588,7 +1636,11 @@ class _LifecycleGuard:
     OVERFLOW_CODE = DIAGNOSTICS_TRUNCATED_CODE
 
     def __init__(
-        self, *, strict: bool = False, max_diagnostics: int = DEFAULT_MAX_GUARD_DIAGNOSTICS
+        self,
+        *,
+        strict: bool = False,
+        max_diagnostics: int = DEFAULT_MAX_GUARD_DIAGNOSTICS,
+        audio_progress: bool = False,
     ) -> None:
         """Initialize the guard.
 
@@ -1598,6 +1650,8 @@ class _LifecycleGuard:
             max_diagnostics: Upper bound on retained diagnostics before the
                 guard switches to an aggregated overflow summary (the bounded
                 diagnostic channel). MUST be > 0.
+            audio_progress: Whether the engine's effective capabilities permit
+                ``audio_processed_until`` on events.
 
         Raises:
             ValueError: If ``max_diagnostics`` is not positive.
@@ -1605,6 +1659,7 @@ class _LifecycleGuard:
         if max_diagnostics <= 0:
             raise ValueError("max_diagnostics must be > 0.")
         self._strict = strict
+        self._audio_progress = audio_progress
         self._max_diagnostics = max_diagnostics
         self._state: dict[str, str] = {}
         #: Live reading-order ledger: declarations append, supersedes splice.
@@ -1633,6 +1688,17 @@ class _LifecycleGuard:
         #: surfaced through the single overflow-summary entry. Empty until the
         #: list first overflows.
         self._overflow_counts: dict[str, int] = {}
+
+    def set_audio_progress(self, supported: bool) -> None:
+        """Set whether the event stream may carry an audio-progress cursor.
+
+        The engine base calls this after it resolves effective capabilities.
+        A direct session keeps the fail-closed default until its author sets it.
+
+        Args:
+            supported: Whether ``audio_processed_until`` is declared.
+        """
+        self._audio_progress = supported
 
     def _record(self, diagnostic: Diagnostic) -> None:
         """Append a diagnostic, enforcing the bounded-channel cap.
@@ -2129,6 +2195,13 @@ class _LifecycleGuard:
         cursor = event.audio_processed_until
         if cursor is None:
             return event, None
+        if not self._audio_progress:
+            self._reject(
+                DIAG_AUDIO_PROGRESS_UNDECLARED,
+                "audio_processed_until was removed because this session does not "
+                "declare streaming.audio_progress support.",
+            )
+            return event.model_copy(update={"audio_processed_until": None}), None
         if cursor < self._audio_cursor:
             self._reject(
                 DIAG_AUDIO_CURSOR_DECREASED,
@@ -2182,6 +2255,9 @@ _RESERVED_SESSION_ATTRS: frozenset[str] = frozenset(
         "_session_started_at",
         "_iterating",
         "_initial_diagnostics",
+        "_input_duration",
+        "_terminal_event",
+        "_context_closed",
     }
 )
 
@@ -2231,6 +2307,7 @@ class TranscriptionSession(ABC):
         audio_history_maxlen: int = DEFAULT_AUDIO_HISTORY_MAXLEN,
         strict_lifecycle: bool = False,
         max_guard_diagnostics: int = DEFAULT_MAX_GUARD_DIAGNOSTICS,
+        audio_progress: bool = False,
     ) -> None:
         """Initialize the session.
 
@@ -2268,6 +2345,9 @@ class TranscriptionSession(ABC):
                 aggregated into a single overflow summary rather than growing
                 without bound. Exposed alongside the other bounds so a session
                 can size it; defaults to ``DEFAULT_MAX_GUARD_DIAGNOSTICS``.
+            audio_progress: Whether this session may emit
+                ``audio_processed_until``. EngineBase replaces this initial
+                value with the effective capability after session construction.
 
         Raises:
             ValueError: If a deadline is not positive (or ``None`` where
@@ -2300,7 +2380,9 @@ class TranscriptionSession(ABC):
         )
         self._buffer = _CoalescingBuffer(capacity=event_buffer_capacity)
         self._guard = _LifecycleGuard(
-            strict=strict_lifecycle, max_diagnostics=max_guard_diagnostics
+            strict=strict_lifecycle,
+            max_diagnostics=max_guard_diagnostics,
+            audio_progress=audio_progress,
         )
         self._mode: Literal["feed", "manual"] | None = None
         self._ended = False
@@ -2344,6 +2426,13 @@ class TranscriptionSession(ABC):
         # session is handed to the application, so they surface through the
         # session's existing ``diagnostics()`` channel.
         self._initial_diagnostics: list[Diagnostic] = []
+        #: Measured duration of the complete input, if the engine or standard
+        #: layer knows it. This is input metadata, not a recognition cursor.
+        self._input_duration: float | None = None
+        #: The one terminal event that fixes the outcome and result semantics.
+        self._terminal_event: TranscriptionEvent | None = None
+        #: True after ``__aexit__`` cancels a still-running producer.
+        self._context_closed = False
         # Reserved-attribute guard: snapshot the base-owned objects now, so
         # the guard can fail loudly if a subclass rebinds one of these reserved
         # private names (almost always by accident -- for example, using ``self._buffer``
@@ -2454,6 +2543,62 @@ class TranscriptionSession(ABC):
             self._max_idle = deadlines.max_idle
         if "max_session_seconds" in deadlines.model_fields_set:
             self._max_session_seconds = deadlines.max_session_seconds
+
+    def _configure_audio_progress(self, supported: bool) -> None:
+        """Apply the effective audio-progress capability (friend API).
+
+        The base engine calls this after constructing a session. It keeps the
+        event guard synchronized with the effective capability tree, so an
+        adapter cannot accidentally emit a processing cursor it did not
+        declare.
+
+        Args:
+            supported: Whether ``streaming.audio_progress`` is supported.
+
+        Raises:
+            InvalidSessionUseError: If the session already has a terminal
+                outcome and its event contract is no longer configurable.
+        """
+        self._ensure_reserved_attrs_checked()
+        if self._terminal_event is not None:
+            raise InvalidSessionUseError(
+                "Cannot configure audio progress after the streaming session ended."
+            )
+        self._guard.set_audio_progress(supported)
+
+    def set_input_duration(self, seconds: float) -> None:
+        """Record the measured duration of the complete streaming input.
+
+        Call this once when the producer knows the complete input duration. The
+        engine base calls it for whole-input streaming audio. Repeating the
+        exact same measurement is safe, which lets a producer and the base
+        independently report the same known duration. A processing cursor does
+        not imply that all input has arrived, so ``audio_processed_until`` never
+        sets this value.
+
+        Args:
+            seconds: Complete input duration in seconds.
+
+        Raises:
+            ValueError: If ``seconds`` is negative or non-finite, or conflicts
+                with a duration already recorded.
+            StreamClosedError: If the session has already completed.
+        """
+        self._ensure_reserved_attrs_checked()
+        if type(seconds) not in (int, float) or not math.isfinite(seconds):
+            raise ValueError("Input duration must be a finite number of seconds.")
+        value = float(seconds)
+        if value < 0:
+            raise ValueError("Input duration must be >= 0 seconds.")
+        if self._terminal_event is not None:
+            raise StreamClosedError("Cannot set input duration after the streaming session ended.")
+        if self._input_duration is None:
+            self._input_duration = value
+        elif self._input_duration != value:
+            raise ValueError(
+                f"Input duration was already set to {self._input_duration}; "
+                f"cannot replace it with {value}."
+            )
 
     # ----- author hooks ---------------------------------------------------- #
     async def _open(self) -> None:
@@ -2892,9 +3037,12 @@ class TranscriptionSession(ABC):
         tasks = [t for t in (self._producer_task, self._feed_task) if t is not None]
         for task in tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await self._close()
+        try:
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._close()
+        finally:
+            self._context_closed = True
 
     def _drain_pending_reconnects(self) -> None:
         """Flush any queued reconnect ``progress`` / ``content_lost`` events.
@@ -3207,6 +3355,8 @@ class TranscriptionSession(ABC):
                 # model_copy skips validators -- fine: the sticky value was
                 # validated on the admitted event that carried it.
                 terminal = terminal.model_copy(update={"detected_language": sticky})
+        if self._terminal_event is None:
+            self._terminal_event = terminal
         return terminal
 
     def _release_audio_input(self) -> None:
@@ -3342,13 +3492,72 @@ start_transcription` template with the parameter-gating and language-axis
         """
         return self._max_session_seconds
 
-    def result(self) -> TranscriptionResult:
-        """Reduce the session so far into a transcription result.
+    def status(self) -> SessionStatus:
+        """Return whether the session is running, succeeded, or failed.
+
+        The terminal event remains available after iteration finishes, including
+        after an error, so applications can inspect the machine-readable code
+        before deciding whether a new session may help.
 
         Returns:
-            The reduced result.
+            The current session status and terminal event, if any.
         """
-        return self._reducer.result()
+        terminal = self._terminal_event
+        if terminal is None:
+            if self._context_closed:
+                return SessionStatus(state="closed")
+            return SessionStatus(state="running")
+        if terminal.type == "done":
+            return SessionStatus(state="succeeded", terminal_event=terminal)
+        return SessionStatus(state="failed", terminal_event=terminal)
+
+    def partial_result(self) -> TranscriptionResult:
+        """Return an explicit snapshot of the transcript reduced so far.
+
+        The snapshot keeps all diagnostics and a known input duration. It may
+        contain partial text while the session runs, or after a terminal error,
+        so an application must not treat it as a successful final result.
+
+        Returns:
+            The current reduced transcript snapshot.
+        """
+        result = self._reducer.result()
+        return result.model_copy(
+            update={
+                "duration": self._input_duration,
+                "diagnostics": [*result.diagnostics, *self.diagnostics()],
+            }
+        )
+
+    def result(self) -> TranscriptionResult:
+        """Return the successful final result.
+
+        Use :meth:`partial_result` for an explicit live or failure snapshot.
+        Returning a snapshot from this method after a terminal error would make
+        partial text look like a successful transcription.
+
+        Returns:
+            The final reduced result after a terminal ``done`` event.
+
+        Raises:
+            InvalidSessionUseError: If the session is still running.
+            StreamFailedError: If a terminal error ended the session.
+        """
+        outcome = self.status()
+        if outcome.state == "running":
+            raise InvalidSessionUseError(
+                "Streaming session is still running; call partial_result() for a live snapshot."
+            )
+        if outcome.state == "closed":
+            raise StreamClosedError(
+                "Streaming session closed before it delivered a terminal event; "
+                "call partial_result() for the retained snapshot."
+            )
+        if outcome.state == "failed":
+            terminal = outcome.terminal_event
+            assert terminal is not None and terminal.code is not None
+            raise StreamFailedError(terminal.code, retriable_after=terminal.retriable_after)
+        return self.partial_result()
 
 
 class SyncSession:
@@ -3677,8 +3886,48 @@ class SyncSession:
                     return
             yield event
 
+    def status(self) -> SessionStatus:
+        """Return the wrapped session's terminal status.
+
+        Returns:
+            The current session status and terminal event, if any.
+
+        Raises:
+            TimeoutError: If the live loop cannot run the status query within
+                the submit timeout.
+        """
+        if self._closed:
+            return self._session.status()
+
+        async def _do_status() -> SessionStatus:
+            return self._session.status()
+
+        return cast("SessionStatus", self._submit(_do_status(), timeout=self._submit_timeout))
+
+    def partial_result(self) -> TranscriptionResult:
+        """Return the wrapped session's explicit transcript snapshot.
+
+        Returns:
+            The current reduced transcript, including known duration and
+            diagnostics.
+
+        Raises:
+            TimeoutError: If the live loop cannot run the reduction within the
+                submit timeout.
+        """
+        if self._closed:
+            return self._session.partial_result()
+
+        async def _do_partial_result() -> TranscriptionResult:
+            return self._session.partial_result()
+
+        return cast(
+            "TranscriptionResult",
+            self._submit(_do_partial_result(), timeout=self._submit_timeout),
+        )
+
     def result(self) -> TranscriptionResult:
-        """Reduce the session so far into a transcription result.
+        """Return the wrapped session's successful final result.
 
         SERIALIZED WITH THE PRODUCER while the bridge is live: the reduction
         walks reducer state the producer task mutates (a supersede pops
@@ -3767,6 +4016,7 @@ __all__ = [
     "DEFAULT_MAX_IDLE",
     "DEFAULT_MAX_SESSION_SECONDS",
     "DIAG_AUDIO_CURSOR_DECREASED",
+    "DIAG_AUDIO_PROGRESS_UNDECLARED",
     "DIAG_FROZEN_PREFIX_REWRITTEN",
     "DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE",
     "DIAG_FROZEN_SPEAKER_REWRITTEN",
@@ -3784,6 +4034,7 @@ __all__ = [
     "DIAGNOSTICS_TRUNCATED_CODE",
     "DIAG_SUPERSEDE_UNKNOWN_OLD_ID",
     "EventType",
+    "SessionStatus",
     "StreamDeadlines",
     "StreamReducer",
     "SyncSession",

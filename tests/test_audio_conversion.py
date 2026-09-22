@@ -13,14 +13,17 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from standard_asr.audio.conversion import (
     DIAG_ASSUMED_SAMPLE_RATE,
+    DIAG_AUDIO_CLIPPED,
     DIAG_AUDIO_CONVERSION,
     DIAG_NON_FINITE_AUDIO,
     DIAG_RESAMPLED_WITH,
     PreparedAudio,
     _target_array_sample_rate,  # pyright: ignore[reportPrivateUsage]
+    canonicalize_array,
     execute_plan,
 )
 from standard_asr.audio.input import (
@@ -44,6 +47,7 @@ def test_conversion_diagnostic_code_constants_match_their_wire_literals() -> Non
     change what applications match on.
     """
     assert DIAG_AUDIO_CONVERSION == "audio_conversion"
+    assert DIAG_AUDIO_CLIPPED == "audio_clipped"
     assert DIAG_NON_FINITE_AUDIO == "non_finite_audio"
     assert DIAG_RESAMPLED_WITH == "resampled_with"
     assert DIAG_ASSUMED_SAMPLE_RATE == "assumed_sample_rate"
@@ -85,6 +89,17 @@ def _wav_bytes(samples: int = 8, rate: int = 16000) -> bytes:
         wf.setsampwidth(2)
         wf.setframerate(rate)
         wf.writeframes(np.zeros(samples, dtype=np.int16).tobytes())
+    return buf.getvalue()
+
+
+def _stereo_wav_bytes(samples: np.ndarray, rate: int = 16000) -> bytes:
+    buf = io.BytesIO()
+    pcm = np.rint(np.clip(samples, -1, 1) * 32767).astype("<i2")
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(pcm.tobytes())
     return buf.getvalue()
 
 
@@ -158,6 +173,16 @@ def test_array_encode_clean_input_has_no_non_finite_diagnostic() -> None:
     samples = np.array([0.0, 0.25, -0.5], dtype=np.float32)
     prepared = _exec(AudioArray(samples, 16000), {InputKind.ENCODED_BYTES})
     assert not any(d.code == "non_finite_audio" for d in prepared.diagnostics)
+
+
+def test_array_encode_clips_out_of_range_with_diagnostic() -> None:
+    samples = np.array([-2.0, 0.0, 2.0], dtype=np.float32)
+    prepared = _exec(AudioArray(samples, 16000), {InputKind.ENCODED_BYTES})
+    diagnostic = next(d for d in prepared.diagnostics if d.code == "audio_clipped")
+    assert diagnostic.provided == 2
+    with wave.open(io.BytesIO(prepared.data or b""), "rb") as wf:
+        pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2")
+    np.testing.assert_array_equal(pcm, np.array([-32767, 0, 32767], dtype=np.int16))
 
 
 def test_array_encode_oversize_raises() -> None:
@@ -355,26 +380,23 @@ def test_array_within_max_duration_ok() -> None:
     assert prepared.kind is InputKind.ARRAY
 
 
-# --- Non-finite samples on array delivery: diagnose, never mutate ---
+# --- Canonical array delivery: mono, finite float32 in [-1, 1] ---
 
 
-def test_array_passthrough_nan_diagnosed_and_forwarded_unchanged() -> None:
+def test_array_passthrough_non_finite_is_diagnosed_and_sanitized() -> None:
     samples = np.array([0.0, np.nan, np.inf, -np.inf, 0.5], dtype=np.float32)
     prepared = _exec(AudioArray(samples, 16000), {InputKind.ARRAY})
     diag = next(d for d in prepared.diagnostics if d.code == "non_finite_audio")
     assert diag.level == "warning"
     assert "3 non-finite" in diag.message
-    # The payload is forwarded unchanged: no clipping/zeroing of the samples.
+    assert diag.provided == 3
     assert prepared.array is not None
-    assert np.isnan(prepared.array[1])
-    assert prepared.array[2] == np.inf
-    assert prepared.array[3] == -np.inf
-    assert prepared.array[4] == np.float32(0.5)
+    np.testing.assert_array_equal(
+        prepared.array, np.array([0.0, 0.0, 1.0, -1.0, 0.5], dtype=np.float32)
+    )
 
 
-def test_array_resampled_nan_still_diagnosed() -> None:
-    # NaN propagates through resampling, so the post-resample delivery is also
-    # diagnosed (the check runs on the array the engine actually receives).
+def test_array_resampled_nan_is_sanitized_before_resampling() -> None:
     samples = np.zeros(48000, dtype=np.float32)
     samples[100] = np.nan
     prepared = _exec(
@@ -384,6 +406,95 @@ def test_array_resampled_nan_still_diagnosed() -> None:
         native_sample_rate=16000,
     )
     assert any(d.code == "non_finite_audio" for d in prepared.diagnostics)
+    assert prepared.array is not None and np.isfinite(prepared.array).all()
+
+
+def test_array_passthrough_stereo_is_downmixed_with_diagnostic() -> None:
+    stereo = np.array([[0.6, 0.4], [0.8, 0.2]], dtype=np.float32)
+    prepared = _exec(AudioArray(stereo, 16000), {InputKind.ARRAY})
+    assert prepared.array is not None
+    np.testing.assert_allclose(prepared.array, [0.5, 0.5])
+    diagnostic = next(d for d in prepared.diagnostics if d.code == "audio_conversion")
+    assert diagnostic.level == "warning"
+    assert diagnostic.provided == 2
+    assert diagnostic.effective == 1
+
+
+def test_array_passthrough_single_channel_2d_becomes_mono_without_loss_diagnostic() -> None:
+    provided = np.array([[0.25], [-0.5]], dtype=np.float64)
+    prepared = _exec(AudioArray(provided, 16000), {InputKind.ARRAY})
+    assert prepared.array is not None
+    np.testing.assert_array_equal(prepared.array, np.array([0.25, -0.5], np.float32))
+    assert prepared.array.dtype == np.float32
+    assert prepared.array.flags.c_contiguous
+    assert not any(d.code == "audio_conversion" for d in prepared.diagnostics)
+
+
+def test_array_passthrough_out_of_range_is_clipped_with_diagnostic() -> None:
+    samples = np.array([-2.0, -1.0, 0.25, 1.0, 2.0], dtype=np.float32)
+    prepared = _exec(AudioArray(samples, 16000), {InputKind.ARRAY})
+    assert prepared.array is not None
+    np.testing.assert_array_equal(
+        prepared.array, np.array([-1.0, -1.0, 0.25, 1.0, 1.0], dtype=np.float32)
+    )
+    diagnostic = next(d for d in prepared.diagnostics if d.code == "audio_clipped")
+    assert diagnostic.level == "warning"
+    assert diagnostic.provided == 2
+    assert diagnostic.effective == "[-1, 1]"
+
+
+@pytest.mark.parametrize(
+    ("samples", "message"),
+    [
+        (np.empty(0, dtype=np.float32), "at least one sample"),
+        (np.empty((0, 2), dtype=np.float32), "at least one sample"),
+        (np.empty((2, 0), dtype=np.float32), "at least one channel"),
+        (np.array(0.0, dtype=np.float32), "1D mono or 2D"),
+        (np.zeros((2, 2, 1), dtype=np.float32), "1D mono or 2D"),
+    ],
+)
+def test_array_passthrough_rejects_empty_or_malformed_shape(
+    samples: np.ndarray, message: str
+) -> None:
+    with pytest.raises(AudioProcessingError, match=message):
+        _exec(AudioArray(samples, 16000), {InputKind.ARRAY})
+
+
+def test_canonicalize_array_rejects_non_floating_dtype() -> None:
+    with pytest.raises(AudioProcessingError, match="floating dtype"):
+        canonicalize_array(np.array([0, 1], dtype=np.int16))  # type: ignore[arg-type]
+
+
+def test_encoded_stereo_and_direct_array_use_same_downmix_policy() -> None:
+    stereo = np.array([[0.6, 0.4], [0.8, 0.2]], dtype=np.float32)
+    direct = _exec(AudioArray(stereo, 16000), {InputKind.ARRAY})
+    encoded = _exec(AudioBytes(_stereo_wav_bytes(stereo), "wav"), {InputKind.ARRAY})
+    assert direct.array is not None and encoded.array is not None
+    np.testing.assert_allclose(encoded.array, direct.array, atol=1 / 32767)
+    for prepared in (direct, encoded):
+        diagnostic = next(
+            d for d in prepared.diagnostics if d.code == "audio_conversion" and d.provided == 2
+        )
+        assert diagnostic.provided == 2
+        assert diagnostic.effective == 1
+
+
+def test_encoded_decode_repairs_are_structured_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoded = np.array([[2.0, np.nan], [-2.0, np.inf]], dtype=np.float32)
+
+    def read_soundfile(_source: object) -> tuple[NDArray[np.float32], int]:
+        return decoded, 16000
+
+    monkeypatch.setattr("standard_asr.audio.loader._read_with_soundfile", read_soundfile)
+    prepared = _exec(AudioBytes(b"encoded"), {InputKind.ARRAY})
+    assert prepared.array is not None
+    np.testing.assert_array_equal(prepared.array, np.array([0.5, 0.0], dtype=np.float32))
+    diagnostics = {item.code: item for item in prepared.diagnostics}
+    assert diagnostics["audio_conversion"].provided == 2
+    assert diagnostics["non_finite_audio"].provided == 2
+    assert diagnostics["audio_clipped"].provided == 2
 
 
 def test_clean_array_has_no_non_finite_diagnostic() -> None:
@@ -444,6 +555,25 @@ def test_array_resampled_to_accepted_rate() -> None:
     )
     assert prepared.sample_rate == 16000
     assert any(d.code == "resampled_with" for d in prepared.diagnostics)
+
+
+def test_resampler_output_is_recanonicalized_with_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_resample(*_args: object) -> tuple[np.ndarray, str]:
+        return np.array([1.25, np.nan, -1.5], dtype=np.float32), "scipy"
+
+    monkeypatch.setattr("standard_asr.audio.conversion.resample_with_backend", fake_resample)
+    prepared = _exec(
+        AudioArray(np.zeros(3, dtype=np.float32), 48000),
+        {InputKind.ARRAY},
+        accepted_sample_rates=[16000],
+        native_sample_rate=16000,
+    )
+    assert prepared.array is not None
+    np.testing.assert_array_equal(prepared.array, np.array([1.0, 0.0, -1.0], np.float32))
+    assert any(d.code == "non_finite_audio" for d in prepared.diagnostics)
+    assert any(d.code == "audio_clipped" for d in prepared.diagnostics)
 
 
 def test_array_required_rate_overrides_any() -> None:
@@ -800,14 +930,11 @@ def test_resample_diagnostic_backend_field_is_fallback_without_scipy(
     assert "standard-asr[audio]" in diag.message
 
 
-def test_empty_array_resample_raises_audio_error_not_bare_valueerror() -> None:
-    # (per the verdict): an empty array that needs resampling must
-    # raise the contracted AudioProcessingError at the execute_plan boundary, not
-    # the bare ValueError ("Cannot resample empty audio") from the resampler --
-    # which would escape transcribe()'s Raises contract and map to a 500 on the
-    # server path. (Emptiness is intentionally NOT rejected at construction.)
+def test_empty_array_is_rejected_before_resampling() -> None:
+    # Canonical ARRAY delivery rejects emptiness before choosing or running a
+    # resampler, so same-rate and mismatched-rate input have one error contract.
     empty = AudioArray(np.zeros(0, dtype=np.float32), 48000)
-    with pytest.raises(AudioProcessingError, match="Cannot resample"):
+    with pytest.raises(AudioProcessingError, match="at least one sample"):
         _exec(empty, {InputKind.ARRAY}, accepted_sample_rates=[16000], native_sample_rate=16000)
 
 

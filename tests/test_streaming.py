@@ -25,6 +25,7 @@ from standard_asr.contract.exceptions import (
     ArtifactUnavailableError,
     InvalidSessionUseError,
     StreamClosedError,
+    StreamFailedError,
 )
 from standard_asr.contract.results import Word
 from standard_asr.runtime import streaming as streaming_module
@@ -491,6 +492,52 @@ def test_session_manual_mode_and_result() -> None:
     assert text == "hello world"
 
 
+def test_session_status_keeps_failure_details_and_requires_explicit_partial_result() -> None:
+    class _FailsAfterPartial(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            self.emit_diagnostic(code="model_note", message="The model returned partial text.")
+            yield TranscriptionEvent.partial("s0", "partial")
+            yield TranscriptionEvent.make_error("native_failed")
+
+    async def run() -> None:
+        session = _FailsAfterPartial()
+        assert session.status().state == "running"
+        with pytest.raises(InvalidSessionUseError, match="partial_result"):
+            session.result()
+        session.set_input_duration(1.25)
+        session.set_input_duration(1.25)
+        events = await _collect(session)
+        assert events[-1].code == "native_failed"
+        status = session.status()
+        assert status.state == "failed"
+        assert status.terminal_event is events[-1]
+        snapshot = session.partial_result()
+        assert snapshot.text == ""
+        assert snapshot.duration == 1.25
+        assert [diagnostic.code for diagnostic in snapshot.diagnostics] == ["model_note"]
+        with pytest.raises(StreamFailedError, match="native_failed") as caught:
+            session.result()
+        assert caught.value.code == "native_failed"
+        with pytest.raises(StreamClosedError, match="input duration"):
+            session.set_input_duration(1.25)
+
+    asyncio.run(run())
+
+
+def test_session_status_marks_context_exit_before_terminal_closed() -> None:
+    async def run() -> None:
+        session = _EchoSession()
+        async with session:
+            pass
+        assert session.status().state == "closed"
+        assert session.status().terminal_event is None
+        assert session.partial_result().text == ""
+        with pytest.raises(StreamClosedError, match="before it delivered a terminal"):
+            session.result()
+
+    asyncio.run(run())
+
+
 def test_session_feed_then_manual_raises() -> None:
     # Mixing feed with manual input is a usage error against a
     # still-live session -> InvalidSessionUseError, not StreamClosedError.
@@ -852,7 +899,7 @@ def test_session_sync_source_error_is_terminal_without_done() -> None:
         session = _YieldingEchoSession()
         session.feed(source())
         events = await _collect(session)
-        return events, session.result().text
+        return events, session.partial_result().text
 
     events, text = asyncio.run(run())
     _assert_input_source_error(events, secret)
@@ -872,7 +919,10 @@ def test_session_async_source_error_is_terminal_without_done() -> None:
         session = _YieldingEchoSession()
         session.feed(source())
         events = await _collect(session)
-        return events, session.result().text
+        assert session.status().state == "failed"
+        with pytest.raises(StreamFailedError, match="input_source_error"):
+            session.result()
+        return events, session.partial_result().text
 
     events, text = asyncio.run(run())
     _assert_input_source_error(events, secret)
@@ -958,13 +1008,13 @@ def test_sync_bridge_forwards_diagnostics() -> None:
     assert [d.code for d in diags] == ["unsupported_parameter_ignored"]
 
 
-def test_sync_bridge_serializes_result_and_diagnostics_with_the_loop() -> None:
-    """``result()``/``diagnostics()`` run ON the owned loop while live.
+def test_sync_bridge_serializes_partial_result_and_diagnostics_with_the_loop() -> None:
+    """``partial_result()``/``diagnostics()`` run ON the owned loop while live.
 
     Both reduce/snapshot state the producer task mutates (a supersede pops
     segments mid-walk of the reading order), and they were the ONLY bridge
     members running on the caller's thread: a rendering loop
-    (``for ev in sync: render(sync.result())``) raced the producer and
+    (``for ev in sync: render(sync.partial_result())``) raced the producer and
     crashed with a spurious ``KeyError`` or returned a torn result mixing
     pre- and post-supersede segments. Submission to the owned loop is the
     same mutual exclusion every other member already uses. After teardown
@@ -978,9 +1028,9 @@ def test_sync_bridge_serializes_result_and_diagnostics_with_the_loop() -> None:
     reduce_threads: list[str] = []
 
     class _ThreadRecordingSession(_EchoSession):
-        def result(self) -> streaming_module.TranscriptionResult:
+        def partial_result(self) -> streaming_module.TranscriptionResult:
             reduce_threads.append(threading.current_thread().name)
-            return super().result()
+            return super().partial_result()
 
         def diagnostics(self) -> list[streaming_module.Diagnostic]:
             reduce_threads.append(threading.current_thread().name)
@@ -988,16 +1038,18 @@ def test_sync_bridge_serializes_result_and_diagnostics_with_the_loop() -> None:
 
     with SyncSession(_ThreadRecordingSession()) as sync:
         sync.feed([b"abc"])
-        sync.result()
+        sync.partial_result()
         sync.diagnostics()
-        assert reduce_threads == [_SYNC_BRIDGE_LOOP_THREAD_NAME] * 2
+        # partial_result() includes the current diagnostics, so it calls both
+        # methods on the owned loop before the explicit diagnostics() query.
+        assert reduce_threads == [_SYNC_BRIDGE_LOOP_THREAD_NAME] * 3
         list(sync)
     reduce_threads.clear()
-    assert sync.result().text  # still functional after teardown...
+    assert sync.partial_result().text  # still functional after teardown...
     sync.diagnostics()
     # ...via the direct call (no loop thread exists anymore to submit to).
     assert _SYNC_BRIDGE_LOOP_THREAD_NAME not in reduce_threads
-    assert len(reduce_threads) == 2
+    assert len(reduce_threads) == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -1371,7 +1423,7 @@ def test_terminal_event_carries_session_detected_language() -> None:
     async def run() -> tuple[list[TranscriptionEvent], Any]:
         session = _ScriptedSession(events)
         delivered = await _collect(session)
-        return delivered, session.result()
+        return delivered, session.partial_result()
 
     delivered, result = asyncio.run(run())
     assert delivered[-1].type == "done"
@@ -1480,7 +1532,7 @@ def test_backpressure_terminal_is_stamped_with_session_language() -> None:
     async def run() -> tuple[list[TranscriptionEvent], Any]:
         session = _LanguageThenFlood()
         delivered = await _collect_after_producer_runs(session)
-        return delivered, session.result()
+        return delivered, session.partial_result()
 
     delivered, result = asyncio.run(run())
     assert delivered[-1].code == "backpressure"
@@ -1509,7 +1561,7 @@ def test_delivered_stream_preserves_reading_order_under_backpressure() -> None:
     async def run() -> tuple[list[TranscriptionEvent], Any]:
         session = _OutOfOrderFinals()
         events = await _collect_after_producer_runs(session)
-        return events, session.result()
+        return events, session.partial_result()
 
     events, result = asyncio.run(run())
     assert result.text == "hello world"
@@ -1568,7 +1620,7 @@ def test_overflow_event_is_refused_entirely_never_polluting_result() -> None:
             event_buffer_capacity=2,
         )
         events = await _collect_after_producer_runs(session)
-        return events, session.result()
+        return events, session.partial_result()
 
     events, result = asyncio.run(run())
     assert events[-1].code == "backpressure"
@@ -2121,14 +2173,14 @@ def test_reconnect_events_delivered_while_producer_blocked_on_slow_reconnect() -
 # Lifecycle enforcement + stable_until monotonicity
 # --------------------------------------------------------------------------- #
 def test_guard_suppresses_partial_after_final() -> None:
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     assert guard.admit(TranscriptionEvent.final("s0", "done")) is not None
     assert guard.admit(TranscriptionEvent.partial("s0", "oops")) is None
     assert any(d.code == "lifecycle_partial_after_final" for d in guard.diagnostics)
 
 
 def test_guard_suppresses_events_after_closed() -> None:
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     guard.admit(TranscriptionEvent.final("s0", "x"))
     guard.admit(TranscriptionEvent.closed("s0", "X."))
     assert guard.admit(TranscriptionEvent.partial("s0", "y")) is None
@@ -2145,7 +2197,7 @@ def test_guard_suppresses_closed_in_supersede_old_ids() -> None:
 
 
 def test_guard_strict_raises() -> None:
-    guard = _LifecycleGuard(strict=True)
+    guard = _LifecycleGuard(strict=True, audio_progress=True)
     guard.admit(TranscriptionEvent.final("s0", "x"))
     with pytest.raises(ValueError):
         guard.admit(TranscriptionEvent.partial("s0", "y"))
@@ -2223,7 +2275,7 @@ def test_guard_clamp_decreased_then_invalid_boundary_keeps_prior_frontier() -> N
 def test_guard_clamps_decreasing_audio_cursor() -> None:
     # audio_processed_until is monotonic across the whole session; a decrease is
     # clamped to the prior value with a diagnostic.
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     e1 = guard.admit(TranscriptionEvent.progress(audio_processed_until=2.0))
     assert e1 is not None and e1.audio_processed_until == 2.0
     e2 = guard.admit(TranscriptionEvent.progress(audio_processed_until=1.0))
@@ -2231,8 +2283,17 @@ def test_guard_clamps_decreasing_audio_cursor() -> None:
     assert any(d.code == "audio_cursor_decreased" for d in guard.diagnostics)
 
 
+def test_guard_reports_undeclared_audio_progress_without_losing_content() -> None:
+    guard = _LifecycleGuard()
+    event = guard.admit(TranscriptionEvent.partial("s0", "text", audio_processed_until=2.0))
+    assert event is not None
+    assert event.text == "text"
+    assert event.audio_processed_until is None
+    assert any(d.code == "audio_progress_undeclared" for d in guard.diagnostics)
+
+
 def test_guard_raises_on_decreasing_audio_cursor_strict() -> None:
-    guard = _LifecycleGuard(strict=True)
+    guard = _LifecycleGuard(strict=True, audio_progress=True)
     guard.admit(TranscriptionEvent.progress(audio_processed_until=2.0))
     with pytest.raises(ValueError, match="cursor is monotonic"):
         guard.admit(TranscriptionEvent.progress(audio_processed_until=1.0))
@@ -2715,7 +2776,7 @@ def test_guard_diagnostics_bounded_aggregates_overflow_by_code() -> None:
     # trips a clamp on every event must not grow diagnostics without limit; past
     # the cap the guard keeps a single trailing diagnostics_truncated summary
     # (per-code counts) instead of retaining each entry.
-    guard = _LifecycleGuard(max_diagnostics=5)
+    guard = _LifecycleGuard(max_diagnostics=5, audio_progress=True)
     for _ in range(100):
         guard._reject("audio_cursor_decreased", "down")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     # Never exceeds the cap, and the last entry is the aggregated summary.
@@ -2730,7 +2791,7 @@ def test_guard_diagnostics_bound_holds_via_admit_clamp_path() -> None:
     # A real misbehaving engine -- a perpetually decreasing audio
     # cursor that clamps on every admit -- stays bounded through admit(), not
     # just the internal _reject helper.
-    guard = _LifecycleGuard(max_diagnostics=5)
+    guard = _LifecycleGuard(max_diagnostics=5, audio_progress=True)
     # First event sets the cursor to a high value; every later event reports a
     # lower cursor and is clamped (audio_cursor_decreased) on admit.
     guard.admit(TranscriptionEvent.partial("s0", "x", audio_processed_until=100.0))
@@ -2848,6 +2909,7 @@ def test_session_diagnostics_bounded_end_to_end() -> None:
         # Cap the diagnostics bound small so it is reached without 1000 events;
         # the production default is DEFAULT_MAX_GUARD_DIAGNOSTICS.
         session = _ScriptedSession(events, max_guard_diagnostics=5)
+        session._configure_audio_progress(True)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         await _collect(session)
         return session.diagnostics()
 
@@ -2893,7 +2955,7 @@ def test_supersede_duplicate_new_id_rejected_at_construction() -> None:
 
 
 def test_guard_supersede_unknown_old_id_suppressed() -> None:
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     rejected = guard.admit(TranscriptionEvent.supersede(["never-seen"], ["b"]))
     assert rejected is None
     assert any(d.code == "supersede_unknown_old_id" for d in guard.diagnostics)
@@ -2909,7 +2971,7 @@ def test_guard_supersede_unknown_old_id_strict_raises() -> None:
 
 
 def test_guard_supersede_reintroduces_known_new_id_suppressed() -> None:
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     guard.admit(TranscriptionEvent.partial("a", "x"))
     guard.admit(TranscriptionEvent.partial("b", "y"))  # b already open
     rejected = guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
@@ -3175,7 +3237,7 @@ def test_deadline_terminal_stops_producer_so_result_matches_stream() -> None:
             # Give a not-canceled producer ample time to emit the late final
             # before reducing -- without the fix this makes result() diverge.
             await asyncio.sleep(0.3)
-        return events, session.result().text
+        return events, session.partial_result().text
 
     events, text = asyncio.run(run())
     assert any(e.type == "error" and e.code == "done_timeout" for e in events)
@@ -4054,7 +4116,7 @@ def test_deadline_terminal_drains_admitted_but_undelivered_events_first() -> Non
         session._replace_reserved_attr("_monotonic", _clock)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         session.feed([])
         events = await _collect(session)
-        return events, session.result().text
+        return events, session.partial_result().text
 
     events, text = asyncio.run(run())
     # Both admitted finals are delivered, in order, before the terminal.
@@ -4101,7 +4163,7 @@ def test_closed_final_fulfils_supersede_obligation() -> None:
     # A closed final that is a replacement group's only freeze MUST
     # register in the obligation ledger; finalize() must not emit a false
     # supersede_obligation_unfulfilled for fully preserved frozen text.
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     assert guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11)) is not None
     assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None
     closed = guard.admit(TranscriptionEvent.closed("b", "hello world.", stable_until=12))
@@ -4114,7 +4176,7 @@ def test_closed_final_short_freeze_still_reports_unfulfilled_obligation() -> Non
     # The true-positive direction stays intact: a closed final whose freeze is
     # genuinely shorter than the retired frozen text still reports the
     # (soft, info-level) unfulfilled obligation.
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11))
     guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
     guard.admit(TranscriptionEvent.closed("b", "hello", stable_until=5))
@@ -4169,7 +4231,7 @@ def test_suppressed_event_does_not_advance_audio_cursor() -> None:
     # (cursor half): a suppressed illegal event must not poison the
     # session audio cursor -- later legal events would otherwise be clamped up
     # to the rejected event's cursor with a misleading diagnostic.
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     assert guard.admit(TranscriptionEvent.final("s0", "x")) is not None
     suppressed = guard.admit(TranscriptionEvent.partial("s0", "y", audio_processed_until=99.0))
     assert suppressed is None  # partial after final: illegal transition
@@ -4181,7 +4243,7 @@ def test_suppressed_event_does_not_advance_audio_cursor() -> None:
 
 def test_admitted_event_still_advances_audio_cursor() -> None:
     # The compute/commit split must not break normal monotonic enforcement.
-    guard = _LifecycleGuard()
+    guard = _LifecycleGuard(audio_progress=True)
     assert guard.admit(TranscriptionEvent.progress(audio_processed_until=5.0)) is not None
     clamped = guard.admit(TranscriptionEvent.progress(audio_processed_until=1.0))
     assert clamped is not None

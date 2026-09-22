@@ -21,10 +21,10 @@ and never silently degraded. Degradation to ``prompt`` is opt-in and one-way via
 from __future__ import annotations
 
 from enum import Enum
-from typing import Final, Literal, get_args
+from typing import Any, Final, Literal, cast, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from pydantic_core import PydanticCustomError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from standard_asr.contract.capabilities import WordTimestampGranularityName
 from standard_asr.contract.language import AUTO, is_valid_bcp47, normalize_bcp47
@@ -416,23 +416,16 @@ def _validate_phrase_hints_list(value: list[str] | None) -> list[str] | None:
 
 
 class WireRuntimeParams(BaseModel):
-    """The portable runtime params accepted over an untyped wire (D5).
+    """Runtime params accepted from JSON before engine-specific validation.
 
-    The server (and any other transport that accepts JSON it did not type) MUST
-    accept **only** the portable standard set. The engine-specific
-    ``provider_params`` escape hatch on :class:`RuntimeParams` is **discover-only**
-    -- its JSON Schema is published for discovery / UI generation, but it cannot
-    be *constructed* from untyped wire JSON without the engine's params type, and
-    accepting a raw ``provider_params`` object would let it reach the engine
-    ambiguously (untyped, unvalidated). This model therefore carries exactly the
-    portable fields and **rejects** a ``provider_params`` key via
-    ``extra="forbid"`` (it has no such field), so a request that sends one fails
-    loudly with a clear validation error instead of silently dropping or
-    mis-routing it.
+    Portable fields validate directly on this closed model. ``provider_params``
+    enters as a JSON object, then :meth:`to_runtime_params` validates it with the
+    selected engine's exact published :class:`ProviderParams` subclass before
+    constructing :class:`RuntimeParams`. A raw mapping never reaches the engine.
 
     A module-level drift assertion (below) binds this model's field set to
-    ``RuntimeParams`` minus ``provider_params`` so an additive change to the
-    portable set cannot silently desync the wire view.
+    :class:`RuntimeParams`, so an additive change cannot silently desync the wire
+    view.
 
     Attributes:
         language: See :class:`RuntimeParams`.
@@ -444,10 +437,11 @@ class WireRuntimeParams(BaseModel):
         prompt: See :class:`RuntimeParams`.
         phrase_hints: See :class:`RuntimeParams`.
         on_unsupported: See :class:`RuntimeParams`.
+        provider_params: Engine-specific JSON object. The selected engine's
+            published params type validates it during promotion.
 
     Raises:
-        ValueError: If field validation fails, or a non-portable key (for example,
-            ``provider_params``) is supplied.
+        ValueError: If field validation fails.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -476,6 +470,13 @@ class WireRuntimeParams(BaseModel):
             "strict/best_effort gate: strict raises, best_effort drops with a "
             "diagnostic. 'fail' does NOT force the whole request to fail. "
             "'degrade_to_prompt' opts into the one-way rich->prompt fallback."
+        ),
+    )
+    provider_params: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "Engine-specific parameters, validated against the selected engine's "
+            "published provider params schema."
         ),
     )
 
@@ -535,25 +536,79 @@ class WireRuntimeParams(BaseModel):
         """
         return _validate_phrase_hints_list(value)
 
-    def to_runtime_params(self) -> RuntimeParams:
-        """Build the internal :class:`RuntimeParams` from the validated wire set.
+    def to_runtime_params(
+        self, provider_params_type: type[ProviderParams] | None = None
+    ) -> RuntimeParams:
+        """Build typed internal params for the selected engine.
 
-        ``provider_params`` is necessarily ``None`` (it cannot be sent), so the
-        resulting params carry only the portable, already-validated fields.
+        The provider object is validated with ``provider_params_type`` before it
+        enters :class:`RuntimeParams`. Nested validation locations are prefixed
+        with ``provider_params`` so CLI and server errors identify the request
+        field without echoing its value.
+
+        Args:
+            provider_params_type: The selected engine's exact published params
+                type, or ``None`` when it accepts no engine-specific params.
 
         Returns:
             The equivalent internal :class:`RuntimeParams`.
+
+        Raises:
+            ValidationError: If provider params were supplied for an engine that
+                accepts none, or the published type rejects the object.
+            TypeError: If ``provider_params_type`` is not a closed, concrete
+                :class:`ProviderParams` subclass.
         """
-        return RuntimeParams.model_validate(self.model_dump())
+        raw_type: Any = provider_params_type
+        if raw_type is not None and not (
+            isinstance(raw_type, type)
+            and issubclass(raw_type, ProviderParams)
+            and raw_type is not ProviderParams
+            and raw_type.model_config.get("extra") == "forbid"
+        ):
+            raise TypeError(
+                "provider_params_type must be a closed, concrete ProviderParams subclass or None."
+            )
+        params_model = raw_type
+        provider_params: ProviderParams | None = None
+        if self.provider_params is not None:
+            if params_model is None:
+                raise ValidationError.from_exception_data(
+                    type(self).__name__,
+                    [
+                        {
+                            "type": PydanticCustomError(
+                                "standard_asr_provider_params_unsupported",
+                                "The selected engine does not accept provider_params.",
+                            ),
+                            "loc": ("provider_params",),
+                            "input": self.provider_params,
+                        }
+                    ],
+                )
+            try:
+                provider_params = params_model.model_validate(self.provider_params)
+            except ValidationError as exc:
+                errors: list[InitErrorDetails] = []
+                for error in exc.errors():
+                    prefixed = cast(
+                        "InitErrorDetails",
+                        {key: value for key, value in error.items() if key != "url"},
+                    )
+                    prefixed["loc"] = ("provider_params", *error["loc"])
+                    errors.append(prefixed)
+                raise ValidationError.from_exception_data(type(self).__name__, errors) from exc
+        values = self.model_dump(exclude={"provider_params"})
+        values["provider_params"] = provider_params
+        return RuntimeParams.model_validate(values)
 
 
-# D5 drift guard: the wire view is exactly the portable set, that is, RuntimeParams
-# minus the discover-only ``provider_params`` escape hatch. Defining the two
-# field sets independently risks them desyncing as the portable set evolves; this
-# import-time invariant (and a drift test) makes such a desync a hard failure.
-assert set(WireRuntimeParams.model_fields) == (
-    set(RuntimeParams.model_fields) - {"provider_params"}
-), "WireRuntimeParams desynced from the portable RuntimeParams field set"
+# The wire and internal containers have the same top-level fields. Their
+# provider values deliberately differ in type: JSON mapping before selection,
+# exact engine model after promotion.
+assert set(WireRuntimeParams.model_fields) == set(RuntimeParams.model_fields), (
+    "WireRuntimeParams desynced from the RuntimeParams field set"
+)
 
 
 __all__ = [

@@ -730,7 +730,7 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             # analysis half that catches an environment no process layout can
             # fix -- cannot run at all. That is a NON-CLEAN state, exactly
             # like the packaging-absent mode below: a footer note alone would
-            # leave is_clean True and the headline claiming "No dependency
+            # leave is_clean True and the headline claiming "No numpy dependency
             # conflicts detected" while the core-floor gap this analysis
             # exists to close silently reopened.
             core_spec = None
@@ -1001,7 +1001,7 @@ def format_report(report: DoctorReport) -> str:
         # The clean claim is gated on the report's single verdict property, so
         # a new non-clean state added to is_clean can never read as clean here
         # (it still needs its own rendering branch below).
-        lines.append("No dependency conflicts detected.")
+        lines.append("No numpy dependency conflicts detected.")
     elif report.has_conflict:
         lines.append("Conflicts:")
         lines.extend(f"  ! {c}" for c in report.conflicts)

@@ -1263,6 +1263,9 @@ _ALWAYS_REQUIRED_METHODS: tuple[str, ...] = (
     # streaming journey, derivable from Properties (EngineBase provides it for
     # free; a structural engine must implement it).
     "recommended_wire_format",
+    # Pools need a deterministic process-local resource-release seam. EngineBase
+    # provides a no-op, while structural engines must expose the same method.
+    "close",
 )
 
 
@@ -2427,8 +2430,8 @@ def _cross_check_event_capabilities(
 ) -> None:
     """Cross-check one event's fields against the declared streaming capabilities.
 
-    The "no-timestamp streaming" profile couples a declared streaming capability
-    with the event field it gates; an engine that declares the capability
+    The streaming capability tree couples each declared feature with the event
+    field it gates; an engine that declares the capability
     unsupported yet emits the field anyway is a capability⇄stream desync the
     structural invariants cannot see. The stream MUST NOT *exceed* what the
     capabilities promise:
@@ -2436,9 +2439,9 @@ def _cross_check_event_capabilities(
     * ``word_stability`` unsupported ⇒ no event may carry a meaningful
       ``stable_until`` (> 0): the field asserts a frozen prefix the engine declared
       it does not provide.
-    * streaming ``timestamps`` mode ``none`` ⇒ no event may carry
-      ``audio_processed_until``: that cursor is a streaming timestamp the engine
-      declared it does not emit.
+    * ``audio_progress`` unsupported ⇒ no event may carry
+      ``audio_processed_until``: a processing cursor is distinct from aligned
+      transcript timestamps, but still requires an explicit declaration.
     * ``word_timestamps`` unsupported ⇒ no event may carry ``words``: per-word
       timings are word timestamps the engine declared it does not produce.
     * ``diarization`` unsupported ⇒ no event may carry a speaker label (its own
@@ -2474,17 +2477,16 @@ def _cross_check_event_capabilities(
                 model=None,
             )
         )
-    if event.audio_processed_until is not None and not streaming.timestamps.is_supported:
+    if event.audio_processed_until is not None and not streaming.audio_progress.is_supported:
         issues.append(
             ComplianceIssue(
                 level="error",
-                code="stream_exceeds_timestamps",
+                code="stream_exceeds_audio_progress",
                 message=(
                     f"event emits audio_processed_until={event.audio_processed_until} but the "
-                    "engine declares streaming.timestamps mode 'none' (no streaming "
-                    "timestamps) -- the declared capabilities and the emitted stream "
-                    "disagree. Declare a timestamps mode, or do not emit "
-                    "audio_processed_until."
+                    "engine declares streaming.audio_progress unsupported -- the declared "
+                    "capabilities and emitted stream disagree. Declare audio_progress "
+                    "supported, or do not emit audio_processed_until."
                 ),
                 model=None,
             )
@@ -2569,7 +2571,7 @@ def check_event_sequence(
             the engine's declared streaming capabilities: a stream MUST NOT
             *exceed* what it declares -- for example, emit a non-zero ``stable_until`` while
             ``word_stability`` is unsupported, an ``audio_processed_until`` cursor
-            while ``timestamps`` mode is ``none``, ``words`` while
+            while ``audio_progress`` is unsupported, ``words`` while
             ``word_timestamps`` is unsupported, or a speaker label (event- or
             word-level) while ``diarization`` is unsupported. Pass
             ``engine.declared_capabilities`` to catch a declaration that disagrees
@@ -2579,13 +2581,21 @@ def check_event_sequence(
         A :class:`ComplianceReport`; ``passed`` is ``True`` when the sequence
         honors every streaming invariant.
     """
-    guard = _LifecycleGuard(strict=False)
-    issues: list[ComplianceIssue] = []
-    saw_any = False
-    saw_terminal = False
     # The streaming sub-domain to cross-check events against; ``None`` when
     # no capabilities were supplied or the tree declares no streaming domain.
     streaming_caps = capabilities.streaming if capabilities is not None else None
+    # Without a declared tree, preserve cursors so the generic monotonicity
+    # check remains useful. With a tree, mirror the runtime's fail-closed
+    # guard so an undeclared cursor is diagnosed and removed consistently.
+    guard = _LifecycleGuard(
+        strict=False,
+        audio_progress=streaming_caps.audio_progress.is_supported
+        if streaming_caps is not None
+        else True,
+    )
+    issues: list[ComplianceIssue] = []
+    saw_any = False
+    saw_terminal = False
     for event in events:
         saw_any = True
         if saw_terminal:

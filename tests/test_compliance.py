@@ -199,6 +199,9 @@ class _GoodASR:
         encoding = wire[0] if wire else CANONICAL_WIRE_ENCODING
         return AudioFormat(encoding=encoding, sample_rate=sample_rate, channels=1)
 
+    def close(self) -> None:
+        """Release no resources for this structural fixture."""
+
 
 def good_factory() -> _GoodASR:  # pyright: ignore[reportUnusedFunction]
     return _GoodASR()
@@ -211,6 +214,27 @@ class _BypassedPropsASR(_GoodASR):
     properties: ClassVar[BaseProperties] = _Props.model_construct(
         selectable_languages=["en", "   "]
     )
+
+
+class _NoCloseASR(_GoodASR):
+    """Structural engine that omits the required process-lifecycle method."""
+
+    close: ClassVar[None] = None  # pyright: ignore[reportIncompatibleMethodOverride]
+
+
+def no_close_factory() -> _NoCloseASR:  # pyright: ignore[reportUnusedFunction]
+    return _NoCloseASR()
+
+
+class _AsyncCloseASR(_GoodASR):
+    """Structural engine with an invalid coroutine cleanup method."""
+
+    async def close(self) -> None:  # type: ignore[override]
+        return None
+
+
+def async_close_factory() -> _AsyncCloseASR:  # pyright: ignore[reportUnusedFunction]
+    return _AsyncCloseASR()
 
 
 def bypassed_props_factory() -> _BypassedPropsASR:  # pyright: ignore[reportUnusedFunction]
@@ -454,6 +478,22 @@ def test_check_entrypoints_empty_registry_errors() -> None:
 def test_check_entrypoints_good_engine_passes() -> None:
     report = check_entrypoints(registry=_registry("good_factory"))
     assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_check_entrypoints_requires_synchronous_close() -> None:
+    report = check_entrypoints(registry=_registry("no_close_factory"))
+    assert report.passed is False
+    assert any(
+        issue.code == "missing_required_method" and "close" in issue.message
+        for issue in report.issues
+    )
+
+    async_report = check_entrypoints(registry=_registry("async_close_factory"))
+    assert async_report.passed is False
+    assert any(
+        issue.code == "protocol_member_not_synchronous" and "close" in issue.message
+        for issue in async_report.issues
+    )
 
 
 def test_check_entrypoints_bypassed_properties_fail_revalidation() -> None:
@@ -3094,7 +3134,7 @@ def test_event_sequence_flags_stable_until_without_word_stability() -> None:
     assert any(i.code == "stream_exceeds_word_stability" for i in report.issues)
 
 
-def test_event_sequence_flags_audio_cursor_without_timestamps() -> None:
+def test_event_sequence_flags_audio_cursor_without_audio_progress() -> None:
     events = [
         TranscriptionEvent.partial("s0", "hi", audio_processed_until=1.0),
         TranscriptionEvent.final("s0", "hi"),
@@ -3102,7 +3142,7 @@ def test_event_sequence_flags_audio_cursor_without_timestamps() -> None:
     ]
     report = check_event_sequence(events, capabilities=_NO_TS_STREAMING_CAPS)
     assert report.passed is False
-    assert any(i.code == "stream_exceeds_timestamps" for i in report.issues)
+    assert any(i.code == "stream_exceeds_audio_progress" for i in report.issues)
 
 
 def test_event_sequence_flags_words_without_word_timestamps() -> None:
@@ -3122,6 +3162,7 @@ def test_event_sequence_consistent_stream_passes_cross_check() -> None:
     caps = DeclaredCapabilities(
         streaming=StreamingCapabilities(
             word_stability=FlagCap(supported=True),
+            audio_progress=FlagCap(supported=True),
             timestamps=StreamTimestampsCap(mode="native_frame_aligned"),
             word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
         ),

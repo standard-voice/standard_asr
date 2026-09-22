@@ -229,24 +229,49 @@ def test_language_error_never_echoes_raw_value(
     assert all(sentinel not in err["msg"] for err in exc_info.value.errors())
 
 
-# --- WireRuntimeParams (portable-only wire view, D5) --------------------------
+# --- WireRuntimeParams (typed promotion from JSON) ----------------------------
 
 
-def test_wire_params_field_set_matches_portable_runtime_params() -> None:
-    # D5 drift guard: the wire view is exactly RuntimeParams minus the
-    # discover-only provider_params escape hatch. An additive change to the
-    # portable set must update both, or this fails (mirrors the import-time
-    # assertion in runtime_params).
-    assert set(WireRuntimeParams.model_fields) == (
-        set(RuntimeParams.model_fields) - {"provider_params"}
-    )
+def test_wire_params_field_set_matches_runtime_params() -> None:
+    # The wire and internal models carry the same top-level vocabulary. The
+    # provider field changes from a JSON mapping to the selected engine's exact
+    # type only during promotion.
+    assert set(WireRuntimeParams.model_fields) == set(RuntimeParams.model_fields)
 
 
-def test_wire_params_forbids_provider_params() -> None:
-    # provider_params cannot be sent over the wire; supplying it is rejected.
+def test_wire_params_promotes_provider_params_to_exact_type() -> None:
+    wire = WireRuntimeParams.model_validate({"provider_params": {"temperature": 0.25}})
+    params = wire.to_runtime_params(_OpenAIParams)
+    assert type(params.provider_params) is _OpenAIParams
+    assert params.provider_params.temperature == 0.25
+
+
+def test_wire_params_rejects_provider_params_when_engine_accepts_none() -> None:
+    wire = WireRuntimeParams.model_validate({"provider_params": {"temperature": 0.25}})
     with pytest.raises(ValidationError) as exc_info:
-        WireRuntimeParams.model_validate({"provider_params": {"beam": 5}})
-    assert any(err["loc"] == ("provider_params",) for err in exc_info.value.errors())
+        wire.to_runtime_params(None)
+    assert exc_info.value.errors()[0]["loc"] == ("provider_params",)
+    assert exc_info.value.errors()[0]["type"] == "standard_asr_provider_params_unsupported"
+
+
+def test_wire_params_prefixes_nested_provider_errors() -> None:
+    secret = "sk-PROVIDER-SECRET"
+    wire = WireRuntimeParams.model_validate(
+        {"provider_params": {"temperature": secret, "unknown": secret}}
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        wire.to_runtime_params(_OpenAIParams)
+    assert {error["loc"] for error in exc_info.value.errors()} == {
+        ("provider_params", "temperature"),
+        ("provider_params", "unknown"),
+    }
+    assert all(secret not in error["msg"] for error in exc_info.value.errors())
+
+
+def test_wire_params_refuses_bare_provider_base_as_selected_type() -> None:
+    wire = WireRuntimeParams.model_validate({"provider_params": {}})
+    with pytest.raises(TypeError, match="closed, concrete"):
+        wire.to_runtime_params(ProviderParams)
 
 
 def test_wire_params_validates_language() -> None:
@@ -273,7 +298,7 @@ def test_wire_params_to_runtime_params_round_trips_portable_fields() -> None:
     assert params.prompt == "hi"
     assert params.phrase_hints == ["foo"]
     assert params.on_unsupported == "degrade_to_prompt"
-    # provider_params is necessarily None (it cannot be sent).
+    # No provider object was supplied.
     assert params.provider_params is None
 
 

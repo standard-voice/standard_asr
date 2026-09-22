@@ -82,7 +82,7 @@ def test_compatible_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
     report = doctor.diagnose()
     assert len(report.plugins) == 2
     assert report.has_conflict is False
-    assert "No dependency conflicts" in doctor.format_report(report)
+    assert "No numpy dependency conflicts" in doctor.format_report(report)
 
 
 def test_numpy1_vs_2_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1158,7 +1158,7 @@ def test_packaging_unavailable_with_plugins_headline_is_not_clean(
     # The headline is deliberately GENERALIZED (it now covers the unreadable-core
     # gap too); the packaging-specific cause and its fix live in the note.
     assert "Conflict analysis unavailable or incomplete" in rendered
-    assert "No dependency conflicts detected." not in rendered
+    assert "No numpy dependency conflicts detected." not in rendered
     assert any("optional 'packaging' library" in n for n in report.notes)
 
 
@@ -1563,7 +1563,7 @@ def test_core_metadata_unreadable_is_a_non_clean_analysis_gap(
 
     That relation is the half that catches an environment NO process layout can
     fix, so its absence is a non-clean ``analysis_unavailable`` state, not a
-    footer note under a green "No dependency conflicts detected" headline --
+    footer note under a green "No numpy dependency conflicts detected" headline --
     the core-floor gap this analysis exists to close would silently reopen.
     The rendered listing must also NOT show a core line it does not have.
 
@@ -1586,7 +1586,7 @@ def test_core_metadata_unreadable_is_a_non_clean_analysis_gap(
 
     rendered = doctor.format_report(report)
     assert "core:" not in rendered
-    assert "No dependency conflicts detected." not in rendered
+    assert "No numpy dependency conflicts detected." not in rendered
     # The headline is the generalized one: it covers every analysis gap, and the
     # specific gap is named by the note.
     assert "Conflict analysis unavailable or incomplete" in rendered
