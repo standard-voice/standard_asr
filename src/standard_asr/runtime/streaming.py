@@ -3628,6 +3628,7 @@ start_transcription` template with the parameter-gating and language-axis
         Raises:
             InvalidSessionUseError: If the session is still running.
             StreamFailedError: If a terminal error ended the session.
+            StreamClosedError: If the context closed before a terminal event.
         """
         outcome = self.status()
         if outcome.state == "running":

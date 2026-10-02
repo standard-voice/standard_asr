@@ -108,10 +108,7 @@ You never write decode/resample/encode glue — declare `accepted_input` and the
 
 ### Advanced: native multi-input batches
 
-Keep `transcribe()` as the public single-input entry point. When a native SDK
-can infer several independent inputs in one call, an `EngineBase` subclass can
-reuse the exact standard batch pipeline for each item through its protected
-hooks:
+Keep `transcribe()` as the public single-input entry point. When a native SDK can infer several independent inputs in one call, an `EngineBase` subclass can reuse the exact standard batch pipeline for each item through its protected hooks:
 
 ```python
 requests = [self._prepare_transcription_request(audio, params) for audio in inputs]
@@ -124,15 +121,7 @@ results = [
 ]
 ```
 
-`_prepare_transcription_request()` performs the same protocol compatibility
-check, provider-parameter gate, capability degradation, language resolution,
-audio negotiation, conversion, and pre-inference diagnostic collection as
-`transcribe()`. `_finalize_transcription_result()` checks that each native
-return is a synchronous `TranscriptionResult`, applies standard speaker
-synthesis, and merges that request's diagnostics. Keep the request/result
-pairing intact and isolate an individual native failure before finalizing the
-other successful items. These are protected `EngineBase` hooks for an adapter's
-own optimized wrapper; they do not add a second public Standard ASR operation.
+`_prepare_transcription_request()` performs the same protocol compatibility check, provider-parameter gate, capability degradation, language resolution, audio negotiation, conversion, and pre-inference diagnostic collection as `transcribe()`. `_finalize_transcription_result()` checks that each native return is a synchronous `TranscriptionResult`, applies standard speaker synthesis, and merges that request's diagnostics. Keep the request/result pairing intact and isolate an individual native failure before finalizing the other successful items. These are protected `EngineBase` hooks for an adapter's own optimized wrapper; they do not add a second public Standard ASR operation.
 
 ## Streaming
 

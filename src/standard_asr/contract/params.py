@@ -21,7 +21,7 @@ and never silently degraded. Degradation to ``prompt`` is opt-in and one-way via
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Final, Literal, cast, get_args
+from typing import Final, Literal, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import InitErrorDetails, PydanticCustomError
@@ -84,6 +84,34 @@ class ProviderParams(BaseModel):
     # `model_` protected namespace so they do not warn (the warning fires on
     # older pydantic, for example, the lower-bounds 2.5).
     model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
+
+
+def validate_provider_params_type(value: object) -> type[ProviderParams] | None:
+    """Validate an engine's provider-parameter type declaration.
+
+    Args:
+        value: The declared type, or ``None`` when the engine accepts no
+            provider-specific parameters.
+
+    Returns:
+        The exact concrete, closed provider-parameter type, or ``None``.
+
+    Raises:
+        TypeError: If the declaration is not a closed, concrete
+            :class:`ProviderParams` subclass.
+    """
+    if value is None:
+        return None
+    if not (
+        isinstance(value, type)
+        and issubclass(value, ProviderParams)
+        and value is not ProviderParams
+        and value.model_config.get("extra") == "forbid"
+    ):
+        raise TypeError(
+            "provider_params_type must be a closed, concrete ProviderParams subclass or None."
+        )
+    return value
 
 
 class DiarizationRequest(BaseModel):
@@ -559,17 +587,7 @@ class WireRuntimeParams(BaseModel):
             TypeError: If ``provider_params_type`` is not a closed, concrete
                 :class:`ProviderParams` subclass.
         """
-        raw_type: Any = provider_params_type
-        if raw_type is not None and not (
-            isinstance(raw_type, type)
-            and issubclass(raw_type, ProviderParams)
-            and raw_type is not ProviderParams
-            and raw_type.model_config.get("extra") == "forbid"
-        ):
-            raise TypeError(
-                "provider_params_type must be a closed, concrete ProviderParams subclass or None."
-            )
-        params_model = raw_type
+        params_model = validate_provider_params_type(provider_params_type)
         provider_params: ProviderParams | None = None
         if self.provider_params is not None:
             if params_model is None:
@@ -594,6 +612,27 @@ class WireRuntimeParams(BaseModel):
                     prefixed = cast(
                         "InitErrorDetails",
                         {key: value for key, value in error.items() if key != "url"},
+                    )
+                    # ``errors()`` flattens a PydanticCustomError into its string
+                    # code. Passing that string back to ``from_exception_data``
+                    # works only for pydantic's built-in codes; an engine's
+                    # custom code raises ``KeyError`` and turns a caller-fixable
+                    # validation failure into an internal fault. Rebuild every
+                    # entry as a custom error because the flattened shape no
+                    # longer records which codes were custom. Use the already
+                    # rendered message as a literal and deliberately omit the
+                    # arbitrary engine context: applying the same context a
+                    # second time can rewrite a rendered message whose value
+                    # contains another ``{placeholder}``. The original error
+                    # remains the ``__cause__`` for an in-process caller that
+                    # needs its context; CLI and server surfaces intentionally
+                    # expose neither context nor input.
+                    error_type = error["type"]
+                    message = error["msg"]
+                    prefixed.pop("ctx", None)
+                    prefixed["type"] = PydanticCustomError(
+                        error_type,  # pyright: ignore[reportArgumentType]
+                        message,  # pyright: ignore[reportArgumentType]
                     )
                     prefixed["loc"] = ("provider_params", *error["loc"])
                     errors.append(prefixed)

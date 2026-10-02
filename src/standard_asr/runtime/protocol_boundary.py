@@ -44,15 +44,42 @@ from collections.abc import Coroutine
 from typing import Any, Literal, cast
 
 from standard_asr.contract.exceptions import EngineContractError
+from standard_asr.contract.params import ProviderParams, validate_provider_params_type
 
 __all__ = [
     "SyncDefectKind",
     "SyncResultDefect",
+    "require_provider_params_type",
     "require_sync_result",
     "safe_class_name",
     "safe_type_name",
     "sync_result_defect",
 ]
+
+
+def require_provider_params_type(engine: object) -> type[ProviderParams] | None:
+    """Read and validate an engine's static provider-parameter declaration.
+
+    The declaration is class metadata, so the lookup does not invoke a plugin
+    descriptor. The CLI and server share this boundary to classify the same
+    malformed declaration as an engine fault before parsing caller options.
+
+    Args:
+        engine: The selected engine instance.
+
+    Returns:
+        The exact published type, or ``None``.
+
+    Raises:
+        EngineContractError: If the declaration is not a closed, concrete
+            :class:`~standard_asr.contract.params.ProviderParams` subclass.
+    """
+    declared = inspect.getattr_static(engine, "provider_params_type", None)
+    try:
+        return validate_provider_params_type(declared)
+    except TypeError as exc:
+        raise EngineContractError(f"The engine's {exc}") from exc
+
 
 #: Fixed placeholder for a type whose metadata name cannot be safely rendered.
 #: A name that does not conform to the identifier grammar below carries no

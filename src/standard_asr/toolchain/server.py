@@ -18,7 +18,6 @@ not a substitute for a rate limiter.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
@@ -53,7 +52,7 @@ from standard_asr.contract.results import TranscriptionResult
 from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
 from standard_asr.runtime.engine_pool import EngineLease, EnginePool, EnginePoolClosedError
 from standard_asr.runtime.interface import require_engine_protocol
-from standard_asr.runtime.protocol_boundary import require_sync_result
+from standard_asr.runtime.protocol_boundary import require_provider_params_type, require_sync_result
 from standard_asr.runtime.redaction import (
     log_exception_safely,
     sanitize_validation_errors,
@@ -972,7 +971,7 @@ def create_app(
         asr = lease.engine
         _release_lease_when_task_finishes(lease)
         try:
-            params = _build_params(request.options, _provider_params_type(asr))
+            params = _build_params(request.options, require_provider_params_type(asr))
         except ValidationError as exc:
             await _abort_ws(websocket, "bad_request", _sanitized_validation_message(exc))
             return
@@ -1762,7 +1761,7 @@ async def _run_transcription(
 
     async with lease as asr:
         try:
-            params = _build_params(options, _provider_params_type(asr))
+            params = _build_params(options, require_provider_params_type(asr))
         except ValidationError as exc:
             http_error: Any = http_exception
             raise http_error(
@@ -1827,34 +1826,6 @@ async def _run_transcription(
             log_exception_safely(logger, "Transcription failed for model %r", model)
             detail = _internal_error_message("transcription")
             raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
-
-
-def _provider_params_type(engine: Any) -> type[ProviderParams] | None:
-    """Read and validate one engine's published provider params type.
-
-    Args:
-        engine: Selected engine instance.
-
-    Returns:
-        The exact published type, or ``None``.
-
-    Raises:
-        EngineContractError: If the declaration is not a ProviderParams type.
-    """
-    params_type: Any = inspect.getattr_static(engine, "provider_params_type", None)
-    if params_type is None:
-        return None
-    if not (
-        isinstance(params_type, type)
-        and issubclass(params_type, ProviderParams)
-        and params_type is not ProviderParams
-        and params_type.model_config.get("extra") == "forbid"
-    ):
-        raise EngineContractError(
-            "The engine's provider_params_type must be a closed, concrete "
-            "ProviderParams subclass or None."
-        )
-    return params_type
 
 
 def _build_params(

@@ -65,6 +65,7 @@ from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_mo
 from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
 from standard_asr.runtime.interface import EngineBase, StandardASR, require_engine_protocol
 from standard_asr.runtime.protocol_boundary import (
+    require_provider_params_type,
     require_sync_result,
     safe_type_name,
     sync_result_defect,
@@ -2106,17 +2107,7 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     registry = discover_models(strict=args.strict_discovery)
     asr = registry.create(args.name, **_parse_init_config(args))
 
-    provider_params_type = getattr(type(asr), "provider_params_type", None)
-    if provider_params_type is not None and not (
-        isinstance(provider_params_type, type)
-        and issubclass(provider_params_type, ProviderParams)
-        and provider_params_type is not ProviderParams
-        and provider_params_type.model_config.get("extra") == "forbid"
-    ):
-        raise EngineContractError(
-            "The engine's provider_params_type must be a closed, concrete "
-            "ProviderParams subclass or None."
-        )
+    provider_params_type = require_provider_params_type(asr)
     params = _parse_options(args.options, provider_params_type=provider_params_type)
     effective_params = params or RuntimeParams()
     _transcribe_artifact_preflight(asr, name=args.name, params=effective_params)

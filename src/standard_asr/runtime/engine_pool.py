@@ -259,6 +259,9 @@ class EnginePool:
 
         A close failure is an engine/resource fault. It is safe-logged without
         aborting later engines' cleanup or masking application shutdown.
+        The drain has no implicit deadline: closing an active engine could free
+        buffers still used by native work. A non-returning native operation
+        requires the operator's process termination policy, not early cleanup.
 
         Returns:
             None.
