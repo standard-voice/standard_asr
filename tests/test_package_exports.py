@@ -143,6 +143,12 @@ def test_sample_rate_helpers_are_on_the_engine_facade() -> None:
     assert "nearest_accepted_sample_rate" not in standard_asr.__all__
 
 
+def test_segment_text_composer_is_shared_across_public_surfaces() -> None:
+    results = importlib.import_module("standard_asr.contract.results")
+    assert standard_asr.compose_segment_text is results.compose_segment_text
+    assert engine_facade.compose_segment_text is results.compose_segment_text
+
+
 #: Engine-author / framework-internal names the curation deliberately moved OFF
 #: the application-facing top level (to ``standard_asr.engine`` /
 #: ``standard_asr.compliance`` / their own modules). This regression guard fails
@@ -205,6 +211,7 @@ _DELIBERATE_DUAL_EXPORTS: frozenset[str] = (
             "TranscriptionSession",
             "Word",
             "WordTimestampGranularity",
+            "compose_segment_text",
         }
     )
     | _ARTIFACT_DUAL_EXPORTS

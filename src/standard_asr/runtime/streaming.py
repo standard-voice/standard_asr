@@ -45,6 +45,7 @@ from collections.abc import (
     Coroutine,
     Iterable,
     Iterator,
+    Mapping,
     Sequence,
 )
 from typing import Any, Literal, cast
@@ -65,6 +66,8 @@ from standard_asr.contract.results import (
     TranscriptionResult,
     WireExtra,
     Word,
+    compose_segment_text,
+    compose_text_fragments,
     synthesize_segment_speaker,
     to_json_value,
     validate_speaker_label,
@@ -270,6 +273,11 @@ class TranscriptionEvent(BaseModel):
         type: The event type.
         segment_id: Stable id of the segment this event concerns.
         text: The segment's complete current text (cumulative/replace).
+        text_separator: Exact text inserted before this segment when it follows
+            another live segment in reduced reading order. The first live
+            segment's separator is ignored. Defaults to one space for engines
+            whose English-like segments omit boundary whitespace. Use ``""``
+            for exact fragments or scripts without word separators.
         stable_until: Frozen-prefix length in codepoints (monotonic per
             segment while recognition is in progress; a terminal ``closed``
             restatement may shrink it).
@@ -310,6 +318,7 @@ class TranscriptionEvent(BaseModel):
     type: EventType
     segment_id: str | None = None
     text: str | None = None
+    text_separator: str = " "
     stable_until: int | None = None
     finality: Literal["final", "closed"] = "final"
     words: list[Word] | None = None
@@ -786,7 +795,13 @@ class _ReadingOrderLedger:
         return list(self._order)
 
 
-def reduce_event(order: list[str], texts: dict[str, str], event: TranscriptionEvent) -> None:
+def reduce_event(
+    order: list[str],
+    texts: dict[str, str],
+    event: TranscriptionEvent,
+    *,
+    separators: dict[str, str] | None = None,
+) -> None:
     """Apply the canonical streaming reduce (the spec §5.2 reference).
 
     This is the core reduce every compliant application implements --
@@ -796,9 +811,9 @@ def reduce_event(order: list[str], texts: dict[str, str], event: TranscriptionEv
     is "list order IS reading order", and a mid-stream ``supersede`` must
     splice its replacements into the retired block's position -- a plain
     dict can only append, which silently reorders the transcript (the
-    cardinal sin). Display text is ``texts`` joined in ``order``
-    (``" ".join(texts[sid] for sid in order if sid in texts)`` for
-    space-delimited languages). Non-text events are ignored.
+    cardinal sin). A caller that displays text MUST pass ``separators`` and
+    use :func:`compose_reduced_text`; omitting the map is supported only for
+    callers that consume the state structurally. Non-text events are ignored.
 
     This helper assumes a lifecycle-legal stream, which is what
     :class:`TranscriptionSession` delivers (its guard suppresses illegal
@@ -811,6 +826,9 @@ def reduce_event(order: list[str], texts: dict[str, str], event: TranscriptionEv
             splices).
         texts: The mutable ``{segment_id: text}`` map, updated in place.
         event: The event to apply.
+        separators: Optional mutable ``{segment_id: text_separator}`` map,
+            updated in place alongside ``texts``. Required for exact display
+            composition.
 
     Raises:
         ValueError: If a ``supersede`` retires nothing at all (empty
@@ -823,6 +841,8 @@ def reduce_event(order: list[str], texts: dict[str, str], event: TranscriptionEv
         if event.segment_id not in order:
             order.append(event.segment_id)
         texts[event.segment_id] = event.text or ""
+        if separators is not None:
+            separators[event.segment_id] = event.text_separator
     elif event.type == "supersede":
         if not event.old_ids:
             raise ValueError(
@@ -855,6 +875,29 @@ def reduce_event(order: list[str], texts: dict[str, str], event: TranscriptionEv
         order[start : start + len(event.old_ids)] = list(event.new_ids)
         for old_id in event.old_ids:
             texts.pop(old_id, None)
+            if separators is not None:
+                separators.pop(old_id, None)
+
+
+def compose_reduced_text(
+    order: Sequence[str], texts: Mapping[str, str], separators: Mapping[str, str]
+) -> str:
+    """Compose the current text state maintained by :func:`reduce_event`.
+
+    Args:
+        order: Live segment ids in reading order.
+        texts: Current text by segment id.
+        separators: Exact separator by segment id.
+
+    Returns:
+        Exact text for segments that have delivered content so far.
+
+    Raises:
+        KeyError: If a segment with text has no separator entry.
+    """
+    return compose_text_fragments(
+        (separators[segment_id], texts[segment_id]) for segment_id in order if segment_id in texts
+    )
 
 
 def _supersede_admission(
@@ -1095,12 +1138,14 @@ class StreamReducer:
                 start=event.start,
                 end=event.end,
                 text=event.text or "",
+                text_separator=event.text_separator,
                 words=event.words,
                 speaker=(
                     event.speaker
                     if event.speaker is not None
                     else synthesize_segment_speaker(event.words)
                 ),
+                extra=event.extra,
             )
         elif event.type == "supersede":
             # THE shared admission rules (_supersede_admission), against the
@@ -1152,9 +1197,14 @@ class StreamReducer:
             Ordered by ``start`` when every retained segment carries one
             (``measured`` and ``start_only`` alike -- a real onset is a real
             time position); otherwise the ledger's reading order is used
-            (declaration order with supersede replacements IN PLACE), and
-            ``text`` joins segment texts in the same list order either
-            way. When any retained segment lacks a full measured span
+            (declaration order with supersede replacements IN PLACE).
+            :func:`~standard_asr.contract.results.compose_segment_text`
+            composes ``text`` in that order from each segment's exact
+            ``text`` and ``text_separator``. It does not strip, drop, or infer
+            characters. ``words`` is ``None`` only when every retained segment
+            has ``words=None``; otherwise it is the flattened words from all
+            retained segments in the same order. When any retained segment
+            lacks a full measured span
             (``timestamp_status != "measured"``), the result carries the
             aggregate ``segment_timestamps_unavailable`` warning diagnostic;
             the per-segment truth is the nullable ``start``/``end`` values
@@ -1176,12 +1226,12 @@ class StreamReducer:
         if order and len(starts) == len(order):
             order.sort(key=lambda sid: starts[sid])
         segments = [self._segments[sid] for sid in order]
-        # Strip each segment and drop empties so a segment carrying edge
-        # whitespace (or an empty committed segment) does not inject a double
-        # space / stray separator into the reduced transcript. Segments are
-        # space-joined as the standard default; a no-space-language (CJK) separator is a
-        # separate spec question, not silently changed here.
-        text = " ".join(part for part in (segment.text.strip() for segment in segments) if part)
+        text = compose_segment_text(segments)
+        words = (
+            None
+            if all(segment.words is None for segment in segments)
+            else [word for segment in segments for word in (segment.words or [])]
+        )
         diagnostics: list[Diagnostic] = list(self._suppressions)
         unmeasured = [sid for sid in order if self._segments[sid].timestamp_status != "measured"]
         if unmeasured:
@@ -1211,6 +1261,7 @@ class StreamReducer:
             # `None` with non-empty text synthesizes a whole-text fallback
             # cue -- an empty session must never fabricate one.
             segments=segments,
+            words=words,
             detected_language=self._detected_language,
             diagnostics=diagnostics,
         )
@@ -1569,20 +1620,25 @@ class _SupersedeObligation:
     user already saw frozen).
     """
 
-    __slots__ = ("f_old", "frozen", "new_ids")
+    __slots__ = ("f_old", "frozen", "include_first_separator", "new_ids", "separators")
 
-    def __init__(self, f_old: str, new_ids: list[str]) -> None:
+    def __init__(self, f_old: str, new_ids: list[str], *, include_first_separator: bool) -> None:
         """Initialize the obligation.
 
         Args:
             f_old: Concatenated frozen prefix of the retired segments.
             new_ids: The replacement segment ids, in reading (temporal) order.
+            include_first_separator: Whether the replaced block follows a live
+                segment, so its first segment's separator is visible text.
         """
         self.f_old = f_old
         self.new_ids = new_ids
+        self.include_first_separator = include_first_separator
         #: Per-new-id current frozen prefix, accumulated as each new segment
         #: freezes more text.
         self.frozen: dict[str, str] = {}
+        #: Exact separators carried by the events that established ``frozen``.
+        self.separators: dict[str, str] = {}
 
     def f_new(self) -> str:
         """Return the replacement's *contiguous* frozen prefix.
@@ -1601,10 +1657,12 @@ class _SupersedeObligation:
             truncated at the first not-yet-frozen (missing or empty) new id.
         """
         parts: list[str] = []
-        for nid in self.new_ids:
+        for index, nid in enumerate(self.new_ids):
             frozen = self.frozen.get(nid, "")
             if not frozen:
                 break
+            if index > 0 or self.include_first_separator:
+                parts.append(self.separators[nid])
             parts.append(frozen)
         return "".join(parts)
 
@@ -1669,6 +1727,9 @@ class _LifecycleGuard:
         self._ledger = _ReadingOrderLedger()
         self._stable_until: dict[str, int] = {}
         self._frozen_text: dict[str, str] = {}
+        #: Last accepted exact separator per segment, used when a supersede
+        #: composes frozen text in the same way as the final result.
+        self._text_separator: dict[str, str] = {}
         #: Last ACCEPTED non-None segment-level speaker per segment id. One
         #: ledger deliberately feeds BOTH diarization guards (they were adopted
         #: as a package): the frozen-speaker rule and the
@@ -1835,10 +1896,18 @@ class _LifecycleGuard:
                     "be duplicated -- this harms only non-compliant engines.",
                 )
                 return None
-            # Concatenate the retired segments' frozen prefixes, in old_ids
-            # (reading) order: this is the text the user already saw frozen and
-            # which the replacement MUST preserve.
-            f_old = "".join(self._frozen_text.get(old, "") for old in event.old_ids)
+            # Compose the retired segments' frozen prefixes exactly as they
+            # appeared in the live transcript. The first separator is visible
+            # only when the retired block follows another live segment.
+            frozen_parts: list[str] = []
+            for index, old in enumerate(event.old_ids):
+                frozen = self._frozen_text.get(old, "")
+                if not frozen:
+                    continue
+                if index > 0 or block_start > 0:
+                    frozen_parts.append(self._text_separator.get(old, " "))
+                frozen_parts.append(frozen)
+            f_old = "".join(frozen_parts)
             if not event.new_ids and f_old:
                 # Pure deletion (empty new_ids) cannot preserve any frozen text;
                 # it MUST NOT silently destroy a prefix the user saw frozen.
@@ -1859,7 +1928,11 @@ class _LifecycleGuard:
                 # new_ids is duplicate-free by construction (model validator),
                 # so the obligation's F_new join never counts a replacement
                 # segment's frozen prefix twice.
-                obligation = _SupersedeObligation(f_old, list(event.new_ids))
+                obligation = _SupersedeObligation(
+                    f_old,
+                    list(event.new_ids),
+                    include_first_separator=block_start > 0,
+                )
                 for new in event.new_ids:
                     self._supersede_obligations[new] = obligation
             self._commit_audio_cursor(pending_cursor)
@@ -1939,11 +2012,17 @@ class _LifecycleGuard:
             prior_obligation_frozen = (
                 obligation.frozen.get(sid, "") if obligation is not None else ""
             )
+            had_obligation_separator = obligation is not None and sid in obligation.separators
+            prior_obligation_separator = (
+                obligation.separators.get(sid, "") if obligation is not None else ""
+            )
 
             event = self._clamp_stable_until(event, sid, allow_decrease=is_closed_final)
             su = event.stable_until or 0
             if su > 0 and event.text is not None:
                 self._frozen_text[sid] = event.text[:su]
+                if obligation is not None:
+                    obligation.separators[sid] = event.text_separator
                 if is_closed_final and obligation is not None:
                     # Bookkeeping only: a closed final may legally rewrite frozen
                     # text (the divergence rejection below is exempted for it),
@@ -1979,6 +2058,10 @@ class _LifecycleGuard:
                         obligation.frozen[sid] = prior_obligation_frozen
                     else:
                         obligation.frozen.pop(sid, None)
+                    if had_obligation_separator:
+                        obligation.separators[sid] = prior_obligation_separator
+                    else:
+                        obligation.separators.pop(sid, None)
                     self._reject(
                         DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE,
                         f"supersede replacement group {group!r} froze a "
@@ -1999,6 +2082,7 @@ class _LifecycleGuard:
                 # Closed finals record too (harmless: terminal states reject
                 # all later events anyway).
                 self._last_speaker[sid] = event.speaker
+            self._text_separator[sid] = event.text_separator
             if event.type == "final":
                 self._state[sid] = "closed" if event.finality == "closed" else "final"
             else:
@@ -2085,7 +2169,9 @@ class _LifecycleGuard:
         prior_su = self._stable_until.get(sid, 0)
         if prior_su <= 0 or event.text is None:
             return False
-        return event.text[:prior_su] != self._frozen_text.get(sid, "")
+        return event.text[:prior_su] != self._frozen_text.get(
+            sid, ""
+        ) or event.text_separator != self._text_separator.get(sid, " ")
 
     def _supersede_preserves_frozen(self, sid: str) -> bool:
         """Return whether ``sid``'s freeze keeps a supersede obligation intact.
@@ -4040,6 +4126,7 @@ __all__ = [
     "SyncSession",
     "TranscriptionEvent",
     "TranscriptionSession",
+    "compose_reduced_text",
     "reduce_event",
     "validate_stable_until",
 ]

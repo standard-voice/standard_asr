@@ -680,14 +680,15 @@ TranscriptionResult:
 
 ## TR.2 `Segment` / `Word`（流批共享子模型）
 ```
-Segment: start:float|null  end:float|null  text:str
+Segment: start:float|null  end:float|null  text:str  text_separator:str=" "
          words:list[Word]|None  speaker:str|None  channel:int|None
          avg_logprob/no_speech_prob/…:float|None  extra:dict
 Word:    start:float  end:float  text:str
          probability:float|None  speaker:str|None  channel:int|None  extra:dict
 ```
-- **时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）**，与 §ST 同一原点。**每通道内**（有测量值的段间）跨段单调；多通道时不同通道的段 `[start, end]` **允许重叠**（双声道同时说话），顶层**带 `start` 的** segments 按 `start` 稳定排序、`start` 相同时按 `channel` 排、仍相同时按 `speaker` 排（**最终 tie-break**；`None` 排在真实标签之前——单通道多说话人重叠段因此有确定顺序）；`start=null` 的段无时间位置，列表保持**阅读顺序**（列表顺序即阅读顺序，`text` 按列表顺序 join）。适配器把 ms / protobuf-duration / ticks 转入。
+- **时间单位 MUST = float 秒，原点 = 提交音频的第一个采样（音频时间 t=0）**，与 §ST 同一原点。**每通道内**（有测量值的段间）跨段单调；多通道时不同通道的段 `[start, end]` **允许重叠**（双声道同时说话），顶层**带 `start` 的** segments 按 `start` 稳定排序、`start` 相同时按 `channel` 排、仍相同时按 `speaker` 排（**最终 tie-break**；`None` 排在真实标签之前——单通道多说话人重叠段因此有确定顺序）；`start=null` 的段无时间位置，列表保持**阅读顺序**（列表顺序即阅读顺序，`text` 按下条的唯一规则组合）。适配器把 ms / protobuf-duration / ticks 转入。
   > **排序是引擎义务，非构造期强制、合规套件亦不校验（明示，与 TR.4 不对称）**：该 `(start, channel, speaker)` 排序与每通道单调性是**引擎/适配器的义务**——既**不**在 `TranscriptionResult` 构造期强制，合规套件也**不**校验：`StreamReducer` 在任一保留段缺 `start` 时合法地保留到达顺序、否则仅按 `start` 排（无 channel tie-break），严格的 `(start, channel, speaker)` 校验（无论在构造期还是套件对 `session.result()` 输出）都会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是**不可表示的歧义形状**（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界以同一 `(start, channel, speaker)` 键防御性重排——这是标准层唯一的安全网。
+- **段文本组合（normative）**：`Segment.text` 是引擎提供的精确片段，标准层 MUST NOT `strip`、删除空片段或根据文字猜测边界。`text_separator` 是该段跟在另一个段后面时插在它前面的**精确字符串**；最终阅读顺序中的第一段忽略该字段。完整文本的唯一组合规则为：空列表得 `""`；否则 `segments[0].text + "".join(s.text_separator + s.text for s in segments[1:])`。默认值 `" "` 保留既有「无空格英文片段」事件的行为；已自带边界空白的精确片段、CJK 等不以空格分词的文字，或标点片段 MUST 显式使用 `""`。空白与空字符串均是数据，组合时不得丢弃。参考实现与插件 MUST 调用 `compose_segment_text`，不得另写启发式副本。批量引擎直接提供权威的 `TranscriptionResult.text`；该 helper 用于从 segments 构造全文时的统一行为，并不要求标准层改写引擎已提供的批量全文。
 - `probability ∈ [0,1]`；若引擎给 logprob，**另立字段**，不与 probability 混。
 - **`Segment` 时间可空（normative）**：`start`/`end` 为 **`float | null`**，`null` = 引擎**未测量**该时间——是数据，不是缺字段；合法形状仅三种：`(float, float)`（**measured**，`end >= start`）、`(float, null)`（**start_only**，有真实起点但无可用区间）、`(null, null)`（**unavailable**）；`(null, float)`（有终点无起点）**不可表示**，构造期拒绝。衍生只读属性 `Segment.timestamp_status ∈ {"measured","start_only","unavailable"}` 由值派生（**不存储**，因此永不与值矛盾）。流式归约器把引擎的测量**原样存入**（绝不伪造 `0.0`），任一保留段非 measured 时结果级另发 `segment_timestamps_unavailable` diagnostic 作聚合披露；**逐段真相就是可空值本身**——消费者（含标准 SRT/VTT 渲染器）MUST 读值判定，MUST NOT 嗅探 `0.0` 或依赖任何 `extra` 标记（历史上的保留键 `timestamp_placeholder` 已删除；`Segment.extra` 完全归引擎所有，标准不保留任何键）。`TranscriptionEvent` 的 `partial`/`final` 同样拒绝 `(null, float)` 形状（两层同一不变量）。标准渲染器的策略针对**不可渲染（unrenderable）段**、由调用者显式选择：一个段不可渲染，当且仅当其无 measured span，**或** measured span 在输出毫秒格上量化为零（`_to_millis(end) <= _to_millis(start)`——`T --> T` cue 被播放器静默丢弃，渲染成功字符串却无人看见文本）。`to_srt`/`to_vtt` 的 `on_unrenderable ∈ {"error", "omit", "collapse"}`（`"error"` 为默认，抛 `SubtitleRenderingError`（携 `.unrenderable`/`.total` 计数）；`"omit"` 仅渲染可渲染段；`"collapse"` 整文单 cue；未知值响亮拒绝——Literal 不在运行时强制）。渲染器 MUST NOT 自行加宽 span（如捏造 1 ms）——那是未经授权的时间伪造；可渲染性是**渲染器属性**（取决于输出量化格），与模型的 `timestamp_status`（报告测量了什么）语义分离——无声丢字、无声隐藏与无声伪造时间皆为 cardinal sin，默认必须响亮。
 - **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_until` 等）加在**事件包装层**，不污染共享子模型。
@@ -1058,6 +1059,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 | `type` | `"partial" \| "final" \| "supersede" \| "progress" \| "done" \| "error"` | 事件类型 |
 | `segment_id` | `str \| None` | 所属段的稳定 id（`done` 和部分 `error`/`progress` 可为 `None`） |
 | `text` | `str \| None` | 该段的当前完整文本（`partial`/`final` 必有） |
+| `text_separator` | `str` | 该段跟在另一个存活段后面时使用的精确分隔字符串（默认 `" "`；最终阅读顺序第一段忽略）。随 `partial`/`final` 原样传递；`StreamReducer` 在 final/closed 上把它与 `text` 一起提交到 `Segment` |
 | `stable_until` | `int \| None` | 已冻结的 codepoint 数量（`text[:stable_until]` = 冻结前缀；见 §4.2） |
 | `words` | `list[Word] \| None` | 词级细节（可选，与 [§结果模型](#transcription-result) 共享同一 `Word` 定义） |
 | `speaker` | `str \| None` | 段级说话人标签。继承规则与 `Segment.speaker` 相同（TR.5）：`event.words[i].speaker` 非 `None` 时在词级覆盖；标签有效性规则同 TR.5（构造期拒绝空/纯空白/带首尾空白）。冻结区域保护见 §4.2 |
@@ -1074,6 +1076,10 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 
 - **非 `error` 事件**：`extra` MUST 原样透传上 wire——`extra` 是引擎扩展槽位（与 `Segment`/`Word` 的 `extra` 惯例一致），其他语言的客户端按本表即可解释收到的键。
 - **`error` 事件**：server MUST 在出栈前清空 `extra`（置为 `{}`）后再发给客户端。标准层把人类可读的诊断字符串存于 `extra["detail"]`——`engine_error` catch-all 下即**已在 producer 捕获点做过 input-echo-free 摘要**的文本（`safe_exception_summary`；届时异常链尚在，redaction 不可能推迟到日志层）；摘要文本仍可含文件路径 / 上游主机名（有意的 operator 内容），故不得转发给（未认证的）客户端。引擎自建 `error` 事件的 `extra` 属 plugin-authored 数据、标准层无从审查，因此清空规则对**所有** `error` 事件一体适用（引擎作者自行负责其 server 端日志内容的安全）。安全的结构化字段（`code` / `recoverable` / `retriable_after` / `segment_id` 及 gap/reconnect 字段）保留。被剥离的 detail 由 server 以**收到的不透明字符串原样**记入操作日志——链已不存在，server 不会（也无法）重新分析（详见 [server-api.md §4.2](./server-api.md)）。
+
+**归约语义（normative）**：被接受的 `final`/`closed` 事件把 `extra` **整份原样**提交为对应 `Segment.extra`；同 id 后续被接受的 `final`/`closed` 原子替换该段的 `text`、`text_separator`、`words`、`speaker`、时间与 `extra`，不得逐键合并旧字典。段被 supersede 后，其 `extra` 随段一同退出结果。`partial` 尚未提交段，因此其 `extra` 不进入结果；`progress`/`supersede`/`done`/`error` 的扩展信息没有无歧义的结果级归属，`StreamReducer` 不把任何事件 `extra` 聚合到 `TranscriptionResult.extra`。需要跨会话或结果级数据的引擎必须在具名标准字段毕业，或由 batch/自定义结果生产者显式填入结果 `extra`，不可依赖「最后一个事件胜出」之类的隐藏规则。
+
+**词级归约（normative）**：归约完成后，若所有存活段的 `words` 都为 `null`，顶层 `TranscriptionResult.words` 为 `null`；否则它等于按最终段顺序展平所有非 `null` 的 `Segment.words`。因此显式请求但所有列表为空时得到 `[]`，而 supersede 与 closed 修订不会留下旧词。
 
 每种事件的含义：
 
@@ -1172,21 +1178,24 @@ supersede(old_ids=["seg-3","seg-4"], new_ids=["seg-5"])
 ```python
 order: list[str] = []  # 存活段 id 的阅读顺序（列表顺序即阅读顺序）
 texts: dict[str, str] = {}  # segment_id -> 当前文本
+separators: dict[str, str] = {}  # segment_id -> 精确 text_separator
 
 if event.type in ("partial", "final"):
     if event.segment_id not in order:
         order.append(event.segment_id)  # 首次宣告认领下一个阅读位置
     texts[event.segment_id] = event.text  # 显示 / 提交
+    separators[event.segment_id] = event.text_separator
 elif event.type == "supersede":
     pos = order.index(event.old_ids[0])  # 旧块起点（old_ids 连续、按阅读顺序）
     for old_id in event.old_ids:
         order.remove(old_id)  # 退休旧段
         texts.pop(old_id, None)
+        separators.pop(old_id, None)
     order[pos:pos] = event.new_ids  # 新段原位接管旧块的阅读位置
-# 显示文本 = 按 order 串接 texts（new_ids 的内容随后经 partial/final 到达）
+# 显示文本 = 按 order 以每段显式 text_separator 精确组合
 ```
 
-状态是**阅读顺序列表 + 文本映射**而非裸映射：无时间戳流（`start=null`）的阅读顺序就是列表顺序（§TR），而 mid-stream 的 `supersede` 必须把替换段**原位**接进被退休块的位置——裸 dict 只能在末尾追加，会静默改变词序（cardinal sin）。参考实现 `runtime.streaming.reduce_event` 与上述逐行一致（对违反 placement 不变量的事件 fail-loud；经 `TranscriptionSession` 驱动时守卫已先抑制它们）。
+状态是**阅读顺序列表 + 文本映射 + separator 映射**而非裸映射：无时间戳流（`start=null`）的阅读顺序就是列表顺序（§TR），而 mid-stream 的 `supersede` 必须把替换段**原位**接进被退休块的位置——裸 dict 只能在末尾追加，会静默改变词序（cardinal sin）；忽略 separator 映射则会重新引入语言相关猜测并改写空白。参考实现 `runtime.streaming.reduce_event` 维护三者，`compose_reduced_text` 执行 TR.2 唯一组合规则（对违反 placement 不变量的事件 fail-loud；经 `TranscriptionSession` 驱动时守卫已先抑制它们）。
 
 **`supersede` 是核心事件（非可选）**——即使 `re_segments` capability 为 `false`（引擎承诺不发 supersede），应用代码也 MUST 包含上面的 reduce 逻辑。这样无论切换到任何引擎都安全。
 
@@ -1196,7 +1205,7 @@ elif event.type == "supersede":
 - **连续区间与原位替换（placement，normative）**：`old_ids` MUST 构成**当前存活阅读顺序**中的一个**连续区间**，且事件内顺序与存活顺序一致；`new_ids` MUST **原位**接管该区间的阅读位置（区间内按 `new_ids` 顺序）。每个段 id 在**首次宣告**时（收到首个 `partial`/`final`，或作为 `supersede` 的 `new_ids` 被引入）认领当前阅读顺序的下一个位置。这是无时间戳流（`start=null`，列表顺序即阅读顺序，见 §TR）在 supersede 后仍有确定阅读顺序的**唯一**依据——把替换段当作新段追加到末尾会静默改变最终词序（cardinal sin：`final(a,"hi") final(b,"world") supersede([a],[a2]) final(a2,"HI")` 的正确归约是 `HI world`，追加式归约给出 `world HI`）。语义根据：supersede 表达对一段**连续语音区间**的重转写（合并/拆分**相邻**段）——冻结前缀保留规则的 F_old 拼接本就预设旧段文本相邻，跨越无关存活段的"替换"没有连贯语义。非连续或乱序的 `old_ids` 使整个 supersede 事件被**抑制**并发 **`supersede_noncontiguous_old_ids`** diagnostic（strict 模式 raise；抑制语义与跨说话人合并禁令一致：旧段继续存活、新段以全新段到达、归约可能出现重复文本——只伤害不合规适配器）。
 - `new_ids` 中的段可能先以 `partial` 到达（不一定立刻是 `final`）——应用的 reduce 应在 `new_ids` 的第一个事件到达时就开始渲染新段文本。
 - **排序**：`supersede` 事件 MUST 在其 `new_ids` 的任何 `partial`/`final` 之前投递；`old_ids` 中的 id 必须在之前已被**宣告**过——「宣告」= 收到过至少一个 `partial` / `final`，**或**作为更早一次 `supersede` 的 `new_ids` 被引入（链式 supersede `A→B`、`B→C` 中，`B` 即使从未收到 partial/final 也算已宣告）。
-- **冻结前缀保留（拼接覆盖规则）**：`supersede` 操作 MUST 保留已冻结的文本。设 **F_old** = 被替换的旧段（按 `old_ids` 顺序）各自冻结前缀 `text[:stable_until]` 的拼接；**F_new** = 新段（按 `new_ids` 顺序）各自当前冻结前缀的拼接（随新段后续 `partial`/`final` 不断冻结更多文本而增长）。**不变量**：F_old 与 F_new MUST 在其公共前缀上一致——任何一方都 MUST NOT 改写另一方。换言之，**用户已经看到并"确信不变"的文字，在段被替换后仍然不变**。
+- **冻结前缀保留（拼接覆盖规则）**：`supersede` 操作 MUST 保留已冻结的文本。设 **F_old** = 被替换的旧段（按 `old_ids` 顺序）各自冻结前缀 `text[:stable_until]` 按 TR.2 的 `text_separator` 规则精确组合；**F_new** = 新段（按 `new_ids` 顺序）各自当前冻结前缀以同一规则组合（随新段后续 `partial`/`final` 不断冻结更多文本而增长）。若被替换块前面还有存活段，两边首段的 separator 都是可见边界，纳入 F；若该块位于全文开头，两边首段 separator 均忽略。某段已经确立冻结前缀后，后续非 `closed` 事件改变它的 `text_separator` 也属于改写冻结文字，MUST 与改变 `text[:stable_until]` 一样被抑制。**不变量**：F_old 与 F_new MUST 在其公共前缀上一致——任何一方都 MUST NOT 改写另一方。换言之，**用户已经看到并"确信不变"的文字，在段被替换后仍然不变**。
   - 这条规则**统一覆盖** 1→1、多→1（合并）、1→多（拆分）、多→多 各种基数；1→1 只是 n=m=1 的退化情形，无需特殊处理。（例：旧段冻结前缀是"你好世界"，无论新分段是单个 seg("你好世界", `stable_until`≥4) 还是拆成 seg("你好", su≥2)+seg("世界…", su≥2)，拼接后都必须以"你好世界"开头。）
   - **方向不对称**：**改写/分歧方向** MUST **及早（eagerly）**检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。「拒绝」作用于**整个触发事件**（含其未冻结尾部）而非仅冻结部分——只伤害不合规适配器，且保证被拒事件不会以半改写状态泄出。而"新分段冻结的文本严格少于 F_old"是**保守安全方向**（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。该"至多一条软诊断"在实现中是：会话到达终态（或合规重放结束）时，若某个 supersede 的 F_new 仍严格短于 F_old，标准层发一条 **`info` 级 `supersede_obligation_unfulfilled`** diagnostic（点名受影响的 `new_ids`），表示未重新冻结的尾巴被从 lineage 中丢弃——它**不是 error、不拒绝**任何事件，supersede 依旧成立（实现：`_LifecycleGuard.finalize`，由 `TranscriptionSession._terminate` 调用）。
 - **跨说话人合并禁令（normative）**：引擎 MUST NOT 把携带**不同** speaker 的段 supersede 进单一新段——合并后的段只有一个 `speaker` 字段，无论选谁，另一人说的文字都被静默错误归属；set-to-set lineage（见下）原理上无法保留 per-speaker 归属。标准层的运行时守卫做**鸽笼式**最佳努力执行：当退休旧段（`old_ids`）各自**最后已知**的非 `None` speaker 互不相同（≥2 个不同标签），且 `new_ids` 非空而数量**少于**这些不同标签的数量（跨 speaker 合并不可避免；典型即多→1）时，MUST 抑制整个 `supersede` 事件并发 `supersede_cross_speaker_merge` diagnostic。set-to-set lineage 证明不了更细的映射，其余形态（如等基数换牌）仅由本条 MUST NOT 约束——守卫检不出（合规重放共用同一鸽笼守卫，同样检不出），是防线不是完备判定。**被抑制 supersede 的副作用（与上文「拒绝作用于整个触发事件」同一抑制语义，明示）**：旧段在应用/归约器中继续存活，而 `new_ids` 的段随后以全新段到达——归约结果出现**重复文本**。这是既有「只伤害不合规适配器」立场的延续；合法引擎（同 speaker 合并、保 speaker 拆分）不受影响。

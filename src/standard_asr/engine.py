@@ -145,6 +145,7 @@ from standard_asr.contract.results import (
     Segment,
     TranscriptionResult,
     Word,
+    compose_segment_text,
     to_json_value,
 )
 from standard_asr.runtime.config import (
@@ -260,6 +261,7 @@ __all__ = [
     "WordTimestampGranularity",
     "WordTimestampGranularityName",
     "WordTimestampsCap",
+    "compose_segment_text",
     "allow_downloads",
     "effective_candidate_languages",
     "effective_language",

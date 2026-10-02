@@ -3007,10 +3007,10 @@ def test_check_event_sequence_does_not_cascade_after_supersede_rewrite() -> None
 
 def test_check_event_sequence_accepts_supersede_merge_preserving_frozen() -> None:
     events = [
-        TranscriptionEvent.final("a", "你好", stable_until=2),
-        TranscriptionEvent.final("b", "世界", stable_until=2),
+        TranscriptionEvent.final("a", "你好", text_separator="", stable_until=2),
+        TranscriptionEvent.final("b", "世界", text_separator="", stable_until=2),
         TranscriptionEvent.supersede(["a", "b"], ["c"]),
-        TranscriptionEvent.final("c", "你好世界！", stable_until=4),
+        TranscriptionEvent.final("c", "你好世界！", text_separator="", stable_until=4),
         TranscriptionEvent.done(),
     ]
     report = check_event_sequence(events)

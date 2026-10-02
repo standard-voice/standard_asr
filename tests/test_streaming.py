@@ -58,6 +58,7 @@ from standard_asr.runtime.streaming import (
     _cancel_all_tasks,  # pyright: ignore[reportPrivateUsage]
     _CoalescingBuffer,  # pyright: ignore[reportPrivateUsage]
     _LifecycleGuard,  # pyright: ignore[reportPrivateUsage]
+    compose_reduced_text,
     reduce_event,
     validate_stable_until,
 )
@@ -179,15 +180,43 @@ def test_event_speaker_serializes_on_wire_dump() -> None:
 def test_reduce_event_partial_final_supersede() -> None:
     order: list[str] = []
     texts: dict[str, str] = {}
-    reduce_event(order, texts, TranscriptionEvent.partial("s1", "hel"))
-    reduce_event(order, texts, TranscriptionEvent.final("s1", "hello"))
+    separators: dict[str, str] = {}
+    reduce_event(
+        order,
+        texts,
+        TranscriptionEvent.partial("s1", "hel", text_separator=""),
+        separators=separators,
+    )
+    reduce_event(
+        order,
+        texts,
+        TranscriptionEvent.final("s1", "hello", text_separator=""),
+        separators=separators,
+    )
     assert (order, texts) == (["s1"], {"s1": "hello"})
-    reduce_event(order, texts, TranscriptionEvent.final("s2", "world"))
-    reduce_event(order, texts, TranscriptionEvent.supersede(["s1", "s2"], ["s3"]))
+    reduce_event(
+        order,
+        texts,
+        TranscriptionEvent.final("s2", "world", text_separator="\n"),
+        separators=separators,
+    )
+    assert compose_reduced_text(order, texts, separators) == "hello\nworld"
+    reduce_event(
+        order,
+        texts,
+        TranscriptionEvent.supersede(["s1", "s2"], ["s3"]),
+        separators=separators,
+    )
     # The replacement takes over the retired block's position; its text
     # arrives with its own final.
     assert (order, texts) == (["s3"], {})
-    reduce_event(order, texts, TranscriptionEvent.final("s3", "hello world"))
+    assert separators == {}
+    reduce_event(
+        order,
+        texts,
+        TranscriptionEvent.final("s3", "hello world"),
+        separators=separators,
+    )
     assert (order, texts) == (["s3"], {"s3": "hello world"})
 
 
@@ -208,15 +237,141 @@ def test_stream_reducer_supersede_removes() -> None:
     assert reducer.result().text == "right"
 
 
-def test_stream_reducer_result_strips_edge_whitespace_and_drops_empty() -> None:
-    # A segment carrying trailing/leading whitespace, and a whitespace-only
-    # committed segment, must not inject a double space or a stray separator
-    # into the reduced transcript.
+def test_stream_reducer_preserves_exact_text_and_explicit_separators() -> None:
     reducer = StreamReducer()
-    reducer.add(TranscriptionEvent.final("s1", "the quick ", start=0.0, end=1.0))
-    reducer.add(TranscriptionEvent.final("s2", "  ", start=1.0, end=2.0))
-    reducer.add(TranscriptionEvent.final("s3", " brown fox", start=2.0, end=3.0))
-    assert reducer.result().text == "the quick brown fox"
+    reducer.add(TranscriptionEvent.final("s1", " 你好", text_separator="", start=0.0, end=1.0))
+    reducer.add(TranscriptionEvent.final("s2", "世界 ", text_separator="", start=1.0, end=2.0))
+    reducer.add(TranscriptionEvent.final("s3", "\t", text_separator="\n", start=2.0, end=3.0))
+    result = reducer.result()
+    assert result.text == " 你好世界 \n\t"
+    assert result.segments is not None
+    assert [segment.text for segment in result.segments] == [" 你好", "世界 ", "\t"]
+    assert [segment.text_separator for segment in result.segments] == ["", "", "\n"]
+
+
+def test_stream_reducer_revisions_replace_all_segment_projection_fields() -> None:
+    first_words = _speaker_words("A")
+    closed_words = _speaker_words("B", "B")
+    reducer = StreamReducer()
+    reducer.add(
+        TranscriptionEvent.final(
+            "s1",
+            "draft",
+            text_separator=" ",
+            words=first_words,
+            speaker="A",
+            extra={"revision": 1, "nested": {"state": "draft"}},
+        )
+    )
+    reducer.add(
+        TranscriptionEvent.closed(
+            "s1",
+            "定稿 ",
+            text_separator="",
+            words=closed_words,
+            speaker="B",
+            extra={"revision": 2},
+        )
+    )
+
+    result = reducer.result()
+    assert result.text == "定稿 "
+    assert result.words == closed_words
+    assert result.extra == {}
+    assert result.segments is not None
+    assert result.segments[0].model_dump() == {
+        "start": None,
+        "end": None,
+        "text": "定稿 ",
+        "text_separator": "",
+        "words": [word.model_dump() for word in closed_words],
+        "speaker": "B",
+        "channel": None,
+        "avg_logprob": None,
+        "no_speech_prob": None,
+        "temperature": None,
+        "compression_ratio": None,
+        "extra": {"revision": 2},
+    }
+
+
+def test_stream_reducer_words_follow_live_segment_order_and_null_rule() -> None:
+    old_words = _speaker_words("old")
+    kept_words = _speaker_words("kept")
+    new_words = _speaker_words("new", "new")
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("old", "old", words=old_words))
+    reducer.add(TranscriptionEvent.final("kept", "kept", words=kept_words))
+    reducer.add(TranscriptionEvent.supersede(["old"], ["new"]))
+    reducer.add(TranscriptionEvent.final("new", "新", text_separator="", words=new_words))
+
+    result = reducer.result()
+    assert result.text == "新 kept"
+    assert result.words == [*new_words, *kept_words]
+
+    unavailable = StreamReducer()
+    unavailable.add(TranscriptionEvent.final("s1", "one"))
+    assert unavailable.result().words is None
+
+    requested_but_empty = StreamReducer()
+    requested_but_empty.add(TranscriptionEvent.final("s1", "silence", words=[]))
+    assert requested_but_empty.result().words == []
+
+
+def test_frozen_text_protects_exact_segment_separators() -> None:
+    guard = _LifecycleGuard()
+    assert (
+        guard.admit(TranscriptionEvent.partial("s1", "hello", text_separator=" ", stable_until=5))
+        is not None
+    )
+    assert (
+        guard.admit(TranscriptionEvent.final("s1", "hello", text_separator="\n", stable_until=5))
+        is None
+    )
+    assert [diagnostic.code for diagnostic in guard.diagnostics] == [DIAG_FROZEN_PREFIX_REWRITTEN]
+
+
+def test_supersede_frozen_text_uses_internal_and_outer_separators() -> None:
+    internal = _LifecycleGuard()
+    assert (
+        internal.admit(TranscriptionEvent.final("a", "hello", text_separator="", stable_until=5))
+        is not None
+    )
+    assert (
+        internal.admit(TranscriptionEvent.final("b", "world", text_separator=" ", stable_until=5))
+        is not None
+    )
+    assert internal.admit(TranscriptionEvent.supersede(["a", "b"], ["a2", "b2"])) is not None
+    assert (
+        internal.admit(TranscriptionEvent.partial("a2", "hello", text_separator="", stable_until=5))
+        is not None
+    )
+    assert (
+        internal.admit(TranscriptionEvent.partial("b2", "world", text_separator="", stable_until=5))
+        is None
+    )
+    assert (
+        internal.admit(
+            TranscriptionEvent.partial("b2", "world", text_separator=" ", stable_until=5)
+        )
+        is not None
+    )
+
+    outer = _LifecycleGuard()
+    assert outer.admit(TranscriptionEvent.final("first", "one")) is not None
+    assert (
+        outer.admit(TranscriptionEvent.final("old", "two", text_separator=" ", stable_until=3))
+        is not None
+    )
+    assert outer.admit(TranscriptionEvent.supersede(["old"], ["new"])) is not None
+    assert (
+        outer.admit(TranscriptionEvent.final("new", "two", text_separator="", stable_until=3))
+        is None
+    )
+    assert (
+        outer.admit(TranscriptionEvent.final("new", "two", text_separator=" ", stable_until=3))
+        is not None
+    )
 
 
 def _speaker_words(*labels: str | None) -> list[Word]:
@@ -536,6 +691,48 @@ def test_session_status_marks_context_exit_before_terminal_closed() -> None:
             session.result()
 
     asyncio.run(run())
+
+
+def test_session_status_rejects_inconsistent_terminal_shapes() -> None:
+    done = TranscriptionEvent.done()
+    error = TranscriptionEvent.make_error("failed")
+    partial = TranscriptionEvent.partial("s1", "text")
+
+    for state in ("running", "closed"):
+        with pytest.raises(ValidationError, match="cannot have a terminal event"):
+            streaming_module.SessionStatus.model_validate({"state": state, "terminal_event": done})
+    with pytest.raises(ValidationError, match="requires a terminal event"):
+        streaming_module.SessionStatus(state="succeeded")
+    with pytest.raises(ValidationError, match="requires a terminal event"):
+        streaming_module.SessionStatus(state="failed", terminal_event=partial)
+    with pytest.raises(ValidationError, match="requires a done event"):
+        streaming_module.SessionStatus(state="succeeded", terminal_event=error)
+    with pytest.raises(ValidationError, match="requires a terminal error event"):
+        streaming_module.SessionStatus(state="failed", terminal_event=done)
+
+
+def test_session_metadata_rejects_invalid_or_late_updates() -> None:
+    session = _EchoSession()
+    for value in ("1.0", float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite number"):
+            session.set_input_duration(value)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=">= 0"):
+        session.set_input_duration(-0.1)
+
+    session.set_input_duration(1.0)
+    with pytest.raises(ValueError, match="already set"):
+        session.set_input_duration(2.0)
+
+    first = session._terminate(TranscriptionEvent.done())  # pyright: ignore[reportPrivateUsage]
+    second = session._terminate(  # pyright: ignore[reportPrivateUsage]
+        TranscriptionEvent.make_error("too_late")
+    )
+    assert session.status().terminal_event is first
+    assert second.code == "too_late"
+    with pytest.raises(InvalidSessionUseError, match="audio progress"):
+        session._configure_audio_progress(  # pyright: ignore[reportPrivateUsage]
+            True
+        )
 
 
 def test_session_feed_then_manual_raises() -> None:
@@ -979,7 +1176,11 @@ def test_sync_bridge_feed() -> None:
     with SyncSession(_EchoSession()) as sync:
         sync.feed([b"abc", b"de"])
         events = list(sync)
+        assert sync.status().state == "succeeded"
+        live_result = sync.result()
     assert events[-1].type == "done"
+    assert sync.status().state == "succeeded"
+    assert live_result == sync.result()
     assert sync.result().text in ("abc de", "de abc") or "abc" in sync.result().text
 
 
@@ -2335,10 +2536,12 @@ def test_guard_supersede_2to1_merge_preserves_frozen_text() -> None:
     # Two retired segments froze "你好" and "世界"; the single replacement MUST
     # carry the concatenation "你好世界" as its frozen prefix.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好", stable_until=2))
-    guard.admit(TranscriptionEvent.final("b", "世界", stable_until=2))
+    guard.admit(TranscriptionEvent.final("a", "你好", text_separator="", stable_until=2))
+    guard.admit(TranscriptionEvent.final("b", "世界", text_separator="", stable_until=2))
     guard.admit(TranscriptionEvent.supersede(["a", "b"], ["c"]))
-    accepted = guard.admit(TranscriptionEvent.partial("c", "你好世界！", stable_until=4))
+    accepted = guard.admit(
+        TranscriptionEvent.partial("c", "你好世界！", text_separator="", stable_until=4)
+    )
     assert accepted is not None
     assert not guard.diagnostics
 
@@ -2352,11 +2555,11 @@ def test_guard_supersede_1to2_split_preserves_frozen_text() -> None:
     guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
     # First new segment freezes "你好" -- strictly shorter than F_old, the safe
     # (pending) direction: accepted with no diagnostic.
-    first = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    first = guard.admit(TranscriptionEvent.partial("b", "你好", text_separator="", stable_until=2))
     assert first is not None
     assert not guard.diagnostics
     # Second new segment freezes "世界"; F_new now == "你好世界" == F_old.
-    second = guard.admit(TranscriptionEvent.final("c", "世界呀", stable_until=2))
+    second = guard.admit(TranscriptionEvent.final("c", "世界呀", text_separator="", stable_until=2))
     assert second is not None
     assert not guard.diagnostics
 
@@ -2373,11 +2576,13 @@ def test_guard_supersede_split_out_of_order_freeze_accepted() -> None:
     guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
     guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
     # c (the later new id) freezes "世界" first -- must NOT be misplaced at 0.
-    out_of_order = guard.admit(TranscriptionEvent.partial("c", "世界呀", stable_until=2))
+    out_of_order = guard.admit(
+        TranscriptionEvent.partial("c", "世界呀", text_separator="", stable_until=2)
+    )
     assert out_of_order is not None
     assert not guard.diagnostics
     # b later freezes "你好"; the contiguous run is now "你好世界" == F_old.
-    filled = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    filled = guard.admit(TranscriptionEvent.partial("b", "你好", text_separator="", stable_until=2))
     assert filled is not None
     assert not guard.diagnostics
 
@@ -2390,9 +2595,11 @@ def test_guard_supersede_split_contradiction_still_rejected() -> None:
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
     guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    first = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    first = guard.admit(TranscriptionEvent.partial("b", "你好", text_separator="", stable_until=2))
     assert first is not None
-    rejected = guard.admit(TranscriptionEvent.partial("c", "再见", stable_until=2))
+    rejected = guard.admit(
+        TranscriptionEvent.partial("c", "再见", text_separator="", stable_until=2)
+    )
     assert rejected is None
     assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
 
@@ -2407,10 +2614,14 @@ def test_guard_supersede_out_of_order_divergence_diagnostic_names_the_group() ->
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))  # F_old = 你好世界
     guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    out_of_order = guard.admit(TranscriptionEvent.partial("c", "界世", stable_until=2))
+    out_of_order = guard.admit(
+        TranscriptionEvent.partial("c", "界世", text_separator="", stable_until=2)
+    )
     assert out_of_order is not None  # c's freeze is still pending at this point.
     assert not guard.diagnostics
-    rejected = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
+    rejected = guard.admit(
+        TranscriptionEvent.partial("b", "你好", text_separator="", stable_until=2)
+    )
 
     # Behavior is unchanged: b's freeze is suppressed (the run now diverges).
     assert rejected is None
@@ -2510,24 +2721,30 @@ def test_guard_rejected_event_does_not_poison_speaker_ledger() -> None:
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
     guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    accepted = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2, speaker="B"))
+    accepted = guard.admit(
+        TranscriptionEvent.partial("b", "你好", text_separator="", stable_until=2, speaker="B")
+    )
     assert accepted is not None
     # c freezes text diverging from F_old while carrying speaker "C": the
     # event is rejected on the supersede obligation -- AFTER the point where a
     # naive implementation would have recorded the speaker.
-    rejected = guard.admit(TranscriptionEvent.partial("c", "再见", stable_until=2, speaker="C"))
+    rejected = guard.admit(
+        TranscriptionEvent.partial("c", "再见", text_separator="", stable_until=2, speaker="C")
+    )
     assert rejected is None
     assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
     ledger = guard._last_speaker  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert "c" not in ledger and ledger["b"] == "B"
     # Follow-up: c may still take ANY first speaker (the rejected "C" never
     # locked in) ...
-    ok = guard.admit(TranscriptionEvent.partial("c", "世界呀", stable_until=2, speaker="D"))
+    ok = guard.admit(
+        TranscriptionEvent.partial("c", "世界呀", text_separator="", stable_until=2, speaker="D")
+    )
     assert ok is not None and ok.speaker == "D"
     # ... and is thereafter judged against the ACCEPTED "D", not the
     # rejected "C".
     rejected_again = guard.admit(
-        TranscriptionEvent.partial("c", "世界呀!", stable_until=2, speaker="C")
+        TranscriptionEvent.partial("c", "世界呀!", text_separator="", stable_until=2, speaker="C")
     )
     assert rejected_again is None
     assert any(d.code == "frozen_speaker_rewritten" for d in guard.diagnostics)

@@ -18,7 +18,7 @@ Null rules (disambiguation):
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Annotated, Literal, cast
 
 from pydantic import (
@@ -341,9 +341,9 @@ class Segment(BaseModel):
         channel)`` overlapping segments, ``None`` sorting before any real
         label). A ``start=None`` segment has no time position: the producer
         keeps the list in READING order instead (list order is the reading
-        order, and ``TranscriptionResult.text`` joins segment texts in list
-        order), so a single unmeasured segment never scrambles -- or forces
-        fabricated positions into -- an otherwise real timeline.
+        order, and :func:`compose_segment_text` composes the exact text in
+        that order), so a single unmeasured segment never scrambles -- or
+        forces fabricated positions into -- an otherwise real timeline.
 
     Attributes:
         start: Segment start time in seconds (origin = first submitted sample;
@@ -351,6 +351,12 @@ class Segment(BaseModel):
         end: Segment end time in seconds (non-negative, finite, ``>= start``),
             or ``None`` when unmeasured. Requires ``start``.
         text: Segment transcript text.
+        text_separator: Exact text inserted before this segment when it follows
+            another segment in a composed transcript. The first segment's
+            separator is ignored. The default space preserves engines whose
+            English-like segments omit boundary whitespace. Use ``""`` when
+            ``text`` already carries its boundary or the language uses no
+            separator.
         words: Optional word-level details for this segment.
         speaker: Optional speaker label (authoritative diarization shape).
         channel: Optional channel index for provenance (``>= 0``).
@@ -382,6 +388,12 @@ class Segment(BaseModel):
         ),
     )
     text: str = Field(..., description="Segment transcript text.")
+    text_separator: str = Field(
+        default=" ",
+        description=(
+            "Exact separator before this segment in composed text; ignored for the first segment."
+        ),
+    )
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this segment."
     )
@@ -480,6 +492,44 @@ class Segment(BaseModel):
         return "measured"
 
 
+def compose_text_fragments(fragments: Iterable[tuple[str, str]]) -> str:
+    """Compose ``(separator, text)`` fragments without rewriting characters.
+
+    The first fragment's separator is ignored. Empty and whitespace-only text
+    remains significant.
+
+    Args:
+        fragments: Exact separator and text pairs in final reading order.
+
+    Returns:
+        The exact composed transcript, or ``""`` for no fragments.
+    """
+    iterator = iter(fragments)
+    try:
+        _, first_text = next(iterator)
+    except StopIteration:
+        return ""
+    return first_text + "".join(separator + text for separator, text in iterator)
+
+
+def compose_segment_text(segments: Sequence[Segment]) -> str:
+    """Compose segment text without rewriting engine-provided characters.
+
+    The first segment contributes its ``text`` verbatim. Each later segment
+    contributes its ``text_separator`` followed by its ``text``, also
+    verbatim. Empty and whitespace-only text remains significant. This makes
+    whitespace, punctuation, and scripts without word separators explicit
+    protocol data instead of a reducer heuristic.
+
+    Args:
+        segments: Segments in final reading order.
+
+    Returns:
+        The exact composed transcript, or ``""`` for no segments.
+    """
+    return compose_text_fragments((segment.text_separator, segment.text) for segment in segments)
+
+
 def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
     """Derive a segment-level speaker label from its words (the pinned synthesis rule).
 
@@ -566,8 +616,9 @@ class TranscriptionResult(BaseModel):
             (monotonic within a channel; ``speaker`` is the final tie-break,
             ``None`` sorting first); a ``start=None`` segment has no time
             position, so the list stays in READING order instead (list order
-            is the reading order; ``text`` joins segment texts in list
-            order). The ordering is an **engine obligation**, neither
+            is the reading order; :func:`compose_segment_text` defines exact
+            composition when a producer derives ``text`` from the list). The
+            ordering is an **engine obligation**, neither
             enforced at construction nor checked by the compliance suite
             (the streaming reducer keeps arrival order whenever any retained
             segment lacks a ``start``). The SRT/VTT renderers' defensive
@@ -731,6 +782,8 @@ __all__ = [
     "Segment",
     "TranscriptionResult",
     "Word",
+    "compose_segment_text",
+    "compose_text_fragments",
     "synthesize_segment_speaker",
     "to_json_value",
     "validate_speaker_label",

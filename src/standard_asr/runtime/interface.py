@@ -1674,21 +1674,16 @@ class EngineBase(ABC):
         Raises:
             EngineContractError: If ``result`` is awaitable or not a
                 :class:`~standard_asr.contract.results.TranscriptionResult`.
-            TranscriptionError: If result validation raises a pydantic
-                ``ValidationError``.
         """
-        try:
-            # The boundary belongs HERE, at the author hook, not only on the
-            # public method a consumer sees: the template consumes this value
-            # immediately (speaker synthesis, then .diagnostics), so an
-            # `async def` _transcribe surfaced as a secondary AttributeError
-            # on a coroutine -- plus a never-awaited warning -- long before
-            # any consumer's own check could classify it. A public
-            # `transcribe()` being synchronous says nothing about the hook it
-            # delegates to, so no surface-level modality check can see this.
-            require_sync_result(result, "_transcribe()", expected_type=TranscriptionResult)
-        except ValidationError as exc:
-            raise _invalid_transcription_result_error(exc) from exc
+        # The boundary belongs HERE, at the author hook, not only on the
+        # public method a consumer sees: the template consumes this value
+        # immediately (speaker synthesis, then .diagnostics), so an
+        # `async def` _transcribe surfaced as a secondary AttributeError
+        # on a coroutine -- plus a never-awaited warning -- long before
+        # any consumer's own check could classify it. A public
+        # `transcribe()` being synchronous says nothing about the hook it
+        # delegates to, so no surface-level modality check can see this.
+        require_sync_result(result, "_transcribe()", expected_type=TranscriptionResult)
         typed_result = cast("TranscriptionResult", result)
         # Standard-layer diarization synthesis: the streaming
         # reducer applies the same shared rule, so batch and streaming yield

@@ -5246,6 +5246,15 @@ def test_error_event_drops_extra_before_serializing() -> None:
     assert payload["type"] == "error"
 
 
+def test_content_event_preserves_exact_text_separator_on_wire() -> None:
+    event = TranscriptionEvent.final("s1", "世界", text_separator="\n")
+    payload = server_module._scrub_event_for_client(  # pyright: ignore[reportPrivateUsage]
+        event
+    )
+    assert payload["text"] == "世界"
+    assert payload["text_separator"] == "\n"
+
+
 def test_rest_projection_failure_is_a_scrubbed_500_not_an_asgi_crash(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

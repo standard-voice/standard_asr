@@ -119,6 +119,7 @@ from standard_asr.contract.results import (
     Segment,
     TranscriptionResult,
     Word,
+    compose_segment_text,
 )
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
 from standard_asr.renderers import UnrenderablePolicy, to_srt, to_vtt
@@ -225,6 +226,7 @@ __all__ = [
     "UnsupportedFeatureError",
     "Word",
     "WordTimestampGranularity",
+    "compose_segment_text",
     "discover_models",
     "require_engine_protocol",
     "to_srt",
