@@ -10,7 +10,8 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterable, Iterator
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Literal, cast
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -20,6 +21,14 @@ from standard_asr.contract.artifacts import (
     ArtifactReport,
     ArtifactRequirement,
 )
+from standard_asr.contract.capabilities import (
+    DiarizationCap,
+    FinalityCap,
+    FlagCap,
+    StreamingCapabilities,
+    StreamTimestampsCap,
+    WordTimestampsCap,
+)
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactUnavailableError,
@@ -28,24 +37,26 @@ from standard_asr.contract.exceptions import (
 )
 from standard_asr.contract.results import Word
 from standard_asr.runtime import streaming as streaming_module
+from standard_asr.runtime._text import (
+    is_combining_mark,
+    splits_combining_sequence,
+)
 from standard_asr.runtime.streaming import (
     ARTIFACT_ACQUISITION_FAILED_CODE,
     ARTIFACT_UNAVAILABLE_CODE,
     DEFAULT_DONE_TIMEOUT,
     DIAG_AUDIO_CURSOR_DECREASED,
-    DIAG_FROZEN_PREFIX_REWRITTEN,
-    DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE,
-    DIAG_FROZEN_SPEAKER_REWRITTEN,
     DIAG_LIFECYCLE_AFTER_TERMINAL,
     DIAG_LIFECYCLE_CLOSED_SUPERSEDED,
     DIAG_LIFECYCLE_FINAL_AFTER_FINAL,
     DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL,
     DIAG_LIFECYCLE_RETIRED_RESUPERSEDED,
+    DIAG_LOCKED_SPEAKER_REWRITTEN,
     DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
-    DIAG_STABLE_UNTIL_CLAMPED,
+    DIAG_STABLE_TEXT_ABANDONED,
+    DIAG_STABLE_TEXT_CLAMPED,
+    DIAG_STABLE_TEXT_REWRITTEN,
     DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE,
-    DIAG_SUPERSEDE_DELETES_FROZEN_TEXT,
-    DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
     DIAG_SUPERSEDE_REINTRODUCES_SEGMENT,
     DIAG_SUPERSEDE_UNKNOWN_OLD_ID,
     EventBufferOverflowError,
@@ -58,32 +69,248 @@ from standard_asr.runtime.streaming import (
     _CoalescingBuffer,  # pyright: ignore[reportPrivateUsage]
     _LifecycleGuard,  # pyright: ignore[reportPrivateUsage]
     reduce_event,
-    validate_stable_until,
+    validate_stable_text,
 )
 
+# --------------------------------------------------------------------------- #
+# Stable text: the prefix check and the combining-sequence boundary
+# --------------------------------------------------------------------------- #
+_ZWNJ = "\u200c"
+_ZWJ = "\u200d"
+_ACUTE = "\u0301"
+#: WOMAN, ZERO WIDTH JOINER, PERSONAL COMPUTER: one emoji built from three
+#: code points.
+_TECHNOLOGIST = "\U0001f469" + _ZWJ + "\U0001f4bb"
+
+
+def test_validate_stable_text_requires_a_prefix() -> None:
+    assert validate_stable_text("hello", "") is True
+    assert validate_stable_text("hello", "hel") is True
+    assert validate_stable_text("hello", "hello") is True
+    # The comparison is character for character: no case folding, no
+    # trimming, no normalization.
+    assert validate_stable_text("hello", "Hel") is False
+    assert validate_stable_text("hello", "hello!") is False
+    assert validate_stable_text("hello", " hel") is False
+    assert validate_stable_text("e" + _ACUTE, "\u00e9") is False
+
+
+@pytest.mark.parametrize(
+    ("text", "stable_text", "valid"),
+    [
+        # Characters above U+FFFF are one character each in a Python string,
+        # so a cut between them is an ordinary boundary.
+        ("\U00020bb7野家", "\U00020bb7", True),
+        ("\U00020bb7野家", "\U00020bb7野", True),
+        ("\U0001f600 ok", "\U0001f600", True),
+        # A combining acute accent belongs to the "e" before it.
+        ("e" + _ACUTE + "x", "e", False),
+        ("e" + _ACUTE + "x", "e" + _ACUTE, True),
+        # Devanagari KA followed by the vowel sign AA (U+093E, category `Mc`,
+        # canonical combining class 0).
+        ("\u0915\u093e", "\u0915", False),
+        ("\u0915\u093e", "\u0915\u093e", True),
+        # Thai KO KAI followed by the vowel sign MAI HAN-AKAT (U+0E31,
+        # category Mn, canonical combining class 0).
+        ("\u0e01\u0e31\u0e19", "\u0e01", False),
+        ("\u0e01\u0e31\u0e19", "\u0e01\u0e31", True),
+        # A zero width joiner glues both of its neighbors: a cut before it
+        # and a cut right after it both split the emoji.
+        (_TECHNOLOGIST, "\U0001f469", False),
+        (_TECHNOLOGIST, "\U0001f469" + _ZWJ, False),
+        (_TECHNOLOGIST, _TECHNOLOGIST, True),
+        # A zero width non-joiner follows its base like a combining mark.
+        ("a" + _ZWNJ + "b", "a", False),
+        ("a" + _ZWNJ + "b", "a" + _ZWNJ, True),
+        # The empty stable text always passes. The whole text passes too,
+        # unless it ends with a zero width joiner.
+        ("e" + _ACUTE, "", True),
+        ("e" + _ACUTE, "e" + _ACUTE, True),
+    ],
+)
+def test_validate_stable_text_boundary_rule(text: str, stable_text: str, valid: bool) -> None:
+    assert validate_stable_text(text, stable_text) is valid
+    assert splits_combining_sequence(text, len(stable_text)) is not valid
+
+
+#: WAVING BLACK FLAG, five tag letters that spell the region code of
+#: Scotland, and CANCEL TAG: the flag of Scotland, one emoji built from seven
+#: code points.
+_SCOTLAND = "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f"
+
+
+@pytest.mark.parametrize(
+    ("text", "stable_text"),
+    [
+        pytest.param("\u0e01\u0e33", "\u0e01", id="before-thai-sara-am"),
+        pytest.param("\u0e19\u0e49\u0e33", "\u0e19\u0e49", id="thai-sara-am-after-tone-mark"),
+        pytest.param("\u0e81\u0eb3", "\u0e81", id="before-lao-am"),
+        pytest.param("\u0915\u094d\u0937", "\u0915\u094d", id="after-virama-in-conjunct"),
+        pytest.param("\u0995\u09cd\u09b7", "\u0995\u09cd", id="bengali-conjunct"),
+        pytest.param("\u0a95\u0acd\u0ab7", "\u0a95\u0acd", id="gujarati-conjunct"),
+        pytest.param("\u0b15\u0b4d\u0b37", "\u0b15\u0b4d", id="odia-conjunct"),
+        pytest.param("\u0c15\u0c4d\u0c37", "\u0c15\u0c4d", id="telugu-conjunct"),
+        pytest.param("\u0d15\u0d4d\u0d37", "\u0d15\u0d4d", id="malayalam-conjunct"),
+        pytest.param("\u1100\u1161", "\u1100", id="between-hangul-jamo"),
+        pytest.param("\u1112\u1161\u11ab", "\u1112\u1161", id="before-hangul-final-jamo"),
+        pytest.param("\U0001f1ef\U0001f1f5", "\U0001f1ef", id="inside-a-flag"),
+        pytest.param("\U0001f44d\U0001f3fd", "\U0001f44d", id="before-skin-tone-modifier"),
+        pytest.param(_SCOTLAND, _SCOTLAND[:2], id="inside-emoji-tag-sequence"),
+        pytest.param("\uff76\uff9e", "\uff76", id="before-halfwidth-voiced-mark"),
+        pytest.param("a\r\nb", "a\r", id="between-cr-and-lf"),
+    ],
+)
+def test_validate_stable_text_does_not_catch_every_cut_inside_a_character(
+    text: str, stable_text: str
+) -> None:
+    # Each cut falls inside one user-perceived character, which the protocol
+    # forbids, yet the check passes it: the character after the cut is not a
+    # combining mark or a joiner. The rows pin the gaps that the docstring of
+    # validate_stable_text documents. If the standard layer gains a full
+    # grapheme cluster check, a row that starts failing here belongs in the
+    # boundary-rule test above instead.
+    assert validate_stable_text(text, stable_text) is True
+    assert splits_combining_sequence(text, len(stable_text)) is False
+
+
+def test_splits_combining_sequence_edges() -> None:
+    # A cut at position 0 never splits; a cut at the end splits only when the
+    # text ends with a zero width joiner that still waits for its right side.
+    assert splits_combining_sequence(_ACUTE + "x", 0) is False
+    assert splits_combining_sequence("ab", 2) is False
+    assert splits_combining_sequence("a" + _ZWJ, 2) is True
+
+
+def test_is_combining_mark_uses_the_general_category() -> None:
+    # Nonspacing (`Mn`), spacing (`Mc`), and enclosing (`Me`) marks all count,
+    # including marks whose canonical combining class is 0.
+    assert is_combining_mark(_ACUTE) is True
+    assert is_combining_mark("\u093e") is True
+    assert is_combining_mark("\u0e31") is True
+    assert is_combining_mark("\u20dd") is True
+    assert is_combining_mark("a") is False
+    assert is_combining_mark(_ZWJ) is False
+
 
 # --------------------------------------------------------------------------- #
-# stable_until invariant
+# Stable text on the event model
 # --------------------------------------------------------------------------- #
-def test_validate_stable_until_bounds() -> None:
-    assert validate_stable_until("hello", 0) is True
-    assert validate_stable_until("hello", 5) is True
-    assert validate_stable_until("hello", 3) is True
-    assert validate_stable_until("hello", -1) is False
-    assert validate_stable_until("hello", 6) is False
+def test_stable_text_defaults_per_event_type() -> None:
+    # A partial that names no stable text has none; a final that names none
+    # is settled as a whole, and so is a closed final.
+    assert TranscriptionEvent.partial("s0", "hello").stable_text == ""
+    assert TranscriptionEvent.final("s0", "hello").stable_text == "hello"
+    assert TranscriptionEvent.closed("s0", "Hello.").stable_text == "Hello."
+    assert TranscriptionEvent(type="partial", segment_id="s0", text="hi").stable_text == ""
+    assert TranscriptionEvent(type="final", segment_id="s0", text="hi").stable_text == "hi"
+    # By default, every other event type carries no stable text.
+    assert TranscriptionEvent.done().stable_text is None
+    assert TranscriptionEvent.progress(audio_processed_until=1.0).stable_text is None
+    assert TranscriptionEvent.supersede(["a"], ["b"]).stable_text is None
+    assert TranscriptionEvent.make_error("boom", recoverable=False).stable_text is None
 
 
-def test_validate_stable_until_combining() -> None:
-    # "e" + combining acute accent: cutting before the accent is invalid.
-    text = "éx"
-    assert validate_stable_until(text, 1) is False
-    assert validate_stable_until(text, 2) is True
+def test_stable_text_explicit_values_are_kept() -> None:
+    partial = TranscriptionEvent.partial("s0", "hello world", stable_text="hello ")
+    assert partial.stable_text == "hello "
+    settled = TranscriptionEvent.final("s0", "hello", stable_text="hello")
+    assert settled.stable_text == "hello"
 
 
-def test_stable_text_property() -> None:
-    ev = TranscriptionEvent.partial("s0", "hello world", stable_until=5)
-    assert ev.stable_text == "hello"
-    assert TranscriptionEvent.partial("s0", "x").stable_text == ""
+def test_stable_text_must_be_a_prefix_of_text() -> None:
+    with pytest.raises(ValidationError, match="not a prefix"):
+        TranscriptionEvent.partial("s0", "hello", stable_text="help")
+    with pytest.raises(ValidationError, match="not a prefix"):
+        TranscriptionEvent.partial("s0", "hi", stable_text="hi there")
+    with pytest.raises(ValidationError, match="not a prefix"):
+        TranscriptionEvent.final("s0", "hello", stable_text="Hello")
+
+
+def test_explicit_none_stable_text_is_rejected_on_content_events() -> None:
+    # The defaults apply only to an omitted field: an explicit None on a
+    # partial or final is malformed, not a request for the default.
+    with pytest.raises(ValidationError, match="MUST carry stable_text as a string"):
+        TranscriptionEvent.partial("s0", "hello", stable_text=None)
+    with pytest.raises(ValidationError, match="MUST carry stable_text as a string"):
+        TranscriptionEvent.final("s0", "hello", stable_text=None)
+    with pytest.raises(ValidationError, match="MUST carry stable_text as a string"):
+        TranscriptionEvent.model_validate(
+            {"type": "partial", "segment_id": "s0", "text": "hi", "stable_text": None}
+        )
+
+
+def test_stable_text_default_applies_to_every_input_form() -> None:
+    # The default is resolved from the validated text, so it does not depend
+    # on the input being a plain dict or the text already being a str.
+    partial = TranscriptionEvent.model_validate(
+        MappingProxyType({"type": "partial", "segment_id": "s0", "text": "abc"})
+    )
+    assert partial.stable_text == ""
+    final = TranscriptionEvent.model_validate(
+        MappingProxyType({"type": "final", "segment_id": "s0", "text": "abc"})
+    )
+    assert final.stable_text == "abc"
+    from_json = TranscriptionEvent.model_validate_json(
+        '{"type": "final", "segment_id": "s0", "text": "abc"}'
+    )
+    assert from_json.stable_text == "abc"
+    coerced = TranscriptionEvent(type="final", segment_id="s0", text=cast("str", b"abc"))
+    assert coerced.text == "abc"
+    assert coerced.stable_text == "abc"
+
+
+def test_resolved_stable_text_counts_as_set() -> None:
+    # A dump that leaves out unset fields still carries the resolved value:
+    # a consumer never applies the default itself.
+    partial = TranscriptionEvent.partial("s0", "hello").model_dump(exclude_unset=True)
+    assert partial["stable_text"] == ""
+    final = TranscriptionEvent.final("s0", "hello").model_dump(exclude_unset=True)
+    assert final["stable_text"] == "hello"
+    assert "stable_text" not in TranscriptionEvent.done().model_dump(exclude_unset=True)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        TranscriptionEvent.partial("s0", "hello wor", stable_text="hello "),
+        TranscriptionEvent.partial("s0", "hello"),
+        TranscriptionEvent.final("s0", "hello world"),
+        TranscriptionEvent.closed("s0", "Hello, world."),
+        TranscriptionEvent.supersede(["a", "b"], ["c"]),
+        TranscriptionEvent.supersede(["a"], []),
+        TranscriptionEvent.progress(audio_processed_until=1.5),
+        TranscriptionEvent.done(),
+        TranscriptionEvent.make_error("boom", recoverable=False),
+    ],
+    ids=[
+        "partial-with-stable-text",
+        "partial-default",
+        "final-default",
+        "closed",
+        "supersede",
+        "supersede-deletion",
+        "progress",
+        "done",
+        "error",
+    ],
+)
+def test_event_json_round_trip_keeps_stable_text(event: TranscriptionEvent) -> None:
+    assert TranscriptionEvent.model_validate(event.model_dump(mode="json")) == event
+    assert TranscriptionEvent.model_validate_json(event.model_dump_json()) == event
+    wire = event.model_dump(mode="json", exclude_none=True)
+    assert TranscriptionEvent.model_validate(wire) == event
+
+
+def test_serialized_content_frame_always_carries_the_resolved_stable_text() -> None:
+    # A client in another language reads stable_text from the frame and never
+    # applies a default itself, so the resolved string is always serialized,
+    # the empty string included.
+    partial = TranscriptionEvent.partial("s0", "hello").model_dump(mode="json", exclude_none=True)
+    assert partial["stable_text"] == ""
+    final = TranscriptionEvent.final("s0", "hello").model_dump(mode="json", exclude_none=True)
+    assert final["stable_text"] == "hello"
+    done = TranscriptionEvent.done().model_dump(mode="json", exclude_none=True)
+    assert "stable_text" not in done
 
 
 # --------------------------------------------------------------------------- #
@@ -1129,14 +1356,15 @@ def test_coalescing_partial_after_delivery_starts_fresh_slot() -> None:
 
 def test_coalescing_carries_forward_speaker() -> None:
     # A blind coalesce replace would silently drop the only event that ever
-    # carried the speaker (semantic carry-forward). Both partials
-    # here are UNFROZEN (no stable_until), where the protocol permits X->None, so the
-    # second event's None could in principle be a deliberate withdrawal -- yet
-    # carry-forward still re-presents "A". That is deliberate and safe: unfrozen
-    # partial speakers are non-actionable, so re-presenting a stale
+    # carried the speaker (semantic carry-forward). Neither partial here has
+    # stable text, so the protocol permits X->None, and the second event's
+    # None could in principle be a deliberate withdrawal -- yet carry-forward
+    # still re-presents "A". That is deliberate and safe: the speaker of a
+    # partial without stable text is non-actionable, so re-presenting a stale
     # provisional speaker cannot drive a wrong irreversible action, and it keeps
-    # the buffer self-consistent with the guard, which -- should s0 later freeze
-    # -- locks the last-accepted non-None speaker, that is, exactly this "A".
+    # the buffer self-consistent with the guard, which -- should s0 later gain
+    # stable text -- locks the last-accepted non-None speaker, that is, exactly
+    # this "A".
     async def run() -> list[TranscriptionEvent]:
         buf = _CoalescingBuffer()
         buf.put(TranscriptionEvent.partial("s0", "hel", speaker="A"))
@@ -2118,7 +2346,7 @@ def test_reconnect_events_delivered_while_producer_blocked_on_slow_reconnect() -
 
 
 # --------------------------------------------------------------------------- #
-# Lifecycle enforcement + stable_until monotonicity
+# Lifecycle enforcement and stable text that only grows
 # --------------------------------------------------------------------------- #
 def test_guard_suppresses_partial_after_final() -> None:
     guard = _LifecycleGuard()
@@ -2151,73 +2379,660 @@ def test_guard_strict_raises() -> None:
         guard.admit(TranscriptionEvent.partial("s0", "y"))
 
 
-def test_guard_clamps_decreasing_stable_until() -> None:
+def test_guard_accepts_growing_stable_text_unchanged() -> None:
     guard = _LifecycleGuard()
-    ev1 = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=4))
-    assert ev1 is not None and ev1.stable_until == 4
-    ev2 = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=2))
-    assert ev2 is not None and ev2.stable_until == 4  # clamped up to prior
-    assert ev2.stable_text == "hell"
-    assert any(d.code == "stable_until_clamped" for d in guard.diagnostics)
+    first = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="he"))
+    assert first is not None and first.stable_text == "he"
+    second = guard.admit(TranscriptionEvent.partial("s0", "hello world", stable_text="hello "))
+    assert second is not None and second.stable_text == "hello "
+    assert guard._stable_text["s0"] == "hello "  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert not guard.diagnostics
 
 
-def test_guard_accepts_increasing_stable_until_unchanged() -> None:
+def test_guard_clamps_shrinking_stable_text() -> None:
+    # A shorter stable text would retract a promise the application already
+    # holds: the event is delivered with the earlier stable text instead.
     guard = _LifecycleGuard()
-    ev1 = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=2))
-    assert ev1 is not None and ev1.stable_until == 2
-    ev2 = guard.admit(TranscriptionEvent.partial("s0", "hello world", stable_until=5))
-    assert ev2 is not None and ev2.stable_until == 5
-    assert ev2.stable_text == "hello"
-    assert guard._stable_until["s0"] == 5  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert not any(d.code == "stable_until_clamped" for d in guard.diagnostics)
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hell"))
+    shrunk = guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_text="he"))
+    assert shrunk is not None and shrunk.stable_text == "hell"
+    assert shrunk.text == "hello!"
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED]
+    assert "is shorter than" in guard.diagnostics[0].message
+    # Omitting stable_text on a later partial is a shrink to "" and is
+    # clamped the same way.
+    omitted = guard.admit(TranscriptionEvent.partial("s0", "hello!!"))
+    assert omitted is not None and omitted.stable_text == "hell"
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED] * 2
 
 
-def test_guard_clamps_invalid_combining_boundary() -> None:
+def test_guard_moves_stable_text_back_to_a_combining_boundary() -> None:
+    # "e" + COMBINING ACUTE ACCENT: a stable text of "e" would end between
+    # the letter and its accent, so it moves back to "".
     guard = _LifecycleGuard()
-    # "é" as e + combining accent; cutting at 1 splits the combining sequence.
-    ev = guard.admit(TranscriptionEvent.partial("s0", "éx", stable_until=1))
-    assert ev is not None and ev.stable_until == 0
+    admitted = guard.admit(TranscriptionEvent.partial("s0", "e" + _ACUTE + "x", stable_text="e"))
+    assert admitted is not None and admitted.stable_text == ""
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED]
+    assert "combining character sequence" in guard.diagnostics[0].message
+    # A zero width joiner left at the end of the stable text is moved back
+    # past the emoji it would join.
+    joined = guard.admit(
+        TranscriptionEvent.partial("s1", _TECHNOLOGIST + " ok", stable_text="\U0001f469" + _ZWJ)
+    )
+    assert joined is not None and joined.stable_text == ""
 
 
-def test_guard_keeps_prior_when_combining_mark_splits_prior_boundary() -> None:
+def test_guard_boundary_clamp_moves_back_but_not_below_the_earlier_stable_text() -> None:
     guard = _LifecycleGuard()
-    first = guard.admit(TranscriptionEvent.partial("s0", "abc", stable_until=3))
-    assert first is not None and first.stable_until == 3
+    guard.admit(TranscriptionEvent.partial("s0", "a b", stable_text="a "))
+    # The proposed `"a bc"` ends between `c` and its accent. The nearest valid
+    # boundary before it is `"a b"`, which is still longer than the earlier
+    # stable text.
+    moved = guard.admit(TranscriptionEvent.partial("s0", "a bc" + _ACUTE, stable_text="a bc"))
+    assert moved is not None and moved.stable_text == "a b"
+    # Here the only boundary between the earlier stable text and the
+    # proposed one is the earlier stable text itself.
+    guard.admit(TranscriptionEvent.partial("s1", "ab", stable_text="ab"))
+    kept = guard.admit(
+        TranscriptionEvent.partial("s1", "abc" + _ACUTE + "\u0302", stable_text="abc" + _ACUTE)
+    )
+    assert kept is not None and kept.stable_text == "ab"
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED] * 2
 
-    text = "abc" + "\u0303" + "def"
-    assert text[:3] == "abc"
-    assert validate_stable_until(text, 3) is False
-    second = guard.admit(TranscriptionEvent.partial("s0", text, stable_until=3))
 
-    assert second is not None
-    assert second.stable_until == 3
-    assert second.stable_text == "abc"
-    assert guard._stable_until["s0"] == 3  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert guard._frozen_text["s0"] == "abc"  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert any(d.code == "stable_until_clamped" for d in guard.diagnostics)
-
-
-def test_guard_clamp_decreased_then_invalid_boundary_keeps_prior_frontier() -> None:
-    # A decreased stable_until is first clamped UP to the prior. If that prior is
-    # now an invalid boundary for the new text, the published frontier still
-    # cannot move backwards.
+# An event built without validation (model_copy, model_construct) can carry a
+# stable_text that construction would have rejected. In normal mode the guard
+# repairs the shapes these tests cover and records a diagnostic, instead of
+# forwarding the value as is. In strict mode it raises.
+def test_guard_repairs_a_partial_whose_stable_text_is_not_the_start_of_its_text() -> None:
     guard = _LifecycleGuard()
-    # prior = 2 on text whose boundary 2 is valid; freezes the prefix "ae".
-    first = guard.admit(TranscriptionEvent.partial("s0", "ae", stable_until=2))
-    assert first is not None and first.stable_until == 2
-    # New text "a" + "e" + combining accent extends "ae" (frozen prefix preserved)
-    # but boundary 2 now splits the combining sequence. A decreased request is
-    # clamped up to 2 and must not be clamped below that prior frontier.
-    combining = "a" + "e" + "́"  # "ae" + COMBINING ACUTE ACCENT over the e
-    second = guard.admit(TranscriptionEvent.partial("s0", combining, stable_until=0))
-    assert second is not None and second.stable_until == 2
-    assert second.stable_text == "ae"
-    assert guard._stable_until["s0"] == 2  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert guard._frozen_text["s0"] == "ae"  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    msgs = [d.message for d in guard.diagnostics if d.code == "stable_until_clamped"]
-    # The diagnostic records BOTH the decrease and the invalid-boundary reason
-    # in one combined message.
-    assert any("decreased" in m and "invalid boundary" in m and "; " in m for m in msgs)
+    guard.admit(TranscriptionEvent.partial("s0", "hello wor", stable_text="hel"))
+    forged = TranscriptionEvent.partial("s0", "hello world", stable_text="hello ").model_copy(
+        update={"text": "help"}
+    )
+    out = guard.admit(forged)
+    assert out is not None
+    assert out.text == "help"
+    assert out.stable_text == "hel"  # the earlier stable text
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED]
+    assert "not the start of text" in guard.diagnostics[0].message
+    # The repaired value is what later events are judged against.
+    assert guard.admit(TranscriptionEvent.final("s0", "help me")) is not None
+
+
+def test_guard_repairs_a_first_partial_whose_stable_text_is_longer_than_its_text() -> None:
+    guard = _LifecycleGuard()
+    forged = TranscriptionEvent.partial("s0", "hello world", stable_text="hello ").model_copy(
+        update={"text": "hi"}
+    )
+    out = guard.admit(forged)
+    assert out is not None
+    assert out.stable_text == ""
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED]
+
+
+def test_guard_repairs_a_partial_built_with_no_stable_text() -> None:
+    guard = _LifecycleGuard()
+    forged = TranscriptionEvent.model_construct(type="partial", segment_id="s0", text="hello")
+    out = guard.admit(forged)
+    assert out is not None
+    assert out.stable_text == ""
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED]
+
+
+@pytest.mark.parametrize("finality", ["final", "closed"])
+def test_guard_repairs_a_final_whose_stable_text_is_not_its_whole_text(finality: str) -> None:
+    guard = _LifecycleGuard()
+    forged = TranscriptionEvent.partial("s0", "hello world", stable_text="hello ").model_copy(
+        update={"type": "final", "finality": finality}
+    )
+    out = guard.admit(forged)
+    assert out is not None
+    assert out.stable_text == "hello world"
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED]
+    assert "not its whole text" in guard.diagnostics[0].message
+
+
+@pytest.mark.parametrize(
+    "forged_value",
+    [("hel",), ("hel",) * 10, 3, ["hel"]],
+    ids=["tuple", "long-tuple", "number", "list"],
+)
+def test_guard_repairs_a_partial_whose_stable_text_is_not_a_string(forged_value: object) -> None:
+    # str.startswith accepts a tuple, so a forged tuple would pass a bare
+    # prefix test and be forwarded as is.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello wor", stable_text="hel"))
+    forged = TranscriptionEvent.partial("s0", "hello world").model_copy(
+        update={"stable_text": forged_value}
+    )
+    out = guard.admit(forged)
+    assert out is not None
+    assert out.stable_text == "hel"
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_CLAMPED]
+
+
+def test_guard_messages_state_the_violation_and_name_the_segment() -> None:
+    # In strict mode the same text is the error and nothing is delivered, so a
+    # message does not say what happened to the event.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hell"))
+    guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_text="he"))
+    guard.admit(TranscriptionEvent.partial("s0", "goodbye"))
+    clamped, rewritten = (d.message for d in guard.diagnostics)
+    assert clamped.startswith("partial for segment 's0': ")
+    assert "The stable text that passes these checks is 'hell'." in clamped
+    assert rewritten.startswith("partial for segment 's0' changes")
+    assert "'goodbye' no longer starts with it" in rewritten
+    for message in (clamped, rewritten):
+        assert "delivered" not in message
+        assert "suppressed" not in message
+
+
+def test_guard_strict_raises_for_a_stable_text_that_is_not_the_start_of_its_text() -> None:
+    guard = _LifecycleGuard(strict=True)
+    forged = TranscriptionEvent.partial("s0", "hello world", stable_text="hello ").model_copy(
+        update={"text": "hi"}
+    )
+    with pytest.raises(ValueError, match="not the start of text"):
+        guard.admit(forged)
+
+
+def test_session_survives_a_partial_built_with_model_copy() -> None:
+    # Reusing an event through model_copy is an easy mistake for an engine
+    # author. In normal mode, this stable text that is not the start of its
+    # text costs a diagnostic, not the session; in strict mode the session
+    # ends with engine_error.
+    first = TranscriptionEvent.partial("s0", "hello world", stable_text="hello ")
+    script = [first.model_copy(update={"text": "hi"}), TranscriptionEvent.final("s0", "hi")]
+
+    async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
+        session = _ScriptedSession(script)
+        events = await _collect(session)
+        return events, session.result().text, [d.code for d in session.diagnostics()]
+
+    events, text, codes = asyncio.run(run())
+    assert [e.type for e in events] == ["partial", "final", "done"]
+    assert events[0].stable_text == ""
+    assert text == "hi"
+    assert codes == [DIAG_STABLE_TEXT_CLAMPED]
+
+
+def test_guard_closed_may_rewrite_stable_text_and_is_not_clamped() -> None:
+    # The closed restatement may reformat stable text once ("twenty twenty"
+    # becomes "2020"), and its stable text is the whole restated text.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "twenty twenty", stable_text="twenty "))
+    guard.admit(TranscriptionEvent.final("s0", "twenty twenty"))
+    closed = guard.admit(TranscriptionEvent.closed("s0", "2020"))
+    assert closed is not None and closed.stable_text == "2020"
+    assert not guard.diagnostics
+    # A closed restatement straight after partials is exempt as well.
+    guard.admit(TranscriptionEvent.partial("s1", "hello", stable_text="hello"))
+    assert guard.admit(TranscriptionEvent.closed("s1", "Hi.")) is not None
+    assert not guard.diagnostics
+
+
+@pytest.mark.parametrize(
+    ("events", "match"),
+    [
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
+                TranscriptionEvent.partial("s0", "goodbye"),
+            ],
+            "no longer starts with it",
+            id="rewrite",
+        ),
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "a", stable_text="a"),
+                TranscriptionEvent.partial("s0", "a" + _ACUTE),
+            ],
+            "adds a combining mark",
+            id="combining-mark-appended",
+        ),
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
+                TranscriptionEvent.partial("s0", "hello", stable_text="he"),
+            ],
+            "is shorter than",
+            id="shrink",
+        ),
+        pytest.param(
+            [TranscriptionEvent.partial("s0", "e" + _ACUTE, stable_text="e")],
+            "combining character sequence",
+            id="boundary",
+        ),
+    ],
+)
+def test_guard_strict_raises_for_each_stable_text_violation(
+    events: list[TranscriptionEvent], match: str
+) -> None:
+    guard = _LifecycleGuard(strict=True)
+    *setup, offending = events
+    for event in setup:
+        assert guard.admit(event) is not None
+    with pytest.raises(ValueError, match=match):
+        guard.admit(offending)
+
+
+# --------------------------------------------------------------------------- #
+# Stable text through the session
+# --------------------------------------------------------------------------- #
+def _assert_stable_text_only_grows(events: Iterable[TranscriptionEvent]) -> None:
+    """Assert each partial or plain final keeps and extends its segment's stable text.
+
+    A closed final is skipped: it may reformat the stable text once.
+    """
+    delivered: dict[str, str] = {}
+    for event in events:
+        if event.type not in ("partial", "final") or event.finality == "closed":
+            continue
+        assert event.segment_id is not None and event.stable_text is not None
+        earlier = delivered.get(event.segment_id, "")
+        assert event.stable_text.startswith(earlier), (earlier, event.stable_text)
+        delivered[event.segment_id] = event.stable_text
+
+
+def test_session_result_and_delivered_stream_agree_on_growing_stable_text() -> None:
+    from standard_asr.compliance import assert_stable_text_invariant
+
+    script = [
+        TranscriptionEvent.partial("s0", "hel"),
+        TranscriptionEvent.partial("s0", "hello wo", stable_text="hello "),
+        # The engine retracts part of its stable text; the session delivers
+        # the earlier stable text instead.
+        TranscriptionEvent.partial("s0", "hello world", stable_text="hel"),
+        TranscriptionEvent.final("s0", "hello world"),
+        TranscriptionEvent.partial("s1", "\U00020bb7野", stable_text="\U00020bb7"),
+        TranscriptionEvent.final("s1", "\U00020bb7野家"),
+    ]
+
+    async def run() -> tuple[list[TranscriptionEvent], Any, list[str]]:
+        session = _ScriptedSession(script)
+        events = await _collect(session)
+        return events, session.result(), [d.code for d in session.diagnostics()]
+
+    events, result, codes = asyncio.run(run())
+    assert codes == [DIAG_STABLE_TEXT_CLAMPED]
+    _assert_stable_text_only_grows(events)
+    assert_stable_text_invariant(events)
+    # Coalescing may drop some partials, so only the values the guard decided
+    # are pinned: no partial carries the retracted `"hel"`, and each final is
+    # stable as a whole.
+    assert all(e.stable_text != "hel" for e in events)
+    finals = [(e.segment_id, e.stable_text) for e in events if e.type == "final"]
+    assert finals == [("s0", "hello world"), ("s1", "\U00020bb7野家")]
+    # An application that reduces the delivered stream gets the session's
+    # own result.
+    replay = StreamReducer()
+    for event in events:
+        replay.add(event)
+    assert replay.result().segments == result.segments
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["hello world", "\U00020bb7野家"]
+
+
+def test_coalescing_under_a_slow_consumer_never_delivers_shorter_stable_text() -> None:
+    # Coalescing drops pending partials when the consumer falls behind. The
+    # guard clamps each partial before it reaches the buffer, so whichever
+    # partials survive, a later one never carries shorter stable text than
+    # an earlier one, even when the engine itself retracted some.
+    words = "one two three four five six seven eight nine ten".split()
+
+    class _BurstySession(TranscriptionSession):
+        async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            text = ""
+            for index, word in enumerate(words):
+                stable = text
+                text = f"{text}{word} "
+                # Every third partial retracts its stable text to "".
+                yield TranscriptionEvent.partial(
+                    "s0", text, stable_text="" if index % 3 == 2 else stable
+                )
+                if index % 4 == 3:
+                    await asyncio.sleep(0.03)
+            yield TranscriptionEvent.final("s0", text.strip())
+
+    async def run() -> tuple[list[TranscriptionEvent], list[str]]:
+        session = _BurstySession()
+        delivered: list[TranscriptionEvent] = []
+        async with session:
+            async for event in session:
+                delivered.append(event)
+                await asyncio.sleep(0.02)
+        return delivered, [d.code for d in session.diagnostics()]
+
+    delivered, codes = asyncio.run(run())
+    partials = [e for e in delivered if e.type == "partial"]
+    # Some partials were coalesced away, and the engine's retractions were
+    # clamped.
+    assert len(partials) < len(words)
+    assert DIAG_STABLE_TEXT_CLAMPED in codes
+    _assert_stable_text_only_grows(delivered)
+    assert delivered[-2].type == "final" and delivered[-2].stable_text == delivered[-2].text
+
+
+# --------------------------------------------------------------------------- #
+# Stable text abandoned: an open segment with stable text when done arrives
+# --------------------------------------------------------------------------- #
+def test_guard_reports_stable_text_abandoned_at_done() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    guard.admit(TranscriptionEvent.partial("s1", "draft"))
+    guard.admit(TranscriptionEvent.partial("s2", "world", stable_text="wor"))
+    guard.admit(TranscriptionEvent.final("s2", "world"))
+    done = guard.admit(TranscriptionEvent.done())
+    # The done itself is delivered: the guard reports, it does not suppress.
+    assert done is not None and done.type == "done"
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_ABANDONED]
+    # Only the open segment with stable text is named.
+    message = guard.diagnostics[0].message
+    assert "['s0']" in message
+    assert "s1" not in message and "s2" not in message
+
+
+def test_guard_no_stable_text_abandoned_when_every_stable_segment_is_final() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    guard.admit(TranscriptionEvent.final("s0", "hello"))
+    guard.admit(TranscriptionEvent.partial("s1", "never stable"))
+    assert guard.admit(TranscriptionEvent.done()) is not None
+    assert not guard.diagnostics
+
+
+def test_guard_no_stable_text_abandoned_on_an_error_terminal() -> None:
+    # A session that fails is already explicit about losing text.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    assert guard.admit(TranscriptionEvent.make_error("boom", recoverable=False)) is not None
+    assert not guard.diagnostics
+
+
+def test_guard_stable_text_abandoned_strict_raises() -> None:
+    guard = _LifecycleGuard(strict=True)
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    with pytest.raises(ValueError, match="never reached final"):
+        guard.admit(TranscriptionEvent.done())
+
+
+@pytest.mark.parametrize("engine_sends_done", [False, True], ids=["base-done", "engine-done"])
+def test_session_reports_stable_text_abandoned(engine_sends_done: bool) -> None:
+    script = [
+        TranscriptionEvent.partial("s0", "hello wor", stable_text="hello "),
+        TranscriptionEvent.final("s1", "kept"),
+    ]
+    if engine_sends_done:
+        script.append(TranscriptionEvent.done())
+
+    async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
+        session = _ScriptedSession(script)
+        events = await _collect(session)
+        return events, session.result().text, [d.code for d in session.diagnostics()]
+
+    events, text, codes = asyncio.run(run())
+    assert codes == [DIAG_STABLE_TEXT_ABANDONED]
+    assert events[-1].type == "done"
+    # The result holds finalized segments only: the abandoned stable text is
+    # absent, which is what the diagnostic reports.
+    assert text == "kept"
+
+
+def test_session_no_stable_text_abandoned_when_the_session_ends_with_an_error() -> None:
+    async def run() -> tuple[list[TranscriptionEvent], list[str]]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
+                TranscriptionEvent.make_error("engine_gave_up", recoverable=False),
+            ]
+        )
+        events = await _collect(session)
+        return events, [d.code for d in session.diagnostics()]
+
+    events, codes = asyncio.run(run())
+    assert events[-1].code == "engine_gave_up"
+    assert codes == []
+
+
+@pytest.mark.parametrize("engine_sends_done", [False, True])
+def test_session_stable_text_abandoned_strict_ends_with_engine_error(
+    engine_sends_done: bool,
+) -> None:
+    script = [TranscriptionEvent.partial("s0", "hello", stable_text="hel")]
+    if engine_sends_done:
+        script.append(TranscriptionEvent.done())
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _ScriptedSession(script, strict_lifecycle=True)
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "engine_error"
+    assert not any(e.type == "done" for e in events)
+
+
+# --------------------------------------------------------------------------- #
+# Events checked against the engine's declared streaming capabilities
+# --------------------------------------------------------------------------- #
+_WORD = Word(text="hi", start=0.0, end=0.5)
+
+
+@pytest.mark.parametrize(
+    ("event", "code"),
+    [
+        pytest.param(
+            TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
+            "stream_exceeds_partial_stability",
+            id="stable-text-on-a-partial",
+        ),
+        pytest.param(
+            TranscriptionEvent.supersede(["s0"], ["s1"]),
+            "stream_exceeds_re_segments",
+            id="supersede",
+        ),
+        pytest.param(
+            TranscriptionEvent.progress(audio_processed_until=1.0),
+            "stream_exceeds_timestamps",
+            id="audio-cursor",
+        ),
+        pytest.param(
+            TranscriptionEvent.partial("s0", "hi", words=[_WORD]),
+            "stream_exceeds_word_timestamps",
+            id="words",
+        ),
+        pytest.param(
+            TranscriptionEvent.partial("s0", "hi", speaker="A"),
+            "stream_exceeds_diarization",
+            id="speaker",
+        ),
+    ],
+)
+def test_guard_records_an_event_the_declared_capabilities_do_not_cover(
+    event: TranscriptionEvent, code: str
+) -> None:
+    # The event is forwarded unchanged: removing the field would hide the
+    # engine's fault, and dropping a supersede would duplicate text.
+    guard = _LifecycleGuard(capabilities=StreamingCapabilities())
+    guard.admit(TranscriptionEvent.partial("s0", "h"))
+    out = guard.admit(event)
+    assert out == event
+    assert [d.code for d in guard.diagnostics] == [code]
+    assert guard.diagnostics[0].level == "warning"
+
+
+def test_guard_records_each_capability_mismatch_once_per_session() -> None:
+    # The mismatch is a fact about the engine, not about one event.
+    guard = _LifecycleGuard(capabilities=StreamingCapabilities())
+    for seconds in (1.0, 2.0, 3.0):
+        guard.admit(TranscriptionEvent.progress(audio_processed_until=seconds))
+    assert [d.code for d in guard.diagnostics] == ["stream_exceeds_timestamps"]
+    # The message states the violation only: in strict mode it is the error.
+    assert "once per session" not in guard.diagnostics[0].message
+
+
+def test_guard_accepts_events_the_declared_capabilities_cover() -> None:
+    capabilities = StreamingCapabilities(
+        partial_stability=FlagCap(supported=True),
+        re_segments=FlagCap(supported=True),
+        timestamps=StreamTimestampsCap(mode="post_align"),
+        word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
+        diarization=DiarizationCap(supported=True),
+    )
+    guard = _LifecycleGuard(capabilities=capabilities)
+    guard.admit(
+        TranscriptionEvent.partial(
+            "s0",
+            "hi there",
+            stable_text="hi ",
+            words=[_WORD],
+            speaker="A",
+            audio_processed_until=1.0,
+        )
+    )
+    guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"]))
+    guard.admit(TranscriptionEvent.final("s1", "hi there"))
+    guard.admit(TranscriptionEvent.done())
+    assert guard.diagnostics == []
+
+
+def test_guard_without_capabilities_does_not_check_them() -> None:
+    # A session built directly, as in a unit test, has no declaration to
+    # check against. "No declaration" is not "nothing supported".
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"]))
+    assert guard.diagnostics == []
+
+
+def test_guard_strict_raises_for_a_capability_mismatch() -> None:
+    guard = _LifecycleGuard(strict=True, capabilities=StreamingCapabilities())
+    guard.admit(TranscriptionEvent.final("s0", "hello"))
+    with pytest.raises(ValueError, match=r"streaming\.re_segments is unsupported"):
+        guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"]))
+
+
+def test_guard_reports_finals_left_unclosed_under_finality_level_closed() -> None:
+    capabilities = StreamingCapabilities(finality_level=FinalityCap(mode="closed"))
+    guard = _LifecycleGuard(capabilities=capabilities)
+    guard.admit(TranscriptionEvent.final("s0", "hello"))
+    guard.admit(TranscriptionEvent.closed("s0", "Hello."))
+    guard.admit(TranscriptionEvent.final("s1", "world"))
+    guard.admit(TranscriptionEvent.done())
+    assert [d.code for d in guard.diagnostics] == ["finality_level_not_reached"]
+    assert "'s1'" in guard.diagnostics[0].message and "'s0'" not in guard.diagnostics[0].message
+
+
+def test_guard_records_several_capability_mismatches_of_one_event_in_a_fixed_order() -> None:
+    event = TranscriptionEvent.partial(
+        "s0",
+        "hi there",
+        stable_text="hi ",
+        words=[_WORD.model_copy(update={"speaker": "A"})],
+        audio_processed_until=1.0,
+    )
+    guard = _LifecycleGuard(capabilities=StreamingCapabilities())
+    assert guard.admit(event) == event
+    assert [d.code for d in guard.diagnostics] == [
+        "stream_exceeds_partial_stability",
+        "stream_exceeds_timestamps",
+        "stream_exceeds_word_timestamps",
+        "stream_exceeds_diarization",
+    ]
+    # Strict mode raises for the first one in that order.
+    strict = _LifecycleGuard(strict=True, capabilities=StreamingCapabilities())
+    with pytest.raises(ValueError, match=r"streaming\.partial_stability is unsupported"):
+        strict.admit(event)
+
+
+def test_guard_judges_the_event_as_sent_not_as_repaired() -> None:
+    # The boundary repair empties this partial's stable text. The engine
+    # still sent stable text that its capabilities do not support.
+    guard = _LifecycleGuard(capabilities=StreamingCapabilities())
+    out = guard.admit(TranscriptionEvent.partial("s0", "e" + _ACUTE + "x", stable_text="e"))
+    assert out is not None and out.stable_text == ""
+    assert [d.code for d in guard.diagnostics] == [
+        DIAG_STABLE_TEXT_CLAMPED,
+        "stream_exceeds_partial_stability",
+    ]
+
+
+@pytest.mark.parametrize("engine_sends_done", [False, True])
+@pytest.mark.parametrize("strict", [False, True])
+def test_session_reports_finals_left_unclosed_under_finality_level_closed(
+    engine_sends_done: bool, strict: bool
+) -> None:
+    # The check runs when the session reaches done, whether the engine sent
+    # done or the session added it after the engine's last event.
+    script = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.closed("s0", "Hello."),
+        TranscriptionEvent.final("s1", "world"),
+    ]
+    if engine_sends_done:
+        script.append(TranscriptionEvent.done())
+
+    async def run() -> tuple[list[TranscriptionEvent], list[str]]:
+        session = _ScriptedSession(script, strict_lifecycle=strict)
+        session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
+            StreamingCapabilities(finality_level=FinalityCap(mode="closed"))
+        )
+        events = await _collect(session)
+        return events, [d.code for d in session.diagnostics()]
+
+    events, codes = asyncio.run(run())
+    if strict:
+        # engine_error takes the place of done, and nothing is recorded.
+        assert [e.type for e in events] == ["final", "final", "final", "error"]
+        assert events[-1].code == "engine_error"
+        assert codes == []
+    else:
+        assert [e.type for e in events] == ["final", "final", "final", "done"]
+        assert codes == ["finality_level_not_reached"]
+
+
+def test_bound_capabilities_reach_the_session_diagnostics() -> None:
+    # The engine base, or bind_session_capabilities for an engine that does
+    # not derive from it, binds the capabilities after the session is built.
+    script = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.supersede(["s0"], ["s1"]),
+        TranscriptionEvent.final("s1", "goodbye"),
+    ]
+
+    async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
+        session = _ScriptedSession(script)
+        session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
+            StreamingCapabilities()
+        )
+        events = await _collect(session)
+        return events, session.result().text, [d.code for d in session.diagnostics()]
+
+    events, text, codes = asyncio.run(run())
+    # The supersede is delivered, so the result holds the replacement only.
+    assert [e.type for e in events] == ["final", "supersede", "final", "done"]
+    assert text == "goodbye"
+    assert codes == ["stream_exceeds_re_segments"]
+
+
+def test_bound_capabilities_in_strict_mode_end_the_session() -> None:
+    script = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.supersede(["s0"], ["s1"]),
+    ]
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _ScriptedSession(script, strict_lifecycle=True)
+        session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
+            StreamingCapabilities()
+        )
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    assert events[-1].type == "error"
+    assert events[-1].code == "engine_error"
 
 
 def test_guard_clamps_decreasing_audio_cursor() -> None:
@@ -2238,238 +3053,404 @@ def test_guard_raises_on_decreasing_audio_cursor_strict() -> None:
         guard.admit(TranscriptionEvent.progress(audio_processed_until=1.0))
 
 
-def test_guard_suppresses_frozen_prefix_rewrite() -> None:
-    # The frozen prefix (text[:stable_until]) is immutable: extending text is
-    # fine, but rewriting an already-frozen region is suppressed.
+def test_guard_suppresses_stable_text_rewrite() -> None:
+    # Stable text does not change: extending the text after it is fine, but an
+    # event whose text no longer starts with it is suppressed.
     guard = _LifecycleGuard()
-    first = guard.admit(TranscriptionEvent.partial("s0", "the cat", stable_until=4))
-    assert first is not None  # freezes "the "
-    extend = guard.admit(TranscriptionEvent.partial("s0", "the cattle", stable_until=4))
-    assert extend is not None  # extends, prefix preserved
-    rewrite = guard.admit(TranscriptionEvent.partial("s0", "a dog runs", stable_until=4))
+    first = guard.admit(TranscriptionEvent.partial("s0", "the cat", stable_text="the "))
+    assert first is not None
+    extend = guard.admit(TranscriptionEvent.partial("s0", "the cattle", stable_text="the "))
+    assert extend is not None
+    rewrite = guard.admit(TranscriptionEvent.partial("s0", "a dog runs"))
     assert rewrite is None
-    assert any(d.code == "frozen_prefix_rewritten" for d in guard.diagnostics)
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_REWRITTEN]
 
 
-def test_guard_non_closed_final_rewrite_frozen_prefix_suppressed() -> None:
+def test_guard_non_closed_final_rewrite_of_stable_text_suppressed() -> None:
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=5))
-    rejected = guard.admit(TranscriptionEvent.final("s0", "Hello.", stable_until=6))
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hello"))
+    rejected = guard.admit(TranscriptionEvent.final("s0", "Hello."))
     assert rejected is None
-    assert any(d.code == "frozen_prefix_rewritten" for d in guard.diagnostics)
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_REWRITTEN]
+    # The suppressed final changed nothing: a final that keeps the stable
+    # text is still accepted.
+    assert guard.admit(TranscriptionEvent.final("s0", "hello there")) is not None
+
+
+def test_guard_rejects_a_combining_mark_appended_to_a_stable_character() -> None:
+    # "a" is stable. Text "a" + COMBINING ACUTE ACCENT + "b" still starts with
+    # "a", but the accent changes the character the application already saw,
+    # so the event is a rewrite, not an extension.
+    guard = _LifecycleGuard()
+    assert guard.admit(TranscriptionEvent.partial("s0", "a", stable_text="a")) is not None
+    assert guard.admit(TranscriptionEvent.partial("s0", "a" + _ACUTE + "b")) is None
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_REWRITTEN]
+    # The same holds for a zero width joiner that would fuse a stable emoji
+    # with the next one.
+    woman = "\U0001f469"
+    assert guard.admit(TranscriptionEvent.partial("s1", woman, stable_text=woman)) is not None
+    assert guard.admit(TranscriptionEvent.partial("s1", _TECHNOLOGIST)) is None
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_REWRITTEN] * 2
+    # A plain extension of the stable character is still accepted.
+    extended = guard.admit(TranscriptionEvent.partial("s0", "ab", stable_text="a"))
+    assert extended is not None and extended.stable_text == "a"
 
 
 def test_guard_supersede_new_ids_open_then_partial_allowed() -> None:
     guard = _LifecycleGuard()
     guard.admit(TranscriptionEvent.final("s0", "x"))
-    guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"]))
+    assert guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"])) is not None
     # s1 was started open by supersede; a partial for it is legal.
     assert guard.admit(TranscriptionEvent.partial("s1", "new")) is not None
+    assert not guard.diagnostics
 
 
 # --------------------------------------------------------------------------- #
-# Supersede MUST preserve concatenated frozen text
+# Supersede rule: a supersede withdraws the retired segments, stable text
+# included
 # --------------------------------------------------------------------------- #
-def test_guard_supersede_2to1_merge_preserves_frozen_text() -> None:
-    # Two retired segments froze "你好" and "世界"; the single replacement MUST
-    # carry the concatenation "你好世界" as its frozen prefix.
+# The guard compares no text across a supersede: the retired segments and every
+# promise attached to them end with the event, and each replacement segment
+# starts with no stable text.
+def test_guard_supersede_retiring_a_partial_with_stable_text_is_admitted() -> None:
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好", stable_until=2))
-    guard.admit(TranscriptionEvent.final("b", "世界", stable_until=2))
-    guard.admit(TranscriptionEvent.supersede(["a", "b"], ["c"]))
-    accepted = guard.admit(TranscriptionEvent.partial("c", "你好世界！", stable_until=4))
-    assert accepted is not None
+    guard.admit(TranscriptionEvent.partial("a", "hello wor", stable_text="hello "))
+    assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None
+    # The replacement is judged only against its own history: text unrelated
+    # to the retired stable text is accepted, and from then on b's own stable
+    # text only grows.
+    assert guard.admit(TranscriptionEvent.partial("b", "goodbye")) is not None
+    assert (
+        guard.admit(TranscriptionEvent.partial("b", "goodbye all", stable_text="good")) is not None
+    )
+    assert not guard.diagnostics
+    assert guard.admit(TranscriptionEvent.partial("b", "bye")) is None
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_REWRITTEN]
+    # The retired segment is over: a later event for it is a lifecycle error.
+    assert guard.admit(TranscriptionEvent.partial("a", "hello world", stable_text="hello ")) is None
+    assert guard.diagnostics[-1].code == DIAG_LIFECYCLE_AFTER_TERMINAL
+
+
+def test_guard_supersede_retiring_a_final_is_admitted() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.final("a", "hello"))
+    assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None
+    assert guard.admit(TranscriptionEvent.final("b", "goodbye")) is not None
     assert not guard.diagnostics
 
 
-def test_guard_supersede_1to2_split_preserves_frozen_text() -> None:
-    # "你好世界" frozen on one segment, split into "你好" + "世界…": the two new
-    # segments' concatenated frozen prefix reconstructs F_old and MUST be
-    # accepted (the conservative split case).
+def test_guard_supersede_pure_deletion_of_stable_text_is_admitted() -> None:
+    # A supersede with empty new_ids retires segments without replacing them,
+    # whether or not they have stable text.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    # First new segment freezes "你好" -- strictly shorter than F_old, the safe
-    # (pending) direction: accepted with no diagnostic.
-    first = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
-    assert first is not None
-    assert not guard.diagnostics
-    # Second new segment freezes "世界"; F_new now == "你好世界" == F_old.
-    second = guard.admit(TranscriptionEvent.final("c", "世界呀", stable_until=2))
-    assert second is not None
+    guard.admit(TranscriptionEvent.partial("p", "um", stable_text="u"))
+    guard.admit(TranscriptionEvent.final("f", "uh"))
+    assert guard.admit(TranscriptionEvent.supersede(["p"], [])) is not None
+    assert guard.admit(TranscriptionEvent.supersede(["f"], [])) is not None
     assert not guard.diagnostics
 
 
-def test_guard_supersede_split_out_of_order_freeze_accepted() -> None:
-    # Split of frozen "你好世界" into [b, c] (reading order). The protocol does
-    # not forbid freezing the new segments out of order: c freezes "世界" BEFORE
-    # b has frozen anything. Because a frozen prefix is contiguous from
-    # position 0, c's "世界" does NOT yet count toward the replacement's frozen
-    # prefix (b's slot is still empty), so F_new is the empty contiguous run and
-    # the event MUST be accepted with no false rewrite diagnostic. Once b later
-    # freezes "你好", F_new == "你好世界" == F_old and stays accepted.
+def test_guard_forgets_the_text_and_speaker_of_a_retired_segment() -> None:
+    # Only the lifecycle state outlives a retired segment. A long session that
+    # revises often does not keep every withdrawn text.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    # c (the later new id) freezes "世界" first -- must NOT be misplaced at 0.
-    out_of_order = guard.admit(TranscriptionEvent.partial("c", "世界呀", stable_until=2))
-    assert out_of_order is not None
+    guard.admit(TranscriptionEvent.partial("old", "abc", stable_text="abc", speaker="X"))
+    guard.admit(TranscriptionEvent.supersede(["old"], []))
+    assert guard._stable_text == {}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert guard._last_speaker == {}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    # The id still cannot be reused.
+    assert guard.admit(TranscriptionEvent.partial("old", "abc")) is None
+    assert guard.diagnostics[-1].code == DIAG_LIFECYCLE_AFTER_TERMINAL
+
+
+def test_guard_keeps_only_what_is_read_again_after_a_final() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("a", "hi", stable_text="hi", speaker="X"))
+    guard.admit(TranscriptionEvent.final("a", "hi", speaker="X"))
+    # No rule reads a finalized segment's stable text again. Its speaker is
+    # still read when a later supersede retires the segment.
+    assert guard._stable_text == {}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert guard._last_speaker == {"a": "X"}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    guard.admit(TranscriptionEvent.closed("a", "Hi.", speaker="X"))
+    assert guard._last_speaker == {}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert guard.segments_in_state("closed") == ["a"]
+
+
+def test_guard_chained_supersedes_each_start_from_empty_stable_text() -> None:
+    guard = _LifecycleGuard()
+    reducer = StreamReducer()
+    events = [
+        TranscriptionEvent.partial("a", "the cat", stable_text="the "),
+        TranscriptionEvent.final("a", "the cat sat"),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.partial("b", "a cat", stable_text="a "),
+        TranscriptionEvent.supersede(["b"], ["c"]),
+        TranscriptionEvent.final("c", "that cat sat"),
+    ]
+    for event in events:
+        admitted = guard.admit(event)
+        assert admitted is not None
+        reducer.add(admitted)
     assert not guard.diagnostics
-    # b later freezes "你好"; the contiguous run is now "你好世界" == F_old.
-    filled = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
-    assert filled is not None
+    assert reducer.result().text == "that cat sat"
+
+
+def test_guard_issue_81_case_1_replacement_keeps_stable_parts_around_unstable_text() -> None:
+    # "hello" stable with " world" not yet stable, then "foo" stable with
+    # " bar" not yet stable, replaced by one segment that keeps both stable
+    # parts and rewrites the rest.
+    guard = _LifecycleGuard()
+    reducer = StreamReducer()
+    events = [
+        TranscriptionEvent.partial("a", "hello world", stable_text="hello"),
+        TranscriptionEvent.partial("b", "foo bar", stable_text="foo"),
+        TranscriptionEvent.supersede(["a", "b"], ["c"]),
+        TranscriptionEvent.partial("c", "hello there foo bar", stable_text="hello there foo"),
+        TranscriptionEvent.final("c", "hello there foo bar"),
+    ]
+    for event in events:
+        admitted = guard.admit(event)
+        assert admitted is not None
+        reducer.add(admitted)
     assert not guard.diagnostics
+    assert reducer.result().text == "hello there foo bar"
 
 
-def test_guard_supersede_split_contradiction_still_rejected() -> None:
-    # Both new segments freeze in order but c rewrites positions 2-3: b freezes
-    # "你好", c freezes "再见" -> F_new "你好再见" diverges from F_old "你好世界"
-    # on the common prefix, so it MUST still be rejected (the contradiction
-    # check survives the contiguous-run change).
+def test_guard_issue_81_case_2_merge_of_settled_segments_is_admitted() -> None:
+    # No text is joined or compared, so the separator between the retired
+    # texts never matters.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    first = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
-    assert first is not None
-    rejected = guard.admit(TranscriptionEvent.partial("c", "再见", stable_until=2))
-    assert rejected is None
-    assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
-
-
-def test_guard_supersede_out_of_order_divergence_diagnostic_names_the_group() -> None:
-    # Diagnostic-accuracy: c freezes WRONG text "界世" out of order (before b has
-    # frozen anything), then b later freezes the CORRECT "你好" -- completing the
-    # contiguous run that exposes c's divergence. The suppression is correct, but
-    # the diagnostic MUST NOT blame b (which froze correct text). It must describe
-    # the supersede GROUP and the F_old-vs-F_new comparison so an engine author
-    # debugging it is pointed at the real divergence, not the run-completing id.
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))  # F_old = 你好世界
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    out_of_order = guard.admit(TranscriptionEvent.partial("c", "界世", stable_until=2))
-    assert out_of_order is not None  # c's freeze is still pending at this point.
+    reducer = StreamReducer()
+    events = [
+        TranscriptionEvent.final("a", "hello"),
+        TranscriptionEvent.final("b", "foo"),
+        TranscriptionEvent.supersede(["a", "b"], ["c"]),
+        TranscriptionEvent.final("c", "hello foo"),
+    ]
+    for event in events:
+        admitted = guard.admit(event)
+        assert admitted is not None
+        reducer.add(admitted)
     assert not guard.diagnostics
-    rejected = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
-
-    # Behavior is unchanged: b's freeze is suppressed (the run now diverges).
-    assert rejected is None
-    diag = next(d for d in guard.diagnostics if d.code == "frozen_prefix_rewritten_supersede")
-    # The message references the whole replacement group, not just one segment...
-    assert "['b', 'c']" in diag.message
-    # ...and shows the F_new (diverging contiguous run) vs F_old comparison.
-    assert "你好界世" in diag.message  # F_new
-    assert "你好世界" in diag.message  # F_old
-    # It does NOT mis-attribute the rewrite solely to b: b is mentioned only as
-    # the id that COMPLETED the contiguous run, not as the rewriter.
-    assert "completed the contiguous run" in diag.message
+    assert reducer.result().text == "hello foo"
 
 
-def test_guard_supersede_rewrite_frozen_prefix_suppressed() -> None:
+def test_guard_issue_81_case_3_stable_text_replaced_by_unrelated_text() -> None:
+    # The supersede withdraws `"abc"` explicitly, so its replacement by `"xyz"`
+    # is admitted with no diagnostic.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    # New segment freezes "再见" -- rewrites the user-visible frozen "你好世界".
-    rejected = guard.admit(TranscriptionEvent.partial("b", "再见", stable_until=2))
-    assert rejected is None
-    assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
+    reducer = StreamReducer()
+    events = [
+        TranscriptionEvent.partial("a", "abc", stable_text="abc"),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.final("b", "xyz"),
+        TranscriptionEvent.done(),
+    ]
+    for event in events:
+        admitted = guard.admit(event)
+        assert admitted is not None
+        reducer.add(admitted)
+    assert not guard.diagnostics
+    assert reducer.result().text == "xyz"
+
+
+def test_session_supersede_of_stable_text_lands_in_place() -> None:
+    # Through the public session: the replacement takes the retired
+    # segment's place in reading order, the delivered stream reduces to the
+    # session's own result, and a retired segment whose stable text never
+    # reached a final is not reported as abandoned.
+    async def run() -> tuple[list[TranscriptionEvent], Any, list[str]]:
+        session = _ScriptedSession(
+            [
+                TranscriptionEvent.partial("a", "hello wor", stable_text="hello "),
+                TranscriptionEvent.final("x", "keep"),
+                TranscriptionEvent.supersede(["a"], ["a2"]),
+                TranscriptionEvent.final("a2", "hi"),
+            ]
+        )
+        events = await _collect(session)
+        return events, session.result(), [d.code for d in session.diagnostics()]
+
+    events, result, codes = asyncio.run(run())
+    assert codes == []
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["hi", "keep"]
+    replay = StreamReducer()
+    for event in events:
+        replay.add(event)
+    assert replay.result().segments == result.segments
 
 
 # --------------------------------------------------------------------------- #
-# Frozen-speaker guard + cross-speaker supersede
+# Finals: a final is wholly stable
 # --------------------------------------------------------------------------- #
-def test_guard_frozen_speaker_change_suppressed() -> None:
-    # Once a frozen prefix exists and a speaker was accepted, X->Y is an
+def test_final_stable_text_must_be_the_whole_text() -> None:
+    assert TranscriptionEvent.final("s0", "hello", stable_text="hello").stable_text == "hello"
+    with pytest.raises(ValidationError, match="MUST be the whole text"):
+        TranscriptionEvent.final("s0", "hello world", stable_text="hello")
+    with pytest.raises(ValidationError, match="MUST be the whole text"):
+        TranscriptionEvent.final("s0", "hello", stable_text="")
+    # An empty final is wholly stable with an empty stable text.
+    assert TranscriptionEvent.final("s0", "").stable_text == ""
+
+
+def test_closed_stable_text_must_be_the_whole_text() -> None:
+    with pytest.raises(ValidationError, match="MUST be the whole text"):
+        TranscriptionEvent.closed("s0", "Hello.", stable_text="")
+    with pytest.raises(ValidationError, match="MUST be the whole text"):
+        TranscriptionEvent.closed("s0", "Hello.", stable_text="Hello")
+
+
+@pytest.mark.parametrize("finality", ["final", "closed"])
+def test_final_whose_text_ends_with_a_joiner_is_admitted(
+    finality: Literal["final", "closed"],
+) -> None:
+    # A final has no boundary inside its text, so the boundary check does not
+    # apply to it, although the standalone check on the same strings fails.
+    text = "a" + _ZWJ
+    assert validate_stable_text(text, text) is False
+    event = TranscriptionEvent(type="final", segment_id="s0", text=text, finality=finality)
+    guard = _LifecycleGuard()
+    out = guard.admit(event)
+    assert out is not None and out.stable_text == text
+    assert guard.diagnostics == []
+
+    async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
+        session = _ScriptedSession([event])
+        events = await _collect(session)
+        return events, session.result().text, [d.code for d in session.diagnostics()]
+
+    events, result_text, codes = asyncio.run(run())
+    assert [e.type for e in events] == ["final", "done"]
+    assert result_text == text.strip()
+    assert codes == []
+
+
+def test_guard_delivers_a_final_as_wholly_stable_after_partial_stable_text() -> None:
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    admitted = guard.admit(TranscriptionEvent.final("s0", "hello world"))
+    assert admitted is not None and admitted.stable_text == "hello world"
+    assert not guard.diagnostics
+
+
+def test_final_that_rewrites_stable_text_is_rejected_and_then_abandoned() -> None:
+    # A final must keep the stable text its partials published. When it does
+    # not, the final is suppressed; the segment stays open, so the session's
+    # done also reports the stable text as abandoned.
+    guard = _LifecycleGuard()
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    assert guard.admit(TranscriptionEvent.final("s0", "goodbye")) is None
+    assert guard.admit(TranscriptionEvent.done()) is not None
+    assert [d.code for d in guard.diagnostics] == [
+        DIAG_STABLE_TEXT_REWRITTEN,
+        DIAG_STABLE_TEXT_ABANDONED,
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Locked speaker + cross-speaker supersede
+# --------------------------------------------------------------------------- #
+def test_guard_locked_speaker_change_suppressed() -> None:
+    # Once a segment has stable text and an accepted speaker, X->Y is an
     # illegal rewrite: the whole event is suppressed (never clamped -- a clamp
     # would keep presenting stale attribution).
     guard = _LifecycleGuard()
-    first = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
+    first = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel", speaker="A"))
     assert first is not None
-    rejected = guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="B"))
+    rejected = guard.admit(
+        TranscriptionEvent.partial("s0", "hello!", stable_text="hel", speaker="B")
+    )
     assert rejected is None
-    assert any(d.code == "frozen_speaker_rewritten" for d in guard.diagnostics)
+    assert [d.code for d in guard.diagnostics] == [DIAG_LOCKED_SPEAKER_REWRITTEN]
 
 
-def test_guard_frozen_speaker_retraction_suppressed() -> None:
-    # X->None over the frozen region is a retraction-by-rewrite: also illegal.
+def test_guard_locked_speaker_retraction_suppressed() -> None:
+    # X->None on a segment with stable text is a retraction by rewrite: also
+    # illegal.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
-    rejected = guard.admit(TranscriptionEvent.final("s0", "hello!", stable_until=3))
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel", speaker="A"))
+    rejected = guard.admit(TranscriptionEvent.final("s0", "hello!"))
     assert rejected is None
-    diag = next(d for d in guard.diagnostics if d.code == "frozen_speaker_rewritten")
+    diag = next(d for d in guard.diagnostics if d.code == DIAG_LOCKED_SPEAKER_REWRITTEN)
     assert "X->None" in diag.message
 
 
-def test_guard_speaker_none_to_x_after_freeze_allowed() -> None:
-    # None->X after freezing is the recommended delay-speaker-to-final engine
-    # strategy and MUST be admitted.
+def test_guard_speaker_none_to_x_after_stable_text_allowed() -> None:
+    # None->X after the segment has stable text is the recommended
+    # delay-speaker-to-final engine strategy and MUST be admitted.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3))
-    accepted = guard.admit(TranscriptionEvent.final("s0", "hello!", stable_until=3, speaker="A"))
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel"))
+    accepted = guard.admit(TranscriptionEvent.final("s0", "hello!", speaker="A"))
     assert accepted is not None and accepted.speaker == "A"
     assert not guard.diagnostics
 
 
-def test_guard_speaker_floats_before_freeze() -> None:
-    # Pins the PRIOR-frontier semantics: while nothing is frozen the speaker
-    # floats freely (A->B admitted); a same-event freeze+speaker-set is legal
-    # (the frontier read predates the event's own freeze); only afterward is
-    # the last accepted speaker locked.
+def test_guard_speaker_floats_until_the_segment_has_stable_text() -> None:
+    # The lock is keyed on non-empty stable text from an EARLIER event. While
+    # the stable text is empty the speaker floats freely (A->B admitted). An
+    # event that both makes text stable and sets the speaker is legal; only
+    # afterward is the last accepted speaker locked.
     guard = _LifecycleGuard()
     assert guard.admit(TranscriptionEvent.partial("s0", "he", speaker="A")) is not None
-    assert guard.admit(TranscriptionEvent.partial("s0", "hel", speaker="B")) is not None
-    frozen = guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="B"))
-    assert frozen is not None
+    assert (
+        guard.admit(TranscriptionEvent.partial("s0", "hel", stable_text="", speaker="B"))
+        is not None
+    )
+    made_stable = guard.admit(
+        TranscriptionEvent.partial("s0", "hello", stable_text="hel", speaker="A")
+    )
+    assert made_stable is not None
     assert not guard.diagnostics
-    rejected = guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="A"))
+    rejected = guard.admit(
+        TranscriptionEvent.partial("s0", "hello!", stable_text="hel", speaker="B")
+    )
     assert rejected is None
-    assert any(d.code == "frozen_speaker_rewritten" for d in guard.diagnostics)
+    assert [d.code for d in guard.diagnostics] == [DIAG_LOCKED_SPEAKER_REWRITTEN]
 
 
-def test_guard_closed_final_exempt_from_frozen_speaker() -> None:
-    # closed is the terminal post-processing correction: it may legally settle
-    # a different speaker, exactly like it may rewrite frozen text.
+def test_guard_closed_final_exempt_from_locked_speaker() -> None:
+    # closed is the terminal post-processing restatement: it may settle a
+    # different speaker, just as it may reformat stable text.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel", speaker="A"))
     accepted = guard.admit(TranscriptionEvent.closed("s0", "Hello.", speaker="B"))
     assert accepted is not None and accepted.speaker == "B"
     assert not guard.diagnostics
 
 
-def test_guard_frozen_speaker_strict_raises() -> None:
+def test_guard_locked_speaker_strict_raises() -> None:
     guard = _LifecycleGuard(strict=True)
-    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"))
-    with pytest.raises(ValueError, match="speaker is locked"):
-        guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="B"))
+    guard.admit(TranscriptionEvent.partial("s0", "hello", stable_text="hel", speaker="A"))
+    with pytest.raises(ValueError, match="speaker of a segment with stable text is locked"):
+        guard.admit(TranscriptionEvent.partial("s0", "hello!", stable_text="hel", speaker="B"))
 
 
 def test_guard_rejected_event_does_not_poison_speaker_ledger() -> None:
-    # The ledger commit sits AFTER every reject path: a supersede-obligation-
-    # rejected event carrying a speaker must not register it, and follow-up
-    # events are judged against the ledger as it stood before the rejection.
+    # The ledger commit sits AFTER every reject path: a rejected event that
+    # carries a speaker must not register it, and follow-up events are judged
+    # against the ledger as it stood before the rejection.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    accepted = guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2, speaker="B"))
-    assert accepted is not None
-    # c freezes text diverging from F_old while carrying speaker "C": the
-    # event is rejected on the supersede obligation -- AFTER the point where a
-    # naive implementation would have recorded the speaker.
-    rejected = guard.admit(TranscriptionEvent.partial("c", "再见", stable_until=2, speaker="C"))
+    assert guard.admit(TranscriptionEvent.partial("c", "hello", stable_text="hel")) is not None
+    # This event rewrites the stable text while carrying speaker "C": it is
+    # rejected AFTER the point where a naive implementation would have
+    # recorded the speaker.
+    rejected = guard.admit(TranscriptionEvent.partial("c", "goodbye", speaker="C"))
     assert rejected is None
-    assert any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
+    assert [d.code for d in guard.diagnostics] == [DIAG_STABLE_TEXT_REWRITTEN]
     ledger = guard._last_speaker  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "c" not in ledger and ledger["b"] == "B"
+    assert "c" not in ledger
     # Follow-up: c may still take ANY first speaker (the rejected "C" never
     # locked in) ...
-    ok = guard.admit(TranscriptionEvent.partial("c", "世界呀", stable_until=2, speaker="D"))
+    ok = guard.admit(TranscriptionEvent.partial("c", "hello there", stable_text="hel", speaker="D"))
     assert ok is not None and ok.speaker == "D"
     # ... and is thereafter judged against the ACCEPTED "D", not the
     # rejected "C".
     rejected_again = guard.admit(
-        TranscriptionEvent.partial("c", "世界呀!", stable_until=2, speaker="C")
+        TranscriptionEvent.partial("c", "hello there!", stable_text="hel", speaker="C")
     )
     assert rejected_again is None
-    assert any(d.code == "frozen_speaker_rewritten" for d in guard.diagnostics)
+    assert guard.diagnostics[-1].code == DIAG_LOCKED_SPEAKER_REWRITTEN
 
 
 def test_guard_supersede_cross_speaker_merge_suppressed() -> None:
@@ -2585,131 +3566,6 @@ def test_guard_supersede_unknown_speakers_allowed() -> None:
     assert not guard.diagnostics
 
 
-def test_session_supersede_rewrite_suppression_accepts_corrected_final_result() -> None:
-    async def run() -> tuple[str, list[str], list[TranscriptionEvent]]:
-        session = _ScriptedSession(
-            [
-                TranscriptionEvent.final("a", "hello", stable_until=5),
-                TranscriptionEvent.supersede(["a"], ["b"]),
-                TranscriptionEvent.final("b", "bye", stable_until=3),
-                TranscriptionEvent.final("b", "hello there", stable_until=5),
-            ]
-        )
-        events = await _collect(session)
-        return session.result().text, [d.code for d in session.diagnostics()], events
-
-    text, diagnostic_codes, events = asyncio.run(run())
-
-    assert text == "hello there"
-    assert diagnostic_codes == ["frozen_prefix_rewritten_supersede"]
-    assert any(e.segment_id == "b" and e.text == "hello there" for e in events)
-    assert not any(e.segment_id == "b" and e.text == "bye" for e in events)
-
-
-def test_guard_supersede_rewrite_suppression_restores_existing_freeze_state() -> None:
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "hello world", stable_until=11))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    guard.admit(TranscriptionEvent.partial("b", "hello", stable_until=5))
-
-    rejected = guard.admit(TranscriptionEvent.partial("b", "hello bye", stable_until=9))
-    accepted = guard.admit(TranscriptionEvent.final("b", "hello world", stable_until=11))
-
-    assert rejected is None
-    assert accepted is not None
-    stable_until = guard._stable_until["b"]  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    frozen_text = guard._frozen_text["b"]  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert stable_until == 11
-    assert frozen_text == "hello world"
-    assert [d.code for d in guard.diagnostics] == ["frozen_prefix_rewritten_supersede"]
-
-
-def test_guard_supersede_rewrite_frozen_prefix_strict_raises() -> None:
-    guard = _LifecycleGuard(strict=True)
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    with pytest.raises(ValueError, match="preserve frozen text"):
-        guard.admit(TranscriptionEvent.partial("b", "再见", stable_until=2))
-
-
-def test_guard_closed_supersede_rewrite_frozen_prefix_is_accepted() -> None:
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "hello", stable_until=5))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    guard.admit(TranscriptionEvent.final("b", "hello", stable_until=5))
-    accepted = guard.admit(TranscriptionEvent.closed("b", "Hello.", stable_until=6))
-    assert accepted is not None
-    assert not any(d.code == "frozen_prefix_rewritten_supersede" for d in guard.diagnostics)
-
-
-def test_guard_supersede_no_frozen_old_text_has_no_obligation() -> None:
-    # An old segment with no frozen prefix imposes no preservation obligation;
-    # the replacement may freeze whatever it likes.
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "draft"))  # stable_until None -> 0
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    accepted = guard.admit(TranscriptionEvent.partial("b", "different", stable_until=4))
-    assert accepted is not None
-    assert not guard.diagnostics
-
-
-# --------------------------------------------------------------------------- #
-# A8 -- unfulfilled supersede frozen-prefix obligation at session end
-# --------------------------------------------------------------------------- #
-def test_guard_finalize_flags_unfulfilled_supersede_obligation() -> None:
-    # The replacement re-froze "你好" but the retired frozen prefix was "你好世界":
-    # F_new stays strictly shorter than F_old (the permitted conservative
-    # direction). At session end this is reported as ONE soft info diagnostic.
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
-    assert not guard.diagnostics  # nothing eager: the short direction is allowed.
-    emitted = guard.finalize()
-    assert len(emitted) == 1
-    diag = emitted[0]
-    assert diag.code == "supersede_obligation_unfulfilled"
-    assert diag.level == "info"  # soft, not an error.
-    assert "b" in diag.message  # names the affected new id.
-    # Surfaced through the guard's diagnostics channel too.
-    assert guard.diagnostics == emitted
-
-
-def test_guard_finalize_no_diagnostic_for_reconciled_supersede() -> None:
-    # The replacement re-froze the full retired frozen prefix -> obligation
-    # satisfied -> finalize emits nothing.
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    guard.admit(TranscriptionEvent.final("b", "你好世界", stable_until=4))
-    assert guard.finalize() == []
-    assert not guard.diagnostics
-
-
-def test_guard_finalize_one_diagnostic_per_obligation_not_per_new_id() -> None:
-    # A 1->2 split shares one obligation across both new ids; an unfulfilled
-    # split yields exactly ONE diagnostic naming both new ids (not one each).
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b", "c"]))
-    guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))  # c never freezes
-    emitted = guard.finalize()
-    assert len(emitted) == 1
-    assert "b" in emitted[0].message and "c" in emitted[0].message
-
-
-def test_guard_finalize_is_idempotent() -> None:
-    # finalize runs the sweep at most once (the session terminal and a later
-    # compliance replay must not double-report).
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
-    assert len(guard.finalize()) == 1
-    assert guard.finalize() == []  # second sweep is a no-op.
-    assert len(guard.diagnostics) == 1
-
-
 def test_guard_diagnostics_bounded_aggregates_overflow_by_code() -> None:
     # The diagnostic channel is bounded. A misbehaving engine that
     # trips a clamp on every event must not grow diagnostics without limit; past
@@ -2774,63 +3630,6 @@ def test_guard_rejects_nonpositive_max_diagnostics() -> None:
         _LifecycleGuard(max_diagnostics=0)
 
 
-def test_guard_finalize_obligations_respect_diagnostics_cap() -> None:
-    # The end-of-session supersede sweep also routes through the
-    # bounded channel, so a finalize that runs after the cap is reached folds
-    # its obligations into the overflow summary instead of overflowing the list.
-    guard = _LifecycleGuard(max_diagnostics=2)
-    guard._reject("audio_cursor_decreased", "down")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # fills slot 0
-    guard._reject("audio_cursor_decreased", "down")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # triggers summary
-    assert len(guard.diagnostics) == 2
-    assert guard.diagnostics[-1].code == "diagnostics_truncated"
-    # An unfulfilled supersede obligation at finalize is still emitted as the
-    # method's return value, but folded into the (already-present) summary.
-    guard.admit(TranscriptionEvent.final("a", "你好世界", stable_until=4))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    guard.admit(TranscriptionEvent.partial("b", "你好", stable_until=2))
-    emitted = guard.finalize()
-    assert len(emitted) == 1  # the obligation is still reported to the caller.
-    assert len(guard.diagnostics) == 2  # but the list stays capped.
-    assert "supersede_obligation_unfulfilled" in guard.diagnostics[-1].message
-
-
-def test_session_unfulfilled_supersede_obligation_surfaces_soft_diagnostic_on_done() -> None:
-    # A session that supersedes a frozen segment and ends (done) with the
-    # replacement re-frozen LESS than the retired frozen prefix yields ONE soft
-    # supersede_obligation_unfulfilled diagnostic via diagnostics() -- not an
-    # error event, and the session still terminates with done.
-    async def run() -> tuple[list[str], list[TranscriptionEvent]]:
-        session = _ScriptedSession(
-            [
-                TranscriptionEvent.final("a", "你好世界", stable_until=4),
-                TranscriptionEvent.supersede(["a"], ["b"]),
-                TranscriptionEvent.partial("b", "你好", stable_until=2),
-            ]
-        )
-        events = await _collect(session)
-        return [d.code for d in session.diagnostics()], events
-
-    codes, events = asyncio.run(run())
-    assert codes == ["supersede_obligation_unfulfilled"]
-    assert events[-1].type == "done"
-    assert not any(e.type == "error" for e in events)
-
-
-def test_session_reconciled_supersede_emits_no_obligation_diagnostic() -> None:
-    async def run() -> list[str]:
-        session = _ScriptedSession(
-            [
-                TranscriptionEvent.final("a", "你好世界", stable_until=4),
-                TranscriptionEvent.supersede(["a"], ["b"]),
-                TranscriptionEvent.final("b", "你好世界", stable_until=4),
-            ]
-        )
-        await _collect(session)
-        return [d.code for d in session.diagnostics()]
-
-    assert asyncio.run(run()) == []
-
-
 def test_session_diagnostics_bounded_end_to_end() -> None:
     # The cap is enforced through the live session, not just the
     # guard in isolation. A scripted session whose engine reports a perpetually
@@ -2871,9 +3670,8 @@ def test_supersede_disjoint_enforced_at_construction() -> None:
 def test_supersede_duplicate_old_id_rejected_at_construction() -> None:
     # A duplicate id within old_ids retires the same segment twice
     # (retire-once) -- structurally malformed, like an old/new overlap. The
-    # event model refuses to build one via both the classmethod and raw constructor,
-    # so it can never reach the guard's frozen-text join (where it would double the
-    # frozen prefix and silently drop a legitimate later final).
+    # event model refuses to build one via both the classmethod and raw
+    # constructor, so it never reaches the guard.
     with pytest.raises(ValueError, match="MUST NOT repeat a segment id"):
         TranscriptionEvent.supersede(["a", "a"], ["b"])
     with pytest.raises(ValueError, match="MUST NOT repeat a segment id"):
@@ -2884,8 +3682,7 @@ def test_supersede_duplicate_new_id_rejected_at_construction() -> None:
     # A duplicate id within new_ids introduces the same replacement segment
     # twice -- malformed under set-to-set lineage (new_ids is
     # semantically a set). Left constructible it would inflate the raw new_ids
-    # length, evading the guard's cross-speaker pigeonhole count, and
-    # double-count that segment's frozen prefix in the F_new join.
+    # length and evade the guard's cross-speaker pigeonhole count.
     with pytest.raises(ValueError, match="new_ids MUST NOT repeat a segment id"):
         TranscriptionEvent.supersede(["a"], ["b", "b"])
     with pytest.raises(ValueError, match="new_ids MUST NOT repeat a segment id"):
@@ -2953,12 +3750,12 @@ def test_guard_closed_after_final_is_legal() -> None:
     assert not any(d.code == "lifecycle_final_after_final" for d in guard.diagnostics)
 
 
-def test_session_accepts_closed_rewrite_of_frozen_prefix_and_updates_result() -> None:
+def test_session_accepts_closed_rewrite_of_stable_text_and_updates_result() -> None:
     async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
         session = _ScriptedSession(
             [
-                TranscriptionEvent.final("s0", "hello", stable_until=5),
-                TranscriptionEvent.closed("s0", "Hello.", stable_until=6),
+                TranscriptionEvent.final("s0", "hello"),
+                TranscriptionEvent.closed("s0", "Hello."),
             ]
         )
         events = await _collect(session)
@@ -2967,18 +3764,21 @@ def test_session_accepts_closed_rewrite_of_frozen_prefix_and_updates_result() ->
     events, text, diagnostic_codes = asyncio.run(run())
     assert any(e.type == "final" and e.finality == "closed" for e in events)
     assert text == "Hello."
-    assert "frozen_prefix_rewritten" not in diagnostic_codes
+    assert diagnostic_codes == []
 
 
-def test_session_accepts_closed_punctuation_itn_within_frozen_prefix() -> None:
+def test_session_accepts_closed_punctuation_itn_of_stable_text() -> None:
+    # The closed restatement may shorten the text ("twenty dollars" becomes
+    # "$20."). Its stable text is the whole corrected text, forwarded as-is.
     raw = "i owe twenty dollars"
     corrected = "I owe $20."
 
     async def run() -> tuple[list[TranscriptionEvent], str, list[str]]:
         session = _ScriptedSession(
             [
-                TranscriptionEvent.final("s0", raw, stable_until=len(raw)),
-                TranscriptionEvent.closed("s0", corrected, stable_until=len(corrected)),
+                TranscriptionEvent.partial("s0", raw, stable_text="i owe "),
+                TranscriptionEvent.final("s0", raw),
+                TranscriptionEvent.closed("s0", corrected),
             ]
         )
         events = await _collect(session)
@@ -2986,72 +3786,25 @@ def test_session_accepts_closed_punctuation_itn_within_frozen_prefix() -> None:
 
     events, text, diagnostic_codes = asyncio.run(run())
     closed_events = [e for e in events if e.type == "final" and e.finality == "closed"]
-    assert closed_events
+    assert [e.stable_text for e in closed_events] == [corrected]
     assert text == corrected
-    assert "frozen_prefix_rewritten" not in diagnostic_codes
-    # The legal closed shrink MUST be forwarded as-is -- not clamped back up
-    # above the corrected text (an out-of-range wire value).
-    assert "stable_until_clamped" not in diagnostic_codes
-    closed = closed_events[0]
-    assert closed.stable_until == len(corrected)
-    assert closed.text is not None and closed.stable_until is not None
-    assert validate_stable_until(closed.text, closed.stable_until)
+    assert diagnostic_codes == []
 
 
-def test_guard_closed_shrink_forwards_in_range_stable_until() -> None:
-    # The canonical legal-closed-shrink case: "twenty twenty" (su=13) post-
-    # processed by ITN into "2020" (su=4). The closed event is spec-legal; the
-    # guard must forward stable_until=4, not clamp it to the prior frontier 13.
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("s0", "twenty twenty", stable_until=13))
-    admitted = guard.admit(TranscriptionEvent.closed("s0", "2020", stable_until=4))
-    assert admitted is not None
-    assert admitted.stable_until == 4
-    assert admitted.text is not None
-    assert validate_stable_until(admitted.text, admitted.stable_until)
-    assert not any(d.code == "stable_until_clamped" for d in guard.diagnostics)
-
-
-def test_guard_closed_out_of_range_stable_until_is_repaired() -> None:
-    # A buggy engine carrying the OLD frontier onto the shrunk closed text is
-    # still repaired to a structurally valid in-range boundary + diagnostic.
-    # (Constructed via model_copy to bypass the construction-time bound, which
-    # already rejects this shape -- the guard is defense-in-depth.)
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("s0", "twenty twenty", stable_until=13))
-    bad = TranscriptionEvent.closed("s0", "2020", stable_until=4).model_copy(
-        update={"stable_until": 13}
-    )
-    admitted = guard.admit(bad)
-    assert admitted is not None
-    assert admitted.text is not None and admitted.stable_until is not None
-    assert validate_stable_until(admitted.text, admitted.stable_until)
-    assert admitted.stable_until == 4  # min(13, len("2020")) -> 4, a valid cut
-    assert any(d.code == "stable_until_clamped" for d in guard.diagnostics)
-
-
-def test_check_event_sequence_accepts_legal_closed_itn_shrink() -> None:
-    # The compliance half of the legal closed shrink: the suite must NOT fail
-    # a spec-legal closed-ITN engine with a stable_until_clamped error.
+def test_check_event_sequence_accepts_closed_itn_restatement() -> None:
+    # The compliance half of the closed restatement: the suite must NOT fail
+    # an engine whose closed final restates stable text in a new format.
     from standard_asr.compliance import check_event_sequence
 
     report = check_event_sequence(
         [
-            TranscriptionEvent.final("s0", "twenty twenty", stable_until=13),
-            TranscriptionEvent.closed("s0", "2020", stable_until=4),
+            TranscriptionEvent.partial("s0", "twenty twenty", stable_text="twenty "),
+            TranscriptionEvent.final("s0", "twenty twenty"),
+            TranscriptionEvent.closed("s0", "2020"),
             TranscriptionEvent.done(),
         ]
     )
     assert report.passed is True, [i.message for i in report.issues]
-
-
-def test_event_construction_rejects_out_of_range_stable_until() -> None:
-    # text[:stable_until] must be a real prefix; an unsatisfiable claim is
-    # rejected at construction (negative or > len).
-    with pytest.raises(ValueError, match="out of range"):
-        TranscriptionEvent.partial("s", "hi", stable_until=3)
-    with pytest.raises(ValueError, match="out of range"):
-        TranscriptionEvent.partial("s", "hello", stable_until=-2)
 
 
 def test_event_model_validate_passes_non_dict_through() -> None:
@@ -3132,29 +3885,6 @@ def test_session_constructor_rejects_degenerate_bounds() -> None:
         _ScriptedSession([], event_buffer_capacity=0)
 
 
-def test_obligation_sweep_runs_on_engine_emitted_terminal() -> None:
-    # The supersede_obligation_unfulfilled sweep must run before an
-    # ENGINE-emitted terminal too, not only the clean-end done path
-    # (byte-identical streams must not differ in diagnostics()).
-    async def run() -> list[str]:
-        session = _ScriptedSession(
-            [
-                TranscriptionEvent.final("a", "hello world", stable_until=11),
-                TranscriptionEvent.supersede(["a"], ["b"]),
-                # b never re-freezes the retired frozen text...
-                TranscriptionEvent.final("b", "hello", stable_until=2),
-                # ...and the ENGINE emits its own terminal error.
-                TranscriptionEvent.make_error(code="engine_gave_up", recoverable=False),
-            ]
-        )
-        session.feed([])
-        await _collect(session)
-        return [d.code for d in session.diagnostics()]
-
-    codes = asyncio.run(run())
-    assert "supersede_obligation_unfulfilled" in codes
-
-
 def test_deadline_terminal_stops_producer_so_result_matches_stream() -> None:
     # A synthesized deadline terminal ends iteration; the producer must be
     # stopped with it, or it keeps feeding the reducer events the consumer
@@ -3185,9 +3915,9 @@ def test_deadline_terminal_stops_producer_so_result_matches_stream() -> None:
 
 def test_guard_suppresses_closed_after_superseded_segment() -> None:
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("s0", "hello", stable_until=5))
-    guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"]))
-    rejected = guard.admit(TranscriptionEvent.closed("s0", "Hello.", stable_until=6))
+    guard.admit(TranscriptionEvent.final("s0", "hello"))
+    assert guard.admit(TranscriptionEvent.supersede(["s0"], ["s1"])) is not None
+    rejected = guard.admit(TranscriptionEvent.closed("s0", "Hello."))
     assert rejected is None
     assert any(d.code == "lifecycle_after_terminal" for d in guard.diagnostics)
 
@@ -3195,25 +3925,10 @@ def test_guard_suppresses_closed_after_superseded_segment() -> None:
 # --------------------------------------------------------------------------- #
 # Supersede with empty new_ids (pure deletion)
 # --------------------------------------------------------------------------- #
-def test_guard_supersede_empty_new_ids_deleting_frozen_suppressed() -> None:
+def test_guard_supersede_empty_new_ids_without_stable_text_is_allowed() -> None:
+    # Pure deletion is fine when the retired segment has no stable text.
     guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.final("a", "你好", stable_until=2))
-    rejected = guard.admit(TranscriptionEvent.supersede(["a"], []))
-    assert rejected is None
-    assert any(d.code == "supersede_deletes_frozen_text" for d in guard.diagnostics)
-
-
-def test_guard_supersede_empty_new_ids_deleting_frozen_strict_raises() -> None:
-    guard = _LifecycleGuard(strict=True)
-    guard.admit(TranscriptionEvent.final("a", "你好", stable_until=2))
-    with pytest.raises(ValueError, match="empty new_ids"):
-        guard.admit(TranscriptionEvent.supersede(["a"], []))
-
-
-def test_guard_supersede_empty_new_ids_no_frozen_is_allowed() -> None:
-    # Pure deletion is fine when the retired segment froze nothing.
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.partial("a", "draft"))  # nothing frozen
+    guard.admit(TranscriptionEvent.partial("a", "draft"))
     accepted = guard.admit(TranscriptionEvent.supersede(["a"], []))
     assert accepted is not None
     assert not guard.diagnostics
@@ -3235,17 +3950,6 @@ def test_session_suppresses_illegal_transition_in_stream() -> None:
     # The revived partial must NOT be forwarded.
     assert not any(e.type == "partial" for e in events)
     assert ndiag >= 1
-
-
-def test_stable_text_guards_invalid_stable_until() -> None:
-    # Negative / out-of-range stable_until must not produce a wrong prefix.
-    # Construction now rejects these shapes, so build them via model_copy
-    # (which skips validation) -- the property stays defensive for events
-    # materialized through model_construct/copy paths.
-    base = TranscriptionEvent.partial("s", "hello")
-    assert base.model_copy(update={"stable_until": -2}).stable_text == ""
-    short = TranscriptionEvent.partial("s", "hi")
-    assert short.model_copy(update={"stable_until": 99}).stable_text == "hi"
 
 
 # --------------------------------------------------------------------------- #
@@ -3739,16 +4443,14 @@ def test_streaming_diagnostic_code_constants_match_their_wire_literals() -> None
     assert DIAG_LIFECYCLE_RETIRED_RESUPERSEDED == "lifecycle_retired_resuperseded"
     assert DIAG_SUPERSEDE_REINTRODUCES_SEGMENT == "supersede_reintroduces_segment"
     assert DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE == "supersede_cross_speaker_merge"
-    assert DIAG_SUPERSEDE_DELETES_FROZEN_TEXT == "supersede_deletes_frozen_text"
     assert DIAG_LIFECYCLE_AFTER_TERMINAL == "lifecycle_after_terminal"
     assert DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL == "lifecycle_partial_after_final"
     assert DIAG_LIFECYCLE_FINAL_AFTER_FINAL == "lifecycle_final_after_final"
-    assert DIAG_FROZEN_PREFIX_REWRITTEN == "frozen_prefix_rewritten"
-    assert DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE == "frozen_prefix_rewritten_supersede"
-    assert DIAG_FROZEN_SPEAKER_REWRITTEN == "frozen_speaker_rewritten"
+    assert DIAG_STABLE_TEXT_REWRITTEN == "stable_text_rewritten"
+    assert DIAG_LOCKED_SPEAKER_REWRITTEN == "locked_speaker_rewritten"
     assert DIAG_AUDIO_CURSOR_DECREASED == "audio_cursor_decreased"
-    assert DIAG_STABLE_UNTIL_CLAMPED == "stable_until_clamped"
-    assert DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED == "supersede_obligation_unfulfilled"
+    assert DIAG_STABLE_TEXT_CLAMPED == "stable_text_clamped"
+    assert DIAG_STABLE_TEXT_ABANDONED == "stable_text_abandoned"
 
 
 def test_reducer_preserves_arrival_order_without_timestamps() -> None:
@@ -3862,11 +4564,11 @@ def test_coalescing_buffer_large_drain_order() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# SURVEY -- WeNet two-pass supersede preserves frozen prefix; DSM; FireRed
+# SURVEY -- a two-pass supersede reduce; DSM; FireRed
 # --------------------------------------------------------------------------- #
 def test_survey_wenet_two_pass_supersede_reduce() -> None:
-    # First pass finalizes seg-3/seg-4; second pass merges into seg-5, which
-    # takes over the retired block's reading-order position in place.
+    # First pass finalizes seg-3/seg-4; second pass merges them into seg-5,
+    # which takes over the retired block's reading-order position in place.
     order: list[str] = []
     texts: dict[str, str] = {}
     reduce_event(order, texts, TranscriptionEvent.final("seg-3", "hello"))
@@ -4094,34 +4796,6 @@ def test_deadline_drain_stops_at_real_buffered_terminal() -> None:
     assert [event.type for event in events] == ["final", "done"]
 
 
-# --------------------------------------------------------------------------- #
-# Closed finals fulfill supersede obligations (no lying diagnostic)
-# --------------------------------------------------------------------------- #
-def test_closed_final_fulfils_supersede_obligation() -> None:
-    # A closed final that is a replacement group's only freeze MUST
-    # register in the obligation ledger; finalize() must not emit a false
-    # supersede_obligation_unfulfilled for fully preserved frozen text.
-    guard = _LifecycleGuard()
-    assert guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11)) is not None
-    assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None
-    closed = guard.admit(TranscriptionEvent.closed("b", "hello world.", stable_until=12))
-    assert closed is not None
-    assert guard.finalize() == []
-    assert not any(d.code == "supersede_obligation_unfulfilled" for d in guard.diagnostics)
-
-
-def test_closed_final_short_freeze_still_reports_unfulfilled_obligation() -> None:
-    # The true-positive direction stays intact: a closed final whose freeze is
-    # genuinely shorter than the retired frozen text still reports the
-    # (soft, info-level) unfulfilled obligation.
-    guard = _LifecycleGuard()
-    guard.admit(TranscriptionEvent.partial("a", "hello world", stable_until=11))
-    guard.admit(TranscriptionEvent.supersede(["a"], ["b"]))
-    guard.admit(TranscriptionEvent.closed("b", "hello", stable_until=5))
-    emitted = guard.finalize()
-    assert [d.code for d in emitted] == ["supersede_obligation_unfulfilled"]
-
-
 def test_feed_source_drains_without_blocking_after_terminal() -> None:
     # Feed-mode input release: when the engine terminates while the fed source
     # has chunks, the feed task discards the remainder instead of blocking
@@ -4149,7 +4823,7 @@ def test_feed_source_drains_without_blocking_after_terminal() -> None:
 def test_supersede_of_superseded_segment_is_rejected() -> None:
     # Superseded is a terminal state -- an id retires
     # the moment it appears in old_ids and MUST NOT be retired a second time
-    # (a double retirement would copy the frozen text into two lineages).
+    # (a double retirement would give one segment two replacement lineages).
     guard = _LifecycleGuard()
     assert guard.admit(TranscriptionEvent.partial("a", "hello")) is not None
     assert guard.admit(TranscriptionEvent.supersede(["a"], ["b"])) is not None
@@ -4497,7 +5171,7 @@ def test_supersede_noncontiguous_old_block_is_suppressed_everywhere() -> None:
 
 def test_supersede_misordered_old_ids_are_suppressed() -> None:
     # Positions contiguous but listed AGAINST reading order: old_ids MUST be
-    # in reading order (the frozen-prefix concatenation rule depends on it).
+    # in reading order (the replacement takes the block's place in it).
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("a", "one"))
     reducer.add(TranscriptionEvent.final("b", "two"))

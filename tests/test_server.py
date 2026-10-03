@@ -3131,7 +3131,8 @@ def _unprojectable_result_factory() -> (  # pyright: ignore[reportUnusedFunction
 
 class _IterationFaultSession(_StreamEchoSession):
     """Faults the bridge's forward loop itself: iteration raises directly
-    instead of being funneled into an ``engine_error`` event by the base."""
+    instead of being funneled into an ``error`` event with code
+    ``engine_error`` by the base."""
 
     def __aiter__(self) -> AsyncIterator[TranscriptionEvent]:
         raise RuntimeError("forward-loop fault: /secret/internal/path")
@@ -3254,6 +3255,276 @@ def test_ws_event_carries_speaker() -> None:
     finals = [e for e in events if e["type"] == "final"]
     assert finals and finals[0]["speaker"] == "A"
     assert events[-1]["type"] == "done" and events[-1]["speaker"] is None
+
+
+class _StableTextStreamSession(TranscriptionSession):
+    """Emits a partial with stable text, a partial without, and a final."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        async for _chunk in self.audio_chunks():
+            yield TranscriptionEvent.partial("seg-0", "hello wor", stable_text="hello ")
+            yield TranscriptionEvent.final("seg-0", "hello world")
+            yield TranscriptionEvent.partial("seg-1", "again")
+            yield TranscriptionEvent.final("seg-1", "again")
+
+
+class _StableTextStreamEngine(_StreamEchoEngine):
+    """Streaming engine that marks stable text on a partial."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            emits_partials=FlagCap(supported=True),
+            partial_stability=FlagCap(supported=True),
+        ),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return _StableTextStreamSession()
+
+
+def _stable_text_stream_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _StableTextStreamEngine
+):
+    return _StableTextStreamEngine()
+
+
+def test_ws_content_frames_carry_the_resolved_stable_text() -> None:
+    # A client in another language reads stable_text from the frame and never
+    # applies a default. Every partial and final frame carries the resolved
+    # string, the empty string included, and the done frame carries null.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_stable_text_stream_factory"))
+    client = TestClient(app)
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": None}
+        )
+        ws.send_bytes(b"abc")
+        ws.send_text("end")
+        events: list[dict[str, Any]] = []
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "done":
+                break
+    content = [(e["type"], e["segment_id"], e["stable_text"]) for e in events[:-1]]
+    assert content == [
+        ("partial", "seg-0", "hello "),
+        ("final", "seg-0", "hello world"),
+        ("partial", "seg-1", ""),
+        ("final", "seg-1", "again"),
+    ]
+    assert events[-1]["stable_text"] is None
+
+
+class _AbandonedStableTextSession(TranscriptionSession):
+    """Leaves a segment that has stable text open when the audio ends."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        async for _chunk in self.audio_chunks():
+            yield TranscriptionEvent.partial("seg-0", "hello wor", stable_text="hello ")
+
+
+class _AbandonedStableTextEngine(_StableTextStreamEngine):
+    """Streaming engine whose session abandons stable text."""
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return _AbandonedStableTextSession()
+
+
+def _abandoned_stable_text_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _AbandonedStableTextEngine
+):
+    return _AbandonedStableTextEngine()
+
+
+def test_ws_delivers_the_diagnostic_recorded_while_admitting_done() -> None:
+    # The guard records stable_text_abandoned when it admits done. The client
+    # still receives it in a diagnostics frame before the socket closes. Its
+    # position relative to the done frame is not fixed.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    app = server_module.create_app(registry=_registry_for("_abandoned_stable_text_factory"))
+    client = TestClient(app)
+    frames: list[dict[str, Any]] = []
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": None}
+        )
+        ws.send_bytes(b"abc")
+        ws.send_text("end")
+        try:
+            while True:
+                frames.append(ws.receive_json())
+        except WebSocketDisconnect:
+            pass
+    assert any(f["type"] == "done" for f in frames)
+    codes = [d["code"] for f in frames if f["type"] == "diagnostics" for d in f["diagnostics"]]
+    assert codes == ["stable_text_abandoned"]
+
+
+class _WsSupersedingSession(TranscriptionSession):
+    """Sends a ``supersede``, whatever its engine supports."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        async for _chunk in self.audio_chunks():
+            yield TranscriptionEvent.final("seg-0", "hello")
+            yield TranscriptionEvent.supersede(["seg-0"], ["seg-1"])
+            yield TranscriptionEvent.final("seg-1", "goodbye")
+
+
+class _WsUndeclaredSupersedeEngine(_StreamEchoEngine):
+    """Supports no re-segmentation, and its session sends a ``supersede``."""
+
+    strict: ClassVar[bool] = False
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: Any = None,
+        audio_format: Any = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return _WsSupersedingSession(strict_lifecycle=type(self).strict)
+
+
+class _WsStrictUndeclaredSupersedeEngine(_WsUndeclaredSupersedeEngine):
+    strict: ClassVar[bool] = True
+
+
+def _ws_undeclared_supersede_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WsUndeclaredSupersedeEngine
+):
+    return _WsUndeclaredSupersedeEngine()
+
+
+def _ws_strict_undeclared_supersede_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WsStrictUndeclaredSupersedeEngine
+):
+    return _WsStrictUndeclaredSupersedeEngine()
+
+
+class _WsStructuralSupersedeEngine:
+    """The same stream from an engine that is not an ``EngineBase``."""
+
+    properties: ClassVar[BaseProperties] = _StreamProperties()
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+    provider_params_type: ClassVar[type[ProviderParams] | None] = None
+
+    def __init__(self) -> None:
+        self.config = _DummyConfig(engine="stream")
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+    def start_transcription(self, **_kwargs: Any) -> TranscriptionSession:
+        return _WsSupersedingSession()
+
+
+def _ws_structural_supersede_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WsStructuralSupersedeEngine
+):
+    return _WsStructuralSupersedeEngine()
+
+
+class _WsFailingCapabilitiesEngine(_WsStructuralSupersedeEngine):
+    """Its ``effective_capabilities`` property raises ``AttributeError``."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+    @property
+    def effective_capabilities(self) -> DeclaredCapabilities:
+        raise AttributeError("model")
+
+
+def _ws_failing_capabilities_factory() -> (  # pyright: ignore[reportUnusedFunction]
+    _WsFailingCapabilitiesEngine
+):
+    return _WsFailingCapabilitiesEngine()
+
+
+def _ws_frames(factory: str) -> list[dict[str, Any]]:
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    app = server_module.create_app(registry=_registry_for(factory))
+    client = TestClient(app)
+    frames: list[dict[str, Any]] = []
+    with client.websocket_connect("/v1/stream/dummy/echo") as ws:
+        ws.send_json(
+            {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}, "options": None}
+        )
+        ws.send_bytes(b"abc")
+        ws.send_text("end")
+        try:
+            while True:
+                frames.append(ws.receive_json())
+        except WebSocketDisconnect:
+            pass
+    return frames
+
+
+def _ws_diagnostic_codes(frames: list[dict[str, Any]]) -> list[str]:
+    return [d["code"] for f in frames if f["type"] == "diagnostics" for d in f["diagnostics"]]
+
+
+@pytest.mark.parametrize(
+    "factory", ["_ws_undeclared_supersede_factory", "_ws_structural_supersede_factory"]
+)
+def test_ws_delivers_an_event_beyond_the_capabilities_with_its_diagnostic(factory: str) -> None:
+    # The supersede still reaches the client, and a diagnostics frame names
+    # the capability the engine went beyond. That holds for an engine built
+    # on EngineBase and for one that is not: the server binds the latter.
+    pytest.importorskip("fastapi")
+    frames = _ws_frames(factory)
+    events = [f["type"] for f in frames if f["type"] != "diagnostics"]
+    assert events == ["final", "supersede", "final", "done"]
+    assert _ws_diagnostic_codes(frames) == ["stream_exceeds_re_segments"]
+
+
+def test_ws_engine_whose_capabilities_cannot_be_read_gets_no_session() -> None:
+    # Reading the effective capabilities raises, and the server does not
+    # fall back to the wider declared ones: the client gets the engine-fault
+    # frame (internal_error) and no events.
+    pytest.importorskip("fastapi")
+    frames = _ws_frames("_ws_failing_capabilities_factory")
+    assert [f["type"] for f in frames] == ["error"]
+    assert frames[0]["code"] == "internal_error"
+
+
+def test_ws_strict_session_ends_at_an_event_beyond_the_capabilities() -> None:
+    pytest.importorskip("fastapi")
+    frames = _ws_frames("_ws_strict_undeclared_supersede_factory")
+    events = [f["type"] for f in frames if f["type"] != "diagnostics"]
+    assert events == ["final", "error"]
+    assert frames[-1]["code"] == "engine_error"
+    assert _ws_diagnostic_codes(frames) == []
 
 
 def test_ws_stream_forwards_degrade_diagnostics() -> None:
@@ -4020,8 +4291,8 @@ def test_ws_stream_establishment_unexpected_error_reports_internal_no_leak() -> 
 def test_ws_stream_forward_loop_fault_reports_internal_no_leak() -> None:
     """A fault in the forward loop itself is logged and reported, not swallowed.
 
-    Engine faults are normally funneled into ``engine_error`` events by the
-    session base; this exercises the bridge's own failure path (session
+    Engine faults are normally funneled into ``error`` events with code
+    ``engine_error`` by the session base; this exercises the bridge's own failure path (session
     iteration / event serialization), which must emit one generic, non-leaking
     ``internal_error`` frame instead of silently dropping the stream.
     """
@@ -4057,7 +4328,8 @@ def test_ws_stream_client_disconnect_is_handled() -> None:
 
 class _StreamErrorSession(TranscriptionSession):
     """Raises a detail-bearing exception so the base synthesizes an
-    ``engine_error`` event whose ``extra['detail']`` carries the raw text."""
+    ``error`` event with code ``engine_error`` whose ``extra['detail']``
+    carries the raw text."""
 
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
         async for _chunk in self.audio_chunks():

@@ -222,6 +222,7 @@
 (?i)num
 (?i)numpy
 (?i)nyquist
+(?i)odia
 (?i)onnxruntime
 (?i)openai
 (?i)optinos
