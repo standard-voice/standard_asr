@@ -1,0 +1,724 @@
+{
+  "description": "Shared stable-text cases for the streaming protocol. Each case lists wire-shaped events in emission order and what the lifecycle guard does with each. The cases are replayed through the lifecycle guard, the session's reducer, and the reference reduce, not through a session. The guard is given no capabilities, so no case records a capability code (stream_exceeds_*, finality_level_not_reached); a guard that has an engine's capabilities, as in a session that an engine opened, can record more codes for the same events. Every event writes out finality, old_ids, new_ids, and extra, the keys whose default is not null, and every partial and final writes out stable_text. Every other key that an event leaves out is null, such as segment_id, text, and stable_text on a done event. The outcome of an event is 'admitted' (the guard forwards it), 'rejected' (the guard suppresses it), or 'invalid' (malformed: it fails event construction and never reaches the guard). The fixture runner skips an invalid event and goes on to the next one; in a session, an engine that fails to construct an event ends the session with engine_error. A partial or a final is invalid when its stable_text is null, is not the start of its text, or, on a final, is not the whole text. An admitted partial or final gives the stable_text as the guard forwards it, which can differ from the one sent; an admitted event of another type gives none, because it carries null. 'diagnostics' lists the codes recorded while handling that event, in order. 'display' is the reading-order list of [segment_id, text] pairs that the reference reduce keeps, partial text included; 'result_segments' are the texts of the finalized segments in the reduced result; 'result_text' is given for cases with at most one finalized segment only, because how segment texts are joined is not settled (issue #46). 'group' names the rule a case depends on: 'core', 'final' (a final is wholly stable), or 'supersede' (a supersede withdraws the retired segments, stable text included). The boundary cases cover only what the standard layer checks, that stable text does not end inside a combining character sequence or right after a zero width joiner; they do not cover the full rule that stable text ends between two user-perceived characters.",
+  "cases": [
+    {
+      "name": "growth",
+      "group": "core",
+      "description": "Stable text grows from event to event; the final is stable as a whole.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hel", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "hello wor", "stable_text": "hello ", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello world", "stable_text": "hello world", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello "},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello world"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello world"]],
+        "result_segments": ["hello world"],
+        "result_text": "hello world"
+      }
+    },
+    {
+      "name": "empty_stable_text",
+      "group": "core",
+      "description": "A partial with an empty stable text promises nothing.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello"]],
+        "result_segments": ["hello"],
+        "result_text": "hello"
+      }
+    },
+    {
+      "name": "shrink_is_clamped",
+      "group": "core",
+      "description": "A partial whose stable text is shorter than before is delivered with the earlier stable text.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hell", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "hello!", "stable_text": "he", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "hello!!", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello!!", "stable_text": "hello!!", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hell"},
+          {"outcome": "admitted", "diagnostics": ["stable_text_clamped"], "stable_text": "hell"},
+          {"outcome": "admitted", "diagnostics": ["stable_text_clamped"], "stable_text": "hell"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello!!"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello!!"]],
+        "result_segments": ["hello!!"],
+        "result_text": "hello!!"
+      }
+    },
+    {
+      "name": "non_prefix_is_invalid",
+      "group": "core",
+      "description": "A stable text that is not a prefix of the text fails construction. The fixture runner goes on to the next event; in a session, an engine that fails to construct an event ends the session with engine_error.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "help", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "invalid", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello"]],
+        "result_segments": ["hello"],
+        "result_text": "hello"
+      }
+    },
+    {
+      "name": "explicit_null_is_invalid",
+      "group": "core",
+      "description": "A partial or final with an explicit null stable_text fails construction.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": null, "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello", "stable_text": null, "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "invalid", "diagnostics": []},
+          {"outcome": "invalid", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello"]],
+        "result_segments": ["hello"],
+        "result_text": "hello"
+      }
+    },
+    {
+      "name": "rewrite_is_rejected",
+      "group": "core",
+      "description": "An event whose text no longer starts with the stable text is suppressed.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "the cat", "stable_text": "the ", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "a dog", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "the cattle", "stable_text": "the cattle", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "the "},
+          {"outcome": "rejected", "diagnostics": ["stable_text_rewritten"]},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "the cattle"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "the cattle"]],
+        "result_segments": ["the cattle"],
+        "result_text": "the cattle"
+      }
+    },
+    {
+      "name": "supplementary_plane",
+      "group": "core",
+      "description": "Characters above U+FFFF are one character each; a cut between them is an ordinary boundary.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "\ud842\udfb7野", "stable_text": "\ud842\udfb7", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "\ud842\udfb7野家", "stable_text": "\ud842\udfb7野", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "\ud842\udfb7野家", "stable_text": "\ud842\udfb7野家", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\ud842\udfb7"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\ud842\udfb7野"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\ud842\udfb7野家"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "\ud842\udfb7野家"]],
+        "result_segments": ["\ud842\udfb7野家"],
+        "result_text": "\ud842\udfb7野家"
+      }
+    },
+    {
+      "name": "emoji",
+      "group": "core",
+      "description": "An emoji above U+FFFF followed by a space is an ordinary boundary.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "\ud83d\ude00 ok", "stable_text": "\ud83d\ude00", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "\ud83d\ude00 ok", "stable_text": "\ud83d\ude00 ok", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\ud83d\ude00"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\ud83d\ude00 ok"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "\ud83d\ude00 ok"]],
+        "result_segments": ["\ud83d\ude00 ok"],
+        "result_text": "\ud83d\ude00 ok"
+      }
+    },
+    {
+      "name": "combining_accent_boundary",
+      "group": "core",
+      "description": "A stable text that ends between a letter and its combining accent moves back to the nearest boundary.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "e\u0301x", "stable_text": "e", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "e\u0301xy", "stable_text": "e\u0301", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "e\u0301xy", "stable_text": "e\u0301xy", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": ["stable_text_clamped"], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "e\u0301"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "e\u0301xy"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "e\u0301xy"]],
+        "result_segments": ["e\u0301xy"],
+        "result_text": "e\u0301xy"
+      }
+    },
+    {
+      "name": "devanagari_vowel_sign_boundary",
+      "group": "core",
+      "description": "U+093E is a spacing mark with canonical combining class 0. A cut before it is still inside the character, so the boundary moves back.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "\u0915\u093e", "stable_text": "\u0915", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "\u0915\u093e", "stable_text": "\u0915\u093e", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": ["stable_text_clamped"], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\u0915\u093e"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "\u0915\u093e"]],
+        "result_segments": ["\u0915\u093e"],
+        "result_text": "\u0915\u093e"
+      }
+    },
+    {
+      "name": "zero_width_joiner_boundary",
+      "group": "core",
+      "description": "A cut before or right after a zero width joiner splits the emoji it builds.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "\ud83d\udc69\u200d\ud83d\udcbb ok", "stable_text": "\ud83d\udc69", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "\ud83d\udc69\u200d\ud83d\udcbb ok", "stable_text": "\ud83d\udc69\u200d", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "\ud83d\udc69\u200d\ud83d\udcbb ok", "stable_text": "\ud83d\udc69\u200d\ud83d\udcbb", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "\ud83d\udc69\u200d\ud83d\udcbb ok", "stable_text": "\ud83d\udc69\u200d\ud83d\udcbb ok", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": ["stable_text_clamped"], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": ["stable_text_clamped"], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\ud83d\udc69\u200d\ud83d\udcbb"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "\ud83d\udc69\u200d\ud83d\udcbb ok"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "\ud83d\udc69\u200d\ud83d\udcbb ok"]],
+        "result_segments": ["\ud83d\udc69\u200d\ud83d\udcbb ok"],
+        "result_text": "\ud83d\udc69\u200d\ud83d\udcbb ok"
+      }
+    },
+    {
+      "name": "boundary_clamp_stops_at_earlier_stable_text",
+      "group": "core",
+      "description": "A boundary repair moves back only as far as the earlier stable text.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "ab", "stable_text": "ab", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "abc\u0301\u0302", "stable_text": "abc\u0301", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "abc\u0301\u0302", "stable_text": "abc\u0301\u0302", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "ab"},
+          {"outcome": "admitted", "diagnostics": ["stable_text_clamped"], "stable_text": "ab"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "abc\u0301\u0302"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "abc\u0301\u0302"]],
+        "result_segments": ["abc\u0301\u0302"],
+        "result_text": "abc\u0301\u0302"
+      }
+    },
+    {
+      "name": "combining_mark_appended_is_rejected",
+      "group": "core",
+      "description": "A combining mark added to an already stable character changes that character: the event is a rewrite.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "a", "stable_text": "a", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "a\u0301b", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "ab", "stable_text": "ab", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "a"},
+          {"outcome": "rejected", "diagnostics": ["stable_text_rewritten"]},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "ab"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "ab"]],
+        "result_segments": ["ab"],
+        "result_text": "ab"
+      }
+    },
+    {
+      "name": "closed_rewrite",
+      "group": "core",
+      "description": "The closed restatement may reformat stable text once; its stable text is its whole text.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "twenty twenty", "stable_text": "twenty ", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "twenty twenty", "stable_text": "twenty twenty", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "2020", "stable_text": "2020", "finality": "closed", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "twenty "},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "twenty twenty"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "2020"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "2020"]],
+        "result_segments": ["2020"],
+        "result_text": "2020"
+      }
+    },
+    {
+      "name": "locked_speaker",
+      "group": "core",
+      "description": "Once a segment has stable text and an accepted speaker, a different speaker is suppressed.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "speaker": "A", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "hello!", "stable_text": "hel", "finality": "final", "speaker": "B", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello!", "stable_text": "hello!", "finality": "final", "speaker": "A", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "rejected", "diagnostics": ["locked_speaker_rewritten"]},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello!"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello!"]],
+        "result_segments": ["hello!"],
+        "result_text": "hello!"
+      }
+    },
+    {
+      "name": "abandoned_at_done",
+      "group": "core",
+      "description": "A segment that has stable text and is still open at done is reported; its text is absent from the result.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "admitted", "diagnostics": ["stable_text_abandoned"]}
+        ],
+        "display": [["s0", "hello"]],
+        "result_segments": [],
+        "result_text": ""
+      }
+    },
+    {
+      "name": "not_abandoned_on_error",
+      "group": "core",
+      "description": "A session that ends with an error is not checked for abandoned stable text.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "error", "finality": "final", "old_ids": [], "new_ids": [], "code": "engine_gave_up", "recoverable": false, "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello"]],
+        "result_segments": [],
+        "result_text": ""
+      }
+    },
+    {
+      "name": "speaker_retraction_is_rejected",
+      "group": "core",
+      "description": "Once a segment has stable text and an accepted speaker, an event with no speaker retracts it and is suppressed.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "speaker": "A", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "hello!", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello!", "stable_text": "hello!", "finality": "final", "speaker": "A", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "rejected", "diagnostics": ["locked_speaker_rewritten"]},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello!"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello!"]],
+        "result_segments": ["hello!"],
+        "result_text": "hello!"
+      }
+    },
+    {
+      "name": "speaker_first_assigned_after_stable_text",
+      "group": "core",
+      "description": "A segment that had no speaker may get its first one after it has stable text.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s0", "text": "hello!", "stable_text": "hel", "finality": "final", "speaker": "A", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello!", "stable_text": "hello!", "finality": "final", "speaker": "A", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello!"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello!"]],
+        "result_segments": ["hello!"],
+        "result_text": "hello!"
+      }
+    },
+    {
+      "name": "closed_may_change_a_locked_speaker",
+      "group": "core",
+      "description": "The closed restatement is exempt from the speaker lock.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "speaker": "A", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "Hello.", "stable_text": "Hello.", "finality": "closed", "speaker": "B", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "Hello."},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "Hello."]],
+        "result_segments": ["Hello."],
+        "result_text": "Hello."
+      }
+    },
+    {
+      "name": "closed_without_an_earlier_final",
+      "group": "core",
+      "description": "A segment may go from open straight to closed; that closed final may reformat stable text.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "twenty twenty", "stable_text": "twenty ", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "2020", "stable_text": "2020", "finality": "closed", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "twenty "},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "2020"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "2020"]],
+        "result_segments": ["2020"],
+        "result_text": "2020"
+      }
+    },
+    {
+      "name": "final_stable_text_is_whole_text",
+      "group": "final",
+      "description": "A final's stable text is its whole text: an empty or partial value fails construction.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": "hello", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "Hello.", "stable_text": "Hello", "finality": "closed", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "invalid", "diagnostics": []},
+          {"outcome": "invalid", "diagnostics": []},
+          {"outcome": "invalid", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello"]],
+        "result_segments": ["hello"],
+        "result_text": "hello"
+      }
+    },
+    {
+      "name": "final_after_stable_partial",
+      "group": "final",
+      "description": "A final that keeps the earlier stable text is delivered wholly stable.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "hello world", "stable_text": "hello world", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello world"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "hello world"]],
+        "result_segments": ["hello world"],
+        "result_text": "hello world"
+      }
+    },
+    {
+      "name": "final_rewrite_then_abandoned",
+      "group": "final",
+      "description": "A final that drops the earlier stable text is suppressed; the segment stays open and is reported at done.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "hello", "stable_text": "hel", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "goodbye", "stable_text": "goodbye", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hel"},
+          {"outcome": "rejected", "diagnostics": ["stable_text_rewritten"]},
+          {"outcome": "admitted", "diagnostics": ["stable_text_abandoned"]}
+        ],
+        "display": [["s0", "hello"]],
+        "result_segments": [],
+        "result_text": ""
+      }
+    },
+    {
+      "name": "final_appends_combining_mark_is_rejected",
+      "group": "final",
+      "description": "A non-closed final that adds a combining mark to the last stable character changes that character. It is suppressed as a rewrite, and the segment, still open, is reported at done.",
+      "events": [
+        {"type": "partial", "segment_id": "s0", "text": "cafe", "stable_text": "cafe", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s0", "text": "café", "stable_text": "café", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "cafe"},
+          {"outcome": "rejected", "diagnostics": ["stable_text_rewritten"]},
+          {"outcome": "admitted", "diagnostics": ["stable_text_abandoned"]}
+        ],
+        "display": [["s0", "cafe"]],
+        "result_segments": [],
+        "result_text": ""
+      }
+    },
+    {
+      "name": "supersede_withdraws_stable_partial",
+      "group": "supersede",
+      "description": "A supersede may retire a segment with stable text; the replacement starts with no stable text of its own.",
+      "events": [
+        {"type": "partial", "segment_id": "a", "text": "hello wor", "stable_text": "hello ", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a"], "new_ids": ["b"], "extra": {}},
+        {"type": "partial", "segment_id": "b", "text": "goodbye", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "b", "text": "goodbye all", "stable_text": "good", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "b", "text": "bye", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "b", "text": "goodbye all", "stable_text": "goodbye all", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello "},
+          {"outcome": "admitted", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "good"},
+          {"outcome": "rejected", "diagnostics": ["stable_text_rewritten"]},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "goodbye all"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["b", "goodbye all"]],
+        "result_segments": ["goodbye all"],
+        "result_text": "goodbye all"
+      }
+    },
+    {
+      "name": "supersede_pure_deletion_of_stable_final",
+      "group": "supersede",
+      "description": "A supersede with no replacement may retire a final, stable text included.",
+      "events": [
+        {"type": "final", "segment_id": "a", "text": "uh", "stable_text": "uh", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a"], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "uh"},
+          {"outcome": "admitted", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [],
+        "result_segments": [],
+        "result_text": ""
+      }
+    },
+    {
+      "name": "supersede_closed_is_rejected",
+      "group": "supersede",
+      "description": "A closed segment cannot be superseded.",
+      "events": [
+        {"type": "final", "segment_id": "a", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "a", "text": "Hello.", "stable_text": "Hello.", "finality": "closed", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a"], "new_ids": ["b"], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "Hello."},
+          {"outcome": "rejected", "diagnostics": ["lifecycle_closed_superseded"]},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["a", "Hello."]],
+        "result_segments": ["Hello."],
+        "result_text": "Hello."
+      }
+    },
+    {
+      "name": "issue_81_case_1",
+      "group": "supersede",
+      "description": "Two segments, each with stable text and a part that is not yet stable, are replaced by one segment. Its text keeps both stable parts here, but nothing requires that.",
+      "events": [
+        {"type": "partial", "segment_id": "a", "text": "hello world", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "b", "text": "foo bar", "stable_text": "foo", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a", "b"], "new_ids": ["c"], "extra": {}},
+        {"type": "partial", "segment_id": "c", "text": "hello there foo bar", "stable_text": "hello there foo", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "c", "text": "hello there foo bar", "stable_text": "hello there foo bar", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "foo"},
+          {"outcome": "admitted", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello there foo"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello there foo bar"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["c", "hello there foo bar"]],
+        "result_segments": ["hello there foo bar"],
+        "result_text": "hello there foo bar"
+      }
+    },
+    {
+      "name": "issue_81_case_2",
+      "group": "supersede",
+      "description": "Two finals are merged into one segment. No text is compared across the supersede, so the separator between the retired texts does not matter.",
+      "events": [
+        {"type": "final", "segment_id": "a", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "b", "text": "foo", "stable_text": "foo", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a", "b"], "new_ids": ["c"], "extra": {}},
+        {"type": "final", "segment_id": "c", "text": "hello foo", "stable_text": "hello foo", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "foo"},
+          {"outcome": "admitted", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello foo"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["c", "hello foo"]],
+        "result_segments": ["hello foo"],
+        "result_text": "hello foo"
+      }
+    },
+    {
+      "name": "issue_81_case_3",
+      "group": "supersede",
+      "description": "Stable text replaced by unrelated text: the supersede withdraws it explicitly.",
+      "events": [
+        {"type": "partial", "segment_id": "a", "text": "abc", "stable_text": "abc", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a"], "new_ids": ["b"], "extra": {}},
+        {"type": "final", "segment_id": "b", "text": "xyz", "stable_text": "xyz", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "abc"},
+          {"outcome": "admitted", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "xyz"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["b", "xyz"]],
+        "result_segments": ["xyz"],
+        "result_text": "xyz"
+      }
+    },
+    {
+      "name": "reading_order_splice",
+      "group": "supersede",
+      "description": "The replacement takes the retired segment's place in reading order. The result_text join is left out on purpose (issue #46).",
+      "events": [
+        {"type": "final", "segment_id": "a", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "b", "text": "world", "stable_text": "world", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a"], "new_ids": ["a2"], "extra": {}},
+        {"type": "final", "segment_id": "a2", "text": "hi", "stable_text": "hi", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "world"},
+          {"outcome": "admitted", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "hi"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["a2", "hi"], ["b", "world"]],
+        "result_segments": ["hi", "world"]
+      }
+    },
+    {
+      "name": "abandoned_replacement_segment",
+      "group": "supersede",
+      "description": "A replacement segment starts with no stable text. Once it has stable text, it is reported at done if it is still open, like any other segment.",
+      "events": [
+        {"type": "final", "segment_id": "a", "text": "old", "stable_text": "old", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "supersede", "finality": "final", "old_ids": ["a"], "new_ids": ["b"], "extra": {}},
+        {"type": "partial", "segment_id": "b", "text": "new text", "stable_text": "new ", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "old"},
+          {"outcome": "admitted", "diagnostics": []},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "new "},
+          {"outcome": "admitted", "diagnostics": ["stable_text_abandoned"]}
+        ],
+        "display": [["b", "new text"]],
+        "result_segments": [],
+        "result_text": ""
+      }
+    }
+  ]
+}

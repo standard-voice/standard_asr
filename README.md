@@ -37,7 +37,7 @@ Speech recognition never got its standard interface. Every ASR library and cloud
 ## Why build on Standard ASR?
 
 - **Write once, run with any engine.** Code against the protocol, not the vendor. Switching from a cloud API to a local model (or the reverse) is a one-line model-key change — your integration work survives every vendor decision you'll make later.
-- **One streaming model for every engine.** Real-time ASR has no shared conventions: some engines rewrite their interim results, some never revise a token, some merge already-emitted segments after a second decoding pass. Standard ASR unifies all of it under one event protocol with explicit stability guarantees — designed against an in-repo survey of 30+ real engine APIs ([`docs/internal/research/`](docs/internal/research/)).
+- **One streaming model for every engine.** Real-time ASR has no shared conventions: some engines rewrite their interim results, some never revise a token, some re-cut segments they already sent when speaker labels arrive late. Standard ASR unifies all of it under one event protocol with explicit stability guarantees — designed against an in-repo survey of 30+ real engine APIs ([`docs/internal/research/`](docs/internal/research/)).
 - **Audio negotiation, batteries included.** Hand over what you have — a file path, raw bytes, a NumPy array, a URL — and the framework negotiates and converts to whatever form the engine accepts, loudly reporting anything lossy. No more sample-rate guesswork.
 - **See what a model needs before it runs.** Engines declare their inference artifacts — weights, tokenizers, compiled graphs, installed operating-system assets — so your app (or `standard-asr status`) can ask what is on disk without loading anything, and `standard-asr pull` acquires what is missing without faking a transcription to warm a cache. A gated license, an absent credential, or a disabled download policy comes back as a structured, machine-readable verdict you can act on — a blocker naming why acquisition cannot run, plus the operator actions where actions exist — not a stack trace on the first request.
 - **No dependency hell, no licensing traps.** Each engine is its own pip-installable plugin, so restrictive licenses and heavy dependencies stay in the packages that carry them. Hard dependency conflicts (for example, numpy 1.x vs 2.x) cannot share one environment — `standard-asr doctor` surfaces them instead of letting them hide. Process isolation is the escape hatch for plugin-vs-plugin conflicts; a plugin incompatible with the core's own numpy floor cannot run anywhere, and doctor reports that as its own conflict.
@@ -158,7 +158,7 @@ async with engine.start_transcription(audio_format=audio_format) as session:
             if event.segment_id not in order:
                 order.append(event.segment_id)  # first mention claims a position
             texts[event.segment_id] = event.text  # partial: may change; final: settled
-        elif event.type == "supersede":  # engine re-segmented (two-pass rescoring)
+        elif event.type == "supersede":  # engine replaced segments it already sent
             pos = order.index(event.old_ids[0])
             for old_id in event.old_ids:
                 order.remove(old_id)
@@ -169,7 +169,7 @@ async with engine.start_transcription(audio_format=audio_format) as session:
 print(session.result().text)  # collapse the session into a TranscriptionResult
 ```
 
-Those branches (packaged as `standard_asr.runtime.streaming.reduce_event`) are the **complete core reduce** — handle them and your app is safe on every compliant engine, including ones that rewrite interim text or merge segments after the fact. Engines that never do these things simply never emit those events. Voice agents can go further and act on `event.stable_until`, the engine's guarantee of how much of the text is frozen against further recognition (a terminal `closed` restatement may still reformat it — see the streaming guide's "Finality" section).
+Those branches (packaged as `standard_asr.runtime.streaming.reduce_event`) are the **complete core reduce** — handle them and your app is safe on every compliant engine, including ones that rewrite interim text or merge segments after the fact. Engines that never do these things simply never emit those events. Voice agents can go further and start work on `event.stable_text`: the start of a segment's text that the engine promises not to change while the segment lives. A `supersede` withdraws it with its segment, and a terminal `closed` restatement may reformat it once (see the streaming guide's "Stable text" section).
 
 > Not async? `SyncSession` wraps any streaming session behind a blocking iterator. See [`docs/content/specification/`](docs/content/specification/) for the full streaming contract — segment lifecycle, stability guarantees, reconnect semantics, and backpressure rules.
 

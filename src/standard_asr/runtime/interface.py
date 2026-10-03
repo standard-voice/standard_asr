@@ -23,6 +23,7 @@ The negotiation / conversion / gating pipeline runs in the standard layer
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
@@ -48,7 +49,7 @@ from standard_asr.contract.artifacts import (
     ArtifactReport,
     ArtifactRequirement,
 )
-from standard_asr.contract.capabilities import DeclaredCapabilities
+from standard_asr.contract.capabilities import DeclaredCapabilities, StreamingCapabilities
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
@@ -590,6 +591,87 @@ def ensure_wire_format_supported(properties: BaseProperties, audio_format: Audio
             mode="streaming",
             hint=f"Open the session at an accepted_sample_rates value: {accepted!r}.",
         )
+
+
+def bind_session_capabilities(session: TranscriptionSession, engine: StandardASR) -> None:
+    """Give a session the streaming capabilities of the engine that opened it.
+
+    The session then checks each event it forwards against them. It looks
+    for six kinds of mismatch, each with its own diagnostic code:
+
+    * a ``partial`` with non-empty ``stable_text`` while
+      ``partial_stability`` is unsupported
+      (``stream_exceeds_partial_stability``);
+    * a ``supersede`` while ``re_segments`` is unsupported
+      (``stream_exceeds_re_segments``);
+    * an ``audio_processed_until`` cursor while ``timestamps`` mode is
+      ``none`` (``stream_exceeds_timestamps``);
+    * a non-empty ``words`` list while ``word_timestamps`` is unsupported
+      (``stream_exceeds_word_timestamps``);
+    * a speaker, on the event or on a word, while ``diarization`` is
+      unsupported (``stream_exceeds_diarization``);
+    * at ``done``, a segment that reached ``final`` but not ``closed``, and
+      that no ``supersede`` retired, while ``finality_level`` mode is
+      ``closed`` (``finality_level_not_reached``).
+
+    The session judges each event as the engine sent it, before any
+    repair: a ``partial`` whose stable text the boundary repair empties
+    still counts as carrying stable text. An event the session suppresses
+    for another reason is not checked. The session delivers an event that
+    goes beyond the capabilities unchanged. Removing the field would hide
+    the engine's fault, and dropping a ``supersede`` would leave the
+    retired segments in place and duplicate the replacement text. The
+    session records one warning per code, the first time that code
+    applies, in :meth:`TranscriptionSession.diagnostics`. With
+    ``strict_lifecycle=True``, the first mismatch ends the session instead:
+    a terminal ``error`` event with code ``engine_error`` takes the place
+    of the event. :func:`~standard_asr.compliance.check_event_sequence`
+    runs the same check on a recorded stream.
+
+    :meth:`EngineBase.start_transcription` binds the engine's effective
+    capabilities to every session it opens, so for an :class:`EngineBase`
+    this function does nothing. An engine that implements the protocol
+    without deriving from :class:`EngineBase` binds nothing. Call this
+    function after you open a session through such an engine to get the
+    same check; the reference server calls it for every session it opens.
+    A session that nothing binds, such as one constructed directly in a
+    test, is not checked.
+
+    The function reads the engine's ``effective_capabilities`` the
+    ordinary way, so an attribute the engine serves through ``__getattr__``
+    counts. An exception raised while reading it propagates, and the session
+    stays unbound. That includes an ``AttributeError`` raised inside an
+    ``effective_capabilities`` property. The function uses the engine's
+    ``declared_capabilities`` only when the engine has no
+    ``effective_capabilities`` attribute, or the attribute does not hold a
+    ``DeclaredCapabilities``. A tree with no ``streaming`` domain binds the
+    default ``StreamingCapabilities()``, in which ``partial_stability``,
+    ``re_segments``, ``timestamps``, ``word_timestamps``, and
+    ``diarization`` are unsupported and ``finality_level`` mode is
+    ``final``.
+
+    Args:
+        session: The session the engine returned.
+        engine: The engine that opened it.
+    """
+    if isinstance(engine, EngineBase):
+        return
+    # Read the attribute the ordinary way, so an engine that serves it through
+    # ``__getattr__`` is covered. An AttributeError then has one of two
+    # causes: the engine has no such attribute, or a property that defines it
+    # raised. Only the first is a reason to use the declared tree. A static
+    # lookup, which runs no code, tells the two apart.
+    capabilities: object = None
+    try:
+        capabilities = cast("object", getattr(engine, "effective_capabilities"))  # noqa: B009
+    except AttributeError:
+        if inspect.getattr_static(engine, "effective_capabilities", None) is not None:
+            raise
+    if not isinstance(capabilities, DeclaredCapabilities):
+        capabilities = engine.declared_capabilities
+    session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
+        capabilities.streaming or StreamingCapabilities()
+    )
 
 
 def require_engine_protocol(engine: object) -> BaseProperties:
@@ -2093,7 +2175,10 @@ class EngineBase(ABC):
         format, gates parameters against the ``streaming`` capabilities,
         resolves the language axis, prepares whole-input audio through the
         standard audio pipeline, and attaches the resulting diagnostics to the
-        session.
+        session. The base also binds this engine's effective streaming
+        capabilities to the returned session, which then checks each event
+        it forwards against them (see
+        :func:`~standard_asr.bind_session_capabilities`).
 
         Because gating now runs here, ``provider_params``
         swap-safety is enforced on the streaming path too: a swapped-engine
@@ -2284,6 +2369,18 @@ class EngineBase(ABC):
                 *(prepared.diagnostics if prepared is not None else []),
             ]
         )
+        # Friend API: bind the effective capabilities, so the session checks
+        # each event against them (bind_session_capabilities describes the
+        # check). An application may rely on a declaration (for example, act
+        # on a final because the engine declares no re-segmentation), so the
+        # check runs where the application runs, not only in the compliance
+        # suite. The fallback to the default domain is only a defense: every
+        # path above requires streaming_input or streaming_output, and a
+        # validated capability tree supports neither without a streaming
+        # domain.
+        session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
+            self.effective_capabilities.streaming or StreamingCapabilities()
+        )
         if deadlines is not None:
             session._apply_deadline_overrides(deadlines)  # pyright: ignore[reportPrivateUsage]
         return session
@@ -2331,6 +2428,7 @@ class EngineBase(ABC):
 __all__ = [
     "EngineBase",
     "StandardASR",
+    "bind_session_capabilities",
     "ensure_wire_format_supported",
     "require_engine_protocol",
 ]

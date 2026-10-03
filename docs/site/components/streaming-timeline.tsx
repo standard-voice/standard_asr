@@ -14,7 +14,7 @@ interface DemoEvent {
   type: EventType;
   segment_id?: string;
   text?: string;
-  stable_until?: number;
+  stable_text?: string;
   old_ids?: string[];
   new_ids?: string[];
   finality?: 'final' | 'closed';
@@ -61,29 +61,29 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: 'append',
-    label: 'Append-only stream',
-    intro: 'Some engines never revise: the stable prefix only grows (stable_until).',
+    label: 'Stable text',
+    intro: 'Some engines mark the start of a segment as stable (stable_text) before it is final.',
     events: [
       {
         type: 'partial',
         segment_id: 's1',
         text: 'switching',
-        stable_until: 9,
-        note: 'stable_until marks the frozen prefix, in codepoints.',
+        stable_text: 'switching',
+        note: 'stable_text: the start of text. Later partials and plain finals keep it.',
       },
-      { type: 'partial', segment_id: 's1', text: 'switching engines', stable_until: 9 },
+      { type: 'partial', segment_id: 's1', text: 'switching engines', stable_text: 'switching' },
       {
         type: 'partial',
         segment_id: 's1',
         text: 'switching engines is a one line',
-        stable_until: 20,
-        note: 'The frozen prefix only ever grows.',
+        stable_text: 'switching engines is',
+        note: 'Stable text grows. A supersede can withdraw it; a closed final can reformat it once.',
       },
       {
         type: 'partial',
         segment_id: 's1',
         text: 'switching engines is a one-line change',
-        stable_until: 38,
+        stable_text: 'switching engines is a one-line change',
       },
       {
         type: 'final',
@@ -96,8 +96,8 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: 'supersede',
-    label: 'Two-pass rescoring',
-    intro: 'A second decoding pass may replace segments that were already final.',
+    label: 'Replaced segments',
+    intro: 'An engine may replace segments it already sent, for example to re-cut them.',
     events: [
       { type: 'partial', segment_id: 's1', text: 'so the total is' },
       { type: 'final', segment_id: 's1', text: 'so the total is' },
@@ -128,7 +128,7 @@ const SCENARIOS: Scenario[] = [
 
 interface SegmentState {
   text: string;
-  stableUntil?: number;
+  stableText?: string;
   final: boolean;
 }
 
@@ -136,11 +136,6 @@ interface ReducedState {
   order: string[];
   segments: Record<string, SegmentState>;
   done: boolean;
-}
-
-// stable_until counts codepoints (the spec's unit), not UTF-16 units.
-function slicePoints(text: string, start: number, end?: number): string {
-  return [...text].slice(start, end).join('');
 }
 
 function reduce(events: DemoEvent[]): ReducedState {
@@ -152,7 +147,8 @@ function reduce(events: DemoEvent[]): ReducedState {
       if (!order.includes(event.segment_id)) order.push(event.segment_id);
       segments[event.segment_id] = {
         text: event.text ?? '',
-        stableUntil: event.stable_until,
+        // On the wire a final always carries its whole text as stable_text.
+        stableText: event.stable_text ?? (event.type === 'final' ? event.text : undefined),
         final: event.type === 'final',
       };
     } else if (event.type === 'supersede') {
@@ -321,14 +317,9 @@ export function StreamingTimeline() {
             {state.order.map((id) => {
               const segment = state.segments[id];
               if (!segment) return null;
-              const stable =
-                segment.stableUntil !== undefined
-                  ? slicePoints(segment.text, 0, segment.stableUntil)
-                  : undefined;
-              const tail =
-                segment.stableUntil !== undefined
-                  ? slicePoints(segment.text, segment.stableUntil)
-                  : undefined;
+              // stable_text is a prefix of text, so the rest starts at its length.
+              const stable = segment.stableText;
+              const tail = stable !== undefined ? segment.text.slice(stable.length) : undefined;
               return (
                 <div
                   key={id}

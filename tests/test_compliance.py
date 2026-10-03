@@ -26,7 +26,7 @@ from standard_asr.compliance import (
     DEFAULT_SYNC_BRIDGE_TIMEOUT,
     ComplianceIssue,
     ComplianceReport,
-    assert_prefix_invariant,
+    assert_stable_text_invariant,
     check_entrypoints,
     check_event_sequence,
     check_provider_params_swap_safety,
@@ -46,6 +46,7 @@ from standard_asr.contract.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
     DiarizationCap,
+    FinalityCap,
     FlagCap,
     GuidanceCaps,
     LanguageCaps,
@@ -77,7 +78,12 @@ from standard_asr.engine import (
 from standard_asr.plugins.discovery import ModelRegistry, discover_models
 from standard_asr.runtime.config import env_var_name
 from standard_asr.runtime.interface import StandardASR
-from standard_asr.runtime.streaming import SyncSession, TranscriptionEvent, TranscriptionSession
+from standard_asr.runtime.streaming import (
+    DEFAULT_MAX_GUARD_DIAGNOSTICS,
+    SyncSession,
+    TranscriptionEvent,
+    TranscriptionSession,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -2913,97 +2919,144 @@ def test_check_event_sequence_recoverable_error_is_not_terminal() -> None:
     assert report.passed is True, [i.message for i in report.issues]
 
 
-def test_check_event_sequence_accepts_closed_rewrite_frozen_prefix() -> None:
+def test_check_event_sequence_accepts_closed_rewrite_of_stable_text() -> None:
     events = [
-        TranscriptionEvent.final("s0", "hello", stable_until=5),
-        TranscriptionEvent.closed("s0", "Hello.", stable_until=6),
-        TranscriptionEvent.done(),
-    ]
-    report = check_event_sequence(events)
-    assert report.passed is True
-    assert not any("frozen_prefix_rewritten" in i.message for i in report.issues)
-
-
-def test_check_event_sequence_flags_non_closed_frozen_prefix_rewrite() -> None:
-    events = [
-        TranscriptionEvent.partial("s0", "hello", stable_until=5),
-        TranscriptionEvent.final("s0", "Hello.", stable_until=6),
-        TranscriptionEvent.done(),
-    ]
-    report = check_event_sequence(events)
-    assert report.passed is False
-    assert any("frozen_prefix_rewritten" in i.message for i in report.issues)
-
-
-def test_check_event_sequence_flags_supersede_frozen_prefix_rewrite() -> None:
-    # A supersede that rewrites the retired segment's frozen prefix
-    # MUST be reported -- the cardinal sin.
-    events = [
-        TranscriptionEvent.final("a", "你好世界", stable_until=4),
-        TranscriptionEvent.supersede(["a"], ["b"]),
-        TranscriptionEvent.final("b", "再见", stable_until=2),
-        TranscriptionEvent.done(),
-    ]
-    report = check_event_sequence(events)
-    assert report.passed is False
-    assert any("frozen_prefix_rewritten_supersede" in i.message for i in report.issues)
-
-
-def test_check_event_sequence_does_not_cascade_after_supersede_rewrite() -> None:
-    events = [
-        TranscriptionEvent.final("a", "hello", stable_until=5),
-        TranscriptionEvent.supersede(["a"], ["b"]),
-        TranscriptionEvent.final("b", "bye", stable_until=3),
-        TranscriptionEvent.final("b", "hello there", stable_until=5),
-        TranscriptionEvent.done(),
-    ]
-
-    report = check_event_sequence(events)
-
-    assert report.passed is False
-    assert len(report.issues) == 1
-    assert "frozen_prefix_rewritten_supersede" in report.issues[0].message
-
-
-def test_check_event_sequence_accepts_supersede_merge_preserving_frozen() -> None:
-    events = [
-        TranscriptionEvent.final("a", "你好", stable_until=2),
-        TranscriptionEvent.final("b", "世界", stable_until=2),
-        TranscriptionEvent.supersede(["a", "b"], ["c"]),
-        TranscriptionEvent.final("c", "你好世界！", stable_until=4),
-        TranscriptionEvent.done(),
-    ]
-    report = check_event_sequence(events)
-    assert report.passed is True
-
-
-def test_check_event_sequence_warns_unfulfilled_supersede_obligation() -> None:
-    # A8: the replacement re-froze "你好" but the retired frozen prefix was
-    # "你好世界" -- the permitted conservative direction. The replay reports it as
-    # a soft WARNING (it does NOT fail the report; the supersede is not rejected).
-    events = [
-        TranscriptionEvent.final("a", "你好世界", stable_until=4),
-        TranscriptionEvent.supersede(["a"], ["b"]),
-        TranscriptionEvent.final("b", "你好", stable_until=2),
+        TranscriptionEvent.partial("s0", "hello", stable_text="hello"),
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.closed("s0", "Hello."),
         TranscriptionEvent.done(),
     ]
     report = check_event_sequence(events)
     assert report.passed is True, [i.message for i in report.issues]
-    obligation = [i for i in report.issues if "supersede_obligation_unfulfilled" in i.message]
-    assert len(obligation) == 1
-    assert obligation[0].level == "warning"
+    assert report.issues == []
 
 
-def test_check_event_sequence_reconciled_supersede_has_no_obligation_warning() -> None:
+def test_check_event_sequence_flags_non_closed_stable_text_rewrite() -> None:
     events = [
-        TranscriptionEvent.final("a", "你好世界", stable_until=4),
-        TranscriptionEvent.supersede(["a"], ["b"]),
-        TranscriptionEvent.final("b", "你好世界", stable_until=4),
+        TranscriptionEvent.partial("s0", "hello", stable_text="hello"),
+        TranscriptionEvent.final("s0", "Hello."),
         TranscriptionEvent.done(),
     ]
     report = check_event_sequence(events)
-    assert report.passed is True
-    assert not any("supersede_obligation_unfulfilled" in i.message for i in report.issues)
+    assert report.passed is False
+    assert any(i.code == "streaming_invariant:stable_text_rewritten" for i in report.issues)
+
+
+def test_check_event_sequence_does_not_cascade_after_stable_text_rewrite() -> None:
+    # A suppressed event changes no state, so the legal events after it are
+    # judged against the segment as it was, and only the rewrite is reported.
+    events = [
+        TranscriptionEvent.partial("b", "hello", stable_text="hello"),
+        TranscriptionEvent.partial("b", "bye"),
+        TranscriptionEvent.final("b", "hello there"),
+        TranscriptionEvent.done(),
+    ]
+
+    report = check_event_sequence(events)
+
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["streaming_invariant:stable_text_rewritten"]
+
+
+@pytest.mark.parametrize(
+    ("events", "code"),
+    [
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hell"),
+                TranscriptionEvent.partial("s0", "hello!", stable_text="he"),
+                TranscriptionEvent.final("s0", "hello!"),
+            ],
+            "stable_text_clamped",
+            id="shrink",
+        ),
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "e\u0301", stable_text="e"),
+                TranscriptionEvent.final("s0", "e\u0301"),
+            ],
+            "stable_text_clamped",
+            id="boundary",
+        ),
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "a", stable_text="a"),
+                TranscriptionEvent.partial("s0", "a\u0301b"),
+                TranscriptionEvent.final("s0", "ab"),
+            ],
+            "stable_text_rewritten",
+            id="combining-mark-appended",
+        ),
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hel", speaker="A"),
+                TranscriptionEvent.partial("s0", "hello!", stable_text="hel", speaker="B"),
+                TranscriptionEvent.final("s0", "hello!", speaker="A"),
+            ],
+            "locked_speaker_rewritten",
+            id="locked-speaker",
+        ),
+        pytest.param(
+            [TranscriptionEvent.partial("s0", "hello", stable_text="hel")],
+            "stable_text_abandoned",
+            id="abandoned",
+        ),
+    ],
+)
+def test_check_event_sequence_reports_stable_text_codes_as_streaming_invariants(
+    events: list[TranscriptionEvent], code: str
+) -> None:
+    report = check_event_sequence([*events, TranscriptionEvent.done()])
+    assert report.passed is False
+    assert [i.code for i in report.issues] == [f"streaming_invariant:{code}"]
+    assert report.issues[0].level == "error"
+
+
+def test_check_event_sequence_does_not_report_abandoned_stable_text_after_an_error() -> None:
+    # A stream that ends with a non-recoverable error is explicit about its
+    # failure, so its open segment with stable text is not reported as abandoned.
+    events = [
+        TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
+        TranscriptionEvent.make_error("engine_gave_up", recoverable=False),
+    ]
+    report = check_event_sequence(events)
+    assert not any("stable_text_abandoned" in i.code for i in report.issues)
+
+
+# Supersede rule: a supersede withdraws the retired segments, stable text
+# included.
+def test_check_event_sequence_accepts_supersede_of_stable_text() -> None:
+    events = [
+        TranscriptionEvent.partial("a", "hello wor", stable_text="hello "),
+        TranscriptionEvent.supersede(["a"], ["b"]),
+        TranscriptionEvent.final("b", "goodbye"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True, [i.message for i in report.issues]
+    assert report.issues == []
+
+
+def test_check_event_sequence_accepts_supersede_merge_of_finals() -> None:
+    events = [
+        TranscriptionEvent.final("a", "你好"),
+        TranscriptionEvent.final("b", "世界"),
+        TranscriptionEvent.supersede(["a", "b"], ["c"]),
+        TranscriptionEvent.final("c", "你好世界！"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_check_event_sequence_accepts_pure_deletion_of_stable_text() -> None:
+    events = [
+        TranscriptionEvent.final("a", "你好"),
+        TranscriptionEvent.supersede(["a"], []),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events)
+    assert report.passed is True, [i.message for i in report.issues]
 
 
 def test_check_event_sequence_flags_unannounced_old_id() -> None:
@@ -3039,19 +3092,9 @@ def test_check_event_sequence_flags_final_after_final() -> None:
     assert any("lifecycle_final_after_final" in i.message for i in report.issues)
 
 
-def test_check_event_sequence_flags_empty_new_ids_deleting_frozen() -> None:
-    events = [
-        TranscriptionEvent.final("a", "你好", stable_until=2),
-        TranscriptionEvent.supersede(["a"], []),
-        TranscriptionEvent.done(),
-    ]
-    report = check_event_sequence(events)
-    assert report.passed is False
-    assert any("supersede_deletes_frozen_text" in i.message for i in report.issues)
-
-
 # --------------------------------------------------------------------------- #
-# check_event_sequence capability cross-check
+# check_event_sequence capability check (a session runs the same one; see
+# tests/test_streaming.py)
 # --------------------------------------------------------------------------- #
 # Streaming caps with the timestamp/stability sub-caps left at their (unsupported)
 # defaults -- the "no-timestamp streaming" profile.
@@ -3062,36 +3105,92 @@ _NO_TS_STREAMING_CAPS = DeclaredCapabilities(
 
 
 def test_event_sequence_cross_check_skipped_without_capabilities() -> None:
-    # No capabilities -> the cross-check does not run (a non-zero stable_until is
-    # not, on its own, a structural violation).
+    # No capabilities -> the cross-check does not run (a partial with stable
+    # text is not, on its own, a structural violation).
     events = [
-        TranscriptionEvent.partial("s0", "hello", stable_until=3),
+        TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
     assert check_event_sequence(events).passed is True
 
 
-def test_event_sequence_cross_check_skipped_without_streaming_domain() -> None:
-    # Capabilities without a streaming domain -> nothing to cross-check against.
-    events = [
-        TranscriptionEvent.partial("s0", "hello", stable_until=3),
+def test_event_sequence_cross_check_treats_a_missing_streaming_domain_as_unsupported() -> None:
+    # A tree with no streaming domain supports nothing in it. An absent
+    # declaration must not pass more than an explicit "unsupported" does.
+    stable_partial = [
+        TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
-    report = check_event_sequence(events, capabilities=DeclaredCapabilities())
-    assert not any(i.code.startswith("stream_exceeds_") for i in report.issues)
+    report = check_event_sequence(stable_partial, capabilities=DeclaredCapabilities())
+    assert [i.code for i in report.issues] == ["stream_exceeds_partial_stability"]
+    withdrawal = [
+        TranscriptionEvent.final("s0", "hi"),
+        TranscriptionEvent.supersede(["s0"], []),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(withdrawal, capabilities=DeclaredCapabilities())
+    assert [i.code for i in report.issues] == ["stream_exceeds_re_segments"]
+    plain = [
+        TranscriptionEvent.partial("s0", "hel"),
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.done(),
+    ]
+    assert check_event_sequence(plain, capabilities=DeclaredCapabilities()).passed is True
 
 
-def test_event_sequence_flags_stable_until_without_word_stability() -> None:
+def test_event_sequence_flags_partial_stable_text_without_partial_stability() -> None:
     events = [
-        TranscriptionEvent.partial("s0", "hello", stable_until=3),
+        TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
     report = check_event_sequence(events, capabilities=_NO_TS_STREAMING_CAPS)
     assert report.passed is False
-    assert any(i.code == "stream_exceeds_word_stability" for i in report.issues)
+    assert [i.code for i in report.issues] == ["stream_exceeds_partial_stability"]
+
+
+def test_event_sequence_final_never_exceeds_partial_stability() -> None:
+    # A final is wholly stable on every engine, and a partial with empty
+    # stable text promises nothing: neither needs partial_stability.
+    events = [
+        TranscriptionEvent.partial("s0", "hel"),
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.closed("s0", "Hello."),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=_NO_TS_STREAMING_CAPS)
+    assert report.passed is True, [i.message for i in report.issues]
+
+
+def test_event_sequence_flags_supersede_without_re_segments() -> None:
+    # An application that acts on a final relies on the declaration that no
+    # supersede follows it.
+    events = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.supersede(["s0"], ["s1"]),
+        TranscriptionEvent.final("s1", "goodbye"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=_NO_TS_STREAMING_CAPS)
+    assert report.passed is False
+    assert [i.code for i in report.issues] == ["stream_exceeds_re_segments"]
+
+
+def test_event_sequence_accepts_supersede_with_re_segments() -> None:
+    events = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.supersede(["s0"], ["s1"]),
+        TranscriptionEvent.final("s1", "goodbye"),
+        TranscriptionEvent.done(),
+    ]
+    caps = DeclaredCapabilities(
+        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+    )
+    report = check_event_sequence(events, capabilities=caps)
+    assert report.passed is True, [i.message for i in report.issues]
 
 
 def test_event_sequence_flags_audio_cursor_without_timestamps() -> None:
@@ -3121,14 +3220,14 @@ def test_event_sequence_consistent_stream_passes_cross_check() -> None:
     # exceed declared caps, but may use less).
     caps = DeclaredCapabilities(
         streaming=StreamingCapabilities(
-            word_stability=FlagCap(supported=True),
+            partial_stability=FlagCap(supported=True),
             timestamps=StreamTimestampsCap(mode="native_frame_aligned"),
             word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
         ),
         streaming_input=FlagCap(supported=True),
     )
     events = [
-        TranscriptionEvent.partial("s0", "hi", stable_until=1, audio_processed_until=1.0),
+        TranscriptionEvent.partial("s0", "hi", stable_text="h", audio_processed_until=1.0),
         TranscriptionEvent.final("s0", "hi", words=[Word(start=0.0, end=0.5, text="hi")]),
         TranscriptionEvent.done(),
     ]
@@ -3217,18 +3316,18 @@ def test_event_sequence_always_on_speaker_never_flagged() -> None:
     assert report.passed is True, [i.message for i in report.issues]
 
 
-def test_check_event_sequence_reports_frozen_speaker() -> None:
-    # The guard-backed replay surfaces the frozen-speaker suppression as a
+def test_check_event_sequence_reports_locked_speaker() -> None:
+    # The guard-backed replay surfaces the locked-speaker suppression as a
     # namespaced streaming_invariant issue with zero extra wiring.
     events = [
-        TranscriptionEvent.partial("s0", "hello", stable_until=3, speaker="A"),
-        TranscriptionEvent.partial("s0", "hello!", stable_until=3, speaker="B"),
+        TranscriptionEvent.partial("s0", "hello", stable_text="hel", speaker="A"),
+        TranscriptionEvent.partial("s0", "hello!", stable_text="hel", speaker="B"),
         TranscriptionEvent.final("s0", "hello!", speaker="A"),
         TranscriptionEvent.done(),
     ]
     report = check_event_sequence(events)
     assert report.passed is False
-    assert any(i.code == "streaming_invariant:frozen_speaker_rewritten" for i in report.issues)
+    assert any(i.code == "streaming_invariant:locked_speaker_rewritten" for i in report.issues)
 
 
 def test_check_event_sequence_reports_cross_speaker_supersede() -> None:
@@ -3358,40 +3457,196 @@ def test_check_transcription_result_registry_is_none() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# assert_prefix_invariant (assert the invariant, not partial counts)
+# assert_stable_text_invariant (assert the invariant, not partial counts)
 # --------------------------------------------------------------------------- #
-def test_assert_prefix_invariant_accepts_consistent_partials() -> None:
-    # Monotonic, never-rewritten prefixes pass -- regardless of how many partials
-    # survived coalescing.
+def test_assert_stable_text_invariant_accepts_consistent_partials() -> None:
+    # Stable text that only grows and is never rewritten passes -- regardless
+    # of how many partials survived coalescing.
     events = [
-        TranscriptionEvent.partial("s0", "hel", stable_until=2),
-        TranscriptionEvent.partial("s0", "hello", stable_until=3),
+        TranscriptionEvent.partial("s0", "hel", stable_text="he"),
+        TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
-    assert_prefix_invariant(events)  # no raise
+    assert_stable_text_invariant(events)  # no raise
 
 
-def test_assert_prefix_invariant_tolerates_non_terminated_slice() -> None:
-    # Unlike check_event_sequence, the prefix helper does NOT require a terminal:
-    # it applies to a mid-stream slice (the common shape when asserting partials).
+def test_assert_stable_text_invariant_tolerates_non_terminated_slice() -> None:
+    # Unlike check_event_sequence, the helper does NOT require a terminal: it
+    # applies to a mid-stream slice (the common shape when asserting
+    # partials).
     events = [
-        TranscriptionEvent.partial("s0", "he", stable_until=1),
-        TranscriptionEvent.partial("s0", "hel", stable_until=2),
+        TranscriptionEvent.partial("s0", "he", stable_text="h"),
+        TranscriptionEvent.partial("s0", "hel", stable_text="he"),
     ]
-    assert_prefix_invariant(events)  # no raise despite no terminal
+    assert_stable_text_invariant(events)  # no raise despite no terminal
 
 
-def test_assert_prefix_invariant_flags_frozen_prefix_rewrite() -> None:
-    # A rewritten frozen prefix (text[:stable_until] changed) is the invariant
-    # violation the helper exists to catch -- raised as AssertionError for tests.
+@pytest.mark.parametrize(
+    ("events", "code"),
+    [
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hello"),
+                TranscriptionEvent.final("s0", "Hello."),
+            ],
+            "stable_text_rewritten",
+            id="rewrite",
+        ),
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hell"),
+                TranscriptionEvent.partial("s0", "hello", stable_text="he"),
+            ],
+            "stable_text_clamped",
+            id="shrink",
+        ),
+        pytest.param(
+            [TranscriptionEvent.partial("s0", "e\u0301", stable_text="e")],
+            "stable_text_clamped",
+            id="boundary",
+        ),
+        pytest.param(
+            [
+                TranscriptionEvent.partial("s0", "hello", stable_text="hel"),
+                TranscriptionEvent.done(),
+            ],
+            "stable_text_abandoned",
+            id="abandoned",
+        ),
+    ],
+)
+def test_assert_stable_text_invariant_flags_each_violation(
+    events: list[TranscriptionEvent], code: str
+) -> None:
+    # Each of these cases raises AssertionError, with the guard's code in the
+    # message.
+    with pytest.raises(AssertionError, match=f"stable-text invariant.*{code}"):
+        assert_stable_text_invariant(events)
+
+
+def test_assert_stable_text_invariant_ignores_other_streaming_violations() -> None:
+    # The helper is scoped to stable text: a lifecycle violation is
+    # check_event_sequence's to report.
     events = [
-        TranscriptionEvent.partial("s0", "hello", stable_until=5),
-        TranscriptionEvent.final("s0", "Hello.", stable_until=6),
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.final("s0", "hello again"),
+        TranscriptionEvent.supersede(["never-seen"], ["s1"]),
+    ]
+    assert_stable_text_invariant(events)  # no raise
+
+
+def test_check_event_sequence_reports_a_code_past_the_runtime_diagnostic_cap() -> None:
+    # A caller matches streaming_invariant:<code>. The runtime guard folds
+    # diagnostics past its cap into one summary, which would hide the code.
+    events = [TranscriptionEvent.progress(audio_processed_until=1.0)]
+    events += [
+        TranscriptionEvent.progress(audio_processed_until=0.0)
+        for _ in range(DEFAULT_MAX_GUARD_DIAGNOSTICS)
+    ]
+    events += [
+        TranscriptionEvent.partial("s0", "a", stable_text="a"),
         TranscriptionEvent.done(),
     ]
-    with pytest.raises(AssertionError, match="frozen-prefix invariant"):
-        assert_prefix_invariant(events)
+    codes = {i.code for i in check_event_sequence(events).issues}
+    assert "streaming_invariant:stable_text_abandoned" in codes
+    assert "streaming_invariant:diagnostics_truncated" not in codes
+
+
+def test_compliance_admits_a_final_whose_text_ends_with_a_joiner() -> None:
+    # The boundary check applies to a partial's stable text. A final has no
+    # boundary inside its text.
+    events = [
+        TranscriptionEvent.final("s0", "a\u200d"),
+        TranscriptionEvent.closed("s1", "b\u200d"),
+        TranscriptionEvent.done(),
+    ]
+    assert check_event_sequence(events).passed is True
+    assert_stable_text_invariant(events)  # no raise
+
+
+def _closed_level_caps() -> DeclaredCapabilities:
+    return DeclaredCapabilities(
+        streaming=StreamingCapabilities(
+            finality_level=FinalityCap(mode="closed"),
+            re_segments=FlagCap(supported=True),
+        ),
+        streaming_input=FlagCap(supported=True),
+    )
+
+
+def test_event_sequence_flags_a_final_left_unclosed_under_finality_level_closed() -> None:
+    events = [
+        TranscriptionEvent.final("s0", "hello"),
+        TranscriptionEvent.closed("s0", "Hello."),
+        TranscriptionEvent.final("s1", "world"),
+        TranscriptionEvent.done(),
+    ]
+    report = check_event_sequence(events, capabilities=_closed_level_caps())
+    assert [i.code for i in report.issues] == ["finality_level_not_reached"]
+    assert "'s1'" in report.issues[0].message
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [
+            TranscriptionEvent.final("s0", "hello"),
+            TranscriptionEvent.closed("s0", "Hello."),
+            TranscriptionEvent.closed("s1", "World."),
+            TranscriptionEvent.done(),
+        ],
+        [
+            TranscriptionEvent.final("s0", "hello"),
+            TranscriptionEvent.supersede(["s0"], []),
+            TranscriptionEvent.done(),
+        ],
+        [
+            TranscriptionEvent.final("s0", "hello"),
+            TranscriptionEvent.make_error("boom", recoverable=False),
+        ],
+    ],
+    ids=["every-final-closed", "final-retired", "error-terminal"],
+)
+def test_event_sequence_finality_level_closed_is_met(events: list[TranscriptionEvent]) -> None:
+    report = check_event_sequence(events, capabilities=_closed_level_caps())
+    assert not any(i.code == "finality_level_not_reached" for i in report.issues)
+
+
+def test_event_sequence_finality_level_final_does_not_require_closed() -> None:
+    events = [TranscriptionEvent.final("s0", "hello"), TranscriptionEvent.done()]
+    caps = DeclaredCapabilities(
+        streaming=StreamingCapabilities(), streaming_input=FlagCap(supported=True)
+    )
+    assert check_event_sequence(events, capabilities=caps).passed is True
+
+
+def test_assert_stable_text_invariant_sees_a_violation_past_the_diagnostic_cap() -> None:
+    # The runtime guard keeps a bounded list and folds later diagnostics into
+    # one summary. The helper must not read a full list as success.
+    events = [TranscriptionEvent.progress(audio_processed_until=1.0)]
+    events += [
+        TranscriptionEvent.progress(audio_processed_until=0.0)
+        for _ in range(DEFAULT_MAX_GUARD_DIAGNOSTICS)
+    ]
+    events += [
+        TranscriptionEvent.partial("s0", "a", stable_text="a"),
+        TranscriptionEvent.done(),
+    ]
+    with pytest.raises(AssertionError, match="stable_text_abandoned"):
+        assert_stable_text_invariant(events)
+
+
+def test_assert_stable_text_invariant_stops_at_the_terminal() -> None:
+    # An event after the terminal is check_event_sequence's to report. It is
+    # not replayed, so it cannot produce a stable-text verdict.
+    events = [
+        TranscriptionEvent.final("a", "hello"),
+        TranscriptionEvent.done(),
+        TranscriptionEvent.partial("b", "y", stable_text="y"),
+        TranscriptionEvent.done(),
+    ]
+    assert_stable_text_invariant(events)  # no raise
 
 
 # --------------------------------------------------------------------------- #
@@ -3974,21 +4229,6 @@ def test_event_sequence_passes_through_guard_code() -> None:
     report = check_event_sequence(events)
     assert report.passed is False
     assert any(i.code == "streaming_invariant:lifecycle_final_after_final" for i in report.issues)
-
-
-def test_event_sequence_soft_obligation_code_is_namespaced() -> None:
-    events = [
-        TranscriptionEvent.final("a", "你好世界", stable_until=4),
-        TranscriptionEvent.supersede(["a"], ["b"]),
-        TranscriptionEvent.final("b", "你好", stable_until=2),
-        TranscriptionEvent.done(),
-    ]
-    report = check_event_sequence(events)
-    assert report.passed is True
-    assert any(
-        i.code == "streaming_soft:supersede_obligation_unfulfilled" and i.level == "warning"
-        for i in report.issues
-    )
 
 
 # --------------------------------------------------------------------------- #

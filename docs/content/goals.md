@@ -12,7 +12,7 @@ Concrete, executable goals that deliver on the [mission](./mission.md).
 - **G.1.2: Audio input negotiation and a constant result.** A unified audio-input type system (`AudioInput` discriminated union) with deterministic negotiation. Lossy steps surface as structured diagnostics; impossible conversions fail loudly. The result is a constant-schema `TranscriptionResult` whose shape never changes with parameters.
 - **G.1.3: Properties, capabilities, metadata, and config declarations.** Engines make four machine-readable declarations: *Properties* (static I/O identity), *Capabilities* (hierarchical feature tree), *Metadata* (typed lifecycle and operational facts), and *Config* (typed, UI-renderable Pydantic model with secret-field marking).
 - **G.1.4: Standardize optional features.** Streaming, word timestamps, diarization, phrase hints, and other advanced features have standard interfaces, standard return formats, and a fail-closed capability query (`supports()`).
-- **G.1.5: Unify streaming semantics.** A single event protocol (`partial` / `final` / `supersede` / `progress` / `done` / `error`) with segment lifecycle and explicit stability guarantees covers every real-world streaming behavior -- from rewriting interims to append-only token streams to two-pass rescoring.
+- **G.1.5: Unify streaming semantics.** A single event protocol (`partial` / `final` / `supersede` / `progress` / `done` / `error`) with segment lifecycle and explicit stability guarantees covers every real-world streaming behavior -- from rewriting interims to append-only token streams to engines that re-cut segments they already sent.
 
 ## G.2: Provide a developer toolkit
 
