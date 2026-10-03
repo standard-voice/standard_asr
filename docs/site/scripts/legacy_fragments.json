@@ -6,6 +6,9 @@
   "for_app_dev/errors.html": {
     "errors-diagnostics": "errors--diagnostics"
   },
+  "for_app_dev/streaming.html": {
+    "stability-guarantees": "stable-text"
+  },
   "for_asr_dev/adapting_engine.html": {
     "credentials-environment-fallback-ic4": "credentials--environment-fallback-ic4",
     "declare-what-you-emit-capability-stream-consistency": "declare-what-you-emit-capability--stream-consistency",
@@ -59,7 +62,7 @@
     "3_4": "3-接口与能力",
     "4": "4-行为规范",
     "41": "41-事件类型",
-    "42-stable_until": "42-稳定前缀stable_until",
+    "42-stable_until": "42-稳定文本stable_text",
     "43-replace": "43-累积replace-归一化",
     "44": "44-音频时间游标与心跳",
     "4_1": "4-行为规范-1",
@@ -90,7 +93,7 @@
     "6_4": "6-生命周期与健壮性",
     "7": "7-示例",
     "71": "71-最简场景显示实时字幕",
-    "72": "72-语音助手利用稳定前缀",
+    "72": "72-语音助手利用稳定文本",
     "73-openai-audio-sse": "73-openai-audio-sse整段输入--流式输出",
     "8": "8-附注与理由",
     "9-v1-capabilities": "9-能力清单v1-流式-capabilities",

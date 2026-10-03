@@ -365,7 +365,7 @@ capabilities:
     diarization:            { supported, always_on: { supported }, constraints: { max_speakers? } }
     emits_partials:         { supported }
     re_segments:            { supported }        # 是否可能发 supersede 事件
-    word_stability:         { supported }        # 是否提供有意义的 stable_until
+    partial_stability:      { supported }        # partial 事件是否可能携带非空 stable_text
     reconnect:              { mode: seamless | lossy | unsupported }
     finality_level:         { mode: final | closed }
     timestamps:             { mode: native_frame_aligned | post_align | none }
@@ -378,7 +378,7 @@ capabilities:
 
 同一功能（如 `language`、`guidance`）在 `batch` 和 `streaming` 下**分别声明**——同一引擎在不同模式下的能力可以不同。
 
-**`diarization.always_on`（行为性 flag 节点，normative）。** `always_on` 是 `DiarizationCap` 上的一个**行为性 flag 节点**（`FlagCap`），与 `self_resamples`（以及流式行为性 flag `emits_partials`/`re_segments`/`word_stability`）同族——它描述引擎**做什么**（架构上不可关闭 diarization，未请求时也可能出现 speaker 标签），不授予应用可请求的任何东西。它**不进** `constraints`（§3.3：`constraints` 专用于机器可校验的限额，而 `always_on` 是行为事实）。
+**`diarization.always_on`（行为性 flag 节点，normative）。** `always_on` 是 `DiarizationCap` 上的一个**行为性 flag 节点**（`FlagCap`），与 `self_resamples`（以及流式行为性 flag `emits_partials`/`re_segments`/`partial_stability`）同族——它描述引擎**做什么**（架构上不可关闭 diarization，未请求时也可能出现 speaker 标签），不授予应用可请求的任何东西。它**不进** `constraints`（§3.3：`constraints` 专用于机器可校验的限额，而 `always_on` 是行为事实）。
 
 但它是一个**普通的可查询 flag 节点**，与 `self_resamples` 一致：`supports("<mode>.diarization.always_on")` 是有效查询路径；声明 supported 时它出现在 `iter_supported_paths()` 中；canonical JSON 统一为它注入 `supported` 布尔值；`covers()` 通过标准集合包含把「declared 未声明 → effective 声明」的变化当作漂移（declaration drift）拒绝。矛盾态 `supported=false ∧ always_on 声明 supported` 仍**不可表示**（构造期 validator 拒绝）。
 
@@ -678,7 +678,7 @@ Word:    start:float  end:float  text:str
   > **排序是引擎义务，非构造期强制、合规套件亦不校验（明示，与 TR.4 不对称）**：该 `(start, channel, speaker)` 排序与每通道单调性是**引擎/适配器的义务**——既**不**在 `TranscriptionResult` 构造期强制，合规套件也**不**校验：`StreamReducer` 在任一保留段缺 `start` 时合法地保留到达顺序、否则仅按 `start` 排（无 channel tie-break），严格的 `(start, channel, speaker)` 校验（无论在构造期还是套件对 `session.result()` 输出）都会误拒合法归约结果。与 TR.4 的构造期强制（见下）不对称是有意的：TR.4 拒绝的是**不可表示的歧义形状**（无合法生产者），而违反 TR.2 排序的乱序 segments 是合法可表示的中间产物。渲染器在自身边界以同一 `(start, channel, speaker)` 键防御性重排——这是标准层唯一的安全网。
 - `probability ∈ [0,1]`；若引擎给 logprob，**另立字段**，不与 probability 混。
 - **`Segment` 时间可空（normative）**：`start`/`end` 为 **`float | null`**，`null` = 引擎**未测量**该时间——是数据，不是缺字段；合法形状仅三种：`(float, float)`（**measured**，`end >= start`）、`(float, null)`（**start_only**，有真实起点但无可用区间）、`(null, null)`（**unavailable**）；`(null, float)`（有终点无起点）**不可表示**，构造期拒绝。衍生只读属性 `Segment.timestamp_status ∈ {"measured","start_only","unavailable"}` 由值派生（**不存储**，因此永不与值矛盾）。流式归约器把引擎的测量**原样存入**（绝不伪造 `0.0`），任一保留段非 measured 时结果级另发 `segment_timestamps_unavailable` diagnostic 作聚合披露；**逐段真相就是可空值本身**——消费者（含标准 SRT/VTT 渲染器）MUST 读值判定，MUST NOT 嗅探 `0.0` 或依赖任何 `extra` 标记（历史上的保留键 `timestamp_placeholder` 已删除；`Segment.extra` 完全归引擎所有，标准不保留任何键）。`TranscriptionEvent` 的 `partial`/`final` 同样拒绝 `(null, float)` 形状（两层同一不变量）。标准渲染器的策略针对**不可渲染（unrenderable）段**、由调用者显式选择：一个段不可渲染，当且仅当其无 measured span，**或** measured span 在输出毫秒格上量化为零（`_to_millis(end) <= _to_millis(start)`——`T --> T` cue 被播放器静默丢弃，渲染成功字符串却无人看见文本）。`to_srt`/`to_vtt` 的 `on_unrenderable ∈ {"error", "omit", "collapse"}`（`"error"` 为默认，抛 `SubtitleRenderingError`（携 `.unrenderable`/`.total` 计数）；`"omit"` 仅渲染可渲染段；`"collapse"` 整文单 cue；未知值响亮拒绝——Literal 不在运行时强制）。渲染器 MUST NOT 自行加宽 span（如捏造 1 ms）——那是未经授权的时间伪造；可渲染性是**渲染器属性**（取决于输出量化格），与模型的 `timestamp_status`（报告测量了什么）语义分离——无声丢字、无声隐藏与无声伪造时间皆为 cardinal sin，默认必须响亮。
-- **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_until` 等）加在**事件包装层**，不污染共享子模型。
+- **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_text` 等）加在**事件包装层**，不污染共享子模型。
 - **`session.result() -> TranscriptionResult`**：流式会话可归约为最终结果（反映 `final`；late `closed` 重格式化可更新它）。
 
 ## TR.3 时间戳粒度
@@ -706,7 +706,7 @@ Word:    start:float  end:float  text:str
 - **always-on 引擎的具名豁免（normative）**：声明 `always_on` 为 supported 的引擎 MAY 在 diarization **未被请求**时填充 `speaker`，这**不是**违规——它是对「未请求的数据 MUST NOT 回填」立场（TR.3 对 word timestamps 的禁令）的**有意、具名**豁免：架构上不可关闭的 joint 模型无法不产出 speaker，强制剥离 = 主动丢弃高价值数据 + 在静默方向（漏剥没人知道）留 bug 窗口。此类引擎 MAY 额外发一条 `info` diagnostic（`code="unrequested_speaker_labels"`）。想要无 speaker 标签的应用（隐私场景）在 always-on 引擎上无标准关闭手段，自行在客户端剥除。可关闭的引擎不享受此豁免（能关 MUST 关，[§能力系统 3.2](#capabilities)）。
 - **channel vs speaker 正交**：`channel` 是**物理来源**（哪个麦克风/线路），`speaker` 是**逻辑身份**（谁在说话）；两者 MAY 同时存在。引擎特有的 diarization×多通道互斥是**请求时适配器门控**（strict 抛 `UnsupportedFeatureError`；best_effort 丢弃 diarization + diagnostic），**不是** `effective_capabilities` 收窄——effective 能力是实例级/配置期收窄，通道数是随音频到达的请求级属性，实例级机制表达不了「这条请求是立体声，所以 diarization 不可用」。
 - **与 `word_timestamps` 的交互**：diarization 被请求时，`Segment.speaker` MUST 在可判定处填充（它是权威形状）；`Word.speaker` 仅当 `words` 本身被请求/填充时才可能出现（TR.3：`words=None`=未请求）。
-- **合规范围（诚实声明）**：diarization 的**正向**行为（标签质量、真实归属、hint 是否被用）在没有多说话人 fixtures 时不可验证；合规套件只强制**负向**交叉检查——声明不支持却发出 speaker（streaming：`stream_exceeds_diarization`；batch：`result_exceeds_diarization`，扫 `segments[]`/`words[]`/`channels[]` 全部载体）。
+- **合规范围（诚实声明）**：diarization 的**正向**行为（标签质量、真实归属、hint 是否被用）在没有多说话人 fixtures 时不可验证；合规套件只强制**负向**交叉检查——声明不支持却发出 speaker（streaming：`stream_exceeds_diarization`，会话运行时也用同一段代码检查，见流式 [§9](#streaming)；batch：`result_exceeds_diarization`，扫 `segments[]`/`words[]`/`channels[]` 全部载体，只有合规套件检查）。
 
 ## TR.6 SRT/VTT 等格式（核心渲染，非返回类型）
 - 禁 `response_format`→字符串。核心库提供 **`to_srt(result) -> str` / `to_vtt(result) -> str`**（基于恒定 `segments`），每个 compliant 引擎一键可得（**强于现状**：现状只有部分引擎给）。
@@ -925,7 +925,7 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 
 - **输入方式**：有的引擎能在说话的同时**逐块接收音频**（如 ElevenLabs、Qwen3-ASR）；有的要求**先把整段音频上传完**，再流式返回结果（如 OpenAI Audio API `stream=true`）。
 - **结果修订**：有的引擎吐出的中间结果**可能被推翻**（Google/AWS/ElevenLabs）；有的**一旦吐出就不改**（Kyutai STT、Voxtral Realtime）。
-- **分段边界**：有的引擎按语句端点自动切段；有的（两遍重打分引擎如 WeNet）甚至会**事后合并或拆分段**。
+- **分段边界**：有的引擎按语句端点自动切段；有的会**事后调整已经送出的段**——例如说话人分离的结果晚于文字到达时，把已送出的段重新切开、合并或改派说话人。
 
 本节把这些统一为一套**事件模型 + 段生命周期 + 能力声明**。
 
@@ -939,8 +939,8 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 | `segment` / `segment_id` | 一段连贯的转写文本（通常对应一句话或一段发言）。每段由引擎或适配器分配一个**稳定 id**（字符串），用于在事件流中追踪、更新和最终锁定该段。 |
 | `partial` 事件 | 引擎对某段的**当前最佳猜测**。partial 的文本可能随着更多音频到来而变化（下一个 partial 会携带该段的完整当前文本，覆盖之前的）。 |
 | `final` 事件 | 引擎**不再因新音频改变**该段文本。表示一个语句/段落的转写已确定。 |
-| `supersede` 事件 | 引擎用一组新段**替换**一组旧段（用于两遍重打分等场景，详见 §5）。是**核心事件**，每个 compliant 应用都 MUST 处理。 |
-| `stable_until` | 一个非负整数，标明 `text` 的前多少个 **codepoint** 已冻结、不会再变（`text[:stable_until]` 即冻结前缀）。适配器 SHOULD 使该值落在字素簇 (grapheme cluster) 边界上。简单应用可忽略它；语音助手用它判断"前缀中哪些字已安全可以行动"。**冻结的范围是进行中的识别**：段终态的 `closed` 事件 MAY 对已冻结文本做一次后处理定稿改写（补标点/ITN/大小写，§6 豁免条款）——基于冻结前缀做**不可逆**动作（写库、发消息、触发工具）的应用 MUST 以识别语义为界，预期 `closed` 可能改写呈现形式。 |
+| `supersede` 事件 | 引擎用一组新段**替换**一组旧段（用于事后重新切段等场景，详见 §5）。是**核心事件**，每个 compliant 应用都 MUST 处理。 |
+| `stable_text` | 一个字符串，是 `text` 开头已经稳定的那一段（`text` 一定以它开头）；没有稳定文本时是空字符串。同一段后来的 `partial` 和非 `closed` 的 `final` 都保留这段文字，稳定范围只增不减。`supersede` 撤回旧段，连同它的稳定文本（§5.2）。段的终态事件 `closed` MAY 对同一段做一次只改变呈现形式的重述：补标点、改大小写、做 ITN（逆文本规范化，即把「twenty twenty」写成「2020」这类数字与格式转换）。简单应用可以不管它；语音助手用它判断哪些字已经可以先处理。边界规则和各阶段还允许什么变化见 §4.2：稳定文本要结束在两个字素簇（读者眼里的一个「字符」）之间，而标准层只能查出一部分违规。文字稳定了，不等于可以拿它做**不可撤销**的动作（写库、发消息、触发工具）；应用按之后还可能发生的变化和自己的用途选择行动时机，见 §4.2「应用怎么用」。 |
 | `audio_processed_until` | 浮点数，表示引擎已处理到的音频时间点（秒），原点 = 本次会话的第一个音频采样。 |
 
 ---
@@ -1027,6 +1027,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 
 - 引擎的原始协议如果自带 id（如 AWS `ResultId`、OpenAI diarized 的 `segment_id`），适配器 MUST 使用它。
 - 如果引擎不提供 id（如 OpenAI 非 diarized 的 SSE 只有一个连续文本流），适配器 MUST 按确定性规则合成（如 `"seg-0"`、`"seg-1"`…），保证**同一引擎的不同运行、给同样音频，产生相同的 id 序列**。
+- 一个带原生 id 的段被 `supersede` 替换后，新段 MUST 用新的 id：`new_ids` 不得复用任何已经出现过的 id（§5.2）。如果引擎给替换后的段的原生 id 没有变，适配器就从原生 id 派生一个确定的新 id，例如 `<原生 id>#<修订序号>`。
 - **段之间独立**：一个新的 `segment_id` 可以在前一个段的 `final` 或 `closed` **之后**开始发 `partial`——这是云 WebSocket 引擎的标准模式（interim→commit→新段）。
 
 ---
@@ -1042,16 +1043,16 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 | `type` | `"partial" \| "final" \| "supersede" \| "progress" \| "done" \| "error"` | 事件类型 |
 | `segment_id` | `str \| None` | 所属段的稳定 id（`done` 和部分 `error`/`progress` 可为 `None`） |
 | `text` | `str \| None` | 该段的当前完整文本（`partial`/`final` 必有） |
-| `stable_until` | `int \| None` | 已冻结的 codepoint 数量（`text[:stable_until]` = 冻结前缀；见 §4.2） |
+| `stable_text` | `str \| None` | `text` 开头已经稳定的部分（§4.2）。在 `partial` 和 `final` 上总是字符串。在其他事件类型上 MUST 为 `null`：这是适配器的义务，标准层目前不检查 |
 | `words` | `list[Word] \| None` | 词级细节（可选，与 [§结果模型](#transcription-result) 共享同一 `Word` 定义） |
-| `speaker` | `str \| None` | 段级说话人标签。继承规则与 `Segment.speaker` 相同（TR.5）：`event.words[i].speaker` 非 `None` 时在词级覆盖；标签有效性规则同 TR.5（构造期拒绝空/纯空白/带首尾空白）。冻结区域保护见 §4.2 |
+| `speaker` | `str \| None` | 段级说话人标签。继承规则与 `Segment.speaker` 相同（TR.5）：`event.words[i].speaker` 非 `None` 时在词级覆盖；标签有效性规则同 TR.5（构造期拒绝空/纯空白/带首尾空白）。有稳定文本的段的 speaker 保护见 §4.2 |
 | `start` / `end` | `float \| None` | 段的起止时间（秒，原点 = 会话第一个音频采样）|
 | `audio_processed_until` | `float \| None` | 引擎已处理到的音频时间点（§4.4） |
 | `old_ids` / `new_ids` | `list[str]` | 仅 `supersede` 事件使用（§5） |
 | `detected_language` | `str \| None` | 引擎检测到的语言（BCP-47，非 `auto`；与结果模型同规则校验）。是 §6.3 重连连续性承诺的载体——重连前后 MUST 保持一致。终态事件缺失该值时由标准层盖上会话已归约的 sticky 语言（§6.4 终态语言盖章） |
-| `finality` | `"final" \| "closed"`（默认 `"final"`） | 仅 `final` 事件有意义：`"closed"` 标记该 `segment_id` 进入终态（§6.2）。`closed` **不是**独立的 `type`——它是同一 id 上再发一次的 `final`，携带此标记（文本可能因后处理定稿而变化）；终态段 MUST NOT 再被 supersede |
-| `code` / `recoverable` / `retriable_after` | | 仅 `error` 事件使用（§7.2） |
-| `reconnect` / `gap_start` / `gap_end` | | 仅 `progress` 的重连通知使用（§7.3） |
+| `finality` | `"final" \| "closed"`（默认 `"final"`） | 仅 `final` 事件有意义：`"closed"` 标记该 `segment_id` 进入终态（§5.3）。`closed` **不是**独立的 `type`——它是同一 id 上再发一次的 `final`，携带此标记（文本可能因后处理定稿而变化）；终态段 MUST NOT 再被 supersede |
+| `code` / `recoverable` / `retriable_after` | | 仅 `error` 事件使用（§6.2） |
+| `reconnect` / `gap_start` / `gap_end` | | 仅 `progress` 的重连通知使用（§6.3） |
 | `extra` | `dict[str, JsonValue]` | 引擎特定/实验数据槽位（默认 `{}`）。**同受 [§TR.1](#transcription-result) 的 JSON 值空间与 str 键域规则约束**（递归至任意深度，非字符串键与非有限 float 构造期 fail-loud）——`error` 事件的 `extra` 由 server 出栈前清空（§7.2），其余事件的 `extra` 原样转发上线，故它与结果模型的 `extra` 是同一个 wire 可见槽位、不可声明为 `Any`。语义与 [结果模型](#transcription-result) 的 `extra` 一致：**引擎特定、不可移植**，可移植应用代码 MUST NOT 依赖其中的键。提供给适配器透传原生协议的额外信息（如 token 级置信度、自定义元数据），而无需扩展封闭的标准字段集 |
 
 **`extra` 的 wire 转发/剥离规则**（两层同构，G.5.2）：
@@ -1062,41 +1063,123 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 每种事件的含义：
 
 - **`partial`**：引擎对该段的**当前最佳猜测**。`text` = 该段的完整当前文本（不是增量/delta——追加式引擎如 OpenAI 由适配器在内部累积 delta，对外总是发完整文本）。下一个 partial 会覆盖上一个。
-- **`final`**：该段的转写**不再因新音频而改变**。它可能仍被 `supersede`（两遍重打分场景）或被 `closed` 事件更新（后处理标点/ITN 修正）。
+- **`final`**：该段的转写**不再因新音频而改变**，所以整段都是稳定的，`stable_text` 等于 `text`。之后它仍可能被 `supersede` 整段替换（§5.2），或被 `closed` 事件更新一次（后处理补标点、做 ITN）。
 - **`supersede`**：用一组新段替换一组旧段。详见 §5。
 - **`progress`**：时间推进 / 心跳 / 重连通知，不改变任何段的文本。
 - **`done`**：整个会话结束，不再有任何事件。
 - **`error`**：出错。
 
-### 4.2 稳定前缀（`stable_until`）
+### 4.2 稳定文本（`stable_text`）
 
 这是流式模型最核心的概念之一，但**简单应用可以完全忽略它**。
 
-**直觉**：引擎边听边写时，**前面的字越来越确定，最后面几个字还不稳定**。`stable_until` 就是标明"前面多少个字已经冻结、不会再变"的那条线。
+**直觉**：引擎边听边写时，**前面的字越来越确定，最后面几个字还不稳定**。`stable_text` 就是前面已经确定、不会再变的那一段文字。
 
-**精确定义**：`stable_until` 是一个非负整数，表示 `text` 中前多少个 **codepoint** 已经被冻结。Python 中 `text[:stable_until]` 即冻结前缀——codepoint 是 Python 字符串的原生索引单位，直接可用、零依赖。
+**定义**：`stable_text` 是一个字符串，是 `text` 开头的一段，也就是 `text` 的前缀。这个前缀关系按 **Unicode 码位**逐个定义，不做大小写折叠、空白裁剪或 Unicode 规范化。`text` MUST 以 `stable_text` 开头。没有稳定文本时，`stable_text` 是空字符串 `""`。`text` 去掉这段开头以后剩下的文字，就是还可能变的部分。
 
-**组合字符不变量**：`stable_until` **MUST NOT** 切开 Unicode combining character sequence——即 `text[stable_until]`（如果存在）的 `unicodedata.combining()` MUST 为 0。这保证切点不会落在印度系 matra、阿拉伯语变音符等组合标记的中间，**用 stdlib `unicodedata` 即可验证，零第三方依赖**。标准 SHOULD 提供 `validate_stable_until(text, stable_until) -> bool` helper，合规测试 MUST 校验此不变量。
+消费端如果把 `text` 拆成稳定部分和剩余部分，MUST 恰好去掉 `stable_text` 包含的那串码位，保留其后的全部文字。协议不传递任何长度或位置，所以不需要约定按什么单位计数：消费端可以按 Unicode 码位操作，也可以在两个字符串上按同一种编码的码元或字节操作。在 Python、JavaScript、Java、C#、Go、Rust 里，这就是字符串自带的比较与切片。消费端 MUST NOT 只靠数 `stable_text` 里有几个字素簇（读者眼里的一个「字符」，见下文「边界规则」）来确定 `text` 的切分位置：`stable_text` 没有结束在字素簇边界上时，这样数会多切或少切。
 
-> 实际上，适配器从引擎拿到的稳定边界通常是 word/token 级的，映射到 `text` 中的位置天然满足此不变量，不需要额外处理。
+例如，在 Swift 里用 `unicodeScalars` 视图，不要用 `text.dropFirst(stable_text.count)`。引擎有义务把稳定文本的结尾放在字素簇边界上，但标准层只能查出一部分违规；检查通过，不代表这个切分位置一定是字素簇边界。需要完整字素簇的应用可以另做下文「边界规则」里的检查，把自己使用的稳定范围缩短到完整的字素簇为止。
 
-适配器 SHOULD 进一步使 `stable_until` 落在**字素簇 (grapheme cluster) 边界**上（覆盖 emoji ZWJ 等 combining 以外的多 codepoint 序列），但这是 SHOULD 级建议，不强制。完整 UAX#29 字素簇支持留作未来修订如有需求时的 additive 扩展。
+**承诺（normative）**：一段文字一旦出现在某段的 `stable_text` 里，**只要这个段还在**，它就不再改变：
+
+- 同一段后来的 `partial` 和 `final`，其 `text` MUST 仍以此前的 `stable_text` 开头；`stable_text` MUST 只增不减。
+- 只有两件事能结束这个承诺。两件都是应用看得见的事件，不会悄悄发生：
+  - **`supersede`**：把这个段整段撤回，稳定文本一起撤回（§5.2）。应用丢掉从被撤回的段得到的东西，改从替换它的新段开始。
+  - **`closed`**：段的终态重述，MAY 改写一次呈现形式（见下文「规则」）。
+- 引擎声明 `streaming.re_segments` 不支持时，就是承诺不发 `supersede`，第一种情况不会发生。
+
+**各事件上的取值（normative）**：
+
+| 事件 | `stable_text` |
+|---|---|
+| `partial` | 默认 `""`。非空表示这个段的开头已经稳定；引擎要先声明 `streaming.partial_stability` 能力（§9）。 |
+| `final`（两种 `finality`） | 总是整段 `text`，这也是默认值。`final` 的文本不再因新音频改变，所以整段稳定。其他值在构造时被拒绝。 |
+| 其他事件 | 不适用（`null`）。 |
+
+- **默认值只是构造时的便利**：经过校验的 `partial` 和 `final` 事件上，`stable_text` 总是已经算好的字符串，wire 上也总是带着这个字符串（[server-api.md §4.1](./server-api.md)）。其他语言的客户端直接读这个字段，不需要知道默认规则。
+
+**边界规则**：
+
+- **适配器的义务（MUST）**：`stable_text` MUST 结束在两个**字素簇**之间。字素簇（extended grapheme cluster，定义见 Unicode 标准附件 UAX #29）就是读者眼里的一个「字符」，例如一个字母加上它的重音符号、一个辅音加上它的元音符号、一个由几个码位拼成的 emoji。把一个字符拆成稳定的一半和还会变的一半，应用拿到的就是半个字符。
+- **标准层检查什么**：标准层只检查这条规则的一部分，而且只用 Python 标准库 `unicodedata`。它检查 `stable_text` 没有在一个 Unicode **组合字符序列**中间结束，也没有紧接在零宽连接符（U+200D）之后结束。组合字符序列（combining character sequence，Unicode 定义 D56）是一个基字符加上跟在它后面的组合标记、零宽连接符和零宽非连接符，例如字母 `e` 加上重音符号 U+0301。紧接在零宽连接符之后切开，并没有切开组合字符序列；但零宽连接符会把它后面的字符和前面的字符连成读者眼里的同一个字符，例如由几个码位拼成的 emoji，所以这项检查也报告这种切法。把 `text` 里紧跟在 `stable_text` 后面的那个字符叫做「下一个字符」，检查的是三件事：
+  - 下一个字符不是组合标记，即它的 Unicode 通用类别（General_Category）不是 `Mn`、`Mc` 或 `Me`；
+  - 下一个字符不是 U+200C（零宽非连接符）或 U+200D（零宽连接符）；
+  - `stable_text` 本身不以 U+200D 结尾。
+
+  标准 SHOULD 提供 `validate_stable_text(text, stable_text) -> bool`，用来检查本节规定的前缀关系和标准层边界条件。本库的公开函数 `validate_stable_text` 就做这两项检查。标准层（`_LifecycleGuard`）在两个地方做同样的检查。一是每个 `partial` 自己的 `stable_text`。二是每个 `partial` 和非 `closed` 的 `final`：此前的稳定文本在新的 `text` 里是否仍然通过本节规定的标准层边界检查（见下一条）。`final` 自己的 `stable_text` 不检查：它就是整段文字，里面没有边界。字符类别取自运行中的 Python 自带的 Unicode 数据，所以结果跟着 Python 版本走（例如 Python 3.13 带的是 Unicode 15.1）。比这个版本新的组合标记在那里还没有类别，会通过检查。合规套件在检查事件序列时 MUST 校验本节规定的标准层边界条件：`partial` 自己的稳定文本的边界，以及此前的稳定文本在后来的 `partial` 和非 `closed` 的 `final` 里的边界。这项检查不等于完整的 UAX #29 字素簇边界检查。
+- **跨事件同样适用**：此前的 `stable_text` 在新的 `text` 里也 MUST 仍然结束在合法边界上。在一个已经稳定的字符后面追加组合标记，会改变读者已经看到的那个字符。例如稳定文本是 `e`，下一个事件的 `text` 变成 `e` + U+0301（`é`）。标准层把这当作改写，抑制这个事件（`stable_text_rewritten`，见下文「规则」）。如果引擎的 `final` 也带着这个标记，`final` 同样被抑制，这个段仍在进行中。之后如果既没有一个被接受的 `final` 让它结束（普通 `final` 要保留此前的稳定文本，`closed` 不受这条限制），也没有 `supersede` 撤回它，会话以 `done` 结束时这个段就会被报告为 `stable_text_abandoned`；会话以终态 `error` 结束时不做这项检查。所以，一个字符后面如果还可能来属于它的组合标记，适配器就不能把稳定文本标到这个字符为止（这是下文「保守」规则的一种情况）。
+- **这项检查是必要条件，不是充分条件**：检查通过只表示「没有发现违规」，不证明边界落在两个字素簇之间。下面四种结果都只有这个意思：`validate_stable_text` 返回 `True`；会话里没有 `stable_text_clamped` diagnostic；合规套件的 `check_event_sequence` 通过；`assert_stable_text_invariant` 通过。下表是检查漏掉的切法。每一处都切在一个字素簇里面，都违反上面的 MUST：
+
+  | 情形 | 例子（码位） | 漏掉的切点 | 为什么漏掉 |
+  |---|---|---|---|
+  | 泰文 SARA AM | `ทำ`（U+0E17 U+0E33，「做」）；`น้ำ`（U+0E19 U+0E49 U+0E33，「水」） | U+0E33 之前 | U+0E33 的类别是 `Lo`（字母），不是组合标记。声调符号 U+0E49 之前的切点能查出 |
+  | 老挝文 AM | `ນຳ`（U+0E99 U+0EB3） | U+0EB3 之前 | U+0EB3 的类别是 `Lo` |
+  | 合体辅音，天城文 | `क्ष`（U+0915 U+094D U+0937） | virama（U+094D）之后 | 下一个字符是辅音，类别 `Lo`。virama 之前的切点能查出 |
+  | 合体辅音，其他文字 | 孟加拉文 `ক্ষ`、古吉拉特文 `ક્ષ`、奥里亚文 `କ୍ଷ`、泰卢固文 `క్ష`、马拉雅拉姆文 `ക്ഷ`；按 ICU 78 的切分，还有高棉文和缅甸文的叠写辅音 | virama 或叠写符号之后 | 同上 |
+  | 分开书写的韩文字母（jamo） | U+1112 U+1161 U+11AB（分解形式的 `한`） | 任意两个字母之间 | jamo 的类别是 `Lo`。预组合的音节（如 U+D55C）是一个码位，切不开 |
+  | 国旗 | U+1F1EF U+1F1F5（日本国旗） | 两个区域指示符之间 | 类别 `So` |
+  | 带肤色的 emoji | U+1F44D U+1F3FD | 肤色修饰符之前 | 类别 `Sk` |
+  | emoji 标签序列（例如苏格兰旗） | U+1F3F4 U+E0067 … | 标签字符之前 | 类别 `Cf` |
+  | 半角片假名加浊音符 | `ｶﾞ`（U+FF76 U+FF9E） | U+FF9E 之前 | 类别 `Lm` |
+  | CR LF | U+000D U+000A | 两者之间 | 两个都不是组合标记 |
+
+  泰米尔文和卡纳达文不在表里：它们的 virama 之后是真正的字素簇边界。
+
+  跨事件的检查有同样的漏洞。一个段先给出稳定文本 `ท`，下一个事件的 `text` 是 `ทำ`，稳定文本不变。标准层接受这个事件，不发任何 diagnostic，虽然读者看到的最后一个稳定字符已经从 `ท` 变成了 `ทำ`。换成组合标记（先 `e`，再 `e` + U+0301），同样的事件会被抑制（`stable_text_rewritten`）。
+- **漏掉的切法到了应用那里会怎样**：
+  - **不会错的**：转写结果不会错。`text` 总是整段文字，`session.result()` 由 `text` 构建。稳定文本里的码位也不会错，错的只是边界的位置。
+  - **不受影响的应用**：不读 `stable_text` 的应用。只把每次新增的稳定文字按顺序追加到同一个地方的应用也不受影响：先追加 `ท`、再追加 `ำ`，最后得到的仍是 `ทำ`。
+  - **受影响的应用**：把稳定文本、或每次新增的稳定文字，当作本身完整的文字来用的应用。
+    - 把稳定部分和其余部分分成两段、用不同样式绘制：文字排版通常不跨过样式的分界，所以分界处会显示一个破损的字符。读者可能看到一个画在虚线圈上的符号（`ท` 后面跟着 `◌ำ`），可能看到本该合成一个字形的两个辅音分开显示（`क्` 和 `ष`，而不是 `क्ष`），也可能看到国旗变成方框里的两个字母。稳定文本越过这个字素簇之后，显示会自己恢复。
+    - 把每次新增的稳定文字交给一个把它当作完整文本的程序，例如语音合成、翻译、命令解析、搜索查询、逐段做 Unicode 规范化、量长度或宽度：前一段以半个字符结尾，后一段以另外半个开头。
+    - 根据最后一个稳定字符做了事的应用：这个字符在读者眼里可能变成另一个字（`ท` 变成 `ทำ`，见上一条）。
+
+    协议从不承诺稳定文本结束在词的边界上，在任何语言里都是这样，所以逐段处理的应用本来就要能处理半个词。半个字符是同一类问题，只是低了一层，而且还会破坏显示。
+  - **涉及的语言**：泰语和老挝语；印地语、马拉地语、尼泊尔语（天城文），孟加拉语、古吉拉特语、奥里亚语、泰卢固语、马拉雅拉姆语。在这些语言里，表中的写法出现在日常用词和大多数句子里，不是罕见情况（例如泰语的 `ทำ`「做」、`น้ำ`「水」、`คำ`「词」）。韩语只在引擎输出分开的字母（jamo）时受影响，日语只在半角片假名加浊音符时受影响，emoji 只在引擎输出 emoji 时受影响。对拉丁、西里尔、希腊、阿拉伯、希伯来字母，越南语，中文，常用写法的日文，以及预组合音节的韩文，这项检查在实际使用中是完整的。
+  - **什么样的引擎会产生这种切法**：引擎声明了 `streaming.partial_stability`，在 `partial` 上给出非空 `stable_text`，并且把边界放在词以下，例如放在模型的 token 处。按词标记稳定的引擎不会切进一个字符。
+- **适配器要做什么**：这条义务属于适配器，因为只有适配器知道边界从哪里来。把边界放在词与词之间；或者先用字素簇切分器切分 `text`，在送出之前把边界退回到最近的字素簇边界。干净的合规报告不证明引擎遵守了这条规则。
+- **应用能做什么**：应用如果分样式绘制两部分，或逐段处理新增的稳定文字，又服务于上面列出的语言，可以自己补上这项检查。用平台的字素簇切分器切分 `text`：JavaScript 的 `Intl.Segmenter`，Swift 的 `Character`，Java 与 C++ 的 ICU `BreakIterator`，Rust 的 `unicode-segmentation` crate，Python 第三方 `regex` 模块的 `\X`。稳定文本的结尾不是字素簇边界时，把边界退回到它所在的那个字素簇的开头。这样做总是安全的：它只是把更少的文字当作稳定。
+- **以后更完整的检查**：完整的 UAX #29 检查留作未来修订的 additive 扩展（如有需求）。它会查出更多违反同一条规则的情况，并把更多边界往回退，这是安全的方向。它不给引擎增加义务，也不改变任何字段。
+
+> 按词给出的稳定边界天然满足以上规则。按 token（子词）给出的边界不一定：一个 token 可能在一个字符中间结束，把组合标记、泰文的 SARA AM 或合体辅音的后半切到下一个 token。标准层保留组合字符序列这项检查，就是为了查出其中最常见的一类。
 
 **规则**：
-- `stable_until` 在同一段内 **MUST 只增不减**（冻结的前缀永不回退）。
-  - **`closed` 终态修正的豁免（见 §5.3 / §5.4）**：此不可变规则约束的是**进行中的识别**——只要识别仍在继续，已冻结前缀 MUST NOT 被后续 `partial`/`final`/`supersede` 改写（实现：标准层 `_LifecycleGuard` 抑制改写并发 `frozen_prefix_rewritten` diagnostic）。**唯一例外**是段进入终态时的 `closed` 事件：它 MAY 对已冻结文本做一次后处理改写（补标点 / ITN / 大小写），这不是"识别回退"而是终态定稿（§5.3、§5.4）。应用收到 `closed` 时 MUST 用新文本**替换**显示，而非追加。**该豁免显式覆盖单调钳制本身**：后处理改写可能**缩短**文本（ITN "twenty twenty" → "2020"），`closed` 事件的 `stable_until` 因此 MAY 小于此前的冻结前沿；标准层 MUST NOT 把它向上钳回（那会产生 `stable_until > len(text)` 的非法线值），只 MAY 修复结构边界（`0 ≤ stable_until ≤ len(text)`、不切组合字符）。合规套件 MUST NOT 因合法的 `closed` 收缩判错。
-- 适配器 MUST **保守地**设 `stable_until`——宁可偏小（少冻结几个字），不可偏大（声称冻结了实际可能再变的字）。
-- 引擎没有 `right_context`（前瞻窗口）或时间戳信息时（如 Qwen3-ASR streaming），MUST 报 `stable_until=0`——表示没有冻结任何字。相应地，`word_stability` capability 应声明为 `false`。
-- **简单应用**：可以无视 `stable_until`，只用 `partial` 显示、`final` 提交。
-- **语音助手**：读 `text[:stable_until]` 作为"可安全行动的前缀"。
 
-**冻结区域的 speaker 保护（normative）**：冻结保证延伸到**段级** `event.speaker`（词级 speaker 的冻结追踪当前明确不做，留作适配器义务）。规则：
+- **改写 → 抑制**：同一段的 `partial` 或非 `closed` 的 `final` 出现以下任一情况时，标准层（`_LifecycleGuard`）MUST 抑制整个事件，并发 `stable_text_rewritten` diagnostic：它的 `text` 不再以该段此前的 `stable_text` 开头；或者此前的 `stable_text` 在新的 `text` 中未通过本节规定的标准层边界检查。
+- **回退 → 钳制**：这一条只用在没有被抑制的事件上。标准层先按 §5.1 的状态机规则、上面「改写」一条和下文的 speaker 保护检查事件；事件被其中任何一条抑制，就不会投递，也不会被钳制。例如该段此前的稳定文本是 `e`，新的 `partial` 的 `text` 是 `e` 加上 U+0301，`stable_text` 是 `""`：`text` 仍以 `e` 开头，但 U+0301 紧跟在此前的稳定文本之后，所以标准层按「改写」一条抑制整个事件，发 `stable_text_rewritten`，不钳制。`partial` 的 `stable_text` 比该段此前的短，而 `text` 仍以此前的稳定文本开头时，标准层 MUST 改用此前的 `stable_text` 投递这个事件，并发 `stable_text_clamped` diagnostic。此前的承诺仍然有效，事件的 `text` 也与它一致，所以只需要纠正这一个字段。`partial` 的 `stable_text` 未通过本节规定的标准层边界检查（结束在组合字符序列中间，或紧接在零宽连接符之后）时，标准层同样钳制：把边界往回退到最近一个通过这项检查的位置，但不短于此前的稳定文本。另有两种情况只会出现在绕过构造期校验建出的事件上（例如在 Python 里用 `model_copy(update=...)` 建出的事件），标准层同样钳制并发 `stable_text_clamped`：`partial` 的 `stable_text` 不是 `text` 的开头时，改用此前的稳定文本；`final`（包括 `closed`）的 `stable_text` 不是整段 `text` 时，改用整段 `text`。
+- **`closed` 终态重述的豁免（见 §5.3 / §5.4）**：稳定的承诺约束的是**识别**。段进入终态时的 `closed` 事件 MAY 对稳定文本做一次后处理改写：补标点、做 ITN、改大小写。这不是识别结果回退，而是终态定稿。改写后的文本可以更短，例如 ITN 把 "twenty twenty" 写成 "2020"。应用收到 `closed` 时 MUST 用新文本**替换**显示，不是追加。标准层不拿 `closed` 和该段此前的稳定文本比较：上面「改写」一条和「回退」一条里对照此前稳定文本的检查都不用在它身上，下文的 speaker 保护也不用在它身上。但 `final`（包括 `closed`）的 `stable_text` 总是整段 `text` 这条规则不在豁免之内：一个绕过构造期校验建出的 `closed` 如果带着别的值，标准层照样按「回退」一条改用整段 `text` 并发 `stable_text_clamped`。合规套件 MUST NOT 因为合法的 `closed` 改写判错。这项豁免只覆盖**呈现形式**的改变。适配器 MUST NOT 用 `closed` 传递识别内容的改动，例如删掉或换掉用户说的词、按指令改写内容：那不是同一段话的定稿。标准层查不出这一点，这是适配器的责任。
+- **有稳定文本的段不能在 `done` 时仍未结束**：一个段有了稳定文本，又没有被 `supersede` 撤回，就 MUST 在会话以 `done` 结束之前到达 `final`。原因是结果（`session.result()`）只包含到达 `final` 的段。如果会话以 `done` 结束时，一个有稳定文本的段仍在进行中，应用被告知「不会再变」的文字就从结果里消失了。被 `supersede` 撤回的段不欠任何东西：它的稳定文本已经随撤回作废。标准层不能替引擎补一个 `final`，所以它在 `done` 时发 `stable_text_abandoned` diagnostic（warning 级），列出这些段。在 strict 模式下（`strict_lifecycle=True`），会话不发 `done`，而是以 code 为 `engine_error` 的终态 `error` 事件结束。合规套件把它判为错误。以终态 `error` 结束的会话不做这项检查：失败本身已经是明确的信号。
+- 适配器 MUST **保守地**给 `stable_text`：宁可偏短（少给几个字），不可偏长（把可能再变的文字说成稳定）。只有在适配器有依据保证这段文字不再改变时，才给非空值。如果引擎提供的只是「稳定度估计」（一个概率分数），MUST NOT 把它当成承诺。
+- 适配器无法保证当前 `partial` 的任何非空前缀满足稳定承诺时，MUST 给出 `stable_text=""`。如果引擎不能为任何 `partial` 提供这种保证，MUST 声明 `streaming.partial_stability` 不支持。某一次 `partial` 没有稳定文本，不要求引擎把这项能力声明为不支持。
 
-- 一旦某段在**先前事件**中确立了冻结前缀（`stable_until > 0`）**且**该段已被接受过非 `None` 的 speaker，其**最后被接受的**非 `None` speaker 即被锁定：后续 `partial` / `final` MUST NOT 改变它（X→Y）也 MUST NOT 撤回它（X→None——撤回即改写：应用已依冻结前缀行动）。
-- **`None→X` 合法**（冻结后首次赋 speaker）——这正是推荐的适配器策略「**延迟 speaker 到 final**」：引擎聚类未稳定时 partial 报 `speaker=None`，稳定后（通常 `final`）再给。聚类会漂移的引擎（流式重分配 speaker 的云引擎）SHOULD 采用此策略而非盲转发。
+**各阶段还允许什么变化（normative）**：
+
+- **`partial` 之后**：同一段后来的 `partial` 和非 `closed` 的 `final` MUST 保留此前的稳定文本及其合法边界，稳定范围 MUST 只增不减；稳定文本之后的文字仍然可以改写。`streaming.partial_stability` 只决定引擎能不能在 `partial` 上给出非空的稳定文本，不改变 `final` 的保证。
+- **普通 `final` 之后**：引擎 MUST NOT 再为同一段发送 `partial` 或普通 `final`。整段文字已经稳定，但这个段仍可能被 `supersede` 撤回，或者由一次 `finality="closed"` 的 `final` 重述。这次重述 MAY 改变标点、大小写、数字写法等呈现形式，MUST NOT 改变识别内容。它也可以修正这个段的 `speaker`：下文的 speaker 保护对 `closed` 豁免。
+- **`streaming.re_segments`**：引擎声明它不支持时，MUST NOT 发送 `supersede`。所以这样的引擎在普通 `final` 之后，文字唯一还可能有的变化，是一次 `closed` 重述带来的呈现形式改变（这次重述还可能修正 `speaker`）。标准层在会话运行时检查这项承诺，合规套件在拿到能力声明时用同一段代码检查（`stream_exceeds_re_segments`）。会话照原样投递这个 `supersede`，并记一条 diagnostic；在 strict 模式下（`strict_lifecycle=True`），会话以 code 为 `engine_error` 的终态 `error` 事件结束（§9）。
+- **`closed` 之后**：引擎 MUST NOT 再为同一段发送 `partial` 或 `final`，也 MUST NOT 用 `supersede` 撤回这个段。这个保证只针对这一个段，不表示其他段或整个会话已经结束。
+- **`streaming.finality_level`**：`mode` 声明引擎保证到哪一级终态。`mode="final"` 不保证每个段都会收到 `closed`，也不禁止合法的 `closed` 重述。`mode="closed"` 时，引擎 MUST 在会话以 `done` 结束之前，让每个已经到达 `final`、又没有被 `supersede` 撤回的段到达 `closed`；不经过普通 `final`、直接从 `open` 到达 `closed` 的段也满足这条要求。标准层在会话运行时检查这一点，合规套件在拿到能力声明时用同一段代码检查（`finality_level_not_reached`）。会话照常投递 `done`，并记一条 diagnostic；在 strict 模式下，会话不发 `done`，而是以 code 为 `engine_error` 的终态 `error` 事件结束（§9）。能力声明本身不让任何段进入终态：一个段处在哪个状态，以已经收到的事件为准。
+- **`done` 之后**：会话以 `done` 正常结束后，不再有任何事件。应用此时得到的最终文本，来自仍然保留、已经到达 `final` 或 `closed` 的段；`done` 不会把还没有定稿的 `partial` 变成结果。
+
+**应用怎么用**：
+
+- **简单应用**：可以不管 `stable_text`，只用 `partial` 显示、`final` 提交。想把稳定部分用不同样式显示的应用，先看上文「边界规则」：标准层查不出的切法会在分界处显示破损的字符。
+- **想提前开始处理的应用**（语音助手先算意图、实时翻译）：对每个段记住已经处理过的 `stable_text`；新事件里多出来的那部分，就是可以先处理的新文字。收到 `supersede` 时，丢掉为 `old_ids` 做的工作（示例见 §7.2）。这条规则对每个引擎都成立，不需要先查能力：不提供 partial 稳定性的引擎在 `final` 时一次给出整段，提供的引擎提前给出。新增的文字可能以半个字符开头或结尾，哪些语言会遇到、怎么处理，见上文「边界规则」。
+- **做不可撤销动作的应用**（把文字打进另一个程序、写库、发消息、触发工具）：协议规定的是引擎之后还能改变什么（见上文「各阶段还允许什么变化」），不统一规定应用什么时候做这些动作；唯一的例外是 §7.2 的 speaker 路由警告，它禁止语音助手根据还没有稳定文本的段上 `partial` 的 speaker 采取不可逆行动。需要某段文字此后完全不变时，等这个段的 `closed`；需要整个会话的最终结果时，等 `done` 之后使用归约结果。`streaming.finality_level` 为 `mode="final"` 时不保证每段都有 `closed`，所以等它可能要一直等到会话结束。
+
+  引擎声明 `streaming.re_segments` 不支持时，能接受一次可能发生的 `closed` 重述（改变呈现形式，也可能修正 `speaker`）的应用，可以在普通 `final` 时行动。需要准确保留最终拼写、标点或数字格式的应用，不应把普通 `final` 当作已经 `closed`。应用如果更早行动，或者在可能发 `supersede` 的引擎上按 `final` 行动，就要准备处理已经做了的动作和后来的结果不一致的情况。
+
+  提前处理稳定文本，适合可以取消或重做的工作：收到 `supersede` 时，撤销为旧段做的工作，从新段重新开始。稳定文本也不表示一个词或一句话已经完整：文字不再改写，不等于说话人的完整意图已经确定。
+- **稳定文本按段计，不是一条可以直接追加的全文**：不同的段可以同时进行（例如两位说话人的话重叠），后面一个段的文字可能先稳定。按阅读顺序呈现全文的应用 MUST 保留 §5.2 定义的段顺序（§5.2 的核心 reduce），并在收到 `supersede` 时原位替换旧段。对于只能追加、不能撤回或替换的输出，应用还要等前面的段达到这种输出需要的确定程度；普通 `final` 仍可能被撤回或重述，具体保证见上文「各阶段还允许什么变化」。
+
+**有稳定文本的段的 speaker 保护（normative）**：稳定承诺延伸到**段级** `event.speaker`（词级 speaker 的追踪当前明确不做，留作适配器义务）。规则：
+
+- 一旦某段在**先前事件**中已有稳定文本（`stable_text` 非空）**且**该段已被接受过非 `None` 的 speaker，其**最后被接受的**非 `None` speaker 即被锁定：后续 `partial` / `final` MUST NOT 改变它（X→Y）也 MUST NOT 撤回它（X→None——撤回即改写：应用已依稳定文本行动）。
+- **`None→X` 合法**（有稳定文本之后首次赋 speaker）——这正是推荐的适配器策略「**延迟 speaker 到 final**」：引擎聚类未稳定时 partial 报 `speaker=None`，稳定后（通常 `final`）再给。聚类会漂移的引擎（流式重分配 speaker 的云引擎）SHOULD 采用此策略而非盲转发。
 - **`closed` 终态豁免**（与文字的 `closed` 后处理豁免对称——终态定稿不是识别回退）。
-- 违规时标准层 MUST **抑制整个事件**并发 `frozen_speaker_rewritten` diagnostic（`frozen_prefix_rewritten` 的镜像）——**绝不钳制**：钳制（保留事件、还原旧 speaker）会把过时的归属继续呈现给应用，正是另一个方向的静默错误结果。抑制的代价按事件类型分两档：抑制进行中的 `partial` 只是 ephemeral 损失（下一个 partial 会重新呈现该段）；但抑制违规的普通 `final` **不是**——标准归约器只提交 final（§TR.2：`session.result()` 反映 `final`），被抑制的 final 使该段**永远不提交**，其文本从 `session.result()` 中永久缺失（只留下 `frozen_speaker_rewritten` warning diagnostic）。要让 final 落地，适配器 MUST 走以下任一合规路径：(1) 在 final 上**复述已锁定的 speaker**；(2) 采用「延迟 speaker 到 final」策略（partial 报 `speaker=None`，final 上一次性给出——经 `None→X` 合法）；(3) 把修正后的 speaker 放到豁免的 `closed` 终态事件上定稿（`open→closed` 是 §5.1 合法的一步终态化，`closed` 不受本守卫约束，照常提交）。抑制只伤害不合规适配器：盲转发原生 partial speaker 重分配的适配器会连续掉 partial；若其 final 也携带改写后的 speaker，该段文本将整段丢失。
-- 未冻结区域（以及尚无冻结前缀的段）上，partial 的 speaker 保持**临时性**、可自由变化（§7.2 的路由警告）。
+- 违规时标准层 MUST **抑制整个事件**并发 `locked_speaker_rewritten` diagnostic（`stable_text_rewritten` 的镜像）——**绝不钳制**：钳制（保留事件、还原旧 speaker）会把过时的归属继续呈现给应用，正是另一个方向的静默错误结果。抑制的代价按事件类型分两档：抑制进行中的 `partial` 只是 ephemeral 损失（下一个 partial 会重新呈现该段）；但抑制违规的普通 `final` **不是**——标准归约器只提交 final（§TR.2：`session.result()` 反映 `final`），被抑制的 final **不提交**该段（留下 `locked_speaker_rewritten` warning diagnostic）。除非之后同一段有一个被接受的 `final` 或 `closed` 提交它，这个段的文字就不在 `session.result()` 里；会话以 `done` 结束时如果这个段仍在进行中，还会有 `stable_text_abandoned`。要让 final 落地，适配器 MUST 走以下任一合规路径：(1) 在 final 上**复述已锁定的 speaker**；(2) 采用「延迟 speaker 到 final」策略（partial 报 `speaker=None`，final 上一次性给出——经 `None→X` 合法）；(3) 把修正后的 speaker 放到豁免的 `closed` 终态事件上定稿（`open→closed` 是 §5.1 合法的一步终态化，`closed` 不受本守卫约束，照常提交）。抑制只伤害不合规适配器：盲转发原生 partial speaker 重分配的适配器会连续掉 partial；若其 final 也携带改写后的 speaker，该段文本会整段缺失，除非之后有一个被接受的 `final` 或 `closed` 提交它。
+- 还没有稳定文本的段上，partial 的 speaker 保持**临时性**、可自由变化（§7.2 的路由警告）。
 
 ### 4.3 累积/replace 归一化
 
@@ -1109,7 +1192,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 每个事件可以携带 `audio_processed_until`（浮点秒数），表示引擎**已经处理到**的音频时间点。
 
 - 原点 = 本次会话的**第一个音频采样**的时刻（音频时间 t=0），与 [§结果模型](#transcription-result) 中 `Segment.start/end` 的原点相同。
-- MUST **单调递增**（不回退）；跨重连窗口期保持旧值（见 §7.3）。
+- MUST **单调递增**（不回退）；跨重连窗口期保持旧值（见 §6.3）。
 - **`progress` 事件**可以只携带 `audio_processed_until` 而不改变任何段的文本——用于心跳、表示"引擎在等更多证据"（DSM 架构的 padding token 场景）、或通知重连。
 - **心跳是 MAY，不是义务**。标准层的活性兜底不依赖心跳——`done_timeout` 由「事件**或**音频消费」共同重置（§6.1），纯静音期的会话存活不需要适配器做任何事。业界（Deepgram / AWS / Google 等）一致将流活性锚定在**音频流**而非转写事件流上，没有任何原生协议或官方 SDK 要求接收侧心跳节拍（docs/internal/research/5）。
 - 在两种情形下适配器 **SHOULD** 发 `progress`：
@@ -1143,7 +1226,7 @@ async with engine.start_transcription(audio_format=mic_format) as session:
 
 ### 5.2 `supersede`（段替换）
 
-两遍重打分引擎（如 WeNet U2++）的第二遍可能改变段的文本甚至段的边界（合并两段、拆分一段）。`supersede` 就是为此设计的：
+有的引擎会在事后调整已经送出的段：把两段合并、把一段拆开、重新识别一段还没有定的文字，或者把一段改派给另一位说话人（说话人分离的结果常常晚于文字）。`supersede` 就是为此设计的：
 
 ```
 supersede(old_ids=["seg-3","seg-4"], new_ids=["seg-5"])
@@ -1175,30 +1258,33 @@ elif event.type == "supersede":
 **`supersede` 是核心事件（非可选）**——即使 `re_segments` capability 为 `false`（引擎承诺不发 supersede），应用代码也 MUST 包含上面的 reduce 逻辑。这样无论切换到任何引擎都安全。
 
 **规则与不变量**：
-- `old_ids` 与 `new_ids` **MUST 无交集**——一个被替换的 id 不会被复用；id 一旦出现在 `old_ids` 中即退休。两个列表各自内部也 **MUST NOT 重复** id——lineage 是 set-to-set（见下），`old_ids`/`new_ids` 本质是集合：`old_ids` 重复 = 同一段退休两次；`new_ids` 重复会使守卫的跨说话人鸽笼计数与冻结前缀拼接（F_new）把同一段计两次。三条皆**构造期拒绝**。
-- **顺序语义**：`old_ids` 与 `new_ids` 都 MUST 按**阅读（时间）顺序**排列——这是下面"冻结前缀保留"规则做拼接（concatenation）的前提。
-- **连续区间与原位替换（placement，normative）**：`old_ids` MUST 构成**当前存活阅读顺序**中的一个**连续区间**，且事件内顺序与存活顺序一致；`new_ids` MUST **原位**接管该区间的阅读位置（区间内按 `new_ids` 顺序）。每个段 id 在**首次宣告**时（收到首个 `partial`/`final`，或作为 `supersede` 的 `new_ids` 被引入）认领当前阅读顺序的下一个位置。这是无时间戳流（`start=null`，列表顺序即阅读顺序，见 §TR）在 supersede 后仍有确定阅读顺序的**唯一**依据——把替换段当作新段追加到末尾会静默改变最终词序（cardinal sin：`final(a,"hi") final(b,"world") supersede([a],[a2]) final(a2,"HI")` 的正确归约是 `HI world`，追加式归约给出 `world HI`）。语义根据：supersede 表达对一段**连续语音区间**的重转写（合并/拆分**相邻**段）——冻结前缀保留规则的 F_old 拼接本就预设旧段文本相邻，跨越无关存活段的"替换"没有连贯语义。非连续或乱序的 `old_ids` 使整个 supersede 事件被**抑制**并发 **`supersede_noncontiguous_old_ids`** diagnostic（strict 模式 raise；抑制语义与跨说话人合并禁令一致：旧段继续存活、新段以全新段到达、归约可能出现重复文本——只伤害不合规适配器）。
+- `old_ids` 与 `new_ids` **MUST 无交集**——一个被替换的 id 不会被复用；id 一旦出现在 `old_ids` 中即退休。两个列表各自内部也 **MUST NOT 重复** id——lineage 是 set-to-set（见下），`old_ids`/`new_ids` 本质是集合：`old_ids` 重复 = 同一段退休两次；`new_ids` 重复会使守卫的跨说话人鸽笼计数把同一段计两次。三条皆**构造期拒绝**。
+- **顺序语义**：`old_ids` 与 `new_ids` 都 MUST 按**阅读（时间）顺序**排列——这是下面「原位替换」规则的前提。
+- **连续区间与原位替换（placement，normative）**：`old_ids` MUST 构成**当前存活阅读顺序**中的一个**连续区间**，且事件内顺序与存活顺序一致；`new_ids` MUST **原位**接管该区间的阅读位置（区间内按 `new_ids` 顺序）。每个段 id 在**首次宣告**时（收到首个 `partial`/`final`，或作为 `supersede` 的 `new_ids` 被引入）认领当前阅读顺序的下一个位置。这是无时间戳流（`start=null`，列表顺序即阅读顺序，见 §TR）在 supersede 后仍有确定阅读顺序的**唯一**依据——把替换段当作新段追加到末尾会静默改变最终词序（cardinal sin：`final(a,"hi") final(b,"world") supersede([a],[a2]) final(a2,"HI")` 的正确归约是 `HI world`，追加式归约给出 `world HI`）。语义根据：supersede 表达对一段**连续语音区间**的重转写（合并/拆分**相邻**段）——跨越无关存活段的"替换"没有连贯语义。非连续或乱序的 `old_ids` 使整个 supersede 事件被**抑制**并发 **`supersede_noncontiguous_old_ids`** diagnostic（strict 模式下会话以 code 为 `engine_error` 的终态 `error` 事件结束；抑制语义与跨说话人合并禁令一致：旧段继续存活、新段以全新段到达、归约可能出现重复文本——只伤害不合规适配器）。
 - `new_ids` 中的段可能先以 `partial` 到达（不一定立刻是 `final`）——应用的 reduce 应在 `new_ids` 的第一个事件到达时就开始渲染新段文本。
 - **排序**：`supersede` 事件 MUST 在其 `new_ids` 的任何 `partial`/`final` 之前投递；`old_ids` 中的 id 必须在之前已被**宣告**过——「宣告」= 收到过至少一个 `partial` / `final`，**或**作为更早一次 `supersede` 的 `new_ids` 被引入（链式 supersede `A→B`、`B→C` 中，`B` 即使从未收到 partial/final 也算已宣告）。
-- **冻结前缀保留（拼接覆盖规则）**：`supersede` 操作 MUST 保留已冻结的文本。设 **F_old** = 被替换的旧段（按 `old_ids` 顺序）各自冻结前缀 `text[:stable_until]` 的拼接；**F_new** = 新段（按 `new_ids` 顺序）各自当前冻结前缀的拼接（随新段后续 `partial`/`final` 不断冻结更多文本而增长）。**不变量**：F_old 与 F_new MUST 在其公共前缀上一致——任何一方都 MUST NOT 改写另一方。换言之，**用户已经看到并"确信不变"的文字，在段被替换后仍然不变**。
-  - 这条规则**统一覆盖** 1→1、多→1（合并）、1→多（拆分）、多→多 各种基数；1→1 只是 n=m=1 的退化情形，无需特殊处理。（例：旧段冻结前缀是"你好世界"，无论新分段是单个 seg("你好世界", `stable_until`≥4) 还是拆成 seg("你好", su≥2)+seg("世界…", su≥2)，拼接后都必须以"你好世界"开头。）
-  - **方向不对称**：**改写/分歧方向** MUST **及早（eagerly）**检查——一旦某个新段冻结了文本，就把当前的 F_new 与 F_old 在公共前缀上比较，分歧即拒绝（这是"用户看到的字被改写"的根本性错误方向）。「拒绝」作用于**整个触发事件**（含其未冻结尾部）而非仅冻结部分——只伤害不合规适配器，且保证被拒事件不会以半改写状态泄出。而"新分段冻结的文本严格少于 F_old"是**保守安全方向**（新分段只是还没把全部文本重新冻结回来），允许暂时留待后续事件补齐，至多记一条软诊断、不强制拒绝。这样实现复杂度有界（无需判定"何时所有重叠新段都已关闭"）。该"至多一条软诊断"在实现中是：会话到达终态（或合规重放结束）时，若某个 supersede 的 F_new 仍严格短于 F_old，标准层发一条 **`info` 级 `supersede_obligation_unfulfilled`** diagnostic（点名受影响的 `new_ids`），表示未重新冻结的尾巴被从 lineage 中丢弃——它**不是 error、不拒绝**任何事件，supersede 依旧成立（实现：`_LifecycleGuard.finalize`，由 `TranscriptionSession._terminate` 调用）。
-- **跨说话人合并禁令（normative）**：引擎 MUST NOT 把携带**不同** speaker 的段 supersede 进单一新段——合并后的段只有一个 `speaker` 字段，无论选谁，另一人说的文字都被静默错误归属；set-to-set lineage（见下）原理上无法保留 per-speaker 归属。标准层的运行时守卫做**鸽笼式**最佳努力执行：当退休旧段（`old_ids`）各自**最后已知**的非 `None` speaker 互不相同（≥2 个不同标签），且 `new_ids` 非空而数量**少于**这些不同标签的数量（跨 speaker 合并不可避免；典型即多→1）时，MUST 抑制整个 `supersede` 事件并发 `supersede_cross_speaker_merge` diagnostic。set-to-set lineage 证明不了更细的映射，其余形态（如等基数换牌）仅由本条 MUST NOT 约束——守卫检不出（合规重放共用同一鸽笼守卫，同样检不出），是防线不是完备判定。**被抑制 supersede 的副作用（与上文「拒绝作用于整个触发事件」同一抑制语义，明示）**：旧段在应用/归约器中继续存活，而 `new_ids` 的段随后以全新段到达——归约结果出现**重复文本**。这是既有「只伤害不合规适配器」立场的延续；合法引擎（同 speaker 合并、保 speaker 拆分）不受影响。
-- `re_segments` capability：`false` 表示引擎承诺不发 `supersede`（finals 只增不改）；`true` 表示可能发。
-- **lineage 是 set-to-set（当前已知限制）**：`old_ids`/`new_ids` 表达 re-segmentation 的**基数**（哪些退休、哪些出现），但**不**承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；冻结前缀保留（上）按**拼接**的 F_old/F_new 校验而非逐对。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。
+- **`supersede` 是整段撤回（normative）**：`supersede` 撤回 `old_ids` 中的每个段，连同它们的稳定文本（§4.2）。标准层在 `supersede` 上**不比较任何文字**。新段（`new_ids`）是全新的段：每个新段的稳定文本都从空开始，按 §4.2 的规则各自增长。新段的文字与被撤回的文字相同、部分相同或完全不同，都合法。
+  - **为什么不跨 `supersede` 保护稳定文字**：协议不携带「旧段的哪些字对应新段的哪些字」（见下方 lineage 条）。没有这个对应关系，任何「旧的稳定文字必须留在新段里」的规则都只能靠字符串比较去近似。这种近似会拒绝正确的替换（旧段之间隔着还不稳定的文字时），也会放行错误的替换（有重复的词时）。业界调查也没有显示需要它：调查中没有发现哪个引擎有文档说明，它会在把文字标为稳定之后，再靠重新切段改写其中的**用词**（火山引擎 `fixed_prefix_result` 的行为未能确认）。事后会变的是分段、说话人归属，以及由 `closed` 承载的格式化重述。
+  - **应用怎么处理**：把 `supersede` 当作明确的撤回通知：丢掉从 `old_ids` 得到的显示和已经做的工作，从 `new_ids` 重新开始。这正是上面的核心 reduce 做的事，每个应用本来就必须实现它。
+  - **引擎的义务**：`supersede` 不必对应上游引擎的某个撤回事件：适配器自己累积文字、切段，或把晚到的说话人结果对应到段上时，也可能需要撤回或重新切分已经送出的段。但把自己还会改写的文字标成稳定、再靠 `supersede` 改掉，是不诚实的适配。标准层查不出这种做法，责任在适配器。
+- **跨说话人合并禁令（normative）**：引擎 MUST NOT 把携带**不同** speaker 的段 supersede 进单一新段——合并后的段只有一个 `speaker` 字段，无论选谁，另一人说的文字都被静默错误归属；set-to-set lineage（见下）原理上无法保留 per-speaker 归属。标准层的运行时守卫做**鸽笼式**最佳努力执行：当退休旧段（`old_ids`）各自**最后已知**的非 `None` speaker 互不相同（≥2 个不同标签），且 `new_ids` 非空而数量**少于**这些不同标签的数量（跨 speaker 合并不可避免；典型即多→1）时，MUST 抑制整个 `supersede` 事件并发 `supersede_cross_speaker_merge` diagnostic。set-to-set lineage 证明不了更细的映射，其余形态（如等基数换牌）仅由本条 MUST NOT 约束——守卫检不出（合规重放共用同一鸽笼守卫，同样检不出），是防线不是完备判定。**被抑制 supersede 的副作用（明示）**：旧段在应用/归约器中继续存活，而 `new_ids` 的段随后以全新段到达——归约结果出现**重复文本**。这是既有「只伤害不合规适配器」立场的延续；合法引擎（同 speaker 合并、保 speaker 拆分）不受影响。
+- `re_segments` capability：`false` 表示引擎承诺不发 `supersede`，所以普通 `final` 之后，文字唯一还可能有的变化是一次 `closed` 重述（§4.2「各阶段还允许什么变化」）；`true` 表示可能发。
+- **lineage 是 set-to-set（当前已知限制）**：`old_ids`/`new_ids` 表达 re-segmentation 的**基数**（哪些退休、哪些出现），但**不**承载 per-old→per-new 的逐对映射——merge+split（多→多）时无法判定某个新段具体源自哪个旧段。规范不要求逐对映射；正因为没有映射，标准层不跨 `supersede` 比较文字，被撤回的段连同稳定文本一起撤回（上）。逐对 edit-ops/diff 是 §10 deferred 方向（additive-later）。
 
 ### 5.3 两级终态
 
-- **`final`**：该段的文本**不再因新音频而改变**——但仍可能被 `supersede`（两遍重打分）或被 `closed` 事件原位修正（后处理标点/ITN/大小写修正）。
+- **`final`**：该段的文本**不再因新音频而改变**（整段稳定）——但仍可能被 `supersede` 整段撤回，或被 `closed` 事件原位修正一次（后处理标点/ITN/大小写修正）。
 - **`closed`**：该段**彻底不可变**——连后处理修正都不会再有。`closed` 段 MUST NOT 出现在任何后续 `supersede` 的 `old_ids` 中。
 
-引擎通过 `finality_level` capability 声明它能保证到哪一级。**默认保守**：若引擎无法确认 `final` 后是否还会有后处理修正（如 ElevenLabs 的 committed 段是否会被重格式化目前未明确），MUST 声明 `final`、MUST NOT 声明 `closed`。
+引擎通过 `finality_level` capability 声明它能保证到哪一级。**默认保守**：若引擎无法确认 `final` 后是否还会有后处理修正，MUST 声明 `final`、MUST NOT 声明 `closed`。声明 `mode="closed"` 给引擎带来什么义务，见 §4.2「各阶段还允许什么变化」。
 
 `closed` 事件的格式：对同一 `segment_id` 再发一次 `final`，携带 `finality="closed"` 标记（文本可能因后处理而有变化——例如补了标点）。此后该 id 进入终态。
 
+**已知限制**：一个段在 `final` 之后只能被原位修正一次，就是 `closed`（它也可以同时修正 speaker）；`closed` 之后，这个段不能再被 `supersede`。如果引擎会对同一段多次修订说话人，它每修订一次就发一个 `supersede`，用文字不变的新段替换旧段（1→1 或 1→多）。最后一次修订之后才发 `closed`。引擎声明 `streaming.finality_level` 为 `mode="final"` 时，也可以不发；声明 `mode="closed"` 时，到达 `final` 又没有被撤回的段要在会话以 `done` 结束之前到达 `closed`（§4.2「各阶段还允许什么变化」）。
+
 ### 5.4 `closed` 与 `re_segments=false` 的交互
 
-当引擎声明 `re_segments=false`（不发 `supersede`，finals 只增不改）时，`closed` 事件仍然可能**原位修改文本**（例如加标点），这不算"重分段"——段的 id 和边界不变，只是内容被后处理修正。应用在收到 `closed` 事件时应当用新文本**替换**（非追加）已显示的内容。
+当引擎声明 `re_segments=false`（不发 `supersede`；普通 `final` 之后，文字唯一还可能有的变化是一次 `closed` 重述）时，`closed` 事件仍然可能**原位修改文本**（例如加标点），这不算"重分段"——段的 id 和边界不变，只是内容被后处理修正。应用在收到 `closed` 事件时应当用新文本**替换**（非追加）已显示的内容。
 
 ---
 
@@ -1288,12 +1374,12 @@ elif event.type == "supersede":
 
 当事件消费方处理速度慢于产生速度时：
 
-- **`partial` 事件**：按 `segment_id` 合并——只保留该段最新的 partial（保留最大 `audio_processed_until`）。**合并 MUST 被同 segment 的 `final`/`closed`/`supersede` 作废**——若该段已有任一内容事件投递给消费方（该段的阅读顺序宣告已抵达），被作废的 pending partial MUST 丢弃（投递在段终态事件之后会复活已替换的段）。**唯一提及例外（normative）**：若该 pending partial 是消费方对该段的**唯一**提及——该段从未有任何内容事件投递——它就是该段在 delivered 流中的**阅读顺序宣告**，标准层 MUST 保留它并在作废事件**之前**投递（它在队列中本就先于作废事件，不构成复活——no-revival 约束的是顺序，不是存在）。丢弃宣告曾产生两种静默漂移：无时间戳流（§5：列表顺序即阅读顺序）中该段的首次提及被移到作废事件的队尾位置，delivered 流的归约与 `session.result()` **词序不同**（cardinal sin）；以及退休从未投递段的 `supersede` 以 never-declared `old_ids` 抵达消费方归约——那里被抑制、会话内却已 splice，两侧文本直接分叉。保留的 stale partial 只占用它已占用的缓冲槽位，不引入新的增长向量。**语义字段 carry-forward（normative）**：合并替换时，若存活的较新 partial 的 `speaker` 或 `detected_language` 为 `None` 而被替换的 pending partial 携带非 `None` 值，标准层 MUST 把该值 carry-forward 进存活事件——盲整体替换会静默丢弃已交付的语义（引擎未在每个 partial 重申 speaker/语言时，被合并掉的那次赋值就消失了）。较新的**非 `None`** 值总是胜出（不复活旧值）；carry-forward 天然限于同一 `segment_id`（合并本就按段）。其安全性分两区域诚实论证：**冻结区域**——§4.2 禁止 X→None 撤回，且标准层 `_LifecycleGuard` 会在该转移到达合并缓冲之前就**抑制**它（发 `frozen_speaker_rewritten` diagnostic），故此处存活方的 `None` 只可能是「未重申」，不可能是「刻意撤回」；**未冻结区域**——§4.2 明确**允许** X→None（刻意撤回），故 carry-forward **可能**把一个已过时的临时 speaker 重新呈现出来。这仍然安全，不是因为撤回不可能，而是因为未冻结 partial 的 speaker 本就**不可据以行动**（§7.2：应用 MUST NOT 对无冻结保护的 partial speaker 采取行动）；且它自洽——若该段随后冻结，守卫会锁定其**最后被接受的**非 `None` speaker（§4.2），恰是被 carry-forward 的那个值。适配器最佳实践仍 SHOULD 在每个 partial 重复 speaker；carry-forward 是标准层兜底。
+- **`partial` 事件**：按 `segment_id` 合并——只保留该段最新的 partial（保留最大 `audio_processed_until`）。**合并 MUST 被同 segment 的 `final`/`closed`/`supersede` 作废**——若该段已有任一内容事件投递给消费方（该段的阅读顺序宣告已抵达），被作废的 pending partial MUST 丢弃（投递在段终态事件之后会复活已替换的段）。**唯一提及例外（normative）**：若该 pending partial 是消费方对该段的**唯一**提及——该段从未有任何内容事件投递——它就是该段在 delivered 流中的**阅读顺序宣告**，标准层 MUST 保留它并在作废事件**之前**投递（它在队列中本就先于作废事件，不构成复活——no-revival 约束的是顺序，不是存在）。丢弃宣告曾产生两种静默漂移：无时间戳流（§5：列表顺序即阅读顺序）中该段的首次提及被移到作废事件的队尾位置，delivered 流的归约与 `session.result()` **词序不同**（cardinal sin）；以及退休从未投递段的 `supersede` 以 never-declared `old_ids` 抵达消费方归约——那里被抑制、会话内却已 splice，两侧文本直接分叉。保留的 stale partial 只占用它已占用的缓冲槽位，不引入新的增长向量。**语义字段 carry-forward（normative）**：合并替换时，若存活的较新 partial 的 `speaker` 或 `detected_language` 为 `None` 而被替换的 pending partial 携带非 `None` 值，标准层 MUST 把该值 carry-forward 进存活事件——盲整体替换会静默丢弃已交付的语义（引擎未在每个 partial 重申 speaker/语言时，被合并掉的那次赋值就消失了）。较新的**非 `None`** 值总是胜出（不复活旧值）；carry-forward 天然限于同一 `segment_id`（合并本就按段）。其安全性分两种情况诚实论证：**已有稳定文本的段**——§4.2 禁止 X→None 撤回，且标准层 `_LifecycleGuard` 会在该转移到达合并缓冲之前就**抑制**它（发 `locked_speaker_rewritten` diagnostic），故此处存活方的 `None` 只可能是「未重申」，不可能是「刻意撤回」；**没有稳定文本的段**——§4.2 明确**允许** X→None（刻意撤回），故 carry-forward **可能**把一个已过时的临时 speaker 重新呈现出来。这仍然安全，不是因为撤回不可能，而是因为没有稳定文本的段上 partial 的 speaker 本就**不可据以行动**（§7.2：应用 MUST NOT 对这样的 partial speaker 采取不可逆行动）；且它自洽——若该段随后有了稳定文本，守卫会锁定其**最后被接受的**非 `None` speaker（§4.2），恰是被 carry-forward 的那个值。适配器最佳实践仍 SHOULD 在每个 partial 重复 speaker；carry-forward 是标准层兜底。
 - **`final`、`supersede`、`done`、`error` 事件**：**永不丢弃、永不重排**。
 - **终态语言盖章（normative）**：sticky 语言语义（最后一个非 `None` 胜出）是**顺序敏感**的，而合并不是——原位合并可把较新的语言赋值移到较早的投递槽位、作废可淘汰唯一携带语言的 partial，故任何逐事件 carry-forward 都无法在所有交错下让 delivered 流的 running language 收敛到会话值（被 carry 的旧值甚至可能落在更新的已投递值之后并把它回退）。终态事件是唯一**必然投递、必然最后、永不丢弃**的事件，故标准层 MUST 在终态事件（`done` 或终态 `error`，含标准层合成的 backpressure/deadline 终态）缺失 `detected_language` 时盖上会话已归约的 sticky 语言；引擎自带的终态语言从不被覆写（它本身就是最新赋值，归约两侧同样收敛于它）。由此 `reduce(delivered events).detected_language == session.result().detected_language` 按构造成立。
 - 发送侧有界缓冲区，溢出发 `error`。
 - sync 桥的事件队列（§6.5）也遵守同样的背压规则。
-- **诊断通道同样有界。** 标准层 `_LifecycleGuard` 的 lifecycle-suppression 诊断（抑制的非法转移、钳制的 `stable_until` / 音频游标）经 `session.diagnostics()` 暴露——一个每事件都触发钳制的轻微越界引擎（如游标持续抖动）在数小时直播会话中会无界累积诊断，这与会话其余资源（事件缓冲、音频队列、滚动音频缓冲区均有界）的哲学相悖。故诊断列表 MUST 有上限：达到上限后，标准层 MUST NOT 再保留逐条诊断，而是聚合为单条尾部 `diagnostics_truncated` 汇总（按 code 计数）——上限被命中这一事实 MUST 被诚实上报，绝不静默丢弃（实现：`_LifecycleGuard`，默认上限 `DEFAULT_MAX_GUARD_DIAGNOSTICS`）。
+- **诊断通道同样有界。** 标准层 `_LifecycleGuard` 的 lifecycle-suppression 诊断（抑制的非法转移、钳制的 `stable_text` / 音频游标）经 `session.diagnostics()` 暴露——一个每事件都触发钳制的轻微越界引擎（如游标持续抖动）在数小时直播会话中会无界累积诊断，这与会话其余资源（事件缓冲、音频队列、滚动音频缓冲区均有界）的哲学相悖。故诊断列表 MUST 有上限：达到上限后，标准层 MUST NOT 再保留逐条诊断，而是聚合为单条尾部 `diagnostics_truncated` 汇总（按 code 计数）——上限被命中这一事实 MUST 被诚实上报，绝不静默丢弃（实现：`_LifecycleGuard`，默认上限 `DEFAULT_MAX_GUARD_DIAGNOSTICS`）。
 
 ### 6.5 sync 桥
 
@@ -1326,16 +1412,31 @@ async with engine.start_transcription(audio_format=mic_format) as session:
                 remove_caption(old_id)
 ```
 
-### 7.2 语音助手：利用稳定前缀
+### 7.2 语音助手：利用稳定文本
 
 ```python
+acted: dict[str, str] = {}  # segment_id -> 已经处理过的稳定文本
+
 async for event in session:
-    if event.type == "partial" and event.stable_until and event.stable_until > 0:
-        frozen_prefix = event.text[: event.stable_until]
-        maybe_start_responding_to(frozen_prefix)
+    if event.type in ("partial", "final"):
+        done = acted.get(event.segment_id, "")
+        if not event.stable_text.startswith(done):
+            # 只有 closed 重述会改写已经稳定的文字：之前为这段做的工作作废，重来
+            cancel_processing(event.segment_id)
+            done = ""
+        new_text = event.stable_text[len(done) :]  # 只增不减，所以多出来的就是新文字
+        if new_text:
+            start_processing(event.segment_id, new_text)
+            acted[event.segment_id] = event.stable_text
+    elif event.type == "supersede":
+        for old_id in event.old_ids:  # 这些段被撤回，为它们做的工作作废
+            cancel_processing(old_id)
+            acted.pop(old_id, None)
 ```
 
-> **speaker 路由警告（normative）**：partial 事件的 `speaker` 在段获得冻结保护之前是**临时的**（引擎聚类可能重排）。语音助手 MUST NOT 对无冻结保护的 partial speaker 采取不可逆行动（路由、鉴权决策）；可以安全作为路由键的是：受 §4.2 冻结区域 speaker 保护的段级 speaker（该段已有冻结前缀且已接受非 `None` speaker——此后除 `closed` 终态定稿外不可再变），以及 `final` / `closed` 事件的 speaker。
+`supersede` 撤回的段，连同为它们做的工作一起丢掉；替换它们的新段从头开始计。`closed` 重述如果只是重复同样的文字，这里什么都不做。如果它改写了已经处理过的文字（补标点、改数字写法），这里把这一段的工作作废，再按新文字重做。这段处理适合可以取消或重做的工作；不可撤销的动作见 §4.2「应用怎么用」。`start_processing` 每次拿到的新文字可能以半个字符开头或结尾；如果它把这段文字当作完整文本（例如交给翻译或语音合成），见 §4.2「边界规则」里标准层查不出的切法和应用能做什么。
+
+> **speaker 路由警告（normative）**：partial 事件的 `speaker` 在该段有稳定文本之前是**临时的**（引擎聚类可能重排）。语音助手 MUST NOT 对这样的 partial speaker 采取不可逆行动（路由、鉴权决策）；可以作为路由键的是：受 §4.2 speaker 保护的段级 speaker（该段已有稳定文本且已接受非 `None` speaker——此后除 `closed` 终态定稿外不可再变），以及 `final` / `closed` 事件的 speaker。这里的 speaker 保护只在该段存续期间有效，并保留 `closed` 的终态修正豁免。`supersede` 会撤回整个段及其 speaker；稳定文本或普通 `final` 不足以保证这个 speaker 此后不会被修正或撤回。
 
 ### 7.3 OpenAI Audio SSE（整段输入 + 流式输出）
 
@@ -1354,7 +1455,9 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 
 - **为什么 `supersede` 是核心事件而非可选？** 如果 `supersede` 只是可选的高级功能、简单应用可以忽略它，那么当简单应用切换到一个会发 `supersede` 的引擎时，它的 reduce 就是错的（旧段没被删、新段凭空出现 → 文本重复/矛盾）。把 `supersede` 设为核心意味着每个应用的 reduce 都天然能处理段替换，无论引擎是否实际使用。代价 = 应用代码约 10 行（阅读顺序列表 + 文本映射的原位 splice，见 §5.2 核心 reduce——曾经的 3 行 dict 版本在无时间戳流上会静默改变词序，是被撤回的错误设计）；收益 = 切引擎永远安全。
 - **为什么要用累积/replace 而不是 delta？** delta 更小，但只有在引擎永不修改已发文本时才有效。很多引擎（Google/AWS/ElevenLabs/Qwen3/WeNet）会修改已发文本。选累积 = 适用于所有引擎；delta 的应用可以用两次累积文本做差得到。
-- **为什么 `stable_until` 用 codepoint 而非字素簇？** codepoint 是 Python 字符串的原生索引单位——`text[:stable_until]` 直接可用、零依赖。实际上适配器从引擎拿到的稳定边界是 word/token 级的,映射到 `text` 中的位置天然就是字素簇边界,不存在"切到组合字符中间"的现实场景。标准用 SHOULD 建议适配器落在字素簇边界,而非用 MUST 强制标准层维护 UAX#29 状态机——这与标准不做音频解码(交给 `[audio]`)、不做 URL fetch(交给引擎)是同一哲学:标准定义语义,不承担不必要的实现。
+- **为什么 `stable_text` 是字符串，而不是一个长度？** 长度需要单位，而各语言的字符串单位不同：Python 按 Unicode 码位计，JavaScript、Java、C# 按 UTF-16 码元计，Rust 和 Go 按字节计，Swift 按字素簇计。如果跨语言传一个数字，JavaScript、Java、C# 客户端会在 U+FFFF 以上的字符（多数 emoji、「𠮷」这样的汉字）之后切错位置，而且没有任何报错；Go 客户端会在任何非 ASCII 字符之后切错；Rust 切到字符中间时会直接 panic。前两种都是悄无声息的错误结果，也就是本项目最不能接受的那类错误（cardinal sin）。字符串没有单位：前缀比较在每种语言里都有定义。业界调查覆盖了 60 余个流式 ASR 接口，其中没有一个用字符偏移量标记稳定范围。用字符串而不是位置来区分两部分的有 Alibaba Qwen-ASR-Realtime（同一条消息里的 `text` 和 `stash`）、Azure MAI-Transcribe-2-Streaming（已经确定的 `delta` 增量，加上整段替换的 `intermediate`）等。代价是 `stable_text` 重复了 `text` 的开头，需要一条构造期不变量（`text` 以它开头）来保证两者一致。
+- **为什么标准层只检查组合字符序列和零宽连接符，而字素簇边界留给适配器？** 完整的字素簇切分（UAX #29）需要一张随 Unicode 版本更新的数据表，Python 标准库不提供；核心只依赖 pydantic 与 numpy（[§依赖与兼容 DEP.1](#dependencies)）。组合字符序列和紧接在零宽连接符之后的切点用标准库就能判定，能查出重音符号和多数元音符号被切开的情况。它查不出泰文、老挝文的 AM、印度系文字的合体辅音、国旗和带肤色的 emoji 等切法；完整清单、对应用的影响和各方的对策见 §4.2「边界规则」。边界落在哪里只有适配器知道（它来自引擎的词或 token），所以完整的义务在适配器，标准层的检查只是必要条件。以后加上完整的检查，只会查出更多违反同一条规则的情况，不会给引擎增加义务。这与标准不做音频解码（交给 `[audio]`）、不做 URL fetch（交给引擎）是同一个思路：标准定义语义，不承担不必要的实现。
+- **为什么 `supersede` 可以撤回稳定文本，而不是保护它？** 见 §5.2「`supersede` 是整段撤回」：协议没有旧文字到新文字的映射，跨段保护只能靠字符串比较去近似，会拒绝正确的替换，也会放行错误的替换。把 `supersede` 定为明确的撤回，稳定文本的规则就只在一个段之内，可以准确检查。会事后重新切段或改派说话人的引擎（做说话人分离的引擎常常如此）也能同时提供稳定文本。代价是：稳定文本的承诺以段的存续为界，做不可撤销动作的应用要多等一步（§4.2）。
 - **整段输入为何需要 `start_transcription` 的 `audio` 参数（验证 C-1）？** OpenAI Audio SSE 需要一次上传完整文件然后流式收结果。如果只有 `audio_format` + `send_audio(chunk)`，应用就得把 mp3 文件假装成 PCM 帧来喂——但 mp3 不是 PCM（§AI.1 明确禁止混淆编码容器与裸 PCM 帧）。增加 `audio` 参数让整段输入走正确的 `AudioInput` 路径。
 
 ---
@@ -1369,20 +1472,34 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 | `streaming_output` | flag `{supported}` | 引擎全局；能否增量返回结果 |
 | `streaming.emits_partials` | flag `{supported}` | 是否发 partial 事件（false = 只发段末 final） |
 | `streaming.re_segments` | flag `{supported}` | 是否可能发 supersede |
-| `streaming.word_stability` | flag `{supported}` | 是否提供有意义的 `stable_until` |
+| `streaming.partial_stability` | flag `{supported}` | `partial` 事件是否可能携带非空 `stable_text`（`final` 不受此能力约束：它在每个引擎上都是整段稳定） |
 | `streaming.diarization` | bounded `{supported, always_on: {supported}, constraints: {max_speakers?}}` | 流式说话人分离（与 batch 分别声明；`always_on` 语义见 [§能力系统 3.2](#capabilities)，结果/事件语义见 [§结果模型 TR.5](#transcription-result) 与 §4.1/§4.2） |
 | `streaming.reconnect` | enum `{mode: seamless\|lossy\|unsupported}` | 重连能力 |
-| `streaming.finality_level` | enum `{mode: final\|closed}` | 能保证到哪级终态 |
+| `streaming.finality_level` | enum `{mode: final\|closed}` | 能保证到哪级终态。`final`：不保证每个段都会收到 `closed`，也不禁止 `closed`；`closed`：每个到达 `final` 且没有被 `supersede` 撤回的段，都在会话以 `done` 结束之前到达 `closed`（§4.2「各阶段还允许什么变化」） |
 | `streaming.timestamps` | enum `{mode: native_frame_aligned\|post_align\|none}` | 流式时间戳来源 |
 | `streaming.guidance.*` | 同 §R.4 | 流式引导（可与 batch 限额不同） |
 | `streaming.language.*` | 同 §LANG.3 | 流式语言能力（可与 batch 不同） |
+
+**事件流超出能力声明时（normative）**：下面七种情况，表示事件流用到了引擎不支持的能力，或者没有做到引擎声明的终态级别。会话按引擎的生效能力判断，合规套件按传给它的能力声明判断。括号里是对应的 code：
+
+- 引擎发了 `partial`，而 `streaming.emits_partials` 不支持（`stream_exceeds_emits_partials`）；
+- `partial` 带着非空 `stable_text`，而 `streaming.partial_stability` 不支持（`stream_exceeds_partial_stability`）；
+- 引擎发了 `supersede`，而 `streaming.re_segments` 不支持（`stream_exceeds_re_segments`）；
+- 事件带着 `audio_processed_until`，而 `streaming.timestamps` 的 `mode` 是 `none`（`stream_exceeds_timestamps`）；
+- 事件带着非空的 `words` 列表，而 `streaming.word_timestamps` 不支持（`stream_exceeds_word_timestamps`）；
+- 事件本身或其中某个词带着 speaker，而 `streaming.diarization` 不支持（`stream_exceeds_diarization`）；
+- `streaming.finality_level` 的 `mode` 是 `closed`，会话以 `done` 结束时，却还有段停在 `final`：它既没有到达 `closed`，也没有被 `supersede` 撤回（`finality_level_not_reached`，见 §4.2「各阶段还允许什么变化」）。
+
+标准层在会话里拿引擎的生效能力（`effective_capabilities`；引擎没有这个属性时用 `declared_capabilities`）检查它转发的每个事件。它按引擎发来的样子判断事件，不按修补以后的样子：边界修补把一个 `partial` 的稳定文本清空了，这个 `partial` 仍然算带着非空 `stable_text`。标准层因为别的原因抑制的事件，不做这项检查。遇到上面的情况，标准层 MUST 照常投递这个事件（第七种情况投递的是 `done`），并记一条 warning 级 diagnostic。标准层 MUST NOT 因为这项检查删掉事件里的字段，也 MUST NOT 因为这项检查丢掉事件。原因是：丢掉 `supersede` 会让被撤回的段留在结果里，替换它们的新段又带来一遍文字，造成重复；删掉字段则会把引擎的错误藏起来。同一种情况在一个会话里只记一条 diagnostic。strict 模式（`strict_lifecycle=True`）例外：第一次出现这种情况时，会话不投递这个事件，而是以 code 为 `engine_error` 的终态 `error` 事件结束。
+
+经 `EngineBase.start_transcription` 打开的会话总会拿到引擎的生效能力。引擎实现了协议、却不是从 `EngineBase` 派生的，就不会把能力交给会话。参考服务器对它打开的每个会话调用 `bind_session_capabilities(session, engine)`，把能力交给会话；其他调用方也可以这样做。经这样的引擎打开、又没有拿到能力的会话不做这项检查；直接构造的会话（例如测试里的会话）也一样。合规套件的 `check_event_sequence` 在拿到能力声明时用同一段代码检查，把每种情况报告为一个 error，code 与上面相同，每种只报告一次。传给合规套件的能力树没有 `streaming` 域时，它按默认的域检查：在默认的域里，`emits_partials`、`partial_stability`、`re_segments`、`timestamps`、`word_timestamps`、`diarization` 这六项都不支持，`finality_level` 的 `mode` 是 `final`。
 
 ---
 
 ## 10. 当前世代 ship vs defer
 
-**当前世代包含**：`partial`/`final`/`supersede`/`progress`/`done`/`error` + 稳定 `segment_id` + 保守 `stable_until`(codepoints, SHOULD 字素簇边界) + `end_audio` + 两级终态标志 + 正交 input/output 能力 + `reconnect(lossy,gap)` + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。
+**当前世代包含**：`partial`/`final`/`supersede`/`progress`/`done`/`error` + 稳定 `segment_id` + 保守 `stable_text`（字符串；MUST 结束在字素簇边界；标准层只检查其中组合字符序列和零宽连接符这一部分，查不出的切法见 §4.2） + `end_audio` + 两级终态标志 + 正交 input/output 能力 + `reconnect(lossy,gap)` + session 拥有 pump + 标准 sync 桥 + 音频时间游标。验证可驱动三个基准（OpenAI SSE / ElevenLabs realtime / Qwen3 vLLM）。
 
-**defer（additive-later）**：运行时 `target_latency` 调整（当前仅构造期固定；流式节奏与延迟调优已有已定案设计——见 `docs/internal/feat_plan/streaming-cadence-and-tuning.md` D1–D7，实现落地时将其规范文本与 rationale 并入本 spec）；`update_guidance()` 中途改引导（当前保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；无缝 DSM 重连（当前声明 lossy）；多通道流式展开。
+**defer（additive-later）**：运行时 `target_latency` 调整（当前仅构造期固定；流式节奏与延迟调优已有已定案设计——见 `docs/internal/feat_plan/streaming-cadence-and-tuning.md` D1–D7，实现落地时将其规范文本与 rationale 并入本 spec）；`update_guidance()` 中途改引导（当前保留 `mutable_mid_stream` 能力标志但不承诺方法）；revision 的 edit-ops/diff；标准层对 `stable_text` 的完整字素簇边界检查（UAX #29，§4.2）；无缝 DSM 重连（当前声明 lossy）；多通道流式展开。
 
 

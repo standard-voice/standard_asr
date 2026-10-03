@@ -22,7 +22,7 @@ Standard ASR defines a vendor-neutral protocol for the application-to-engine bou
 
 ### Streaming semantics are the core value proposition
 
-Real-time ASR is the most fragmented part of the ecosystem: some engines rewrite interim results, some never revise a token, some merge segments after a second decoding pass. Standard ASR unifies all of this under one event protocol with explicit stability guarantees -- designed against an in-repo survey of 30+ real engine APIs.
+Real-time ASR is the most fragmented part of the ecosystem: some engines rewrite interim results, some never revise a token, some re-cut segments they already sent when speaker labels arrive late. Standard ASR unifies all of this under one event protocol with explicit stability guarantees -- designed against an in-repo survey of 30+ real engine APIs.
 
 ### Two layers, kept in sync
 

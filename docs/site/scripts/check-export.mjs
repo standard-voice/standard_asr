@@ -31,9 +31,12 @@ await expect('llms-full.txt', [`#### ${FIELD}`, MODULE_DOC]);
 // A legacy fragment translates end to end: the old spec URL's stub maps
 // the old mkdocs heading id to an id the new page actually renders.
 const OLD_ID = '42-stable_until';
-const NEW_ID = '42-稳定前缀stable_until';
+const NEW_ID = '42-稳定文本stable_text';
 await expect('spec/specification.html', [`"${OLD_ID}":"${NEW_ID}"`]);
 await expect('docs/specification/protocol/index.html', [`id="${NEW_ID}"`]);
+// The same holds for a guide heading that was renamed after the move.
+await expect('for_app_dev/streaming.html', ['"stability-guarantees":"stable-text"']);
+await expect('docs/app-developers/streaming/index.html', ['id="stable-text"']);
 
 // Every machine-readable page URL is canonical: the export serves
 // trailing-slash URLs, so a slashless page link costs a 301 on Pages
