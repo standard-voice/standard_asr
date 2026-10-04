@@ -374,7 +374,7 @@ class DiarizationCap(_FlagLikeNode):
 
     ``always_on`` is a **behavioral fact**, in the same family as
     ``self_resamples`` (and the streaming behavior flags ``emits_partials`` /
-    ``re_segments`` / ``word_stability``): it describes what the engine *does*
+    ``re_segments`` / ``partial_stability``): it describes what the engine *does*
     -- its architecture cannot DISABLE diarization, so speaker labels may appear
     even when diarization is not requested -- and grants nothing an application
     could request.
@@ -466,10 +466,22 @@ class ReconnectCap(_CapNode):
 
 
 class FinalityCap(_CapNode):
-    """Streaming finality level the engine can guarantee.
+    """Streaming finality level the engine promises.
+
+    The rule lives in the streaming section of the protocol specification,
+    section 4.2, under the list of what may still change at each stage.
 
     Attributes:
-        mode: ``final`` (may still be revised by post-processing) or ``closed``.
+        mode: ``final`` or ``closed``. With ``final``, the engine does not
+            promise a ``closed`` final for each segment, and it may still
+            send one: a post-processing restatement that changes how the
+            text is written. With ``closed``, the engine MUST bring every
+            segment that reached ``final``, and that no ``supersede``
+            retired, to ``closed`` before the session ends with ``done``. A
+            session that has the engine's capabilities checks this at
+            ``done``, and so does ``check_event_sequence`` when it is given
+            them; both report a segment left ``final`` as
+            ``finality_level_not_reached``.
     """
 
     mode: Literal["final", "closed"] = "final"
@@ -589,9 +601,12 @@ class StreamingCapabilities(_Container):
             streaming variant additionally exposes ``mutable_mid_stream``.
         emits_partials: Whether partial events are emitted.
         re_segments: Whether supersede events may occur.
-        word_stability: Whether a meaningful ``stable_until`` is provided.
+        partial_stability: Whether a ``partial`` event may carry non-empty
+            ``stable_text``. A ``final`` is outside this capability: it marks
+            its whole text stable on every engine.
         reconnect: Reconnect capability mode.
-        finality_level: Finality level guaranteed.
+        finality_level: Whether the engine promises a ``closed`` final for
+            each finalized segment (see :class:`FinalityCap`).
         timestamps: Source of streaming timestamps.
     """
 
@@ -611,7 +626,7 @@ class StreamingCapabilities(_Container):
     guidance: GuidanceCaps = Field(default_factory=StreamingGuidanceCaps)
     emits_partials: FlagCap = Field(default_factory=FlagCap)
     re_segments: FlagCap = Field(default_factory=FlagCap)
-    word_stability: FlagCap = Field(default_factory=FlagCap)
+    partial_stability: FlagCap = Field(default_factory=FlagCap)
     reconnect: ReconnectCap = Field(default_factory=ReconnectCap)
     finality_level: FinalityCap = Field(default_factory=FinalityCap)
     timestamps: StreamTimestampsCap = Field(default_factory=StreamTimestampsCap)

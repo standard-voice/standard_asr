@@ -8,6 +8,7 @@ from __future__ import annotations
 import inspect
 import math
 import re
+import sys
 import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -73,6 +74,10 @@ from standard_asr.runtime.protocol_boundary import (
 )
 from standard_asr.runtime.redaction import safe_exception_summary, sanitized_validation_message
 from standard_asr.runtime.streaming import (
+    CAPABILITY_DIAGNOSTIC_CODES,
+    DIAG_STABLE_TEXT_ABANDONED,
+    DIAG_STABLE_TEXT_CLAMPED,
+    DIAG_STABLE_TEXT_REWRITTEN,
     SyncSession,
     TranscriptionEvent,
     TranscriptionSession,
@@ -85,7 +90,7 @@ __all__ = [
     "DEFAULT_SYNC_BRIDGE_TIMEOUT",
     "SupportsCapabilities",
     "SupportsWireRecommendation",
-    "assert_prefix_invariant",
+    "assert_stable_text_invariant",
     "check_entrypoints",
     "check_event_sequence",
     "check_provider_params_swap_safety",
@@ -2420,108 +2425,6 @@ def _check_class_level_metadata(
     return "compatible"
 
 
-def _cross_check_event_capabilities(
-    event: TranscriptionEvent,
-    streaming: StreamingCapabilities,
-    issues: list[ComplianceIssue],
-) -> None:
-    """Cross-check one event's fields against the declared streaming capabilities.
-
-    The "no-timestamp streaming" profile couples a declared streaming capability
-    with the event field it gates; an engine that declares the capability
-    unsupported yet emits the field anyway is a capability⇄stream desync the
-    structural invariants cannot see. The stream MUST NOT *exceed* what the
-    capabilities promise:
-
-    * ``word_stability`` unsupported ⇒ no event may carry a meaningful
-      ``stable_until`` (> 0): the field asserts a frozen prefix the engine declared
-      it does not provide.
-    * streaming ``timestamps`` mode ``none`` ⇒ no event may carry
-      ``audio_processed_until``: that cursor is a streaming timestamp the engine
-      declared it does not emit.
-    * ``word_timestamps`` unsupported ⇒ no event may carry ``words``: per-word
-      timings are word timestamps the engine declared it does not produce.
-    * ``diarization`` unsupported ⇒ no event may carry a speaker label (its own
-      ``speaker`` or any ``words[i].speaker``): attribution is diarization
-      output the engine declared it does not produce. This negative check is
-      the only diarization coverage the suite can offer -- *positive*
-      diarization behavior (correct labels) is unverifiable without
-      multi-speaker fixtures, and the standard probes feed silence.
-
-    The reverse -- declaring a capability a given recorded stream simply never
-    exercises -- is not a violation, so each check is one-directional.
-
-    Args:
-        event: The event to check.
-        streaming: The engine's declared streaming capabilities.
-        issues: The mutable list of issues to append to.
-    """
-    if (
-        event.stable_until is not None
-        and event.stable_until > 0
-        and not streaming.word_stability.is_supported
-    ):
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="stream_exceeds_word_stability",
-                message=(
-                    f"event emits stable_until={event.stable_until} (a frozen prefix) but "
-                    "the engine declares streaming.word_stability unsupported -- the "
-                    "declared capabilities and the emitted stream disagree. Declare "
-                    "word_stability supported, or do not emit a non-zero stable_until."
-                ),
-                model=None,
-            )
-        )
-    if event.audio_processed_until is not None and not streaming.timestamps.is_supported:
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="stream_exceeds_timestamps",
-                message=(
-                    f"event emits audio_processed_until={event.audio_processed_until} but the "
-                    "engine declares streaming.timestamps mode 'none' (no streaming "
-                    "timestamps) -- the declared capabilities and the emitted stream "
-                    "disagree. Declare a timestamps mode, or do not emit "
-                    "audio_processed_until."
-                ),
-                model=None,
-            )
-        )
-    if event.words and not streaming.word_timestamps.is_supported:
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="stream_exceeds_word_timestamps",
-                message=(
-                    "event emits per-word timings (words) but the engine declares "
-                    "streaming.word_timestamps unsupported -- the declared capabilities "
-                    "and the emitted stream disagree. Declare word_timestamps supported, "
-                    "or do not emit words."
-                ),
-                model=None,
-            )
-        )
-    if (
-        event.speaker is not None or any(word.speaker is not None for word in event.words or [])
-    ) and not streaming.diarization.is_supported:
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="stream_exceeds_diarization",
-                message=(
-                    "event emits a speaker label but the engine declares "
-                    "streaming.diarization unsupported -- the declared capabilities and "
-                    "the emitted stream disagree. Declare diarization supported "
-                    "(always_on if architecturally non-disableable), or do not emit "
-                    "speaker labels."
-                ),
-                model=None,
-            )
-        )
-
-
 def check_event_sequence(
     events: Iterable[TranscriptionEvent],
     *,
@@ -2531,8 +2434,8 @@ def check_event_sequence(
     """Validate a *recorded* streaming event sequence against the invariants.
 
     Behavioral check for streaming engines that is **pure**: it replays an
-    already-captured event stream through the standard lifecycle/frontier guard
-    and reports every invariant it violates, without ever instantiating or
+    already-captured event stream through the standard lifecycle guard
+    and reports every violation its checks find, without ever instantiating or
     calling an engine. (Behavioral checks that would require *running* a model --
     strict sample-rate, the input-conversion matrix, language membership -- are
     deliberately left to unit tests, because invoking a cloud engine from a
@@ -2541,23 +2444,49 @@ def check_event_sequence(
 
     Detected violations (each an error): an illegal lifecycle transition
     (``partial``/``final`` after a segment is finalized/superseded; a non-closed
-    ``final`` after ``final``; superseding a ``closed`` segment), a non-monotonic
-    ``stable_until`` or ``audio_processed_until``, a rewritten frozen prefix, the
-    full ``supersede`` invariants -- frozen-prefix preservation
-    across a replacement (the concatenated frozen text of ``old_ids`` MUST be
-    preserved by ``new_ids``), ``old_ids`` that were never announced, a
-    ``new_id`` that reintroduces an already-known segment, and an empty
-    ``new_ids`` (pure deletion) that would destroy frozen text -- an event stream
-    that never reaches a terminal (``done`` / non-recoverable ``error``) event,
-    **an empty sequence** (unless ``allow_empty=True``), and **any event emitted
-    after the session-terminal** event (a terminal MUST be the last event).
+    ``final`` after ``final``; superseding a ``closed`` segment), stable text
+    that is rewritten, shrinks, or ends inside a combining character
+    sequence or right after a zero width joiner, a segment that has stable
+    text and is still open at ``done``,
+    a decreasing ``audio_processed_until``, a locked speaker that changes or
+    is retracted, the ``supersede`` invariants -- ``old_ids`` that were never
+    announced or do not form one contiguous block of the reading order, a
+    ``new_id`` that reintroduces an already-known segment, a ``supersede``
+    that retires segments carrying two or more different speakers into at
+    least one but fewer replacement segments than there are speakers -- an
+    event stream that never reaches a terminal (``done`` / non-recoverable
+    ``error``) event, **an empty sequence** (unless ``allow_empty=True``), and
+    **any event emitted after the session-terminal** event (a terminal MUST be
+    the last event).
 
-    The per-segment lifecycle / frozen-prefix / supersede checks are obtained by
+    The per-segment lifecycle / stable-text / supersede checks, and the
+    capability check described under ``capabilities``, are obtained by
     replaying the events through the same
     :class:`~standard_asr.runtime.streaming._LifecycleGuard` the runtime uses, so the
     compliance verdict cannot drift from the runtime's enforcement. Events after
     the session-terminal are flagged and **not** replayed (they do not exist in a
     well-formed stream, so they MUST NOT mutate segment state).
+
+    The checks have limits. The stable-text checks compare a ``partial`` or
+    plain ``final`` with the segment's earlier stable text: a ``closed``
+    final is exempt from that comparison, and an event the guard rejects for
+    another reason first, such as a lifecycle violation, is reported for
+    that reason only. The cross-speaker check is the limited check the
+    specification describes: it catches a merge only when fewer replacement
+    segments arrive than there are different speakers, so another merge of
+    different speakers, such as an equal-count reshuffle, passes. Some
+    obligations are the engine's and no replay can prove them: that a
+    ``closed`` final changes how the text is written and not what was said,
+    and that stable text is conservative, marking only text the engine knows
+    does not change.
+
+    A passing report does not prove that every stable text ends between two
+    user-perceived characters, as the protocol requires. The boundary check
+    catches only stable text that ends inside a combining character sequence
+    or right after a zero width joiner, and
+    :func:`~standard_asr.runtime.streaming.validate_stable_text` lists the
+    cuts it misses. Placing the boundary correctly stays the engine's
+    obligation.
 
     Args:
         events: The recorded events to validate, in emission order.
@@ -2565,27 +2494,45 @@ def check_event_sequence(
             intentional case). Default ``False`` -- an empty sequence is a
             violation, because a real session always emits at least a terminal
             event.
-        capabilities: When provided, additionally cross-check each event against
-            the engine's declared streaming capabilities: a stream MUST NOT
-            *exceed* what it declares -- for example, emit a non-zero ``stable_until`` while
-            ``word_stability`` is unsupported, an ``audio_processed_until`` cursor
-            while ``timestamps`` mode is ``none``, ``words`` while
-            ``word_timestamps`` is unsupported, or a speaker label (event- or
-            word-level) while ``diarization`` is unsupported. Pass
-            ``engine.declared_capabilities`` to catch a declaration that disagrees
-            with the engine's actual output. ``None`` skips the cross-check.
+        capabilities: When provided, also check the events against the
+            engine's declared streaming capabilities. A stream MUST NOT
+            *exceed* what the engine declares. This is the check a session
+            runs while it is open, and
+            :func:`~standard_asr.bind_session_capabilities` states its rules
+            and the seven codes it reports: the six ``stream_exceeds_*``
+            codes and ``finality_level_not_reached``. Here each of these
+            codes is reported once, as an error under its own name (not
+            under ``streaming_invariant:``), however many events break the
+            declaration. A tree that declares no streaming domain is
+            checked against the all-default domain, in which
+            ``emits_partials``, ``partial_stability``, ``re_segments``,
+            ``timestamps``, ``word_timestamps``, and ``diarization`` are
+            unsupported and ``finality_level`` mode is ``final``. Pass
+            ``engine.declared_capabilities`` to catch a declaration that
+            disagrees with the engine's actual output. ``None`` skips this
+            check.
 
     Returns:
-        A :class:`ComplianceReport`; ``passed`` is ``True`` when the sequence
-        honors every streaming invariant.
+        A :class:`ComplianceReport`; ``passed`` is ``True`` when no check
+        described above finds a violation.
     """
-    guard = _LifecycleGuard(strict=False)
+    # No diagnostic cap: once the guard's list is full, later violations exist
+    # only as counts inside its overflow summary, and a caller that matches
+    # ``streaming_invariant:<code>`` would not see them.
     issues: list[ComplianceIssue] = []
     saw_any = False
     saw_terminal = False
-    # The streaming sub-domain to cross-check events against; ``None`` when
-    # no capabilities were supplied or the tree declares no streaming domain.
-    streaming_caps = capabilities.streaming if capabilities is not None else None
+    # The streaming capabilities to check events against; ``None`` when no
+    # capabilities were supplied. A tree that declares no streaming domain is
+    # checked against the all-default domain, in which none of the six gated
+    # capabilities is supported and finality_level mode is final: an absent
+    # declaration must not pass more than an explicit "unsupported" does.
+    streaming_caps: StreamingCapabilities | None = None
+    if capabilities is not None:
+        streaming_caps = capabilities.streaming or StreamingCapabilities()
+    # The guard runs the capability check here as it does in a session, so the
+    # report and the session cannot disagree about what a declaration covers.
+    guard = _LifecycleGuard(strict=False, max_diagnostics=sys.maxsize, capabilities=streaming_caps)
     for event in events:
         saw_any = True
         if saw_terminal:
@@ -2606,8 +2553,6 @@ def check_event_sequence(
             )
             continue
         guard.admit(event)
-        if streaming_caps is not None:
-            _cross_check_event_capabilities(event, streaming_caps, issues)
         if event.is_terminal:
             saw_terminal = True
     for diagnostic in guard.diagnostics:
@@ -2616,25 +2561,20 @@ def check_event_sequence(
         # interpolating it into the message: a CI pipeline can match
         # ``streaming_invariant:<guard_code>`` without parsing free text. The
         # message keeps the human-readable form (and the code, for terminals).
+        if diagnostic.code in CAPABILITY_DIAGNOSTIC_CODES:
+            # A broken capability declaration keeps the code the session
+            # records for it, with no ``streaming_invariant:`` prefix.
+            issues.append(
+                ComplianceIssue(
+                    level="error", code=diagnostic.code, message=diagnostic.message, model=None
+                )
+            )
+            continue
         issues.append(
             ComplianceIssue(
                 level="error",
                 code=f"streaming_invariant:{diagnostic.code}",
                 message=(f"streaming invariant violated ({diagnostic.code}): {diagnostic.message}"),
-                model=None,
-            )
-        )
-    # Sweep for supersede frozen-prefix obligations the replacement never fully
-    # re-froze before the sequence ended. This is the permitted (conservative)
-    # direction of the supersede rule, so it is a soft WARNING -- it does NOT fail the
-    # report -- consistent with how the runtime surfaces it via diagnostics().
-    # Harvested AFTER the error loop above so it is not mis-promoted to error.
-    for obligation in guard.finalize():
-        issues.append(
-            ComplianceIssue(
-                level="warning",
-                code=f"streaming_soft:{obligation.code}",
-                message=(f"streaming soft diagnostic ({obligation.code}): {obligation.message}"),
                 model=None,
             )
         )
@@ -2667,46 +2607,87 @@ def check_event_sequence(
     return ComplianceReport(registry=None, issues=issues)
 
 
-#: Guard diagnostic codes that signal a violated frozen-prefix / stability
-#: invariant (as opposed to a lifecycle or audio-cursor one), scoping
-#: :func:`assert_prefix_invariant` to exactly the prefix invariant.
-_PREFIX_INVARIANT_CODES: frozenset[str] = frozenset(
-    {"frozen_prefix_rewritten", "frozen_prefix_rewritten_supersede", "stable_until_clamped"}
+#: Guard diagnostic codes that signal a violated stable-text invariant (as
+#: opposed to a lifecycle or audio-cursor one), scoping
+#: :func:`assert_stable_text_invariant` to exactly that invariant.
+_STABLE_TEXT_INVARIANT_CODES: frozenset[str] = frozenset(
+    {DIAG_STABLE_TEXT_REWRITTEN, DIAG_STABLE_TEXT_CLAMPED, DIAG_STABLE_TEXT_ABANDONED}
 )
 
 
-def assert_prefix_invariant(events: Iterable[TranscriptionEvent]) -> None:
-    """Assert a recorded stream's partials honor the frozen-prefix invariant.
+def assert_stable_text_invariant(events: Iterable[TranscriptionEvent]) -> None:
+    """Assert that a recorded stream keeps the stable-text rules.
 
     Test helper for engine authors. Partials are **lossy under backpressure**: the
     base coalesces pending partials when the consumer is slow, so the
     partial *count* is non-deterministic -- the same engine may surface five
     partials or none purely by consumer timing. Asserting a count is therefore
-    flaky; assert the **invariant** instead. This checks only the prefix invariant
-    -- a segment's frozen prefix (``text[:stable_until]``) is never rewritten and
-    ``stable_until`` never regresses -- across however many partials survived
-    coalescing, and (unlike :func:`check_event_sequence`) does NOT require a
-    terminal event, so it also applies to a mid-stream slice. It replays events
-    through the same runtime :class:`~standard_asr.runtime.streaming._LifecycleGuard` the
-    runtime uses, so the assertion cannot drift from enforcement.
+    flaky; assert the **invariant** instead.
+
+    The helper replays the events through the same
+    :class:`~standard_asr.runtime.streaming._LifecycleGuard` the runtime
+    uses, so the assertion cannot drift from enforcement, and raises for the
+    stable-text diagnostics that replay produces. They cover a ``partial``
+    or plain ``final`` whose text drops or changes the segment's earlier
+    stable text, or adds a combining mark, a zero width joiner, or a zero
+    width non-joiner right after it; a
+    ``partial`` whose stable text shrinks, or ends inside a combining
+    character sequence or right after a zero width joiner; and a segment
+    that still has stable text and is
+    open when ``done`` arrives. The check works across however many partials
+    survived coalescing.
+
+    The helper does not report:
+
+    * a ``closed`` final that changes how the stable text is written, which
+      the protocol allows once;
+    * the boundary of a ``final``'s own stable text, which is its whole text;
+    * an event the guard rejects for another reason first, such as a
+      lifecycle or speaker violation: the stable-text rules never judge it.
+
+    The helper checks one session or a slice of one. Unlike
+    :func:`check_event_sequence`, it does NOT require a terminal event, so
+    it also applies to a mid-stream slice. It stops at the first ``done`` or
+    non-recoverable ``error`` and ignores the events after it. For a full
+    check of the sequence, including an event the guard rejects for another
+    reason and the events after the terminal, use
+    :func:`check_event_sequence`.
+
+    Passing does not prove that every stable text ends between two
+    user-perceived characters, as the protocol requires. The boundary check
+    catches only stable text that ends inside a combining character sequence
+    or right after a zero width joiner, and
+    :func:`~standard_asr.runtime.streaming.validate_stable_text` lists the
+    cuts it misses, such as a cut before Thai SARA AM or inside a Devanagari
+    conjunct consonant. Placing the boundary correctly is the engine's
+    obligation. For example, end stable text at a word boundary, or move it
+    back to a grapheme cluster boundary with a grapheme segmentation library
+    before emitting it.
 
     Args:
         events: The recorded events, in emission order.
 
     Raises:
-        AssertionError: If any segment's frozen prefix was rewritten or its
-            ``stable_until`` regressed.
+        AssertionError: If replaying the events through the lifecycle guard
+            records a stable-text diagnostic: ``stable_text_rewritten``,
+            ``stable_text_clamped``, or ``stable_text_abandoned``.
     """
-    guard = _LifecycleGuard(strict=False)
+    # No diagnostic cap: once the guard's list is full, later violations exist
+    # only as counts in its overflow summary, and a filter by code would miss
+    # them and report success.
+    guard = _LifecycleGuard(strict=False, max_diagnostics=sys.maxsize)
     for event in events:
         guard.admit(event)
-    violations = [d for d in guard.diagnostics if d.code in _PREFIX_INVARIANT_CODES]
+        if event.is_terminal:
+            # Nothing after the terminal belongs to the session; replaying it
+            # would report segments that exist only in malformed input.
+            break
+    violations = [d for d in guard.diagnostics if d.code in _STABLE_TEXT_INVARIANT_CODES]
     if violations:
         detail = "; ".join(f"{d.code}: {d.message}" for d in violations)
         raise AssertionError(
-            "stream violates the frozen-prefix invariant (partials must form "
-            "monotonic, never-rewritten prefixes; assert this, not partial counts): "
-            f"{detail}"
+            "stream violates the stable-text invariant: replaying it through the "
+            f"lifecycle guard recorded these stable-text diagnostics: {detail}"
         )
 
 
@@ -2744,8 +2725,9 @@ def _cross_check_result_capabilities(
 ) -> None:
     """Cross-check a batch result's speaker labels against the declared capabilities.
 
-    The batch twin of the streaming ``stream_exceeds_diarization`` check in
-    :func:`_cross_check_event_capabilities`: a result MUST NOT carry speaker
+    The batch twin of the streaming ``stream_exceeds_diarization`` check that
+    the lifecycle guard runs (``_capability_violations`` in
+    ``runtime/streaming.py``): a result MUST NOT carry speaker
     labels (anywhere -- top-level ``segments[]`` / ``words[]`` or any
     ``channels[i]`` view) when ``batch.diarization`` is declared unsupported. A
     missing ``batch`` domain is the same verdict (fail-closed: no declaration

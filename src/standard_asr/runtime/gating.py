@@ -20,7 +20,6 @@ rules:
 
 from __future__ import annotations
 
-import unicodedata
 from typing import cast
 
 from standard_asr.contract.capabilities import (
@@ -33,6 +32,7 @@ from standard_asr.contract.capabilities import (
 from standard_asr.contract.exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from standard_asr.contract.params import DiarizationRequest, ProviderParams, RuntimeParams
 from standard_asr.contract.results import Diagnostic, to_json_value
+from standard_asr.runtime._text import is_combining_mark
 
 #: Alias of the contract-layer :data:`~standard_asr.contract.capabilities.ModeName`
 #: (kept under the runtime layer's established name; one Literal, one home).
@@ -447,26 +447,6 @@ def _count_tokens(text: str) -> int:
     return len(text.split()) + sum(1 for ch in text if _is_no_space_codepoint(ch))
 
 
-def _is_combining_mark(ch: str) -> bool:
-    """Return whether *ch* is a Unicode combining mark (category ``M*``).
-
-    Used to keep prompt truncation from ending in a half-formed grapheme. The
-    Unicode **general category** (``Mn`` / ``Mc`` / ``Me``) is the right test
-    here, NOT ``unicodedata.combining`` (the canonical *combining class*): the
-    latter is about normalization ordering and is ``0`` for many real combining
-    marks -- for example, the Thai vowel sign U+0E31 (category ``Mn``) has combining
-    class ``0`` -- so a combining-class test would miss exactly the marks this
-    guard exists to protect.
-
-    Args:
-        ch: A single character.
-
-    Returns:
-        ``True`` when ``ch`` is a nonspacing / spacing / enclosing combining mark.
-    """
-    return unicodedata.category(ch) in ("Mn", "Mc", "Me")
-
-
 def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
     r"""Truncate *text* to a PREFIX whose :func:`_count_tokens` is ``<= max_tokens``.
 
@@ -509,8 +489,8 @@ def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
     # the cut back past the entire partial cluster (its trailing marks already in
     # the prefix, then the base itself) so the result never ends in a half-formed
     # grapheme. Purely shortens, so the budget still holds.
-    if lo < len(text) and _is_combining_mark(text[lo]):
-        while lo > 0 and _is_combining_mark(text[lo - 1]):
+    if lo < len(text) and is_combining_mark(text[lo]):
+        while lo > 0 and is_combining_mark(text[lo - 1]):
             lo -= 1
         if lo > 0:
             lo -= 1

@@ -179,9 +179,9 @@ export default function HomePage() {
           </h2>
           <p className="mt-3 max-w-2xl text-fd-muted-foreground">
             Real-time ASR is the most fragmented part of the ecosystem: some engines rewrite interim
-            results, some never revise a token, some merge segments after a second pass. Standard
-            ASR unifies all of it under six event types with explicit stability guarantees —
-            designed against a survey of 30+ real engine APIs.
+            results, some never revise a token, some re-cut segments they already sent. Standard ASR
+            unifies all of it under six event types with explicit stability guarantees — designed
+            against a survey of 30+ real engine APIs.
           </p>
           <div className="mt-8">
             <StreamingTimeline />
