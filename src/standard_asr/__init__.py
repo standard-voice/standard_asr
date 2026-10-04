@@ -123,7 +123,11 @@ from standard_asr.contract.results import (
 )
 from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
 from standard_asr.renderers import UnrenderablePolicy, to_srt, to_vtt
-from standard_asr.runtime.interface import StandardASR, require_engine_protocol
+from standard_asr.runtime.interface import (
+    StandardASR,
+    bind_session_capabilities,
+    require_engine_protocol,
+)
 from standard_asr.runtime.streaming import (
     SessionStatus,
     StreamDeadlines,
@@ -227,6 +231,7 @@ __all__ = [
     "Word",
     "WordTimestampGranularity",
     "compose_segment_text",
+    "bind_session_capabilities",
     "discover_models",
     "require_engine_protocol",
     "to_srt",

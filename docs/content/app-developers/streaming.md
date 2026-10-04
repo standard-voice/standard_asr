@@ -90,21 +90,100 @@ Display text is `texts` joined in `order`. The state is a reading-order list plu
 
 Engines that never revise or re-segment never emit `supersede`. Your code does not need to know which engine is running.
 
-## Stability guarantees
+## Stable text
 
-Some engines can tell you how much of the current text is *frozen*: recognition does not revise it as more audio arrives. This is surfaced via `event.stable_until`:
+Some engines can tell you which part of a segment's current text is settled before the segment is final. Every `partial` and `final` event carries that part as `event.stable_text`: a string that `event.text` starts with. The rest of `event.text` may still change.
 
 ```python
-if event.type == "partial" and event.stable_until is not None:
-    frozen = event.text[: event.stable_until]
-    tentative = event.text[event.stable_until :]
+if event.type == "partial":
+    stable = event.stable_text  # only a closed final may reformat it
+    tentative = event.text[len(stable) :]  # may still change
 ```
 
-Voice agents can act on `frozen` immediately (for example, start intent recognition) without waiting for a `final` -- act on its meaning, not its exact spelling (see "Finality": a terminal `closed` restatement may still reformat it).
+The field is a string, not a count, so programming languages do not have to agree on a unit for counting characters. If you split `text` into the stable text and the rest, remove exactly the code points of `stable_text` from the start of `text`. Work on Unicode code points, or on the code units of one encoding used for both strings. Do not find the split by counting user-perceived characters alone, as Swift's `String.count` does. The [streaming specification](../specification/protocol.md#streaming), section 4.2, requires this of every client that splits `text`. A tool that splits text into user-perceived characters still has a use: holding back part of the stable text, as "Where stable text ends" describes.
+
+What the engine promises:
+
+- Stable text only grows, except as the two events below allow. A later `partial` or plain `final` of the segment starts its `text` with the segment's earlier stable text.
+- A `partial` carries non-empty `stable_text` only if the engine declares the `streaming.partial_stability` capability.
+- A `final` is stable as a whole: its `stable_text` equals its `text`.
+
+Two events can end the promise, and your code sees both:
+
+- A `supersede` withdraws the segments in `old_ids`, stable text included. Drop what you derived from them and start over on `new_ids`. An engine sends one only if it declares the `streaming.re_segments` capability.
+- A `final` with `finality="closed"` may restate the segment once (see "Finality").
+
+The session checks both capability declarations while it runs. If the engine breaks one, the session does not change or drop the event because of it. It records `stream_exceeds_partial_stability` or `stream_exceeds_re_segments` in `session.diagnostics()`, once per session. A session built with `strict_lifecycle=True` ends instead, with an `error` event whose code is `engine_error`. The compliance suite runs the same check on a recorded stream.
+
+The session can check only when it has the engine's capabilities. `EngineBase.start_transcription` gives them to every session it opens. An engine that implements the protocol without deriving from `EngineBase` does not. The reference server gives them to every session it opens, and you can do the same with `bind_session_capabilities(session, engine)` from `standard_asr`. A session that never gets them is not checked.
+
+The session does enforce the stable-text rules it can check. It suppresses or repairs an event that breaks them and records `stable_text_rewritten` or `stable_text_clamped` in `session.diagnostics()`. If the session reaches `done` while a segment that has stable text is still open, it records `stable_text_abandoned` there too: text the engine marked stable is missing from `session.result()`. These diagnostics are in `session.diagnostics()`, not in `session.result().diagnostics`. A session built with `strict_lifecycle=True` instead ends at the first violation, with an `error` event whose code is `engine_error`.
+
+How to use it:
+
+- **To display text**, ignore the field and use the core reduce above.
+- **To start work early**, such as intent detection or translation, process the part of `stable_text` you have not processed yet. This suits work you can cancel or redo. Stable text does not mean that a word, a sentence, or an intent is complete. Cancel that work when a `supersede` retires the segment:
+
+  ```python
+  acted: dict[str, str] = {}  # segment_id -> stable text already processed
+
+  async for event in session:
+      if event.type in ("partial", "final"):
+          done = acted.get(event.segment_id, "")
+          if not event.stable_text.startswith(done):
+              # Only a `closed` restatement rewrites stable text: redo the segment.
+              cancel_processing(event.segment_id)
+              done = ""
+          new_text = event.stable_text[len(done) :]
+          if new_text:
+              start_processing(event.segment_id, new_text)
+              acted[event.segment_id] = event.stable_text
+      elif event.type == "supersede":
+          for old_id in event.old_ids:
+              cancel_processing(old_id)
+              acted.pop(old_id, None)
+  ```
+
+- **For an action you cannot undo**, such as typing the text into another program, writing to a database, or sending a message, choose the point to act from what can still change (see "Finality"). The protocol says what an engine may still change; it does not say when your application acts, with one exception about speakers: the speaker routing warning in section 7.2 of the [streaming specification](../specification/protocol.md#streaming) forbids a voice assistant from taking an irreversible action, such as routing, on the speaker of a `partial` in a segment that has no stable text yet.
+  - If you need a segment's text never to change again, wait for its `closed` final. An engine whose `streaming.finality_level` mode is `"final"` does not promise one, so on that engine the wait can last until the session ends.
+  - If you need the session's final result, wait for `done` and use `session.result()`. The result holds only segments that reached `final` and were not superseded; `done` does not turn an open `partial` into part of the result.
+  - On an engine that does not declare `streaming.re_segments`, the only change to the text after a `final` is one `closed` restatement of how it is written. That restatement may also correct the segment's `speaker`. If your action tolerates that, you can act on the `final`. If it needs the exact final spelling, punctuation, or number format, do not treat a plain `final` as `closed`. If such an engine sends a `supersede` anyway, the event still arrives, and `session.diagnostics()` holds `stream_exceeds_re_segments`. That diagnostic tells you that the engine withdrew text it declared it would not withdraw.
+  - If you act earlier, or act on a `final` from an engine that may send `supersede`, be ready for a later event to disagree with what you already did.
+- **For output in reading order**, remember that stable text is per segment. Two segments can be open at the same time, and the later one can become stable first. Keep the reading order with the core reduce above, which also puts replacement segments where the retired ones were. If your output can only append, and cannot take text back or replace it, also wait until the segments before it are as settled as that output needs. A plain `final` can still be superseded or restated (see "Finality").
+
+### Where stable text ends
+
+An engine must end stable text between two user-perceived characters, never inside one. A user-perceived character can be several code points: a letter with its accent, a consonant with its vowel sign, or an emoji built from several parts. Unicode calls such a unit an extended grapheme cluster.
+
+The standard layer checks only part of this rule. It catches stable text that ends before a combining mark, such as an accent or most vowel signs. It also catches stable text that ends before a zero width joiner or a zero width non-joiner, or right after a zero width joiner. It does not catch these splits inside one character:
+
+- Thai before the vowel SARA AM (`ำ`), which is in everyday words such as `ทำ`, "do", and `น้ำ`, "water". Lao has the same vowel.
+- A joined pair of consonants such as `क्ष`, which is in most sentences of Hindi, Marathi, Nepali, Bengali, Gujarati, Odia, Telugu, and Malayalam. Under the ICU library's segmentation, Khmer and Myanmar stacked consonants are the same case.
+- Korean written as separate letters (jamo) instead of whole syllables.
+- Flags, emoji with a skin tone, emoji tag sequences such as the flag of Scotland, half-width katakana with a voiced sound mark, and a CR LF line break.
+
+An engine that marks stable text a whole word at a time does not split a character. The risk comes from an engine that places the boundary inside a word, for example after each model token, and gets it wrong. The [streaming section of the specification](../specification/protocol.md#streaming) owns the rule and the exact check.
+
+Such a split never changes the transcript: `text` is always the whole segment text, and the result is built from it. Whether your application is affected depends on what it does with stable text:
+
+- **Not affected:** an application that ignores `stable_text`, or appends each newly stable piece to one place, such as a text field. The same code points arrive in the same order.
+- **Affected:** an application that draws the stable part and the rest as two separately styled runs. Text rendering usually does not join a character across two runs. The reader sees a broken character at the boundary, such as a vowel sign drawn on a dotted circle. It repairs itself once the stable text grows past that character.
+- **Affected:** an application that hands each newly stable piece to something that treats it as complete text. Examples are speech synthesis, translation, a command parser, a search query, Unicode normalization, and a length measurement. One piece ends with half a character, and the next piece starts with the other half.
+
+In both affected cases, the last stable character can also change: stable `ท` becomes `ทำ` when the next piece arrives.
+
+If your application is affected and serves one of these languages, you can check the boundary yourself. Split `text` into user-perceived characters with the tool your platform provides: `Intl.Segmenter` in JavaScript, `Character` in Swift, ICU `BreakIterator` in Java and C++, the `unicode-segmentation` crate in Rust, or `\X` in the third-party `regex` module in Python. If `stable_text` ends inside a character, treat it as ending where that character starts. This hold-back is always safe, because it only treats less text as stable.
 
 ## Finality
 
-The freeze covers **ongoing recognition**. When a segment reaches its terminal state, an engine may re-send it once as a `final` with `finality="closed"`: a post-processing restatement (punctuation, numbers, casing) that may rewrite the frozen prefix and may even shorten `stable_until`. Replace the displayed text when a `closed` final arrives -- do not append. If you take irreversible actions on frozen text (write a database row, trigger a tool), key them on the recognition meaning, and expect the `closed` restatement to change the presentation form.
+A `final` settles a segment against new audio. Two events can still follow it. A `supersede` can replace the segment. An engine may also send the segment once more as a `final` with `finality="closed"`. That is a post-processing restatement that changes how the text is written (punctuation, numbers, casing), not what was said. The restated text can be shorter: "twenty twenty" becomes "2020". It may also correct the segment's `speaker`. Replace the displayed text when a `closed` final arrives; do not append. After `closed`, the segment does not change and cannot be superseded. That holds for this segment only, not for other segments or the session.
+
+The engine's `streaming.finality_level` capability says whether every segment reaches `closed`:
+
+- With mode `"final"`, the engine does not promise a `closed` final for each segment, and it may still send one.
+- With mode `"closed"`, the engine brings every segment that reached `final`, and that no `supersede` retired, to `closed` before the session ends with `done`.
+
+The session checks this declaration when it reaches `done`, whether the engine sent `done` or the session added it after the engine's last event. Under mode `"closed"`, if a segment that no `supersede` retired is still `final` and not `closed` at that point, the session still delivers `done` and records `finality_level_not_reached` in `session.diagnostics()`. With `strict_lifecycle=True`, the session ends with a terminal `error` event whose code is `engine_error`, in place of `done`. The compliance suite runs the same check on a recorded stream.
 
 ## Collapsing a session into a result
 
@@ -162,7 +241,7 @@ When a deadline fires, the session terminates with a terminal **`error`** event 
 
 ## Diagnostics mid-stream
 
-The standard layer attaches parameter-gating and language-resolution diagnostics to the session at `start_transcription` (for example, a best-effort drop of an unsupported feature -- always disclosed, never silent). Engines add their own mid-stream notes via `session.emit_diagnostic()` (for example, a lossy fallback). Both arrive through `session.diagnostics()`, without interrupting the event flow.
+The standard layer attaches parameter-gating and language-resolution diagnostics to the session at `start_transcription` (for example, a best-effort drop of an unsupported feature -- always disclosed, never silent). Engines add their own mid-stream notes via `session.emit_diagnostic()` (for example, a lossy fallback). The session adds its own when the engine breaks a protocol rule the session checks, such as the stable-text rules above. All of them arrive through `session.diagnostics()`, without interrupting the event flow.
 
 ## Further reading
 

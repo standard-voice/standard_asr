@@ -22,6 +22,7 @@ from standard_asr import (
     StandardASR,
     TranscriptionResult,
     Word,
+    bind_session_capabilities,
 )
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import AudioArray, AudioPath, AudioUrl, InputKind
@@ -509,7 +510,8 @@ def test_batch_engine_failure_wraps_as_transcription_error() -> None:
     # execution failure inside _transcribe MUST surface as a portable
     # TranscriptionError importable from the package top level, preserving the
     # original exception as __cause__, so applications can catch one type across
-    # every engine. This mirrors the streaming engine_error event.
+    # every engine. This mirrors the streaming error event with code
+    # engine_error.
     import standard_asr
 
     assert standard_asr.TranscriptionError is TranscriptionError
@@ -1600,6 +1602,201 @@ class _AudioProgressEngine(_StreamEngine):
     ) -> TranscriptionSession:
         del gated_params, audio_format, prepared_audio
         return _CursorSession()
+
+
+class _SupersedingSession(TranscriptionSession):
+    """Sends a ``supersede``, whatever the engine declares."""
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.final("s0", "hello")
+        yield TranscriptionEvent.supersede(["s0"], ["s1"])
+        yield TranscriptionEvent.final("s1", "goodbye")
+
+
+class _UndeclaredSupersedeEngine(_StreamEngine):
+    """Declares no re-segmentation, and its session sends a ``supersede``."""
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return _SupersedingSession()
+
+
+class _DeclaredSupersedeEngine(_UndeclaredSupersedeEngine):
+    """Declares re-segmentation, so the same stream is within its declaration."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=BatchCapabilities(),
+        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+        streaming_output=FlagCap(supported=True),
+    )
+
+
+class _NarrowedSupersedeEngine(_DeclaredSupersedeEngine):
+    """Declares re-segmentation, and its configuration turns it off."""
+
+    strict: ClassVar[bool] = False
+
+    @property
+    def effective_capabilities(self) -> DeclaredCapabilities:
+        return DeclaredCapabilities(
+            batch=BatchCapabilities(),
+            streaming=StreamingCapabilities(re_segments=FlagCap(supported=False)),
+            streaming_input=FlagCap(supported=True),
+            streaming_output=FlagCap(supported=True),
+        )
+
+    def _start_transcription(
+        self,
+        *,
+        gated_params: RuntimeParams,
+        audio_format: AudioFormat | None = None,
+        prepared_audio: PreparedAudio | None = None,
+    ) -> TranscriptionSession:
+        return _SupersedingSession(strict_lifecycle=type(self).strict)
+
+
+class _StrictNarrowedSupersedeEngine(_NarrowedSupersedeEngine):
+    strict: ClassVar[bool] = True
+
+
+async def _run_engine_session(engine: EngineBase) -> tuple[list[str], str, list[str]]:
+    session = engine.start_transcription(
+        audio_format=AudioFormat(encoding="pcm_s16le", sample_rate=16000, channels=1)
+    )
+    types: list[str] = []
+    async with session:
+        await session.end_audio()
+        async for event in session:
+            types.append(event.type)
+    return types, session.partial_result().text, [d.code for d in session.diagnostics()]
+
+
+def test_start_transcription_checks_the_stream_against_the_engine_capabilities() -> None:
+    # An application may act on a final because the engine declares no
+    # re-segmentation, so the declaration is checked where the application
+    # runs. The supersede is still delivered: the result holds the
+    # replacement, and the diagnostic names the broken declaration.
+    types, text, codes = asyncio.run(_run_engine_session(_UndeclaredSupersedeEngine()))
+    assert types == ["final", "supersede", "final", "done"]
+    assert text == "goodbye"
+    assert codes == ["stream_exceeds_re_segments"]
+
+
+def test_start_transcription_accepts_a_stream_within_the_engine_capabilities() -> None:
+    types, text, codes = asyncio.run(_run_engine_session(_DeclaredSupersedeEngine()))
+    assert types == ["final", "supersede", "final", "done"]
+    assert text == "goodbye"
+    assert codes == []
+
+
+def test_start_transcription_checks_against_the_effective_capabilities() -> None:
+    # The declared tree supports re-segmentation and the effective one does
+    # not. The session is checked against the effective one.
+    types, text, codes = asyncio.run(_run_engine_session(_NarrowedSupersedeEngine()))
+    assert types == ["final", "supersede", "final", "done"]
+    assert text == "goodbye"
+    assert codes == ["stream_exceeds_re_segments"]
+    types, _text, codes = asyncio.run(_run_engine_session(_StrictNarrowedSupersedeEngine()))
+    assert types == ["final", "error"]
+    assert codes == []
+
+
+class _StructuralStreamEngine:
+    """Implements the protocol without deriving from ``EngineBase``."""
+
+    # A domain that differs from the default one, so a test can tell these
+    # declared capabilities from the default domain that binds when a tree
+    # has no streaming domain.
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(emits_partials=FlagCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+    )
+
+
+class _StructuralNarrowedEngine(_StructuralStreamEngine):
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+    )
+
+    @property
+    def effective_capabilities(self) -> DeclaredCapabilities:
+        return DeclaredCapabilities(
+            streaming=StreamingCapabilities(), streaming_input=FlagCap(supported=True)
+        )
+
+
+def _bound_capabilities(session: TranscriptionSession) -> StreamingCapabilities | None:
+    return session._guard._capabilities  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+def test_bind_session_capabilities_covers_an_engine_that_is_not_an_engine_base() -> None:
+    # EngineBase binds in start_transcription. A caller that opens a session
+    # through any other engine binds here to get the same check.
+    session = _SupersedingSession()
+    bind_session_capabilities(session, cast("StandardASR", _StructuralStreamEngine()))
+    bound = _bound_capabilities(session)
+    assert bound is not None and bound.emits_partials.is_supported is True
+    # The effective capabilities win when the engine has them.
+    session = _SupersedingSession()
+    bind_session_capabilities(session, cast("StandardASR", _StructuralNarrowedEngine()))
+    bound = _bound_capabilities(session)
+    assert bound is not None and bound.re_segments.is_supported is False
+    # Nothing to do for an EngineBase: its template bound the session already.
+    session = _SupersedingSession()
+    bind_session_capabilities(session, _StreamEngine())
+    assert _bound_capabilities(session) is None
+
+
+class _StructuralFailingPropertyEngine(_StructuralNarrowedEngine):
+    """Its ``effective_capabilities`` property raises ``AttributeError``."""
+
+    @property
+    def effective_capabilities(self) -> DeclaredCapabilities:
+        raise AttributeError("model")
+
+
+class _StructuralDynamicEngine(_StructuralStreamEngine):
+    """Serves ``effective_capabilities`` through ``__getattr__``."""
+
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
+        streaming_input=FlagCap(supported=True),
+    )
+
+    def __getattr__(self, name: str) -> object:
+        if name == "effective_capabilities":
+            return DeclaredCapabilities(
+                streaming=StreamingCapabilities(), streaming_input=FlagCap(supported=True)
+            )
+        raise AttributeError(name)
+
+
+def test_bind_session_capabilities_reads_an_attribute_served_dynamically() -> None:
+    # The engine serves the attribute through __getattr__, which a static
+    # lookup does not see. Its declared tree supports re-segmentation and its
+    # effective tree does not, so the assertion shows that the effective one
+    # binds.
+    session = _SupersedingSession()
+    bind_session_capabilities(session, cast("StandardASR", _StructuralDynamicEngine()))
+    bound = _bound_capabilities(session)
+    assert bound is not None and bound.re_segments.is_supported is False
+
+
+def test_bind_session_capabilities_does_not_hide_a_failing_capability_property() -> None:
+    # The engine has the attribute, and reading it raises. A fallback to the
+    # declared capabilities, which are wider here, would hide the engine's
+    # fault and check the stream against the wrong tree.
+    session = _SupersedingSession()
+    with pytest.raises(AttributeError, match="model"):
+        bind_session_capabilities(session, cast("StandardASR", _StructuralFailingPropertyEngine()))
+    assert _bound_capabilities(session) is None
 
 
 class _NoStreamingInputEngine(_StreamEngine):

@@ -51,7 +51,7 @@ from standard_asr.contract.params import ProviderParams, RuntimeParams, WireRunt
 from standard_asr.contract.results import TranscriptionResult
 from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
 from standard_asr.runtime.engine_pool import EngineLease, EnginePool, EnginePoolClosedError
-from standard_asr.runtime.interface import require_engine_protocol
+from standard_asr.runtime.interface import bind_session_capabilities, require_engine_protocol
 from standard_asr.runtime.protocol_boundary import require_provider_params_type, require_sync_result
 from standard_asr.runtime.redaction import (
     log_exception_safely,
@@ -998,6 +998,11 @@ def create_app(
             require_sync_result(
                 session, "start_transcription()", expected_type=TranscriptionSession
             )
+            # An engine that does not derive from EngineBase does not give its
+            # session its capabilities. Bind them here, so the server checks
+            # every session it opens against its engine's capabilities. For an
+            # EngineBase this call does nothing: start_transcription bound them.
+            bind_session_capabilities(session, asr)
         except ConfigurationRequiredError:
             # Required config absent, discovered lazily at establishment (an
             # engine deferring its credential check past construction): the WS
@@ -1277,7 +1282,9 @@ def _diagnostics_delta_frame(
     rather than appending beside it (documented in the server spec's WS
     vocabulary). Bounded by construction -- the guard keeps exactly one such
     entry -- and the final tally is delivered because the bridge takes a
-    delta after the terminal event, which the guard's own finalize precedes.
+    delta after the terminal event. That delta also carries any diagnostic
+    the guard records while it admits ``done``, such as
+    ``stable_text_abandoned``.
 
     Args:
         session: The streaming session.

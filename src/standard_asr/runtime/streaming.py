@@ -7,11 +7,15 @@ This module defines the streaming event model and session machinery:
 
 * :class:`TranscriptionEvent` -- the 6-type event (``partial`` / ``final`` /
   ``supersede`` / ``progress`` / ``done`` / ``error``) carrying a stable
-  ``segment_id``, cumulative ``text``, a conservative ``stable_until`` codepoint
-  frontier, and an ``audio_processed_until`` cursor.
-* :func:`validate_stable_until` -- enforces the combining-character invariant
-  (``stable_until`` MUST NOT split a combining sequence) using stdlib
-  ``unicodedata`` only.
+  ``segment_id``, cumulative ``text``, the segment's ``stable_text``, and an
+  ``audio_processed_until`` cursor. The stable text is the start of
+  ``text`` that a later ``partial`` or plain ``final`` of the segment keeps
+  and extends; a ``supersede`` withdraws it with the segment, and a
+  ``closed`` final may reformat it once.
+* :func:`validate_stable_text` -- checks that a stable text is a prefix of the
+  segment text and does not end inside a combining character sequence or
+  right after a zero width joiner. This is part of the protocol's boundary
+  rule, not all of it.
 * :func:`reduce_event` / :class:`StreamReducer` -- the canonical application-side
   reduce (including the core ``supersede`` handling) and reduction of a session
   to a :class:`~standard_asr.contract.results.TranscriptionResult`.
@@ -35,7 +39,6 @@ import logging
 import math
 import threading
 import time
-import unicodedata
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import (
@@ -52,6 +55,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from standard_asr.contract.capabilities import StreamingCapabilities
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactUnavailableError,
@@ -72,6 +76,7 @@ from standard_asr.contract.results import (
     to_json_value,
     validate_speaker_label,
 )
+from standard_asr.runtime._text import splits_combining_sequence
 from standard_asr.runtime.redaction import log_exception_safely, safe_exception_summary
 
 LOGGER = logging.getLogger(__name__)
@@ -186,17 +191,39 @@ DIAG_LIFECYCLE_RETIRED_RESUPERSEDED = "lifecycle_retired_resuperseded"
 DIAG_SUPERSEDE_REINTRODUCES_SEGMENT = "supersede_reintroduces_segment"
 DIAG_SUPERSEDE_NONCONTIGUOUS = "supersede_noncontiguous_old_ids"
 DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE = "supersede_cross_speaker_merge"
-DIAG_SUPERSEDE_DELETES_FROZEN_TEXT = "supersede_deletes_frozen_text"
 DIAG_LIFECYCLE_AFTER_TERMINAL = "lifecycle_after_terminal"
 DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL = "lifecycle_partial_after_final"
 DIAG_LIFECYCLE_FINAL_AFTER_FINAL = "lifecycle_final_after_final"
-DIAG_FROZEN_PREFIX_REWRITTEN = "frozen_prefix_rewritten"
-DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE = "frozen_prefix_rewritten_supersede"
-DIAG_FROZEN_SPEAKER_REWRITTEN = "frozen_speaker_rewritten"
+DIAG_STABLE_TEXT_REWRITTEN = "stable_text_rewritten"
+DIAG_LOCKED_SPEAKER_REWRITTEN = "locked_speaker_rewritten"
 DIAG_AUDIO_CURSOR_DECREASED = "audio_cursor_decreased"
-DIAG_AUDIO_PROGRESS_UNDECLARED = "audio_progress_undeclared"
-DIAG_STABLE_UNTIL_CLAMPED = "stable_until_clamped"
-DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED = "supersede_obligation_unfulfilled"
+DIAG_STABLE_TEXT_CLAMPED = "stable_text_clamped"
+DIAG_STABLE_TEXT_ABANDONED = "stable_text_abandoned"
+DIAG_STREAM_EXCEEDS_EMITS_PARTIALS = "stream_exceeds_emits_partials"
+DIAG_STREAM_EXCEEDS_PARTIAL_STABILITY = "stream_exceeds_partial_stability"
+DIAG_STREAM_EXCEEDS_RE_SEGMENTS = "stream_exceeds_re_segments"
+DIAG_STREAM_EXCEEDS_TIMESTAMPS = "stream_exceeds_timestamps"
+DIAG_STREAM_EXCEEDS_AUDIO_PROGRESS = "stream_exceeds_audio_progress"
+DIAG_STREAM_EXCEEDS_WORD_TIMESTAMPS = "stream_exceeds_word_timestamps"
+DIAG_STREAM_EXCEEDS_DIARIZATION = "stream_exceeds_diarization"
+DIAG_FINALITY_LEVEL_NOT_REACHED = "finality_level_not_reached"
+
+#: The diagnostic codes that report a stream the engine's streaming
+#: capabilities do not cover: the effective ones in a session, the ones passed
+#: to ``check_event_sequence`` in a compliance run. A session records each at
+#: most once, and ``check_event_sequence`` reports each under the same name.
+CAPABILITY_DIAGNOSTIC_CODES: frozenset[str] = frozenset(
+    {
+        DIAG_STREAM_EXCEEDS_EMITS_PARTIALS,
+        DIAG_STREAM_EXCEEDS_PARTIAL_STABILITY,
+        DIAG_STREAM_EXCEEDS_RE_SEGMENTS,
+        DIAG_STREAM_EXCEEDS_AUDIO_PROGRESS,
+        DIAG_STREAM_EXCEEDS_TIMESTAMPS,
+        DIAG_STREAM_EXCEEDS_WORD_TIMESTAMPS,
+        DIAG_STREAM_EXCEEDS_DIARIZATION,
+        DIAG_FINALITY_LEVEL_NOT_REACHED,
+    }
+)
 
 
 class StreamDeadlines(BaseModel):
@@ -244,26 +271,83 @@ async def _cancel_all_tasks() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def validate_stable_until(text: str, stable_until: int) -> bool:
-    """Return whether ``stable_until`` is a valid frozen-prefix boundary.
+def validate_stable_text(text: str, stable_text: str) -> bool:
+    """Return whether ``stable_text`` passes the standard layer's stable-text check.
 
-    ``stable_until`` is a codepoint count; ``text[:stable_until]`` is the frozen
-    prefix. It MUST NOT split a Unicode combining sequence -- that is, the codepoint
-    at the cut (if any) must not be a combining mark. Validated
-    with stdlib ``unicodedata`` only.
+    The check has two parts. First, ``text`` starts with ``stable_text``,
+    compared character for character: no case folding, no trimming, and no
+    Unicode normalization. Second, ``stable_text`` does not end inside a
+    combining character sequence, which is a base character followed by the
+    marks and joiners that belong to it (Unicode definition D56): the
+    character of ``text`` right after ``stable_text`` is not a combining mark
+    (general category ``Mn``, ``Mc``, or ``Me``), not U+200C (zero width
+    non-joiner), and not U+200D (zero width joiner). The check also reports
+    a ``stable_text`` that ends with U+200D, although that cut does not split
+    a combining character sequence: the joiner binds the character after it
+    to the one before it, as in an emoji built from several code points. The
+    check catches a cut between a letter and its accent, before a vowel sign
+    or a tone mark that Unicode classes as a mark, before the sign U+094D or
+    its equivalent in another Indic script, before a variation selector or
+    the enclosing mark U+20E3, and on either side of a zero width joiner.
+
+    ``True`` means "no violation found", not "valid". The protocol requires
+    more than this function checks: an engine MUST end its stable text
+    between two user-perceived characters, that is, between two extended
+    grapheme clusters as Unicode Standard Annex #29 defines them. A
+    user-perceived character is what a reader sees as one character, such as
+    a letter with its accent or an emoji built from several code points. The
+    standard library has no grapheme segmentation, and these cuts inside one
+    user-perceived character are the misses known today, each returning
+    ``True``:
+
+    * before Thai SARA AM (U+0E33), also when a tone mark stands between it
+      and its consonant, and before Lao AM (U+0EB3);
+    * inside a conjunct consonant, after the sign U+094D or its equivalent,
+      in Devanagari, Bengali, Gujarati, Odia, Telugu, and Malayalam; under
+      the grapheme segmentation of the ICU library (International Components
+      for Unicode) also inside Khmer and Myanmar stacked consonants;
+    * between the conjoining jamo of a Hangul syllable written as separate
+      letters (a syllable stored as one code point cannot be cut);
+    * between the two regional indicator letters of a flag;
+    * before an emoji skin-tone modifier;
+    * before a tag character in an emoji tag sequence, such as the flag of
+      Scotland;
+    * before the voiced sound mark U+FF9E that follows a half-width
+      katakana letter;
+    * between CR and LF.
+
+    The list records what this version misses, not a promise to keep
+    passing these cuts: a later version may reject more cuts that break the
+    same rule.
+
+    The Unicode data is the running Python's: ``unicodedata`` carries the
+    Unicode version of the Python build. A mark added to Unicode after that
+    version is an unassigned code point there, so a cut before it returns
+    ``True``.
+
+    The function judges one pair of ``text`` and ``stable_text``. The rule
+    that spans events is the session's to enforce: within a segment, a later
+    ``partial`` or plain ``final`` keeps and extends the stable text. Two
+    events end that promise: a ``supersede`` withdraws the segment, and a
+    ``closed`` final may reformat its text once. The session does not apply
+    this function to a ``final``'s own stable text: it is the whole text,
+    so no boundary lies inside it. The function still reports what it is
+    given: for a ``text`` that ends with U+200D, passed as both arguments,
+    it returns ``False``.
 
     Args:
         text: The segment text.
-        stable_until: The proposed frozen-prefix length in codepoints.
+        stable_text: The proposed stable text. The empty string always
+            passes.
 
     Returns:
-        ``True`` if the boundary is valid.
+        ``True`` if ``text`` starts with ``stable_text``, the character of
+        ``text`` right after it is not a combining mark, U+200C, or U+200D,
+        and ``stable_text`` does not end with U+200D.
     """
-    if stable_until < 0 or stable_until > len(text):
+    if not text.startswith(stable_text):
         return False
-    if stable_until == 0 or stable_until == len(text):
-        return True
-    return unicodedata.combining(text[stable_until]) == 0
+    return not splits_combining_sequence(text, len(stable_text))
 
 
 class TranscriptionEvent(BaseModel):
@@ -278,19 +362,29 @@ class TranscriptionEvent(BaseModel):
             segment's separator is ignored. Defaults to one space for engines
             whose English-like segments omit boundary whitespace. Use ``""``
             for exact fragments or scripts without word separators.
-        stable_until: Frozen-prefix length in codepoints (monotonic per
-            segment while recognition is in progress; a terminal ``closed``
-            restatement may shrink it).
+        stable_text: For ``partial`` and ``final``, the prefix of ``text``
+            that does not change for as long as the segment lives. A later
+            ``partial`` or plain ``final`` of the segment keeps and extends
+            it, a ``supersede`` that retires the segment withdraws it
+            together with the segment, and a ``closed`` final may reformat it
+            once. A ``partial`` defaults to ``""`` (nothing is stable). A ``final``
+            always carries the whole ``text``, which is also its default.
+            The engine is responsible for ending it between two
+            user-perceived characters. Construction checks only that
+            ``text`` starts with it; :func:`validate_stable_text` checks part
+            of the boundary rule and lists the cuts it misses. Every other
+            event type MUST carry ``None``, which construction does not
+            check.
         finality: For ``final`` events, ``"final"`` or ``"closed"`` (a
-            ``closed`` final is the terminal restatement and may rewrite
-            frozen text once).
+            ``closed`` final is the terminal restatement and may reformat
+            stable text once).
         words: Optional word-level detail (shares the batch ``Word`` model).
         speaker: Segment-level speaker label, with the same
             inheritance rule as ``Segment.speaker`` (a non-``None``
             ``words[i].speaker`` overrides it at word level) and the same
-            label-validity rule. A frozen segment's accepted
-            speaker is protected across events by the lifecycle guard,
-            not at construction.
+            label-validity rule. Once a segment has stable text, its
+            accepted speaker is locked across events by the lifecycle
+            guard, not at construction.
         start: Segment start time in seconds (origin = first session sample).
         end: Segment end time in seconds.
         audio_processed_until: Monotonic audio-time cursor in seconds.
@@ -319,7 +413,7 @@ class TranscriptionEvent(BaseModel):
     segment_id: str | None = None
     text: str | None = None
     text_separator: str = " "
-    stable_until: int | None = None
+    stable_text: str | None = None
     finality: Literal["final", "closed"] = "final"
     words: list[Word] | None = None
     speaker: str | None = None
@@ -340,22 +434,6 @@ class TranscriptionEvent(BaseModel):
     gap_end: float | None = Field(default=None, ge=0.0)
     detected_language: str | None = None
     extra: WireExtra = Field(default_factory=dict)
-
-    @property
-    def stable_text(self) -> str:
-        """The frozen prefix of ``text`` (``text[:stable_until]``).
-
-        Guards against an invalid (negative or out-of-range) ``stable_until`` so
-        a malformed frontier never produces a wrong or oversized prefix.
-
-        Returns:
-            The frozen prefix, or ``""`` if nothing is validly frozen.
-        """
-        if self.text is None or self.stable_until is None:
-            return ""
-        if self.stable_until <= 0:
-            return ""
-        return self.text[: self.stable_until]
 
     @property
     def is_content(self) -> bool:
@@ -463,8 +541,9 @@ class TranscriptionEvent(BaseModel):
         a supersede whose retired/replacement ids overlap (or that retires
         nothing) is malformed -- a wrong or unattributable transcript is the
         cardinal sin, so the event model refuses to represent one. Sequence-level
-        invariants (monotonic ``stable_until`` / ``audio_processed_until``,
-        frozen-prefix immutability, illegal lifecycle transitions) are enforced
+        invariants (stable text that a later ``partial`` or plain ``final``
+        keeps and extends, a monotonic ``audio_processed_until``, illegal
+        lifecycle transitions) are enforced
         across events by :class:`_LifecycleGuard`, not here.
 
         Returns:
@@ -501,17 +580,41 @@ class TranscriptionEvent(BaseModel):
                     f"start={self.start}; a segment span must satisfy end >= start "
                     "(zero-duration allowed)."
                 )
-            su = self.stable_until
-            if su is not None and not 0 <= su <= len(self.text):
-                # Structural bound only: ``text[:stable_until]`` must be a real
-                # prefix, or every consumer (UI, wire client) receives an
-                # unsatisfiable frozen-prefix claim. The *combining-character*
-                # boundary rule stays at the guard/compliance layer, which keeps
-                # it a sequence-level concern with clamp-and-diagnose semantics,
-                # not a construction error.
+            stable = self.stable_text
+            if "stable_text" not in self.model_fields_set:
+                # Omitted, as opposed to an explicit ``None``: resolve the
+                # default here, from the validated ``text``, so every input
+                # form gets it. A validated content event then always holds a
+                # string, and a consumer never applies a default itself. The
+                # default depends on the type: a ``partial`` that names no
+                # stable text has none, and the text of a ``final`` is stable
+                # as a whole. The model is frozen, so the value is written
+                # with ``object.__setattr__``; marking the field as set keeps
+                # it in an ``exclude_unset`` dump.
+                stable = self.text if self.type == "final" else ""
+                object.__setattr__(self, "stable_text", stable)
+                self.__pydantic_fields_set__.add("stable_text")
+            if stable is None:
                 raise ValueError(
-                    f"stable_until {su} is out of range for text of length "
-                    f"{len(self.text)} (text[:stable_until] must be a real prefix)."
+                    f"{self.type} event MUST carry stable_text as a string, not None. "
+                    "Omit the field for the default: '' on a partial, the whole text "
+                    "on a final."
+                )
+            if not self.text.startswith(stable):
+                # Structural rule only: every consumer reads ``stable_text`` as
+                # the start of ``text``. The combining-sequence boundary rule
+                # stays at the guard and compliance layer, which clamps and
+                # diagnoses it across events.
+                raise ValueError(
+                    f"stable_text {stable!r} is not a prefix of text {self.text!r} "
+                    "(stable_text MUST be the start of text, character for character)."
+                )
+            if self.type == "final" and stable != self.text:
+                raise ValueError(
+                    f"final event carries stable_text {stable!r}, which is not its "
+                    f"whole text {self.text!r}; the stable_text of a final MUST be "
+                    "the whole text, because that text no longer changes with new "
+                    "audio. Omit stable_text on a final."
                 )
         elif self.type == "supersede":
             if not self.old_ids:
@@ -525,8 +628,7 @@ class TranscriptionEvent(BaseModel):
                 # Lineage is set-to-set: new_ids is semantically a
                 # set, so a repeat is malformed. Left unrejected it would also
                 # collapse the guard's cross-speaker pigeonhole count (two slots
-                # that are really one segment) and double-count that segment's
-                # frozen prefix in the F_new join.
+                # that are really one segment).
                 raise ValueError(
                     "supersede new_ids MUST NOT repeat a segment id "
                     "(each replacement segment is introduced once)."
@@ -558,7 +660,8 @@ class TranscriptionEvent(BaseModel):
         Args:
             segment_id: The segment id.
             text: The segment's final text.
-            **kw: Additional event fields.
+            **kw: Additional event fields. Leave ``stable_text`` out: on a
+                ``final`` it is always the whole text.
 
         Returns:
             A ``final`` event.
@@ -588,9 +691,9 @@ class TranscriptionEvent(BaseModel):
         but not a per-old->per-new mapping. On a merge+split (many->many) a UI
         cannot tell which specific old segment a given new segment descends
         from. This is a documented limitation of the current generation; the spec does not
-        require a pairwise mapping, and the frozen-prefix-preservation invariant
-        is enforced over the concatenated prefixes, not per pair. Per-pair
-        edit-ops/diffs are a possible future direction (additive later).
+        require a pairwise mapping. Because nothing maps old text onto new
+        text, a supersede withdraws the retired segments as a whole, stable
+        text included, and the replacement segments start with none.
 
         Args:
             old_ids: The retired segment ids, in reading (time) order.
@@ -926,9 +1029,8 @@ def _supersede_admission(
     2. **Closed old** (guard only -- a reducer's state vocabulary never
        answers ``"closed"``): closed MUST NOT be superseded.
     3. **Retired old**: superseded is terminal; an id retires the moment it
-       appears in ``old_ids``, and a second retirement would copy the
-       retired segment's frozen text into a SECOND independent replacement
-       lineage.
+       appears in ``old_ids``, and a second retirement would give one
+       retired segment two independent replacement lineages.
     4. **Reintroduced new**: a ``new_id`` MUST be fresh -- an id that
        already holds any state is either being reused or this supersede
        was delivered out of order.
@@ -1022,7 +1124,7 @@ class StreamReducer:
     suppressed event commits NOTHING -- not even the sticky
     ``detected_language`` (the admitted-only commit discipline of
     :meth:`add`). Full
-    lifecycle enforcement (frozen prefixes, speakers, ``stable_until``)
+    lifecycle enforcement (stable text, speakers)
     remains the session guard's job: events reaching this reducer through
     :class:`TranscriptionSession` are already guard-filtered, so these
     checks fire only for raw non-compliant streams.
@@ -1393,16 +1495,18 @@ class _CoalescingBuffer:
                 # bug, ``detected_language``) whenever the engine did not
                 # repeat the value on every partial: the only event that ever
                 # carried it was the one being thrown away. The newer non-None
-                # value always wins (no resurrection of an old value). Over the
-                # frozen region the guard already suppresses X->None before it
-                # reaches this buffer, so a None survivor here only ever
-                # originates from the UNFROZEN region, where the protocol permits
-                # deliberate withdrawal; re-presenting the donor's speaker there
-                # is safe because unfrozen partial speakers are non-actionable,
-                # and if the segment later freezes the guard locks
-                # that last-accepted non-None speaker, matching the
-                # carried value. The scope is inherently one segment_id
-                # (coalescing is per segment).
+                # value always wins (no resurrection of an old value). Once an
+                # EARLIER event gave the segment stable text, the guard
+                # suppresses X->None before it reaches this buffer. A None
+                # survivor here therefore comes from a segment that had no
+                # stable text before this event, although this event itself
+                # may be the first to carry some. Up to that point the speaker
+                # is not locked and the protocol permits a deliberate
+                # withdrawal, so re-presenting the donor's speaker is safe.
+                # The guard already holds the donor's speaker as the last
+                # accepted non-None one, so the lock that applies from the
+                # next event on protects the carried value. The scope is
+                # inherently one segment_id (coalescing is per segment).
                 # model_copy skips validators -- fine, both carried values were
                 # validated when the donor event was constructed.
                 carried = {
@@ -1608,81 +1712,173 @@ class _Slot:
         self.alive = True
 
 
-class _SupersedeObligation:
-    """A pending frozen-prefix-preservation obligation for one supersede group.
+def _capability_violations(
+    event: TranscriptionEvent, capabilities: StreamingCapabilities
+) -> list[tuple[str, str]]:
+    """Return what one event uses that the given capabilities do not support.
 
-    A ``supersede`` MUST preserve the concatenated frozen text of the retired
-    segments across the replacement. This records, for one
-    ``new_ids`` group, the concatenated frozen prefix of the retired old
-    segments (``f_old``, in ``old_ids`` order) and the running concatenated
-    frozen prefix of the new segments (in ``new_ids`` order), so the guard can
-    eagerly reject the cardinal-sin direction (a new segment rewriting text the
-    user already saw frozen).
+    Each streaming capability gates one event field or event type. The
+    capabilities are the ones the caller passes: those bound to a session,
+    or the declared ones that ``check_event_sequence`` receives. A stream
+    may use less than they support and never more:
+
+    * ``emits_partials`` unsupported: no ``partial``.
+    * ``partial_stability`` unsupported: no ``partial`` carries non-empty
+      ``stable_text``. A ``final`` is outside this rule: its whole text is
+      stable on every engine.
+    * ``re_segments`` unsupported: no ``supersede``. An application may act
+      on a ``final`` because of this declaration.
+    * ``audio_progress`` unsupported: no event carries
+      ``audio_processed_until``.
+    * ``timestamps`` mode ``none``: no event carries ``start`` or ``end``.
+    * ``word_timestamps`` unsupported: no event carries a non-empty
+      ``words`` list.
+    * ``diarization`` unsupported: no event carries a speaker, on the event
+      or on a word.
+
+    The reverse is not a violation: an engine may declare a capability that
+    one stream never uses.
+
+    Args:
+        event: The event to check.
+        capabilities: The engine's streaming capabilities.
+
+    Returns:
+        One ``(code, message)`` pair per violated declaration, in the order
+        above. Empty when the event stays within the declaration.
     """
-
-    __slots__ = ("f_old", "frozen", "include_first_separator", "new_ids", "separators")
-
-    def __init__(self, f_old: str, new_ids: list[str], *, include_first_separator: bool) -> None:
-        """Initialize the obligation.
-
-        Args:
-            f_old: Concatenated frozen prefix of the retired segments.
-            new_ids: The replacement segment ids, in reading (temporal) order.
-            include_first_separator: Whether the replaced block follows a live
-                segment, so its first segment's separator is visible text.
-        """
-        self.f_old = f_old
-        self.new_ids = new_ids
-        self.include_first_separator = include_first_separator
-        #: Per-new-id current frozen prefix, accumulated as each new segment
-        #: freezes more text.
-        self.frozen: dict[str, str] = {}
-        #: Exact separators carried by the events that established ``frozen``.
-        self.separators: dict[str, str] = {}
-
-    def f_new(self) -> str:
-        """Return the replacement's *contiguous* frozen prefix.
-
-        A frozen prefix is contiguous from position 0, so the replacement's
-        frozen prefix is the concatenation of the new segments' frozen prefixes
-        in ``new_ids`` order **only up to the first new segment that has not yet
-        frozen any text**. The streaming protocol does not forbid freezing the
-        new segments of a split out of order; a later ``new_id`` that freezes
-        before an earlier one does NOT yet contribute to position 0, so its
-        text must not be counted until the gap to its left is filled (otherwise
-        it would be misplaced and falsely flagged as rewriting ``f_old``).
-
-        Returns:
-            The new segments' frozen prefixes joined in ``new_ids`` order,
-            truncated at the first not-yet-frozen (missing or empty) new id.
-        """
-        parts: list[str] = []
-        for index, nid in enumerate(self.new_ids):
-            frozen = self.frozen.get(nid, "")
-            if not frozen:
-                break
-            if index > 0 or self.include_first_separator:
-                parts.append(self.separators[nid])
-            parts.append(frozen)
-        return "".join(parts)
+    found: list[tuple[str, str]] = []
+    if event.type == "partial" and not capabilities.emits_partials.is_supported:
+        found.append(
+            (
+                DIAG_STREAM_EXCEEDS_EMITS_PARTIALS,
+                f"partial for segment {event.segment_id!r} carries text that may still "
+                "change, but streaming.emits_partials is unsupported in the engine's "
+                "capabilities. The engine must support emits_partials, or not send "
+                "partial events.",
+            )
+        )
+    if (
+        event.type == "partial"
+        and event.stable_text
+        and not capabilities.partial_stability.is_supported
+    ):
+        found.append(
+            (
+                DIAG_STREAM_EXCEEDS_PARTIAL_STABILITY,
+                f"partial for segment {event.segment_id!r} carries stable_text "
+                f"{event.stable_text!r}, but streaming.partial_stability is "
+                "unsupported in the engine's capabilities. The engine must support "
+                "partial_stability, or send stable_text='' on every partial.",
+            )
+        )
+    if event.type == "supersede" and not capabilities.re_segments.is_supported:
+        found.append(
+            (
+                DIAG_STREAM_EXCEEDS_RE_SEGMENTS,
+                f"supersede retires {event.old_ids!r}, but streaming.re_segments is "
+                "unsupported in the engine's capabilities. An application may have "
+                "acted on a final because of that declaration. The engine must support "
+                "re_segments, or not send supersede.",
+            )
+        )
+    if event.audio_processed_until is not None and not capabilities.audio_progress.is_supported:
+        found.append(
+            (
+                DIAG_STREAM_EXCEEDS_AUDIO_PROGRESS,
+                f"{event.type} event carries audio_processed_until="
+                f"{event.audio_processed_until}, but streaming.audio_progress is "
+                "unsupported in the engine's capabilities. The engine must support "
+                "audio_progress, or not send audio_processed_until.",
+            )
+        )
+    if (
+        event.start is not None or event.end is not None
+    ) and not capabilities.timestamps.is_supported:
+        found.append(
+            (
+                DIAG_STREAM_EXCEEDS_TIMESTAMPS,
+                f"{event.type} event carries a transcript timestamp, but streaming.timestamps "
+                "mode is 'none' in the engine's capabilities. The engine must support a "
+                "timestamp mode other than 'none', or omit start and end.",
+            )
+        )
+    if event.words and not capabilities.word_timestamps.is_supported:
+        found.append(
+            (
+                DIAG_STREAM_EXCEEDS_WORD_TIMESTAMPS,
+                f"{event.type} event carries words, but streaming.word_timestamps "
+                "is unsupported in the engine's capabilities. The engine must support "
+                "word_timestamps, or not send words.",
+            )
+        )
+    if (
+        event.speaker is not None or any(word.speaker is not None for word in event.words or [])
+    ) and not capabilities.diarization.is_supported:
+        found.append(
+            (
+                DIAG_STREAM_EXCEEDS_DIARIZATION,
+                f"{event.type} event carries a speaker, but streaming.diarization "
+                "is unsupported in the engine's capabilities. The engine must support "
+                "diarization (with always_on if the model cannot turn it off), or "
+                "not send a speaker.",
+            )
+        )
+    return found
 
 
 class _LifecycleGuard:
-    """Enforces segment lifecycle + ``stable_until`` invariants.
+    """Enforces the segment lifecycle and the stable-text rules.
 
     Defense in depth: the spec assigns suppression of illegal transitions to the
     engine (MUST), but a wrong transcript is the cardinal sin, so the base
     independently guards. By default illegal events are SUPPRESSED and a
-    structured :class:`Diagnostic` is recorded; in ``strict`` mode the guard
-    raises instead. A ``stable_until`` decrease is CLAMPED to its prior value
-    (it MUST only increase while recognition is in progress; the terminal
-    ``closed`` restatement is the spec's sole exemption and may shrink it)
-    with a diagnostic. Diarization gets
-    the same defense: a frozen segment's accepted speaker MUST NOT change or
-    be retracted (``frozen_speaker_rewritten``), and a supersede
-    MUST NOT merge segments carrying distinct speakers into fewer segments
-    (``supersede_cross_speaker_merge``) -- both suppress the
-    whole event.
+    structured :class:`Diagnostic` is recorded. In ``strict`` mode the guard
+    raises ``ValueError`` instead, and :class:`TranscriptionSession` turns
+    that into a terminal ``error`` event with code ``engine_error``.
+
+    Within a segment, a later ``partial`` or plain ``final`` keeps and
+    extends the stable text. A ``supersede`` withdraws it (see below), and a
+    ``closed`` final may reformat it once. An event is suppressed
+    (``stable_text_rewritten``) when its ``text`` no longer starts with the
+    segment's stable text, or when it adds a combining mark or a zero width
+    joiner or non-joiner right after that stable text, which changes the
+    last stable character. A ``partial`` whose ``stable_text`` is shorter
+    than before is delivered with the earlier stable text, and one whose
+    ``stable_text`` ends inside a combining character sequence or right
+    after a zero width joiner is delivered with the boundary moved back
+    (``stable_text_clamped`` for both; :meth:`_clamp_stable_text` lists
+    every repair). The terminal ``closed`` restatement is the one exemption:
+    it may reformat stable text once. A segment that has stable text and is
+    still open when the session reaches ``done`` is reported
+    (``stable_text_abandoned``): its text never reached the result.
+
+    The boundary check and its repair catch only stable text that ends
+    inside a combining character sequence or right after a zero width
+    joiner (:func:`validate_stable_text`). A boundary inside one
+    user-perceived character that passes the check, for example before Thai
+    SARA AM, is neither moved back nor diagnosed. A later event that
+    completes that character after the stable text is not treated as a
+    rewrite either.
+
+    The promise holds for as long as the segment lives. A ``supersede``
+    withdraws the segments it retires, stable text included, so the guard
+    compares no text across a supersede: the replacement segments start
+    with no stable text and are judged against their own history only.
+
+    Diarization gets the same defense: once a segment has stable text, its
+    accepted speaker MUST NOT change or be retracted
+    (``locked_speaker_rewritten``), and a supersede MUST NOT merge segments
+    carrying distinct speakers into fewer segments
+    (``supersede_cross_speaker_merge``) -- both suppress the whole event.
+
+    Given the engine's streaming capabilities (:meth:`bind_capabilities`),
+    the guard also checks each event it forwards against them. This check
+    never suppresses or changes the event. It records one warning per code
+    in :data:`CAPABILITY_DIAGNOSTIC_CODES`, or raises in strict mode.
+    Without capabilities the guard skips it.
+    :func:`~standard_asr.bind_session_capabilities` states what the check
+    covers.
 
     States per segment id: ``open`` -> ``final`` -> ``closed`` (terminal), or
     ``superseded`` (terminal). ``new_ids`` from a supersede start ``open``.
@@ -1698,18 +1894,19 @@ class _LifecycleGuard:
         *,
         strict: bool = False,
         max_diagnostics: int = DEFAULT_MAX_GUARD_DIAGNOSTICS,
-        audio_progress: bool = False,
+        capabilities: StreamingCapabilities | None = None,
     ) -> None:
         """Initialize the guard.
 
         Args:
-            strict: If ``True``, raise on an illegal transition instead of
-                suppressing it.
+            strict: If ``True``, raise ``ValueError`` on any violation
+                instead of suppressing or repairing the event.
             max_diagnostics: Upper bound on retained diagnostics before the
                 guard switches to an aggregated overflow summary (the bounded
                 diagnostic channel). MUST be > 0.
-            audio_progress: Whether the engine's effective capabilities permit
-                ``audio_processed_until`` on events.
+            capabilities: The engine's streaming capabilities. When given,
+                the guard also checks each admitted event against them (see
+                :meth:`bind_capabilities`). ``None`` skips that check.
 
         Raises:
             ValueError: If ``max_diagnostics`` is not positive.
@@ -1717,49 +1914,35 @@ class _LifecycleGuard:
         if max_diagnostics <= 0:
             raise ValueError("max_diagnostics must be > 0.")
         self._strict = strict
-        self._audio_progress = audio_progress
         self._max_diagnostics = max_diagnostics
+        self._capabilities = capabilities
+        #: Capability diagnostic codes already recorded. A mismatch between
+        #: the declaration and the stream is a fact about the engine, so one
+        #: diagnostic per code says it; one per event would only fill the list.
+        self._reported_capability_codes: set[str] = set()
         self._state: dict[str, str] = {}
         #: Live reading-order ledger: declarations append, supersedes splice.
         #: The guard validates the supersede placement rule against it (the
         #: reducer holds its own instance for ordering the reduced result;
         #: both see only ACCEPTED events, so they stay in lockstep).
         self._ledger = _ReadingOrderLedger()
-        self._stable_until: dict[str, int] = {}
-        self._frozen_text: dict[str, str] = {}
-        #: Last accepted exact separator per segment, used when a supersede
-        #: composes frozen text in the same way as the final result.
-        self._text_separator: dict[str, str] = {}
+        #: Last ACCEPTED stable text per segment id. Absent or ``""`` means
+        #: the segment has none.
+        self._stable_text: dict[str, str] = {}
+        self._stable_separator: dict[str, str] = {}
         #: Last ACCEPTED non-None segment-level speaker per segment id. One
         #: ledger deliberately feeds BOTH diarization guards (they were adopted
-        #: as a package): the frozen-speaker rule and the
+        #: as a package): the locked-speaker rule and the
         #: cross-speaker supersede pigeonhole check. Written only
         #: at the accepted-commit point of :meth:`admit`, so a rejected event
         #: can never poison it.
         self._last_speaker: dict[str, str] = {}
         self._audio_cursor: float = 0.0
-        #: Maps each ``new_id`` of an active supersede group to its shared
-        #: frozen-prefix-preservation obligation.
-        self._supersede_obligations: dict[str, _SupersedeObligation] = {}
-        #: Set once :meth:`finalize` has run, so the end-of-session obligation
-        #: sweep is emitted at most once per guard.
-        self._finalized = False
         self.diagnostics: list[Diagnostic] = []
         #: Per-code count of diagnostics dropped after the cap was reached;
         #: surfaced through the single overflow-summary entry. Empty until the
         #: list first overflows.
         self._overflow_counts: dict[str, int] = {}
-
-    def set_audio_progress(self, supported: bool) -> None:
-        """Set whether the event stream may carry an audio-progress cursor.
-
-        The engine base calls this after it resolves effective capabilities.
-        A direct session keeps the fail-closed default until its author sets it.
-
-        Args:
-            supported: Whether ``audio_processed_until`` is declared.
-        """
-        self._audio_progress = supported
 
     def _record(self, diagnostic: Diagnostic) -> None:
         """Append a diagnostic, enforcing the bounded-channel cap.
@@ -1830,14 +2013,85 @@ class _LifecycleGuard:
         """
         self._record(diagnostic)
 
+    def bind_capabilities(self, capabilities: StreamingCapabilities) -> None:
+        """Give the guard the engine's streaming capabilities to check against.
+
+        From then on :meth:`admit` checks every event it forwards against
+        them, as the engine sent the event, and forwards the event
+        unchanged. The guard records one diagnostic per code, the first time
+        that code applies, or raises in strict mode.
+        :func:`~standard_asr.bind_session_capabilities` states the full
+        rules.
+
+        Args:
+            capabilities: The engine's streaming capabilities.
+        """
+        self._capabilities = capabilities
+
     def admit(self, event: TranscriptionEvent) -> TranscriptionEvent | None:
+        """Check one event and return what to forward.
+
+        Args:
+            event: The raw event from the producer.
+
+        Returns:
+            The event to forward (possibly with a clamped ``stable_text`` or
+            audio cursor), or ``None`` if the event is an illegal transition
+            and was suppressed.
+        """
+        admitted = self._admit_lifecycle(event)
+        if admitted is not None and self._capabilities is not None:
+            # Judge the event as the engine sent it, not as it is forwarded:
+            # a repair can empty the stable text of a partial, and the engine
+            # still sent stable text its capabilities do not support.
+            self._check_capabilities(event, self._capabilities)
+        return admitted
+
+    def _check_capabilities(
+        self, event: TranscriptionEvent, capabilities: StreamingCapabilities
+    ) -> None:
+        """Record what an admitted event uses beyond the guard's capabilities.
+
+        The guard holds the capabilities it was given: those bound to a
+        session, or the declared ones that ``check_event_sequence`` receives.
+
+        A code already recorded in this session is not recorded again.
+
+        Args:
+            event: The event as the engine sent it.
+            capabilities: The engine's streaming capabilities.
+
+        Raises:
+            ValueError: In strict mode, for the first mismatch.
+        """
+        violations = _capability_violations(event, capabilities)
+        if event.type == "done" and capabilities.finality_level.mode == "closed":
+            not_closed = self.segments_in_state("final")
+            if not_closed:
+                violations.append(
+                    (
+                        DIAG_FINALITY_LEVEL_NOT_REACHED,
+                        "streaming.finality_level mode is 'closed' in the engine's "
+                        "capabilities, but these segments reached final without "
+                        f"reaching closed before done: {not_closed!r}. The engine must send "
+                        "a closed final for every finalized segment that no supersede "
+                        "retired, or use mode 'final'.",
+                    )
+                )
+        for code, message in violations:
+            if code in self._reported_capability_codes:
+                continue
+            self._reported_capability_codes.add(code)
+            self._reject(code, message)
+
+    def _admit_lifecycle(self, event: TranscriptionEvent) -> TranscriptionEvent | None:
         """Validate (and possibly clamp) an event before it is forwarded.
 
         Args:
             event: The raw event from the producer.
 
         Returns:
-            The event to forward (possibly with a clamped ``stable_until``), or
+            The event to forward (possibly with a clamped ``stable_text``), or
             ``None`` if the event is an illegal transition and was suppressed.
         """
         event, pending_cursor = self._clamp_audio_cursor(event)
@@ -1845,9 +2099,9 @@ class _LifecycleGuard:
         if event.type == "supersede":
             # THE shared admission rules (_supersede_admission): the four
             # id-set preconditions plus the placement rule, judged before
-            # any state mutation of this branch. The guard's extra rules
-            # (cross-speaker pigeonhole, frozen-text preservation) follow
-            # below -- they need guard-only state and stay here.
+            # any state mutation of this branch. The guard's extra rule
+            # (cross-speaker pigeonhole) follows below -- it needs guard-only
+            # state and stays here.
             verdict = _supersede_admission(
                 event,
                 ledger=self._ledger,
@@ -1860,7 +2114,7 @@ class _LifecycleGuard:
             block_start = verdict
             # Cross-speaker merge ban: the retired segments'
             # last-known non-None speakers, taken from the same ledger the
-            # frozen-speaker rule maintains. When fewer replacement segments
+            # locked-speaker rule maintains. When fewer replacement segments
             # arrive than there are distinct retired speakers, a cross-speaker
             # merge is unavoidable by pigeonhole (the canonical case is
             # many->1) and someone's words would be silently mis-attributed --
@@ -1896,45 +2150,22 @@ class _LifecycleGuard:
                     "be duplicated -- this harms only non-compliant engines.",
                 )
                 return None
-            # Compose the retired segments' frozen prefixes exactly as they
-            # appeared in the live transcript. The first separator is visible
-            # only when the retired block follows another live segment.
-            frozen_parts: list[str] = []
-            for index, old in enumerate(event.old_ids):
-                frozen = self._frozen_text.get(old, "")
-                if not frozen:
-                    continue
-                if index > 0 or block_start > 0:
-                    frozen_parts.append(self._text_separator.get(old, " "))
-                frozen_parts.append(frozen)
-            f_old = "".join(frozen_parts)
-            if not event.new_ids and f_old:
-                # Pure deletion (empty new_ids) cannot preserve any frozen text;
-                # it MUST NOT silently destroy a prefix the user saw frozen.
-                self._reject(
-                    DIAG_SUPERSEDE_DELETES_FROZEN_TEXT,
-                    "supersede with empty new_ids would delete the frozen prefix "
-                    f"of {event.old_ids!r}; suppressed (frozen text "
-                    "MUST be preserved -- pure deletion is allowed only for "
-                    "segments with no frozen prefix).",
-                )
-                return None
+            # A supersede withdraws the retired segments as a whole, stable
+            # text included. The protocol carries no mapping from retired text
+            # onto replacement text, so no text is compared here: the
+            # application drops what it derived from ``old_ids`` and starts
+            # over on ``new_ids``, whose stable text begins empty.
             self._ledger.splice(event.old_ids, event.new_ids, start=block_start)
             for old in event.old_ids:
+                # Only the lifecycle state outlives a retired segment: it
+                # rejects a later event that reuses the id. The stable text
+                # and the speaker are never consulted again.
                 self._state[old] = "superseded"
+                self._stable_text.pop(old, None)
+                self._stable_separator.pop(old, None)
+                self._last_speaker.pop(old, None)
             for new in event.new_ids:
                 self._state.setdefault(new, "open")
-            if f_old:
-                # new_ids is duplicate-free by construction (model validator),
-                # so the obligation's F_new join never counts a replacement
-                # segment's frozen prefix twice.
-                obligation = _SupersedeObligation(
-                    f_old,
-                    list(event.new_ids),
-                    include_first_separator=block_start > 0,
-                )
-                for new in event.new_ids:
-                    self._supersede_obligations[new] = obligation
             self._commit_audio_cursor(pending_cursor)
             return event
 
@@ -1956,8 +2187,8 @@ class _LifecycleGuard:
                 return None
             if event.type == "final" and state == "final" and event.finality != "closed":
                 # From state final the only legal transitions are supersede or a
-                # closed event; a plain final re-freezing/rewriting the segment
-                # is illegal.
+                # closed event; a second plain final for the segment is
+                # illegal.
                 self._reject(
                     DIAG_LIFECYCLE_FINAL_AFTER_FINAL,
                     f"non-closed final for segment {sid!r} already in state final; "
@@ -1965,294 +2196,224 @@ class _LifecycleGuard:
                     "closed event is legal).",
                 )
                 return None
-            # ``closed`` is the terminal post-processing correction and may
-            # replace previously frozen text in place.
-            if not is_closed_final and self._frozen_prefix_rewritten(event, sid):
-                self._reject(
-                    DIAG_FROZEN_PREFIX_REWRITTEN,
-                    f"segment {sid!r} rewrote its already-frozen prefix "
-                    "(text[:stable_until] changed); suppressed (the "
-                    "frozen prefix is immutable).",
-                )
-                return None
-            # Frozen-speaker rule: once a frozen prefix was
-            # established by a PRIOR event AND a non-None speaker has been
-            # accepted for the segment, the last accepted speaker is locked --
-            # changing it (X->Y) or retracting it (X->None) is suppressed.
-            # None->X after freezing stays legal (the recommended
-            # delay-speaker-to-final engine strategy), and ``closed`` is the
-            # exempt terminal correction. Placement is load-bearing: this must
-            # read the frontier BEFORE _clamp_stable_until below records this
-            # event's own freeze, or a same-event freeze+speaker-set would
-            # falsely trip it. Suppress the WHOLE event, never clamp the
-            # speaker back: a clamp would keep presenting stale attribution --
-            # a silent wrong result in the other direction.
+            text = event.text or ""
+            prior_stable = self._stable_text.get(sid, "")
+            # ``closed`` is the terminal post-processing restatement and may
+            # reformat stable text in place, so the two rules below that
+            # compare an event with the segment's history exempt it: the
+            # rewrite check against the earlier stable text, and the speaker
+            # lock. The repair in ``_clamp_stable_text`` still applies: the
+            # stable text of a ``closed`` final is its whole text.
             if (
                 not is_closed_final
-                and self._stable_until.get(sid, 0) > 0
+                and prior_stable
+                and (
+                    not validate_stable_text(text, prior_stable)
+                    or event.text_separator != self._stable_separator[sid]
+                )
+            ):
+                cause = (
+                    "changes its preceding separator"
+                    if event.text_separator != self._stable_separator[sid]
+                    else "adds a combining mark or a zero width joiner or non-joiner right after it"
+                    if text.startswith(prior_stable)
+                    else "no longer starts with it"
+                )
+                self._reject(
+                    DIAG_STABLE_TEXT_REWRITTEN,
+                    f"{event.type} for segment {sid!r} changes the segment's stable "
+                    f"text {prior_stable!r}: its text {text!r} {cause}. Stable text "
+                    "does not change while its segment lives.",
+                )
+                return None
+            # Locked-speaker rule: once stable text was established by a PRIOR
+            # event AND a non-None speaker has been accepted for the segment,
+            # the last accepted speaker is locked -- changing it (X->Y) or
+            # retracting it (X->None) is suppressed. None->X after that stays
+            # legal (the recommended delay-speaker-to-final engine strategy),
+            # and ``closed`` is the exempt terminal correction. Placement is
+            # load-bearing: ``prior_stable`` is read BEFORE this event's own
+            # stable text is recorded below, or an event that both makes text
+            # stable and sets the speaker would falsely trip it. Suppress the
+            # WHOLE event, never clamp the speaker back: a clamp would keep
+            # presenting stale attribution -- a silent wrong result in the
+            # other direction.
+            if (
+                not is_closed_final
+                and prior_stable
                 and sid in self._last_speaker
                 and event.speaker != self._last_speaker[sid]
             ):
                 change = "retracts it (X->None)" if event.speaker is None else "changes it (X->Y)"
                 self._reject(
-                    DIAG_FROZEN_SPEAKER_REWRITTEN,
-                    f"segment {sid!r} has a frozen prefix and an accepted speaker "
+                    DIAG_LOCKED_SPEAKER_REWRITTEN,
+                    f"segment {sid!r} has stable text and an accepted speaker "
                     f"{self._last_speaker[sid]!r}, but this {event.type} {change}; "
-                    "suppressed (a frozen segment's speaker is locked "
-                    "-- only None->X after freezing and the closed terminal "
-                    "correction are legal).",
+                    "suppressed (the speaker of a segment with stable text is locked "
+                    "-- only None->X and the closed terminal correction are legal).",
                 )
                 return None
-            had_stable_until = sid in self._stable_until
-            prior_stable_until = self._stable_until.get(sid, 0)
-            had_frozen_text = sid in self._frozen_text
-            prior_frozen_text = self._frozen_text.get(sid, "")
-            obligation = self._supersede_obligations.get(sid)
-            had_obligation_frozen = obligation is not None and sid in obligation.frozen
-            prior_obligation_frozen = (
-                obligation.frozen.get(sid, "") if obligation is not None else ""
-            )
-            had_obligation_separator = obligation is not None and sid in obligation.separators
-            prior_obligation_separator = (
-                obligation.separators.get(sid, "") if obligation is not None else ""
-            )
-
-            event = self._clamp_stable_until(event, sid, allow_decrease=is_closed_final)
-            su = event.stable_until or 0
-            if su > 0 and event.text is not None:
-                self._frozen_text[sid] = event.text[:su]
-                if obligation is not None:
-                    obligation.separators[sid] = event.text_separator
-                if is_closed_final and obligation is not None:
-                    # Bookkeeping only: a closed final may legally rewrite frozen
-                    # text (the divergence rejection below is exempted for it),
-                    # but its freeze still fulfills the segment's supersede
-                    # obligation. Without recording it here -- the rejection
-                    # path's _supersede_preserves_frozen is the ledger's only
-                    # other writer -- a closed final that is a replacement
-                    # group's sole freeze never registers, and finalize() emits
-                    # a false supersede_obligation_unfulfilled for fully
-                    # preserved text (a lying diagnostic).
-                    obligation.frozen[sid] = self._frozen_text[sid]
-                if not is_closed_final and not self._supersede_preserves_frozen(sid):
-                    assert obligation is not None
-                    # Capture the diverging comparison BEFORE the rollback below
-                    # restores ``obligation.frozen[sid]``. The contradiction is a
-                    # property of the supersede GROUP, not of ``sid`` alone: a
-                    # later (for example, out-of-order) freeze on ``sid`` can simply
-                    # complete the contiguous run and expose an EARLIER new id's
-                    # divergence, so blaming ``sid`` mis-attributes the rewrite.
-                    # Report the group and the F_old-vs-F_new comparison instead.
-                    f_old = obligation.f_old
-                    f_new = obligation.f_new()
-                    group = obligation.new_ids
-                    if had_stable_until:
-                        self._stable_until[sid] = prior_stable_until
-                    else:
-                        self._stable_until.pop(sid, None)
-                    if had_frozen_text:
-                        self._frozen_text[sid] = prior_frozen_text
-                    else:
-                        self._frozen_text.pop(sid, None)
-                    if had_obligation_frozen:
-                        obligation.frozen[sid] = prior_obligation_frozen
-                    else:
-                        obligation.frozen.pop(sid, None)
-                    if had_obligation_separator:
-                        obligation.separators[sid] = prior_obligation_separator
-                    else:
-                        obligation.separators.pop(sid, None)
-                    self._reject(
-                        DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE,
-                        f"supersede replacement group {group!r} froze a "
-                        f"concatenated prefix {f_new!r} that diverges from the "
-                        f"retired frozen text {f_old!r} it MUST preserve; the freeze "
-                        f"on segment {sid!r} (the latest in the group to freeze) "
-                        "completed the contiguous run that exposed the divergence. "
-                        "Suppressed (supersede MUST preserve frozen "
-                        "text).",
-                    )
-                    return None
+            event = self._clamp_stable_text(event, prior_stable)
             if event.speaker is not None:
                 # Accepted-commit point: every reject path above has already
                 # returned, so a rejected event never poisons the ledger. This
-                # placement IS the rollback discipline -- cheaper than (and
-                # equivalent to) restoring the entry the way the supersede-
-                # obligation path above restores _stable_until/_frozen_text.
-                # Closed finals record too (harmless: terminal states reject
-                # all later events anyway).
+                # placement IS the rollback discipline.
                 self._last_speaker[sid] = event.speaker
-            self._text_separator[sid] = event.text_separator
-            if event.type == "final":
-                self._state[sid] = "closed" if event.finality == "closed" else "final"
-            else:
+            if event.type == "partial":
                 self._state[sid] = "open"
+                self._stable_text[sid] = event.stable_text or ""
+                self._stable_separator[sid] = event.text_separator
+            else:
+                # After a final, no rule reads the segment's stable text
+                # again: a later partial or plain final is rejected by state,
+                # and ``closed`` is exempt. The speaker of a plain final is
+                # still read when a later supersede retires the segment (the
+                # cross-speaker merge check); nothing reads it after closed.
+                self._stable_text.pop(sid, None)
+                self._stable_separator.pop(sid, None)
+                if is_closed_final:
+                    self._state[sid] = "closed"
+                    self._last_speaker.pop(sid, None)
+                else:
+                    self._state[sid] = "final"
             # First ACCEPTED mention claims the reading-order position (a
             # supersede-declared id already sits where the splice put it).
             self._ledger.declare(sid)
             self._commit_audio_cursor(pending_cursor)
             return event
 
+        if event.type == "done":
+            self._note_abandoned_stable_text()
         self._commit_audio_cursor(pending_cursor)
         return event
 
-    def _clamp_stable_until(
-        self, event: TranscriptionEvent, sid: str, *, allow_decrease: bool = False
-    ) -> TranscriptionEvent:
-        """Clamp a decreasing or invalid ``stable_until``.
-
-        With ``allow_decrease`` (the terminal ``closed`` event), a *smaller*
-        ``stable_until`` is spec-legal: the post-processing rewrite (ITN /
-        punctuation / casing) may shorten the text -- for example,
-        "twenty twenty" -> "2020" -- so the monotonic-increase rule MUST NOT
-        clamp it back up above the new text. Only the structural bounds
-        (``0 <= stable_until <= len(text)``, non-combining cut) are repaired,
-        and the closed frontier is **not** recorded as the segment's running
-        frontier (the segment is terminal; recording it would poison nothing
-        but means nothing).
+    def segments_in_state(self, state: str) -> list[str]:
+        """Return the ids of the segments in one lifecycle state.
 
         Args:
-            event: The partial/final event.
-            sid: The segment id.
-            allow_decrease: ``True`` for a terminal ``closed`` event, whose
-                ``stable_until`` may legally shrink along with the text.
+            state: ``"open"``, ``"final"``, ``"closed"``, or ``"superseded"``.
 
         Returns:
-            The event, with ``stable_until`` clamped if it decreased illegally
-            or was an invalid boundary; otherwise the event unchanged.
+            The segment ids in that state, in the order the guard first
+            recorded them: with the first admitted event for the id, or with
+            the ``supersede`` that introduced it.
         """
-        su = event.stable_until
-        if su is None:
-            return event
-        prior = self._stable_until.get(sid, 0)
+        return [sid for sid, current in self._state.items() if current == state]
+
+    def _note_abandoned_stable_text(self) -> None:
+        """Report the open segments that have stable text when ``done`` arrives.
+
+        The result holds only finalized segments. A segment that has stable
+        text and is still open when the session reaches ``done`` therefore
+        drops text the application was told does not change. A segment that
+        a ``supersede`` retired owes nothing: the supersede withdrew its
+        stable text. The guard cannot repair the loss, because it does not
+        invent a ``final``, so it records ``stable_text_abandoned`` (and
+        raises in strict mode). A session that ends with an error is not
+        checked: the failure is already explicit.
+        """
+        abandoned = [
+            sid
+            for sid, state in self._state.items()
+            if state == "open" and self._stable_text.get(sid)
+        ]
+        if abandoned:
+            self._reject(
+                DIAG_STABLE_TEXT_ABANDONED,
+                "done arrived while these segments had stable text and never "
+                f"reached final: {abandoned!r}. That text is absent from the "
+                "result. Before done, the engine MUST bring every segment that has "
+                "stable text to final, or retire it with a supersede.",
+            )
+
+    def _clamp_stable_text(self, event: TranscriptionEvent, prior: str) -> TranscriptionEvent:
+        """Repair a content event whose ``stable_text`` breaks a rule.
+
+        For a non-closed event the caller has already established that
+        ``event.text`` starts with ``prior`` and that ``prior`` still passes
+        the boundary check there, so every repair of a ``partial`` lands on a
+        real prefix of ``event.text``.
+
+        Each repair is recorded as ``stable_text_clamped``, or raises in
+        strict mode:
+
+        * A ``final`` whose stable text is not its whole text gets the whole
+          text.
+        * A ``partial`` whose stable text is not a string, or not the start
+          of its text, keeps ``prior``.
+        * A ``partial`` whose stable text is shorter than ``prior`` keeps
+          ``prior``: a partial's stable text does not shrink.
+        * A ``partial`` whose stable text fails the boundary check is moved
+          back to the nearest boundary that passes it, never below
+          ``prior``.
+
+        The first two cannot happen to a validated event: construction
+        rejects them. They reach the guard only on an event built without
+        validation, for example by ``model_copy(update=...)``.
+
+        The boundary repair moves back only a stable text that ends inside a
+        combining character sequence or right after a zero width joiner. A
+        boundary that passes :func:`validate_stable_text` stays where it is,
+        even when it falls inside one user-perceived character.
+
+        Args:
+            event: The ``partial`` or ``final`` event.
+            prior: The segment's last accepted stable text (``""`` if none).
+
+        Returns:
+            The event, with ``stable_text`` replaced when a repair applied;
+            otherwise the event unchanged.
+        """
         text = event.text or ""
-        clamped = su
-        reason = ""
-        if su < prior and not allow_decrease:
+        # Typed as ``object``: an event built without validation can carry
+        # any value here, not only the ``str | None`` the model declares.
+        stable: object = event.stable_text
+        # Each message states the violation and the value that passes. It
+        # does not say what happened to the event: in strict mode the same
+        # text is the error, and nothing is delivered.
+        subject = f"{event.type} for segment {event.segment_id!r}"
+        if event.type == "final":
+            if stable == text:
+                return event
+            self._reject(
+                DIAG_STABLE_TEXT_CLAMPED,
+                f"{subject} carries stable_text {stable!r}, which is not its whole "
+                f"text {text!r}. The stable_text of a final MUST be its whole text.",
+            )
+            return event.model_copy(update={"stable_text": text})
+        reasons: list[str] = []
+        if not isinstance(stable, str) or not text.startswith(stable):
             clamped = prior
-            reason = f"stable_until decreased {su} -> clamped to {prior} (MUST only increase)"
-        if not validate_stable_until(text, clamped):
-            # Fall back to the largest valid boundary <= clamped without moving
-            # below the previously published frozen frontier (for a closed
-            # event the frontier constraint is void, so the floor is 0).
-            floor = 0 if allow_decrease else prior
-            safe = min(clamped, len(text))
-            while safe > floor and not validate_stable_until(text, safe):
-                safe -= 1
-            if reason:
-                reason += "; "
-            reason += f"stable_until {clamped} invalid boundary -> {safe}"
-            clamped = safe
-        if reason:
-            self._reject(DIAG_STABLE_UNTIL_CLAMPED, reason)
-        if clamped != su:
-            event = event.model_copy(update={"stable_until": clamped})
-        if not allow_decrease:
-            self._stable_until[sid] = clamped
+            reasons.append(f"stable_text {stable!r} is not the start of text {text!r}")
+        elif len(stable) < len(prior):
+            clamped = prior
+            reasons.append(
+                f"stable_text {stable!r} is shorter than the segment's earlier "
+                f"stable text {prior!r} (stable text only grows)"
+            )
+        else:
+            clamped = stable
+        if splits_combining_sequence(text, len(clamped)):
+            reasons.append(
+                f"stable_text {clamped!r} fails the boundary check in text {text!r}: "
+                "it ends inside a combining character sequence or right after a "
+                "zero width joiner"
+            )
+            # The walk stops at ``prior`` at the latest: the caller checked
+            # that ``prior`` ends on a valid boundary in this text.
+            index = len(clamped)
+            while splits_combining_sequence(text, index):
+                index -= 1
+            clamped = text[:index]
+        if reasons:
+            self._reject(
+                DIAG_STABLE_TEXT_CLAMPED,
+                f"{subject}: {'; '.join(reasons)}. The stable text that passes these "
+                f"checks is {clamped!r}.",
+            )
+        if clamped != stable:
+            event = event.model_copy(update={"stable_text": clamped})
         return event
-
-    def _frozen_prefix_rewritten(self, event: TranscriptionEvent, sid: str) -> bool:
-        """Return whether ``event`` rewrites segment ``sid``'s frozen prefix.
-
-        The frozen prefix (``text[:stable_until]`` at the last accepted frontier)
-        is immutable: an engine may extend the text but MUST NOT alter what it
-        has already frozen. Returns ``False`` for the first event
-        of a segment or when nothing is frozen yet.
-
-        Args:
-            event: The incoming partial/final event.
-            sid: The segment id.
-
-        Returns:
-            ``True`` if the previously frozen prefix would change.
-        """
-        prior_su = self._stable_until.get(sid, 0)
-        if prior_su <= 0 or event.text is None:
-            return False
-        return event.text[:prior_su] != self._frozen_text.get(
-            sid, ""
-        ) or event.text_separator != self._text_separator.get(sid, " ")
-
-    def _supersede_preserves_frozen(self, sid: str) -> bool:
-        """Return whether ``sid``'s freeze keeps a supersede obligation intact.
-
-        When ``sid`` is one of the ``new_ids`` of an active supersede group, the
-        concatenated frozen prefix of the new segments (``F_new``, in ``new_ids``
-        order) MUST agree with the retired segments' concatenated frozen prefix
-        (``F_old``) on their common prefix -- neither may rewrite the other.
-        Only the *contradiction* (divergence on the common
-        prefix) is checked, and eagerly: it is the cardinal-sin direction. The
-        opposite case (``F_new`` still strictly shorter than ``F_old``) is the
-        safe, conservative direction (the new segmentation has simply not yet
-        re-frozen everything) and is permitted to remain pending.
-
-        Args:
-            sid: The segment id that just froze (more) text.
-
-        Returns:
-            ``True`` if no obligation is violated (including when ``sid`` is not
-            part of any supersede group).
-        """
-        obligation = self._supersede_obligations.get(sid)
-        if obligation is None:
-            return True
-        obligation.frozen[sid] = self._frozen_text.get(sid, "")
-        f_new = obligation.f_new()
-        common = min(len(f_new), len(obligation.f_old))
-        return f_new[:common] == obligation.f_old[:common]
-
-    def finalize(self) -> list[Diagnostic]:
-        """Sweep for supersede obligations left unfulfilled at session end.
-
-        The supersede frozen-prefix rule is asymmetric: the
-        *contradiction* direction is rejected eagerly in :meth:`admit`, but the
-        *conservative* direction -- the replacement's concatenated frozen prefix
-        ``F_new`` remaining strictly SHORTER than the retired ``F_old`` -- is
-        permitted to stay pending, on the bet that later events re-freeze the
-        rest. If the session ends with that bet unsettled, frozen text the user
-        saw was effectively dropped from the lineage; the spec allows it but
-        wants it reported "at most with a soft diagnostic". This emits exactly
-        that: one **soft** (``info``) ``supersede_obligation_unfulfilled``
-        diagnostic per still-short obligation, naming the affected ``new_ids``.
-        It is NOT an error and does not reject anything -- the supersede stands.
-
-        Call this once when the session reaches its terminal (the base appends
-        ``done``) and once when :func:`~standard_asr.compliance.check_event_sequence`
-        finishes replaying. Idempotent: the sweep runs at most once per guard.
-
-        Returns:
-            The newly emitted obligation diagnostics (also recorded into
-            :attr:`diagnostics`, subject to the bounded-channel cap); empty if
-            every obligation reconciled.
-        """
-        if self._finalized:
-            return []
-        self._finalized = True
-        emitted: list[Diagnostic] = []
-        seen: set[int] = set()
-        for obligation in self._supersede_obligations.values():
-            # new_ids of one supersede share a single obligation object; emit
-            # once per obligation, not once per new_id.
-            if id(obligation) in seen:
-                continue
-            seen.add(id(obligation))
-            if len(obligation.f_new()) < len(obligation.f_old):
-                emitted.append(
-                    Diagnostic(
-                        level="info",
-                        code=DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED,
-                        message=(
-                            f"supersede replacement {obligation.new_ids!r} ended with its "
-                            f"concatenated frozen prefix shorter than the retired frozen text "
-                            f"({obligation.f_new()!r} vs {obligation.f_old!r}); the unre-frozen "
-                            "tail was dropped from the lineage (permitted, "
-                            "reported as a soft diagnostic)."
-                        ),
-                    )
-                )
-        for diagnostic in emitted:
-            self._record(diagnostic)
-        return emitted
 
     def _clamp_audio_cursor(
         self, event: TranscriptionEvent
@@ -2281,13 +2442,6 @@ class _LifecycleGuard:
         cursor = event.audio_processed_until
         if cursor is None:
             return event, None
-        if not self._audio_progress:
-            self._reject(
-                DIAG_AUDIO_PROGRESS_UNDECLARED,
-                "audio_processed_until was removed because this session does not "
-                "declare streaming.audio_progress support.",
-            )
-            return event.model_copy(update={"audio_processed_until": None}), None
         if cursor < self._audio_cursor:
             self._reject(
                 DIAG_AUDIO_CURSOR_DECREASED,
@@ -2393,7 +2547,6 @@ class TranscriptionSession(ABC):
         audio_history_maxlen: int = DEFAULT_AUDIO_HISTORY_MAXLEN,
         strict_lifecycle: bool = False,
         max_guard_diagnostics: int = DEFAULT_MAX_GUARD_DIAGNOSTICS,
-        audio_progress: bool = False,
     ) -> None:
         """Initialize the session.
 
@@ -2424,16 +2577,27 @@ class TranscriptionSession(ABC):
                 ``send_audio`` so a slow engine exerts real backpressure.
             audio_history_maxlen: Capacity of the bounded rolling audio buffer
                 used to replay recent audio after a reconnect.
-            strict_lifecycle: If ``True``, raise on illegal lifecycle
-                transitions instead of suppressing + diagnosing them.
+            strict_lifecycle: If ``True``, the first violation the lifecycle
+                guard finds ends the session: an illegal transition, a
+                stable-text or speaker rule violation, a decreasing audio
+                cursor, stable text abandoned at ``done``, or a stream that
+                goes beyond the engine's effective streaming capabilities.
+                The session then delivers a terminal ``error`` event with
+                code ``engine_error`` in place of the offending event, and
+                iterating the session does not raise. If ``False``, the
+                guard suppresses or repairs the offending event and records
+                a diagnostic. For stable text abandoned at ``done``, it
+                records the diagnostic and delivers ``done``. For a stream
+                beyond the effective capabilities, it delivers the event
+                unchanged and records one diagnostic per kind. Only a
+                session given the engine's capabilities checks events
+                against them; :func:`~standard_asr.bind_session_capabilities`
+                says which sessions get them.
             max_guard_diagnostics: Cap on the bounded lifecycle-suppression
                 diagnostics channel; further diagnostics are
                 aggregated into a single overflow summary rather than growing
                 without bound. Exposed alongside the other bounds so a session
                 can size it; defaults to ``DEFAULT_MAX_GUARD_DIAGNOSTICS``.
-            audio_progress: Whether this session may emit
-                ``audio_processed_until``. EngineBase replaces this initial
-                value with the effective capability after session construction.
 
         Raises:
             ValueError: If a deadline is not positive (or ``None`` where
@@ -2468,7 +2632,6 @@ class TranscriptionSession(ABC):
         self._guard = _LifecycleGuard(
             strict=strict_lifecycle,
             max_diagnostics=max_guard_diagnostics,
-            audio_progress=audio_progress,
         )
         self._mode: Literal["feed", "manual"] | None = None
         self._ended = False
@@ -2629,28 +2792,6 @@ class TranscriptionSession(ABC):
             self._max_idle = deadlines.max_idle
         if "max_session_seconds" in deadlines.model_fields_set:
             self._max_session_seconds = deadlines.max_session_seconds
-
-    def _configure_audio_progress(self, supported: bool) -> None:
-        """Apply the effective audio-progress capability (friend API).
-
-        The base engine calls this after constructing a session. It keeps the
-        event guard synchronized with the effective capability tree, so an
-        adapter cannot accidentally emit a processing cursor it did not
-        declare.
-
-        Args:
-            supported: Whether ``streaming.audio_progress`` is supported.
-
-        Raises:
-            InvalidSessionUseError: If the session already has a terminal
-                outcome and its event contract is no longer configurable.
-        """
-        self._ensure_reserved_attrs_checked()
-        if self._terminal_event is not None:
-            raise InvalidSessionUseError(
-                "Cannot configure audio progress after the streaming session ended."
-            )
-        self._guard.set_audio_progress(supported)
 
     def set_input_duration(self, seconds: float) -> None:
         """Record the measured duration of the complete streaming input.
@@ -3193,12 +3334,14 @@ class TranscriptionSession(ABC):
                     return
                 self._reducer.add(self._buffer.put(admitted))
             self._drain_pending_reconnects()
-            # Session ended cleanly: the funnel sweeps for supersede obligations
-            # whose replacement never re-froze all the retired frozen text. Any
-            # such lineage loss is permitted but MUST be reported honestly as a
-            # soft diagnostic; it surfaces through diagnostics().
+            # Session ended cleanly. The base's own done passes the guard like
+            # an engine-emitted one, so the end-of-session check runs on both.
+            # In strict mode that check raises, and the handler below ends the
+            # session with engine_error instead of done.
             # done MUST never be dropped: bypass the bound so it always lands.
-            self._buffer.put_forced(self._terminate(TranscriptionEvent.done()))
+            done = TranscriptionEvent.done()
+            self._guard.admit(done)
+            self._buffer.put_forced(self._terminate(done))
         except asyncio.CancelledError:  # pragma: no cover - teardown path
             raise
         except EventBufferOverflowError:
@@ -3404,8 +3547,6 @@ class TranscriptionSession(ABC):
         in :meth:`_deadline_events`), so a future terminal path cannot
         silently skip a step:
 
-        * run the supersede-obligation sweep (idempotent) so
-          :meth:`diagnostics` is complete on every exit path;
         * release the audio-input side: a terminal also ends the producer --
           the audio queue's only drainer -- so without a release, an
           application feeder blocked in :meth:`send_audio` on the bounded
@@ -3433,7 +3574,6 @@ class TranscriptionSession(ABC):
             The terminal event -- with the session language stamped in when
             the terminal carried none -- for delivery by the caller.
         """
-        self._guard.finalize()
         self._release_audio_input()
         if terminal.detected_language is None:
             sticky = self._reducer.detected_language
@@ -3507,6 +3647,25 @@ class TranscriptionSession(ABC):
         events.append(self._terminate(TranscriptionEvent.make_error(code=code, recoverable=False)))
         return events
 
+    def _bind_streaming_capabilities(self, capabilities: StreamingCapabilities) -> None:
+        """Give the session the engine's streaming capabilities to check against.
+
+        Called by the base :meth:`~standard_asr.runtime.interface.EngineBase.\
+start_transcription` template with the engine's effective capabilities, and
+        by :func:`~standard_asr.bind_session_capabilities` for an engine that
+        does not derive from ``EngineBase``. From then on the lifecycle guard
+        checks each event it forwards against them, under the rules that
+        function states. A session that neither of them binds is not checked.
+
+        Args:
+            capabilities: The engine's effective streaming capabilities.
+
+        Raises:
+            TypeError: If a subclass rebound a reserved base attribute.
+        """
+        self._ensure_reserved_attrs_checked()
+        self._guard.bind_capabilities(capabilities)
+
     def _attach_initial_diagnostics(self, diagnostics: list[Diagnostic]) -> None:
         """Record standard-layer diagnostics produced before the session ran.
 
@@ -3541,9 +3700,13 @@ start_transcription` template with the parameter-gating and language-axis
 
         Returns:
             The standard-layer parameter-gating / language diagnostics attached
-            at session establishment, followed by the runtime's
-            lifecycle-suppression diagnostics (suppressed illegal transitions or
-            clamped ``stable_until`` values), capped as described above.
+            at session establishment, followed by the lifecycle guard's
+            diagnostics: suppressed illegal transitions, clamped
+            ``stable_text`` values, stable text abandoned at ``done``, and
+            events that go beyond the engine's effective streaming
+            capabilities (one per kind; such an event is delivered
+            unchanged; see :func:`~standard_asr.bind_session_capabilities`).
+            The list is capped as described above.
         """
         return [*self._initial_diagnostics, *self._guard.diagnostics]
 
@@ -4095,6 +4258,7 @@ class SyncSession:
 __all__ = [
     "ARTIFACT_ACQUISITION_FAILED_CODE",
     "ARTIFACT_UNAVAILABLE_CODE",
+    "CAPABILITY_DIAGNOSTIC_CODES",
     "DEFAULT_AUDIO_HISTORY_MAXLEN",
     "DEFAULT_AUDIO_QUEUE_MAXSIZE",
     "DEFAULT_DONE_TIMEOUT",
@@ -4103,20 +4267,25 @@ __all__ = [
     "DEFAULT_MAX_IDLE",
     "DEFAULT_MAX_SESSION_SECONDS",
     "DIAG_AUDIO_CURSOR_DECREASED",
-    "DIAG_AUDIO_PROGRESS_UNDECLARED",
-    "DIAG_FROZEN_PREFIX_REWRITTEN",
-    "DIAG_FROZEN_PREFIX_REWRITTEN_SUPERSEDE",
-    "DIAG_FROZEN_SPEAKER_REWRITTEN",
     "DIAG_LIFECYCLE_AFTER_TERMINAL",
     "DIAG_LIFECYCLE_CLOSED_SUPERSEDED",
     "DIAG_LIFECYCLE_FINAL_AFTER_FINAL",
     "DIAG_LIFECYCLE_PARTIAL_AFTER_FINAL",
     "DIAG_LIFECYCLE_RETIRED_RESUPERSEDED",
+    "DIAG_LOCKED_SPEAKER_REWRITTEN",
     "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
-    "DIAG_STABLE_UNTIL_CLAMPED",
+    "DIAG_FINALITY_LEVEL_NOT_REACHED",
+    "DIAG_STABLE_TEXT_ABANDONED",
+    "DIAG_STABLE_TEXT_CLAMPED",
+    "DIAG_STABLE_TEXT_REWRITTEN",
+    "DIAG_STREAM_EXCEEDS_DIARIZATION",
+    "DIAG_STREAM_EXCEEDS_EMITS_PARTIALS",
+    "DIAG_STREAM_EXCEEDS_PARTIAL_STABILITY",
+    "DIAG_STREAM_EXCEEDS_RE_SEGMENTS",
+    "DIAG_STREAM_EXCEEDS_AUDIO_PROGRESS",
+    "DIAG_STREAM_EXCEEDS_TIMESTAMPS",
+    "DIAG_STREAM_EXCEEDS_WORD_TIMESTAMPS",
     "DIAG_SUPERSEDE_CROSS_SPEAKER_MERGE",
-    "DIAG_SUPERSEDE_DELETES_FROZEN_TEXT",
-    "DIAG_SUPERSEDE_OBLIGATION_UNFULFILLED",
     "DIAG_SUPERSEDE_REINTRODUCES_SEGMENT",
     "DIAGNOSTICS_TRUNCATED_CODE",
     "DIAG_SUPERSEDE_UNKNOWN_OLD_ID",
@@ -4129,5 +4298,5 @@ __all__ = [
     "TranscriptionSession",
     "compose_reduced_text",
     "reduce_event",
-    "validate_stable_until",
+    "validate_stable_text",
 ]
