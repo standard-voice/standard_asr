@@ -37,6 +37,8 @@ The server owns one configured engine instance per model for the FastAPI applica
 
 The pool has no implicit deadline for draining active work. Closing an engine while a native operation still uses its buffers would violate resource ownership; skipping it and reporting complete cleanup would hide unfinished work. Deployments that need a hard process shutdown deadline enforce that policy outside the pool. Coroutine cancellation cannot force a synchronous native operation to return.
 
+Canceling a REST route waits for its synchronous transcription or readiness inspection to finish before releasing the engine lease. A WebSocket route also completes session teardown before releasing its lease. Repeated cancellation does not interrupt those waits. The route preserves its cancellation outcome; if the operation fails while finishing, the server logs that failure using the operator-log redaction rules in §3.7.
+
 `create_app(engine_configs=...)` can supply one operator-owned init-config mapping per model. The pool recursively snapshots the mapping at app creation and copies a fresh snapshot for every factory attempt, so caller mutation and a failed factory's mutation cannot change a later attempt. The mapping and environment defaults establish that model's effective server config; clients cannot change it over the wire. The pool is bounded by the registry's discovered model set.
 
 ## 2. Audio is **not** pre-decoded

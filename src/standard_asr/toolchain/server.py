@@ -20,9 +20,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -67,6 +67,48 @@ if TYPE_CHECKING:
     from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
+_Result = TypeVar("_Result")
+
+
+async def _await_engine_operation(operation: Coroutine[Any, Any, _Result]) -> _Result:
+    """Finish engine work before propagating cancellation to its lease owner.
+
+    A canceled await does not stop a synchronous worker thread. Session cleanup
+    must also finish before the route releases its engine. Repeated cancellation
+    keeps waiting; an operation failure during that wait is logged before the
+    original cancellation propagates.
+
+    Args:
+        operation: Engine work or session cleanup owned by the calling route.
+
+    Returns:
+        The operation's result when the caller was not canceled.
+
+    Raises:
+        asyncio.CancelledError: After the operation ends, if the caller was canceled.
+        Exception: An operation failure when the caller was not canceled.
+    """
+    task = asyncio.create_task(operation)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - report the completed task below.
+                break
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - cancellation remains the caller's outcome.
+            log_exception_safely(
+                logger, "Engine operation failed while finishing a canceled request"
+            )
+        raise
+
 
 #: Default maximum accepted request-body size, in bytes (16 MiB). Enforced
 #: *before* decoding to bound peak memory and prevent unauthenticated
@@ -590,7 +632,7 @@ def create_app(
         lease = await _create_engine_or_http_error(engine_pool, model, HTTPException)
         async with lease as asr:
             try:
-                report = await asyncio.to_thread(asr.artifact_status)
+                report = await _await_engine_operation(asyncio.to_thread(asr.artifact_status))
                 require_sync_result(report, "artifact_status()", expected_type=ArtifactReport)
             except ArtifactStatusError as exc:
                 log_exception_safely(
@@ -1638,7 +1680,7 @@ async def _bridge_stream(
         # shape server-api.md 4.2 defines, and the stream itself succeeded);
         # it is safe-logged instead of escaping the route as a raw traceback.
         try:
-            await session.__aexit__(None, None, None)
+            await _await_engine_operation(session.__aexit__(None, None, None))
         except Exception:  # noqa: BLE001
             log_exception_safely(logger, "WebSocket session teardown failed")
 
@@ -1781,7 +1823,7 @@ async def _run_transcription(
             raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
 
         try:
-            result = await asyncio.to_thread(asr.transcribe, audio, params)
+            result = await _await_engine_operation(asyncio.to_thread(asr.transcribe, audio, params))
             # Enforce the synchronous call boundary before projecting the result.
             require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
             response = TranscribeResponse(model=model, result=result)
