@@ -335,6 +335,54 @@ def test_cli_models_list_empty(
     assert "No Standard ASR models were discovered." in output
 
 
+def _inventory_registry() -> ModelRegistry:
+    """Build a registry with a named preset and a default preset that cannot load."""
+    eps = [
+        EntryPoint(
+            name="alpha/first",
+            value="tests.test_discovery:_dummy_factory",
+            group="standard_asr.models",
+        ),
+        EntryPoint(
+            name="beta/",
+            value="tests.test_cli:_missing_list_target",
+            group="standard_asr.models",
+        ),
+    ]
+    return discover_models(eps=eps, strict=True)
+
+
+def test_cli_models_list_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The default preset prints model_name "": the text view's "<default>" is a
+    # label, not data. The preset whose target cannot load still appears,
+    # because --json reads entry points only, as the text view does.
+    _patch_discover(monkeypatch, _inventory_registry())
+
+    exit_code = cli.main(["list", "--json"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert json.loads(captured.out) == [
+        {"key": "alpha/first", "engine_id": "alpha", "model_name": "first"},
+        {"key": "beta/", "engine_id": "beta", "model_name": ""},
+    ]
+    assert captured.err == ""
+
+
+def test_cli_models_list_json_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An empty registry prints an empty list, not the text view's sentence.
+    _patch_discover(monkeypatch, ModelRegistry({}))
+
+    exit_code = cli.main(["list", "--json"])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
 def test_cli_models_show(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

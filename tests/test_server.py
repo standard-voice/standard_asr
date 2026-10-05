@@ -69,6 +69,7 @@ from standard_asr.engine import (
 from standard_asr.plugins.discovery import ModelRegistry, discover_models
 from standard_asr.runtime.config import LanguageConfigMixin
 from standard_asr.runtime.streaming import TranscriptionEvent, TranscriptionSession
+from standard_asr.toolchain import cli as cli_module
 from standard_asr.toolchain import server as server_module
 
 if TYPE_CHECKING:
@@ -4813,6 +4814,25 @@ def test_bulk_models_remains_import_free_for_broken_plugin() -> None:
 
     assert resp.status_code == 200
     assert resp.json() == [{"key": "dummy/echo", "engine_id": "dummy", "model_name": "echo"}]
+
+
+def test_cli_list_json_prints_the_bulk_models_response(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`standard-asr list --json` prints the list that `GET /v1/models` returns."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    registry = _broken_load_registry()
+    client = TestClient(server_module.create_app(registry=registry))
+
+    def _discover_models(**_: object) -> ModelRegistry:
+        return registry
+
+    monkeypatch.setattr(cli_module, "discover_models", _discover_models)
+
+    assert cli_module.main(["list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == client.get("/v1/models").json()
 
 
 def test_metadata_endpoints_load_failure_is_scrubbed_500_not_404() -> None:

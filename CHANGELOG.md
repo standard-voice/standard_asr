@@ -12,6 +12,7 @@ releases may include breaking changes.
 
 ### Added
 
+- **`standard-asr list --json` prints the model list as JSON.** It prints the list of `ModelInfo` objects that the reference server's `GET /v1/models` returns, sorted by model key, so an application that discovers models through the CLI does not parse text. A default preset has the `model_name` `""`. Like the text view, the command imports no plugin.
 - **Inference-artifact lifecycle protocol.** Protocol 0.2 adds typed static
   declarations, configured-instance status reports, explicit acquisition with
   refresh and progress, structured operator actions, and distinct availability
