@@ -14,6 +14,7 @@ List all discovered models.
 Flags:
 - `--strict-discovery`: fail on invalid plugin entry points during discovery (default: keep going, skipping invalid ones). Deliberately NOT named `--strict`: bare `strict` is the engine's strict/best_effort *parameter-gating* policy (an init-config field, `--set strict=...`), a different setting.
 - `--on-conflict {warn_keep_first,replace}`: strategy for duplicate model keys (default: `warn_keep_first`).
+- `--json`: print the list of `ModelInfo` objects that `GET /v1/models` returns ([server API](./server-api.md), section 3.2), sorted by model key. A default preset has the `model_name` `""`. When discovery finds no model, the command prints `[]`.
 
 ### `standard-asr show <engine/model>`
 Show metadata about a specific model entry point. The output has four sections: identity (engine/model, module, attribute, entry-point value), declared **capabilities**, declared **metadata**, and the init-**config schema**.
@@ -122,7 +123,7 @@ Read-only dependency diagnostic: enumerates installed plugins and reports numpy 
 
 - Human‑readable console output by default; ASCII status markers (`[OK]`/`[FAIL]`/`[WARN]`/`[INFO]`) so a redirected/piped stream never crashes on a decorative character.
 - The output streams are forced to UTF‑8 when not already UTF‑8 (for example, a Windows redirect defaulting to the ANSI code page), so non‑Latin transcripts print losslessly rather than raising `UnicodeEncodeError`. Transcript text is never silently replaced.
-- JSON output for transcription, artifact status, and artifact pull with `--json`.
+- JSON output for the model list, transcription, artifact status, and artifact pull with `--json`.
 - Clear error messages on failure (stderr).
 - Exit codes: `0` success, `1` runtime/transcription failures **and engine faults**, `2` usage or validation errors *the invoker can fix*. The split follows the same fault ownership the server uses (server-api.md §3.7), applied to the CLI's own caller role -- the invoking user owns the flags AND the environment -- and it is classified **at the seam that knows the source**, never by exception class alone:
   - **Exit 2 (invoker-actionable).** A mis-typed flag; an unknown/malformed model key; a bad `--options` payload (validated by `_parse_options` before the engine runs); a strict-mode `UnsupportedFeatureError`; a bad audio input; a plugin on an unsupported protocol line selected for transcription or an artifact command; a required `downloads_disabled` or `action_required` artifact state; and every `ConfigError` -- configuration is invoker-owned at the CLI *whichever seam it surfaces at*, including a factory rejecting a supplied value and a deferred credential check raising `ConfigurationRequiredError` at first transcribe. (The same errors are a scrubbed 500/503 on the server, whose clients cannot supply config: ownership follows the supplier, not the exception site.)

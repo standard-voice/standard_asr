@@ -41,7 +41,12 @@ from standard_asr.contract.exceptions import (
 from standard_asr.contract.metadata import DeclaredEngineMetadata
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import TranscriptionResult
-from standard_asr.plugins.discovery import FactoryLoadError, ModelRegistry, discover_models
+from standard_asr.plugins.discovery import (
+    FactoryLoadError,
+    ModelInfo,
+    ModelRegistry,
+    discover_models,
+)
 from standard_asr.runtime.interface import bind_session_capabilities, require_engine_protocol
 from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
@@ -300,28 +305,6 @@ class _BodySizeLimitMiddleware:
             await send(message)
 
         await self.app(scope, receive_capped, send_capped)
-
-
-class ModelInfo(BaseModel):
-    """Serializable model info for API responses.
-
-    Attributes:
-        key: Full model key in ``engine/model`` format.
-        engine_id: Engine identifier.
-        model_name: Model preset name.
-
-    Raises:
-        ValueError: If validation fails.
-    """
-
-    # `model_name` is a deliberate API field; opt out of pydantic's `model_`
-    # protected namespace so it does not warn (the warning fires on older
-    # pydantic, for example, the lower-bounds lane's 2.5).
-    model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
-
-    key: str = Field(..., description="Model key in 'engine/model' format.")
-    engine_id: str = Field(..., description="Engine identifier.")
-    model_name: str = Field(..., description="Model preset name.")
 
 
 class TranscribeJsonRequest(BaseModel):
@@ -1990,7 +1973,6 @@ def run(
 
 
 __all__ = [
-    "ModelInfo",
     "TranscribeJsonRequest",
     "TranscribeResponse",
     "create_app",

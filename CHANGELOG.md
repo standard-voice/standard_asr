@@ -12,6 +12,7 @@ releases may include breaking changes.
 
 ### Added
 
+- **`standard-asr list --json` prints the model list as JSON.** It prints the list of `ModelInfo` objects that the reference server's `GET /v1/models` returns, sorted by model key, so an application that discovers models through the CLI does not parse text. A default preset has the `model_name` `""`. Like the text view, the command imports no plugin.
 - **Inference-artifact lifecycle protocol.** Protocol 0.2 adds typed static
   declarations, configured-instance status reports, explicit acquisition with
   refresh and progress, structured operator actions, and distinct availability
@@ -29,6 +30,7 @@ releases may include breaking changes.
 
 ### Changed (breaking — pre-1.0 policy: long-term design over compatibility)
 
+- **`ModelInfo` moved from `standard_asr.toolchain.server` to `standard_asr.plugins.discovery`.** The reference server and the CLI share it. Import it from `standard_asr.plugins.discovery`; the server module no longer exports it. The JSON that `GET /v1/models` returns is unchanged.
 - **Streaming events carry stable text as a string, `stable_text`, in place of the count `stable_until`.** A count needs a unit, and string units differ between programming languages. A JavaScript, Java, or C# client that sliced `text` by the count cut it in the wrong place after any character above U+FFFF, with no error. A Go client, which counts bytes, did so after any non-ASCII character, and a Rust client panicked when the count fell inside a character. `stable_text` is the start of `text`. A `partial` defaults to `""`, and a `final` always carries its whole text. `TranscriptionEvent.stable_text` was a read-only property before, which returned `text[:stable_until]`, and `""` on a `final` without `stable_until`; it is now the field, and on a `final` it is the whole text. Because a `partial` defaults to `""`, a `partial` that leaves `stable_text` out after its segment has stable text now shrinks that stable text: the session delivers it with the earlier stable text and records `stable_text_clamped`, and with `strict_lifecycle=True` the session ends with `engine_error`. Before, a `partial` without `stable_until` was accepted with no diagnostic. When you migrate an engine, send at least the segment's stable text on every later `partial` of the segment. A client that splits `text` into the stable text and the rest MUST remove exactly the code points of `stable_text`, and MUST NOT find the split only by counting user-perceived characters. An engine MUST now end stable text between two user-perceived characters; before, this was a recommendation (SHOULD). The standard layer checks only part of this rule. The boundary check now tests the Unicode general category instead of the canonical combining class. The earlier test let through a split before a vowel sign whose combining class is zero, such as Thai U+0E31 or Devanagari U+093E. The new test catches it, and also a split before a zero width joiner or non-joiner or after a zero width joiner. The check is still partial: it passes, for example, a split before Thai SARA AM, inside a joined pair of Indic consonants, between Korean jamo, or inside a flag or a skin-tone emoji. Section 4.2 of the streaming specification has the full list. (#83) Renamed with it:
   - `validate_stable_until` is now `validate_stable_text`.
   - `assert_prefix_invariant` is now `assert_stable_text_invariant`.
@@ -378,6 +380,8 @@ releases may include breaking changes.
 
 ### Fixed
 
+- **`SyncSession` keeps the `with` block's exception when its exit misses the deadline.** When the block raised and the async session's `__aexit__` then ran past `submit_timeout`, the bridge's `TimeoutError` replaced the block's exception, and its message blamed a hung engine for a failure the application caused. `__exit__` now logs that timeout at warning level and lets the block's exception propagate. When the block raised nothing, the timeout still propagates. (#62)
+- **`SyncSession` forwards a `TimeoutError` that the engine raises itself.** From Python 3.11, the bridge read any `TimeoutError` from a call it ran on its event loop as its own missed deadline. An engine whose `_open` raised a connection timeout at once was reported as "SyncSession lifecycle call timed out after 30.0s; the async engine hung (no-hang contract)", with the engine's error only as the cause. The bridge now reports a missed deadline only when the call did not finish in time, and the engine's `TimeoutError` propagates unchanged. On Python 3.10 the engine's error already propagated.
 - **Security: a WS error event's detail is never repr'd into the operator
   log without shape vetting** (`toolchain.server`). The bridge logged
   `extra["detail"]` with `%r` *before* the client-side scrub — and a value

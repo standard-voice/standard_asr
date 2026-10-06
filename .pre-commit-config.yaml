@@ -18,6 +18,7 @@ default_install_hook_types: [pre-commit, pre-push]
 # (provenance), so hooks skip them.
 exclude: |
   (?x)^(
+    \.vale/styles/Google/|
     reference/|
     docs/internal/|
     docs/site/(node_modules|out|\.next|\.source|\.generated)/|

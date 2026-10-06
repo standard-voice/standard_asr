@@ -15,6 +15,7 @@
 - **Entry Point Name:** ``<engine_id>/<model_name>`` (for example, ``faster-whisper/large-v3``)
 - **ModelRegistry:** Container of all discovered ASR engine factories.
 - **ModelSpec:** Metadata for a single entry point.
+- **ModelInfo:** The JSON-ready identity of a single entry point.
 
 **For Plugin Authors:** See ``docs/content/engine-authors/plugin-entry-points.md``.
 """
@@ -35,7 +36,7 @@ from typing import (
     final,
 )
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic.errors import PydanticInvalidForJsonSchema
 
 from standard_asr.contract.exceptions import (
@@ -417,6 +418,37 @@ class ModelSpec:
                 "the engine's Config or Properties class instead of the engine)."
             )
         return typing.cast("type[StandardASR]", cls)
+
+
+class ModelInfo(BaseModel):
+    """The identity of one discovered model, as JSON-ready data.
+
+    Its fields come from the entry point's name alone, so producing it
+    imports no plugin. The reference server's ``GET /v1/models`` returns a
+    list of these, and ``standard-asr list --json`` prints the same list.
+    :class:`ModelSpec` holds the same identity plus the entry point and the
+    declared engine id.
+
+    Attributes:
+        key: Model key in ``engine_id/model_name`` format.
+        engine_id: Canonical engine identifier.
+        model_name: Model preset name, or ``""`` for the engine's default
+            preset.
+
+    Raises:
+        ValueError: If validation fails.
+    """
+
+    # `model_name` is a deliberate API field; opt out of pydantic's `model_`
+    # protected namespace so it does not warn (the warning fires on older
+    # pydantic, for example, the lower-bounds lane's 2.5).
+    model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
+
+    key: str = Field(..., description="Model key in 'engine/model' format.")
+    engine_id: str = Field(..., description="Canonical engine identifier.")
+    model_name: str = Field(
+        ..., description="Model preset name; empty for the engine's default preset."
+    )
 
 
 def _missing_class_declaration_error(name: str) -> EngineContractError:
@@ -1002,6 +1034,7 @@ def _dist_identity(ep: EntryPoint) -> str:
 __all__ = [
     "ASRFactory",
     "ENTRYPOINT_GROUP",
+    "ModelInfo",
     "ModelRegistry",
     "ModelSpec",
     "discover_models",

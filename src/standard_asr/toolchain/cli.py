@@ -14,7 +14,7 @@ import traceback
 from collections.abc import Callable, Iterable
 from typing import IO, Any, cast
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from standard_asr.audio.format import AudioFormat
 from standard_asr.compliance import (
@@ -60,7 +60,7 @@ from standard_asr.contract.exceptions import (
 from standard_asr.contract.metadata import DeclaredEngineMetadata
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
-from standard_asr.plugins.discovery import ModelRegistry, ModelSpec, discover_models
+from standard_asr.plugins.discovery import ModelInfo, ModelRegistry, ModelSpec, discover_models
 from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
 from standard_asr.runtime.interface import EngineBase, StandardASR, require_engine_protocol
 from standard_asr.runtime.protocol_boundary import (
@@ -148,6 +148,10 @@ _FAIL = "[FAIL]"
 _WARN = "[WARN]"
 _INFO = "[INFO]"
 
+# A list has no ``model_dump_json``; this adapter gives ``list --json`` the
+# pydantic serialization that the other ``--json`` commands use.
+_MODEL_INFO_LIST = TypeAdapter(list[ModelInfo])
+
 #: Copy-pasteable examples shown at the bottom of ``standard-asr --help`` so the
 #: top-level help alone is enough to get started (no drilling into per-command
 #: ``--help`` to learn the common invocations).
@@ -234,6 +238,7 @@ def _add_inspection_subcommands(subparsers: Any) -> None:
         default="warn_keep_first",
         help="Strategy for duplicate model keys.",
     )
+    _add_json_output_flag(list_parser, noun="model list")
     list_parser.set_defaults(func=_cmd_list)
 
     show_parser = subparsers.add_parser(
@@ -560,6 +565,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _cmd_list(args: argparse.Namespace) -> int:
     """Handle the ``list`` command.
 
+    The command reads entry points only and imports no plugin. With
+    ``--json`` it prints the list of ``ModelInfo`` objects that the reference
+    server's ``GET /v1/models`` returns. It prints ``[]`` when discovery finds
+    no model.
+
     Args:
         args: Parsed CLI arguments.
 
@@ -572,6 +582,13 @@ def _cmd_list(args: argparse.Namespace) -> int:
     """
     registry = discover_models(strict=args.strict_discovery, on_conflict=args.on_conflict)
     names = registry.names()
+    if args.json:
+        infos: list[ModelInfo] = []
+        for name in names:
+            spec = registry.spec(name)
+            infos.append(ModelInfo(key=name, engine_id=spec.engine_id, model_name=spec.model_name))
+        print(_MODEL_INFO_LIST.dump_json(infos, indent=2).decode())
+        return 0
     if not names:
         print("No Standard ASR models were discovered.")
         return 0
