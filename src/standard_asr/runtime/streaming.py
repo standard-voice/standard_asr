@@ -3688,6 +3688,8 @@ class SyncSession:
                 the coroutine cannot run anymore.
             TimeoutError: If the coroutine does not complete within ``timeout``.
                 The background loop + thread are torn down before raising.
+            Exception: Any exception the coroutine raises, unchanged, a
+                ``TimeoutError`` included. The bridge stays open.
         """
         if self._closed:
             # The owned loop is already stopped/closed (normal exit, or a
@@ -3702,17 +3704,19 @@ class SyncSession:
                 "loop); this call cannot run."
             )
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError as exc:
-            # On Python 3.10 ``concurrent.futures.TimeoutError`` is distinct from the
-            # builtin TimeoutError; re-raise as the builtin for a stable API.
+        # Whether the future finished, not the exception type, tells a missed
+        # deadline from a coroutine that raised TimeoutError itself: from Python
+        # 3.11, ``future.result(timeout=...)`` raises the builtin TimeoutError in
+        # both cases.
+        done, _ = concurrent.futures.wait((future,), timeout=timeout)
+        if not done:
             future.cancel()
             self._shutdown()
             raise TimeoutError(
                 f"SyncSession lifecycle call timed out after {timeout}s; "
                 "the async engine hung (no-hang contract)."
-            ) from exc
+            )
+        return future.result()
 
     def __enter__(self) -> SyncSession:
         """Enter the async session's context.
@@ -3729,7 +3733,9 @@ class SyncSession:
             The sync session.
 
         Raises:
-            TimeoutError: If the engine ``_open`` hangs past ``submit_timeout``.
+            TimeoutError: If the engine's ``_open`` runs past
+                ``submit_timeout``, or raises ``TimeoutError`` itself, which
+                propagates unchanged. The bridge is torn down in both cases.
         """
         entered = False
         try:
@@ -3875,34 +3881,34 @@ class SyncSession:
             anext_coro = cast("Coroutine[Any, Any, TranscriptionEvent]", self._aiter.__anext__())
             future = asyncio.run_coroutine_threadsafe(anext_coro, self._loop)
             unresponsive_probes = 0
-            while True:
-                try:
-                    event = future.result(timeout=_SYNC_PUMP_POLL_SECONDS)
-                    break
-                except concurrent.futures.TimeoutError as exc:
-                    if self._thread.is_alive() and self._loop_responsive():
-                        unresponsive_probes = 0
-                        continue
-                    if self._thread.is_alive() and unresponsive_probes < 2:
-                        # Tolerate a brief blocking stall (for example, a synchronous
-                        # weights load inside the engine): require consecutive failed
-                        # probes before declaring the loop frozen.
-                        unresponsive_probes += 1
-                        continue
-                    # Capture the failure mode BEFORE teardown: _shutdown joins
-                    # the thread, so is_alive() afterward always reports dead.
-                    frozen = self._thread.is_alive()
-                    future.cancel()
-                    self._shutdown()
-                    raise TimeoutError(
-                        "SyncSession event pump aborted: the bridge's "
-                        "event-loop thread "
-                        + ("is frozen by blocking engine code" if frozen else "died")
-                        + ", so no further event or in-loop deadline can be "
-                        "delivered."
-                    ) from exc
-                except StopAsyncIteration:
-                    return
+            # As in _submit, whether the future finished tells a quiet poll slice
+            # from a coroutine that raised TimeoutError itself.
+            while not concurrent.futures.wait((future,), timeout=_SYNC_PUMP_POLL_SECONDS)[0]:
+                if self._thread.is_alive() and self._loop_responsive():
+                    unresponsive_probes = 0
+                    continue
+                if self._thread.is_alive() and unresponsive_probes < 2:
+                    # Tolerate a brief blocking stall (for example, a synchronous
+                    # weights load inside the engine): require consecutive failed
+                    # probes before declaring the loop frozen.
+                    unresponsive_probes += 1
+                    continue
+                # Capture the failure mode BEFORE teardown: _shutdown joins
+                # the thread, so is_alive() afterward always reports dead.
+                frozen = self._thread.is_alive()
+                future.cancel()
+                self._shutdown()
+                raise TimeoutError(
+                    "SyncSession event pump aborted: the bridge's "
+                    "event-loop thread "
+                    + ("is frozen by blocking engine code" if frozen else "died")
+                    + ", so no further event or in-loop deadline can be "
+                    "delivered."
+                )
+            try:
+                event = future.result()
+            except StopAsyncIteration:
+                return
             yield event
 
     def result(self) -> TranscriptionResult:

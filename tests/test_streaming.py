@@ -4996,6 +4996,61 @@ def test_sync_bridge_calls_after_teardown_raise_stream_closed() -> None:
     assert sync._thread.is_alive() is False  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 
+class _OpenRaisesTimeoutSession(TranscriptionSession):
+    """Session whose ``_open`` raises its own ``TimeoutError`` at once."""
+
+    async def _open(self) -> None:
+        raise TimeoutError("engine connect timed out")
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        yield TranscriptionEvent.done()  # pragma: no cover
+
+
+class _EndAudioRaisesTimeoutSession(_EchoSession):
+    """Echo session whose ``end_audio`` raises its own ``TimeoutError`` at once."""
+
+    async def end_audio(self) -> None:
+        raise TimeoutError("engine flush timed out")
+
+
+@pytest.mark.parametrize("submit_timeout", [30.0, None])
+def test_sync_bridge_forwards_an_engine_timeout_unchanged(submit_timeout: float | None) -> None:
+    # The engine's own TimeoutError is not a missed deadline. It reaches the
+    # caller as raised, not wrapped in the bridge's report of a missed deadline,
+    # and with no submit_timeout at all there is no deadline to miss.
+    with pytest.raises(TimeoutError, match="engine connect timed out") as info:
+        with SyncSession(_OpenRaisesTimeoutSession(), submit_timeout=submit_timeout):
+            pass
+    assert info.value.__cause__ is None
+
+
+def test_sync_bridge_stays_open_after_an_engine_timeout() -> None:
+    # An input call tears the bridge down only when it misses the deadline.
+    # After a TimeoutError that the call raised itself, the next call still runs
+    # instead of raising StreamClosedError.
+    with SyncSession(_EndAudioRaisesTimeoutSession(), submit_timeout=5.0) as sync:
+        with pytest.raises(TimeoutError, match="engine flush timed out"):
+            sync.end_audio()
+        sync.send_audio(b"x")
+
+
+def test_sync_pump_forwards_an_iterator_timeout_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A future that finished by raising TimeoutError is not a quiet poll slice.
+    # Read as one, the pump polled the finished future again, forever.
+    monkeypatch.setattr(streaming_module, "_SYNC_PUMP_POLL_SECONDS", 0.05)
+
+    async def _raises_timeout() -> AsyncIterator[TranscriptionEvent]:
+        raise TimeoutError("iterator timed out")
+        yield TranscriptionEvent.done()  # pragma: no cover
+
+    with SyncSession(_EchoSession(), submit_timeout=5.0) as sync:
+        sync._aiter = _raises_timeout()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(TimeoutError, match="iterator timed out"):
+            next(iter(sync))
+
+
 def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     # An engine running blocking
     # (non-async) code mid-session freezes the bridge loop while its thread
