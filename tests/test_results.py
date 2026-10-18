@@ -264,7 +264,7 @@ def test_result_text_must_be_the_concatenated_segment_texts() -> None:
     # quotes no transcript text (a transcript can be long or private).
     assert message.startswith("TranscriptionResult.text is not the segment texts concatenated")
     assert "differ at code point index 5, counting from 0" in message
-    assert "text has 11 code points, the joined segments have 10" in message
+    assert "text has 11 code points, and the concatenated segment texts have 10" in message
     assert "hello" not in message and "world" not in message
 
     # Stripping the result text is rejected the same way.
@@ -289,8 +289,15 @@ def test_text_of_a_result_with_no_segments_stands_alone() -> None:
     # legal. segments=[]: segmentation ran and found nothing, so text is "".
     assert TranscriptionResult(text=" any text, spaced  ").text == " any text, spaced  "
     assert TranscriptionResult(text="", segments=[]).segments == []
+    # The general remedy, building text from the segments, would drop the
+    # transcript here, so the message names the right one: segments=None.
     message = _mismatch_error(lambda: TranscriptionResult(text="some text", segments=[]))
-    assert "the joined segments have 0" in message
+    assert message.startswith("TranscriptionResult.segments is an empty list")
+    assert "text has 9 code points" in message
+    assert "set segments=None and keep the text" in message
+    assert "some text" not in message
+    message = _mismatch_error(lambda: ChannelResult(channel=1, text="x", segments=[]))
+    assert message.startswith("ChannelResult.segments is an empty list")
 
 
 def test_result_keeps_engine_whitespace_verbatim() -> None:

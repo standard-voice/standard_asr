@@ -497,7 +497,36 @@ class _InvalidSegmentEngine(_ArrayEngine):
         return TranscriptionResult(text="x", segments=[bad])
 
 
-@pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
+class _StrippedTextEngine(_ArrayEngine):
+    """Strips the whole text but not its segments: the usual TR.1 mistake."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        whisper = [
+            Segment(start=0.0, end=1.0, text=" Hello"),
+            Segment(start=1.0, end=2.0, text=" world."),
+        ]
+        return TranscriptionResult(text="Hello world.", segments=whisper)
+
+
+def test_stripped_text_fails_in_transcribe_as_a_transcription_error() -> None:
+    # The breaking change of #46: a text that is not the segment texts
+    # concatenated is rejected at construction, inside _transcribe, and the
+    # application sees one TranscriptionError with the ValidationError chained.
+    with pytest.raises(TranscriptionError) as exc_info:
+        _StrippedTextEngine().transcribe(_audio())
+
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, ValidationError)
+    assert [error["type"] for error in cause.errors()] == ["standard_asr_text_segments_mismatch"]
+    assert "differ at code point index 0" in cause.errors()[0]["msg"]
+    assert "not the segment texts concatenated" in str(exc_info.value)
+    assert exc_info.value.hint is not None
+    assert "stripping text" in exc_info.value.hint
+
+
+@pytest.mark.parametrize(
+    "engine_type", [_StaleResultEngine, _InvalidSegmentEngine, _StrippedTextEngine]
+)
 def test_engine_validation_error_wraps_as_transcription_error(
     engine_type: type[_ArrayEngine],
 ) -> None:

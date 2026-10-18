@@ -545,6 +545,9 @@ def _require_text_is_joined_segments(
     neighbors, so the standard layer never inserts or removes a character.
     The message names the first position where the two strings differ and
     quotes no transcript text, because a transcript can be long or private.
+    An empty list gets its own message: there the remedy is ``segments=None``
+    when the engine has text, and the general remedy, building ``text`` from
+    the segments, would drop the transcript.
 
     Args:
         owner: The model name the message names (``TranscriptionResult`` or
@@ -559,20 +562,29 @@ def _require_text_is_joined_segments(
     """
     if segments is None:
         return
-    joined = "".join(segment.text for segment in segments)
-    if text == joined:
+    concatenated = "".join(segment.text for segment in segments)
+    if text == concatenated:
         return
+    if not segments:
+        raise PydanticCustomError(
+            "standard_asr_text_segments_mismatch",
+            "{owner}.segments is an empty list, so text must be the empty string, "
+            "but text has {text_length} code points. An empty list means that "
+            "segmentation ran and found nothing. If the engine has text but no "
+            "segments, set segments=None and keep the text.",
+            {"owner": owner, "text_length": len(text)},
+        )
     position = next(
-        (i for i, (a, b) in enumerate(zip(text, joined, strict=False)) if a != b),
-        min(len(text), len(joined)),
+        (i for i, (a, b) in enumerate(zip(text, concatenated, strict=False)) if a != b),
+        min(len(text), len(concatenated)),
     )
     raise PydanticCustomError(
         "standard_asr_text_segments_mismatch",
-        "{owner}.text is not the segment texts concatenated in list order: the two "
-        "differ at code point index {position}, counting from 0 (text has "
-        "{text_length} code points, the joined segments have {joined_length}). "
-        "Each segment text carries the spaces and punctuation that join it to "
-        "its neighbors, and text is "
+        "{owner}.text is not the segment texts concatenated in list order. The two "
+        "differ at code point index {position}, counting from 0; text has "
+        "{text_length} code points, and the concatenated segment texts have "
+        "{concatenated_length}. Each segment text carries the spaces and "
+        "punctuation that join it to its neighbors, and text is "
         '"".join(segment.text for segment in segments), with no separator and no '
         "stripping. Build text from the segments, or put the missing space into "
         "the segment text where it belongs.",
@@ -580,7 +592,7 @@ def _require_text_is_joined_segments(
             "owner": owner,
             "position": position,
             "text_length": len(text),
-            "joined_length": len(joined),
+            "concatenated_length": len(concatenated),
         },
     )
 
@@ -640,14 +652,17 @@ class TranscriptionResult(BaseModel):
 
     Attributes:
         text: Full transcript (required). When ``segments`` is a list,
-            the engine builds ``text`` as ``"".join(segment.text for segment
-            in segments)``, checked at construction: each segment text carries
-            the spaces and punctuation that join it to its neighbors, and
-            nothing adds a separator or strips one. The standard layer keeps
-            whatever the engine sent, so ``text`` can start with a space, as
-            the Whisper family's text does. ``[]`` segments therefore require
-            ``text == ""``; an engine that has text but no segments sets
-            ``segments=None``.
+            ``text`` is ``"".join(segment.text for segment in segments)``,
+            and construction checks it. Each segment text carries the spaces
+            and punctuation that join it to its neighbors; nothing adds a
+            separator or strips one. The standard layer keeps whatever the
+            engine sent, so ``text`` can start with a space, as Whisper's
+            does in English and other space-delimited scripts. ``[]``
+            segments therefore require ``text == ""``; an engine that has
+            text but no segments sets ``segments=None``. On a multichannel
+            result the check runs on the top-level list too, which is the
+            time merge of the channels (TR.4); how an engine writes a
+            boundary where channels interleave is open (#48).
         detected_language: Detected language as a well-formed BCP-47 tag in
             ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
@@ -823,7 +838,9 @@ class TranscriptionResult(BaseModel):
     def _check_text_is_joined_segments(self) -> TranscriptionResult:
         """Reject a top-level ``text`` that is not the concatenated segment texts.
 
-        Each ``ChannelResult`` checks its own ``text`` the same way.
+        Each ``ChannelResult`` checks its own ``text`` the same way. On a
+        multichannel result the top-level ``segments`` is the time merge of
+        the channels (TR.4), and this check runs on it too.
 
         Returns:
             The validated result.
