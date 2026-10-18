@@ -1647,11 +1647,13 @@ class EngineBase(ABC):
                 "validation error) inside _transcribe -- an engine/plugin "
                 "fault, not a request error. See the chained ValidationError "
                 "for the offending fields (for example, a field the result model no "
-                "longer accepts).",
+                "longer accepts, or a text that is not the segment texts "
+                "concatenated).",
                 hint=(
                     "Report this to the engine plugin's author; a core/plugin "
                     "version mismatch (the plugin building a result with "
-                    "removed or invalid fields) is the usual cause."
+                    "removed or invalid fields, or stripping text that its "
+                    "segments do not strip) is the usual cause."
                 ),
             ) from exc
         # Standard-layer diarization synthesis: the streaming

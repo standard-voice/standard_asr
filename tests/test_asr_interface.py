@@ -2082,11 +2082,15 @@ def _w(index: int, label: str | None) -> Word:
     return Word(start=index * 0.1, end=index * 0.1 + 0.1, text=f"w{index}", speaker=label)
 
 
-def _speaker_segment(labels: list[str | None], *, speaker: str | None = None) -> Segment:
+def _speaker_segment(
+    labels: list[str | None], *, speaker: str | None = None, leading_space: bool = False
+) -> Segment:
+    # A later segment carries the space that joins it to the one before
+    # (spec TR.1), so ``leading_space`` builds the second segment of a result.
     return Segment(
         start=0.0,
         end=1.0,
-        text=" ".join(f"w{i}" for i in range(len(labels))),
+        text=(" " if leading_space else "") + " ".join(f"w{i}" for i in range(len(labels))),
         words=[_w(i, label) for i, label in enumerate(labels)],
         speaker=speaker,
     )
@@ -2174,7 +2178,10 @@ def test_synthesize_result_speakers_branch_matrix() -> None:
     # Mixed list: only the derivable segment is rebuilt; untouched segments
     # keep object identity inside the new list.
     unchanged_segment = _speaker_segment(["A"], speaker="A")
-    mixed = TranscriptionResult(text="w0 w0", segments=[unchanged_segment, _speaker_segment(["B"])])
+    mixed = TranscriptionResult(
+        text="w0 w0",
+        segments=[unchanged_segment, _speaker_segment(["B"], leading_space=True)],
+    )
     synthesized = _synthesize_result_speakers(mixed)
     assert synthesized is not mixed
     assert synthesized.segments is not None
@@ -2189,7 +2196,10 @@ def test_synthesize_result_speakers_channels_matrix() -> None:
 
     # Channel entry without segments is reused; a derivable entry is rebuilt;
     # the top level (already speakered) stays identical.
-    top = [_speaker_segment(["A"], speaker="A"), _speaker_segment(["B"], speaker="B")]
+    top = [
+        _speaker_segment(["A"], speaker="A"),
+        _speaker_segment(["B"], speaker="B", leading_space=True),
+    ]
     no_segments_entry = ChannelResult(channel=0, text="w0")
     result = TranscriptionResult(
         text="w0 w0",

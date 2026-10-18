@@ -87,6 +87,27 @@ class MyEngine(EngineBase):
         return TranscriptionResult(text=text, detected_language="en")
 ```
 
+## Segment text and whitespace
+
+Every application builds the transcript by concatenating your segment texts in list order with no separator: `"".join(segment.text for segment in segments)`. When the library reduces a stream or checks a result, it adds no space, strips none, and collapses no repeated whitespace. Only the subtitle renderers trim the edges of a cue. So each segment's `text` carries every character the segment adds to the transcript, including the spaces and punctuation that join it to the segments around it. This holds for a batch `Segment` and for the `text` of every streaming `partial` and `final`.
+
+The quotation marks below show the exact strings your engine sends:
+
+| Language | Segment texts | Transcript |
+| --- | --- | --- |
+| English | `"Hello"`, `" world."` | `"Hello world."` |
+| Chinese | `"今天"`, `"天气"`, `"很好。"` | `"今天天气很好。"` |
+| Korean | `"오늘은"`, `" 날씨가"`, `" 좋아요."` | `"오늘은 날씨가 좋아요."` |
+| Punctuation | `"Hello"`, `","`, `" world"`, `"!"` | `"Hello, world!"` |
+
+- **Put each space in exactly one segment.** It can end the earlier segment, start the later one, or be a segment of its own. If your recognizer gives you bare words, put the space at the start of the later segment. Then you decide when you see the next piece: a word takes a space, and a comma does not. The earlier segment does not have to wait. If you cannot decide a boundary yet, hold back the `final` or send a larger segment.
+- **Keep the whitespace your recognizer supplies.** If it returns segments that already carry their spaces, as the Whisper family does with a leading space on every segment, pass them through unchanged. The standard layer keeps that leading space in `result.text`. If you do not want it there, remove it from your first segment.
+- **Build `text` from the segments.** When `segments` is a list, `TranscriptionResult` checks at construction that `text == "".join(segment.text for segment in segments)`, and `ChannelResult` checks its own `text` the same way. A mismatch raises a `ValidationError` of type `standard_asr_text_segments_mismatch`. `transcribe()` re-raises it as a `TranscriptionError` with the `ValidationError` chained, so the application gets an error and no result. The usual cause is a `text` you stripped, or a full text your recognizer joined with spaces while its segments carry none. Do not strip `text` on its own. When your recognizer returns both a full text and segments that disagree, choose one source and derive the other from it. An empty list, `segments=[]`, requires `text=""`. If you have text but no segments, set `segments=None`.
+- **No check catches a missing space.** An engine that sends `"Hello"` and then `"world"` produces `"Helloworld"` in every application. The construction check proves only that `text` matches the segments, and a clean compliance report does not prove that your boundaries are right. Check them with real audio in each language you support.
+- `words` are outside this rule: a `Word` is a unit of recognition or timing, and joining the words need not reproduce `text`.
+
+[Spec TR.1](../specification/protocol.md#transcription-result) states the rule.
+
 ## Map parameters
 
 - The standard layer gates the portable standard set against your `effective_capabilities` (which default to `declared_capabilities`) before it calls `_transcribe`: `language`, `candidate_languages`, `word_timestamps`, `diarization`, `prompt`, `phrase_hints`. Map them onto your model's native arguments. For `diarization`, presence means enable: map `params.diarization is not None` onto your native enable switch (the current `DiarizationRequest` marker carries no fields). An engine that declares `diarization.supported=True` MUST actually diarize when the request passes the gate. The standard layer cannot verify this. Silently ignoring a gated-and-passed request is the cardinal sin: a silent wrong result.
@@ -175,6 +196,7 @@ If you genuinely need an arbitrary in-process object, keep it in your own engine
 The base `TranscriptionSession` owns the pump, backpressure (bounded buffers), the done-timeout/idle deadlines, the sync bridge, and lifecycle suppression. It also corrects a `stable_text` that shrinks, or ends inside a combining character sequence or right after a zero width joiner. By default the base suppresses or corrects a violation and records a diagnostic. An event that goes beyond your engine's effective capabilities is the exception: the base delivers it unchanged and records a diagnostic (see "Declare what you emit"). With `strict_lifecycle=True`, a violation ends the session instead, with a terminal `error` event whose code is `engine_error`. **You** must:
 
 - Send the segment's whole current `text` on every `partial` and `final`, not only the words added since the last event.
+- Carry the segment's boundary whitespace in that `text`, as described in "Segment text and whitespace". The reduced `session.result().text` is your segment texts concatenated with no separator.
 - Mark text stable only when your recognizer promises it does not change. A stability score is an estimate, not a promise. When a segment has no stable text yet and you cannot guarantee that any non-empty start of a `partial`'s text keeps that promise, send `stable_text=""` on that `partial`. If your engine cannot give that guarantee on any `partial`, declare `streaming.partial_stability` unsupported. One `partial` without stable text does not require that declaration.
 - Once a segment has stable text, send at least that stable text on every later `partial` of the segment. A `partial` that leaves `stable_text` out carries the default `""`, which is shorter than the earlier stable text. The base delivers that `partial` with the earlier stable text and records `stable_text_clamped`. With `strict_lifecycle=True`, the session ends instead, with a terminal `error` event whose code is `engine_error`.
 - End stable text between two user-perceived characters. For example, place the boundary at a word boundary, or split `text` into user-perceived characters with a Unicode text segmentation library (UAX #29) and move the boundary back to the start of the character it cuts. The standard layer checks only part of this rule (see "The boundary check is partial" below).

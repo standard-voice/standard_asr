@@ -220,19 +220,100 @@ def test_distinct_channel_indices_accepted() -> None:
 def test_out_of_order_segments_accepted_at_construction() -> None:
     # The (start, channel, speaker) ordering is an ENGINE obligation, NOT
     # a construct-time invariant -- and the compliance suite does not check it
-    # either. The streaming reducer legitimately keeps arrival order for
-    # timestamp-less engines and sorts only by start, so a strict ordering
-    # check (at construction or in the suite) would reject valid reduced
-    # results. This test locks the deliberate non-enforcement so a future
-    # change does not silently add a breaking validator (the renderers
-    # re-sort defensively -- see test_srt_sorts_out_of_order_segments).
+    # either. The streaming reducer keeps the order in which the engine
+    # announced its segments and never re-sorts, so a strict ordering check
+    # (at construction or in the suite) would reject valid reduced results.
+    # This test locks the deliberate non-enforcement so a future change does
+    # not silently add a breaking validator (the renderers re-sort
+    # defensively -- see test_srt_sorts_out_of_order_segments).
     out_of_order = [
         Segment(start=5.0, end=6.0, text="second"),
-        Segment(start=0.0, end=1.0, text="first"),
+        Segment(start=0.0, end=1.0, text=" first"),
     ]
-    result = TranscriptionResult(text="x", segments=out_of_order)
+    result = TranscriptionResult(text="second first", segments=out_of_order)
     assert result.segments is not None
     assert [s.start for s in result.segments] == [5.0, 0.0]
+
+
+def _mismatch_error(build: Callable[[], object]) -> str:
+    """Return the message of the text/segments mismatch that ``build`` raises.
+
+    Args:
+        build: Constructs the model under test.
+
+    Returns:
+        The message of the one validation error, which must carry the
+        ``standard_asr_text_segments_mismatch`` type.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        build()
+    errors = excinfo.value.errors()
+    assert [error["type"] for error in errors] == ["standard_asr_text_segments_mismatch"]
+    return errors[0]["msg"]
+
+
+def test_result_text_must_be_the_concatenated_segment_texts() -> None:
+    # The space join that StreamReducer used to apply is exactly the shape
+    # construction now rejects: "hello world" over "hello" + "world".
+    segments = [
+        Segment(start=0.0, end=1.0, text="hello"),
+        Segment(start=1.0, end=2.0, text="world"),
+    ]
+    message = _mismatch_error(lambda: TranscriptionResult(text="hello world", segments=segments))
+    # The message names the model and the first differing position, and
+    # quotes no transcript text (a transcript can be long or private).
+    assert message.startswith("TranscriptionResult.text is not the segment texts concatenated")
+    assert "differ at code point index 5, counting from 0" in message
+    assert "text has 11 code points, the joined segments have 10" in message
+    assert "hello" not in message and "world" not in message
+
+    # Stripping the result text is rejected the same way.
+    whisper = [
+        Segment(start=0.0, end=1.0, text=" Hello"),
+        Segment(start=1.0, end=2.0, text=" world."),
+    ]
+    message = _mismatch_error(lambda: TranscriptionResult(text="Hello world.", segments=whisper))
+    assert "differ at code point index 0" in message
+
+
+def test_channel_result_text_must_be_the_concatenated_segment_texts() -> None:
+    segments = [Segment(start=0.0, end=1.0, text="今天"), Segment(start=1.0, end=2.0, text="天气")]
+    message = _mismatch_error(lambda: ChannelResult(channel=0, text="今天 天气", segments=segments))
+    assert message.startswith("ChannelResult.text is not the segment texts concatenated")
+    assert "今天" not in message
+    assert ChannelResult(channel=0, text="今天天气", segments=segments).text == "今天天气"
+
+
+def test_text_of_a_result_with_no_segments_stands_alone() -> None:
+    # segments=None: there is nothing to check text against, so any text is
+    # legal. segments=[]: segmentation ran and found nothing, so text is "".
+    assert TranscriptionResult(text=" any text, spaced  ").text == " any text, spaced  "
+    assert TranscriptionResult(text="", segments=[]).segments == []
+    message = _mismatch_error(lambda: TranscriptionResult(text="some text", segments=[]))
+    assert "the joined segments have 0" in message
+
+
+def test_result_keeps_engine_whitespace_verbatim() -> None:
+    # A Whisper-family leading space on the first segment, and a segment of
+    # only whitespace, are engine output: construction accepts them as sent.
+    whisper = TranscriptionResult(
+        text=" Hello world.",
+        segments=[
+            Segment(start=0.0, end=1.0, text=" Hello"),
+            Segment(start=1.0, end=2.0, text=" world."),
+        ],
+    )
+    assert whisper.text == " Hello world."
+    spaced = TranscriptionResult(
+        text="a  b",
+        segments=[
+            Segment(start=0.0, end=1.0, text="a"),
+            Segment(start=1.0, end=2.0, text="  "),
+            Segment(start=2.0, end=3.0, text="b"),
+        ],
+    )
+    assert spaced.segments is not None
+    assert [s.text for s in spaced.segments] == ["a", "  ", "b"]
 
 
 def test_diagnostic_model() -> None:
@@ -251,7 +332,7 @@ def test_diagnostic_model() -> None:
 def test_to_srt_from_segments() -> None:
     segs = [
         Segment(start=0.0, end=1.5, text="Hello"),
-        Segment(start=1.5, end=3.25, text="world"),
+        Segment(start=1.5, end=3.25, text=" world"),
     ]
     srt = to_srt(TranscriptionResult(text="Hello world", segments=segs))
     assert "1\n00:00:00,000 --> 00:00:01,500\nHello" in srt
@@ -282,11 +363,18 @@ def test_to_srt_empty_text_no_duration() -> None:
 
 
 def test_empty_segments_list_yields_no_cues() -> None:
-    # segments=[] means segmentation ran and found nothing (for example, silence). Per
-    # the null rule this must NOT fabricate a full-span cue from text.
-    result = TranscriptionResult(text="some text", segments=[], duration=5.0)
+    # segments=[] means segmentation ran and found nothing (for example, silence),
+    # so text is "" as well (spec TR.1). Per the null rule the known duration
+    # must NOT produce a fabricated full-span cue.
+    result = TranscriptionResult(text="", segments=[], duration=5.0)
     assert to_srt(result) == ""
     assert to_vtt(result) == "WEBVTT\n"
+    # Construction rejects non-empty text over [] segments; a result built
+    # without validation still renders zero cues, so the renderer never
+    # treats [] like None.
+    unchecked = TranscriptionResult.model_construct(text="some text", segments=[], duration=5.0)
+    assert to_srt(unchecked) == ""
+    assert to_vtt(unchecked) == "WEBVTT\n"
 
 
 def test_none_segments_with_text_synthesizes_one_cue() -> None:
@@ -322,7 +410,7 @@ def test_zero_span_measured_segments_are_unrenderable_by_default() -> None:
     """
     segs = [
         Segment(start=0.0, end=0.0, text="hello"),
-        Segment(start=0.0, end=0.0, text="world"),
+        Segment(start=0.0, end=0.0, text=" world"),
     ]
     result = TranscriptionResult(text="hello world", segments=segs)
     assert result.diagnostics == []
@@ -350,7 +438,7 @@ def test_zero_span_segments_with_known_duration_still_raise_by_default() -> None
     """
     segs = [
         Segment(start=0.0, end=0.0, text="a"),
-        Segment(start=0.0, end=0.0, text="b"),
+        Segment(start=0.0, end=0.0, text=" b"),
     ]
     result = TranscriptionResult(text="a b", segments=segs, duration=7.5)
 
@@ -378,11 +466,13 @@ def test_zero_span_segment_text_cannot_silently_vanish() -> None:
     silently vanished at playback. The default policy now refuses; with a
     grid-surviving span the segment renders normally.
     """
-    result = TranscriptionResult(text="", segments=[Segment(start=0.0, end=0.0, text="hello")])
+    result = TranscriptionResult(text="hello", segments=[Segment(start=0.0, end=0.0, text="hello")])
     with pytest.raises(SubtitleRenderingError):
         to_srt(result)
 
-    renderable = TranscriptionResult(text="", segments=[Segment(start=0.0, end=1.0, text="hello")])
+    renderable = TranscriptionResult(
+        text="hello", segments=[Segment(start=0.0, end=1.0, text="hello")]
+    )
     assert to_srt(renderable) == "1\n00:00:00,000 --> 00:00:01,000\nhello\n"
     assert "hello" in to_vtt(renderable)
 
@@ -393,12 +483,30 @@ def test_renderable_segment_keeps_its_speaker_label() -> None:
     it has no single attributable speaker).
     """
     result = TranscriptionResult(
-        text="x", segments=[Segment(start=0.0, end=1.0, text="hi", speaker="Alice")]
+        text="hi", segments=[Segment(start=0.0, end=1.0, text="hi", speaker="Alice")]
     )
     assert (
         to_srt(result, include_speakers=True) == "1\n00:00:00,000 --> 00:00:01,000\n[Alice]: hi\n"
     )
     assert "<v Alice>hi" in to_vtt(result, include_speakers=True)
+
+
+def _segmented(segments: list[Segment], **kwargs: object) -> TranscriptionResult:
+    """Build a result whose ``text`` is its segment texts concatenated.
+
+    Args:
+        segments: The segments, each carrying its own boundary whitespace.
+        **kwargs: Extra :class:`TranscriptionResult` fields (for example,
+            ``duration``).
+
+    Returns:
+        The result, with ``text`` built as the construction check requires.
+    """
+    return TranscriptionResult(
+        text="".join(segment.text for segment in segments),
+        segments=segments,
+        **kwargs,  # pyright: ignore[reportArgumentType]
+    )
 
 
 def _unavailable_segment(text: str, **kwargs: object) -> Segment:
@@ -462,7 +570,7 @@ def test_missing_timing_raises_by_default() -> None:
     """
     result = TranscriptionResult(
         text="real missing",
-        segments=[Segment(start=1.0, end=2.0, text="real"), _unavailable_segment("missing")],
+        segments=[Segment(start=1.0, end=2.0, text="real"), _unavailable_segment(" missing")],
     )
     for render in (to_srt, to_vtt):
         with pytest.raises(SubtitleRenderingError) as excinfo:
@@ -481,7 +589,7 @@ def test_omit_policy_keeps_the_real_cue_and_drops_the_unmeasured_text() -> None:
     """
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "b", start=5.0, end=6.0))
-    reducer.add(TranscriptionEvent.final("s2", "a"))
+    reducer.add(TranscriptionEvent.final("s2", " a"))
     result = reducer.result()
 
     assert result.text == "b a"
@@ -516,7 +624,7 @@ def test_collapse_policy_renders_one_whole_text_cue() -> None:
     synthetic cue carries the full text -- [0, 3 s] when duration is unknown
     (players silently drop zero-duration cues), [0, duration] when known.
     """
-    segs = [_unavailable_segment("hello"), _unavailable_segment("world")]
+    segs = [_unavailable_segment("hello"), _unavailable_segment(" world")]
     result = TranscriptionResult(text="hello world", segments=segs)
 
     srt = to_srt(result, on_unrenderable="collapse")
@@ -534,7 +642,7 @@ def test_collapse_policy_renders_one_whole_text_cue() -> None:
     # asked for: one cue, no partial timeline.
     mixed = TranscriptionResult(
         text="real missing",
-        segments=[Segment(start=1.0, end=2.0, text="real"), _unavailable_segment("missing")],
+        segments=[Segment(start=1.0, end=2.0, text="real"), _unavailable_segment(" missing")],
         duration=9.0,
     )
     assert to_srt(mixed, on_unrenderable="collapse") == (
@@ -542,35 +650,23 @@ def test_collapse_policy_renders_one_whole_text_cue() -> None:
     )
 
 
-def test_collapse_carries_segment_texts_when_whole_text_is_blank() -> None:
-    """ "collapse" owes completeness even when the engine left ``text`` blank.
+def test_collapse_cannot_meet_a_blank_text_over_visible_segments() -> None:
+    """ "collapse" carries ``result.text``, and that text holds every segment.
 
-    An engine that populated only ``segments`` (empty or whitespace-only
-    ``result.text``) used to collapse into ``_whole_text_cue``'s empty
-    return: a successful ``""`` / bare ``WEBVTT`` file while every word of
-    the transcript sat in the segments -- silent total loss from the very
-    policy whose contract is "every text survives, only the timeline does
-    not". The collapsed cue must carry the payload segments' texts in model
-    order instead.
+    A blank ``result.text`` over segments with visible text once collapsed
+    to an empty file. The shape is now unrepresentable: construction checks
+    that ``text`` is the segment texts concatenated (spec TR.1), so the
+    collapsed cue always carries every payload segment's text.
     """
-    segs = [_unavailable_segment("hello"), _unavailable_segment("world")]
+    segs = [_unavailable_segment("hello"), _unavailable_segment(" world")]
     for blank in ("", " "):
-        result = TranscriptionResult(text=blank, segments=segs, duration=7.5)
-        assert to_srt(result, on_unrenderable="collapse") == (
-            "1\n00:00:00,000 --> 00:00:07,500\nhello world\n"
-        )
-        vtt = to_vtt(result, on_unrenderable="collapse")
-        assert "00:00:00.000 --> 00:00:07.500\nhello world" in vtt
+        with pytest.raises(ValidationError, match="standard_asr_text_segments_mismatch"):
+            TranscriptionResult(text=blank, segments=segs, duration=7.5)
 
-    # A visibly non-empty result.text stays canonical: the engine's own
-    # whole-transcript rendering wins over a re-join of the segments.
-    canonical = TranscriptionResult(text="Hello, world.", segments=segs)
-    assert "Hello, world." in to_srt(canonical, on_unrenderable="collapse")
-
-    # Empty text with NO payload segments still renders nothing: there is
-    # genuinely no text to carry, and nothing is fabricated.
+    # Whitespace-only segments give a whitespace-only text: nothing visible
+    # to carry, so the collapsed rendering is empty and nothing is fabricated.
     silent = TranscriptionResult(
-        text="", segments=[Segment(start=None, end=None, text=" ")], duration=2.0
+        text=" ", segments=[Segment(start=None, end=None, text=" ")], duration=2.0
     )
     assert to_srt(silent, on_unrenderable="collapse") == ""
     assert to_vtt(silent, on_unrenderable="collapse") == "WEBVTT\n"
@@ -584,9 +680,9 @@ def test_one_unmeasured_never_discards_a_predominantly_real_timeline() -> None:
     """
     segs = [
         Segment(start=0.0, end=1.0, text="one", speaker="Alice"),
-        Segment(start=1.0, end=2.0, text="two", speaker="Bob"),
-        Segment(start=2.0, end=3.0, text="three", speaker="Alice"),
-        _unavailable_segment("four", speaker="Bob"),
+        Segment(start=1.0, end=2.0, text=" two", speaker="Bob"),
+        Segment(start=2.0, end=3.0, text=" three", speaker="Alice"),
+        _unavailable_segment(" four", speaker="Bob"),
     ]
     result = TranscriptionResult(text="one two three four", segments=segs)
 
@@ -658,30 +754,30 @@ def test_reducer_stores_unmeasured_timing_verbatim() -> None:
     assert by_text["timed"].end == 6.0
 
 
-def test_reducer_sorts_only_when_every_segment_has_a_start() -> None:
-    """A real onset is a real time position: start-only segments sort too.
+def test_reducer_keeps_announced_order_even_when_every_segment_has_a_start() -> None:
+    """The reducer never re-sorts: list order is the order the engine announced.
 
-    When every retained segment carries a ``start`` (measured or start-only)
-    the reducer orders by it -- and ``text`` joins in the same order, so the
-    transcript and the segment list can never disagree. One ``start=None``
-    segment switches the whole result to arrival (reading) order instead of
-    fabricating it a position.
+    Sorting by ``start`` gave a result whose order differed from what an
+    application running the reference reduce displayed. Time order is the
+    engine's obligation (announce segments in time order); the reducer keeps
+    reading order, timed or not, and ``text`` is the texts concatenated in
+    that order.
     """
-    sortable = StreamReducer()
-    sortable.add(TranscriptionEvent.final("s1", "late", start=9.0, end=10.0))
-    sortable.add(TranscriptionEvent.final("s2", "early", start=1.0))  # start-only
-    sorted_result = sortable.result()
-    assert sorted_result.text == "early late"
-    assert sorted_result.segments is not None
-    assert [s.text for s in sorted_result.segments] == ["early", "late"]
+    timed = StreamReducer()
+    timed.add(TranscriptionEvent.final("s1", "late", start=9.0, end=10.0))
+    timed.add(TranscriptionEvent.final("s2", " early", start=1.0))  # start-only
+    timed_result = timed.result()
+    assert timed_result.text == "late early"
+    assert timed_result.segments is not None
+    assert [s.text for s in timed_result.segments] == ["late", " early"]
 
-    unsortable = StreamReducer()
-    unsortable.add(TranscriptionEvent.final("s1", "late", start=9.0, end=10.0))
-    unsortable.add(TranscriptionEvent.final("s2", "untimed"))
-    arrival = unsortable.result()
+    mixed = StreamReducer()
+    mixed.add(TranscriptionEvent.final("s1", "late", start=9.0, end=10.0))
+    mixed.add(TranscriptionEvent.final("s2", " untimed"))
+    arrival = mixed.result()
     assert arrival.text == "late untimed"
     assert arrival.segments is not None
-    assert [s.text for s in arrival.segments] == ["late", "untimed"]
+    assert [s.text for s in arrival.segments] == ["late", " untimed"]
 
 
 def test_empty_segments_with_the_diagnostic_still_render_zero_cues() -> None:
@@ -715,7 +811,7 @@ def test_stale_diagnostic_on_fully_measured_result_is_ignored() -> None:
         text="hello world",
         segments=[
             Segment(start=0.0, end=1.0, text="hello"),
-            Segment(start=1.0, end=2.0, text="world"),
+            Segment(start=1.0, end=2.0, text=" world"),
         ],
         diagnostics=[
             Diagnostic(
@@ -757,7 +853,7 @@ def test_unknown_missing_timestamps_policy_is_a_loud_value_error() -> None:
     """
     mixed = TranscriptionResult(
         text="real missing",
-        segments=[Segment(start=1.0, end=2.0, text="real"), _unavailable_segment("missing")],
+        segments=[Segment(start=1.0, end=2.0, text="real"), _unavailable_segment(" missing")],
     )
     measured = TranscriptionResult(text="ok", segments=[Segment(start=0.0, end=1.0, text="ok")])
     for render in (to_srt, to_vtt):
@@ -824,7 +920,7 @@ def test_reduced_timestampless_stream_default_raises_collapse_renders() -> None:
     """
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "hello"))
-    reducer.add(TranscriptionEvent.final("s2", "world"))
+    reducer.add(TranscriptionEvent.final("s2", " world"))
     result = reducer.result()
 
     assert result.duration is None
@@ -846,9 +942,9 @@ def test_srt_skips_empty_segment_and_renumbers() -> None:
     segs = [
         Segment(start=0.0, end=1.0, text="first"),
         Segment(start=1.0, end=2.0, text="   "),
-        Segment(start=2.0, end=3.0, text="third"),
+        Segment(start=2.0, end=3.0, text="third."),
     ]
-    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    srt = to_srt(_segmented(segs))
     assert "1\n00:00:00,000 --> 00:00:01,000\nfirst" in srt
     assert "2\n00:00:02,000 --> 00:00:03,000\nthird" in srt
     # No third index (the whitespace cue was dropped, not emitted blank).
@@ -861,9 +957,9 @@ def test_vtt_skips_empty_segment() -> None:
     segs = [
         Segment(start=0.0, end=1.0, text="first"),
         Segment(start=1.0, end=2.0, text=""),
-        Segment(start=2.0, end=3.0, text="third"),
+        Segment(start=2.0, end=3.0, text=" third"),
     ]
-    vtt = to_vtt(TranscriptionResult(text="x", segments=segs))
+    vtt = to_vtt(_segmented(segs))
     # WEBVTT header + two real cues = exactly two blank-line separators.
     assert vtt.count("\n\n") == 2
     assert "first" in vtt
@@ -878,7 +974,7 @@ def test_srt_adversarial_blank_line_cannot_forge_cue() -> None:
     # line would, unsanitized, forge a second SRT cue. After sanitization the
     # whole thing stays inside cue 1 and there is exactly one cue.
     evil = "Hello\n\n2\n00:00:05,000 --> 00:00:09,000\nInjected"
-    srt = to_srt(TranscriptionResult(text="x", segments=[Segment(start=0.0, end=1.0, text=evil)]))
+    srt = to_srt(_segmented([Segment(start=0.0, end=1.0, text=evil)]))
     # SRT cues are blank-line-delimited; with the interior blank line collapsed
     # there is no separator, so the injected content stays inside cue 1 and
     # cannot forge a second cue. (SRT, unlike VTT, does not treat "-->" in a
@@ -890,14 +986,14 @@ def test_srt_adversarial_blank_line_cannot_forge_cue() -> None:
 
 def test_srt_collapses_interior_blank_lines() -> None:
     seg = Segment(start=0.0, end=1.0, text="line one\n\n\nline two")
-    srt = to_srt(TranscriptionResult(text="x", segments=[seg]))
+    srt = to_srt(_segmented([seg]))
     assert "line one\nline two" in srt
     assert "line one\n\n" not in srt
 
 
 def test_vtt_neutralizes_arrow_in_text() -> None:
     seg = Segment(start=0.0, end=1.0, text="a --> b")
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]))
+    vtt = to_vtt(_segmented([seg]))
     # Only the cue timing line may contain "-->"; the payload arrow is
     # neutralized by the WebVTT ">" escape, so "-->" in the payload
     # becomes "--&gt;" and can never be read as cue timing.
@@ -907,7 +1003,7 @@ def test_vtt_neutralizes_arrow_in_text() -> None:
 
 def test_vtt_adversarial_blank_line_cannot_forge_cue() -> None:
     evil = "Hi\n\n00:00:05.000 --> 00:00:09.000\nInjected"
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[Segment(start=0.0, end=1.0, text=evil)]))
+    vtt = to_vtt(_segmented([Segment(start=0.0, end=1.0, text=evil)]))
     # WEBVTT header + one real cue: blank-line count is exactly one.
     assert vtt.count("\n\n") == 1
     assert vtt.count("-->") == 1
@@ -921,7 +1017,7 @@ def test_vtt_escapes_markup_metacharacters() -> None:
     # sin. The renderer MUST escape & -> &amp;, < -> &lt;, > -> &gt; per the W3C
     # WebVTT cue-text grammar so the literal text survives.
     seg = Segment(start=0.0, end=1.0, text="a < b & AT&T <i>x")
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]))
+    vtt = to_vtt(_segmented([seg]))
     assert "a &lt; b &amp; AT&amp;T &lt;i&gt;x" in vtt
     # No raw markup metacharacters survive in the payload line.
     payload = vtt.split("\n")[-2]
@@ -935,7 +1031,7 @@ def test_vtt_escapes_engine_leaked_special_tokens() -> None:
     # The realistic input: a Whisper-family engine leaks ``<unk>`` / ``<|...|>``
     # special tokens. They must be shown verbatim (escaped), not eaten as tags.
     seg = Segment(start=0.0, end=1.0, text="<unk> hi <|endoftext|>")
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]))
+    vtt = to_vtt(_segmented([seg]))
     assert "&lt;unk&gt; hi &lt;|endoftext|&gt;" in vtt
     assert "<unk>" not in vtt.split("WEBVTT")[1]
 
@@ -945,7 +1041,7 @@ def test_vtt_escape_order_no_double_escaping() -> None:
     # itself re-escaped into &amp;lt;. A literal "&lt;" in the source text must
     # round-trip as "&amp;lt;" (the ampersand escaped, the rest literal).
     seg = Segment(start=0.0, end=1.0, text="&lt; and < ")
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]))
+    vtt = to_vtt(_segmented([seg]))
     assert "&amp;lt; and &lt;" in vtt
     assert "&amp;lt;lt;" not in vtt  # no double-escaping artifact
 
@@ -955,7 +1051,7 @@ def test_srt_does_not_escape_markup() -> None:
     # surface a literal "&amp;" / "&lt;" to the viewer. The renderer passes "&"
     # and angle brackets through verbatim on the SRT path.
     seg = Segment(start=0.0, end=1.0, text="AT&T <i>bold</i>")
-    srt = to_srt(TranscriptionResult(text="x", segments=[seg]))
+    srt = to_srt(_segmented([seg]))
     assert "AT&T <i>bold</i>" in srt
     assert "&amp;" not in srt
     assert "&lt;" not in srt
@@ -971,7 +1067,7 @@ def test_lone_cr_normalized_cannot_forge_cue(
     # forge a cue. The renderer now normalizes "\r\n"/"\r" -> "\n" before
     # collapsing, so no raw CR survives and no cue can be forged via CR.
     evil = "hello\r\r2\r00:00:05,000 --> 00:00:09,000\rEVIL"
-    out = render(TranscriptionResult(text="x", segments=[Segment(start=0.0, end=1.0, text=evil)]))
+    out = render(_segmented([Segment(start=0.0, end=1.0, text=evil)]))
     assert "\r" not in out
     # The CR-forged blank line is gone: payload stays in one cue. SRT emits no
     # blank-line separator for a single cue; VTT has exactly one (after WEBVTT).
@@ -985,9 +1081,9 @@ def test_lone_cr_normalized_cannot_forge_cue(
 def test_srt_sorts_out_of_order_segments() -> None:
     segs = [
         Segment(start=2.0, end=3.0, text="second"),
-        Segment(start=0.0, end=1.0, text="first"),
+        Segment(start=0.0, end=1.0, text=" first"),
     ]
-    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    srt = to_srt(_segmented(segs))
     assert srt.index("first") < srt.index("second")
     assert srt.startswith("1\n00:00:00,000")
 
@@ -995,9 +1091,9 @@ def test_srt_sorts_out_of_order_segments() -> None:
 def test_srt_sorts_by_channel_on_tie() -> None:
     segs = [
         Segment(start=0.0, end=1.0, text="ch1", channel=1),
-        Segment(start=0.0, end=1.0, text="ch0", channel=0),
+        Segment(start=0.0, end=1.0, text=" ch0", channel=0),
     ]
-    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    srt = to_srt(_segmented(segs))
     assert srt.index("ch0") < srt.index("ch1")
 
 
@@ -1017,9 +1113,9 @@ def test_srt_sorts_none_channel_before_real_channel() -> None:
     # its real ordering and never be treated as if it were None.
     segs = [
         Segment(start=0.0, end=1.0, text="ch0", channel=0),
-        Segment(start=0.0, end=1.0, text="none", channel=None),
+        Segment(start=0.0, end=1.0, text=" none", channel=None),
     ]
-    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    srt = to_srt(_segmented(segs))
     assert srt.index("none") < srt.index("ch0")
 
 
@@ -1118,10 +1214,15 @@ def test_synthesize_speaker_no_votes_returns_none() -> None:
 # --------------------------------------------------------------------------- #
 def _speaker_result(*speakers: str | None) -> TranscriptionResult:
     segs = [
-        Segment(start=float(i), end=float(i) + 1.0, text=f"line {i}", speaker=speaker)
+        Segment(
+            start=float(i),
+            end=float(i) + 1.0,
+            text=f"{' ' if i else ''}line {i}",
+            speaker=speaker,
+        )
         for i, speaker in enumerate(speakers)
     ]
-    return TranscriptionResult(text=" ".join(s.text for s in segs), segments=segs)
+    return _segmented(segs)
 
 
 def test_srt_include_speakers_prefixes_label() -> None:
@@ -1171,7 +1272,7 @@ def test_vtt_voice_tag_injected_after_text_sanitization() -> None:
     # The payload is escaped by _sanitize_cue_text; the voice tag is injected
     # AFTERWARD so it is not itself escaped away.
     seg = Segment(start=0.0, end=1.0, text="<unk> token", speaker="A")
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    vtt = to_vtt(_segmented([seg]), include_speakers=True)
     assert "<v A>&lt;unk&gt; token" in vtt
 
 
@@ -1181,9 +1282,9 @@ def test_srt_label_newline_collapsed(label: str) -> None:
     # is construction-rejected) but must not forge cue structure: every
     # terminator form collapses to a single space in the rendered label.
     seg = Segment(start=0.0, end=1.0, text="hello", speaker=label)
-    srt = to_srt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    srt = to_srt(_segmented([seg]), include_speakers=True)
     assert "[A B]: hello" in srt
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    vtt = to_vtt(_segmented([seg]), include_speakers=True)
     assert "<v A B>hello" in vtt
 
 
@@ -1194,10 +1295,10 @@ def test_srt_empty_text_with_speaker_still_skipped() -> None:
         Segment(start=0.0, end=1.0, text="   ", speaker="Alice"),
         Segment(start=1.0, end=2.0, text="real", speaker="Bob"),
     ]
-    srt = to_srt(TranscriptionResult(text="x", segments=segs), include_speakers=True)
+    srt = to_srt(_segmented(segs), include_speakers=True)
     assert "Alice" not in srt
     assert srt.startswith("1\n00:00:01,000")
-    vtt = to_vtt(TranscriptionResult(text="x", segments=segs), include_speakers=True)
+    vtt = to_vtt(_segmented(segs), include_speakers=True)
     assert "Alice" not in vtt
 
 
@@ -1206,10 +1307,10 @@ def test_cues_sort_speaker_tie_break() -> None:
     # sorts before any real label.
     segs = [
         Segment(start=0.0, end=1.0, text="from B", channel=0, speaker="B"),
-        Segment(start=0.0, end=1.0, text="from A", channel=0, speaker="A"),
-        Segment(start=0.0, end=1.0, text="no speaker", channel=0),
+        Segment(start=0.0, end=1.0, text=" from A", channel=0, speaker="A"),
+        Segment(start=0.0, end=1.0, text=" no speaker", channel=0),
     ]
-    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    srt = to_srt(_segmented(segs))
     assert srt.index("no speaker") < srt.index("from A") < srt.index("from B")
 
 
@@ -1217,9 +1318,9 @@ def test_cues_sort_channel_still_beats_speaker() -> None:
     # speaker is the LAST key: a lower channel wins regardless of labels.
     segs = [
         Segment(start=0.0, end=1.0, text="ch1 A", channel=1, speaker="A"),
-        Segment(start=0.0, end=1.0, text="ch0 B", channel=0, speaker="B"),
+        Segment(start=0.0, end=1.0, text=" ch0 B", channel=0, speaker="B"),
     ]
-    srt = to_srt(TranscriptionResult(text="x", segments=segs))
+    srt = to_srt(_segmented(segs))
     assert srt.index("ch0 B") < srt.index("ch1 A")
 
 
@@ -1227,7 +1328,7 @@ def test_vtt_multiline_cue_single_voice_tag_wraps_whole_body() -> None:
     # An unclosed <v> span legally runs to the end of the cue payload, so ONE
     # opening tag attributes the whole (multi-line) body.
     seg = Segment(start=0.0, end=1.0, text="line one\nline two", speaker="A")
-    vtt = to_vtt(TranscriptionResult(text="x", segments=[seg]), include_speakers=True)
+    vtt = to_vtt(_segmented([seg]), include_speakers=True)
     assert "<v A>line one\nline two" in vtt
     assert vtt.count("<v A>") == 1
 
@@ -1245,7 +1346,7 @@ def test_sub_millisecond_measured_span_is_unrenderable() -> None:
         text="real ghost",
         segments=[
             Segment(start=0.0, end=1.0, text="real"),
-            Segment(start=1.0, end=1.0004, text="ghost"),
+            Segment(start=1.0, end=1.0004, text=" ghost"),
         ],
     )
     for render in (to_srt, to_vtt):
@@ -1272,7 +1373,7 @@ def test_equal_millisecond_distinct_floats_are_unrenderable() -> None:
     ``5.0001 -> 5.0004`` is a positive raw span whose bounds both format to
     ``00:00:05,000``; the output grid, not raw float arithmetic, decides.
     """
-    result = TranscriptionResult(text="x", segments=[Segment(start=5.0001, end=5.0004, text="x")])
+    result = _segmented([Segment(start=5.0001, end=5.0004, text="x")])
     with pytest.raises(SubtitleRenderingError):
         to_srt(result)
 
@@ -1288,9 +1389,8 @@ def test_empty_segments_are_skipped_not_unrenderable() -> None:
     nothing either way, while the policy exists to stop LOST TEXT and
     FABRICATED TIMING.
     """
-    result = TranscriptionResult(
-        text="hello",
-        segments=[
+    result = _segmented(
+        [
             Segment(start=0.0, end=1.0, text="hello"),
             Segment(start=None, end=None, text=""),
             Segment(start=None, end=None, text="   \n  "),
@@ -1321,12 +1421,15 @@ def test_all_empty_segments_render_no_cues_and_never_fabricate() -> None:
     Falling through to it would fabricate a full-span cue for a result whose
     segmentation deliberately reported nothing visible.
     """
-    result = TranscriptionResult(
-        text="hello",
-        segments=[Segment(start=None, end=None, text=""), Segment(start=None, end=None, text="  ")],
-    )
+    empty = [Segment(start=None, end=None, text=""), Segment(start=None, end=None, text="  ")]
+    result = _segmented(empty)
     assert to_srt(result) == ""
     assert to_vtt(result) == "WEBVTT\n"
+    # Built without validation, visible text over the empty segments still
+    # renders zero cues: the segment list decides, not the text.
+    unchecked = TranscriptionResult.model_construct(text="hello", segments=empty)
+    assert to_srt(unchecked) == ""
+    assert to_vtt(unchecked) == "WEBVTT\n"
 
 
 def test_unrenderable_counts_exclude_empty_segments() -> None:
@@ -1335,7 +1438,7 @@ def test_unrenderable_counts_exclude_empty_segments() -> None:
         text="a b",
         segments=[
             Segment(start=0.0, end=1.0, text="a"),
-            Segment(start=None, end=None, text="b"),  # real text, no span: a genuine policy case
+            Segment(start=None, end=None, text=" b"),  # real text, no span: a genuine policy case
             Segment(start=None, end=None, text=""),  # no payload: not part of the decision
         ],
     )

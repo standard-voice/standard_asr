@@ -341,16 +341,27 @@ class Segment(BaseModel):
         channel)`` overlapping segments, ``None`` sorting before any real
         label). A ``start=None`` segment has no time position: the producer
         keeps the list in READING order instead (list order is the reading
-        order, and ``TranscriptionResult.text`` joins segment texts in list
-        order), so a single unmeasured segment never scrambles -- or forces
-        fabricated positions into -- an otherwise real timeline.
+        order, and ``TranscriptionResult.text`` is the segment texts
+        concatenated in list order), so a single unmeasured segment never
+        scrambles -- or forces fabricated positions into -- an otherwise real
+        timeline.
+
+        Text: ``text`` carries every character this segment adds to the
+        transcript, including the spaces and punctuation that join it to the
+        segments around it. A space may end one segment, start the next, or
+        be a segment of its own, but it appears only once. Concatenating the texts of
+        consecutive segments with no separator gives the transcript: English
+        ``"Hello"`` then ``" world."``, Chinese ``"今天"`` then ``"天气很好。"``.
+        The standard layer never inserts, strips, or collapses whitespace,
+        so an engine that sends ``"Hello"`` then ``"world"`` produces
+        ``"Helloworld"`` everywhere.
 
     Attributes:
         start: Segment start time in seconds (origin = first submitted sample;
             non-negative, finite), or ``None`` when unmeasured.
         end: Segment end time in seconds (non-negative, finite, ``>= start``),
             or ``None`` when unmeasured. Requires ``start``.
-        text: Segment transcript text.
+        text: Segment transcript text, boundary whitespace included.
         words: Optional word-level details for this segment.
         speaker: Optional speaker label (authoritative diarization shape).
         channel: Optional channel index for provenance (``>= 0``).
@@ -381,7 +392,9 @@ class Segment(BaseModel):
             "unmeasured; requires a non-null start."
         ),
     )
-    text: str = Field(..., description="Segment transcript text.")
+    text: str = Field(
+        ..., description="Segment text, including the spaces that join it to its neighbors."
+    )
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this segment."
     )
@@ -522,29 +535,99 @@ def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
     return max(counts, key=lambda label: (counts[label], -first_index[label]))
 
 
+def _require_text_is_joined_segments(
+    owner: str, text: str, segments: Sequence[Segment] | None
+) -> None:
+    """Reject a ``text`` that is not the segment texts concatenated in list order.
+
+    The rule is exact: no separator, no stripping, no whitespace collapsing.
+    A segment's text carries the spaces and punctuation that join it to its
+    neighbors, so the standard layer never inserts or removes a character.
+    The message names the first position where the two strings differ and
+    quotes no transcript text, because a transcript can be long or private.
+
+    Args:
+        owner: The model name the message names (``TranscriptionResult`` or
+            ``ChannelResult``).
+        text: The model's ``text``.
+        segments: The model's ``segments``; ``None`` skips the check,
+            because ``text`` then stands alone.
+
+    Raises:
+        PydanticCustomError: If ``segments`` is a list and ``text`` differs
+            from ``"".join(segment.text for segment in segments)``.
+    """
+    if segments is None:
+        return
+    joined = "".join(segment.text for segment in segments)
+    if text == joined:
+        return
+    position = next(
+        (i for i, (a, b) in enumerate(zip(text, joined, strict=False)) if a != b),
+        min(len(text), len(joined)),
+    )
+    raise PydanticCustomError(
+        "standard_asr_text_segments_mismatch",
+        "{owner}.text is not the segment texts concatenated in list order: the two "
+        "differ at code point index {position}, counting from 0 (text has "
+        "{text_length} code points, the joined segments have {joined_length}). "
+        "Each segment text carries the spaces and punctuation that join it to "
+        "its neighbors, and text is "
+        '"".join(segment.text for segment in segments), with no separator and no '
+        "stripping. Build text from the segments, or put the missing space into "
+        "the segment text where it belongs.",
+        {
+            "owner": owner,
+            "position": position,
+            "text_length": len(text),
+            "joined_length": len(joined),
+        },
+    )
+
+
 class ChannelResult(BaseModel):
     """Per-channel transcription for multi-channel audio.
 
     Attributes:
         channel: Channel index.
-        text: Full transcript for this channel.
+        text: Full transcript for this channel. When ``segments`` is a list,
+            the engine builds ``text`` as the segment texts concatenated in
+            list order, with no separator (checked at construction).
         segments: Optional segment-level details for this channel.
         words: Optional flattened word-level details for this channel.
 
     Raises:
-        ValueError: If field validation fails.
+        ValueError: If field validation fails, or if ``text`` is not the
+            concatenated segment texts.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     channel: int = Field(..., ge=0, description="Channel index (>= 0).")
-    text: str = Field(..., description="Full transcript for this channel.")
+    text: str = Field(
+        ...,
+        description="Channel transcript; the segment texts concatenated when segments is a list.",
+    )
     segments: list[Segment] | None = Field(
         default=None, description="Segment-level details for this channel."
     )
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this channel."
     )
+
+    @model_validator(mode="after")
+    def _check_text_is_joined_segments(self) -> ChannelResult:
+        """Reject a ``text`` that is not the concatenated segment texts.
+
+        Returns:
+            The validated channel result.
+
+        Raises:
+            ValueError: If ``segments`` is a list and ``text`` differs from
+                the segment texts concatenated in list order.
+        """
+        _require_text_is_joined_segments("ChannelResult", self.text, self.segments)
+        return self
 
 
 class TranscriptionResult(BaseModel):
@@ -556,22 +639,31 @@ class TranscriptionResult(BaseModel):
     ``channels`` is always safe and lossless.
 
     Attributes:
-        text: Full transcript (required).
+        text: Full transcript (required). When ``segments`` is a list,
+            the engine builds ``text`` as ``"".join(segment.text for segment
+            in segments)``, checked at construction: each segment text carries
+            the spaces and punctuation that join it to its neighbors, and
+            nothing adds a separator or strips one. The standard layer keeps
+            whatever the engine sent, so ``text`` can start with a space, as
+            the Whisper family's text does. ``[]`` segments therefore require
+            ``text == ""``; an engine that has text but no segments sets
+            ``segments=None``.
         detected_language: Detected language as a well-formed BCP-47 tag in
             ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
         duration: Audio duration in seconds, if known (non-negative, finite).
-        segments: Segments across all channels, if available. Segments WITH a
-            ``start`` SHOULD be sorted by ``(start, channel, speaker)``
-            (monotonic within a channel; ``speaker`` is the final tie-break,
-            ``None`` sorting first); a ``start=None`` segment has no time
-            position, so the list stays in READING order instead (list order
-            is the reading order; ``text`` joins segment texts in list
-            order). The ordering is an **engine obligation**, neither
-            enforced at construction nor checked by the compliance suite
-            (the streaming reducer keeps arrival order whenever any retained
-            segment lacks a ``start``). The SRT/VTT renderers' defensive
-            re-sort of measured cues is the only standard-layer safety net.
+        segments: Segments across all channels, if available. List order is
+            the reading order, and ``text`` is the segment texts
+            concatenated in that order. Segments WITH a ``start`` SHOULD be
+            sorted by ``(start, channel, speaker)`` (monotonic within a
+            channel; ``speaker`` is the final tie-break, ``None`` sorting
+            first); a ``start=None`` segment has no time position, so the
+            engine places it by reading order. The ordering is an **engine
+            obligation**, neither enforced at construction nor checked by
+            the compliance suite: the streaming reducer keeps the order in
+            which the engine announced the segments and never re-sorts. The
+            SRT/VTT renderers' defensive re-sort of measured cues is the only
+            standard-layer safety net.
         words: Flattened word-level details, if available.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
@@ -581,12 +673,15 @@ class TranscriptionResult(BaseModel):
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative
-            ``duration``, or a malformed ``detected_language``).
+            ``duration``, a malformed ``detected_language``, or a ``text``
+            that is not the concatenated segment texts).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    text: str = Field(..., description="Full transcript text.")
+    text: str = Field(
+        ..., description="Full transcript; the segment texts concatenated when segments is a list."
+    )
     detected_language: str | None = Field(
         default=None, description="Detected language (well-formed BCP-47) in auto mode."
     )
@@ -597,7 +692,8 @@ class TranscriptionResult(BaseModel):
         default=None, ge=0.0, description="Audio duration in seconds, if known (>= 0)."
     )
     segments: list[Segment] | None = Field(
-        default=None, description="Time-ordered segments, if available."
+        default=None,
+        description="Segments in reading order, if available; text is their texts concatenated.",
     )
     words: list[Word] | None = Field(
         default=None, description="Flattened word-level details, if available."
@@ -673,14 +769,14 @@ class TranscriptionResult(BaseModel):
         ``start`` sorted by ``(start, channel, speaker)``, monotonic within a
         channel; ``start=None`` segments keeping reading order) is
         intentionally *not* enforced here: the streaming reducer
-        (:class:`~standard_asr.runtime.streaming.StreamReducer`) legitimately preserves
-        arrival order whenever any retained segment lacks a ``start`` and
-        sorts only by ``start`` otherwise (no channel/speaker tie-break), so
-        a strict ``(start, channel,
-        speaker)`` construct-time check would reject valid reduced results. For
-        the same reason the compliance suite does not check ordering either;
-        ordering is an engine obligation, and the renderers' defensive re-sort
-        at their boundary is the only standard-layer safety net.
+        (:class:`~standard_asr.runtime.streaming.StreamReducer`) keeps the
+        order in which the engine announced the segments and never re-sorts,
+        so a strict ``(start, channel, speaker)`` construct-time check would
+        reject a reduced result whenever the engine announced segments out
+        of time order. For the same reason the compliance suite does not
+        check ordering either; ordering is an engine obligation, and the
+        renderers' defensive re-sort at their boundary is the only
+        standard-layer safety net.
 
         Returns:
             The validated result.
@@ -721,6 +817,22 @@ class TranscriptionResult(BaseModel):
                         + name
                         + ".",
                     )
+        return self
+
+    @model_validator(mode="after")
+    def _check_text_is_joined_segments(self) -> TranscriptionResult:
+        """Reject a top-level ``text`` that is not the concatenated segment texts.
+
+        Each ``ChannelResult`` checks its own ``text`` the same way.
+
+        Returns:
+            The validated result.
+
+        Raises:
+            ValueError: If ``segments`` is a list and ``text`` differs from
+                the segment texts concatenated in list order.
+        """
+        _require_text_is_joined_segments("TranscriptionResult", self.text, self.segments)
         return self
 
 

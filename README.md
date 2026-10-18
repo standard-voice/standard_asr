@@ -164,7 +164,8 @@ async with engine.start_transcription(audio_format=audio_format) as session:
                 order.remove(old_id)
                 texts.pop(old_id, None)
             order[pos:pos] = event.new_ids  # replacements take the block's place
-        render(order, texts)
+        # No separator: each segment's text carries its own spaces.
+        render("".join(texts[sid] for sid in order if sid in texts))
 
 print(session.result().text)  # collapse the session into a TranscriptionResult
 ```

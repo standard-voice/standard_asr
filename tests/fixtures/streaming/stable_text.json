@@ -1,5 +1,5 @@
 {
-  "description": "Shared stable-text cases for the streaming protocol. Each case lists wire-shaped events in emission order and what the lifecycle guard does with each. The cases are replayed through the lifecycle guard, the session's reducer, and the reference reduce, not through a session. The guard is given no capabilities, so no case records a capability code (stream_exceeds_*, finality_level_not_reached); a guard that has an engine's capabilities, as in a session that an engine opened, can record more codes for the same events. Every event writes out finality, old_ids, new_ids, and extra, the keys whose default is not null, and every partial and final writes out stable_text. Every other key that an event leaves out is null, such as segment_id, text, and stable_text on a done event. The outcome of an event is 'admitted' (the guard forwards it), 'rejected' (the guard suppresses it), or 'invalid' (malformed: it fails event construction and never reaches the guard). The fixture runner skips an invalid event and goes on to the next one; in a session, an engine that fails to construct an event ends the session with engine_error. A partial or a final is invalid when its stable_text is null, is not the start of its text, or, on a final, is not the whole text. An admitted partial or final gives the stable_text as the guard forwards it, which can differ from the one sent; an admitted event of another type gives none, because it carries null. 'diagnostics' lists the codes recorded while handling that event, in order. 'display' is the reading-order list of [segment_id, text] pairs that the reference reduce keeps, partial text included; 'result_segments' are the texts of the finalized segments in the reduced result; 'result_text' is given for cases with at most one finalized segment only, because how segment texts are joined is not settled (issue #46). 'group' names the rule a case depends on: 'core', 'final' (a final is wholly stable), or 'supersede' (a supersede withdraws the retired segments, stable text included). The boundary cases cover only what the standard layer checks, that stable text does not end inside a combining character sequence or right after a zero width joiner; they do not cover the full rule that stable text ends between two user-perceived characters.",
+  "description": "Shared stable-text cases for the streaming protocol. Each case lists wire-shaped events in emission order and what the lifecycle guard does with each. The cases are replayed through the lifecycle guard, the session's reducer, and the reference reduce, not through a session. The guard is given no capabilities, so no case records a capability code (stream_exceeds_*, finality_level_not_reached); a guard that has an engine's capabilities, as in a session that an engine opened, can record more codes for the same events. Every event writes out finality, old_ids, new_ids, and extra, the keys whose default is not null, and every partial and final writes out stable_text. Every other key that an event leaves out is null, such as segment_id, text, and stable_text on a done event. The outcome of an event is 'admitted' (the guard forwards it), 'rejected' (the guard suppresses it), or 'invalid' (malformed: it fails event construction and never reaches the guard). The fixture runner skips an invalid event and goes on to the next one; in a session, an engine that fails to construct an event ends the session with engine_error. A partial or a final is invalid when its stable_text is null, is not the start of its text, or, on a final, is not the whole text. An admitted partial or final gives the stable_text as the guard forwards it, which can differ from the one sent; an admitted event of another type gives none, because it carries null. 'diagnostics' lists the codes recorded while handling that event, in order. 'display' is the reading-order list of [segment_id, text] pairs that the reference reduce keeps, partial text included; 'result_segments' are the texts of the finalized segments in the reduced result; 'result_text' is the text of the reduced result: the finalized segment texts concatenated in reading order with no separator. Each segment text carries the spaces and punctuation that join it to its neighbors, so no consumer adds, strips, or collapses whitespace. 'group' names the rule a case depends on: 'core', 'final' (a final is wholly stable), or 'supersede' (a supersede withdraws the retired segments, stable text included). The boundary cases cover only what the standard layer checks, that stable text does not end inside a combining character sequence or right after a zero width joiner; they do not cover the full rule that stable text ends between two user-perceived characters.",
   "cases": [
     {
       "name": "growth",
@@ -450,6 +450,182 @@
       }
     },
     {
+      "name": "join_english_leading_space",
+      "group": "core",
+      "description": "English segments: each later segment starts with the space that joins it to the one before, in its partial and in its final.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": "Hello", "stable_text": "Hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "partial", "segment_id": "s1", "text": " wor", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s1", "text": " world.", "stable_text": " world.", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "Hello"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " world."},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "Hello"], ["s1", " world."]],
+        "result_segments": ["Hello", " world."],
+        "result_text": "Hello world."
+      }
+    },
+    {
+      "name": "join_keeps_announced_order_over_start_times",
+      "group": "core",
+      "description": "Timed segments announced against time order: the reduced result keeps the order in which the engine announced them, the order an application displayed, and never sorts by start.",
+      "events": [
+        {"type": "final", "segment_id": "a", "text": "second", "stable_text": "second", "start": 2.0, "end": 3.0, "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "b", "text": " first", "stable_text": " first", "start": 0.0, "end": 1.0, "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "second"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " first"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["a", "second"], ["b", " first"]],
+        "result_segments": ["second", " first"],
+        "result_text": "second first"
+      }
+    },
+    {
+      "name": "join_first_segment_leading_space",
+      "group": "core",
+      "description": "A leading space on the first segment, as the Whisper family sends, stays in the result text: no consumer strips it.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": " Hello", "stable_text": " Hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s1", "text": " world.", "stable_text": " world.", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " Hello"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " world."},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", " Hello"], ["s1", " world."]],
+        "result_segments": [" Hello", " world."],
+        "result_text": " Hello world."
+      }
+    },
+    {
+      "name": "join_chinese_without_spaces",
+      "group": "core",
+      "description": "Chinese segments carry no spaces, and none appear in the result text.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": "今天", "stable_text": "今天", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s1", "text": "天气", "stable_text": "天气", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s2", "text": "很好。", "stable_text": "很好。", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "今天"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "天气"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "很好。"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "今天"], ["s1", "天气"], ["s2", "很好。"]],
+        "result_segments": ["今天", "天气", "很好。"],
+        "result_text": "今天天气很好。"
+      }
+    },
+    {
+      "name": "join_punctuation_segments",
+      "group": "core",
+      "description": "A punctuation mark can be a segment of its own; it attaches to the text before it.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": "Hello", "stable_text": "Hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s1", "text": ",", "stable_text": ",", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s2", "text": " world", "stable_text": " world", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s3", "text": "!", "stable_text": "!", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "Hello"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": ","},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " world"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "!"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "Hello"], ["s1", ","], ["s2", " world"], ["s3", "!"]],
+        "result_segments": ["Hello", ",", " world", "!"],
+        "result_text": "Hello, world!"
+      }
+    },
+    {
+      "name": "join_whitespace_only_and_empty_segments",
+      "group": "core",
+      "description": "A whitespace-only segment adds its characters and an empty segment adds nothing; both stay in the result.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": "a", "stable_text": "a", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s1", "text": "  ", "stable_text": "  ", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s2", "text": "", "stable_text": "", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s3", "text": "b", "stable_text": "b", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "a"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "  "},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": ""},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "b"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "a"], ["s1", "  "], ["s2", ""], ["s3", "b"]],
+        "result_segments": ["a", "  ", "", "b"],
+        "result_text": "a  b"
+      }
+    },
+    {
+      "name": "join_mixed_scripts_without_spaces",
+      "group": "core",
+      "description": "Chinese and English with no spaces between them, as some sources write it.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": "使用", "stable_text": "使用", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s1", "text": "OpenAI", "stable_text": "OpenAI", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s2", "text": "模型。", "stable_text": "模型。", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "使用"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "OpenAI"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "模型。"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "使用"], ["s1", "OpenAI"], ["s2", "模型。"]],
+        "result_segments": ["使用", "OpenAI", "模型。"],
+        "result_text": "使用OpenAI模型。"
+      }
+    },
+    {
+      "name": "join_mixed_scripts_with_spaces",
+      "group": "core",
+      "description": "Chinese and English with spaces between them, as other sources write it. Only the segment texts decide.",
+      "events": [
+        {"type": "final", "segment_id": "s0", "text": "使用", "stable_text": "使用", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s1", "text": " OpenAI", "stable_text": " OpenAI", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "s2", "text": " 模型。", "stable_text": " 模型。", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
+      ],
+      "expected": {
+        "events": [
+          {"outcome": "admitted", "diagnostics": [], "stable_text": "使用"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " OpenAI"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " 模型。"},
+          {"outcome": "admitted", "diagnostics": []}
+        ],
+        "display": [["s0", "使用"], ["s1", " OpenAI"], ["s2", " 模型。"]],
+        "result_segments": ["使用", " OpenAI", " 模型。"],
+        "result_text": "使用 OpenAI 模型。"
+      }
+    },
+    {
       "name": "final_stable_text_is_whole_text",
       "group": "final",
       "description": "A final's stable text is its whole text: an empty or partial value fails construction.",
@@ -678,10 +854,10 @@
     {
       "name": "reading_order_splice",
       "group": "supersede",
-      "description": "The replacement takes the retired segment's place in reading order. The result_text join is left out on purpose (issue #46).",
+      "description": "The replacement takes the retired segment's place in reading order, and the result text follows that order.",
       "events": [
         {"type": "final", "segment_id": "a", "text": "hello", "stable_text": "hello", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
-        {"type": "final", "segment_id": "b", "text": "world", "stable_text": "world", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
+        {"type": "final", "segment_id": "b", "text": " world", "stable_text": " world", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
         {"type": "supersede", "finality": "final", "old_ids": ["a"], "new_ids": ["a2"], "extra": {}},
         {"type": "final", "segment_id": "a2", "text": "hi", "stable_text": "hi", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}},
         {"type": "done", "finality": "final", "old_ids": [], "new_ids": [], "extra": {}}
@@ -689,13 +865,14 @@
       "expected": {
         "events": [
           {"outcome": "admitted", "diagnostics": [], "stable_text": "hello"},
-          {"outcome": "admitted", "diagnostics": [], "stable_text": "world"},
+          {"outcome": "admitted", "diagnostics": [], "stable_text": " world"},
           {"outcome": "admitted", "diagnostics": []},
           {"outcome": "admitted", "diagnostics": [], "stable_text": "hi"},
           {"outcome": "admitted", "diagnostics": []}
         ],
-        "display": [["a2", "hi"], ["b", "world"]],
-        "result_segments": ["hi", "world"]
+        "display": [["a2", "hi"], ["b", " world"]],
+        "result_segments": ["hi", " world"],
+        "result_text": "hi world"
       }
     },
     {
