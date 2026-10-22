@@ -2378,6 +2378,17 @@ _RESERVED_SESSION_ATTRS: frozenset[str] = frozenset(
 )
 
 
+async def _close_producer(events: AsyncIterator[TranscriptionEvent]) -> None:
+    """Close an engine's event iterator and wait for its cleanup.
+
+    An async generator has ``aclose()``, which runs its ``finally`` blocks;
+    an iterator without one has nothing to close.
+    """
+    aclose = getattr(events, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
 class TranscriptionSession(ABC):
     """Async-first, full-duplex streaming session base.
 
@@ -2666,7 +2677,13 @@ class TranscriptionSession(ABC):
         """Open engine resources bound to the event loop (override as needed)."""
 
     async def _close(self) -> None:
-        """Tear down engine resources (override as needed)."""
+        """Tear down engine resources (override as needed).
+
+        Return only after every operation the session started has finished,
+        work handed to a thread included; work that cannot be canceled is
+        waited for (protocol, streaming section 6.5). A host such as the
+        reference server reuses the engine instance once this returns.
+        """
 
     @abstractmethod
     def _produce(self) -> AsyncIterator[TranscriptionEvent]:
@@ -3150,20 +3167,42 @@ class TranscriptionSession(ABC):
         and is delivered ahead of, the terminal) and once more in the ``finally``
         as a guard, so no exit path -- normal, early terminal, exception, or
         overflow -- can lose them.
+
+        **Every terminal event this method appends follows the end of the
+        engine's producer.** Before it appends ``done``, the engine's own
+        terminal, or the error for an overflow or an exception, the session
+        closes the ``_produce`` iterator and waits for its cleanup (the
+        ``finally`` blocks of an async generator). If that cleanup raises,
+        the session ends with ``engine_error`` instead. A consumer that
+        receives ``done`` therefore knows that the engine's producer has
+        finished. A terminal event that a deadline synthesizes comes from the
+        consumer side, which cancels the producer instead of waiting for it.
+        Left suspended, the iterator would run its cleanup in a task the
+        event loop starts when the iterator is collected: after the session
+        ended, or, when the loop closes first, only in part or not at all.
         """
+        terminal: TranscriptionEvent | None = None
         try:
-            async for event in self._produce():
+            events = self._produce()
+            try:
+                async for event in events:
+                    self._drain_pending_reconnects()
+                    admitted = self._guard.admit(event)
+                    if admitted is None:
+                        continue  # illegal transition: suppressed (diagnosed).
+                    if admitted.is_terminal:
+                        terminal = admitted
+                        break
+                    self._reducer.add(self._buffer.put(admitted))
+            finally:
+                await _close_producer(events)
+            if terminal is not None:
                 self._drain_pending_reconnects()
-                admitted = self._guard.admit(event)
-                if admitted is None:
-                    continue  # illegal transition: suppressed (diagnosed).
-                if admitted.is_terminal:
-                    # Engine-emitted terminal: run the shared terminal funnel,
-                    # then deliver drop-proof and reduce the same canonical
-                    # value the funnel produced.
-                    self._reducer.add(self._buffer.put_forced(self._terminate(admitted)))
-                    return
-                self._reducer.add(self._buffer.put(admitted))
+                # Engine-emitted terminal: run the shared terminal funnel,
+                # then deliver drop-proof and reduce the same canonical
+                # value the funnel produced.
+                self._reducer.add(self._buffer.put_forced(self._terminate(terminal)))
+                return
             self._drain_pending_reconnects()
             # Session ended cleanly. The base's own done passes the guard like
             # an engine-emitted one, so the end-of-session check runs on both.

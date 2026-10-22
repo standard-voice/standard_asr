@@ -466,7 +466,16 @@ def _add_serve_subcommand(subparsers: Any) -> None:
         None.
     """
     parser = subparsers.add_parser(
-        "serve", help="Start the FastAPI server for Standard ASR.", allow_abbrev=False
+        "serve",
+        help="Start the FastAPI server for Standard ASR.",
+        description=(
+            "Start the FastAPI server for Standard ASR. After a call that succeeds, the server "
+            "keeps the engine instance, with the model weights it loaded, for the next call to "
+            "the same model key: at most one idle instance per model key. An instance reads its "
+            "init config from the environment once, when the server constructs it, so restart "
+            "the server after you change the environment."
+        ),
+        allow_abbrev=False,
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")

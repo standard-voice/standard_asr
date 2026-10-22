@@ -1534,6 +1534,80 @@ def test_session_backpressure_overflow_emits_error() -> None:
     assert events[-1].recoverable is False
 
 
+class _CleanupSession(TranscriptionSession):
+    """Yields ``tail`` events from a producer whose cleanup awaits, and logs it."""
+
+    def __init__(self, tail: list[TranscriptionEvent], log: list[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._tail = tail
+        self._log = log
+
+    async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+        try:
+            for event in self._tail:
+                yield event
+        finally:
+            self._log.append("cleanup started")
+            await asyncio.sleep(0)
+            self._log.append("cleanup finished")
+
+
+async def _log_terminal(session: TranscriptionSession, log: list[str]) -> None:
+    session.feed([])
+    async with session:
+        async for event in session:
+            if event.is_terminal:
+                log.append(f"received {event.type}")
+    log.append("session closed")
+
+
+def test_engine_cleanup_finishes_before_its_terminal_event_arrives() -> None:
+    # An engine that yields its own done leaves its producer suspended. The
+    # session closes it, and waits for its cleanup, before the done lands:
+    # left alone, the cleanup would run after the session ended.
+    log: list[str] = []
+    events = [TranscriptionEvent.final("s0", "hi", start=0.0, end=1.0), TranscriptionEvent.done()]
+    asyncio.run(_log_terminal(_CleanupSession(events, log), log))
+    assert log == ["cleanup started", "cleanup finished", "received done", "session closed"]
+
+
+def test_engine_cleanup_finishes_before_a_backpressure_error_arrives() -> None:
+    log: list[str] = []
+    flood = [TranscriptionEvent.partial(f"s{index}", "x") for index in range(50)]
+    session = _CleanupSession(flood, log, event_buffer_capacity=4)
+    asyncio.run(_log_terminal(session, log))
+    assert log == ["cleanup started", "cleanup finished", "received error", "session closed"]
+
+
+def test_a_producer_without_aclose_still_ends_the_session() -> None:
+    # _produce may return any async iterator; one without aclose() has no
+    # cleanup for the session to wait for.
+    class _Events:
+        def __init__(self) -> None:
+            self._events = [TranscriptionEvent.final("s0", "hi", start=0.0, end=1.0)]
+            self._events.append(TranscriptionEvent.done())
+
+        def __aiter__(self) -> _Events:
+            return self
+
+        async def __anext__(self) -> TranscriptionEvent:
+            if not self._events:
+                raise StopAsyncIteration
+            return self._events.pop(0)
+
+    class _IteratorSession(TranscriptionSession):
+        def _produce(self) -> AsyncIterator[TranscriptionEvent]:
+            return _Events()
+
+    async def run() -> list[TranscriptionEvent]:
+        session = _IteratorSession()
+        session.feed([])
+        return await _collect(session)
+
+    events = asyncio.run(run())
+    assert [event.type for event in events] == ["final", "done"]
+
+
 def test_progress_heartbeats_also_trigger_backpressure() -> None:
     # A progress heartbeat takes the bounded path, exactly like a new partial
     # slot: put() special-cases partial (coalesce) and final/supersede/error/done

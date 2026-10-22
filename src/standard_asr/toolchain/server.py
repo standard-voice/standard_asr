@@ -18,6 +18,7 @@ not a substitute for a rate limiter.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -374,6 +375,61 @@ class TranscribeResponse(BaseModel):
     result: TranscriptionResult = Field(..., description="Standard ASR transcription result.")
 
 
+class _IdleEngines:
+    """Keep at most one idle engine instance per model key.
+
+    A call takes the idle instance for its model key, or constructs one when
+    there is none, so calls that overlap each get their own instance. When a
+    call ends, the route releases its instance: the instance stays idle for the
+    next call only after a call that succeeded, and only when no other
+    instance is idle for that key. Every method runs on the event-loop thread,
+    so the mapping needs no lock. The design, and why an instance is kept only
+    after success, is in ``docs/internal/feat_plan/server-engine-reuse.md``.
+    """
+
+    def __init__(self) -> None:
+        """Start with no idle instance."""
+        self._idle: dict[str, Any] = {}
+
+    def take(self, model: str) -> Any | None:
+        """Remove and return the idle instance for ``model``.
+
+        Args:
+            model: Model key in ``engine/model`` format.
+
+        Returns:
+            The idle instance, or ``None`` when there is none.
+        """
+        engine = self._idle.pop(model, None)
+        if engine is not None:
+            logger.debug("Reusing the idle engine for model %r", model)
+        return engine
+
+    def release(self, model: str, engine: Any, *, keep: bool) -> None:
+        """End a call's hold on ``engine``: keep it idle, or drop it.
+
+        Args:
+            model: Model key in ``engine/model`` format.
+            engine: The instance the call used.
+            keep: Whether the call succeeded and the server saw its work end.
+        """
+        if not keep:
+            logger.info(
+                "Dropped the engine for model %r: its call failed or did not end cleanly", model
+            )
+        elif model in self._idle:
+            logger.info("Dropped the engine for model %r: another instance is idle", model)
+        else:
+            self._idle[model] = engine
+            logger.debug("Kept the engine for model %r for the next call", model)
+
+    def clear(self) -> None:
+        """Drop every idle instance."""
+        for model in self._idle:
+            logger.info("Dropped the idle engine for model %r at shutdown", model)
+        self._idle.clear()
+
+
 def create_app(
     registry: ModelRegistry | None = None,
     *,
@@ -405,6 +461,11 @@ def create_app(
             one WebSocket session; exceeding it closes the socket with a policy
             error (see :data:`DEFAULT_MAX_WS_SESSION_BYTES`).
 
+    The application keeps at most one idle engine instance per model key
+    between calls (server API, section 5) and drops them in its shutdown
+    event. A host that never runs that event, such as a parent application
+    that mounts this one, keeps them until the application is collected.
+
     Returns:
         FastAPI application instance.
 
@@ -433,7 +494,13 @@ def create_app(
     # import itself stays lazy/optional.
     globals()["WebSocket"] = _WebSocket
 
-    app = FastAPI(title="Standard ASR")
+    idle = _IdleEngines()
+    # A shutdown handler, not a custom lifespan: FastAPI's default lifespan
+    # also runs the handlers an application registers on the returned app,
+    # and a custom one would silently skip them. By shutdown, uvicorn has
+    # closed the open WebSocket connections and waited for the requests in
+    # progress, so no call holds an instance.
+    app = FastAPI(title="Standard ASR", on_shutdown=[idle.clear])
     # Use the caller's registry when one is given -- even an empty one. A bare
     # ``registry or discover_models()`` would treat an explicitly passed empty
     # ``ModelRegistry({})`` as falsy (it is len 0) and silently fall back to
@@ -589,7 +656,7 @@ def create_app(
         # array engine gets an array at its accepted rate -- the upload's true
         # sample rate is never silently overridden).
         body = await _run_transcription(
-            model_registry, model, AudioBytes(data=file), params, HTTPException
+            model_registry, idle, model, AudioBytes(data=file), params, HTTPException
         )
         return Response(content=body, media_type="application/json")
 
@@ -631,7 +698,7 @@ def create_app(
         # multipart endpoint). Decode failures surface as AudioProcessingError
         # and map to 400 in _run_transcription.
         body = await _run_transcription(
-            model_registry, payload.model, AudioBase64(payload.audio), params, HTTPException
+            model_registry, idle, payload.model, AudioBase64(payload.audio), params, HTTPException
         )
         return Response(content=body, media_type="application/json")
 
@@ -795,8 +862,11 @@ def create_app(
             await _abort_ws(websocket, "internal_error", _internal_error_message("handshake"))
             return
 
+        asr = idle.take(model)
         try:
-            asr = await asyncio.to_thread(model_registry.create, model)
+            if asr is None:
+                asr = await asyncio.to_thread(model_registry.create, model)
+                logger.info("Constructed an engine for model %r", model)
         except EntrypointValidationError as exc:
             # The caller's model key does not exist or cannot be parsed --
             # genuinely caller-fixable; the authored message names only the
@@ -854,157 +924,169 @@ def create_app(
             )
             return
 
+        # The engine is released on every path out of this block: kept for the
+        # next call only when the session yielded done and closed cleanly.
+        kept = False
         try:
-            # start_transcription is part of the structural StandardASR protocol
-            # (a batch-only engine raises UnsupportedFeatureError, handled below).
-            session = asr.start_transcription(audio_format=audio_format, params=params)
-            # Sync-call boundary: an `async def` start_transcription (or a sync
-            # wrapper delegating to one) hands back a coroutine that the
-            # consumers below (`session.diagnostics()`, the bridge) would hit
-            # OUTSIDE this try as a secondary AttributeError while the
-            # coroutine leaked never-awaited. EngineContractError is not a
-            # ValueError, so it lands on the generic engine-fault arm below
-            # (scrubbed internal_error frame).
-            require_sync_result(
-                session, "start_transcription()", expected_type=TranscriptionSession
-            )
-            # An engine that does not derive from EngineBase does not give its
-            # session its capabilities. Bind them here, so the server checks
-            # every session it opens against its engine's capabilities. For an
-            # EngineBase this call does nothing: start_transcription bound them.
-            bind_session_capabilities(session, asr)
-        except ConfigurationRequiredError:
-            # Required config absent, discovered lazily at establishment (an
-            # engine deferring its credential check past construction): the WS
-            # twin of the REST 503 -- operator-side, stable generic message,
-            # never the absent field names. MUST precede the ConfigError arm
-            # (subclass), which MUST precede the ValueError arm below.
-            log_exception_safely(
-                logger,
-                "Engine %r requires configuration absent from the server environment",
-                model,
-            )
-            await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
-            return
-        except (ArtifactUnavailableError, ArtifactAcquisitionError):
-            # Inference-artifact availability discovered while establishing
-            # the session is the same operator-side state as the REST 503. The
-            # client gets no report, local path, action URL, or native failure
-            # text.
-            log_exception_safely(
-                logger,
-                "Engine %r has unavailable inference artifacts during stream establishment",
-                model,
-            )
-            await _abort_ws(websocket, "service_unavailable", _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL)
-            return
-        except (ConfigError, InvalidProviderParamError):
-            # An ENGINE fault, not a request error: the WS surface gives the
-            # client no way to cause either -- engine init config never
-            # crosses the wire, `provider_params` is rejected by
-            # WireRuntimeParams in the config frame, and client-fixable
-            # rejections have their own types (UnsupportedFeatureError ->
-            # `unsupported`; frame/options ValidationError -> `bad_request`
-            # at parse time). A ConfigError here is an engine
-            # declaration/config defect (for example, a missing `default_language`)
-            # whose authored message may carry server-side config detail --
-            # the old `bad_request` frame blamed the caller AND surfaced that
-            # text. Scrubbed internal_error, specifics safe-logged. NOTE:
-            # both subclass ValueError -- callers must not rely on a broader
-            # ValueError arm existing (there deliberately is none).
-            log_exception_safely(
-                logger,
-                "Engine-side configuration/contract fault during establishment for %r",
-                model,
-            )
-            await _abort_ws(
-                websocket, "internal_error", _internal_error_message("stream establishment")
-            )
-            return
-        except ValidationError:
-            # By session establishment the client's params are already
-            # validated -- a bare ValidationError here is an ENGINE fault (a
-            # structural engine's internals; EngineBase wraps this seam as
-            # TranscriptionError, but the server cannot assume the base
-            # class). Labeling it "unsupported" misattributes the fault, and
-            # ``str(exc)`` echoes pydantic's offending input_value -- a
-            # mis-placed engine-side secret would cross the trust boundary.
-            # Scrubbed internal_error, logged server-side. A dedicated arm
-            # (not the generic one below) so the log names the seam.
-            log_exception_safely(
-                logger, "Engine-side validation failure during establishment for %r", model
-            )
-            await _abort_ws(
-                websocket, "internal_error", _internal_error_message("stream establishment")
-            )
-            return
-        except UnsupportedFeatureError as exc:
-            # The ONLY caller-fixable establishment rejection: the engine
-            # cannot serve this (validated) request's feature set. A bare
-            # ValueError deliberately does NOT belong here: by establishment
-            # every client input is already validated (config frame ->
-            # pydantic; language/candidates/unknown keys -> WireRuntimeParams;
-            # audio_format -> its model), and a compliant engine signals
-            # unsupported features with UnsupportedFeatureError -- so a
-            # surviving ValueError is an engine/adapter/SDK fault. Mapping it
-            # to `unsupported` blamed the caller AND sent str(exc) -- an
-            # engine-internal message, possibly credential-bearing -- to an
-            # unauthenticated client; it now falls to the scrubbed
-            # internal_error arm below (REST's fault-ownership twin, §3.7).
-            await _abort_ws(websocket, "unsupported", str(exc))
-            return
-        except Exception:  # noqa: BLE001
-            # Internal/unexpected session-establishment fault (for example, a fault in the
-            # engine's own _start_transcription hook, or a bare ValueError from
-            # engine internals): never crash the route or leak detail. Log
-            # server-side; send a single generic, non-leaking frame (mirrors
-            # the construction scrubbed-frame contract).
-            log_exception_safely(logger, "Stream session establishment failed for model %r", model)
-            await _abort_ws(
-                websocket, "internal_error", _internal_error_message("stream establishment")
-            )
-            return
+            try:
+                # start_transcription is part of the structural StandardASR protocol
+                # (a batch-only engine raises UnsupportedFeatureError, handled below).
+                session = asr.start_transcription(audio_format=audio_format, params=params)
+                # Sync-call boundary: an `async def` start_transcription (or a sync
+                # wrapper delegating to one) hands back a coroutine that the
+                # consumers below (`session.diagnostics()`, the bridge) would hit
+                # OUTSIDE this try as a secondary AttributeError while the
+                # coroutine leaked never-awaited. EngineContractError is not a
+                # ValueError, so it lands on the generic engine-fault arm below
+                # (scrubbed internal_error frame).
+                require_sync_result(
+                    session, "start_transcription()", expected_type=TranscriptionSession
+                )
+                # An engine that does not derive from EngineBase does not give its
+                # session its capabilities. Bind them here, so the server checks
+                # every session it opens against its engine's capabilities. For an
+                # EngineBase this call does nothing: start_transcription bound them.
+                bind_session_capabilities(session, asr)
+            except ConfigurationRequiredError:
+                # Required config absent, discovered lazily at establishment (an
+                # engine deferring its credential check past construction): the WS
+                # twin of the REST 503 -- operator-side, stable generic message,
+                # never the absent field names. MUST precede the ConfigError arm
+                # (subclass), which MUST precede the ValueError arm below.
+                log_exception_safely(
+                    logger,
+                    "Engine %r requires configuration absent from the server environment",
+                    model,
+                )
+                await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
+                return
+            except (ArtifactUnavailableError, ArtifactAcquisitionError):
+                # Inference-artifact availability discovered while establishing
+                # the session is the same operator-side state as the REST 503. The
+                # client gets no report, local path, action URL, or native failure
+                # text.
+                log_exception_safely(
+                    logger,
+                    "Engine %r has unavailable inference artifacts during stream establishment",
+                    model,
+                )
+                await _abort_ws(
+                    websocket, "service_unavailable", _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL
+                )
+                return
+            except (ConfigError, InvalidProviderParamError):
+                # An ENGINE fault, not a request error: the WS surface gives the
+                # client no way to cause either -- engine init config never
+                # crosses the wire, `provider_params` is rejected by
+                # WireRuntimeParams in the config frame, and client-fixable
+                # rejections have their own types (UnsupportedFeatureError ->
+                # `unsupported`; frame/options ValidationError -> `bad_request`
+                # at parse time). A ConfigError here is an engine
+                # declaration/config defect (for example, a missing `default_language`)
+                # whose authored message may carry server-side config detail --
+                # the old `bad_request` frame blamed the caller AND surfaced that
+                # text. Scrubbed internal_error, specifics safe-logged. NOTE:
+                # both subclass ValueError -- callers must not rely on a broader
+                # ValueError arm existing (there deliberately is none).
+                log_exception_safely(
+                    logger,
+                    "Engine-side configuration/contract fault during establishment for %r",
+                    model,
+                )
+                await _abort_ws(
+                    websocket, "internal_error", _internal_error_message("stream establishment")
+                )
+                return
+            except ValidationError:
+                # By session establishment the client's params are already
+                # validated -- a bare ValidationError here is an ENGINE fault (a
+                # structural engine's internals; EngineBase wraps this seam as
+                # TranscriptionError, but the server cannot assume the base
+                # class). Labeling it "unsupported" misattributes the fault, and
+                # ``str(exc)`` echoes pydantic's offending input_value -- a
+                # mis-placed engine-side secret would cross the trust boundary.
+                # Scrubbed internal_error, logged server-side. A dedicated arm
+                # (not the generic one below) so the log names the seam.
+                log_exception_safely(
+                    logger, "Engine-side validation failure during establishment for %r", model
+                )
+                await _abort_ws(
+                    websocket, "internal_error", _internal_error_message("stream establishment")
+                )
+                return
+            except UnsupportedFeatureError as exc:
+                # The ONLY caller-fixable establishment rejection: the engine
+                # cannot serve this (validated) request's feature set. A bare
+                # ValueError deliberately does NOT belong here: by establishment
+                # every client input is already validated (config frame ->
+                # pydantic; language/candidates/unknown keys -> WireRuntimeParams;
+                # audio_format -> its model), and a compliant engine signals
+                # unsupported features with UnsupportedFeatureError -- so a
+                # surviving ValueError is an engine/adapter/SDK fault. Mapping it
+                # to `unsupported` blamed the caller AND sent str(exc) -- an
+                # engine-internal message, possibly credential-bearing -- to an
+                # unauthenticated client; it now falls to the scrubbed
+                # internal_error arm below (REST's fault-ownership twin, §3.7).
+                await _abort_ws(websocket, "unsupported", str(exc))
+                return
+            except Exception:  # noqa: BLE001
+                # Internal/unexpected session-establishment fault (for example, a fault in the
+                # engine's own _start_transcription hook, or a bare ValueError from
+                # engine internals): never crash the route or leak detail. Log
+                # server-side; send a single generic, non-leaking frame (mirrors
+                # the construction scrubbed-frame contract).
+                log_exception_safely(
+                    logger, "Stream session establishment failed for model %r", model
+                )
+                await _abort_ws(
+                    websocket, "internal_error", _internal_error_message("stream establishment")
+                )
+                return
 
-        # Forward the standard-layer diagnostics (best-effort parameter degrade,
-        # language resolution, audio conversion) attached at session
-        # establishment, so a WS client can see WHY word_timestamps / prompt /
-        # language were dropped or changed -- the REST path returns these on the
-        # result, and the WS surface must not silently hide them.
-        try:
-            diagnostics_frame = _initial_diagnostics_frame(session)
-        except Exception:  # noqa: BLE001 - projecting is the server's job, not the route's death
-            # This projection ran OUTSIDE every boundary: the establishment
-            # try/except has already returned by here, and `_bridge_stream`'s
-            # forward-loop catch has not started. A diagnostic carrying a
-            # value with no JSON form (only reachable past the JsonValue
-            # declaration -- `model_construct`, or mutation after
-            # construction) therefore killed the route with an unhandled
-            # exception, bypassing the operator-log redaction on the way out.
-            # Failing loudly is deliberate: diagnostics are the channel that
-            # tells a client something degraded, so dropping the frame and
-            # streaming on would hide exactly what the client needs.
-            log_exception_safely(logger, "Stream diagnostics projection failed for model %r", model)
-            # No session teardown on this return, deliberately: the session is
-            # CONSTRUCTED but never entered (start_transcription does not open;
-            # the producer/feed tasks and the engine's _open run inside
-            # _bridge_stream's `async with`), so the standard layer holds no
-            # live resources here, and __aexit__ would call the engine's
-            # _close without a matching _open -- an unspecified state. Same
-            # stance as the compliance gating probe's constructed-not-entered
-            # abandonment.
-            await _abort_ws(
-                websocket, "internal_error", _internal_error_message("stream diagnostics")
-            )
-            return
-        if diagnostics_frame is not None:
-            await websocket.send_json(diagnostics_frame)
+            # Forward the standard-layer diagnostics (best-effort parameter degrade,
+            # language resolution, audio conversion) attached at session
+            # establishment, so a WS client can see WHY word_timestamps / prompt /
+            # language were dropped or changed -- the REST path returns these on the
+            # result, and the WS surface must not silently hide them.
+            try:
+                diagnostics_frame = _initial_diagnostics_frame(session)
+            except Exception:  # noqa: BLE001 - projecting is the server's job, not the route's death
+                # This projection ran OUTSIDE every boundary: the establishment
+                # try/except has already returned by here, and `_bridge_stream`'s
+                # forward-loop catch has not started. A diagnostic carrying a
+                # value with no JSON form (only reachable past the JsonValue
+                # declaration -- `model_construct`, or mutation after
+                # construction) therefore killed the route with an unhandled
+                # exception, bypassing the operator-log redaction on the way out.
+                # Failing loudly is deliberate: diagnostics are the channel that
+                # tells a client something degraded, so dropping the frame and
+                # streaming on would hide exactly what the client needs.
+                log_exception_safely(
+                    logger, "Stream diagnostics projection failed for model %r", model
+                )
+                # No session teardown on this return, deliberately: the session is
+                # CONSTRUCTED but never entered (start_transcription does not open;
+                # the producer/feed tasks and the engine's _open run inside
+                # _bridge_stream's `async with`), so the standard layer holds no
+                # live resources here, and __aexit__ would call the engine's
+                # _close without a matching _open -- an unspecified state. Same
+                # stance as the compliance gating probe's constructed-not-entered
+                # abandonment.
+                await _abort_ws(
+                    websocket, "internal_error", _internal_error_message("stream diagnostics")
+                )
+                return
+            if diagnostics_frame is not None:
+                await websocket.send_json(diagnostics_frame)
 
-        await _bridge_stream(
-            websocket,
-            session,
-            max_frame_bytes=max_ws_frame_bytes,
-            max_session_bytes=max_ws_session_bytes,
-        )
+            kept = await _bridge_stream(
+                websocket,
+                session,
+                max_frame_bytes=max_ws_frame_bytes,
+                max_session_bytes=max_ws_session_bytes,
+            )
+        finally:
+            idle.release(model, asr, keep=kept)
         # Best-effort by contract: a mid-stream client disconnect is the
         # NORMAL way a WS session ends (the bridge handles it and tears the
         # session down), and the bridge's abort path has already closed the
@@ -1238,7 +1320,7 @@ async def _bridge_stream(
     *,
     max_frame_bytes: int,
     max_session_bytes: int,
-) -> None:
+) -> bool:
     """Pump client audio into ``session`` while streaming its events back.
 
     Reads binary frames as audio and any text frame (or a disconnect) as
@@ -1270,6 +1352,14 @@ async def _bridge_stream(
         session: The engine's :class:`~standard_asr.runtime.streaming.TranscriptionSession`.
         max_frame_bytes: Maximum size of a single binary audio frame in bytes.
         max_session_bytes: Cumulative cap on total ingested audio bytes.
+
+    Returns:
+        Whether the session yielded its terminal ``done`` and every step after
+        entry ended without a fault: the audio input (no byte cap exceeded,
+        no receive failure), the forwarding of events, and the exit. The
+        engine's work for the session has then finished, so the route can
+        keep the engine for the next call. A canceled bridge returns nothing:
+        the cancellation propagates.
     """
     # Deferred import, mirroring create_app: fastapi is an optional extra, and
     # this function is only ever reached from the fastapi WS route.
@@ -1362,7 +1452,7 @@ async def _bridge_stream(
         # generic arm below, which would misattribute it as an engine fault.
         log_exception_safely(logger, "Engine configuration absent at stream session open")
         await _abort_ws(websocket, "service_unavailable", _ENGINE_CONFIG_ABSENT_DETAIL)
-        return
+        return False
     except (ArtifactUnavailableError, ArtifactAcquisitionError):
         # An allowed implicit acquisition failed at session open, or a
         # required artifact is gone: the operator-side state of the REST 503.
@@ -1372,7 +1462,7 @@ async def _bridge_stream(
             logger, "Engine has unavailable inference artifacts at stream session open"
         )
         await _abort_ws(websocket, "service_unavailable", _ENGINE_ARTIFACTS_UNAVAILABLE_DETAIL)
-        return
+        return False
     except Exception:  # noqa: BLE001
         # Any other ``_open`` fault (a native handle, an accelerator init, a
         # bare ValueError from engine internals): never crash the route and
@@ -1381,9 +1471,14 @@ async def _bridge_stream(
         await _abort_ws(
             websocket, "internal_error", _internal_error_message("stream establishment")
         )
-        return
+        return False
 
     pump = asyncio.create_task(_pump_audio())
+    # The session appends done only after the engine's producer ended (see
+    # TranscriptionSession._run_producer), whether or not the client still
+    # receives it, so done plus a clean exit means the engine's work is over.
+    saw_done = False
+    clean = True
     # Session EXIT runs the engine's ``_close`` hook -- the second seam no
     # boundary covered. Nested rather than appended to the pump teardown
     # below: the pump gather is an await point, so a cancellation delivered
@@ -1394,6 +1489,7 @@ async def _bridge_stream(
     try:
         try:
             async for event in session:
+                saw_done = saw_done or event.type == "done"
                 if violation or pump_failed:
                     # A byte-cap violation / pump failure occurred: stop
                     # forwarding engine events; the policy frame is sent below.
@@ -1487,6 +1583,7 @@ async def _bridge_stream(
             # serialization) MUST NOT vanish silently (explicit > implicit /
             # fail-loud). Log the full detail server-side and best-effort send
             # one generic, non-leaking frame (mirrors the _pump_audio contract).
+            clean = False
             log_exception_safely(logger, "WebSocket event forwarding failed")
             try:
                 await websocket.send_json(
@@ -1510,7 +1607,9 @@ async def _bridge_stream(
         try:
             await session.__aexit__(None, None, None)
         except Exception:  # noqa: BLE001
+            clean = False
             log_exception_safely(logger, "WebSocket session teardown failed")
+    return saw_done and clean and not violation and not pump_failed
 
 
 async def _create_engine_or_http_error(
@@ -1518,7 +1617,7 @@ async def _create_engine_or_http_error(
     model: str,
     http_exception: type[Exception],
 ) -> Any:
-    """Instantiate the engine, mapping construction errors to HTTP status codes.
+    """Construct an engine for a call that found no idle one, mapping errors to HTTP.
 
     Construction is ``registry.create(model)`` -- ZERO-ARG: the client chooses
     the model key and nothing else; every configuration input (credentials,
@@ -1561,7 +1660,7 @@ async def _create_engine_or_http_error(
         Exception: ``http_exception`` with an appropriate status code.
     """
     try:
-        return await asyncio.to_thread(registry.create, model)
+        engine = await asyncio.to_thread(registry.create, model)
     except EntrypointValidationError as exc:
         # Unknown / unparseable model key: caller-fixable 404 with the
         # authored message (it names only the caller's key + available keys).
@@ -1598,16 +1697,23 @@ async def _create_engine_or_http_error(
         log_exception_safely(logger, "Engine construction failed for model %r", model)
         detail = _internal_error_message("model construction")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+    logger.info("Constructed an engine for model %r", model)
+    return engine
 
 
 async def _run_transcription(
     registry: ModelRegistry,
+    idle: _IdleEngines,
     model: str,
     audio: AudioInput,
     params: RuntimeParams | None,
     http_exception: type[Exception],
 ) -> str:
-    """Instantiate the engine, transcribe, and map errors to HTTP status codes.
+    """Transcribe with the model's idle engine or a new one, mapping errors to HTTP.
+
+    The engine stays idle for the next call only when this call succeeded; any
+    exception or cancellation drops it (``docs/internal/feat_plan/
+    server-engine-reuse.md``, section 5.2).
 
     The audio is passed as an :data:`~standard_asr.audio.input.AudioInput` (not a
     pre-decoded array) so the engine's standard negotiation owns decoding and
@@ -1618,6 +1724,7 @@ async def _run_transcription(
 
     Args:
         registry: The model registry.
+        idle: The application's idle engine instances.
         model: Model key in ``engine/model`` format.
         audio: The audio input to negotiate and transcribe.
         params: Parsed runtime parameters, or ``None``.
@@ -1632,7 +1739,10 @@ async def _run_transcription(
     Raises:
         Exception: ``http_exception`` with an appropriate status code.
     """
-    asr = await _create_engine_or_http_error(registry, model, http_exception)
+    asr = idle.take(model)
+    if asr is None:
+        asr = await _create_engine_or_http_error(registry, model, http_exception)
+    kept = False
 
     try:
         result = await asyncio.to_thread(asr.transcribe, audio, params)
@@ -1663,12 +1773,14 @@ async def _run_transcription(
         # \uXXXX escapes (~1.35-3x smaller bodies on non-ASCII text), and
         # compact separators drop the per-element padding. allow_nan=False
         # stays: NaN/Infinity are Python floats but not JSON.
-        return json.dumps(
+        body = json.dumps(
             response.model_dump(mode="json"),
             ensure_ascii=False,
             allow_nan=False,
             separators=(",", ":"),
         )
+        kept = True
+        return body
     except ValidationError as exc:
         # An ENGINE fault, not a request error: by this point the client's
         # options were already validated (WireRuntimeParams at the route) and
@@ -1730,6 +1842,8 @@ async def _run_transcription(
         log_exception_safely(logger, "Transcription failed for model %r", model)
         detail = _internal_error_message("transcription")
         raise http_exception(status_code=500, detail=detail) from exc  # type: ignore[call-arg]
+    finally:
+        idle.release(model, asr, keep=kept)
 
 
 def _build_params(options: dict[str, Any] | None) -> RuntimeParams | None:
@@ -1934,10 +2048,14 @@ def run(
     :func:`_receive_config_frame`, so the effective per-frame bound is
     ``min(app cap, transport ws_max_size)`` regardless of deployment.
 
+    The log level applies to uvicorn's loggers and to the server's own, the
+    ``standard_asr`` loggers, which report each engine construction and drop
+    (server API, section 5) and every fault the server logs.
+
     Args:
         host: Bind host.
         port: Bind port.
-        log_level: Uvicorn log level.
+        log_level: Log level for uvicorn and the server.
         max_body_bytes: HTTP request-body cap (see :func:`create_app`).
         max_ws_frame_bytes: WebSocket per-frame cap; also passed to uvicorn as
             ``ws_max_size`` (see :func:`create_app`).
@@ -1958,16 +2076,29 @@ def run(
             "pip install 'standard-asr[server]'."
         ) from exc
 
+    from uvicorn.config import LOGGING_CONFIG
+
     app = create_app(
         max_body_bytes=max_body_bytes,
         max_ws_frame_bytes=max_ws_frame_bytes,
         max_ws_session_bytes=max_ws_session_bytes,
     )
+    # uvicorn's log_level sets the level of its own loggers only. Without a
+    # handler, the server's loggers show nothing below WARNING, so they get
+    # uvicorn's handler and the same level; not propagating keeps a record
+    # from also reaching Python's last-resort handler.
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config["loggers"]["standard_asr"] = {
+        "handlers": ["default"],
+        "level": log_level.upper(),
+        "propagate": False,
+    }
     uvicorn.run(
         app,
         host=host,
         port=port,
         log_level=log_level,
+        log_config=log_config,
         ws_max_size=max_ws_frame_bytes,
     )
 
