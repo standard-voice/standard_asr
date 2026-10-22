@@ -169,14 +169,14 @@ def test_channel_segments_require_top_level_segments() -> None:
     # consumers (for example, the renderers) silently drop all per-channel timing, so
     # the shape is rejected at construction.
     chan = ChannelResult(channel=0, text="hi", segments=[Segment(start=0.0, end=1.0, text="hi")])
-    with pytest.raises(ValueError, match="time-merged union"):
+    with pytest.raises(ValueError, match="every channel's"):
         TranscriptionResult(text="hi", channels=[chan])
 
 
 def test_channel_words_require_top_level_words() -> None:
     # Same derivability invariant for the flattened word-level view.
     chan = ChannelResult(channel=0, text="hi", words=[Word(start=0.0, end=0.5, text="hi")])
-    with pytest.raises(ValueError, match="time-merged union"):
+    with pytest.raises(ValueError, match="every channel's"):
         TranscriptionResult(text="hi", channels=[chan])
 
 

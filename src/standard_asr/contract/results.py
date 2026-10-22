@@ -372,7 +372,11 @@ class Segment(BaseModel):
         end: Segment end time in seconds (non-negative, finite, ``>= start``),
             or ``None`` when unmeasured. Requires ``start``.
         text: Segment transcript text, boundary whitespace included.
-        words: Optional word-level details for this segment.
+        words: The result's words that belong to this segment, as the same
+            ``Word`` values in the same order (spec TR.4). ``None`` when the
+            engine does not nest them. The engine decides which words
+            belong to a segment, so a word can cross the segment's
+            measured boundary.
         speaker: Optional speaker label (authoritative diarization shape).
         channel: Optional channel index for provenance (``>= 0``).
         avg_logprob: Optional average log-probability.
@@ -562,8 +566,10 @@ class ChannelResult(BaseModel):
             same ``Segment`` values in the same order (spec TR.4). This is an
             engine obligation that nothing checks.
         words: The top-level words that belong to this channel, as the same
-            ``Word`` values in the same order (spec TR.4). Nothing checks this
-            either.
+            ``Word`` values in the same order (spec TR.4), so they follow this
+            channel's segment order. A segment's own ``words`` are the words
+            of this list that belong to it. Nothing checks that these
+            values correspond either.
 
     Raises:
         ValueError: If field validation fails.
@@ -627,7 +633,12 @@ class TranscriptionResult(BaseModel):
             which the engine announced the segments and never re-sorts. The
             SRT/VTT renderers' defensive re-sort of measured cues is the only
             standard-layer safety net.
-        words: Flattened word-level details, if available.
+        words: Every ``Word`` the engine supplied, in segment order: the
+            first segment's words, then the second segment's, and so on.
+            Where two channels' segments overlap in time, the words stay
+            grouped by segment. A segment's own ``words``, when present,
+            are the words of this list that belong to it (spec TR.4). This
+            is an engine obligation that nothing checks.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
@@ -638,7 +649,10 @@ class TranscriptionResult(BaseModel):
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative
-            ``duration``, or a malformed ``detected_language``).
+            ``duration``, or a malformed ``detected_language``). Also if two
+            ``channels`` entries share a ``channel`` index, or if a
+            ``channels`` entry carries ``segments`` or ``words`` while the
+            top-level field is ``None``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -773,13 +787,16 @@ class TranscriptionResult(BaseModel):
                         + name
                         + " but the top-level "
                         + name
-                        + " is None; the standard requires the top level to be "
-                        "derivable from channels (ignoring channels must be "
-                        "lossless). Populate the top-level "
+                        + " is None; the standard requires the top level to hold "
+                        "every channel's "
                         + name
-                        + " with the time-merged union of all channels' "
+                        + " (ignoring channels must be lossless). Populate the "
+                        "top-level "
                         + name
-                        + ".",
+                        + " with every channel's "
+                        + name
+                        + " in the order TR.4 gives: segments in reading order, "
+                        "words in segment order.",
                     )
         return self
 

@@ -552,6 +552,33 @@ def test_stream_reducer_no_speakers_stays_none() -> None:
     assert [segment.speaker for segment in result.segments] == [None, None]
 
 
+def test_stream_reducer_flattens_segment_words_in_reading_order() -> None:
+    # The flat words are the retained segments' words in reading order
+    # (spec TR.4), so a consumer of result.words sees what the segments
+    # carry. The segments are announced out of time order, so a time sort
+    # would put third before first. A segment without words adds none and
+    # keeps its own None.
+    reducer = StreamReducer()
+    first = _speaker_words(None, None)
+    third = [Word(start=1.0, end=1.5, text="w2")]
+    reducer.add(TranscriptionEvent.final("s1", "w0 w1", start=2.0, end=3.0, words=first))
+    reducer.add(TranscriptionEvent.final("s2", " bare", start=0.0, end=1.0))
+    reducer.add(TranscriptionEvent.final("s3", " w2", start=1.0, end=1.5, words=third))
+    result = reducer.result()
+    assert result.words == first + third
+    assert result.segments is not None
+    assert [segment.words for segment in result.segments] == [first, None, third]
+
+
+def test_stream_reducer_words_stay_none_without_any_words() -> None:
+    # No retained segment carries words, so words is None rather than [].
+    # The reducer never sees the request, so this None says only that the
+    # engine sent no words, not that word timestamps were not requested.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "hello", start=0.0, end=1.0))
+    assert reducer.result().words is None
+
+
 # --------------------------------------------------------------------------- #
 # session
 # --------------------------------------------------------------------------- #

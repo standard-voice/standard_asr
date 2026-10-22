@@ -1227,6 +1227,14 @@ class StreamReducer:
             state, and the renderers' null rule (``None`` + non-empty text
             synthesizes a whole-text fallback cue; ``[]`` renders zero
             cues) depends on the distinction being kept on the wire.
+
+            ``words`` is the retained segments' words, concatenated in the
+            same reading order (spec TR.4), or ``None`` when no retained
+            segment carries a ``words`` list. The reducer has no other
+            source of words and never sees the request, so ``None`` here
+            means only that no retained segment carries words. It does
+            not show that word timestamps were not requested: a silent
+            session that requested them also gives ``None``, not ``[]``.
         """
         order = [sid for sid in self._ledger.order() if sid in self._segments]
         segments = [self._segments[sid] for sid in order]
@@ -1234,6 +1242,17 @@ class StreamReducer:
         # so the transcript is the plain concatenation: whether two segments
         # need a space between them is known only to the engine.
         text = "".join(segment.text for segment in segments)
+        # The flat words are the segments' words in reading order (spec
+        # TR.4), so a consumer of ``result.words`` sees what the segments
+        # carry. None when no retained segment carries a list, because []
+        # would claim that word timestamps ran. The reducer never sees the
+        # request, so this None cannot tell "not requested" from a silent
+        # session that requested them.
+        words = (
+            [word for segment in segments for word in segment.words or []]
+            if any(segment.words is not None for segment in segments)
+            else None
+        )
         diagnostics: list[Diagnostic] = list(self._suppressions)
         unmeasured = [sid for sid in order if self._segments[sid].timestamp_status != "measured"]
         if unmeasured:
@@ -1263,6 +1282,7 @@ class StreamReducer:
             # `None` with non-empty text synthesizes a whole-text fallback
             # cue -- an empty session must never fabricate one.
             segments=segments,
+            words=words,
             detected_language=self._detected_language,
             diagnostics=diagnostics,
         )
