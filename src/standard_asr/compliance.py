@@ -24,6 +24,7 @@ from standard_asr.contract.capabilities import (
     PromptCap,
     StreamingCapabilities,
     WordTimestampsCap,
+    _is_extension_key,  # pyright: ignore[reportPrivateUsage]
 )
 from standard_asr.contract.exceptions import (
     ConfigError,
@@ -56,6 +57,8 @@ from standard_asr.plugins.discovery import (
 )
 from standard_asr.runtime.config import BaseConfig
 from standard_asr.runtime.gating import (
+    _GATED_PARAMS,  # pyright: ignore[reportPrivateUsage]
+    _UNGATED_REQUESTABLE_PATHS,  # pyright: ignore[reportPrivateUsage]
     DIAG_PROMPT_TRUNCATED,
     DIAG_UNSUPPORTED_GRANULARITY_IGNORED,
     DIAG_UNSUPPORTED_PARAMETER_IGNORED,
@@ -1100,6 +1103,85 @@ def _check_instance_config(
             )
         )
     _check_language_axis_config(instance, name, issues)
+
+
+def _check_requestable_kinds(
+    declared: DeclaredCapabilities, name: str, issues: list[ComplianceIssue]
+) -> None:
+    """Check that the gating table and the tree's requestable nodes agree, both ways.
+
+    Forward: under each declared mode, every ``_GATED_PARAMS`` row resolves
+    to a node whose ``kind`` is ``requestable``. Reverse: every standard
+    node under a declared mode whose ``kind`` is ``requestable`` is a
+    ``_GATED_PARAMS`` row or an entry in ``_UNGATED_REQUESTABLE_PATHS``.
+    One direction alone leaves a hole. A requestable node that no gate
+    checks makes ``can_request()`` answer ``True``, yet a request for it
+    reaches the engine unchecked. An engine that does not support the
+    feature then ignores it in silence. The reverse check skips ``x_*``
+    subtrees: a vendor feature is requested through ``provider_params``,
+    which no capability gates.
+
+    The standard tree passes both checks, because each node class pins its
+    kind. A finding means the engine's tree replaced a standard node or
+    added a requestable node of its own, or the installed core is
+    inconsistent. Each message names both readings, because a plugin author
+    can fix only the first.
+
+    Args:
+        declared: The engine's declared capability tree.
+        name: The model key (for issue attribution).
+        issues: The mutable list of issues to append to.
+    """
+    gated = {suffix for _, suffix in _GATED_PARAMS}
+    for mode in ("batch", "streaming"):
+        if getattr(declared, mode) is None:
+            continue
+        prefix = f"{mode}."
+        for _, suffix in _GATED_PARAMS:
+            path = prefix + suffix
+            kind = declared.kind_at(path)
+            if kind != "requestable":
+                issues.append(
+                    ComplianceIssue(
+                        level="error",
+                        code="gated_param_not_requestable",
+                        message=(
+                            f"{path} must be a requestable node, because Standard ASR gates a "
+                            f"RuntimeParams field on it, but kind_at({path!r}) returns "
+                            f"{kind!r}. Build the node from its standard class, without a "
+                            "subclass or model_construct(). If your declaration already does, "
+                            "the installed standard-asr is inconsistent: report it to Standard "
+                            "ASR."
+                        ),
+                        model=name,
+                    )
+                )
+        for path in declared.iter_queryable_paths():
+            if not path.startswith(prefix):
+                continue
+            suffix = path[len(prefix) :]
+            if any(_is_extension_key(part) for part in suffix.split(".")):
+                continue
+            node = declared.node_at(path)
+            if node is None or node.kind != "requestable":
+                continue
+            if suffix in gated or suffix in _UNGATED_REQUESTABLE_PATHS:
+                continue
+            issues.append(
+                ComplianceIssue(
+                    level="error",
+                    code="requestable_node_ungated",
+                    message=(
+                        f"{path} is a requestable node, but Standard ASR gates no "
+                        "RuntimeParams field on it, so a request for it would reach the "
+                        "engine unchecked. If your engine added this node, declare the "
+                        "feature under an x_<vendor>_<feature> key and accept its request in "
+                        "your provider_params. Otherwise the installed standard-asr is "
+                        "inconsistent: report it to Standard ASR."
+                    ),
+                    model=name,
+                )
+            )
 
 
 def _check_instance_capabilities(
@@ -2347,6 +2429,8 @@ def _check_class_level_metadata(
                 model=name,
             )
         )
+    else:
+        _check_requestable_kinds(declared, name, issues)
 
     config_type = inspect.getattr_static(engine_class, "config_type", None)
     if config_type is None:

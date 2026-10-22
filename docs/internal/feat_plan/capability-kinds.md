@@ -1,9 +1,6 @@
 # Capability Kinds (Design Case)
 
-**Status:** Design settled 2026-08-08. This document closes issue #45. It also
-removes the block on issues #37, #8, and #19. The decisions change the engine
-protocol and the wire schema. There is no code yet. Each decision tells you
-what to build.
+**Status:** Design settled 2026-08-08. Implemented by the pull request for roadmap item 4 (#27); section 5 lists what it built. This document closes issue #45. It also removes the block on issues #37, #8, and #19. The decisions change the engine protocol and the wire schema.
 
 > Issue #45 calls this topic the "capability ontology". This document uses the
 > word **kind**, because `kind` is the name of the new field.
@@ -61,7 +58,7 @@ node says that the caller can request it.
 
 Every other declared **leaf** node is a behavior: `streaming_input`,
 `streaming_output`, `self_resamples`, `emits_partials`, `re_segments`,
-`word_stability`, `reconnect`, `finality_level`, `timestamps`,
+`partial_stability`, `reconnect`, `finality_level`, `timestamps`,
 `guidance.mutable_mid_stream`, and `diarization.always_on`.
 
 The constraint submodels are a separate case. `DiarizationConstraints` and its
@@ -177,6 +174,8 @@ def can_request(self, dot_path: str) -> bool:
 `can_request(path)` returns `True` only when the node is supported **and** its
 kind is `requestable`. For all other nodes it returns `False`.
 
+The implementation also ships `kind_at(path)` beside `can_request(path)`. It returns the node's kind, or `None` for a container, an absent path, or an `x_*` node without a recognized `kind`. `can_request()` answers only yes or no, and two consumers need the kind itself. The compliance check of items 5 and 6 compares each node's kind with the gating table. A settings UI shows a behavior as a disclosure and a limit as a bound, and neither as a request control.
+
 **D6 — `always_on` stops being a special case.** The node gets
 `kind="behavior"`. Rewrite the prose note in `contract/capabilities.py`; do not
 delete it. The `kind` field replaces one sentence of that note, which is the
@@ -214,19 +213,19 @@ support.
 | #8 | Unblocked. D2 keeps hardware facts out of the tree. No tree change is necessary. |
 | #19 | Unblocked. D2 applies to model-card facts in the same way. |
 
-## 5. Remaining implementation items
+## 5. Implementation items
 
-These items are implementation work, and they do not block the issues above:
+These items were implementation work, and they did not block the issues above. The pull request for roadmap item 4 did all eight:
 
-1. Add a `_ConstraintNode` base for the four constraint classes. Add the `kind`
+1. **Done.** Add a `_ConstraintNode` base for the four constraint classes. Add the `kind`
    field to `_CapNode` and to `_ConstraintNode`. Set the value on each node
    class. Give `language.runtime_override` its own `RuntimeOverrideCap` class,
    as D4 sets out.
-2. Add `can_request()` to `DeclaredCapabilities`. Return `False` for a
+2. **Done.** Add `can_request()` to `DeclaredCapabilities`. Return `False` for a
    container path and for an absent path.
-3. Render `kind` in `canonical_json()`, and update the two-layer isomorphism
+3. **Done.** Render `kind` in `canonical_json()`, and update the two-layer isomorphism
    test set.
-4. Assert that the generated JSON Schema carries a **required** `kind` property
+4. **Done.** Assert that the generated JSON Schema carries a **required** `kind` property
    on every concrete capability node and constraint node, and that its value is
    the one value that class pins. A domain-only check passes a node that
    declares the wrong kind, so it is not enough. D3 rests on the schema, so a
@@ -236,7 +235,7 @@ These items are implementation work, and they do not block the issues above:
    The assertion holds only for a serialization-mode schema with
    `json_schema_serialization_defaults_required=True` set, as D4 sets out. A
    validation-mode schema leaves a defaulted `kind` out of `required`.
-5. Assert in the compliance suite that every entry in `_GATED_PARAMS` resolves
+5. **Done.** Assert in the compliance suite that every entry in `_GATED_PARAMS` resolves
    to a node with `kind="requestable"`.
 
    The second column of `_GATED_PARAMS` holds a **mode-relative suffix**, not a
@@ -244,7 +243,7 @@ These items are implementation work, and they do not block the issues above:
    assertion must therefore qualify each suffix with `batch` and with
    `streaming`, and it must skip a mode the engine does not declare. A raw
    lookup of `language.runtime_override` resolves nothing.
-6. Assert the **reverse** direction as well: every node with
+6. **Done.** Assert the **reverse** direction as well: every node with
    `kind="requestable"` appears in `_GATED_PARAMS`, or in a new explicit
    exemption set beside it.
 
@@ -267,9 +266,9 @@ These items are implementation work, and they do not block the issues above:
    that mode domain, strip the leading `{mode}.` from each path, and require
    the suffix in `_GATED_PARAMS` or in the exemption set. The exemption set
    holds mode-relative suffixes too, so one entry covers both modes.
-7. Update `docs/content/specification/protocol.md` and `docs/content/specification/server-api.md` for the new
+7. **Done.** Update `docs/content/specification/protocol.md` and `docs/content/specification/server-api.md` for the new
    field and the new query.
-8. Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.
+8. **Done.** Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.
    Do not delete it.
 
 Items 5 and 6 are the important pair. Only together do they make the gating

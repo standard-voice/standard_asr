@@ -46,6 +46,7 @@ from standard_asr.contract.capabilities import (
     DiarizationCap,
     FlagCap,
     LanguageCaps,
+    RuntimeOverrideCap,
     StreamingCapabilities,
 )
 from standard_asr.contract.exceptions import (
@@ -96,7 +97,7 @@ class _DummyParams(ProviderParams):
 
 _DUMMY_CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
     )
 )
 
@@ -781,7 +782,7 @@ class _AutoLangConfig(LanguageConfigMixin, BaseConfig[str]):
 _AUTO_LANG_CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(
         language=LanguageCaps(
-            runtime_override=FlagCap(supported=True),
+            runtime_override=RuntimeOverrideCap(supported=True),
             candidate_languages=CandidateLanguagesCap(
                 supported=True,
                 constraints=CandidateLanguagesConstraints(max=2),

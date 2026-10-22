@@ -102,6 +102,25 @@ _UNGATED_PORTABLE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+#: Requestable capability paths that no :data:`_GATED_PARAMS` row checks,
+#: each with the reason. Each entry is a dot-path suffix relative to the
+#: mode, like the table's second column, so one entry covers both modes.
+#: The compliance suite requires every standard node whose ``kind`` is
+#: ``requestable`` to be a :data:`_GATED_PARAMS` row or an entry here. A new
+#: requestable node that nothing gates is then reported as the error
+#: ``requestable_node_ungated``; without the check, a request for it would
+#: reach the engine unchecked.
+_UNGATED_REQUESTABLE_PATHS: frozenset[str] = frozenset(
+    {
+        # Requested through RuntimeParams.candidate_languages, whose gating
+        # language.effective_candidate_languages owns (see
+        # _UNGATED_PORTABLE_FIELDS): an unsupported list resolves to None
+        # plus one diagnostic and never raises, which this table's
+        # strict-raises gating cannot express.
+        "language.candidate_languages",
+    }
+)
+
 #: Drift guard (import-time, mirrored by a drift test): every portable
 #: ``RuntimeParams`` field MUST be either capability-gated (in _GATED_PARAMS) or
 #: explicitly exempt (in _UNGATED_PORTABLE_FIELDS) -- never silently neither. When

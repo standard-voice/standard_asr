@@ -8,9 +8,10 @@ from __future__ import annotations
 import inspect
 import types
 import typing
+from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from standard_asr.contract import capabilities as cap_module
 from standard_asr.contract.capabilities import (
@@ -29,6 +30,7 @@ from standard_asr.contract.capabilities import (
     PromptCap,
     PromptConstraints,
     ReconnectCap,
+    RuntimeOverrideCap,
     StreamingCapabilities,
     StreamingGuidanceCaps,
     StreamTimestampsCap,
@@ -44,7 +46,7 @@ def _rich() -> DeclaredCapabilities:
     return DeclaredCapabilities(
         batch=BatchCapabilities(
             language=LanguageCaps(
-                runtime_override=FlagCap(supported=True),
+                runtime_override=RuntimeOverrideCap(supported=True),
                 candidate_languages=CandidateLanguagesCap(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=3),
@@ -112,7 +114,7 @@ def test_covers_subset_invariant() -> None:
     # (per fail-closed consistency) the streaming axis flags along with it.
     effective = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         ),
     )
     assert declared.covers(effective) is True
@@ -719,7 +721,11 @@ def test_canonical_json_injects_derived_supported() -> None:
     # Flag nodes keep their real supported field.
     assert cj["streaming_input"]["supported"] is True
     # enum/mode nodes now expose a uniform derived supported alongside mode.
-    assert cj["streaming"]["reconnect"] == {"mode": "unsupported", "supported": False}
+    assert cj["streaming"]["reconnect"] == {
+        "kind": "behavior",
+        "mode": "unsupported",
+        "supported": False,
+    }
     assert cj["streaming"]["timestamps"]["supported"] is True
     assert cj["streaming"]["finality_level"]["supported"] is True
     # The whole tree is JSON-serializable.
@@ -796,11 +802,11 @@ def test_self_resamples_is_declarable_engine_global_flag() -> None:
     declared = DeclaredCapabilities(self_resamples=FlagCap(supported=True))
     assert declared.supports("self_resamples") is True
     # Appears in canonical JSON with its real supported field.
-    assert declared.canonical_json()["self_resamples"] == {"supported": True}
+    assert declared.canonical_json()["self_resamples"] == {"kind": "behavior", "supported": True}
     # Absent => False (fail-closed), and the node defaults to not-supported.
     default = DeclaredCapabilities()
     assert default.supports("self_resamples") is False
-    assert default.canonical_json()["self_resamples"] == {"supported": False}
+    assert default.canonical_json()["self_resamples"] == {"kind": "behavior", "supported": False}
 
 
 def test_mutable_mid_stream_is_a_queryable_streaming_guidance_flag() -> None:
@@ -812,7 +818,10 @@ def test_mutable_mid_stream_is_a_queryable_streaming_guidance_flag() -> None:
     # The default streaming guidance is the StreamingGuidanceCaps variant, so the
     # node exists (and is False), and appears in canonical JSON for wire clients.
     cj = default.canonical_json()
-    assert cj["streaming"]["guidance"]["mutable_mid_stream"] == {"supported": False}
+    assert cj["streaming"]["guidance"]["mutable_mid_stream"] == {
+        "kind": "behavior",
+        "supported": False,
+    }
 
     declared = DeclaredCapabilities(
         streaming=StreamingCapabilities(
@@ -862,7 +871,8 @@ def test_streaming_capabilities_accepts_plain_guidance_caps() -> None:
     caps = DeclaredCapabilities(streaming=streaming)
     assert caps.supports("streaming.guidance.mutable_mid_stream") is False
     assert caps.canonical_json()["streaming"]["guidance"]["mutable_mid_stream"] == {
-        "supported": False
+        "kind": "behavior",
+        "supported": False,
     }
 
 
@@ -939,7 +949,7 @@ def test_canonical_json_preserves_constraints_without_supported() -> None:
     cj = caps.canonical_json()
     cand = cj["batch"]["language"]["candidate_languages"]
     assert cand["supported"] is True
-    assert cand["constraints"] == {"max": 3}
+    assert cand["constraints"] == {"kind": "limit", "max": 3}
 
 
 def test_covers_continues_past_unresolvable_node() -> None:
@@ -1332,3 +1342,221 @@ def test_queryable_surface_keys_cannot_embed_the_path_separator() -> None:
     # spelling of a declared node).
     resolved = {path: caps.supports(path) for path in caps.iter_queryable_paths()}
     assert resolved["x_vendor"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Capability kinds (design case: docs/internal/feat_plan/capability-kinds.md)
+# --------------------------------------------------------------------------- #
+def _concrete_kind_classes() -> list[type[BaseModel]]:
+    bases = {
+        cap_module._CapNode,  # pyright: ignore[reportPrivateUsage]
+        cap_module._FlagLikeNode,  # pyright: ignore[reportPrivateUsage]
+        cap_module._ConstraintNode,  # pyright: ignore[reportPrivateUsage]
+    }
+    node_bases = (
+        cap_module._CapNode,  # pyright: ignore[reportPrivateUsage]
+        cap_module._ConstraintNode,  # pyright: ignore[reportPrivateUsage]
+    )
+    return [
+        cls
+        for cls in vars(cap_module).values()
+        if inspect.isclass(cls) and issubclass(cls, node_bases) and cls not in bases
+    ]
+
+
+#: Every concrete node and constraint class with the kind the design case
+#: decides for it (docs/internal/feat_plan/capability-kinds.md, section 2
+#: and D4): the gated features are requestable, every other flag and every
+#: enum/mode node is a behavior, and the constraint submodels are limits.
+_DECIDED_KINDS: dict[str, str] = {
+    "CandidateLanguagesCap": "requestable",
+    "DiarizationCap": "requestable",
+    "PhraseHintsCap": "requestable",
+    "PromptCap": "requestable",
+    "RuntimeOverrideCap": "requestable",
+    "WordTimestampsCap": "requestable",
+    "FinalityCap": "behavior",
+    "FlagCap": "behavior",
+    "ReconnectCap": "behavior",
+    "StreamTimestampsCap": "behavior",
+    "CandidateLanguagesConstraints": "limit",
+    "DiarizationConstraints": "limit",
+    "PhraseHintsConstraints": "limit",
+    "PromptConstraints": "limit",
+}
+
+
+def test_every_node_class_pins_one_kind() -> None:
+    """Each concrete node and constraint class pins ``kind`` to one value.
+
+    A single-value Literal with a default makes the wrong kind a validation
+    error and renders as a ``const`` in the generated schema (design D4).
+    """
+    classes = {cls.__name__: cls for cls in _concrete_kind_classes()}
+    # The inventory is pinned by name, so a new class must be classified
+    # here, and a changed pin fails this test, not only the schema test.
+    assert set(classes) == set(_DECIDED_KINDS)
+    for name, decided in _DECIDED_KINDS.items():
+        field = classes[name].model_fields["kind"]
+        assert typing.get_origin(field.annotation) is typing.Literal, name
+        assert typing.get_args(field.annotation) == (decided,), name
+        assert field.default == decided, name
+
+
+def test_kind_is_pinned_per_class_and_the_wrong_value_is_rejected() -> None:
+    assert FlagCap().kind == "behavior"
+    assert RuntimeOverrideCap().kind == "requestable"
+    assert DiarizationCap().kind == "requestable"
+    assert DiarizationCap().always_on.kind == "behavior"
+    assert ReconnectCap().kind == "behavior"
+    assert PromptConstraints().kind == "limit"
+    with pytest.raises(ValidationError):
+        FlagCap.model_validate({"supported": True, "kind": "requestable"})
+    with pytest.raises(ValidationError):
+        WordTimestampsCap.model_validate({"supported": False, "kind": "behavior"})
+    with pytest.raises(ValidationError):
+        PromptConstraints.model_validate({"kind": "behavior"})
+
+
+def test_runtime_override_needs_its_own_class() -> None:
+    # language.runtime_override is requestable (the `language` row of
+    # _GATED_PARAMS) and FlagCap pins behavior, so a FlagCap no longer
+    # validates there (design D4). The wire shape is unchanged: a dict with
+    # no kind takes the pinned value.
+    with pytest.raises(ValidationError):
+        LanguageCaps.model_validate({"runtime_override": FlagCap(supported=True)})
+    caps = LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True))
+    assert caps.runtime_override.kind == "requestable"
+    parsed = LanguageCaps.model_validate({"runtime_override": {"supported": True}})
+    assert parsed.runtime_override == caps.runtime_override
+
+
+def test_can_request_is_true_only_for_a_supported_requestable_node() -> None:
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+            diarization=DiarizationCap(supported=True, always_on=FlagCap(supported=True)),
+            word_timestamps=WordTimestampsCap(supported=False),
+        ),
+        self_resamples=FlagCap(supported=True),
+    )
+    assert caps.can_request("batch.language.runtime_override") is True
+    assert caps.can_request("batch.diarization") is True
+    # A supported behavior cannot be asked for.
+    assert caps.can_request("batch.diarization.always_on") is False
+    assert caps.can_request("self_resamples") is False
+    # An unsupported requestable node, a container, a limit, an absent mode,
+    # and an absent path all answer False.
+    assert caps.can_request("batch.word_timestamps") is False
+    assert caps.can_request("batch") is False
+    assert caps.can_request("batch.diarization.constraints") is False
+    assert caps.can_request("streaming.diarization") is False
+    assert caps.can_request("batch.nope") is False
+
+
+def test_kind_at_reports_each_node_and_nothing_for_a_container() -> None:
+    caps = DeclaredCapabilities(batch=BatchCapabilities())
+    assert caps.kind_at("batch.diarization") == "requestable"
+    assert caps.kind_at("batch.diarization.always_on") == "behavior"
+    assert caps.kind_at("batch.diarization.constraints") == "limit"
+    assert caps.kind_at("batch.language.runtime_override") == "requestable"
+    assert caps.kind_at("batch") is None
+    assert caps.kind_at("batch.language") is None
+    assert caps.kind_at("streaming") is None
+    assert caps.kind_at("batch.nope") is None
+
+
+def test_x_star_dict_node_kind_is_read_strictly() -> None:
+    # A vendor node states its kind as data. Anything but the three tokens
+    # states nothing, so a vendor node never reads as requestable by accident.
+    caps = DeclaredCapabilities.model_validate(
+        {
+            "batch": {
+                "x_vendor_ask": {"supported": True, "kind": "requestable"},
+                "x_vendor_does": {"supported": True, "kind": "behavior"},
+                "x_vendor_bad": {"supported": True, "kind": "REQUESTABLE"},
+                "x_vendor_none": {"supported": True},
+            }
+        }
+    )
+    assert caps.can_request("batch.x_vendor_ask") is True
+    assert caps.kind_at("batch.x_vendor_does") == "behavior"
+    assert caps.can_request("batch.x_vendor_does") is False
+    assert caps.kind_at("batch.x_vendor_bad") is None
+    assert caps.can_request("batch.x_vendor_bad") is False
+    assert caps.kind_at("batch.x_vendor_none") is None
+
+
+def test_covers_rejects_a_kind_change_on_a_vendor_node() -> None:
+    # Standard nodes pin their kind per class, so only a raw x_* node can
+    # change kind between the declared and the effective tree. Either
+    # direction changes what can_request() answers, so neither narrows.
+    def tree(kind: str) -> DeclaredCapabilities:
+        return DeclaredCapabilities.model_validate(
+            {"batch": {"x_vendor_thing": {"supported": True, "kind": kind}}}
+        )
+
+    assert tree("behavior").covers(tree("behavior")) is True
+    assert tree("behavior").covers(tree("requestable")) is False
+    assert tree("requestable").covers(tree("behavior")) is False
+
+
+def test_container_rejects_a_kind_key() -> None:
+    # A container states no kind (design D4). An extra kind key would reach
+    # canonical_json() while kind_at() answers None, so it is rejected.
+    with pytest.raises(ValidationError, match="states no kind"):
+        DeclaredCapabilities.model_validate({"batch": {"kind": "requestable"}})
+    with pytest.raises(ValidationError, match="states no kind"):
+        DeclaredCapabilities.model_validate({"kind": "behavior"})
+    with pytest.raises(ValidationError, match="states no kind"):
+        DeclaredCapabilities.model_validate({"batch": {"language": {"kind": "limit"}}})
+
+
+def test_bare_grouping_dict_states_no_kind() -> None:
+    # A raw x_* dict without supported or mode groups nodes; a kind key on
+    # it is vendor data that the query surface does not read.
+    caps = DeclaredCapabilities.model_validate(
+        {"batch": {"x_group": {"kind": "requestable", "nested": {"supported": True}}}}
+    )
+    assert caps.kind_at("batch.x_group") is None
+    assert caps.can_request("batch.x_group") is False
+    assert caps.kind_at("batch.x_group.nested") is None
+
+
+def test_canonical_json_carries_kind_on_nodes_and_limits_not_containers() -> None:
+    caps = DeclaredCapabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities())
+    cj = caps.canonical_json()
+    assert "kind" not in cj
+    assert "kind" not in cj["batch"]
+    assert "kind" not in cj["batch"]["language"]
+    assert cj["batch"]["language"]["runtime_override"]["kind"] == "requestable"
+    assert cj["batch"]["diarization"]["kind"] == "requestable"
+    assert cj["batch"]["diarization"]["always_on"]["kind"] == "behavior"
+    assert cj["batch"]["diarization"]["constraints"]["kind"] == "limit"
+    assert cj["streaming"]["reconnect"]["kind"] == "behavior"
+    assert cj["self_resamples"]["kind"] == "behavior"
+    # The wire document and the query surface agree on every node.
+    for path in caps.iter_queryable_paths():
+        node: dict[str, object] = cj
+        for part in path.split("."):
+            node = cast("dict[str, object]", node[part])
+        assert node.get("kind") == caps.kind_at(path), path
+
+
+def test_serialization_schema_requires_kind_with_the_pinned_value() -> None:
+    """The generated schema is what a non-Python client reads (design D3).
+
+    Every concrete node and constraint definition carries ``kind`` as a
+    required property whose ``const`` is the value the class pins. A
+    validation-mode schema would leave a defaulted ``kind`` optional, so the
+    serialization-mode schema is the contract.
+    """
+    schema = DeclaredCapabilities.model_json_schema(mode="serialization")
+    defs = cast("dict[str, dict[str, Any]]", schema["$defs"])
+    for cls in _concrete_kind_classes():
+        assert cls.__name__ in defs, cls
+        definition = defs[cls.__name__]
+        assert "kind" in definition["required"], cls
+        assert definition["properties"]["kind"]["const"] == _DECIDED_KINDS[cls.__name__], cls
+    assert "kind" not in defs["BatchCapabilities"]["properties"]
+    assert "kind" not in defs["LanguageCaps"]["properties"]
