@@ -72,3 +72,65 @@ def test_testpypi_install_takes_the_package_from_testpypi_only() -> None:
     for command in (package, dependencies):
         assert " --index " not in command, command
         assert "--extra-index-url" not in command, command
+
+
+def _git(repo: Path, *args: str) -> str:
+    """Run git in ``repo`` without the variables a git hook exports."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args], env=env, check=True, capture_output=True, text=True
+    )
+    return result.stdout
+
+
+def test_workflow_comparison_sees_the_current_default_branch(tmp_path: Path) -> None:
+    # actions/checkout sets origin/main back to the commit the run started
+    # from when main has moved. A workflow change merged while the run waited
+    # must still count, so the step fetches main before it compares.
+    remote, work = tmp_path / "remote.git", tmp_path / "work"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    _git(tmp_path, "init", "-q", "-b", "main", str(work))
+    for key, value in (("user.email", "t@example.com"), ("user.name", "t")):
+        _git(work, "config", key, value)
+    _git(work, "config", "commit.gpgsign", "false")
+    assert Path(_git(work, "rev-parse", "--show-toplevel").strip()).resolve() == work.resolve()
+    (work / "scripts").mkdir()
+    (work / "scripts" / "release_commit.py").write_text(
+        (_WORKFLOW.parents[2] / "scripts" / "release_commit.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (work / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "0.2.0"\n'
+        '[build-system]\nrequires = ["uv-build>=0.11.21,<0.12"]\n',
+        encoding="utf-8",
+    )
+    workflows = work / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("name: CI\n", encoding="utf-8")
+    _git(work, "add", ".")
+    _git(work, "commit", "-q", "-m", "release 0.2.0")
+    release_commit = _git(work, "rev-parse", "HEAD").strip()
+    _git(work, "remote", "add", "origin", str(remote))
+    _git(work, "push", "-q", "origin", "main")
+    (workflows / "ci.yml").write_text("name: CI, updated\n", encoding="utf-8")
+    _git(work, "commit", "-q", "-am", "update a workflow")
+    _git(work, "push", "-q", "origin", "main")
+    # The state actions/checkout leaves: HEAD and origin/main at the start.
+    _git(work, "checkout", "-q", "--detach", release_commit)
+    _git(work, "update-ref", "refs/remotes/origin/main", release_commit)
+
+    output = tmp_path / "github-output"
+    env = {
+        **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        "PATH": os.pathsep.join([str(Path(sys.executable).parent), os.environ["PATH"]]),
+        "VERSION": "0.2.0",
+        "DEFAULT_BRANCH": "main",
+        "GITHUB_OUTPUT": str(output),
+    }
+    script = _step_script("Compare the workflow files with the default branch")
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=work, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output.read_text(encoding="utf-8") == "changed=true\n"
+    assert f"sha={release_commit}" in result.stdout
