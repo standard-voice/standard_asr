@@ -37,6 +37,7 @@ from standard_asr.contract.capabilities import (
     DeclaredCapabilities,
     FlagCap,
     LanguageCaps,
+    RuntimeOverrideCap,
     StreamingCapabilities,
 )
 from standard_asr.contract.exceptions import (
@@ -79,7 +80,7 @@ class _ArrayProps(BaseProperties):
 
 _CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
     )
 )
 
@@ -531,7 +532,7 @@ class _StaleStreamingHookEngine(_ArrayEngine):
 
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         ),
         streaming=StreamingCapabilities(),
         streaming_input=FlagCap(supported=True),
@@ -898,7 +899,7 @@ def test_no_language_axis_leaves_runtime_params_unchanged() -> None:
 _CAND_CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(
         language=LanguageCaps(
-            runtime_override=FlagCap(supported=True),
+            runtime_override=RuntimeOverrideCap(supported=True),
             candidate_languages=CandidateLanguagesCap(
                 supported=True,
                 constraints=CandidateLanguagesConstraints(max=2),
@@ -1029,7 +1030,7 @@ class _NoCandConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
 _NO_CAND_CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(
         language=LanguageCaps(
-            runtime_override=FlagCap(supported=True),
+            runtime_override=RuntimeOverrideCap(supported=True),
             candidate_languages=CandidateLanguagesCap(supported=False),
         )
     )
@@ -1109,7 +1110,7 @@ def test_runtime_language_best_effort_falls_back_to_default_for_engine_hook() ->
 
 _NO_OVERRIDE_CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=FlagCap(supported=False)),
+        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=False)),
     )
 )
 
@@ -1475,10 +1476,10 @@ class _StreamEngine(_ArrayEngine):
 
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         ),
         streaming=StreamingCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         ),
         streaming_input=FlagCap(supported=True),
         streaming_output=FlagCap(supported=True),
@@ -1704,7 +1705,7 @@ class _NoStreamingInputEngine(_StreamEngine):
 
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         streaming=StreamingCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         ),
         streaming_output=FlagCap(supported=True),
     )
@@ -1715,7 +1716,7 @@ class _NoStreamingOutputEngine(_StreamEngine):
 
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         streaming=StreamingCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         ),
         streaming_input=FlagCap(supported=True),
     )
@@ -1998,7 +1999,7 @@ def test_streaming_candidate_language_effective_params_flow_to_hook_and_diagnose
         declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
             streaming=StreamingCapabilities(
                 language=LanguageCaps(
-                    runtime_override=FlagCap(supported=True),
+                    runtime_override=RuntimeOverrideCap(supported=True),
                     candidate_languages=CandidateLanguagesCap(
                         supported=True,
                         constraints=CandidateLanguagesConstraints(max=2),

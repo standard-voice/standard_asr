@@ -105,6 +105,8 @@ if engine.supports("batch.word_timestamps"):
 
 Missing capabilities are **fail-closed** (`supports(...)` returns `False`).
 
+`supports()` tells you the engine has a feature, not that you can ask for it. For example, `supports("streaming.re_segments")` is `True` for an engine that may replace segments it already sent, and no parameter asks for that. The capability tree answers the second question. `can_request(path)` is `True` only for a supported feature that a request can ask for. `kind_at(path)` returns the node's kind: `"requestable"`, `"behavior"`, `"limit"` (a `constraints` submodel), or `None` for a container such as `"batch"` or a missing path. A behavior node describes a property, a behavior, or a promise of the engine that no standard `RuntimeParams` field requests. Call them on `engine.declared_capabilities`, or on `registry.engine_class(key).declared_capabilities` before you create the engine. A configured engine can support less than its class declares, so also check `engine.supports(path)` before you send the request.
+
 ## 6. Use the result (constant shape)
 
 ```python

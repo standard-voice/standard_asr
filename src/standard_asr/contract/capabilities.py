@@ -20,9 +20,22 @@ Two layers exist:
 
 Every leaf node is one of three archetypes -- **flag**, **bounded**, or
 **enum/mode** -- and all expose a uniform ``is_supported`` boolean so that
-strict / best_effort gating is consistent across the tree. Applications query
-capabilities exclusively through :meth:`DeclaredCapabilities.supports` with a
-dot-path; missing keys are *fail-closed* (return ``False``).
+strict / best_effort gating is consistent across the tree.
+
+Every typed leaf node also states its kind (:data:`CapabilityKind`) in a
+``kind`` field that its class pins. ``requestable`` means an application can
+ask for the feature. ``behavior`` means the node describes a property, a
+behavior, or a promise of the engine that no standard ``RuntimeParams``
+field requests. Each ``constraints`` submodel states ``limit``, and a
+container states no kind. A raw ``x_*`` node states a kind only when its
+declaration writes one.
+
+Applications query the tree with a dot-path, and a missing key is
+*fail-closed*. :meth:`DeclaredCapabilities.supports` answers whether the
+engine has a feature. :meth:`DeclaredCapabilities.can_request` answers
+whether a request can ask for it, which is ``True`` only for a supported
+``requestable`` node. :meth:`DeclaredCapabilities.kind_at` returns a node's
+kind.
 """
 
 from __future__ import annotations
@@ -30,7 +43,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from standard_asr.contract._json_extra import JsonExtraModel
 
@@ -45,6 +58,20 @@ ModeName = Literal["batch", "streaming"]
 
 #: Mode values that count as "not supported" for enum/mode archetype nodes.
 _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
+
+#: What a capability node states: the ``kind`` field of every typed
+#: capability node and constraint submodel. A container has none, and a raw
+#: ``x_*`` node has one only when its declaration writes it.
+#: ``requestable``: an application can ask for the feature in a request;
+#: a standard node is requested through a ``RuntimeParams`` field.
+#: ``behavior``: a property, a behavior, or a promise of the engine that no
+#: standard ``RuntimeParams`` field requests. A supported behavior node
+#: states a fact and grants nothing a request can ask for.
+#: ``limit``: a bound on a requestable feature (a ``constraints`` submodel).
+#: There is no ``observation`` kind: a declaration is static, so a fact that
+#: changes with the host machine lives outside the capability tree. Each
+#: node class pins one value; this alias states the domain only.
+CapabilityKind = Literal["requestable", "behavior", "limit"]
 
 #: Reserved prefix for experimental extension capabilities
 #: (``x_<vendor>_<feature>``). An *extra* (non-field) key on a typed standard node
@@ -154,6 +181,17 @@ def granularity_offers_all(granularities: Sequence[str]) -> bool:
 class _JsonExtraModel(JsonExtraModel):
     """Apply capability dot-path rules to the shared JSON-extra base."""
 
+    # ``canonical_json()`` writes every field, defaults included, so the
+    # serialization-mode JSON Schema can list every field as required and
+    # show ``kind`` as a required ``const``. A validation-mode schema leaves
+    # a defaulted field optional. The schema covers fields only. The
+    # ``supported`` key that ``canonical_json()`` adds to every present
+    # container and mode domain, and to every enum/mode node such as
+    # ``FinalityCap``, is not a field of any class, so the schema lacks it.
+    # A complete schema of the capability endpoint is item 29 of the
+    # roadmap (issue #27).
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     @classmethod
     def _validate_extra_keys(cls, extras: Mapping[str, object]) -> None:
         """Reject separators in queryable capability-extension keys.
@@ -172,7 +210,18 @@ class _CapNode(_JsonExtraModel):
 
     Subclasses MUST expose an ``is_supported`` boolean property derived from
     their archetype (flag/bounded -> ``supported``; enum/mode -> ``mode``).
+    Each concrete subclass also pins ``kind`` to ``requestable`` or
+    ``behavior`` with a single-value ``Literal`` and a default. The pin makes
+    the wrong kind a validation error and renders as a ``const`` in the
+    generated schema. The shared :data:`CapabilityKind` type would accept a
+    valid but wrong value, such as a behavior that declares ``requestable``.
     """
+
+    # The shared type lets code that holds any node read ``node.kind``.
+    # Pyright reports each narrowing pin as an incompatible override because
+    # it cannot see that the models are frozen, so every pin carries an
+    # ignore for that one rule.
+    kind: CapabilityKind
 
     @property
     def is_supported(self) -> bool:  # pragma: no cover - overridden
@@ -214,7 +263,19 @@ def _mode_supported(mode: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Constraint submodels (machine-checkable limits, live with their feature).
 # --------------------------------------------------------------------------- #
-class CandidateLanguagesConstraints(_JsonExtraModel):
+class _ConstraintNode(_JsonExtraModel):
+    """Base class for the constraint submodels; their ``kind`` is ``limit``.
+
+    A constraint submodel holds the machine-checkable limits on one
+    requestable feature, such as the maximum number of phrase-hint terms. It
+    is not a capability node: it has no ``supported``, and
+    :meth:`DeclaredCapabilities.supports` answers ``False`` for its path.
+    """
+
+    kind: Literal["limit"] = "limit"
+
+
+class CandidateLanguagesConstraints(_ConstraintNode):
     """Constraints for the candidate-languages capability.
 
     Attributes:
@@ -224,7 +285,7 @@ class CandidateLanguagesConstraints(_JsonExtraModel):
     max: int = Field(..., gt=0, description="Maximum number of candidate languages.")
 
 
-class PromptConstraints(_JsonExtraModel):
+class PromptConstraints(_ConstraintNode):
     """Constraints for the prompt guidance channel.
 
     Attributes:
@@ -253,7 +314,7 @@ class PromptConstraints(_JsonExtraModel):
     )
 
 
-class PhraseHintsConstraints(_JsonExtraModel):
+class PhraseHintsConstraints(_ConstraintNode):
     """Constraints for the phrase-hints guidance channel.
 
     Attributes:
@@ -271,7 +332,7 @@ class PhraseHintsConstraints(_JsonExtraModel):
     )
 
 
-class DiarizationConstraints(_JsonExtraModel):
+class DiarizationConstraints(_ConstraintNode):
     """Constraints for the diarization capability.
 
     Attributes:
@@ -285,7 +346,27 @@ class DiarizationConstraints(_JsonExtraModel):
 # Leaf capability nodes.
 # --------------------------------------------------------------------------- #
 class FlagCap(_FlagLikeNode):
-    """A simple supported / not-supported flag."""
+    """A supported / not-supported flag for a property, a behavior, or a promise of the engine.
+
+    Its ``kind`` is ``behavior``: a supported flag tells an application a
+    fact about the engine and grants nothing it can request, as with
+    ``streaming.emits_partials`` or ``diarization.always_on``. A requestable
+    flag has its own class, such as :class:`RuntimeOverrideCap`.
+    """
+
+    kind: Literal["behavior"] = "behavior"  # pyright: ignore[reportIncompatibleVariableOverride]
+
+
+class RuntimeOverrideCap(_FlagLikeNode):
+    """Whether a request's ``language`` may override the configured ``default_language``.
+
+    The node at ``<mode>.language.runtime_override``. Its ``kind`` is
+    ``requestable``, because ``RuntimeParams.language`` is gated on it. It
+    has its own class because :class:`FlagCap` pins ``behavior``, so a
+    ``FlagCap`` in this field fails validation.
+    """
+
+    kind: Literal["requestable"] = "requestable"  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class CandidateLanguagesCap(_FlagLikeNode):
@@ -296,6 +377,7 @@ class CandidateLanguagesCap(_FlagLikeNode):
         constraints: Limits (for example, ``max``) when supported.
     """
 
+    kind: Literal["requestable"] = "requestable"  # pyright: ignore[reportIncompatibleVariableOverride]
     constraints: CandidateLanguagesConstraints | None = None
 
 
@@ -317,6 +399,7 @@ class WordTimestampsCap(_FlagLikeNode):
             MUST be non-empty when ``supported`` is ``True``.
     """
 
+    kind: Literal["requestable"] = "requestable"  # pyright: ignore[reportIncompatibleVariableOverride]
     granularities: list[WordTimestampGranularityName] = Field(
         default_factory=lambda: cast("list[WordTimestampGranularityName]", [])
     )
@@ -355,6 +438,7 @@ class PromptCap(_FlagLikeNode):
         constraints: Limits when supported.
     """
 
+    kind: Literal["requestable"] = "requestable"  # pyright: ignore[reportIncompatibleVariableOverride]
     constraints: PromptConstraints = Field(default_factory=PromptConstraints)
 
 
@@ -366,36 +450,34 @@ class PhraseHintsCap(_FlagLikeNode):
         constraints: Limits when supported.
     """
 
+    kind: Literal["requestable"] = "requestable"  # pyright: ignore[reportIncompatibleVariableOverride]
     constraints: PhraseHintsConstraints = Field(default_factory=PhraseHintsConstraints)
 
 
 class DiarizationCap(_FlagLikeNode):
     """Capability for speaker diarization (requested via ``RuntimeParams.diarization``).
 
-    ``always_on`` is a **behavioral fact**, in the same family as
-    ``self_resamples`` (and the streaming behavior flags ``emits_partials`` /
-    ``re_segments`` / ``partial_stability``): it describes what the engine *does*
-    -- its architecture cannot DISABLE diarization, so speaker labels may appear
-    even when diarization is not requested -- and grants nothing an application
-    could request.
+    The node's ``kind`` is ``requestable``: an application asks for speaker
+    labels with ``RuntimeParams.diarization``. The ``always_on`` child is a
+    :class:`FlagCap`, whose ``kind`` is ``behavior``, like ``self_resamples``
+    and the streaming flags ``emits_partials``, ``re_segments``, and
+    ``partial_stability``. A supported ``always_on`` means the engine
+    applies diarization to every request, because its architecture cannot
+    DISABLE diarization. Speaker labels may then appear even when the
+    application did not ask for them (the documented exemption to
+    request-gated diarization). ``always_on`` grants nothing an application
+    can request.
 
-    It is nonetheless a **regular queryable flag node** (a :class:`FlagCap`),
-    uniform with ``self_resamples``: ``supports("<mode>.diarization.always_on")``
+    ``always_on`` is a **regular queryable flag node**, uniform with
+    ``self_resamples``: ``supports("<mode>.diarization.always_on")``
     works, it appears in :meth:`~DeclaredCapabilities.iter_supported_paths` when
     supported, :meth:`~DeclaredCapabilities.canonical_json` injects a uniform
     ``supported`` boolean for it, and :meth:`~DeclaredCapabilities.covers` treats
     a declared-unsupported -> effective-supported change as a rejected widening
     (declaration drift) by plain set containment.
 
-    The one thing that distinguishes ``always_on`` from every other flag is a
-    **semantic inversion**: for every other flag ``True`` means "you MAY request
-    this", whereas for ``always_on`` ``True`` means "this is imposed on you" --
-    speaker labels may appear even when you did not ask for them (the documented
-    exemption to request-gated diarization). That inversion is documented prose,
-    not a difference in representation.
-
     It is NOT placed inside ``constraints`` (constraints are machine-checkable
-    request limits, and ``always_on`` is a behavioral fact, not a limit). It is
+    request limits, and ``always_on`` is a behavior, not a limit). It is
     reserved for architecturally non-disableable engines: an engine that CAN
     disable diarization MUST disable it when diarization is not requested
     (can-disable-must-disable), and MUST NOT declare ``always_on`` for adapter
@@ -409,6 +491,7 @@ class DiarizationCap(_FlagLikeNode):
         constraints: Limits when supported.
     """
 
+    kind: Literal["requestable"] = "requestable"  # pyright: ignore[reportIncompatibleVariableOverride]
     always_on: FlagCap = Field(
         default_factory=FlagCap,
         description=(
@@ -453,6 +536,7 @@ class ReconnectCap(_CapNode):
         mode: ``seamless`` / ``lossy`` / ``unsupported``.
     """
 
+    kind: Literal["behavior"] = "behavior"  # pyright: ignore[reportIncompatibleVariableOverride]
     mode: Literal["seamless", "lossy", "unsupported"] = "unsupported"
 
     @property
@@ -484,6 +568,7 @@ class FinalityCap(_CapNode):
             ``finality_level_not_reached``.
     """
 
+    kind: Literal["behavior"] = "behavior"  # pyright: ignore[reportIncompatibleVariableOverride]
     mode: Literal["final", "closed"] = "final"
 
     @property
@@ -503,6 +588,7 @@ class StreamTimestampsCap(_CapNode):
         mode: ``native_frame_aligned`` / ``post_align`` / ``none``.
     """
 
+    kind: Literal["behavior"] = "behavior"  # pyright: ignore[reportIncompatibleVariableOverride]
     mode: Literal["native_frame_aligned", "post_align", "none"] = "none"
 
     @property
@@ -519,18 +605,77 @@ class StreamTimestampsCap(_CapNode):
 # Container nodes (group leaves; not capabilities themselves).
 # --------------------------------------------------------------------------- #
 class _Container(_JsonExtraModel):
-    """Base for grouping containers; tolerant of unknown / ``x_*`` keys."""
+    """Base for grouping containers; tolerant of unknown / ``x_*`` keys, except ``kind``."""
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Refuse a container subclass that declares a ``kind`` field.
+
+        A container groups nodes and states no kind (design D4), so
+        ``kind_at()`` answers ``None`` for its path. ``canonical_json()``
+        writes every declared field, so a ``kind`` field on a subclass would
+        publish a kind that Python does not report.
+        :meth:`_validate_extra_keys` cannot catch the field, because it sees
+        only keys that no field declares. This check runs when the class is
+        defined, so it catches the field even when it has a default and no
+        input ever passes it. Pydantic calls this hook once ``model_fields``
+        is complete; ``__init_subclass__`` runs before the fields exist.
+
+        Args:
+            kwargs: Keyword arguments from the class definition that
+                pydantic does not use itself.
+
+        Raises:
+            TypeError: If the subclass declares a ``kind`` field.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        if "kind" in cls.model_fields:
+            raise TypeError(
+                f"{cls.__name__} declares a 'kind' field, but a container groups nodes "
+                "and states no kind; only a capability node or a constraints "
+                "submodel carries kind. Remove the field."
+            )
+
+    @classmethod
+    def _validate_extra_keys(cls, extras: Mapping[str, object]) -> None:
+        """Reject an extra ``kind`` key on a container, then apply the node-surface rules.
+
+        A container groups nodes and states no kind (design D4). This check
+        sees only the extras of the input, the keys that no field of the
+        class declares. An extra ``kind`` would be published by
+        ``canonical_json()`` while ``kind_at()`` answers ``None`` for the
+        same path, so it is rejected at construction. A ``kind`` field that
+        a subclass declares is not an extra:
+        :meth:`__pydantic_init_subclass__` refuses that class when it is
+        defined.
+
+        Args:
+            extras: Unknown capability fields with validated string keys.
+
+        Raises:
+            ValueError: If ``extras`` carries a ``kind`` key.
+        """
+        if "kind" in extras:
+            raise ValueError(
+                f"{cls.__name__} carries a 'kind' key, but a container groups nodes "
+                "and states no kind; only a capability node or a constraints "
+                "submodel carries kind. Remove the key."
+            )
+        super()._validate_extra_keys(extras)
 
 
 class LanguageCaps(_Container):
     """Language capabilities for one mode.
 
     Attributes:
-        runtime_override: Whether per-request language override is allowed.
-        candidate_languages: Candidate-language support and limits.
+        runtime_override: Whether a request's ``language`` may override the
+            configured ``default_language``; requestable (see
+            :class:`RuntimeOverrideCap`).
+        candidate_languages: Candidate-language support and limits;
+            requestable, through ``RuntimeParams.candidate_languages``.
     """
 
-    runtime_override: FlagCap = Field(default_factory=FlagCap)
+    runtime_override: RuntimeOverrideCap = Field(default_factory=RuntimeOverrideCap)
     candidate_languages: CandidateLanguagesCap = Field(default_factory=CandidateLanguagesCap)
 
 
@@ -680,8 +825,8 @@ class DeclaredCapabilities(_Container):
         streaming_output: Whether the engine returns results incrementally. May
             only be supported when a ``streaming`` domain is declared.
         self_resamples: Whether the engine resamples audio internally. This is
-            one of the *behavioral* facts the spec declares in Capabilities
-            rather than Properties -- alongside the per-mode
+            one of the behaviors (``kind`` ``behavior``) the spec declares in
+            Capabilities rather than Properties -- alongside the per-mode
             ``diarization.always_on`` and the streaming behavior flags; unlike
             those it is engine-global (a static behavior of the engine, not
             per-mode), so it lives at the top level alongside
@@ -742,9 +887,11 @@ class DeclaredCapabilities(_Container):
     def supports(self, dot_path: str) -> bool:
         """Return whether the capability at ``dot_path`` is supported.
 
-        The only standard way to query capabilities. Walks the tree segment by
-        segment; any missing segment returns ``False`` (fail-closed). Resolving
-        a present mode-domain or container also returns ``True``.
+        The standard support query. It does not say whether a request can
+        ask for the feature; :meth:`can_request` answers that. Walks the tree
+        segment by segment; any missing segment returns ``False``
+        (fail-closed). Resolving a present mode-domain or container also
+        returns ``True``.
 
         Args:
             dot_path: Dotted capability path without the ``capabilities.``
@@ -760,6 +907,47 @@ class DeclaredCapabilities(_Container):
             if node is None:
                 return False
         return _derive_supported(node)
+
+    def kind_at(self, dot_path: str) -> CapabilityKind | None:
+        """Return the kind of the node at ``dot_path``, or ``None``.
+
+        A capability node answers ``"requestable"`` or ``"behavior"``, and a
+        constraint submodel answers ``"limit"``. ``None`` means the path
+        states no kind: a container or mode domain (it groups nodes), an
+        absent path, a bare ``x_*`` grouping dict (it carries neither
+        ``supported`` nor ``mode``), or a raw ``x_*`` node whose ``kind`` is
+        missing or is not exactly one of the three values. The kind does not depend on
+        support: an unsupported node still has one. To ask whether a request
+        can use the feature, call :meth:`can_request`.
+
+        Args:
+            dot_path: Dotted capability path without the ``capabilities.``
+                prefix (for example, ``"batch.diarization.always_on"``).
+
+        Returns:
+            The node's kind, or ``None``.
+        """
+        return _derive_kind(self._resolve(dot_path))
+
+    def can_request(self, dot_path: str) -> bool:
+        """Return whether a request can ask for the feature at ``dot_path``.
+
+        ``True`` only when the node is supported and its kind is
+        ``requestable``. An unsupported requestable node, a supported
+        behavior, a limit, a container, and an absent path all answer
+        ``False`` (fail-closed, like :meth:`supports`). A standard feature is
+        requested through its ``RuntimeParams`` field, and an ``x_*`` feature
+        through the engine's ``provider_params``.
+
+        Args:
+            dot_path: Dotted capability path without the ``capabilities.``
+                prefix (for example, ``"batch.diarization"``).
+
+        Returns:
+            ``True`` if a request can ask for the feature, otherwise ``False``.
+        """
+        node = self._resolve(dot_path)
+        return _derive_supported(node) and _derive_kind(node) == "requestable"
 
     def node_at(self, dot_path: str) -> _CapNode | None:
         """Return the typed capability *node* at ``dot_path``, or ``None``.
@@ -827,10 +1015,13 @@ class DeclaredCapabilities(_Container):
 
         Enforces the normative ``effective ⊆ declared`` invariant:
         the effective set may only *close* declared capabilities, never widen
-        them. This checks two things:
+        them. This checks three things:
 
         * **Set containment** -- every supported path in ``other`` is also
           supported here (no feature is enabled that this tree did not declare).
+        * **Same kind** -- at every path both trees hold, :meth:`kind_at`
+          gives the same answer, whether or not the node is supported there.
+          A path that ``other`` omits is a narrowing.
         * **Constraint narrowing** -- where both trees support a bounded or
           enum/mode node, ``other``'s limits MUST be no looser than this tree's
           (for example, a smaller-or-equal ``max``, a subset of ``granularities``, a
@@ -846,6 +1037,19 @@ class DeclaredCapabilities(_Container):
         mine = set(self.iter_supported_paths())
         for path in other.iter_supported_paths():
             if path not in mine:
+                return False
+        # A node's kind is data (design D3), and it does not depend on
+        # support, so the kind of every node both trees hold must agree,
+        # supported or not: a change in either direction changes what
+        # kind_at() and can_request() answer, and neither direction narrows.
+        # A path the effective tree omits is a narrowing the loop above
+        # already allowed, so only shared paths are compared.
+        for path in other.iter_queryable_paths():
+            effective_node = other._resolve(path)
+            declared_node = self._resolve(path)
+            if declared_node is None:
+                continue
+            if _derive_kind(declared_node) != _derive_kind(effective_node):
                 return False
         # Where both support a node, the effective node must not be looser.
         for path in other.iter_supported_paths():
@@ -871,7 +1075,10 @@ class DeclaredCapabilities(_Container):
         ``"none"``/``"unsupported"`` sentinels (enum/mode nodes'
         ``supported`` is server-injected). The root object itself carries no
         ``supported`` key (it is the container of all modes, not a capability);
-        an absent mode domain serializes as ``null`` (fail-closed).
+        an absent mode domain serializes as ``null`` (fail-closed). Every
+        typed capability node and constraint submodel also carries its
+        ``kind`` field. A container carries none, and a raw ``x_*`` node
+        carries one only when its declaration does.
 
         Returns:
             A JSON-serializable capability tree with ``supported`` on each node.
@@ -977,6 +1184,37 @@ def _derive_supported(node: object) -> bool:
         # explicitly (x_* gating rules are the same as standard).
         return False
     return False
+
+
+def _derive_kind(node: object) -> CapabilityKind | None:
+    """Derive the kind of a resolved node, or ``None`` when it states none.
+
+    Args:
+        node: A capability leaf, constraint submodel, container, raw dict,
+            or ``None``.
+
+    Returns:
+        The node's kind, or ``None``. A typed node answers its pinned value.
+        A raw dict answers its ``kind`` key only when the dict is a
+        capability node (it carries ``supported`` or ``mode``) and the key
+        holds exactly one of the three values. A bare grouping dict and any
+        other value answer ``None``, so a vendor node never reads as
+        requestable by accident.
+    """
+    if isinstance(node, (_CapNode, _ConstraintNode)):
+        return node.kind
+    if isinstance(node, dict):
+        mapping = cast("dict[str, object]", node)
+        # Only a capability node states a kind: a dict is one iff it carries
+        # ``supported`` or ``mode``, the same predicate _derive_supported and
+        # _to_canonical use. A bare grouping dict groups nodes and states
+        # nothing, whatever keys it carries.
+        if "supported" not in mapping and "mode" not in mapping:
+            return None
+        kind = mapping.get("kind")
+        if kind in ("requestable", "behavior", "limit"):
+            return kind
+    return None
 
 
 def _to_canonical(node: object, *, inject_supported: bool) -> Any:
@@ -1259,6 +1497,7 @@ __all__ = [
     "BatchCapabilities",
     "CandidateLanguagesCap",
     "CandidateLanguagesConstraints",
+    "CapabilityKind",
     "DeclaredCapabilities",
     "DiarizationCap",
     "DiarizationConstraints",
@@ -1273,6 +1512,7 @@ __all__ = [
     "PromptCap",
     "PromptConstraints",
     "ReconnectCap",
+    "RuntimeOverrideCap",
     "StreamTimestampsCap",
     "StreamingCapabilities",
     "StreamingGuidanceCaps",

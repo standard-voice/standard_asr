@@ -15,13 +15,13 @@ from standard_asr.contract.capabilities import (
     CandidateLanguagesConstraints,
     DeclaredCapabilities,
     DiarizationCap,
-    FlagCap,
     GuidanceCaps,
     LanguageCaps,
     PhraseHintsCap,
     PhraseHintsConstraints,
     PromptCap,
     PromptConstraints,
+    RuntimeOverrideCap,
     StreamingCapabilities,
     WordTimestampsCap,
 )
@@ -71,7 +71,7 @@ def _caps(
 ) -> DeclaredCapabilities:
     return DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=override)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=override)),
             guidance=GuidanceCaps(
                 prompt=PromptCap(supported=prompt),
                 phrase_hints=PhraseHintsCap(supported=phrase_hints),
@@ -1084,3 +1084,24 @@ def test_diarization_marker_has_no_fields_drift_guard() -> None:
     # graduates onto DiarizationRequest (for example, num_speakers), sub-gating must be
     # written -- this pin fails alongside the import-time assert until it is.
     assert not DiarizationRequest.model_fields
+
+
+def test_ungated_requestable_paths_are_requestable_and_not_gated() -> None:
+    # The gating table and the exemption set together name every requestable
+    # node of the standard tree, in both modes, and never the same path twice.
+    # The compliance suite proves the same for an engine's declared tree.
+    from standard_asr.runtime.gating import (
+        _GATED_PARAMS,  # pyright: ignore[reportPrivateUsage]
+        _UNGATED_REQUESTABLE_PATHS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    gated = {suffix for _, suffix in _GATED_PARAMS}
+    assert gated.isdisjoint(_UNGATED_REQUESTABLE_PATHS)
+    caps = DeclaredCapabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities())
+    for mode in ("batch", "streaming"):
+        requestable = {
+            path[len(mode) + 1 :]
+            for path in caps.iter_queryable_paths()
+            if path.startswith(f"{mode}.") and caps.kind_at(path) == "requestable"
+        }
+        assert requestable == gated | _UNGATED_REQUESTABLE_PATHS, mode

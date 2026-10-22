@@ -16,6 +16,7 @@ from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import pytest
+from pydantic import Field
 
 from standard_asr import TranscriptionResult
 from standard_asr import compliance as compliance_module
@@ -44,6 +45,7 @@ from standard_asr.contract.artifacts import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
+    CandidateLanguagesCap,
     DeclaredCapabilities,
     DiarizationCap,
     FinalityCap,
@@ -52,6 +54,7 @@ from standard_asr.contract.capabilities import (
     LanguageCaps,
     PromptCap,
     PromptConstraints,
+    RuntimeOverrideCap,
     StreamingCapabilities,
     StreamTimestampsCap,
     WordTimestampsCap,
@@ -113,7 +116,9 @@ class _Props(BaseProperties):
 
 
 _CAPS = DeclaredCapabilities(
-    batch=BatchCapabilities(language=LanguageCaps(runtime_override=FlagCap(supported=True)))
+    batch=BatchCapabilities(
+        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True))
+    )
 )
 
 
@@ -257,7 +262,7 @@ class _WidenedASR(_GoodASR):
     # effective declares MORE than declared (word_timestamps) -> not a subset.
     effective_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
             word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
         )
     )
@@ -265,6 +270,24 @@ class _WidenedASR(_GoodASR):
 
 def widened_factory() -> _WidenedASR:  # pyright: ignore[reportUnusedFunction]
     return _WidenedASR()
+
+
+class _BatchWithUngatedFeature(BatchCapabilities):
+    # A typed requestable node at a path no gate checks: a request for it
+    # would reach the engine unchecked.
+    extra_feature: PromptCap = PromptCap()
+
+
+class _UngatedRequestableASR(_GoodASR):
+    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        batch=_BatchWithUngatedFeature(
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True))
+        )
+    )
+
+
+def ungated_requestable_factory() -> _UngatedRequestableASR:  # pyright: ignore[reportUnusedFunction]
+    return _UngatedRequestableASR()
 
 
 class _OpenParams(ProviderParams):
@@ -1524,11 +1547,13 @@ def test_supports_effective_narrowing_engine_agrees_with_effective() -> None:
     declared = DeclaredCapabilities(
         batch=BatchCapabilities(
             diarization=DiarizationCap(supported=True),
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         )
     )
     effective = DeclaredCapabilities(
-        batch=BatchCapabilities(language=LanguageCaps(runtime_override=FlagCap(supported=True)))
+        batch=BatchCapabilities(
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True))
+        )
     )
     assert declared.covers(effective)
 
@@ -5957,3 +5982,143 @@ def test_compliance_requires_hooks_promised_by_static_booleans() -> None:
     )
     assert inference_only.passed is True, [issue.message for issue in inference_only.issues]
     assert not_applicable.passed is True, [issue.message for issue in not_applicable.issues]
+
+
+# --------------------------------------------------------------------------- #
+# Capability kinds: the gating table and the tree prove each other
+# --------------------------------------------------------------------------- #
+def _standard_tree() -> DeclaredCapabilities:
+    return DeclaredCapabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities())
+
+
+def test_requestable_kinds_check_passes_for_the_standard_tree() -> None:
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(  # pyright: ignore[reportPrivateUsage]
+        _standard_tree(), "m", issues
+    )
+    assert issues == []
+
+
+def test_requestable_kinds_check_skips_an_absent_mode_and_x_star_nodes() -> None:
+    # A vendor feature is requested through provider_params, which no
+    # capability gates, so a requestable x_* node is not an ungated node.
+    caps = DeclaredCapabilities.model_validate(
+        {"batch": {"x_vendor_ask": {"supported": True, "kind": "requestable"}}}
+    )
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+    assert issues == []
+
+
+def test_requestable_kinds_check_flags_a_gated_row_whose_node_is_a_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A gating row that points at a behavior node is the mismatch the class
+    # split for language.runtime_override removed; the check reports it.
+    monkeypatch.setattr(
+        compliance_module, "_GATED_PARAMS", (("diarization", "diarization.always_on"),)
+    )
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(  # pyright: ignore[reportPrivateUsage]
+        _standard_tree(), "m", issues
+    )
+    codes = [issue.code for issue in issues]
+    assert codes.count("gated_param_not_requestable") == 2  # once per declared mode
+    assert any("batch.diarization.always_on" in issue.message for issue in issues)
+
+
+def test_requestable_kinds_check_runs_at_class_level_without_instantiation() -> None:
+    # The declaration is static, so the check runs with the class checks and
+    # does not need the engine constructed; with instantiation it still
+    # reports each finding once.
+    report = check_entrypoints(registry=_registry("ungated_requestable_factory"), instantiate=False)
+    ungated = [issue for issue in report.issues if issue.code == "requestable_node_ungated"]
+    assert len(ungated) == 1
+    assert "batch.extra_feature" in ungated[0].message
+    report = check_entrypoints(registry=_registry("ungated_requestable_factory"))
+    assert [issue.code for issue in report.issues].count("requestable_node_ungated") == 1
+
+
+def test_requestable_kinds_check_covers_the_exempt_path_in_the_forward_direction() -> None:
+    # language.candidate_languages is requested through RuntimeParams and
+    # gated by effective_candidate_languages, so it is exempt from the gating
+    # table but still has to be requestable: a plugin that replaces the node
+    # with a subclass of another kind is reported.
+    class _Misclassified(CandidateLanguagesCap):
+        kind: Literal["behavior"] = "behavior"  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(candidate_languages=_Misclassified(supported=True))
+        )
+    )
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+    assert [issue.code for issue in issues] == ["gated_param_not_requestable"]
+    assert "batch.language.candidate_languages" in issues[0].message
+
+
+def test_requestable_kinds_check_sees_every_node_the_application_can_query() -> None:
+    # The reverse check must recognize the nodes kind_at() and can_request()
+    # recognize: a raw node that states its kind, and a node at the root. A
+    # requestable one that no gate checks is a finding whether or not it is
+    # supported, because the kind does not depend on support.
+    def raw(supported: bool) -> dict[str, object]:
+        return {"supported": supported, "kind": "requestable"}
+
+    class RawBatch(BatchCapabilities):
+        extra_feature: dict[str, object] = Field(default_factory=lambda: raw(True))
+
+    class UnsupportedRawBatch(BatchCapabilities):
+        extra_feature: dict[str, object] = Field(default_factory=lambda: raw(False))
+
+    class RootNode(DeclaredCapabilities):
+        prompt_root: PromptCap = Field(default_factory=lambda: PromptCap(supported=True))
+
+    class UnsupportedRootNode(DeclaredCapabilities):
+        prompt_root: PromptCap = Field(default_factory=lambda: PromptCap(supported=False))
+
+    cases: list[tuple[DeclaredCapabilities, str, bool]] = [
+        (DeclaredCapabilities(batch=RawBatch()), "batch.extra_feature", True),
+        (DeclaredCapabilities(batch=UnsupportedRawBatch()), "batch.extra_feature", False),
+        (RootNode(batch=BatchCapabilities()), "prompt_root", True),
+        (UnsupportedRootNode(batch=BatchCapabilities()), "prompt_root", False),
+    ]
+    for caps, path, supported in cases:
+        assert caps.kind_at(path) == "requestable"
+        assert caps.can_request(path) is supported
+        issues: list[ComplianceIssue] = []
+        compliance_module._check_requestable_kinds(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+        assert [issue.code for issue in issues] == ["requestable_node_ungated"], path
+        assert path in issues[0].message
+
+    # A vendor node stays exempt wherever it sits, as a field or as an extra.
+    class VendorBatch(BatchCapabilities):
+        x_vendor_feature: dict[str, object] = Field(default_factory=lambda: raw(True))
+
+    exempt = DeclaredCapabilities.model_validate(
+        {"batch": VendorBatch(), "x_vendor_root": raw(True)}
+    )
+    assert exempt.can_request("batch.x_vendor_feature") is True
+    issues_exempt: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(exempt, "m", issues_exempt)  # pyright: ignore[reportPrivateUsage]
+    assert issues_exempt == []
+
+
+def test_requestable_kinds_check_flags_a_requestable_node_no_gate_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Dropping the diarization row leaves a requestable node that no gate
+    # checks: a request for it would reach the engine unchecked.
+    rows = tuple(
+        row
+        for row in compliance_module._GATED_PARAMS  # pyright: ignore[reportPrivateUsage]
+        if row[1] != "diarization"
+    )
+    monkeypatch.setattr(compliance_module, "_GATED_PARAMS", rows)
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(  # pyright: ignore[reportPrivateUsage]
+        DeclaredCapabilities(batch=BatchCapabilities()), "m", issues
+    )
+    assert [issue.code for issue in issues] == ["requestable_node_ungated"]
+    assert "batch.diarization" in issues[0].message

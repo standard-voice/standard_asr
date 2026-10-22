@@ -13,7 +13,7 @@ You implement **one** class. The standard layer gives you audio-input negotiatio
 Subclass `EngineBase` and provide:
 
 1. `properties: ClassVar[BaseProperties]` — static identity and I/O boundaries (`accepted_input`, `native_sample_rate`, `accepted_sample_rates`, `selectable_languages`, …). Pin `protocol_version` to the protocol the engine implements, never to the installed `standard-asr` version (spec AR.1). Bump it only after the engine fully implements the newer contract. It is not a package requirement either: declare the `standard-asr` version range your code imports from in your project metadata, because the two move independently.
-2. `declared_capabilities: ClassVar[DeclaredCapabilities]` — what you support, per mode (`batch` / `streaming`). Omit what you don't support (fail-closed).
+2. `declared_capabilities: ClassVar[DeclaredCapabilities]` — what you support, per mode (`batch` / `streaming`). Omit what you don't support (fail-closed). Each node's class fixes its `kind`: `requestable` for a feature a request asks for, `behavior` for a property, a behavior, or a promise of your engine that no standard `RuntimeParams` field requests. So `language.runtime_override` takes `RuntimeOverrideCap`; a `FlagCap` there fails validation, because `FlagCap` pins `behavior`.
 3. `declared_metadata: ClassVar[DeclaredEngineMetadata]` — static metadata for the model preset. The protocol requires an authored `artifacts` section. Use `NO_ARTIFACT_LIFECYCLE` only when no supported context has an inference-artifact lifecycle.
 4. `provider_params_type: ClassVar[type[ProviderParams] | None]` — your typed escape-hatch model, or `None`. Publish your own **terminal** subclass: the bare `ProviderParams` base, a non-subclass, or a model that is not closed (`extra="forbid"`) is a compliance error (`provider_params_type_is_bare_base`, `provider_params_type_not_subclass`, or `provider_params_type_not_closed`).
 5. `__init__` — capture config only. **Keep it pure**: no filesystem, GPU, or network (spec IC.9). Load weights lazily, in a method of your own; the first-party plugins call theirs `_ensure_model_loaded`.
@@ -35,12 +35,12 @@ from standard_asr.engine import (
     DeclaredCapabilities,
     DeclaredEngineMetadata,
     EngineBase,
-    FlagCap,
     InputKind,
     LanguageCaps,
     LanguageConfigMixin,
     NO_ARTIFACT_LIFECYCLE,
     PreparedAudio,
+    RuntimeOverrideCap,
     RuntimeParams,
     TranscriptionResult,
 )
@@ -67,7 +67,7 @@ class MyEngine(EngineBase):
     config_type: ClassVar[type[BaseConfig]] = MyConfig  # schema without instantiation
     declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
         )
     )
     declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
@@ -108,7 +108,7 @@ You never write decode/resample/encode glue — declare `accepted_input` and the
 
 ## Streaming
 
-**Declare the transport axis first.** Set `streaming_input=FlagCap(supported=True)` if you accept incremental PCM frames, `streaming_output=FlagCap(supported=True)` if you return results incrementally, or both. These are engine-global flags, and either one may be supported only when you also declare a `streaming` domain. A `streaming` domain with neither axis is a streaming engine nobody can call: every `start_transcription()` raises `UnsupportedFeatureError`, and compliance reports the error `streaming_domain_without_axis`.
+**Declare the transport axis first.** Set `streaming_input=FlagCap(supported=True)` if you accept incremental PCM frames, `streaming_output=FlagCap(supported=True)` if you return results incrementally, or both. These are engine-global behaviors: `FlagCap` pins `kind` to `behavior`, because no request parameter asks for them. Either one may be supported only when you also declare a `streaming` domain. A `streaming` domain with neither axis is a streaming engine nobody can call: every `start_transcription()` raises `UnsupportedFeatureError`, and compliance reports the error `streaming_domain_without_axis`.
 
 Subclass `TranscriptionSession`, implement async `_produce()` (read fed audio via `self.audio_chunks()`, yield `TranscriptionEvent` objects). The base provides `feed`/`send_audio`/`end_audio`, backpressure, the done-timeout, and the sync bridge — you only write `async`. See the spec §ST for the event model (`partial`/`final`/`supersede`/`progress`/`done`/`error`) and the `stable_text` rules.
 
@@ -237,6 +237,8 @@ Six streaming capabilities each gate one event field or event type. Your declare
 | an `audio_processed_until` cursor | `streaming.timestamps.mode` ≠ `"none"`              |
 | per-word `words`                 | `streaming.word_timestamps = WordTimestampsCap(supported=True, …)` |
 | a segment- or word-level `speaker` | `streaming.diarization = DiarizationCap(supported=True)` — add `always_on=FlagCap(supported=True)` if your model is architecturally unable to disable it |
+
+Each `FlagCap` in the table, `always_on` included, declares a behavior: its `kind` is `behavior`, because no request parameter turns it on. `WordTimestampsCap` and `DiarizationCap` declare requestable features, which an application asks for per request.
 
 One more declaration promises events instead of gating them. Declare `streaming.finality_level = FinalityCap(mode="closed")` only if every segment that reaches `final`, and that no `supersede` retires, also reaches `closed` before the session ends with `done`. Otherwise keep the default mode, `"final"`, which neither promises nor forbids a `closed` final.
 

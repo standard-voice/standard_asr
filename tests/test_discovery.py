@@ -22,8 +22,8 @@ from standard_asr.compliance import check_entrypoints
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
     DeclaredCapabilities,
-    FlagCap,
     LanguageCaps,
+    RuntimeOverrideCap,
 )
 from standard_asr.contract.exceptions import (
     ConfigError,
@@ -76,7 +76,7 @@ class _DummyProperties(BaseProperties):
 
 _DUMMY_CAPS = DeclaredCapabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
     )
 )
 
