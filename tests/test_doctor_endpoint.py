@@ -156,16 +156,46 @@ def test_an_application_subclass_is_driven_as_its_family(monkeypatch: pytest.Mon
     assert doctor.check_endpoint(timeout=1).client == "huggingface_hub 1.19.0 (httpx)"
 
 
+@pytest.mark.parametrize("status", [401, 404, 429])
+def test_an_answer_that_does_not_show_a_blocked_path_is_reachable(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    # A mirror can answer 401 or 404 to a request for its root without a token.
+    # A 429 limits this client's rate, and Hugging Face limits page requests
+    # apart from downloads, so it does not show that a download fails.
+    _install_hub(monkeypatch, _HttpxClient(status))
+    check = doctor.check_endpoint(timeout=1)
+    assert (check.outcome, check.status_code, check.is_problem) == ("reachable", status, False)
+
+
 @pytest.mark.parametrize(
-    ("status", "outcome"), [(407, "proxy_refused"), (500, "server_error"), (503, "server_error")]
+    ("status", "outcome"),
+    [
+        (403, "forbidden"),
+        (407, "proxy_refused"),
+        (451, "forbidden"),
+        (500, "server_error"),
+        (503, "server_error"),
+    ],
 )
-def test_a_407_or_a_5xx_answer_is_a_problem(
+def test_a_refusing_or_failing_answer_is_a_problem(
     monkeypatch: pytest.MonkeyPatch, status: int, outcome: str
 ) -> None:
     _install_hub(monkeypatch, _HttpxClient(status))
     check = doctor.check_endpoint(timeout=1)
     assert (check.outcome, check.status_code, check.is_problem) == (outcome, status, True)
     assert check.remedy
+
+
+@pytest.mark.parametrize(("status", "mentions_token"), [(403, True), (451, False)])
+def test_only_the_403_remedy_suggests_a_download_with_the_token(
+    monkeypatch: pytest.MonkeyPatch, status: int, mentions_token: bool
+) -> None:
+    # A mirror can refuse a request without a token with 403, never with 451.
+    _install_hub(monkeypatch, _HttpxClient(status))
+    remedy = doctor.check_endpoint(timeout=1).remedy
+    assert remedy is not None
+    assert ("token" in remedy) is mentions_token
 
 
 @pytest.mark.parametrize(

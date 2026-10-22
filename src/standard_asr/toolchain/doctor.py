@@ -127,6 +127,7 @@ EndpointOutcome = Literal[
     "could_not_run",
     "offline",
     "proxy_refused",
+    "forbidden",
     "server_error",
     "name_not_resolved",
     "connection_refused",
@@ -176,7 +177,8 @@ class EndpointCheck:
         outcome: How the check ended:
 
             * ``reachable``: an HTTP answer arrived, from the endpoint or from
-              a proxy on the way, with a status other than 407 or 5xx.
+              a proxy on the way, with a status other than 403, 407, 451, or
+              5xx.
             * ``not_applicable``: huggingface_hub is not installed, so no
               engine here downloads through it.
             * ``could_not_run``: huggingface_hub failed to import or to load
@@ -184,6 +186,11 @@ class EndpointCheck:
               the result says nothing about the network.
             * ``offline``: huggingface_hub's offline mode refused the request.
             * ``proxy_refused``: a proxy refused the request, or answered 407.
+            * ``forbidden``: a server on the way, the endpoint or a proxy,
+              answered 403, or 451 for a legal demand. A proxy that blocks a
+              site answers this way, over HTTPS too when it decrypts the
+              traffic, so the answer does not show that the request reached
+              the endpoint.
             * ``server_error``: a server on the way answered with a 5xx status.
             * ``name_not_resolved``, ``connection_refused``, ``timed_out``,
               and ``certificate_not_verified``: the failure the request ended
@@ -1056,6 +1063,21 @@ def _probe(
             "The request got an HTTP answer with status 407: a proxy wants credentials.",
             "Put the proxy's user name and password in its URL in HTTPS_PROXY or HTTP_PROXY, "
             "as in http://user:password@proxy:8080.",
+            status_code=status,
+        )
+    if status in (403, 451):
+        remedy = "Ask whoever runs this network whether a proxy blocks the endpoint's host."
+        if status == 403:
+            remedy += (
+                " If the endpoint is a mirror that refuses requests without a token, check that "
+                "a download works with the token set."
+            )
+        return result(
+            "forbidden",
+            f"The request got an HTTP answer with status {status}: a server on the way, the "
+            "endpoint or a proxy, refused it. A proxy that blocks a site answers this way, over "
+            "HTTPS too when it decrypts the traffic.",
+            remedy,
             status_code=status,
         )
     if status >= 500:
