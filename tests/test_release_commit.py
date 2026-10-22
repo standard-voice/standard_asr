@@ -264,3 +264,34 @@ def test_main_fails_without_a_build_recipe(
     monkeypatch.setattr(release_commit, "run_git", git)
     assert release_commit.main(["--version", "0.2.0"]) == 1
     assert "names no uv-build lower bound" in capsys.readouterr().err
+
+
+def test_workflows_changed_compares_only_the_workflow_directory() -> None:
+    calls: list[list[str]] = []
+
+    def git(args: list[str]) -> str | None:
+        calls.append(args)
+        return ".github/workflows/ci.yml\n" if args[2] == "c1" else ""
+
+    assert release_commit.workflows_changed("c1", "HEAD", git) is True
+    assert release_commit.workflows_changed("c2", "HEAD", git) is False
+    assert calls[0] == ["diff", "--name-only", "c1", "HEAD", "--", ".github/workflows/"]
+    with pytest.raises(RuntimeError, match="cannot compare"):
+        release_commit.workflows_changed("c1", "HEAD", _silent)
+
+
+def test_main_reports_the_workflow_comparison(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    history = _fake_git([("c2", "0.2.0"), ("c1", "0.1.1")])
+
+    def git(args: list[str]) -> str | None:
+        if args[0] == "diff":
+            return "" if args[3] == "HEAD" else None
+        return history(args)
+
+    monkeypatch.setattr(release_commit, "run_git", git)
+    assert release_commit.main(["--version", "0.2.0", "--workflows-against", "HEAD"]) == 0
+    assert capsys.readouterr().out == "sha=c2\nuv=0.11.21\nworkflows_changed=false\n"
+    assert release_commit.main(["--version", "0.2.0", "--workflows-against", "nowhere"]) == 1
+    assert "::error::git cannot compare c2 with nowhere." in capsys.readouterr().err

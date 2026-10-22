@@ -161,6 +161,38 @@ def find_release_commit(version: str, head: str = "HEAD", git: Git = run_git) ->
     return None
 
 
+#: The directory GitHub guards: a token may create a tag at a commit whose
+#: files here differ from the default branch's only if it may change workflows.
+WORKFLOWS_DIRECTORY = ".github/workflows/"
+
+
+def workflows_changed(sha: str, ref: str, git: Git = run_git) -> bool:
+    """Return whether the workflow files at ``sha`` differ from those at ``ref``.
+
+    GitHub lets a token create a tag or a release at a commit whose files
+    under ``.github/workflows/`` differ from the default branch's only if
+    the token may change workflows, and the workflow token never may (GitHub
+    REST reference, "Create a release"). The release commit can fall behind
+    that way whenever a workflow change merges after it.
+
+    Args:
+        sha: The release commit.
+        ref: The default branch's tip, such as ``HEAD`` or
+            ``origin/main``.
+        git: The git runner, replaceable in tests.
+
+    Returns:
+        ``True`` when any file under ``.github/workflows/`` differs.
+
+    Raises:
+        RuntimeError: When git cannot compare the two commits.
+    """
+    changed = git(["diff", "--name-only", sha, ref, "--", WORKFLOWS_DIRECTORY])
+    if changed is None:
+        raise RuntimeError(f"git cannot compare {sha} with {ref}.")
+    return bool(changed.strip())
+
+
 def main(argv: list[str] | None = None) -> int:
     """Print the release commit and its build recipe for the workflow.
 
@@ -169,11 +201,17 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         The process exit code: 0 with ``sha=`` and ``uv=`` lines on stdout,
-        1 with an error on stderr.
+        and a ``workflows_changed=`` line when ``--workflows-against`` is
+        given; 1 with an error on stderr.
     """
     parser = argparse.ArgumentParser(description="Find the commit that set project.version.")
     parser.add_argument("--version", required=True, help="the version being released")
     parser.add_argument("--head", default="HEAD", help="the branch tip to walk back from")
+    parser.add_argument(
+        "--workflows-against",
+        metavar="REF",
+        help="also report whether the workflow files at the release commit differ from REF",
+    )
     args = parser.parse_args(argv)
     # Pass the runner at call time, so a test can replace ``run_git``.
     try:
@@ -196,8 +234,17 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    changed: bool | None = None
+    if args.workflows_against is not None:
+        try:
+            changed = workflows_changed(sha, args.workflows_against, run_git)
+        except RuntimeError as error:
+            print(f"::error::{error}", file=sys.stderr)
+            return 1
     print(f"sha={sha}")
     print(f"uv={uv}")
+    if changed is not None:
+        print(f"workflows_changed={'true' if changed else 'false'}")
     return 0
 
 

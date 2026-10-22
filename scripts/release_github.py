@@ -18,6 +18,15 @@ state first and refuses anything it cannot reconcile:
   cannot read is not an absence.
 * ``ensure``: after PyPI is verified. The same checks, then the release is
   created when absent, and checked again afterwards.
+
+Workflow files: GitHub lets a token create a tag at a commit whose files
+under ``.github/workflows/`` differ from the default branch's only if the
+token may change workflows, and the workflow token never may. When a workflow
+change merged after the release commit and the tag does not exist yet,
+``check`` warns before anything is published, and ``ensure`` stops with the
+command a person runs instead, after PyPI holds the files. When the tag
+exists, ``ensure`` creates the release without ``--target``, which GitHub
+ignores for an existing tag.
 * ``pr-state``: the state of the dev-bump pull request for a branch.
 * ``branch-head``: the commit a branch points at, or ``absent``, for the
   dev-bump job.
@@ -248,8 +257,34 @@ def problems(
     return found, True
 
 
+def manual_create_command(repo: str, version: str, sha: str, prerelease: bool) -> str:
+    """Return the ``gh`` command that creates the release by hand.
+
+    Args:
+        repo: ``owner/name``.
+        version: The version being released.
+        sha: The release commit.
+        prerelease: Whether the version is a pre-release.
+
+    Returns:
+        The command, reading the notes from ``release-notes.md``, the file in
+        the workflow artifact ``standard-asr-release``.
+    """
+    tag = f"v{version}"
+    command = f"gh release create {tag} --repo {repo} --target {sha} --title {tag}"
+    command += " --notes-file release-notes.md"
+    return command + (" --prerelease" if prerelease else "")
+
+
 def check(
-    repo: str, version: str, sha: str, notes_path: Path, prerelease: bool, run: Runner = run_gh
+    repo: str,
+    version: str,
+    sha: str,
+    notes_path: Path,
+    prerelease: bool,
+    run: Runner = run_gh,
+    *,
+    workflows_changed: bool = False,
 ) -> int:
     """Report the tag and release state; see the module docstring.
 
@@ -260,12 +295,17 @@ def check(
         notes_path: The file with the release notes.
         prerelease: Whether the version is a pre-release.
         run: The ``gh`` runner, replaceable in tests.
+        workflows_changed: Whether the workflow files at ``sha`` differ from
+            the default branch's; with no tag yet, this prints a warning.
 
     Returns:
         The process exit code: 0 when the state can be completed, 1 otherwise.
     """
     try:
         found, exists = problems(repo, version, sha, notes_path.read_text("utf-8"), prerelease, run)
+        tag_missing = (
+            not exists and workflows_changed and tag_commit(repo, f"v{version}", run) is None
+        )
     except GitHubError as error:
         print(f"::error::{error}")
         return 1
@@ -273,12 +313,26 @@ def check(
         print(f"::error::{problem}")
     if found:
         return 1
+    if tag_missing:
+        print(
+            f"::warning::The workflow files at the release commit {sha} differ from the "
+            "default branch's, so the workflow token cannot create the tag there. The run "
+            "publishes to PyPI as usual; then the GitHub Release step stops and prints the "
+            'command that creates the release by hand (RELEASING.md, "When a run fails").'
+        )
     print(f"release v{version}: {'exists at the release commit' if exists else 'absent'}")
     return 0
 
 
 def ensure(
-    repo: str, version: str, sha: str, notes_path: Path, prerelease: bool, run: Runner = run_gh
+    repo: str,
+    version: str,
+    sha: str,
+    notes_path: Path,
+    prerelease: bool,
+    run: Runner = run_gh,
+    *,
+    workflows_changed: bool = False,
 ) -> int:
     """Create the release when absent, and check it either way.
 
@@ -289,6 +343,10 @@ def ensure(
         notes_path: The file with the release notes.
         prerelease: Whether the version is a pre-release.
         run: The ``gh`` runner, replaceable in tests.
+        workflows_changed: Whether the workflow files at ``sha`` differ from
+            the default branch's. With no tag yet, the workflow token cannot
+            create one there, so the function stops with the command a
+            person runs instead.
 
     Returns:
         The process exit code: 0 when the release exists at the release
@@ -299,12 +357,27 @@ def ensure(
     tag = f"v{version}"
     try:
         existing = release(repo, tag, run)
+        tagged = existing is None and tag_commit(repo, tag, run) is not None
     except GitHubError as error:
         print(f"::error::{error}")
         return 1
+    if existing is None and not tagged and workflows_changed:
+        print(
+            f"::error::The workflow files at the release commit {sha} differ from the "
+            "default branch's, and GitHub lets a token create a tag at such a commit only "
+            "if the token may change workflows, which the workflow token never may. PyPI "
+            f"holds {tag}. Create the release yourself, with credentials that may change "
+            "workflows, then run this workflow again to open the dev-bump pull request. "
+            "release-notes.md is in the workflow artifact standard-asr-release:"
+        )
+        print(manual_create_command(repo, version, sha, prerelease))
+        return 1
     if existing is None:
-        args = ["release", "create", tag, "--repo", repo, "--target", sha, "--title", tag]
-        args += ["--notes-file", str(notes_path)]
+        # GitHub ignores --target for a tag that exists, and checks it for
+        # workflow changes all the same, so pass it only for a new tag.
+        args = ["release", "create", tag, "--repo", repo]
+        args += [] if tagged else ["--target", sha]
+        args += ["--title", tag, "--notes-file", str(notes_path)]
         if prerelease:
             args.append("--prerelease")
         code, out, err = run(args)
@@ -371,6 +444,12 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_argument("--sha", required=True, help="the release commit")
         sub.add_argument("--notes", type=Path, required=True, help="the release notes file")
         sub.add_argument("--prerelease", choices=("true", "false"), required=True)
+        sub.add_argument(
+            "--workflows-changed",
+            choices=("true", "false"),
+            default="false",
+            help="whether the release commit's workflow files differ from the default branch's",
+        )
     for name in ("pr-state", "branch-head"):
         commands.add_parser(name).add_argument("--branch", required=True)
     args = parser.parse_args(argv)
@@ -385,7 +464,15 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     command = check if args.command == "check" else ensure
-    return command(args.repo, args.version, args.sha, args.notes, args.prerelease == "true", run_gh)
+    return command(
+        args.repo,
+        args.version,
+        args.sha,
+        args.notes,
+        args.prerelease == "true",
+        run_gh,
+        workflows_changed=args.workflows_changed == "true",
+    )
 
 
 if __name__ == "__main__":

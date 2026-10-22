@@ -272,3 +272,70 @@ def test_main_dispatches(
     assert capsys.readouterr().out == "absent\n"
     monkeypatch.setattr(release_github, "run_gh", _runner({"pr-list": "fail"}))
     assert release_github.main([*common, "pr-state", "--branch", "x"]) == 1
+
+
+def test_check_warns_when_the_workflow_token_cannot_create_the_tag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A workflow change after the release commit: the workflow token cannot
+    # create the tag there, so the check warns before anything is published.
+    notes = _notes(tmp_path)
+    run = _runner(_nothing())
+    assert release_github.check(REPO, "1.0.0", SHA, notes, False, run, workflows_changed=True) == 0
+    assert "::warning::The workflow files at the release commit" in capsys.readouterr().out
+    # With the tag already there, nothing needs creating at the release commit.
+    tagged = _nothing()
+    tagged["git/ref/tags/v1.0.0"] = {"object": {"type": "commit", "sha": SHA}}
+    assert (
+        release_github.check(
+            REPO, "1.0.0", SHA, notes, False, _runner(tagged), workflows_changed=True
+        )
+        == 0
+    )
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_ensure_stops_with_the_manual_command_when_workflows_changed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    notes = _notes(tmp_path)
+    created: list[list[str]] = []
+    run = _runner({"git/ref/tags/v1.0.0rc1": None, "releases?per_page=100": []}, created)
+    assert (
+        release_github.ensure(REPO, "1.0.0rc1", SHA, notes, True, run, workflows_changed=True) == 1
+    )
+    assert created == []
+    out = capsys.readouterr().out
+    assert "the workflow token never may" in out
+    assert (
+        f"gh release create v1.0.0rc1 --repo {REPO} --target {SHA} --title v1.0.0rc1 "
+        "--notes-file release-notes.md --prerelease"
+    ) in out
+
+
+def test_ensure_creates_the_release_without_target_for_an_existing_tag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A person created the tag at the release commit; GitHub ignores
+    # --target for an existing tag and would still check it for workflow
+    # changes, so the release is created without it.
+    notes = _notes(tmp_path)
+    created: list[list[str]] = []
+    answers = _nothing()
+    answers["git/ref/tags/v1.0.0"] = {"object": {"type": "commit", "sha": SHA}}
+    run = _runner(answers, created)
+    assert release_github.ensure(REPO, "1.0.0", SHA, notes, False, run, workflows_changed=True) == 0
+    assert len(created) == 1
+    assert "--target" not in created[0]
+    assert "created release v1.0.0" in capsys.readouterr().out
+
+
+def test_main_passes_the_workflow_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    notes = _notes(tmp_path)
+    monkeypatch.setattr(release_github, "run_gh", _runner(_nothing(), []))
+    args = ["--version", "1.0.0", "--sha", SHA, "--notes", str(notes), "--prerelease", "false"]
+    command = ["--repo", REPO, "check", *args, "--workflows-changed", "true"]
+    assert release_github.main(command) == 0
+    assert "::warning::" in capsys.readouterr().out

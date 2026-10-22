@@ -62,7 +62,7 @@ The `prepare` job stops the run, before anything is public, unless each check pa
 8. **Smoke tests.** The wheel and the sdist import in isolated environments and report the version, and `standard-asr --help` runs from the wheel.
 9. **Digest guard.** `dist/` holds exactly the wheel and the sdist, and each index lacks the version or holds only files with this build's sha256 (`scripts/release_index.py guard`).
 
-The distribution files are published only to PyPI (the canonical channel for a pip package) with PEP 740 attestations; the GitHub Release carries the notes and GitHub's auto-generated source archives. The workflow never uploads wheels or sdists to the Release, so it stays compatible with immutable releases.
+The distribution files go to TestPyPI for the rehearsal and to PyPI, the canonical channel for a pip package, for the release, with PEP 740 attestations on both. The GitHub Release carries the notes and GitHub's auto-generated source archives. The workflow never uploads wheels or sdists to the Release, so it stays compatible with immutable releases.
 
 The [design case](docs/internal/feat_plan/release-pipeline-redesign.md) explains why the pipeline works this way.
 
@@ -150,6 +150,8 @@ The printed version must be `X.Y.Z`.
 
 Title the pull request `chore(release): vX.Y.Z`, and merge it after `checks-complete` passes, as one commit on `main`: squash it, or use a merge commit. The workflow releases the commit on `main` that set the version, and CI runs once per push, on its last commit. If the pull request's commits land on `main` one by one, an earlier commit can become the release commit, one without a `checks-complete` run or without the CHANGELOG section.
 
+Merge the release pull request last, after everything the release should contain, and run the workflow right after it merges. The release contains `main` up to the release commit: a pull request merged after it goes to the next version, even though `main` still declares `X.Y.Z`. And a pull request that changes a workflow, a Dependabot update of an action included, makes the release step stop for a manual command ("When a run fails").
+
 ### Step 2 — run the workflow
 
 1. GitHub -> **Actions** -> **Release** -> **Run workflow**. Select `main`; there are no inputs.
@@ -160,7 +162,7 @@ Title the pull request `chore(release): vX.Y.Z`, and merge it after `checks-comp
 The workflow checks each index after its upload, so these checks need no manual step:
 
 - **Files.** The index holds every built file with the same sha256, and each file has a PEP 740 attestation on the index's integrity API.
-- **TestPyPI install.** `standard-asr==X.Y.Z` comes from TestPyPI without its dependencies, and the dependencies, read from the installed package's metadata, come from PyPI. TestPyPI also hosts packages named `numpy` and `pydantic`, so taking only `standard-asr` from it keeps them out of the check. Then the job runs `uv pip check`, imports the package, checks its version, and runs `standard-asr --help`.
+- **TestPyPI install.** `standard-asr==X.Y.Z` comes from TestPyPI alone, without its dependencies, and the dependencies, read from the installed package's metadata, come from PyPI alone. Each install names its one index with `--default-index`: uv's `--index` would only put TestPyPI in front of PyPI, so a package TestPyPI does not serve would come from PyPI and the check would pass on the wrong index. TestPyPI also hosts packages named `numpy` and `pydantic`, so taking only `standard-asr` from it keeps them out of the check. Then the job runs `uv pip check`, imports the package, checks its version, and runs `standard-asr --help`.
 - **PyPI install.** `standard-asr==X.Y.Z` installs from PyPI in an isolated environment, imports, reports the version, and runs `standard-asr --help`.
 
 To check by hand after the release:
@@ -178,6 +180,8 @@ The `dev-bump` job opens `chore: bump version to <next>` from the branch `releas
 The workflow token opened the pull request, so GitHub holds its CI runs until a person with write access approves them ([GitHub docs](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs)). Select **Approve workflows to run** in the merge box, or close and reopen the pull request; either way, CI starts. Merge it after `checks-complete` passes.
 
 Until it merges, `main` still declares `X.Y.Z`, and a second run of the workflow resumes the release. After it merges, the first guard stops every run until the next release pull request merges.
+
+Merge it right after its CI passes. Until it merges, an install from `main`, which the first-party plugins use, reports version `X.Y.Z` while it contains the commits after the release, so a requirement such as `standard-asr>=X.Y.Z` cannot tell the two apart.
 
 ### Pre-releases
 
@@ -208,6 +212,7 @@ Read the error in the job that failed. A second run of the same version resumes 
 | `verify-testpypi`, `verify-pypi` | The index holds a file "with other content", or "has no attestation" for one. | `X.Y.Z` on that index | The index keeps those filenames, and a file uploaded without an attestation never gets one. Release a new version. |
 | `github-release` | "a draft release" for the tag exists. | `X.Y.Z` on both indexes | `prepare` cannot see drafts, because GitHub lists them only to a token with write access. Publish the draft or delete it, then run again. |
 | `github-release` | A tag or release check fails. | `X.Y.Z` on both indexes | As for the same check in `prepare`. |
+| `github-release` | The workflow files at the release commit "differ from the default branch's". | `X.Y.Z` on both indexes | A workflow change merged after the release commit, and GitHub lets a token create a tag at such a commit only if it may change workflows, which the workflow token never may. `prepare` warned about it at the start of the run. Run the `gh release create` command the log prints, with your own credentials, from a directory that holds `release-notes.md` from the run's workflow artifact `standard-asr-release`. Then run the workflow again: it finds the release, and the dev-bump job opens its pull request. |
 | `github-release` | `gh release create` failed. | `X.Y.Z` on both indexes; the release may exist | Look at the release first (`gh release view vX.Y.Z`), because a timeout can leave it created. If the `release-tags` ruleset refused the tag, let the GitHub Actions token create tags. Then run again. |
 | `dev-bump` | The pull request "was closed without merging". | The release is complete | Reopen the pull request, which starts its CI, and merge it after `checks-complete` passes. The job does not open a second one. |
 | `dev-bump` | The pull request "was merged, yet the branch still declares" the version. | The release is complete | Something set the version back after the merge. Look at the history of `pyproject.toml` on `main`. |

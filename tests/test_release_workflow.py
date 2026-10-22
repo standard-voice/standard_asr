@@ -52,3 +52,23 @@ def test_default_branch_guard_compares_the_full_ref(ref: str, accepted: bool) ->
     assert (result.returncode == 0) is accepted, result.stdout + result.stderr
     if not accepted:
         assert "::error::Run the release workflow from 'main'." in result.stdout
+
+
+def _install_commands(step: str) -> list[str]:
+    """Return the ``uv pip install`` commands of a step, continuation lines joined."""
+    script = _step_script(step).replace("\\\n", " ")
+    return [" ".join(line.split()) for line in script.splitlines() if "uv pip install" in line]
+
+
+def test_testpypi_install_takes_the_package_from_testpypi_only() -> None:
+    # uv's --index adds an index in front of PyPI, so a package TestPyPI
+    # does not serve would come from PyPI and the check would pass on the
+    # wrong index. --default-index replaces PyPI (uv CLI reference).
+    package, dependencies = _install_commands("Install from TestPyPI in isolation")
+    assert "--default-index https://test.pypi.org/simple/" in package
+    assert "standard-asr==" in package
+    assert "--no-deps" in package
+    assert "--default-index https://pypi.org/simple/" in dependencies
+    for command in (package, dependencies):
+        assert " --index " not in command, command
+        assert "--extra-index-url" not in command, command
