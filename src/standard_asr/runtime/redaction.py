@@ -39,8 +39,13 @@ The rules are deliberately cheap and total:
   chain carries no ``ValidationError`` (a traceback re-renders every link's
   raw message, echo included).
 
-**Accepted limits, by design.** In text, whitespace ends a URL, so a password
-with a space in it stays visible after the space. An author who interpolates an error's text
+**Accepted limits, by design.** In text, whitespace ends a URL, so a user
+name or a password with whitespace in it can stay visible, in part or whole.
+A message that quotes part of a URL without the URL itself, as a client's
+parse error can (``Invalid port: 'secret'``), gives
+:func:`redact_url_credentials` nothing to find; the endpoint check of
+``doctor`` therefore shows the types of errors, not their messages. An author who
+interpolates an error's text
 into their own message *and then* discards the chain, or a sensitive value
 that happens to be shaped exactly like a field name, can still reach a log.
 Closing those residuals required proving properties of third-party code and
@@ -53,6 +58,7 @@ from __future__ import annotations
 
 import logging
 import re
+import string
 import sys
 from collections.abc import Sequence
 from typing import Any, cast
@@ -108,11 +114,12 @@ _MAX_SUMMARY_CHARS = 400
 #: arbitrarily long ``context`` chain; rendering stays bounded.
 _MAX_CHAIN_LINKS = 8
 
-#: The user information of a URL in text: from the scheme to the last ``@``
-#: before whitespace, so a password with a raw ``@``, ``/``, ``?``, or ``#`` in
-#: it is covered whole. An ``@`` later in the URL widens the match, which
-#: hides too much rather than too little.
-_URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)\S*@")
+#: A run of characters without whitespace: in text, the extent of one URL.
+_WORD = re.compile(r"\S+")
+
+#: The characters of a URL scheme, which starts with a letter (RFC 3986, section 3.1).
+_SCHEME_CHARS: frozenset[str] = frozenset(string.ascii_letters + string.digits + "+-.")
+_LETTERS: frozenset[str] = frozenset(string.ascii_letters)
 
 
 def loc_to_list(loc: object) -> list[object]:
@@ -455,40 +462,85 @@ def safe_exception_summary(exc: BaseException) -> str:
     return " | caused by ".join(parts)
 
 
+def _scheme_start(text: str, end: int) -> int:
+    """Return where the scheme that ends at ``end`` starts, or ``end`` when none does.
+
+    The scheme is the run of scheme characters that ends at ``end``, from its
+    first letter on.
+    """
+    start = end
+    while start > 0 and text[start - 1] in _SCHEME_CHARS:
+        start -= 1
+    while start < end and text[start] not in _LETTERS:
+        start += 1
+    return start
+
+
+def _user_information_bounds(url: str) -> tuple[int, int] | None:
+    """Return where the user information of one URL starts and ends, or ``None``."""
+    separator = url.find("://")
+    has_scheme = separator > 0 and _scheme_start(url, separator) == 0
+    start = separator + 3 if has_scheme else 0
+    at = url.rfind("@")
+    return (start, at) if at >= start else None
+
+
+def url_user_information(url: str) -> str | None:
+    """Return the part of one URL that :func:`redact_url` replaces.
+
+    That part, the user information, runs from the end of the URL's
+    ``scheme://`` to its last ``@``. A value that does not start with a
+    scheme and ``://``, such as ``user:pass@proxy:8080``, has no scheme, and
+    its user information starts at its first character.
+
+    Args:
+        url: One URL, such as a configured endpoint or proxy.
+
+    Returns:
+        The user information, which can be empty, or ``None`` when ``url``
+        has no ``@`` after its scheme.
+    """
+    bounds = _user_information_bounds(url)
+    return None if bounds is None else url[bounds[0] : bounds[1]]
+
+
 def redact_url(url: str) -> str:
     """Replace the user information of one URL with ``***``.
 
     A proxy URL or a mirror URL can carry a user name and a password, as in
     ``http://user:pass@proxy:8080``. The result keeps the rest of the URL,
     ``http://***@proxy:8080``, so a reader still sees that it carries
-    credentials. The user information is everything from the scheme to the
-    last ``@`` of the value, so a password with a space, an ``@``, a ``/``,
-    a ``?``, or a ``#`` in it is replaced whole, even where a client would
-    reject the URL. An ``@`` later in the URL widens what is replaced, which
-    hides too much rather than too little. A value without a scheme,
-    ``user:pass@proxy:8080``, is handled the same way.
+    credentials. The user information runs to the last ``@`` of the value
+    (see :func:`url_user_information`), so a password with a space, an
+    ``@``, a ``/``, a ``?``, a ``#``, or a ``://`` in it is replaced whole,
+    even where a client would reject the URL. An ``@`` later in the URL
+    widens what is replaced, which hides too much rather than too little.
 
     Args:
         url: One URL, such as a configured endpoint or proxy.
 
     Returns:
         ``url`` with its user information replaced, or ``url`` unchanged when
-        it has no ``@``.
+        it has none.
     """
-    scheme_end = url.find("://")
-    start = 0 if scheme_end == -1 else scheme_end + 3
-    at = url.rfind("@")
-    if at < start:
+    bounds = _user_information_bounds(url)
+    if bounds is None:
         return url
+    start, at = bounds
     return f"{url[:start]}***@{url[at + 1 :]}"
 
 
 def redact_url_credentials(text: str) -> str:
     """Replace the user information of every URL in ``text`` with ``***``.
 
-    Use it on text that can contain URLs, such as an exception message.
-    Whitespace ends a URL there, so a password with a space in it stays
-    visible after the space; use :func:`redact_url` for a single URL value.
+    Use it on text that can contain URLs, such as an exception message. In
+    each run of characters without whitespace, a URL starts at the first
+    scheme followed by ``://``, such as ``http://``, and runs to the end of
+    the run, and :func:`redact_url` replaces its user information. Whitespace
+    ends a URL here, so a user name or a password with whitespace in it can
+    stay visible; use :func:`redact_url` for a single URL value. The time it
+    takes is linear in the length of ``text``, so a long message cannot
+    stall an error path.
 
     Args:
         text: Any text that can contain URLs.
@@ -496,7 +548,21 @@ def redact_url_credentials(text: str) -> str:
     Returns:
         ``text`` with every user-information part replaced.
     """
-    return _URL_USERINFO.sub(r"\g<scheme>***@", text)
+    if "://" not in text:
+        return text
+    return _WORD.sub(_redact_word, text)
+
+
+def _redact_word(match: re.Match[str]) -> str:
+    """Return one run of text without whitespace, the user information of its URL replaced."""
+    word = match.group()
+    separator = word.find("://")
+    while separator != -1:
+        start = _scheme_start(word, separator)
+        if start < separator:
+            return word[:start] + redact_url(word[start:])
+        separator = word.find("://", separator + 3)
+    return word
 
 
 def log_exception_safely(log: logging.Logger, msg: str, *args: object) -> None:
@@ -548,4 +614,5 @@ __all__ = [
     "safe_str",
     "sanitize_validation_errors",
     "sanitized_validation_message",
+    "url_user_information",
 ]
