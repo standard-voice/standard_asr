@@ -150,7 +150,7 @@ The printed version must be `X.Y.Z`.
 
 Title the pull request `chore(release): vX.Y.Z`, and merge it after `checks-complete` passes, as one commit on `main`: squash it, or use a merge commit. The workflow releases the commit on `main` that set the version, and CI runs once per push, on its last commit. If the pull request's commits land on `main` one by one, an earlier commit can become the release commit, one without a `checks-complete` run or without the CHANGELOG section.
 
-Merge the release pull request last, after everything the release should contain, and run the workflow right after it merges. The release contains `main` up to the release commit: a pull request merged after it goes to the next version, even though `main` still declares `X.Y.Z`. And a pull request that changes a workflow, a Dependabot update of an action included, makes the release step stop for a manual command ("When a run fails").
+Merge the release pull request last, after everything the release should contain, and run the workflow right after it merges. The release contains `main` up to the release commit: a pull request merged after it goes to the next version, even though `main` still declares `X.Y.Z`. And a pull request that changes a workflow, a Dependabot update of an action included, makes the release step stop for a manual command ("When a run fails") if it merges before the run finishes, including while the run waits for the `pypi` approval.
 
 ### Step 2 — run the workflow
 

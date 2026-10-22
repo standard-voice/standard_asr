@@ -84,6 +84,9 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def test_workflow_comparison_sees_the_current_default_branch(tmp_path: Path) -> None:
+    # The step runs scripts/release_commit.py with this interpreter, and the
+    # script needs ``tomllib``, which Python 3.10 lacks.
+    pytest.importorskip("tomllib")
     # actions/checkout sets origin/main back to the commit the run started
     # from when main has moved. A workflow change merged while the run waited
     # must still count, so the step fetches main before it compares.
