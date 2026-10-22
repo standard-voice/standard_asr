@@ -458,11 +458,13 @@ def test_redact_url_credentials_replaces_the_user_information(text: str, expecte
 
 @pytest.mark.parametrize(
     "text",
+    # Short ids: pytest puts the test id in an environment variable, which
+    # Windows limits to 32,767 characters.
     [
-        "x" * 100_000,  # one long word and no "://"
-        "a://" * 25_000,  # many schemes and no "@"
-        "a://b@" * 16_000,  # many schemes and many "@"
-        "a://b@c " * 12_500,  # many words, each a URL with user information
+        pytest.param("x" * 100_000, id="one-long-word"),
+        pytest.param("a://" * 25_000, id="schemes-without-at"),
+        pytest.param("a://b@" * 16_000, id="schemes-and-ats"),
+        pytest.param("a://b@c " * 12_500, id="many-urls"),
     ],
 )
 def test_url_redaction_takes_linear_time_on_long_text(text: str) -> None:
