@@ -604,9 +604,16 @@ class ChannelResult(BaseModel):
         channel: Channel index.
         text: Full transcript for this channel. When ``segments`` is a list,
             the engine builds ``text`` as the segment texts concatenated in
-            list order, with no separator (checked at construction).
-        segments: Optional segment-level details for this channel.
-        words: Optional flattened word-level details for this channel.
+            list order, with no separator (checked at construction). It can
+            start or end with a space. In the top-level list, this channel's
+            first or last segment can carry the space that joins it to
+            another channel's segment (spec TR.1).
+        segments: The top-level segments that belong to this channel, as the
+            same ``Segment`` values in the same order (spec TR.4). This is an
+            engine obligation that nothing checks.
+        words: The top-level words that belong to this channel, as the same
+            ``Word`` values in the same order (spec TR.4). Nothing checks this
+            either.
 
     Raises:
         ValueError: If field validation fails, or if ``text`` is not the
@@ -647,8 +654,8 @@ class TranscriptionResult(BaseModel):
 
     The top-level ``text`` / ``segments`` / ``words`` are always the complete,
     channel- and speaker-agnostic transcription. For multi-channel audio they
-    are the time-merge of all channels (never channel-0-only), so ignoring
-    ``channels`` is always safe and lossless.
+    hold every channel's segments and words in reading order, not channel 0
+    alone, so ignoring ``channels`` is always safe and lossless.
 
     Attributes:
         text: Full transcript (required). When ``segments`` is a list,
@@ -659,10 +666,12 @@ class TranscriptionResult(BaseModel):
             engine sent, so ``text`` can start with a space, as Whisper's
             does in English and other space-delimited scripts. ``[]``
             segments therefore require ``text == ""``; an engine that has
-            text but no segments sets ``segments=None``. On a multichannel
-            result the check runs on the top-level list too, which is the
-            time merge of the channels (TR.4); how an engine writes a
-            boundary where channels interleave is open (#48).
+            text but no segments sets ``segments=None``. On a multi-channel
+            result the check runs on the top-level list too. Each segment's
+            boundary whitespace joins it to its neighbors in that list,
+            whichever channel they come from (spec TR.1). A ``ChannelResult``
+            holds the same values as its channel's segments in that list
+            (spec TR.4), so its ``text`` can start or end with a space.
         detected_language: Detected language as a well-formed BCP-47 tag in
             ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
@@ -839,8 +848,8 @@ class TranscriptionResult(BaseModel):
         """Reject a top-level ``text`` that is not the concatenated segment texts.
 
         Each ``ChannelResult`` checks its own ``text`` the same way. On a
-        multichannel result the top-level ``segments`` is the time merge of
-        the channels (TR.4), and this check runs on it too.
+        multi-channel result this check runs on the top-level list, of which
+        each channel's ``segments`` is a subsequence (spec TR.4).
 
         Returns:
             The validated result.

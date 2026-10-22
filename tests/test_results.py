@@ -190,6 +190,114 @@ def test_channels_with_top_level_segments_and_words_construct() -> None:
     assert result.words == [word]
 
 
+def _interleaved_result() -> TranscriptionResult:
+    # The speaker on channel 1 speaks between channel 0's two segments. In the
+    # top-level list, the space before "Yes." joins it to "Hello", so the
+    # channel 1 segment carries it. Both views hold the same three Segment
+    # values (spec TR.1 "多通道", TR.4).
+    hello = Segment(start=0.0, end=0.8, text="Hello", channel=0)
+    yes = Segment(start=1.0, end=1.8, text=" Yes.", channel=1)
+    world = Segment(start=2.0, end=2.8, text=" world.", channel=0)
+    return TranscriptionResult(
+        text="Hello Yes. world.",
+        segments=[hello, yes, world],
+        channels=[
+            ChannelResult(channel=0, text="Hello world.", segments=[hello, world]),
+            ChannelResult(channel=1, text=" Yes.", segments=[yes]),
+        ],
+    )
+
+
+def test_multi_channel_boundaries_are_written_for_the_top_level_order() -> None:
+    result = _interleaved_result()
+    assert result.text == "Hello Yes. world."
+    assert result.channels is not None
+    assert [entry.text for entry in result.channels] == ["Hello world.", " Yes."]
+
+
+def test_trailing_space_style_ends_a_channel_text_with_a_space() -> None:
+    # Here each space ends the earlier segment. At the switch from channel 1
+    # back to channel 0, the space sits on channel 1's last segment, so
+    # channel 1's text ends with it. The standard layer keeps it, like any
+    # boundary space.
+    hello = Segment(start=0.0, end=0.8, text="Hello ", channel=0)
+    yes = Segment(start=1.0, end=1.8, text="Yes. ", channel=1)
+    world = Segment(start=2.0, end=2.8, text="world.", channel=0)
+    result = TranscriptionResult(
+        text="Hello Yes. world.",
+        segments=[hello, yes, world],
+        channels=[
+            ChannelResult(channel=0, text="Hello world.", segments=[hello, world]),
+            ChannelResult(channel=1, text="Yes. ", segments=[yes]),
+        ],
+    )
+    assert result.channels is not None
+    assert [entry.text for entry in result.channels] == ["Hello world.", "Yes. "]
+
+
+def test_channel_view_correspondence_is_not_checked_at_construction() -> None:
+    # TR.4 makes each channel's segments the top-level segments of that
+    # channel, as an engine obligation. Construction checks each view's text
+    # against its own segments and compares no segment values across the
+    # views. So a channel entry that holds a segment the top level lacks
+    # still constructs.
+    top = Segment(start=0.0, end=0.8, text="Hello", channel=0)
+    stray = Segment(start=1.0, end=1.8, text=" Yes.", channel=1)
+    result = TranscriptionResult(
+        text="Hello",
+        segments=[top],
+        channels=[ChannelResult(channel=1, text=" Yes.", segments=[stray])],
+    )
+    assert result.channels is not None
+    assert result.channels[0].segments == [stray]
+
+
+def test_channel_local_boundaries_glue_the_top_level_text() -> None:
+    # Written for channel 1 alone, "Yes." carries no space. The standard
+    # layer adds none at the channel switch, so the top-level text glues
+    # "Yes." to "Hello". A top-level text with the space fails the check at
+    # that switch.
+    hello = Segment(start=0.0, end=0.8, text="Hello", channel=0)
+    yes = Segment(start=1.0, end=1.8, text="Yes.", channel=1)
+    world = Segment(start=2.0, end=2.8, text=" world.", channel=0)
+    glued = TranscriptionResult(text="HelloYes. world.", segments=[hello, yes, world])
+    assert glued.text == "HelloYes. world."
+    message = _mismatch_error(
+        lambda: TranscriptionResult(text="Hello Yes. world.", segments=[hello, yes, world])
+    )
+    assert "differ at code point index 5" in message
+
+
+def test_multi_channel_result_in_a_script_without_spaces_adds_none() -> None:
+    # Chinese puts no space between words, so these segments carry none, and
+    # the standard layer adds none at a channel switch either.
+    a = Segment(start=0.0, end=0.8, text="喂", channel=0)
+    b = Segment(start=1.0, end=1.8, text="你好。", channel=1)
+    c = Segment(start=2.0, end=2.8, text="好的。", channel=0)
+    result = TranscriptionResult(
+        text="喂你好。好的。",
+        segments=[a, b, c],
+        channels=[
+            ChannelResult(channel=0, text="喂好的。", segments=[a, c]),
+            ChannelResult(channel=1, text="你好。", segments=[b]),
+        ],
+    )
+    assert result.text == "喂你好。好的。"
+    assert result.channels is not None
+    assert [entry.text for entry in result.channels] == ["喂好的。", "你好。"]
+
+
+def test_multi_channel_result_round_trips_through_json() -> None:
+    # Reading the JSON back runs both checks again, so a result the server
+    # sends is one the client can construct, boundary spaces included.
+    result = _interleaved_result()
+    parsed = TranscriptionResult.model_validate_json(result.model_dump_json())
+    assert parsed == result
+    assert parsed.text == "Hello Yes. world."
+    assert parsed.channels is not None
+    assert parsed.channels[1].text == " Yes."
+
+
 def test_duplicate_channel_index_rejected() -> None:
     # The standard defines `channels` as one ChannelResult per channel, so a
     # duplicate index is a semantically illegal shape -- a consumer keying a dict
