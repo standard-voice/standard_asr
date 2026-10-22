@@ -326,6 +326,25 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Build sdist and wheel
         run: uv build --package standard-asr --no-sources --out-dir dist --clear
+      - name: Assert a second build from a fresh checkout gives the same bytes
+        # The release pipeline resumes a failed run by rebuilding the release
+        # commit on another runner and comparing digests with what the index
+        # already holds, so a build that depends on file times, on the path,
+        # or on chance would burn a version. The second build runs in a new
+        # worktree: new file times, another path. The pinned uv version at
+        # the release commit covers the rest
+        # (docs/internal/feat_plan/release-pipeline-redesign.md).
+        run: |
+          set -euo pipefail
+          git worktree add --quiet --detach "${RUNNER_TEMP}/again" HEAD
+          (cd "${RUNNER_TEMP}/again" && uv build --package standard-asr --no-sources --out-dir "${RUNNER_TEMP}/dist-again" --clear)
+          first="$(cd dist && sha256sum ./* | sort)"
+          second="$(cd "${RUNNER_TEMP}/dist-again" && sha256sum ./* | sort)"
+          printf 'first build:\n%s\nsecond build:\n%s\n' "${first}" "${second}"
+          if [ "${first}" != "${second}" ]; then
+            echo "::error::Two builds of the same commit differ; the release pipeline cannot resume a failed run on a nondeterministic build."
+            exit 1
+          fi
       - name: Assert the wheel ships only source files
         run: |
           contents="$(unzip -Z1 dist/*.whl)"
