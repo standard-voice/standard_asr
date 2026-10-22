@@ -54,3 +54,11 @@ Use `ensure_cache_dir()` (from `standard_asr.engine`, like the other helpers on 
 - For an air-gapped environment, acquire or install artifacts before the network is removed, then verify the configured engine with `status`.
 
 See [Inference artifacts](../reference/artifacts.md) for the Python contract and structured errors.
+
+## 5. Proxies, endpoints, and mirrors
+
+No part of Standard ASR sets or changes `HF_ENDPOINT`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, or `SSL_CERT_DIR`, and none of it uses them to choose a source. These variables decide where a download goes and which certificates it trusts. They reach the engine's native library unchanged, and that library decides what they mean. [Installation](../installation.md#behind-a-proxy-or-a-mirror) lists what each first-party plugin reads.
+
+Standard ASR never chooses a mirror for you. It ships no default mirror, no fallback mirror, and no list of mirrors. A mirror serves model weights, so choosing one decides where the weights come from, and that decision stays with the operator.
+
+The policy for `AudioUrl` inputs, which arrive with a request, requires HTTPS and refuses private addresses; the engine config's `allow_private_urls` lifts the second rule only. The policy does not apply to an endpoint the operator configures: a mirror on a private address or over plain HTTP is the operator's choice. Requests to a plain-HTTP endpoint, and their answers, travel without encryption.

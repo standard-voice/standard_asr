@@ -444,6 +444,7 @@
 (?i)waveform
 (?i)websocket
 (?i)wf
+(?i)xet
 (?i)yi
 (?i)zh
 (?i)zizmor
