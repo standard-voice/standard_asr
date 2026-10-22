@@ -41,7 +41,7 @@ release_github = _load()
 def _runner(answers: Answers, created: list[list[str]] | None = None) -> Runner:
     # ``answers`` maps a suffix of the ``gh api`` path to the JSON to answer
     # with, to None for a 404, or to the string "fail" for another failure;
-    # ``releases`` holds the release list, ``pr-list`` the pull requests.
+    # the ``releases?per_page=100`` key holds the release list.
     def run(args: list[str]) -> tuple[int, str, str]:
         if args[0] == "api":
             for suffix, answer in answers.items():
@@ -67,10 +67,6 @@ def _runner(answers: Answers, created: list[list[str]] | None = None) -> Runner:
             )
             answers[f"git/ref/tags/{args[2]}"] = {"object": {"type": "commit", "sha": SHA}}
             return 0, f"https://github.com/{REPO}/releases/tag/{args[2]}\n", ""
-        if args[:2] == ["pr", "list"]:
-            if answers.get("pr-list") == "fail":
-                return 1, "", "gh: boom\n"
-            return 0, json.dumps(answers.get("pr-list", [])), ""
         raise AssertionError(f"unexpected gh call {args}")
 
     return run
@@ -240,38 +236,23 @@ def test_branch_head_reports_the_commit_or_the_absence() -> None:
         release_github.branch_head(REPO, "broken", run)
 
 
-def test_pr_state_reports_the_newest_pull_request() -> None:
-    def with_pulls(*pulls: dict[str, object]) -> Runner:
-        return _runner({"pr-list": list(pulls)})
-
-    newest_merged = with_pulls({"number": 3, "state": "CLOSED"}, {"number": 5, "state": "MERGED"})
-    assert release_github.pr_state(REPO, "release/dev-bump-v1.0.0", newest_merged) == "merged"
-    assert release_github.pr_state(REPO, "x", with_pulls({"number": 1, "state": "OPEN"})) == "open"
-    closed = with_pulls({"number": 1, "state": "CLOSED"})
-    assert release_github.pr_state(REPO, "x", closed) == "closed"
-    assert release_github.pr_state(REPO, "x", with_pulls()) == "absent"
-    with pytest.raises(release_github.GitHubError, match="gh pr list failed"):
-        release_github.pr_state(REPO, "x", _runner({"pr-list": "fail"}))
-
-
 def test_main_dispatches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     notes = _notes(tmp_path)
     answers = _nothing()
-    answers["pr-list"] = []
     answers["git/ref/heads/x"] = None
     monkeypatch.setattr(release_github, "run_gh", _runner(answers, []))
     common = ["--repo", REPO]
     args = ["--version", "1.0.0", "--sha", SHA, "--notes", str(notes), "--prerelease", "false"]
     assert release_github.main([*common, "check", *args]) == 0
     assert release_github.main([*common, "ensure", *args]) == 0
-    assert release_github.main([*common, "pr-state", "--branch", "x"]) == 0
-    assert capsys.readouterr().out.strip().endswith("absent")
+    capsys.readouterr()
     assert release_github.main([*common, "branch-head", "--branch", "x"]) == 0
     assert capsys.readouterr().out == "absent\n"
-    monkeypatch.setattr(release_github, "run_gh", _runner({"pr-list": "fail"}))
-    assert release_github.main([*common, "pr-state", "--branch", "x"]) == 1
+    monkeypatch.setattr(release_github, "run_gh", _runner({"git/ref/heads/x": "fail"}))
+    assert release_github.main([*common, "branch-head", "--branch", "x"]) == 1
+    assert "::error::" in capsys.readouterr().out
 
 
 def test_check_warns_when_the_workflow_token_cannot_create_the_tag(

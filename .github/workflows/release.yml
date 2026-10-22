@@ -455,13 +455,12 @@ jobs:
             --workflows-changed "${WORKFLOWS_CHANGED}"
 
   dev-bump:
-    name: Open the dev-bump pull request
+    name: Prepare the dev-bump branch
     needs: [prepare, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -485,16 +484,19 @@ jobs:
           git checkout --quiet --detach "origin/${DEFAULT_BRANCH}"
           echo "default branch tip: $(git rev-parse HEAD)"
 
-      - name: Open the pull request that moves the branch to the next development version
+      - name: Commit the next development version to the dev-bump branch
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         # The commit is created through the GraphQL API, which GitHub signs
         # ("if supported", its documentation says; the runbook has the person
-        # check the badge once). The CI runs of a pull request opened with the
-        # workflow token wait for a person's approval; the runbook says what
-        # to do.
+        # check the badge once). The job prepares the branch and prints the
+        # link that opens its pull request; a person opens it. The workflow
+        # token may open a pull request only where the repository allows
+        # GitHub Actions to create pull requests, and the CI runs of one it
+        # opens wait for a person's approval, while a pull request a person
+        # opens runs CI at once.
         run: |
           set -euo pipefail
           next="$(uv run --no-project --with packaging python scripts/release_version.py next "${VERSION}")"
@@ -506,16 +508,6 @@ jobs:
             echo "The branch is already at ${current}, not ${VERSION}; someone moved it on. Nothing to do."
             exit 0
           fi
-          state="$(python3 scripts/release_github.py --repo "${GITHUB_REPOSITORY}" pr-state --branch "${branch}")"
-          echo "pull request from ${branch}: ${state}"
-          case "${state}" in
-            open) echo "The dev-bump pull request is open; merge it."; exit 0 ;;
-            merged) echo "::error::The dev-bump pull request was merged, yet the branch still declares ${VERSION}; look at the branch."; exit 1 ;;
-            closed) echo "::error::A dev-bump pull request from ${branch} was closed without merging. Reopen it and merge it; a closed pull request stays on record, so this job does not open another."; exit 1 ;;
-            absent) ;;
-            *) echo "::error::Unknown pull request state '${state}'."; exit 1 ;;
-          esac
-
           api="repos/${GITHUB_REPOSITORY}"
           base="$(git rev-parse HEAD)"
           head="$(python3 scripts/release_github.py --repo "${GITHUB_REPOSITORY}" branch-head --branch "${branch}")"
@@ -553,7 +545,7 @@ jobs:
                   "message": {
                       "headline": f"chore: bump version to {next_version}",
                       "body": (
-                          "The release pipeline opens this after each release, so an accidental "
+                          "The release pipeline prepares this after each release, so an accidental "
                           "run of the release workflow stops at its development-version guard."
                       ),
                   },
@@ -565,8 +557,12 @@ jobs:
           }))
           PY
           else
-            echo "Branch ${branch} holds ${ahead} commit(s) of its own; opening its pull request."
+            echo "Branch ${branch} holds ${ahead} commit(s) of its own; keeping them."
           fi
-          gh pr create --head "${branch}" --base "${DEFAULT_BRANCH}" \
-            --title "chore: bump version to ${next}" \
-            --body "Opened by the release pipeline after v${VERSION}. It moves the branch to the next development version, so an accidental run of the release workflow stops at its first guard. GitHub holds the CI runs of a pull request opened with the workflow token until a person approves them: select Approve workflows to run in the merge box, or close and reopen this pull request, then merge it."
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${DEFAULT_BRANCH}...${branch}?expand=1"
+          echo "::notice title=Open the dev-bump pull request::${url}"
+          {
+            echo "### Open the dev-bump pull request"
+            echo
+            echo "Branch \`${branch}\` moves \`${DEFAULT_BRANCH}\` to ${next}. Open its pull request, wait for \`checks-complete\`, and merge it: ${url}"
+          } >> "${GITHUB_STEP_SUMMARY}"

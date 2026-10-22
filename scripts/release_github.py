@@ -27,7 +27,6 @@ change merged after the release commit and the tag does not exist yet,
 command a person runs instead, after PyPI holds the files. When the tag
 exists, ``ensure`` creates the release without ``--target``, which GitHub
 ignores for an existing tag.
-* ``pr-state``: the state of the dev-bump pull request for a branch.
 * ``branch-head``: the commit a branch points at, or ``absent``, for the
   dev-bump job.
 
@@ -389,45 +388,8 @@ def ensure(
     return check(repo, version, sha, notes_path, prerelease, run)
 
 
-def pr_state(repo: str, branch: str, run: Runner = run_gh) -> str:
-    """Return the state of the pull request from ``branch``.
-
-    Args:
-        repo: ``owner/name``.
-        branch: The head branch name.
-        run: The ``gh`` runner, replaceable in tests.
-
-    Returns:
-        ``"absent"``, ``"open"``, ``"merged"``, or ``"closed"``; the newest
-        pull request from the branch decides.
-
-    Raises:
-        GitHubError: When the lookup fails.
-    """
-    args = ["pr", "list", "--repo", repo, "--head", branch, "--state", "all"]
-    code, out, err = run([*args, "--json", "number,state", "--limit", "20"])
-    if code != 0:
-        raise GitHubError(f"gh pr list failed for {branch}: {err.strip() or f'exit {code}'}")
-    entries: object = json.loads(out or "[]")
-    pulls = [
-        cast("dict[str, object]", entry)
-        for entry in (cast("list[object]", entries) if isinstance(entries, list) else [])
-        if isinstance(entry, dict)
-    ]
-    if not pulls:
-        return "absent"
-
-    def number(entry: dict[str, object]) -> int:
-        value = entry.get("number", 0)
-        return value if isinstance(value, int) else 0
-
-    newest = max(pulls, key=number)
-    state = str(newest.get("state", "")).lower()
-    return "merged" if state == "merged" else "open" if state == "open" else "closed"
-
-
 def main(argv: list[str] | None = None) -> int:
-    """Run one of the four commands; see the module docstring.
+    """Run one of the three commands; see the module docstring.
 
     Args:
         argv: The command line, without the program name.
@@ -450,15 +412,11 @@ def main(argv: list[str] | None = None) -> int:
             default="false",
             help="whether the release commit's workflow files differ from the default branch's",
         )
-    for name in ("pr-state", "branch-head"):
-        commands.add_parser(name).add_argument("--branch", required=True)
+    commands.add_parser("branch-head").add_argument("--branch", required=True)
     args = parser.parse_args(argv)
-    if args.command in ("pr-state", "branch-head"):
+    if args.command == "branch-head":
         try:
-            if args.command == "pr-state":
-                print(pr_state(args.repo, args.branch, run_gh))
-            else:
-                print(branch_head(args.repo, args.branch, run_gh) or "absent")
+            print(branch_head(args.repo, args.branch, run_gh) or "absent")
         except GitHubError as error:
             print(f"::error::{error}")
             return 1
