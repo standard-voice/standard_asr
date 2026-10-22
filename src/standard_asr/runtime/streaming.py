@@ -2378,6 +2378,17 @@ _RESERVED_SESSION_ATTRS: frozenset[str] = frozenset(
 )
 
 
+async def _close_producer(events: AsyncIterator[TranscriptionEvent]) -> None:
+    """Close an engine's event iterator and wait for its cleanup.
+
+    An async generator has ``aclose()``, which runs its ``finally`` blocks;
+    an iterator without one has nothing to close.
+    """
+    aclose = getattr(events, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
 class TranscriptionSession(ABC):
     """Async-first, full-duplex streaming session base.
 
@@ -3150,20 +3161,39 @@ class TranscriptionSession(ABC):
         and is delivered ahead of, the terminal) and once more in the ``finally``
         as a guard, so no exit path -- normal, early terminal, exception, or
         overflow -- can lose them.
+
+        **The engine's producer ends before a terminal event lands.** When the
+        engine yields its own terminal event, or the buffer overflows, the
+        session closes the ``_produce`` iterator and waits for its cleanup
+        (the ``finally`` blocks of an async generator) before it appends the
+        terminal event. A consumer that receives the terminal event therefore
+        knows that the engine's producer has finished. Left suspended, the
+        iterator would run its cleanup in a task the event loop starts when
+        the iterator is collected: after the session ended, or never, when
+        the loop closes first.
         """
+        terminal: TranscriptionEvent | None = None
         try:
-            async for event in self._produce():
+            events = self._produce()
+            try:
+                async for event in events:
+                    self._drain_pending_reconnects()
+                    admitted = self._guard.admit(event)
+                    if admitted is None:
+                        continue  # illegal transition: suppressed (diagnosed).
+                    if admitted.is_terminal:
+                        terminal = admitted
+                        break
+                    self._reducer.add(self._buffer.put(admitted))
+            finally:
+                await _close_producer(events)
+            if terminal is not None:
                 self._drain_pending_reconnects()
-                admitted = self._guard.admit(event)
-                if admitted is None:
-                    continue  # illegal transition: suppressed (diagnosed).
-                if admitted.is_terminal:
-                    # Engine-emitted terminal: run the shared terminal funnel,
-                    # then deliver drop-proof and reduce the same canonical
-                    # value the funnel produced.
-                    self._reducer.add(self._buffer.put_forced(self._terminate(admitted)))
-                    return
-                self._reducer.add(self._buffer.put(admitted))
+                # Engine-emitted terminal: run the shared terminal funnel,
+                # then deliver drop-proof and reduce the same canonical
+                # value the funnel produced.
+                self._reducer.add(self._buffer.put_forced(self._terminate(terminal)))
+                return
             self._drain_pending_reconnects()
             # Session ended cleanly. The base's own done passes the guard like
             # an engine-emitted one, so the end-of-session check runs on both.
