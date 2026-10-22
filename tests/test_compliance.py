@@ -16,6 +16,7 @@ from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import pytest
+from pydantic import Field
 
 from standard_asr import TranscriptionResult
 from standard_asr import compliance as compliance_module
@@ -6055,6 +6056,53 @@ def test_requestable_kinds_check_covers_the_exempt_path_in_the_forward_direction
     compliance_module._check_requestable_kinds(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
     assert [issue.code for issue in issues] == ["gated_param_not_requestable"]
     assert "batch.language.candidate_languages" in issues[0].message
+
+
+def test_requestable_kinds_check_sees_every_node_the_application_can_query() -> None:
+    # The reverse check must recognize the nodes kind_at() and can_request()
+    # recognize: a raw node that states its kind, and a node at the root. A
+    # requestable one that no gate checks is a finding whether or not it is
+    # supported, because the kind does not depend on support.
+    def raw(supported: bool) -> dict[str, object]:
+        return {"supported": supported, "kind": "requestable"}
+
+    class RawBatch(BatchCapabilities):
+        extra_feature: dict[str, object] = Field(default_factory=lambda: raw(True))
+
+    class UnsupportedRawBatch(BatchCapabilities):
+        extra_feature: dict[str, object] = Field(default_factory=lambda: raw(False))
+
+    class RootNode(DeclaredCapabilities):
+        prompt_root: PromptCap = Field(default_factory=lambda: PromptCap(supported=True))
+
+    class UnsupportedRootNode(DeclaredCapabilities):
+        prompt_root: PromptCap = Field(default_factory=lambda: PromptCap(supported=False))
+
+    cases: list[tuple[DeclaredCapabilities, str, bool]] = [
+        (DeclaredCapabilities(batch=RawBatch()), "batch.extra_feature", True),
+        (DeclaredCapabilities(batch=UnsupportedRawBatch()), "batch.extra_feature", False),
+        (RootNode(batch=BatchCapabilities()), "prompt_root", True),
+        (UnsupportedRootNode(batch=BatchCapabilities()), "prompt_root", False),
+    ]
+    for caps, path, supported in cases:
+        assert caps.kind_at(path) == "requestable"
+        assert caps.can_request(path) is supported
+        issues: list[ComplianceIssue] = []
+        compliance_module._check_requestable_kinds(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+        assert [issue.code for issue in issues] == ["requestable_node_ungated"], path
+        assert path in issues[0].message
+
+    # A vendor node stays exempt wherever it sits, as a field or as an extra.
+    class VendorBatch(BatchCapabilities):
+        x_vendor_feature: dict[str, object] = Field(default_factory=lambda: raw(True))
+
+    exempt = DeclaredCapabilities.model_validate(
+        {"batch": VendorBatch(), "x_vendor_root": raw(True)}
+    )
+    assert exempt.can_request("batch.x_vendor_feature") is True
+    issues_exempt: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(exempt, "m", issues_exempt)  # pyright: ignore[reportPrivateUsage]
+    assert issues_exempt == []
 
 
 def test_requestable_kinds_check_flags_a_requestable_node_no_gate_checks(

@@ -269,6 +269,8 @@ These items were implementation work, and they did not block the issues above. T
    that mode domain, strip the leading `{mode}.` from each path, and require
    the suffix in `_GATED_PARAMS` or in the exemption set. The exemption set
    holds mode-relative suffixes too, so one entry covers both modes.
+
+   > Amended 2026-10-21, from the re-review of #124: the reverse check walks every path that `iter_queryable_paths()` yields, the root included, not only the mode domains. It skips a path with an `x_*` segment, takes the kind from `kind_at()`, and requires each requestable path to be a `_GATED_PARAMS` row or an exemption under a declared mode, whether or not the node is supported. Walking the mode domains with `node_at()` missed a raw node that states `kind: "requestable"` and a requestable node at the root, although `kind_at()` and `can_request()` answer for both.
 7. **Done.** Update `docs/content/specification/protocol.md` and `docs/content/specification/server-api.md` for the new
    field and the new query.
 8. **Done.** Rewrite the `always_on` note in `contract/capabilities.py`, as D6 sets out.

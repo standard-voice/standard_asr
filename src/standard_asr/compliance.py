@@ -1112,15 +1112,20 @@ def _check_requestable_kinds(
 
     Forward: under each declared mode, every ``_GATED_PARAMS`` row and every
     entry in ``_UNGATED_REQUESTABLE_PATHS`` resolves to a node whose ``kind``
-    is ``requestable``. Reverse: every standard node under a declared mode
-    whose ``kind`` is ``requestable`` is a ``_GATED_PARAMS`` row or an entry
-    in ``_UNGATED_REQUESTABLE_PATHS``.
+    is ``requestable``. Reverse: every path that ``iter_queryable_paths()``
+    yields, the root's own fields included, whose ``kind_at()`` is
+    ``requestable`` is one of those rows or entries under a declared mode.
+    The kind comes from ``kind_at()``, so a raw node that states its kind
+    counts, and the check judges the same nodes that ``kind_at()`` and
+    ``can_request()`` answer for. Support does not matter: ``kind_at()``
+    answers ``requestable`` for an unsupported node too, and that answer
+    says that a standard request field asks for the feature.
     One direction alone leaves a hole. A requestable node that no gate
     checks makes ``can_request()`` answer ``True``, yet a request for it
     reaches the engine unchecked. An engine that does not support the
-    feature then ignores it in silence. The reverse check skips ``x_*``
-    subtrees: a vendor feature is requested through ``provider_params``,
-    which no capability gates.
+    feature then ignores it in silence. The reverse check skips every path
+    with an ``x_*`` segment: a vendor feature is requested through
+    ``provider_params``, which no capability gates.
 
     The standard tree passes both checks, because each node class pins its
     kind. A finding means the engine's tree replaced a standard node or
@@ -1134,10 +1139,12 @@ def _check_requestable_kinds(
         issues: The mutable list of issues to append to.
     """
     gated = {suffix for _, suffix in _GATED_PARAMS}
+    checked: set[str] = set()
     for mode in ("batch", "streaming"):
         if getattr(declared, mode) is None:
             continue
         prefix = f"{mode}."
+        checked.update(prefix + suffix for suffix in gated | _UNGATED_REQUESTABLE_PATHS)
         # Forward: every path a request can reach, the table's rows and the
         # named exemptions alike, resolves to a requestable node.
         for suffix in sorted(gated | _UNGATED_REQUESTABLE_PATHS):
@@ -1159,32 +1166,32 @@ def _check_requestable_kinds(
                         model=name,
                     )
                 )
-        for path in declared.iter_queryable_paths():
-            if not path.startswith(prefix):
-                continue
-            suffix = path[len(prefix) :]
-            if any(_is_extension_key(part) for part in suffix.split(".")):
-                continue
-            node = declared.node_at(path)
-            if node is None or node.kind != "requestable":
-                continue
-            if suffix in gated or suffix in _UNGATED_REQUESTABLE_PATHS:
-                continue
-            issues.append(
-                ComplianceIssue(
-                    level="error",
-                    code="requestable_node_ungated",
-                    message=(
-                        f"{path} is a requestable node, but Standard ASR gates no "
-                        "RuntimeParams field on it, so a request for it would reach the "
-                        "engine unchecked. If your engine added this node, declare the "
-                        "feature under an x_<vendor>_<feature> key and accept its request in "
-                        "your provider_params. Otherwise the installed standard-asr is "
-                        "inconsistent: report it to Standard ASR."
-                    ),
-                    model=name,
-                )
+    # Reverse: every path the application can query, at any depth and at the
+    # root too, with the kind that kind_at() gives it. node_at() would see only
+    # typed nodes, but kind_at() also reads the kind a raw node states, and an
+    # application asks kind_at() and can_request(), so the check must see the
+    # same nodes. Support does not matter: the kind of an unsupported node is
+    # still a claim about the standard.
+    for path in declared.iter_queryable_paths():
+        if any(_is_extension_key(part) for part in path.split(".")):
+            continue
+        if declared.kind_at(path) != "requestable" or path in checked:
+            continue
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="requestable_node_ungated",
+                message=(
+                    f"{path} is a requestable node, but Standard ASR gates no "
+                    "RuntimeParams field on it, so a request for it would reach the "
+                    "engine unchecked. If your engine added this node, declare the "
+                    "feature under an x_<vendor>_<feature> key and accept its request in "
+                    "your provider_params. Otherwise the installed standard-asr is "
+                    "inconsistent: report it to Standard ASR."
+                ),
+                model=name,
             )
+        )
 
 
 def _check_instance_capabilities(
