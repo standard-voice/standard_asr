@@ -366,7 +366,10 @@ class Segment(BaseModel):
             ``Word`` values in the same order (spec TR.4). ``None`` when the
             engine does not nest them. The engine decides which words
             belong to a segment, so a word can cross the segment's
-            measured boundary.
+            measured boundary. A ``TranscriptionResult`` or
+            ``ChannelResult`` whose segment carries ``words``, even ``[]``,
+            must also carry its own flat ``words`` (checked at
+            construction).
         speaker: Optional speaker label (authoritative diarization shape).
         channel: Optional channel index for provenance (``>= 0``).
         avg_logprob: Optional average log-probability.
@@ -601,6 +604,41 @@ def _require_text_is_joined_segments(
     )
 
 
+def _require_words_when_segments_carry_them(
+    owner: str, words: list[Word] | None, segments: list[Segment] | None
+) -> None:
+    """Reject ``words=None`` when a segment carries a words list.
+
+    An application that reads the flat ``words`` would silently miss the
+    words the segments hold (spec TR.4). A segment's ``[]`` counts too: it
+    says that word timestamps ran and found nothing, while ``words=None``
+    reads as not requested (the TR.1 null rule). The check looks at presence only.
+    It does not compare the flat list with the nested ones.
+
+    Args:
+        owner: The model name the message names (``TranscriptionResult`` or
+            ``ChannelResult``).
+        words: The model's flat ``words``.
+        segments: The model's ``segments``; ``None`` and ``[]`` pass,
+            because no segment can carry words.
+
+    Raises:
+        PydanticCustomError: If ``words`` is ``None`` while a segment
+            carries a ``words`` list, empty or not.
+    """
+    if words is not None or not segments:
+        return
+    if any(segment.words is not None for segment in segments):
+        raise PydanticCustomError(
+            "standard_asr_words_top_level_missing",
+            "{owner}.segments carry words but {owner}.words is None, so an "
+            "application that reads words would miss them. A segment's empty "
+            "list counts, because it says that word timestamps ran. Set words "
+            "to every segment's words in segment order.",
+            {"owner": owner},
+        )
+
+
 class ChannelResult(BaseModel):
     """Per-channel transcription for multi-channel audio.
 
@@ -619,11 +657,14 @@ class ChannelResult(BaseModel):
             ``Word`` values in the same order (spec TR.4), so they follow this
             channel's segment order. A segment's own ``words`` are the words
             of this list that belong to it. Nothing checks that these
-            values correspond either.
+            values correspond either. Construction checks only that
+            ``words`` is present when a segment carries ``words``, even
+            ``[]``.
 
     Raises:
-        ValueError: If field validation fails, or if ``text`` is not the
-            concatenated segment texts.
+        ValueError: If field validation fails, if ``text`` is not the
+            concatenated segment texts, or if a segment carries ``words``
+            while ``words`` is ``None``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -652,6 +693,23 @@ class ChannelResult(BaseModel):
                 the segment texts concatenated in list order.
         """
         _require_text_is_joined_segments("ChannelResult", self.text, self.segments)
+        return self
+
+    @model_validator(mode="after")
+    def _check_words_present_when_segments_carry_them(self) -> ChannelResult:
+        """Reject ``words=None`` while a segment of this channel carries words.
+
+        A consumer of this channel's flat ``words`` must not miss the words
+        its segments hold (spec TR.4). A segment's ``[]`` counts too.
+
+        Returns:
+            The validated channel result.
+
+        Raises:
+            ValueError: If ``words`` is ``None`` while a segment carries a
+                ``words`` list, empty or not.
+        """
+        _require_words_when_segments_carry_them("ChannelResult", self.words, self.segments)
         return self
 
 
@@ -699,7 +757,9 @@ class TranscriptionResult(BaseModel):
             Where two channels' segments overlap in time, the words stay
             grouped by segment. A segment's own ``words``, when present,
             are the words of this list that belong to it (spec TR.4). This
-            is an engine obligation that nothing checks.
+            is an engine obligation that nothing checks. Construction
+            checks only that ``words`` is present when a segment carries
+            ``words``, even ``[]``.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
@@ -712,7 +772,8 @@ class TranscriptionResult(BaseModel):
             that is not the concatenated segment texts). Also if two
             ``channels`` entries share a ``channel`` index, or if a
             ``channels`` entry carries ``segments`` or ``words`` while the
-            top-level field is ``None``.
+            top-level field is ``None``. Also if a segment carries ``words``
+            while ``words`` is ``None``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -876,6 +937,26 @@ class TranscriptionResult(BaseModel):
                 the segment texts concatenated in list order.
         """
         _require_text_is_joined_segments("TranscriptionResult", self.text, self.segments)
+        return self
+
+    @model_validator(mode="after")
+    def _check_words_present_when_segments_carry_them(self) -> TranscriptionResult:
+        """Reject a top-level ``words=None`` while a segment carries words.
+
+        The reason is the same as for the channel shape check above. An
+        application that reads only the flat ``words`` must not silently
+        miss words that the segments hold (spec TR.4). An engine that nests
+        words therefore fills ``words`` too; one that fills only the flat
+        list passes. The check compares no values.
+
+        Returns:
+            The validated result.
+
+        Raises:
+            ValueError: If ``words`` is ``None`` while a segment carries a
+                ``words`` list, empty or not.
+        """
+        _require_words_when_segments_carry_them("TranscriptionResult", self.words, self.segments)
         return self
 
 
