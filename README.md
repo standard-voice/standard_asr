@@ -195,6 +195,7 @@ standard-asr pull faster-whisper/large-v3                      # acquire the one
 standard-asr transcribe faster-whisper/large-v3 audio.wav      # quick transcription
 standard-asr serve                                             # expose engines over HTTP/WS
 standard-asr doctor                                            # diagnose plugin dependency conflicts
+standard-asr doctor --network                                  # also check that this machine reaches the Hugging Face endpoint
 ```
 
 ---

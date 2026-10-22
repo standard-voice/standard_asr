@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read-only dependency conflict diagnostic (``standard-asr doctor``).
+"""Read-only diagnostics for ``standard-asr doctor``: dependencies and the Hugging Face endpoint.
 
 Enumerates installed Standard ASR plugins, reads each plugin distribution's
 declared ``numpy`` requirement, and reports conflicts that cannot coexist in a
@@ -18,18 +18,33 @@ different conflict models that version intersection cannot decide, so they are
 explicitly known-uncovered today; their hard conflicts fall under the general
 out-of-process isolation guidance.
 See the per-library seam in :func:`_numpy_spec_for` for the rationale.
+
+The endpoint check (``doctor --network``, :func:`check_endpoint`) is opt-in,
+because it is the one diagnostic that sends a request off the machine. When
+huggingface_hub is installed, the check sends one ``HEAD`` request to
+huggingface_hub's endpoint with huggingface_hub's own client, so the request
+uses the proxies and the certificates of a request from huggingface_hub. It
+diagnoses reachability only: it downloads nothing, and it does not test the
+hosts a download can be redirected to.
 """
 
 from __future__ import annotations
 
+import importlib
 import re
+import socket
+import ssl
 import sys
+import threading
+import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, entry_points, requires
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from standard_asr.plugins.discovery import ENTRYPOINT_GROUP
+from standard_asr.runtime.redaction import redact_url, safe_exception_summary
 
 if TYPE_CHECKING:
     from packaging.specifiers import SpecifierSet
@@ -103,6 +118,112 @@ class PluginNumpy:
     numpy_spec: str | None
 
 
+#: Seconds the endpoint check waits for an answer, name resolution included.
+ENDPOINT_CHECK_TIMEOUT: Final = 5.0
+
+EndpointOutcome = Literal[
+    "reachable",
+    "not_applicable",
+    "could_not_run",
+    "offline",
+    "proxy_refused",
+    "server_error",
+    "name_not_resolved",
+    "connection_refused",
+    "timed_out",
+    "certificate_not_verified",
+    "failed",
+]
+"""How the endpoint check ended; :class:`EndpointCheck` describes each value."""
+
+#: The outcomes that leave the doctor verdict clean.
+_CLEAN_OUTCOMES: Final[frozenset[str]] = frozenset({"reachable", "not_applicable"})
+
+#: Shown with every outcome except ``could_not_run`` and ``not_applicable``:
+#: what the check cannot see.
+NOT_CHECKED: Final = (
+    "Not checked: whether a model's weights download, which also needs access to the "
+    "repository, a token if it requires one, and disk space. Also not checked: the storage "
+    "hosts a file can be redirected to, and files stored with Xet, which go through hf_xet, "
+    "a separate client."
+)
+
+
+@dataclass(frozen=True)
+class EndpointCheck:
+    """The result of the endpoint check (``standard-asr doctor --network``).
+
+    The check sends one ``HEAD`` request, without following a redirect, to
+    ``huggingface_hub.constants.ENDPOINT`` (huggingface_hub's reading of
+    ``HF_ENDPOINT``) with ``huggingface_hub.get_session()``, the client
+    huggingface_hub sends its own requests with. So the request uses the
+    proxies and the certificates of a request from huggingface_hub, also
+    when an application replaced the client with
+    ``huggingface_hub.set_client_factory()``; such a client can send more
+    than one request, for example to answer an authentication challenge.
+    Every URL and message in the result has its credentials replaced with
+    ``***``.
+
+    Attributes:
+        outcome: How the check ended:
+
+            * ``reachable``: an HTTP answer arrived, from the endpoint or from
+              a proxy on the way, with a status other than 407 or 5xx.
+            * ``not_applicable``: huggingface_hub is not installed, so no
+              engine here downloads through it.
+            * ``could_not_run``: huggingface_hub failed to import or to load
+              its settings, or did not give the check a client it can drive;
+              the result says nothing about the network.
+            * ``offline``: huggingface_hub's offline mode refused the request.
+            * ``proxy_refused``: a proxy refused the request, or answered 407.
+            * ``server_error``: a server on the way answered with a 5xx status.
+            * ``name_not_resolved``, ``connection_refused``, ``timed_out``,
+              and ``certificate_not_verified``: the failure the request ended
+              with; ``timed_out`` includes a name lookup that stalled past
+              the deadline.
+            * ``failed``: any other failure, described in ``detail``.
+
+        endpoint: The endpoint URL, or ``None`` when huggingface_hub could not
+            be read.
+        client: The library and the HTTP client the check used or tried to
+            use, such as ``huggingface_hub 1.19.0 (httpx)``, or ``None`` when
+            huggingface_hub could not be imported.
+        status_code: The HTTP status of the answer, when one arrived.
+        detail: What happened, in one or two sentences.
+        remedy: What to do about a problem, or ``None``.
+        proxies: The proxies Python resolves for this process, by scheme,
+            from ``urllib.request.getproxies()``, which httpx and requests
+            read too; the ``no`` key lists the hosts that skip the proxy.
+    """
+
+    outcome: EndpointOutcome
+    endpoint: str | None
+    client: str | None
+    status_code: int | None
+    detail: str
+    remedy: str | None
+    proxies: Mapping[str, str]
+
+    @property
+    def is_problem(self) -> bool:
+        """Whether the outcome makes the doctor verdict non-clean.
+
+        Returns:
+            ``False`` for ``reachable`` and ``not_applicable``, ``True``
+            otherwise.
+        """
+        return self.outcome not in _CLEAN_OUTCOMES
+
+    @property
+    def plain_http(self) -> bool:
+        """Whether the endpoint uses plain HTTP.
+
+        Returns:
+            ``True`` when the endpoint URL starts with ``http://``.
+        """
+        return self.endpoint is not None and self.endpoint.lower().startswith("http://")
+
+
 @dataclass
 class DoctorReport:
     """The result of a dependency diagnosis.
@@ -136,6 +257,8 @@ class DoctorReport:
             conflict-free. This is a non-clean state distinct from "no
             conflicts detected"; the accompanying note names the specific
             gap.
+        endpoint: The result of the endpoint check, or ``None`` when it was
+            not requested (``diagnose(network=False)``).
     """
 
     python_version: str
@@ -144,6 +267,7 @@ class DoctorReport:
     conflicts: list[str] = field(default_factory=_empty_strs)
     notes: list[str] = field(default_factory=_empty_strs)
     analysis_unavailable: bool = False
+    endpoint: EndpointCheck | None = None
 
     @property
     def has_conflict(self) -> bool:
@@ -155,20 +279,34 @@ class DoctorReport:
         return bool(self.conflicts)
 
     @property
-    def is_clean(self) -> bool:
-        """Whether the environment is proven conflict-free (the verdict).
+    def dependencies_clean(self) -> bool:
+        """Whether the dependency analysis proved the environment conflict-free.
 
-        The single source of the doctor verdict, consumed by both the CLI exit
-        code and the :func:`format_report` headline: clean requires BOTH no
-        detected conflict AND that conflict analysis actually ran
-        (``analysis_unavailable`` is a non-clean state -- an unprovable
-        environment must not read as clean). A future non-clean state is
-        wired in here once, not re-derived in every consumer.
+        Clean requires both that no conflict was detected and that conflict
+        analysis ran (``analysis_unavailable`` is a non-clean state: an
+        unprovable environment must not read as clean). The
+        :func:`format_report` headline for the dependencies reads it.
 
         Returns:
             ``True`` when no conflict was detected and analysis ran.
         """
         return not self.has_conflict and not self.analysis_unavailable
+
+    @property
+    def is_clean(self) -> bool:
+        """Whether every check that ran found no problem (the verdict).
+
+        The single source of the doctor verdict, consumed by the CLI exit
+        code: the dependencies are clean, and the endpoint check, when it
+        ran, found no problem (:attr:`EndpointCheck.is_problem`). A future
+        non-clean state is wired in here once, not re-derived in every
+        consumer.
+
+        Returns:
+            ``True`` when every check that ran found no problem.
+        """
+        endpoint_ok = self.endpoint is None or not self.endpoint.is_problem
+        return self.dependencies_clean and endpoint_ok
 
 
 def packaging_available() -> bool:
@@ -682,7 +820,270 @@ def _core_numpy_spec() -> str | None:
     return _numpy_spec_for(core_requires)
 
 
-def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
+def _first_line(error: BaseException) -> str:
+    """Return the outermost link of an error's summary, which has no URL credentials."""
+    return safe_exception_summary(error).split(" | caused by ", 1)[0]
+
+
+def _chain(error: BaseException) -> list[BaseException]:
+    """Return an error and its causes, outermost first, cycle-safe."""
+    links: list[BaseException] = []
+    node: BaseException | None = error
+    while node is not None and node not in links and len(links) < 12:
+        links.append(node)
+        node = node.__cause__ if node.__cause__ is not None else node.__context__
+    return links
+
+
+def _client_family(session: object) -> Literal["httpx", "requests"] | None:
+    """Name the HTTP client family a session belongs to, or ``None``.
+
+    huggingface_hub 1.x returns an ``httpx.Client``, and 0.x a
+    ``requests.Session``; an application can set a subclass of either. The
+    class hierarchy decides, so the check imports neither library.
+    """
+    for cls in type(session).__mro__:
+        if cls.__name__ == "Client" and cls.__module__.split(".")[0] == "httpx":
+            return "httpx"
+        if cls.__name__ == "Session" and cls.__module__.split(".")[0] == "requests":
+            return "requests"
+    return None
+
+
+#: The remedy for a certificate that did not verify, by client family.
+_CERTIFICATE_REMEDY: Final = {
+    "httpx": (
+        "If a proxy inspects TLS, set SSL_CERT_FILE to a certificate bundle that includes the "
+        "proxy's root certificate: httpx trusts the certifi bundle, not the operating "
+        "system's store."
+    ),
+    "requests": (
+        "If a proxy inspects TLS, set REQUESTS_CA_BUNDLE to a certificate bundle that includes "
+        "the proxy's root certificate: requests trusts the certifi bundle, not the operating "
+        "system's store."
+    ),
+}
+
+_TIMEOUT_REMEDY: Final = (
+    "If this network reaches the internet through a proxy, set HTTPS_PROXY to it, or "
+    "HTTP_PROXY for a plain-HTTP endpoint. If the endpoint is blocked here, set HF_ENDPOINT "
+    "to an endpoint you trust that this machine reaches."
+)
+
+
+def _classify(
+    error: BaseException, family: Literal["httpx", "requests"]
+) -> tuple[EndpointOutcome, str, str | None]:
+    """Classify a failed request from the error and its causes.
+
+    The causes carry the standard-library error the client wrapped, so one
+    classification serves both client families.
+    """
+    links = _chain(error)
+    names = [type(link).__name__ for link in links]
+    message = _first_line(error)
+    if "OfflineModeIsEnabled" in names:
+        return (
+            "offline",
+            "huggingface_hub's offline mode refused the request, so no download can run.",
+            "Unset HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE; huggingface_hub reads both.",
+        )
+    if any(isinstance(link, ssl.SSLCertVerificationError) for link in links):
+        return (
+            "certificate_not_verified",
+            f"The TLS certificate did not verify: {message}",
+            _CERTIFICATE_REMEDY[family],
+        )
+    if any(isinstance(link, socket.gaierror) for link in links):
+        return (
+            "name_not_resolved",
+            f"A host name did not resolve, the endpoint's or the proxy's: {message}",
+            "Check the host name in HF_ENDPOINT and in the proxy URL, if either is set, and "
+            "that this machine can resolve host names.",
+        )
+    if any(isinstance(link, ConnectionRefusedError) for link in links):
+        return (
+            "connection_refused",
+            f"The connection was refused, by the endpoint or by the proxy: {message}",
+            "Check the host and the port in HF_ENDPOINT and in the proxy URL, if either is "
+            "set. If this network requires a proxy, set HTTPS_PROXY.",
+        )
+    if any(isinstance(link, TimeoutError) or "Timeout" in name for link, name in zip(links, names)):
+        return ("timed_out", f"No answer arrived in time: {message}", _TIMEOUT_REMEDY)
+    if any(name.endswith("ProxyError") for name in names):
+        return (
+            "proxy_refused",
+            f"A proxy refused the request: {message}",
+            "Check the proxy URL and its credentials in HTTPS_PROXY or HTTP_PROXY, or list the "
+            "endpoint's host in NO_PROXY if requests to it must not use the proxy.",
+        )
+    return ("failed", f"The request failed: {message}", None)
+
+
+def _client(
+    utils: Any,
+) -> tuple[Any, Literal["httpx", "requests"]] | tuple[str, str | None]:
+    """Create huggingface_hub's client, or say why it cannot be used.
+
+    Creating the client sends nothing, so it happens before the wait starts,
+    and a failure here is a check that could not run.
+
+    Returns:
+        The session and its family, or the detail and the remedy of why the
+        check cannot run.
+    """
+    try:
+        session: Any = utils.get_session()
+    except Exception as error:
+        return (
+            f"huggingface_hub could not create its HTTP client: {_first_line(error)}",
+            "Check the variables the client reads when it is created: the certificate path in "
+            "SSL_CERT_FILE or SSL_CERT_DIR, and each proxy URL.",
+        )
+    family = _client_family(session)
+    if family is None:
+        return (
+            f"huggingface_hub returned a {type(session).__qualname__} client; doctor can send "
+            "the request only with an httpx or a requests client.",
+            None,
+        )
+    return session, family
+
+
+def _probe(
+    session: Any,
+    family: Literal["httpx", "requests"],
+    url: str,
+    timeout: float,
+    result: Callable[..., EndpointCheck],
+) -> EndpointCheck:
+    """Send the one request and classify the answer; see :func:`check_endpoint`."""
+    try:
+        # One request: a redirect is an answer, and following it would test
+        # another host.
+        if family == "httpx":
+            response: Any = session.head(url, timeout=timeout, follow_redirects=False)
+        else:
+            response = session.head(url, timeout=timeout, allow_redirects=False)
+    except Exception as error:
+        outcome, detail, remedy = _classify(error, family)
+        return result(outcome, detail, remedy)
+    try:
+        status = int(response.status_code)
+    finally:
+        response.close()
+    if status == 407:
+        return result(
+            "proxy_refused",
+            "The request got an HTTP answer with status 407: a proxy wants credentials.",
+            "Put the proxy's user name and password in its URL in HTTPS_PROXY or HTTP_PROXY, "
+            "as in http://user:password@proxy:8080.",
+            status_code=status,
+        )
+    if status >= 500:
+        return result(
+            "server_error",
+            f"The request got an HTTP answer with status {status}: a server on the way, the "
+            "endpoint or a proxy, answered with an error.",
+            "Try again later; if the error stays, ask whoever runs the endpoint or the proxy.",
+            status_code=status,
+        )
+    return result(
+        "reachable", f"The request got an HTTP answer with status {status}.", status_code=status
+    )
+
+
+def check_endpoint(*, timeout: float = ENDPOINT_CHECK_TIMEOUT) -> EndpointCheck:
+    """Send one request to the Hugging Face endpoint and classify what happened.
+
+    This is the check ``standard-asr doctor --network`` runs; it is the only
+    part of doctor that sends a request off the machine. See
+    :class:`EndpointCheck` for what the request is and what each outcome
+    means. huggingface_hub is imported only here, and only when installed.
+
+    The request has ``timeout`` as its own timeout. The wait for its answer
+    also ends after ``timeout`` seconds when a name lookup stalls, which that
+    timeout does not cover. The request runs on a daemon thread: when the
+    time is up, the call returns ``timed_out``, and the thread can still
+    finish the request in the background. The imports and the creation of
+    the client, which send nothing, happen before the wait starts.
+
+    Args:
+        timeout: Seconds to wait for an answer.
+
+    Returns:
+        The result of the check.
+    """
+    proxies = {
+        scheme: value if scheme == "no" else redact_url(value)
+        for scheme, value in sorted(urllib.request.getproxies().items())
+    }
+
+    def not_run(detail: str) -> EndpointCheck:
+        return EndpointCheck("could_not_run", None, None, None, detail, None, proxies)
+
+    try:
+        hub: Any = importlib.import_module("huggingface_hub")
+    except ModuleNotFoundError as error:
+        if error.name == "huggingface_hub":
+            return EndpointCheck(
+                "not_applicable",
+                None,
+                None,
+                None,
+                "huggingface_hub is not installed, so the endpoint check does not apply.",
+                None,
+                proxies,
+            )
+        return not_run(f"huggingface_hub is installed but failed to import: {_first_line(error)}")
+    except Exception as error:
+        return not_run(f"huggingface_hub is installed but failed to import: {_first_line(error)}")
+    try:
+        # Submodules, imported by name: huggingface_hub loads its attributes
+        # lazily, and its lazy loader prints an import failure to stdout.
+        constants: Any = importlib.import_module("huggingface_hub.constants")
+        utils: Any = importlib.import_module("huggingface_hub.utils")
+        url = str(constants.ENDPOINT)
+    except Exception as error:
+        return not_run(f"huggingface_hub cannot be used: {_first_line(error)}")
+    endpoint = redact_url(url)
+    library = f"huggingface_hub {getattr(hub, '__version__', 'of unknown version')}"
+    first, second = _client(utils)
+    if isinstance(first, str):
+        return EndpointCheck("could_not_run", endpoint, library, None, first, second, proxies)
+    session, family = first, cast('Literal["httpx", "requests"]', second)
+    client = f"{library} ({family})"
+
+    def result(
+        outcome: EndpointOutcome,
+        detail: str,
+        remedy: str | None = None,
+        *,
+        status_code: int | None = None,
+    ) -> EndpointCheck:
+        return EndpointCheck(outcome, endpoint, client, status_code, detail, remedy, proxies)
+
+    results: list[EndpointCheck] = []
+
+    def run() -> None:
+        try:
+            results.append(_probe(session, family, url, timeout, result))
+        except Exception as error:
+            results.append(result("failed", f"The check failed: {_first_line(error)}"))
+
+    worker = threading.Thread(target=run, name="standard-asr-endpoint-check", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if results:
+        return results[0]
+    return result(
+        "timed_out",
+        f"No answer arrived within {timeout:g} seconds; the wait includes the name lookup.",
+        _TIMEOUT_REMEDY,
+    )
+
+
+def diagnose(*, group: str = ENTRYPOINT_GROUP, network: bool = False) -> DoctorReport:
     """Diagnose numpy compatibility across installed plugins AND the core.
 
     Four conflict sources are analyzed, because their remediations differ and
@@ -705,12 +1106,17 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
        plus core: the 1.x-vs-2.x split and the general empty-intersection
        check, whose remediation is out-of-process isolation.
 
+    With ``network=True``, the report also carries the endpoint check
+    (:func:`check_endpoint`), the one diagnostic that sends a request off the
+    machine.
+
     Args:
         group: The entry-point group to inspect.
+        network: Whether to run the endpoint check.
 
     Returns:
-        A :class:`DoctorReport` describing plugins, the core requirement, and
-        any conflicts.
+        A :class:`DoctorReport` describing plugins, the core requirement, any
+        conflicts, and the endpoint check when requested.
     """
     py = f"{sys.version_info.major}.{sys.version_info.minor}"
     report = DoctorReport(python_version=py)
@@ -972,6 +1378,8 @@ def diagnose(*, group: str = ENTRYPOINT_GROUP) -> DoctorReport:
             "SpecifierSet.is_unsatisfiable() (>= 26.1) for exact verdicts."
         )
 
+    if network:
+        report.endpoint = check_endpoint()
     return report
 
 
@@ -997,10 +1405,10 @@ def format_report(report: DoctorReport) -> str:
             # is traceable to a visible line, not an invisible participant.
             lines.append(f"  core: [{report.core.distribution}] numpy {report.core.numpy_spec}")
     lines.append("")
-    if report.is_clean:
-        # The clean claim is gated on the report's single verdict property, so
-        # a new non-clean state added to is_clean can never read as clean here
-        # (it still needs its own rendering branch below).
+    if report.dependencies_clean:
+        # The clean claim is gated on the dependency verdict, so a new
+        # non-clean dependency state can never read as clean here (it still
+        # needs its own rendering branch below).
         lines.append("No dependency conflicts detected.")
     elif report.has_conflict:
         lines.append("Conflicts:")
@@ -1017,7 +1425,51 @@ def format_report(report: DoctorReport) -> str:
     if report.notes:
         lines.append("")
         lines.extend(f"  note: {n}" for n in report.notes)
+    lines.append("")
+    lines.extend(_format_endpoint(report.endpoint))
     return "\n".join(lines)
 
 
-__all__ = ["DoctorReport", "PluginNumpy", "diagnose", "format_report"]
+def _format_endpoint(check: EndpointCheck | None) -> list[str]:
+    """Render the endpoint check as the report's network section."""
+    if check is None:
+        return [
+            "Network: not checked. Run 'standard-asr doctor --network' to send one request "
+            "to the Hugging Face endpoint and see whether this machine reaches it."
+        ]
+    lines = ["Network (one request to the Hugging Face endpoint):"]
+    if check.endpoint is not None:
+        lines.append(f"  endpoint: {check.endpoint}")
+    if check.client is not None:
+        lines.append(f"  client: {check.client}")
+    proxies = [f"{scheme}={value}" for scheme, value in check.proxies.items() if scheme != "no"]
+    lines.append(f"  proxies: {', '.join(proxies) if proxies else 'none'}")
+    if "no" in check.proxies:
+        lines.append(f"  no proxy for: {check.proxies['no']}")
+    if check.outcome == "not_applicable":
+        lines.append(f"  [INFO] {check.detail}")
+        return lines
+    marker = "[FAIL]" if check.is_problem else "[OK]"
+    lines.append(f"  {marker} {check.detail}")
+    if check.remedy is not None:
+        lines.append(f"  fix: {check.remedy}")
+    if check.plain_http:
+        lines.append(
+            "  [INFO] The endpoint uses plain HTTP: requests and answers travel without "
+            "encryption, so any host on the network path can read or change them."
+        )
+    if check.outcome != "could_not_run":
+        lines.append(f"  {NOT_CHECKED}")
+    return lines
+
+
+__all__ = [
+    "ENDPOINT_CHECK_TIMEOUT",
+    "DoctorReport",
+    "EndpointCheck",
+    "EndpointOutcome",
+    "PluginNumpy",
+    "check_endpoint",
+    "diagnose",
+    "format_report",
+]

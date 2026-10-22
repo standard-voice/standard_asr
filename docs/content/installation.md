@@ -57,6 +57,7 @@ To work on Standard ASR itself, clone the repository and follow [CONTRIBUTING.md
 standard-asr list                      # discover installed engines
 standard-asr compliance entrypoints    # verify plugins resolve correctly
 standard-asr doctor                    # diagnose dependency conflicts
+standard-asr doctor --network          # also check that this machine reaches the Hugging Face endpoint
 ```
 
 ## Behind a proxy or a mirror
@@ -85,3 +86,5 @@ Two cases need care:
 
 - **Files stored with Xet.** Hugging Face stores the large files of many repositories with Xet, its storage system. huggingface_hub hands such a file to `hf_xet`, a separate client with its own network code, at 1.5.1 in the lock files. This project has not checked which settings `hf_xet` reads. If such a download fails behind a proxy, `HF_HUB_DISABLE_XET=1` makes huggingface_hub download the file itself.
 - **A vLLM server on this machine or your network.** With a proxy set, list the server's host in `NO_PROXY`, or its requests go to the proxy. If your proxy comes from the operating system's settings, setting `NO_PROXY` switches it off, so set `HTTPS_PROXY` and `HTTP_PROXY` as well. For a `ws://` server URL, `websockets` takes `HTTPS_PROXY` before `HTTP_PROXY`, unlike `httpx`.
+
+`standard-asr doctor --network` sends one request to the Hugging Face endpoint with huggingface_hub's own client, and reports whether this machine reaches it and what to do when it does not.

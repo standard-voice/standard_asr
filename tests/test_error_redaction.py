@@ -23,6 +23,8 @@ from standard_asr.runtime.redaction import (
     loc_is_credential,
     loc_to_list,
     log_exception_safely,
+    redact_url,
+    redact_url_credentials,
     safe_exception_summary,
     safe_str,
     sanitize_validation_errors,
@@ -383,3 +385,59 @@ def test_log_without_active_exception_logs_the_message_alone(
     record = caplog.records[0]
     assert record.exc_info is None
     assert record.getMessage() == "no exception context for 'm1'"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://user:pass@proxy:8080", "http://***@proxy:8080"),
+        # The user information runs to the last "@" of the authority, spaces
+        # and "@" included, as some HTTP clients accept them.
+        ("http://alice:pass word@proxy:8080", "http://***@proxy:8080"),
+        ("http://user:p@ss@proxy:8080/path", "http://***@proxy:8080/path"),
+        # A raw "/", "?", or "#" in a password: a client rejects the URL, and
+        # the report must still not print it.
+        ("http://user:pa/ss@proxy:8080", "http://***@proxy:8080"),
+        ("http://user:pa?ss#1@proxy:8080", "http://***@proxy:8080"),
+        ("user:pass@proxy:8080", "***@proxy:8080"),
+        ("https://huggingface.co", "https://huggingface.co"),
+        ("proxy:8080", "proxy:8080"),
+        # An "@" later in the URL is taken for user information: too much
+        # hidden rather than too little.
+        ("http://host/path?email=a@b.example", "http://***@b.example"),
+    ],
+)
+def test_redact_url_replaces_the_user_information_of_one_url(url: str, expected: str) -> None:
+    assert redact_url(url) == expected
+
+
+def test_safe_exception_summary_scrubs_url_credentials_before_cutting() -> None:
+    # A cut inside the URL would drop the "@" that marks its user information.
+    error = RuntimeError("x" * 380 + " see https://alice:longsecret@mirror.example/api")
+    summary = safe_exception_summary(error)
+    assert "longsecret" not in summary
+    assert "alice" not in summary
+    assert summary.endswith("[truncated]")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("http://user:pass@proxy:8080", "http://***@proxy:8080"),
+        # A raw "@" in the password is covered up to the last "@" of the authority.
+        ("http://user:p@ss@proxy:8080/path", "http://***@proxy:8080/path"),
+        ("http://user:pa/ss@proxy:8080 refused", "http://***@proxy:8080 refused"),
+        ("socks5h://user:pass@proxy:1080", "socks5h://***@proxy:1080"),
+        (
+            "Cannot reach http://u:p@mirror/api: offline",
+            "Cannot reach http://***@mirror/api: offline",
+        ),
+        ("two http://a:b@x and https://c:d@y", "two http://***@x and https://***@y"),
+        # Nothing to replace: no user information, or no URL.
+        ("proxy:8080", "proxy:8080"),
+        ("https://huggingface.co", "https://huggingface.co"),
+        ("mail me at a@b.example today", "mail me at a@b.example today"),
+    ],
+)
+def test_redact_url_credentials_replaces_the_user_information(text: str, expected: str) -> None:
+    assert redact_url_credentials(text) == expected

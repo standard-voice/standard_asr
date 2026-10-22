@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Credential-safe rendering of validation errors and exceptions (accident model).
+"""Credential-safe rendering of validation errors, exceptions, and URLs (accident model).
 
 A pydantic :class:`~pydantic.ValidationError` echoes the offending ``input``
 value verbatim in both its structured ``errors()`` entries and its ``str()``
@@ -30,11 +30,17 @@ The rules are deliberately cheap and total:
   :func:`safe_exception_summary`, which renders the ``cause``/``context``
   chain one line per link and substitutes the sanitized message for any
   ``ValidationError`` link;
+* the user information of a URL, the ``user:password@`` part, is replaced
+  with ``***``: :func:`redact_url` for one URL value,
+  :func:`redact_url_credentials` for text, which
+  :func:`safe_exception_summary` applies to every link before it cuts the
+  link to length;
 * :func:`log_exception_safely` logs a full traceback only when the active
   chain carries no ``ValidationError`` (a traceback re-renders every link's
   raw message, echo included).
 
-**Accepted limits, by design.** An author who interpolates an error's text
+**Accepted limits, by design.** In text, whitespace ends a URL, so a password
+with a space in it stays visible after the space. An author who interpolates an error's text
 into their own message *and then* discards the chain, or a sensitive value
 that happens to be shaped exactly like a field name, can still reach a log.
 Closing those residuals required proving properties of third-party code and
@@ -101,6 +107,12 @@ _MAX_SUMMARY_CHARS = 400
 #: Chain-link cap: a retry loop wrapping its failure each iteration builds an
 #: arbitrarily long ``context`` chain; rendering stays bounded.
 _MAX_CHAIN_LINKS = 8
+
+#: The user information of a URL in text: from the scheme to the last ``@``
+#: before whitespace, so a password with a raw ``@``, ``/``, ``?``, or ``#`` in
+#: it is covered whole. An ``@`` later in the URL widens the match, which
+#: hides too much rather than too little.
+_URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)\S*@")
 
 
 def loc_to_list(loc: object) -> list[object]:
@@ -403,7 +415,8 @@ def safe_exception_summary(exc: BaseException) -> str:
         exc: The exception to summarize.
 
     Returns:
-        A single-line, bounded, input-echo-free summary of the chain.
+        A single-line, bounded summary of the chain that echoes no pydantic
+        input and shows no user information of a URL.
     """
     links = _chain_links(exc)
     # A wrapper that interpolated the chained error into its own message
@@ -435,9 +448,55 @@ def safe_exception_summary(exc: BaseException) -> str:
                 "ValidationError, whose text echoes the offending input]"
             )
             continue
-        text = _one_line(rendered)
+        # Scrub URL credentials before shortening: a cut that falls inside a
+        # URL would remove the "@" that marks its user information.
+        text = _one_line(redact_url_credentials(rendered))
         parts.append(f"{name}: {text}" if text else name)
     return " | caused by ".join(parts)
+
+
+def redact_url(url: str) -> str:
+    """Replace the user information of one URL with ``***``.
+
+    A proxy URL or a mirror URL can carry a user name and a password, as in
+    ``http://user:pass@proxy:8080``. The result keeps the rest of the URL,
+    ``http://***@proxy:8080``, so a reader still sees that it carries
+    credentials. The user information is everything from the scheme to the
+    last ``@`` of the value, so a password with a space, an ``@``, a ``/``,
+    a ``?``, or a ``#`` in it is replaced whole, even where a client would
+    reject the URL. An ``@`` later in the URL widens what is replaced, which
+    hides too much rather than too little. A value without a scheme,
+    ``user:pass@proxy:8080``, is handled the same way.
+
+    Args:
+        url: One URL, such as a configured endpoint or proxy.
+
+    Returns:
+        ``url`` with its user information replaced, or ``url`` unchanged when
+        it has no ``@``.
+    """
+    scheme_end = url.find("://")
+    start = 0 if scheme_end == -1 else scheme_end + 3
+    at = url.rfind("@")
+    if at < start:
+        return url
+    return f"{url[:start]}***@{url[at + 1 :]}"
+
+
+def redact_url_credentials(text: str) -> str:
+    """Replace the user information of every URL in ``text`` with ``***``.
+
+    Use it on text that can contain URLs, such as an exception message.
+    Whitespace ends a URL there, so a password with a space in it stays
+    visible after the space; use :func:`redact_url` for a single URL value.
+
+    Args:
+        text: Any text that can contain URLs.
+
+    Returns:
+        ``text`` with every user-information part replaced.
+    """
+    return _URL_USERINFO.sub(r"\g<scheme>***@", text)
 
 
 def log_exception_safely(log: logging.Logger, msg: str, *args: object) -> None:
@@ -483,6 +542,8 @@ __all__ = [
     "loc_is_credential",
     "loc_to_list",
     "log_exception_safely",
+    "redact_url",
+    "redact_url_credentials",
     "safe_exception_summary",
     "safe_str",
     "sanitize_validation_errors",

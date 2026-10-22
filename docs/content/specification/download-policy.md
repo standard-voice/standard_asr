@@ -62,3 +62,5 @@ No part of Standard ASR sets or changes `HF_ENDPOINT`, `HTTP_PROXY`, `HTTPS_PROX
 Standard ASR never chooses a mirror for you. It ships no default mirror, no fallback mirror, and no list of mirrors. A mirror serves model weights, so choosing one decides where the weights come from, and that decision stays with the operator.
 
 The policy for `AudioUrl` inputs, which arrive with a request, requires HTTPS and refuses private addresses; the engine config's `allow_private_urls` lifts the second rule only. The policy does not apply to an endpoint the operator configures: a mirror on a private address or over plain HTTP is the operator's choice. Requests to a plain-HTTP endpoint, and their answers, travel without encryption.
+
+`standard-asr doctor --network` sends one request to the Hugging Face endpoint and reports whether this machine reaches it ([CLI specification](./cli.md)).
