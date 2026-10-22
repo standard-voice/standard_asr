@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -15,7 +16,13 @@ import pytest
 
 _WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not installed")
+# The release workflow runs this step under bash on Linux. On Windows, the
+# bash on PATH can be the launcher of the Windows Subsystem for Linux, which
+# fails when no distribution is installed, so the test runs elsewhere only.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="needs a POSIX bash, as the release workflow's Linux runner has",
+)
 
 
 def _step_script(name: str) -> str:
