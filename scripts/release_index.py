@@ -72,6 +72,9 @@ def fetch_json(url: str, attempts: int = 3) -> dict[str, object] | None:
             with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed https hosts
                 document: object = json.load(response)
         except urllib.error.HTTPError as error:
+            # The status is all this needs; release the response the error holds
+            # before it is swallowed, retried, or raised.
+            error.close()
             if error.code == 404:
                 return None
             if (error.code < 500 and error.code != 429) or attempt == attempts:

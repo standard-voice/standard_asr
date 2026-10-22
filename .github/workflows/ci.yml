@@ -325,7 +325,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Build sdist and wheel
-        run: uv build --package standard-asr --no-sources --out-dir dist --clear
+        run: uv build --package standard-asr --no-sources --out-dir dist --clear --no-create-gitignore
       - name: Assert a second build from a fresh checkout gives the same bytes
         # The release pipeline resumes a failed run by rebuilding the release
         # commit on another runner and comparing digests with what the index
@@ -337,7 +337,7 @@ jobs:
         run: |
           set -euo pipefail
           git worktree add --quiet --detach "${RUNNER_TEMP}/again" HEAD
-          (cd "${RUNNER_TEMP}/again" && uv build --package standard-asr --no-sources --out-dir "${RUNNER_TEMP}/dist-again" --clear)
+          (cd "${RUNNER_TEMP}/again" && uv build --package standard-asr --no-sources --out-dir "${RUNNER_TEMP}/dist-again" --clear --no-create-gitignore)
           first="$(cd dist && sha256sum ./* | sort)"
           second="$(cd "${RUNNER_TEMP}/dist-again" && sha256sum ./* | sort)"
           printf 'first build:\n%s\nsecond build:\n%s\n' "${first}" "${second}"

@@ -26,7 +26,7 @@ This repo publishes exactly one distribution: **`standard-asr`**. Engine plugins
 
 ### Toolchain choices
 
-- **Build frontend:** `uv build --package standard-asr --no-sources --out-dir dist --clear`, run on a detached checkout of the release commit. `--no-sources` is intentional: it proves the package builds from standards-compliant publishable metadata instead of accidentally relying on workspace or local source overrides.
+- **Build frontend:** `uv build --package standard-asr --no-sources --out-dir dist --clear --no-create-gitignore`, run on a detached checkout of the release commit. `--no-sources` is intentional: it proves the package builds from standards-compliant publishable metadata instead of accidentally relying on workspace or local source overrides. `--no-create-gitignore` keeps uv from writing a `.gitignore` into `dist/`, where the digest guard accepts exactly the wheel and the sdist.
 - **Build uv:** the uv whose version is the lower bound of the `uv-build` requirement in `[build-system].requires` at the release commit. uv builds with its own bundled copy of `uv_build` when its version satisfies that requirement ([uv docs](https://docs.astral.sh/uv/concepts/build-backend/#bundled-build-backend)). The lower bound always does, so the release commit fixes the whole recipe, and a second run builds the same bytes. `UV_VERSION` in `release.yml` names the uv for the workflow's other commands: reading the version, the install checks, and the dev-bump commit.
 - **Build backend:** `uv_build`, capped to the current minor series in `pyproject.toml`. The cap is on the build tool, not a runtime dependency.
 - **Publish action:** `pypa/gh-action-pypi-publish`, using PyPI Trusted Publishing and PEP 740 attestations. uv can publish packages, but the PyPA action is PyPI's recommended GitHub Actions path for tokenless publishing and attestation upload. uv remains the source of truth for building and smoke testing the distribution files.
@@ -52,7 +52,7 @@ The two publish jobs are the only ones that can request an OIDC token, and they 
 
 The `prepare` job stops the run, before anything is public, unless each check passes. The checks run in this order:
 
-1. **Default branch.** The run was started from `main`.
+1. **Default branch.** The run was started from the branch `main`: the check compares the full ref, `refs/heads/main`, because a tag named `main` has the same short name.
 2. **Normalized version.** `pyproject.toml` writes the version in the normalized form that uv prints, because the release commit search compares the written string.
 3. **Releasable version.** `scripts/release_version.py classify` refuses a development version and a version outside the versioning policy below, and decides whether the release is a pre-release.
 4. **Release commit.** `scripts/release_commit.py` finds the newest commit on the first-parent history of `main` that set the version, and a successful `checks-complete` check run must exist on it.
@@ -60,7 +60,7 @@ The `prepare` job stops the run, before anything is public, unless each check pa
 6. **Tag and release.** A tag `vX.Y.Z` or a GitHub Release that already exists matches this run (`scripts/release_github.py check`).
 7. **Wheel hygiene.** The wheel contains only package source files (`.py`, `.pyi`, `py.typed`).
 8. **Smoke tests.** The wheel and the sdist import in isolated environments and report the version, and `standard-asr --help` runs from the wheel.
-9. **Digest guard.** Each index lacks the version or holds only files with this build's sha256 (`scripts/release_index.py guard`).
+9. **Digest guard.** `dist/` holds exactly the wheel and the sdist, and each index lacks the version or holds only files with this build's sha256 (`scripts/release_index.py guard`).
 
 The distribution files are published only to PyPI (the canonical channel for a pip package) with PEP 740 attestations; the GitHub Release carries the notes and GitHub's auto-generated source archives. The workflow never uploads wheels or sdists to the Release, so it stays compatible with immutable releases.
 
@@ -143,7 +143,7 @@ Local sanity checks:
 ```bash
 uv version --short
 uv lock --check
-uv build --package standard-asr --no-sources --out-dir dist --clear
+uv build --package standard-asr --no-sources --out-dir dist --clear --no-create-gitignore
 ```
 
 The printed version must be `X.Y.Z`.
@@ -189,7 +189,7 @@ Read the error in the job that failed. A second run of the same version resumes 
 
 | Step | What the log says | What is public | What to do |
 | --- | --- | --- | --- |
-| `prepare` | "Run the release workflow from 'main'." | Nothing new | Start the run from `main`. |
+| `prepare` | "Run the release workflow from 'main'." | Nothing new | Start the run from the branch `main`, not from a tag or another branch. |
 | `prepare` | "pyproject.toml writes the version as" one form, "which uv normalizes to" another. | Nothing new | Write the normalized form that the message names (`0.2.0rc1`, not `0.2.0-rc1`) in `pyproject.toml`, in a new release pull request. |
 | `prepare` | The version is "a development version". | Nothing new | No release pull request has merged since the last release, which is the normal state between releases. Merge the release pull request, then run the workflow. |
 | `prepare` | The version is "outside the versioning policy", or "not a PEP 440 version". | Nothing new | Set a version the policy allows in a new release pull request. |
@@ -199,6 +199,7 @@ Read the error in the job that failed. A second run of the same version resumes 
 | `prepare` | CHANGELOG.md "has no section". | Nothing new | The notes come from the release commit, so the section needs a new release commit: see "A fix after the release commit". |
 | `prepare` | The tag "points at" another commit, the release "exists but its tag does not", or it has "notes that differ" or the wrong pre-release flag. | The tag or the release | Find out how the tag or the release got there before you change anything. Make it match this run (the tag at the release commit, the notes equal to the CHANGELOG section, the pre-release flag that fits the version), then run again. |
 | `prepare` | The wheel "ships unexpected non-source files", or a smoke test fails. | Nothing new | Fix the source: see "A fix after the release commit". |
+| `prepare` | `dist/` "holds" other files, and "a release of X.Y.Z is exactly" the wheel and the sdist. | Nothing new | The build wrote a file besides the wheel and the sdist. The build step in `release.yml` must keep `--no-create-gitignore`; fix it, then run again. |
 | `prepare` | An index "already holds" the version "with other content". | Files of `X.Y.Z` on that index | The index keeps filenames forever, and this build cannot match its files. Release a new version. |
 | `publish-testpypi`, `publish-pypi` | HTTP 403 from the trusted publisher. | Nothing new on that index | The publisher fields on the index must match the owner, the repository, the workflow filename, and the environment exactly. Fix them, then run again. |
 | `publish-pypi` | The job waits. | The rehearsal on TestPyPI | The `pypi` environment needs approval. Review and approve the deployment. |

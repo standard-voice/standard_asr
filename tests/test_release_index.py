@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import sys
 import urllib.error
 from collections.abc import Callable, Iterator
@@ -227,17 +228,25 @@ def test_fetch_json_retries_server_errors_and_rate_limits_and_returns_none_on_40
         def read(self, size: int = -1) -> bytes:
             return self._body
 
+    errors: list[urllib.error.HTTPError] = []
+
+    def http_error(url: str, code: int, reason: str) -> urllib.error.HTTPError:
+        # A real HTTPError holds the response body; the reader must close it.
+        error = urllib.error.HTTPError(url, code, reason, {}, io.BytesIO(b""))  # type: ignore[arg-type]
+        errors.append(error)
+        return error
+
     def urlopen(request: object, timeout: float) -> _Response:
         url = str(getattr(request, "full_url", ""))
         calls.append(url)
         if url.endswith("/missing/json"):
-            raise urllib.error.HTTPError(url, 404, "not found", None, None)  # type: ignore[arg-type]
+            raise http_error(url, 404, "not found")
         if url.endswith("/flaky/json") and len(calls) < 3:
-            raise urllib.error.HTTPError(url, 503, "busy", None, None)  # type: ignore[arg-type]
+            raise http_error(url, 503, "busy")
         if url.endswith("/broken/json"):
-            raise urllib.error.HTTPError(url, 400, "bad", None, None)  # type: ignore[arg-type]
+            raise http_error(url, 400, "bad")
         if url.endswith("/limited/json") and calls.count(url) < 2:
-            raise urllib.error.HTTPError(url, 429, "slow down", None, None)  # type: ignore[arg-type]
+            raise http_error(url, 429, "slow down")
         return _Response(b'{"urls": []}')
 
     monkeypatch.setattr(release_index.urllib.request, "urlopen", urlopen)
@@ -249,6 +258,9 @@ def test_fetch_json_retries_server_errors_and_rate_limits_and_returns_none_on_40
         release_index.fetch_json("https://pypi.org/pypi/x/broken/json")
     # A rate limit is an answer to wait for, not a verdict on the version.
     assert release_index.fetch_json("https://pypi.org/pypi/x/limited/json") == {"urls": []}
+    # Every error path, swallowed, retried, or raised, released its response.
+    assert [error.code for error in errors] == [404, 503, 400, 429]
+    assert all(error.fp.closed for error in errors)
 
 
 def test_index_files_rejects_a_malformed_answer() -> None:
