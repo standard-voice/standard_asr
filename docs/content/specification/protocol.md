@@ -825,6 +825,11 @@ nested 引擎声明 submodel（按 model-family）表达多文件 bundle 的 ini
 - **无钩子 = reported no-op**：未覆盖 `prepare` 的引擎（落到 `EngineBase` 默认实现）视为"无需预热"，工具链报告 no-op 而非失败。
 - 合规：`compliance` 套件检查 `prepare` 存在时**零参且非 coroutine function**；CLI 对 coroutine function 显式报错（不静默）。
 
+## IC.12 实例依序复用（normative）
+同一个引擎实例 MUST 能依序服务任意多次调用，顺序不限，每次调用在前一次完成之后才开始：`transcribe` 在任何没有运行事件循环的线程上调用，`transcribe_async` 与流式会话在任何事件循环上运行。调用返回即完成；会话在它的 `__aexit__` 返回时完成。应用通常只创建一次引擎、再反复调用；参考服务器在不同线程与事件循环之间复用同一个实例（[server-api.md §5](./server-api.md)），也依赖本条。
+- 调用抛出异常或被取消之后，实例是否仍可用，本条不作承诺：被取消的 `asyncio.to_thread()` 不会停止它的线程（AR.6），工作可能仍在进行。
+- 两次调用能否重叠，本规范尚未规定。
+
 
 ---
 ---
@@ -1387,6 +1392,7 @@ elif event.type == "supersede":
 
 **适配器契约**（MUST 遵守，否则 sync 桥会死锁或泄漏）：
 - 所有绑定到事件循环的资源（WebSocket 连接等）MUST 在 `__aenter__` 中创建。
+- `__aexit__`（引擎实现的 `_close`）MUST 等会话启动的所有操作都结束之后才返回，包括交给线程执行的工作；无法取消的工作就等它完成。宿主据此判断会话结束之后可以再用同一个实例（IC.12）。
 - MUST NOT 触碰当前线程的 ambient event loop（不调 `asyncio.get_event_loop()`）。
 - 生产/消费使用标准提供的线程安全原语。
 

@@ -108,7 +108,7 @@ In the default text mode the transcript is printed to stdout. Any `Transcription
 Before transcribing, the command runs the protocol-line gate and then an advisory artifact status inspection. An engine on an unsupported protocol line exits 2 without transcribing: its inference semantics are not interpretable by this core, so the compatibility error is never downgraded to a warning. If required artifacts are not ready and inference can acquire them, stderr explains that the first transcription can acquire artifacts and points to `standard-asr pull`. An unknown state uses “may acquire” wording. An `ArtifactStatusError` at this advisory step becomes a scrubbed warning and transcription continues; configuration, caller-input, and contract errors keep their normal fail-loud behavior. This advisory is CLI-only: the Python `transcribe()` method does not run a status inspection before every call.
 
 ### `standard-asr serve`
-Launch the FastAPI server (requires `standard-asr[server]`). Flags:
+Launch the FastAPI server (requires `standard-asr[server]`). The server keeps one idle engine instance per model key it has served, with the model loaded, until it stops, and an instance reads its configuration from the environment once, when it is constructed ([server API](./server-api.md), section 5). Flags:
 - `--host` (default `127.0.0.1`), `--port` (default `8000`): bind address.
 - `--log-level` (default `info`): uvicorn log level.
 

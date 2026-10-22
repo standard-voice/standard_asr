@@ -111,7 +111,7 @@ This is the wire-side discovery path for settings UIs (G.3.1): a client can rend
 
 ### 3.7 Error → HTTP status mapping
 
-The transcribe endpoints map errors from **both** engine construction (`model_registry.create`) and the `transcribe` call as follows:
+The transcribe endpoints map errors from **both** engine construction (`model_registry.create`, which runs when no idle instance exists; see §5) and the `transcribe` call as follows:
 
 | Condition | Status |
 |---|---|
@@ -231,3 +231,16 @@ A failure on the audio-input pump (for example, a client protocol violation such
 ```json
 { "type": "error", "code": "stream_input_error", "message": "Audio input failed. See server logs for details." }
 ```
+
+## 5. Engine instances
+
+The server keeps at most one idle engine instance per model key, so calls in sequence for one model do not construct an engine, and load its model, again.
+
+- **Taking an instance.** A REST transcription or a WebSocket session takes the idle instance for its model key. When there is none, it constructs one with `registry.create(model)`, and §3.7 and §4.2 map a construction failure. Calls that overlap each get their own instance.
+- **Keeping it.** The server keeps an instance idle for the next call only when its call succeeded and the server can see that the engine's work for the call has finished: a REST call returned its response, or a WebSocket session yielded `done` and closed without a fault. When another instance is already idle for that model key, the server drops this one.
+- **Dropping it.** Every other ending drops the instance, and the next call constructs a new one: an error of any kind, the caller's included; a session that ended with an `error` event or whose client left before `done`; and a call canceled at shutdown. An engine can raise an error after it changed its own state, and no error promises that the instance still works.
+- **Configuration and memory.** An instance reads its configuration from the server's environment once, when it is constructed (protocol IC.9), so a change to the environment takes effect after a restart. Every model key the server has served keeps one instance, with its model loaded, until the server stops. The server neither evicts instances nor bounds their memory.
+- **Shutdown.** uvicorn closes the open WebSocket sessions and waits for the requests in progress. Then the server drops every idle instance.
+- **Logging.** The server logs each construction and each drop at `INFO`, and each reuse at `DEBUG`.
+
+Reuse depends on two protocol rules: an engine instance serves calls in sequence from any thread and any event loop (protocol IC.12), and a session's `__aexit__` returns only after the work the session started has finished (protocol, streaming §6.5).

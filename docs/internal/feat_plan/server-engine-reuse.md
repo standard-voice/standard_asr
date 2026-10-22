@@ -102,7 +102,7 @@ Both describe what applications already assume when they create an engine once a
 
 ### 5.5 What the operator sees
 
-- One log line at INFO for each event: an instance constructed, reused, kept, or dropped, with the reason for a drop.
+- The server logs each construction and each drop at INFO, and each reuse at DEBUG, so an operator sees every model load without an extra line for each request.
 - `server-api.md` says that the server keeps one idle instance per model key, that each model key used keeps a model loaded until the server stops, and that an instance reads its configuration once, at construction (IC.9), so a change to the environment needs a restart. The help text of `standard-asr serve` says the same in a line.
 - The text that assumes construction per request changes with the code: `server-api.md` lines 114, 130, and 187, and the docstring of `_create_engine_or_http_error`.
 

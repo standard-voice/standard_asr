@@ -1039,7 +1039,12 @@ def test_transcribe_body_is_the_single_wire_projection_verbatim() -> None:
     registry = _registry()
     expected_body = asyncio.run(
         server_module._run_transcription(  # pyright: ignore[reportPrivateUsage]
-            registry, "dummy/echo", AudioBytes(data=b"fake"), None, HTTPException
+            registry,
+            server_module._IdleEngines(),  # pyright: ignore[reportPrivateUsage]
+            "dummy/echo",
+            AudioBytes(data=b"fake"),
+            None,
+            HTTPException,
         )
     )
     assert isinstance(expected_body, str)
@@ -1063,6 +1068,7 @@ def test_transcribe_body_is_the_single_wire_projection_verbatim() -> None:
     cjk_body = asyncio.run(
         server_module._run_transcription(  # pyright: ignore[reportPrivateUsage]
             _registry_for("_cjk_factory"),
+            server_module._IdleEngines(),  # pyright: ignore[reportPrivateUsage]
             "dummy/echo",
             AudioBytes(data=b"fake"),
             None,
