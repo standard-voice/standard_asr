@@ -67,7 +67,7 @@ An engine downloads model weights with its own library, and that library reads t
 | Variable | What it sets |
 | --- | --- |
 | `HF_ENDPOINT` | The Hugging Face endpoint, such as a mirror your organization runs. Standard ASR suggests none. |
-| `HTTPS_PROXY`, `HTTP_PROXY` | The proxy for HTTPS requests and for plain-HTTP requests. A user name and a password go in the URL, as in `http://user:password@proxy:8080`. |
+| `HTTPS_PROXY`, `HTTP_PROXY` | The proxy for HTTPS requests and for plain-HTTP requests. A user name and a password go in the URL, as in `http://user:password@proxy:8080`, with every character other than a letter, a digit, `-`, `.`, `_`, or `~` percent-encoded, such as `%23` for `#`. |
 | `NO_PROXY` | The hosts that skip the proxy, such as `localhost,127.0.0.1` for a server on this machine. |
 | `SSL_CERT_FILE` | A certificate bundle to trust, for a proxy that inspects TLS. For `httpx`, it replaces the `certifi` bundle. |
 

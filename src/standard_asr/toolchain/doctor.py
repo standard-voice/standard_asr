@@ -44,7 +44,7 @@ from importlib.metadata import PackageNotFoundError, entry_points, requires
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from standard_asr.plugins.discovery import ENTRYPOINT_GROUP
-from standard_asr.runtime.redaction import redact_url, safe_exception_summary
+from standard_asr.runtime.redaction import redact_url, url_user_information
 
 if TYPE_CHECKING:
     from packaging.specifiers import SpecifierSet
@@ -161,8 +161,16 @@ class EndpointCheck:
     when an application replaced the client with
     ``huggingface_hub.set_client_factory()``; such a client can send more
     than one request, for example to answer an authentication challenge.
-    Every URL and message in the result has its credentials replaced with
-    ``***``.
+
+    Every configured URL in the result has its user information, the
+    ``user:password`` part before the ``@``, replaced with ``***``. The
+    result names each error by its type and never quotes the error's
+    message: a client's message can quote part of a URL without the URL
+    itself, such as the piece of a password a parser took for a port, and a
+    rule that reads only the message cannot find that piece. The one
+    exception is OpenSSL's description of why a certificate did not verify,
+    such as ``self-signed certificate``, without the host name the ``ssl``
+    module adds to a name mismatch.
 
     Attributes:
         outcome: How the check ended:
@@ -193,7 +201,16 @@ class EndpointCheck:
         remedy: What to do about a problem, or ``None``.
         proxies: The proxies Python resolves for this process, by scheme,
             from ``urllib.request.getproxies()``, which httpx and requests
-            read too; the ``no`` key lists the hosts that skip the proxy.
+            read too. The ``no`` key lists the hosts that skip the proxy, an
+            entry with user information masked like a URL.
+        ambiguous_urls: The names of the configured URLs with a ``/``,
+            ``?``, or ``#`` in the part the result masks, between the scheme
+            and the last ``@``: ``endpoint``, or a proxy's scheme in
+            ``proxies``. A client reads the user name, the password, the
+            host, and the port only up to the first of those characters.
+            When one belongs to the user name or the password, the client
+            takes part of them for the host or the port, and the result
+            shows a host the client does not use.
     """
 
     outcome: EndpointOutcome
@@ -203,6 +220,7 @@ class EndpointCheck:
     detail: str
     remedy: str | None
     proxies: Mapping[str, str]
+    ambiguous_urls: tuple[str, ...] = ()
 
     @property
     def is_problem(self) -> bool:
@@ -820,11 +838,6 @@ def _core_numpy_spec() -> str | None:
     return _numpy_spec_for(core_requires)
 
 
-def _first_line(error: BaseException) -> str:
-    """Return the outermost link of an error's summary, which has no URL credentials."""
-    return safe_exception_summary(error).split(" | caused by ", 1)[0]
-
-
 def _chain(error: BaseException) -> list[BaseException]:
     """Return an error and its causes, outermost first, cycle-safe."""
     links: list[BaseException] = []
@@ -833,6 +846,53 @@ def _chain(error: BaseException) -> list[BaseException]:
         links.append(node)
         node = node.__cause__ if node.__cause__ is not None else node.__context__
     return links
+
+
+def _error_types(error: BaseException) -> str:
+    """Name an error and its causes by their types, outermost first.
+
+    The types stand in for the messages, which the endpoint check never
+    quotes (see :class:`EndpointCheck`).
+    """
+    names: list[str] = []
+    for link in _chain(error):
+        cls = type(link)
+        module = cls.__module__
+        names.append(cls.__qualname__ if module == "builtins" else f"{module}.{cls.__qualname__}")
+    return ", caused by ".join(names)
+
+
+def _read_message(code: str) -> str:
+    """Tell how to read the message of an error the report names by type only.
+
+    The command names the interpreter that runs the check: the ``python``
+    on the shell's path can be another one, as under ``pipx`` or ``uv run``.
+    """
+    python = sys.executable or "python"
+    if any(char.isspace() for char in python):
+        python = f'"{python}"'
+    return (
+        f'Run {python} -c "{code}" to see the message, which the report leaves out because it '
+        "can quote part of a password."
+    )
+
+
+def _is_ambiguous(url: str) -> bool:
+    """Return whether the user information of ``url`` holds a ``/``, ``?``, or ``#``.
+
+    A client reads the user name, the password, the host, and the port only
+    up to the first of those characters (RFC 3986, section 3.2), so it
+    splits such user information and takes part of it for the host or the
+    port.
+    """
+    user_information = url_user_information(url)
+    return user_information is not None and any(char in user_information for char in "/?#")
+
+
+#: The two verification errors whose description the ``ssl`` module extends
+#: with the host name the client connected to, a host a misread URL can take
+#: from a password. The report shows OpenSSL's description alone.
+_NAME_MISMATCH: Final[dict[int, str]] = {62: "Hostname mismatch", 64: "IP address mismatch"}
 
 
 def _client_family(session: object) -> Literal["httpx", "requests"] | None:
@@ -881,43 +941,59 @@ def _classify(
     """
     links = _chain(error)
     names = [type(link).__name__ for link in links]
-    message = _first_line(error)
+    errors = _error_types(error)
     if "OfflineModeIsEnabled" in names:
         return (
             "offline",
             "huggingface_hub's offline mode refused the request, so no download can run.",
             "Unset HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE; huggingface_hub reads both.",
         )
-    if any(isinstance(link, ssl.SSLCertVerificationError) for link in links):
+    certificate = next(
+        (link for link in links if isinstance(link, ssl.SSLCertVerificationError)), None
+    )
+    if certificate is not None:
+        # OpenSSL's description of the failure, such as "self-signed
+        # certificate in certificate chain", tells whether the remedy fits.
+        code = getattr(certificate, "verify_code", None)
+        mismatch = _NAME_MISMATCH.get(code) if isinstance(code, int) else None
+        reason = mismatch or str(getattr(certificate, "verify_message", None) or "")
+        reason = " ".join(reason.split()).rstrip(".")
         return (
             "certificate_not_verified",
-            f"The TLS certificate did not verify: {message}",
+            f"The TLS certificate did not verify{f': {reason}' if reason else ''} ({errors}).",
             _CERTIFICATE_REMEDY[family],
         )
     if any(isinstance(link, socket.gaierror) for link in links):
         return (
             "name_not_resolved",
-            f"A host name did not resolve, the endpoint's or the proxy's: {message}",
+            f"A host name, the endpoint's or the proxy's, did not resolve ({errors}).",
             "Check the host name in HF_ENDPOINT and in the proxy URL, if either is set, and "
             "that this machine can resolve host names.",
         )
     if any(isinstance(link, ConnectionRefusedError) for link in links):
         return (
             "connection_refused",
-            f"The connection was refused, by the endpoint or by the proxy: {message}",
+            f"The endpoint or the proxy refused the connection ({errors}).",
             "Check the host and the port in HF_ENDPOINT and in the proxy URL, if either is "
             "set. If this network requires a proxy, set HTTPS_PROXY.",
         )
     if any(isinstance(link, TimeoutError) or "Timeout" in name for link, name in zip(links, names)):
-        return ("timed_out", f"No answer arrived in time: {message}", _TIMEOUT_REMEDY)
+        return ("timed_out", f"No answer arrived in time ({errors}).", _TIMEOUT_REMEDY)
     if any(name.endswith("ProxyError") for name in names):
         return (
             "proxy_refused",
-            f"A proxy refused the request: {message}",
+            f"A proxy refused the request ({errors}).",
             "Check the proxy URL and its credentials in HTTPS_PROXY or HTTP_PROXY, or list the "
             "endpoint's host in NO_PROXY if requests to it must not use the proxy.",
         )
-    return ("failed", f"The request failed: {message}", None)
+    return (
+        "failed",
+        f"The request failed ({errors}).",
+        _read_message(
+            "from huggingface_hub import constants, get_session; "
+            "get_session().head(constants.ENDPOINT)"
+        ),
+    )
 
 
 def _client(
@@ -936,9 +1012,10 @@ def _client(
         session: Any = utils.get_session()
     except Exception as error:
         return (
-            f"huggingface_hub could not create its HTTP client: {_first_line(error)}",
+            f"huggingface_hub could not create its HTTP client ({_error_types(error)}).",
             "Check the variables the client reads when it is created: the certificate path in "
-            "SSL_CERT_FILE or SSL_CERT_DIR, and each proxy URL.",
+            "SSL_CERT_FILE or SSL_CERT_DIR, and each proxy URL. "
+            + _read_message("from huggingface_hub import get_session; get_session()"),
         )
     family = _client_family(session)
     if family is None:
@@ -1008,19 +1085,32 @@ def check_endpoint(*, timeout: float = ENDPOINT_CHECK_TIMEOUT) -> EndpointCheck:
     finish the request in the background. The imports and the creation of
     the client, which send nothing, happen before the wait starts.
 
+    A remedy that gives a command to print an error's message runs the
+    interpreter that runs this check, with huggingface_hub's default client.
+    An application that set its own client with ``set_client_factory()``
+    sends the request again in its own process to read the message.
+
     Args:
         timeout: Seconds to wait for an answer.
 
     Returns:
         The result of the check.
     """
+    configured = sorted(urllib.request.getproxies().items())
+    # An entry of the no-proxy list is a host, but a URL pasted there is
+    # masked like any other.
     proxies = {
-        scheme: value if scheme == "no" else redact_url(value)
-        for scheme, value in sorted(urllib.request.getproxies().items())
+        scheme: ",".join(map(redact_url, value.split(","))) if scheme == "no" else redact_url(value)
+        for scheme, value in configured
     }
+    ambiguous = tuple(
+        scheme for scheme, value in configured if scheme != "no" and _is_ambiguous(value)
+    )
 
-    def not_run(detail: str) -> EndpointCheck:
-        return EndpointCheck("could_not_run", None, None, None, detail, None, proxies)
+    def not_run(detail: str, code: str) -> EndpointCheck:
+        return EndpointCheck(
+            "could_not_run", None, None, None, detail, _read_message(code), proxies, ambiguous
+        )
 
     try:
         hub: Any = importlib.import_module("huggingface_hub")
@@ -1034,10 +1124,17 @@ def check_endpoint(*, timeout: float = ENDPOINT_CHECK_TIMEOUT) -> EndpointCheck:
                 "huggingface_hub is not installed, so the endpoint check does not apply.",
                 None,
                 proxies,
+                ambiguous,
             )
-        return not_run(f"huggingface_hub is installed but failed to import: {_first_line(error)}")
+        return not_run(
+            f"huggingface_hub is installed but failed to import ({_error_types(error)}).",
+            "import huggingface_hub",
+        )
     except Exception as error:
-        return not_run(f"huggingface_hub is installed but failed to import: {_first_line(error)}")
+        return not_run(
+            f"huggingface_hub is installed but failed to import ({_error_types(error)}).",
+            "import huggingface_hub",
+        )
     try:
         # Submodules, imported by name: huggingface_hub loads its attributes
         # lazily, and its lazy loader prints an import failure to stdout.
@@ -1045,12 +1142,20 @@ def check_endpoint(*, timeout: float = ENDPOINT_CHECK_TIMEOUT) -> EndpointCheck:
         utils: Any = importlib.import_module("huggingface_hub.utils")
         url = str(constants.ENDPOINT)
     except Exception as error:
-        return not_run(f"huggingface_hub cannot be used: {_first_line(error)}")
+        return not_run(
+            "huggingface_hub cannot be used: its endpoint setting or its client module failed "
+            f"to load ({_error_types(error)}).",
+            "from huggingface_hub import constants, utils; constants.ENDPOINT",
+        )
     endpoint = redact_url(url)
+    if _is_ambiguous(url):
+        ambiguous = ("endpoint", *ambiguous)
     library = f"huggingface_hub {getattr(hub, '__version__', 'of unknown version')}"
     first, second = _client(utils)
     if isinstance(first, str):
-        return EndpointCheck("could_not_run", endpoint, library, None, first, second, proxies)
+        return EndpointCheck(
+            "could_not_run", endpoint, library, None, first, second, proxies, ambiguous
+        )
     session, family = first, cast('Literal["httpx", "requests"]', second)
     client = f"{library} ({family})"
 
@@ -1061,7 +1166,9 @@ def check_endpoint(*, timeout: float = ENDPOINT_CHECK_TIMEOUT) -> EndpointCheck:
         *,
         status_code: int | None = None,
     ) -> EndpointCheck:
-        return EndpointCheck(outcome, endpoint, client, status_code, detail, remedy, proxies)
+        return EndpointCheck(
+            outcome, endpoint, client, status_code, detail, remedy, proxies, ambiguous
+        )
 
     results: list[EndpointCheck] = []
 
@@ -1069,7 +1176,7 @@ def check_endpoint(*, timeout: float = ENDPOINT_CHECK_TIMEOUT) -> EndpointCheck:
         try:
             results.append(_probe(session, family, url, timeout, result))
         except Exception as error:
-            results.append(result("failed", f"The check failed: {_first_line(error)}"))
+            results.append(result("failed", f"The check failed ({_error_types(error)})."))
 
     worker = threading.Thread(target=run, name="standard-asr-endpoint-check", daemon=True)
     worker.start()
@@ -1457,6 +1564,14 @@ def _format_endpoint(check: EndpointCheck | None) -> list[str]:
         lines.append(
             "  [INFO] The endpoint uses plain HTTP: requests and answers travel without "
             "encryption, so any host on the network path can read or change them."
+        )
+    for name in check.ambiguous_urls:
+        url = "The endpoint URL" if name == "endpoint" else f"The {name} proxy URL"
+        lines.append(
+            f"  [INFO] {url} has a '/', '?', or '#' after the scheme and before its last '@'. "
+            "A client reads the user name, password, host, and port only up to that character. "
+            "If it is in the user name or the password, percent-encode it: '/' as %2F, '?' as "
+            "%3F, '#' as %23."
         )
     if check.outcome != "could_not_run":
         lines.append(f"  {NOT_CHECKED}")

@@ -26,6 +26,12 @@ from standard_asr.toolchain import doctor
 
 ENDPOINT = "https://huggingface.co"
 
+#: Text that stands for an error's message: no result may contain it.
+MESSAGE = "MESSAGE-TEXT"
+
+#: A password, or the part of one, that a client's error message can quote.
+SECRET = "SENTINEL"
+
 
 class _Response:
     def __init__(self, status_code: object) -> None:
@@ -69,6 +75,17 @@ class _AppClient(_HttpxClient):
 
 
 _AppClient.__module__ = "myapp.http"
+
+
+#: Stands for ``httpx.InvalidURL``, whose message quotes the part of a URL it rejected.
+_InvalidURL = type("InvalidURL", (Exception,), {"__module__": "httpx"})
+
+
+class _SecretStatus:
+    """A status code that cannot be read, with an error message that quotes a secret."""
+
+    def __int__(self) -> int:
+        raise ValueError(f"cannot read {SECRET}")
 
 
 def _install_hub(
@@ -155,39 +172,67 @@ def test_a_407_or_a_5xx_answer_is_a_problem(
     ("error", "outcome", "remedy"),
     [
         (
-            type("OfflineModeIsEnabled", (ConnectionError,), {})("offline"),
+            type("OfflineModeIsEnabled", (ConnectionError,), {})(MESSAGE),
             "offline",
             "HF_HUB_OFFLINE",
         ),
         (
-            _wrapped(ssl.SSLCertVerificationError(1, "certificate verify failed")),
+            _wrapped(ssl.SSLCertVerificationError(1, MESSAGE)),
             "certificate_not_verified",
             "SSL_CERT_FILE",
         ),
-        (_wrapped(socket.gaierror(8, "nodename nor servname")), "name_not_resolved", "host name"),
-        (_wrapped(ConnectionRefusedError(61, "refused")), "connection_refused", "port"),
-        (_wrapped(TimeoutError("timed out"), "ReadTimeout"), "timed_out", "HTTPS_PROXY"),
-        (type("ConnectTimeout", (Exception,), {})("slow"), "timed_out", "HTTPS_PROXY"),
-        (
-            _wrapped(OSError("Tunnel connection failed: 403"), "ProxyError"),
-            "proxy_refused",
-            "NO_PROXY",
-        ),
-        (RuntimeError("something else"), "failed", None),
+        (_wrapped(socket.gaierror(8, MESSAGE)), "name_not_resolved", "host name"),
+        (_wrapped(ConnectionRefusedError(61, MESSAGE)), "connection_refused", "port"),
+        (_wrapped(TimeoutError(MESSAGE), "ReadTimeout"), "timed_out", "HTTPS_PROXY"),
+        (type("ConnectTimeout", (Exception,), {})(MESSAGE), "timed_out", "HTTPS_PROXY"),
+        (_wrapped(OSError(MESSAGE), "ProxyError"), "proxy_refused", "NO_PROXY"),
+        (RuntimeError(MESSAGE), "failed", "get_session().head(constants.ENDPOINT)"),
     ],
 )
 def test_a_failed_request_is_classified_from_its_causes(
-    monkeypatch: pytest.MonkeyPatch, error: BaseException, outcome: str, remedy: str | None
+    monkeypatch: pytest.MonkeyPatch, error: BaseException, outcome: str, remedy: str
 ) -> None:
     _install_hub(monkeypatch, _HttpxClient(error))
     check = doctor.check_endpoint(timeout=1)
     assert check.outcome == outcome
     assert check.is_problem
-    if remedy is None:
-        assert check.remedy is None
-        assert "something else" in check.detail
-    else:
-        assert check.remedy is not None and remedy in check.remedy
+    assert check.remedy is not None and remedy in check.remedy
+    # The result names the error by its type, never by its message.
+    assert MESSAGE not in check.detail
+    if outcome != "offline":
+        assert type(error).__qualname__ in check.detail
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "reason"),
+    [
+        (
+            19,
+            "self-signed certificate in certificate chain",
+            "self-signed certificate in certificate chain",
+        ),
+        # The ``ssl`` module adds the host the client connected to, which a
+        # misread URL can take from a password: the report leaves it out.
+        (
+            64,
+            f"IP address mismatch, certificate is not valid for '{SECRET}'.",
+            "IP address mismatch",
+        ),
+        (62, f"Hostname mismatch, certificate is not valid for '{SECRET}'.", "Hostname mismatch"),
+    ],
+)
+def test_a_certificate_failure_gives_openssls_description(
+    monkeypatch: pytest.MonkeyPatch, code: int, message: str, reason: str
+) -> None:
+    cause = ssl.SSLCertVerificationError(1, MESSAGE)
+    cause.verify_code = code
+    cause.verify_message = message
+    _install_hub(monkeypatch, _HttpxClient(_wrapped(cause)))
+    check = doctor.check_endpoint(timeout=1)
+    assert check.detail.startswith(f"The TLS certificate did not verify: {reason} (")
+    assert check.detail.endswith("ConnectError, caused by ssl.SSLCertVerificationError).")
+    assert SECRET not in check.detail
+    assert MESSAGE not in check.detail
 
 
 def test_the_certificate_remedy_names_the_variable_of_the_client_family(
@@ -227,6 +272,10 @@ def test_a_broken_installation_is_not_an_absence(
     check = doctor.check_endpoint(timeout=1)
     assert check.outcome == "could_not_run"
     assert "failed to import" in check.detail
+    assert str(failure) not in check.detail
+    # The command names the interpreter that runs the check.
+    assert check.remedy is not None
+    assert check.remedy.startswith(f'Run {sys.executable} -c "import huggingface_hub"')
 
 
 def test_a_client_that_cannot_be_created_or_driven_could_not_run(
@@ -295,10 +344,10 @@ def test_credentials_never_reach_the_result(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         doctor.urllib.request,
         "getproxies",
-        lambda: {"https": "http://user:sec ret@proxy:8080", "no": "localhost"},
+        lambda: {"https": "http://user:sec ret@proxy:8080", "no": "localhost,http://u:sec@m"},
     )
-    # A long message that quotes the URL: the summary removes the credentials
-    # before it cuts the message at its length bound.
+    # The error's message quotes the URL; the result names the error by its
+    # type and never quotes the message.
     error = _wrapped(
         ConnectionRefusedError(61, "refused " + "x" * 360 + " http://user:sec-ret@mirror/api")
     )
@@ -307,9 +356,88 @@ def test_credentials_never_reach_the_result(monkeypatch: pytest.MonkeyPatch) -> 
     rendered = doctor.format_report(doctor.DoctorReport(python_version="3.13", endpoint=check))
     assert "sec" not in rendered
     assert check.endpoint == "http://***@mirror"
-    assert check.proxies == {"https": "http://***@proxy:8080", "no": "localhost"}
+    # A URL pasted into the no-proxy list is masked too.
+    assert check.proxies == {"https": "http://***@proxy:8080", "no": "localhost,http://***@m"}
     assert "proxies: https=http://***@proxy:8080" in rendered
-    assert "no proxy for: localhost" in rendered
+    assert "no proxy for: localhost,http://***@m" in rendered
+
+
+def test_the_command_quotes_an_interpreter_path_with_a_space(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor.sys, "executable", "/Applications/My Python/bin/python3")
+    _install_hub(monkeypatch, _HttpxClient(RuntimeError(MESSAGE)))
+    check = doctor.check_endpoint(timeout=1)
+    assert check.remedy is not None
+    assert check.remedy.startswith('Run "/Applications/My Python/bin/python3" -c "from ')
+
+
+@pytest.mark.parametrize("where", ["import", "settings", "client", "request", "answer"])
+def test_no_error_message_reaches_the_result(monkeypatch: pytest.MonkeyPatch, where: str) -> None:
+    # A password with a raw "/" makes ``httpx`` reject the URL with "Invalid port:
+    # 'SENTINEL'": part of the password, with no URL around it for a
+    # redaction rule to find. So the result names every error by its type.
+    rejected = _InvalidURL(f"Invalid port: '{SECRET}'")
+    real_import = doctor.importlib.import_module
+
+    def import_module(name: str, package: str | None = None) -> types.ModuleType:
+        if (where, name) == ("import", "huggingface_hub"):
+            raise ImportError(f"broken by {SECRET}")
+        if (where, name) == ("settings", "huggingface_hub.utils"):
+            raise RuntimeError(f"broken by {SECRET}")
+        return real_import(name, package)
+
+    clients = {"client": rejected, "request": _HttpxClient(rejected)}
+    _install_hub(monkeypatch, clients.get(where, _HttpxClient(_SecretStatus())))
+    monkeypatch.setattr(doctor.importlib, "import_module", import_module)
+    check = doctor.check_endpoint(timeout=1)
+    rendered = doctor.format_report(doctor.DoctorReport(python_version="3.13", endpoint=check))
+    assert check.is_problem
+    assert SECRET not in repr(check)
+    assert SECRET not in rendered
+    named = {
+        "import": "(ImportError).",
+        "settings": "(RuntimeError).",
+        "client": "(httpx.InvalidURL).",
+        "request": "(httpx.InvalidURL).",
+        "answer": "(ValueError).",
+    }
+    assert check.detail.endswith(named[where])
+
+
+@pytest.mark.parametrize(
+    ("proxy", "endpoint", "ambiguous"),
+    [
+        # A raw "/", "?", or "#" in a password ends the host part early.
+        ("http://alice:SEN/TINEL@proxy:8080", ENDPOINT, ("https",)),
+        ("http://alice:p?w@proxy:8080", ENDPOINT, ("https",)),
+        # A value that does not start with a scheme is read from its start,
+        # even with a "://" in its password.
+        ("alice:p#w@proxy:8080", ENDPOINT, ("https",)),
+        ("alice:SE://CRET@proxy:8080", ENDPOINT, ("https",)),
+        # A raw "@" in a password, or a "/" after the last "@", reads as meant.
+        ("http://alice:p@w@proxy:8080", ENDPOINT, ()),
+        ("http://alice:pw@proxy:8080/", ENDPOINT, ()),
+        ("http://proxy:8080", "https://alice:a/b@mirror", ("endpoint",)),
+        # An "@" in a path looks the same, which is why the note says "if".
+        ("http://proxy:8080", "https://mirror/models@v2", ("endpoint",)),
+    ],
+)
+def test_a_url_a_client_can_read_differently_from_the_report_is_named(
+    monkeypatch: pytest.MonkeyPatch, proxy: str, endpoint: str, ambiguous: tuple[str, ...]
+) -> None:
+    # The hosts in NO_PROXY are not a URL, so they are never named.
+    proxies = {"https": proxy, "no": "a/b@c"}
+    monkeypatch.setattr(doctor.urllib.request, "getproxies", lambda: proxies)
+    _install_hub(monkeypatch, _HttpxClient(200), endpoint=endpoint)
+    check = doctor.check_endpoint(timeout=1)
+    assert check.ambiguous_urls == ambiguous
+    rendered = doctor.format_report(doctor.DoctorReport(python_version="3.13", endpoint=check))
+    notes = [line.strip() for line in rendered.splitlines() if "before its last '@'" in line]
+    names = [
+        "The endpoint URL" if name == "endpoint" else f"The {name} proxy URL" for name in ambiguous
+    ]
+    assert [note.split(" has ", 1)[0] for note in notes] == [f"[INFO] {name}" for name in names]
 
 
 def test_the_verdict_and_the_report_keep_the_two_checks_apart() -> None:
