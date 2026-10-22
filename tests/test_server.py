@@ -1105,8 +1105,12 @@ def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
         setattr(uvicorn_stub, "kwargs", kwargs)
 
     uvicorn_stub.run = _run  # type: ignore[attr-defined]
+    config_stub = types.ModuleType("uvicorn.config")
+    uvicorn_logging: dict[str, Any] = {"version": 1, "loggers": {"uvicorn": {"level": "INFO"}}}
+    config_stub.LOGGING_CONFIG = uvicorn_logging  # type: ignore[attr-defined]
 
     monkeypatch.setitem(__import__("sys").modules, "uvicorn", uvicorn_stub)
+    monkeypatch.setitem(__import__("sys").modules, "uvicorn.config", config_stub)
 
     create_app_kwargs: dict[str, Any] = {}
 
@@ -1132,6 +1136,16 @@ def test_run_calls_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kwargs["ws_max_size"] == 4096
     # The same cap is propagated to the app it builds.
     assert create_app_kwargs["max_ws_frame_bytes"] == 4096
+    # The server's own loggers get uvicorn's handler at the same level, from a
+    # copy: uvicorn's default configuration is left as it was.
+    assert kwargs["log_level"] == "warning"
+    assert kwargs["log_config"]["loggers"]["standard_asr"] == {
+        "handlers": ["default"],
+        "level": "WARNING",
+        "propagate": False,
+    }
+    assert kwargs["log_config"]["loggers"]["uvicorn"] == {"level": "INFO"}
+    assert "standard_asr" not in uvicorn_logging["loggers"]
 
 
 def test_declared_metadata_endpoint_is_canonical_and_does_not_instantiate() -> None:

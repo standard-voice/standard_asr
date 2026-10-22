@@ -18,6 +18,7 @@ not a substitute for a rate limiter.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -2047,10 +2048,14 @@ def run(
     :func:`_receive_config_frame`, so the effective per-frame bound is
     ``min(app cap, transport ws_max_size)`` regardless of deployment.
 
+    The log level applies to uvicorn's loggers and to the server's own, the
+    ``standard_asr`` loggers, which report each engine construction and drop
+    (server API, section 5) and every fault the server logs.
+
     Args:
         host: Bind host.
         port: Bind port.
-        log_level: Uvicorn log level.
+        log_level: Log level for uvicorn and the server.
         max_body_bytes: HTTP request-body cap (see :func:`create_app`).
         max_ws_frame_bytes: WebSocket per-frame cap; also passed to uvicorn as
             ``ws_max_size`` (see :func:`create_app`).
@@ -2071,16 +2076,29 @@ def run(
             "pip install 'standard-asr[server]'."
         ) from exc
 
+    from uvicorn.config import LOGGING_CONFIG
+
     app = create_app(
         max_body_bytes=max_body_bytes,
         max_ws_frame_bytes=max_ws_frame_bytes,
         max_ws_session_bytes=max_ws_session_bytes,
     )
+    # uvicorn's log_level sets the level of its own loggers only. Without a
+    # handler, the server's loggers show nothing below WARNING, so they get
+    # uvicorn's handler and the same level; not propagating keeps a record
+    # from also reaching Python's last-resort handler.
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config["loggers"]["standard_asr"] = {
+        "handlers": ["default"],
+        "level": log_level.upper(),
+        "propagate": False,
+    }
     uvicorn.run(
         app,
         host=host,
         port=port,
         log_level=log_level,
+        log_config=log_config,
         ws_max_size=max_ws_frame_bytes,
     )
 
