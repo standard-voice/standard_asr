@@ -277,14 +277,12 @@ def _sorted_timed(segments: Iterable[Segment]) -> list[_TimedCue]:
     )
 
 
-def _whole_text_cue(result: TranscriptionResult, *, text: str | None = None) -> list[_TimedCue]:
+def _whole_text_cue(result: TranscriptionResult) -> list[_TimedCue]:
     """Build the single synthetic whole-text cue (or none for no visible text).
 
     Args:
-        result: The transcription result (the cue span's source).
-        text: The text the cue carries; defaults to ``result.text`` (the
-            ``segments is None`` fallback shape). The ``"collapse"`` policy
-            passes the text it owes the caller instead.
+        result: The transcription result; the cue carries ``result.text``
+            and takes its span from ``result.duration``.
 
     Returns:
         One cue spanning ``[0, duration]`` (or ``[0, 3 s]`` when ``duration``
@@ -293,8 +291,7 @@ def _whole_text_cue(result: TranscriptionResult, *, text: str | None = None) -> 
         would survive rendering (the renderers skip a payload-less cue, so
         emptiness is decided by the same rule, up front).
     """
-    carried = result.text if text is None else text
-    if not _has_visible_payload(carried):
+    if not _has_visible_payload(result.text):
         return []
     # A zero-duration synthetic cue is exactly the invisible artifact
     # (players silently drop it) this fallback's non-zero span exists to
@@ -310,7 +307,7 @@ def _whole_text_cue(result: TranscriptionResult, *, text: str | None = None) -> 
         if duration is not None and _to_millis(duration) > 0
         else _SYNTHETIC_CUE_FALLBACK_END
     )
-    return [_TimedCue(0.0, end, Segment(start=0.0, end=end, text=carried))]
+    return [_TimedCue(0.0, end, Segment(start=0.0, end=end, text=result.text))]
 
 
 def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -> list[_TimedCue]:
@@ -352,10 +349,9 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
       dropped by players.
     * ``"collapse"``: one synthetic whole-text cue (the ``segments is None``
       fallback shape) -- every text survives, the per-segment timeline does
-      not. The cue carries ``result.text`` when it is visibly non-empty,
-      else the payload segments' texts in model order: "every text
-      survives" is a guarantee, not a hope that the engine mirrored its
-      segments into ``text``.
+      not. The cue carries ``result.text``, which construction guarantees
+      is every segment's text concatenated (spec TR.1), so every text
+      survives.
 
     Args:
         result: The transcription result.
@@ -412,23 +408,10 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
             )
         if on_unrenderable == "omit":
             return _sorted_timed([s for s in payload if _renderable(s)])
-        # "collapse": the caller trades the timeline for completeness -- so
-        # completeness is owed. ``result.text`` is the engine's canonical
-        # whole-transcript rendering and carries the cue when it is visibly
-        # non-empty; but an engine that populated only ``segments`` leaves
-        # it blank, and collapsing to it rendered an empty file while every
-        # word sat in the payload segments -- the exact silent total loss
-        # the caller's explicit choice was scoped to exclude. The cue then
-        # carries the payload segments' texts in model order (the
-        # transcript's own reading order) instead.
-        return _whole_text_cue(
-            result,
-            text=(
-                result.text
-                if _has_visible_payload(result.text)
-                else " ".join(s.text.strip() for s in payload)
-            ),
-        )
+        # "collapse": the caller trades the timeline for completeness. The
+        # result's construction check makes ``result.text`` the segment texts
+        # concatenated, so it carries every payload segment's text.
+        return _whole_text_cue(result)
     return _whole_text_cue(result)
 
 

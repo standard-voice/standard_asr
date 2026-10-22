@@ -497,7 +497,36 @@ class _InvalidSegmentEngine(_ArrayEngine):
         return TranscriptionResult(text="x", segments=[bad])
 
 
-@pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
+class _StrippedTextEngine(_ArrayEngine):
+    """Strips the whole text but not its segments: the usual TR.1 mistake."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        whisper = [
+            Segment(start=0.0, end=1.0, text=" Hello"),
+            Segment(start=1.0, end=2.0, text=" world."),
+        ]
+        return TranscriptionResult(text="Hello world.", segments=whisper)
+
+
+def test_stripped_text_fails_in_transcribe_as_a_transcription_error() -> None:
+    # The breaking change of #46: a text that is not the segment texts
+    # concatenated is rejected at construction, inside _transcribe, and the
+    # application sees one TranscriptionError with the ValidationError chained.
+    with pytest.raises(TranscriptionError) as exc_info:
+        _StrippedTextEngine().transcribe(_audio())
+
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, ValidationError)
+    assert [error["type"] for error in cause.errors()] == ["standard_asr_text_segments_mismatch"]
+    assert "differ at code point index 0" in cause.errors()[0]["msg"]
+    assert "not the segment texts concatenated" in str(exc_info.value)
+    assert exc_info.value.hint is not None
+    assert "stripping text" in exc_info.value.hint
+
+
+@pytest.mark.parametrize(
+    "engine_type", [_StaleResultEngine, _InvalidSegmentEngine, _StrippedTextEngine]
+)
 def test_engine_validation_error_wraps_as_transcription_error(
     engine_type: type[_ArrayEngine],
 ) -> None:
@@ -2082,11 +2111,15 @@ def _w(index: int, label: str | None) -> Word:
     return Word(start=index * 0.1, end=index * 0.1 + 0.1, text=f"w{index}", speaker=label)
 
 
-def _speaker_segment(labels: list[str | None], *, speaker: str | None = None) -> Segment:
+def _speaker_segment(
+    labels: list[str | None], *, speaker: str | None = None, leading_space: bool = False
+) -> Segment:
+    # A later segment carries the space that joins it to the one before
+    # (spec TR.1), so ``leading_space`` builds the second segment of a result.
     return Segment(
         start=0.0,
         end=1.0,
-        text=" ".join(f"w{i}" for i in range(len(labels))),
+        text=(" " if leading_space else "") + " ".join(f"w{i}" for i in range(len(labels))),
         words=[_w(i, label) for i, label in enumerate(labels)],
         speaker=speaker,
     )
@@ -2174,7 +2207,10 @@ def test_synthesize_result_speakers_branch_matrix() -> None:
     # Mixed list: only the derivable segment is rebuilt; untouched segments
     # keep object identity inside the new list.
     unchanged_segment = _speaker_segment(["A"], speaker="A")
-    mixed = TranscriptionResult(text="w0 w0", segments=[unchanged_segment, _speaker_segment(["B"])])
+    mixed = TranscriptionResult(
+        text="w0 w0",
+        segments=[unchanged_segment, _speaker_segment(["B"], leading_space=True)],
+    )
     synthesized = _synthesize_result_speakers(mixed)
     assert synthesized is not mixed
     assert synthesized.segments is not None
@@ -2189,7 +2225,10 @@ def test_synthesize_result_speakers_channels_matrix() -> None:
 
     # Channel entry without segments is reused; a derivable entry is rebuilt;
     # the top level (already speakered) stays identical.
-    top = [_speaker_segment(["A"], speaker="A"), _speaker_segment(["B"], speaker="B")]
+    top = [
+        _speaker_segment(["A"], speaker="A"),
+        _speaker_segment(["B"], speaker="B", leading_space=True),
+    ]
     no_segments_entry = ChannelResult(channel=0, text="w0")
     result = TranscriptionResult(
         text="w0 w0",

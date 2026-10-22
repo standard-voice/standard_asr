@@ -422,7 +422,7 @@ def test_reduce_event_partial_final_supersede() -> None:
 def test_stream_reducer_result() -> None:
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "hello", start=0.0, end=1.0))
-    reducer.add(TranscriptionEvent.final("s2", "world", start=1.0, end=2.0))
+    reducer.add(TranscriptionEvent.final("s2", " world", start=1.0, end=2.0))
     result = reducer.result()
     assert result.text == "hello world"
     assert result.segments is not None and len(result.segments) == 2
@@ -436,15 +436,65 @@ def test_stream_reducer_supersede_removes() -> None:
     assert reducer.result().text == "right"
 
 
-def test_stream_reducer_result_strips_edge_whitespace_and_drops_empty() -> None:
-    # A segment carrying trailing/leading whitespace, and a whitespace-only
-    # committed segment, must not inject a double space or a stray separator
-    # into the reduced transcript.
+def test_stream_reducer_result_keeps_segment_whitespace_verbatim() -> None:
+    # Edge whitespace, a whitespace-only segment, and an empty segment are
+    # all engine output: the reducer concatenates them unchanged (spec TR.1)
+    # and keeps every segment, because only the engine knows which spaces
+    # the transcript holds.
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "the quick ", start=0.0, end=1.0))
     reducer.add(TranscriptionEvent.final("s2", "  ", start=1.0, end=2.0))
-    reducer.add(TranscriptionEvent.final("s3", " brown fox", start=2.0, end=3.0))
-    assert reducer.result().text == "the quick brown fox"
+    reducer.add(TranscriptionEvent.final("s3", "", start=2.0, end=2.5))
+    reducer.add(TranscriptionEvent.final("s4", " brown fox", start=2.5, end=3.0))
+    result = reducer.result()
+    assert result.text == "the quick    brown fox"
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["the quick ", "  ", "", " brown fox"]
+
+
+def test_stream_reducer_concatenates_chinese_segments_without_spaces() -> None:
+    # The space join this replaces wrote "今天 天气 很好": the library put
+    # spaces into a language written without them.
+    reducer = StreamReducer()
+    for i, text in enumerate(["今天", "天气", "很好"]):
+        reducer.add(TranscriptionEvent.final(f"s{i}", text))
+    result = reducer.result()
+    assert result.text == "今天天气很好"
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == ["今天", "天气", "很好"]
+
+
+def test_stream_reducer_keeps_leading_spaces_of_english_segments() -> None:
+    # Whisper-family segments start with a space, the first one included;
+    # the reducer keeps it rather than editing recognized text.
+    reducer = StreamReducer()
+    for i, text in enumerate([" Hello", ",", " world", "!"]):
+        reducer.add(TranscriptionEvent.final(f"s{i}", text))
+    assert reducer.result().text == " Hello, world!"
+
+
+def test_stream_reducer_text_equals_reference_reduce_display() -> None:
+    # For a sequence that finalizes every segment, the session's reducer and
+    # the reference reduce produce the same text: both concatenate in
+    # reading order, a mid-stream supersede included. The starts run against
+    # the announced order, which a time sort in the reducer would reorder.
+    events = [
+        TranscriptionEvent.partial("a", "Hel", start=4.0),
+        TranscriptionEvent.final("a", "Hello", start=4.0, end=5.0),
+        TranscriptionEvent.final("b", " wrld", start=2.0, end=3.0),
+        TranscriptionEvent.final("c", " again.", start=0.0, end=1.0),
+        TranscriptionEvent.supersede(["b"], ["b2"]),
+        TranscriptionEvent.final("b2", " world", start=2.0, end=3.0),
+    ]
+    reducer = StreamReducer()
+    order: list[str] = []
+    texts: dict[str, str] = {}
+    for event in events:
+        reducer.add(event)
+        reduce_event(order, texts, event)
+    display = "".join(texts[sid] for sid in order if sid in texts)
+    assert display == "Hello world again."
+    assert reducer.result().text == display
 
 
 def _speaker_words(*labels: str | None) -> list[Word]:
@@ -710,7 +760,7 @@ def test_session_manual_mode_and_result() -> None:
         session = _EchoSession()
         async with session:
             await session.send_audio(b"hello")
-            await session.send_audio(b"world")
+            await session.send_audio(b" world")
             await session.end_audio()
             events = [e async for e in session]
         return events, session.result().text
@@ -1726,14 +1776,15 @@ def test_delivered_stream_preserves_reading_order_under_backpressure() -> None:
     # Out-of-order finalization with a slow consumer: with the pending
     # declarations dropped, the delivered stream's first mentions moved to
     # the finals' arrival order, so an app-side reduce of the delivered
-    # events read "world hello" while session.result() read "hello world" --
+    # events put " world" before "hello" while session.result() read
+    # "hello world" --
     # a silently reordered transcript (the cardinal sin), reachable with
     # nothing but a slow consumer and finals completing out of order.
     class _OutOfOrderFinals(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             yield TranscriptionEvent.partial("s0", "he")
-            yield TranscriptionEvent.partial("s1", "wo")
-            yield TranscriptionEvent.final("s1", "world")
+            yield TranscriptionEvent.partial("s1", " wo")
+            yield TranscriptionEvent.final("s1", " world")
             yield TranscriptionEvent.final("s0", "hello")
 
     async def run() -> tuple[list[TranscriptionEvent], Any]:
@@ -1756,13 +1807,13 @@ def test_delivered_supersede_reduces_identically_when_old_segment_never_delivere
     # A supersede retiring a segment whose only mention was still pending:
     # with that declaration dropped, the delivered supersede carried a
     # never-declared old_id -- the app-side reduce SUPPRESSED it (and
-    # appended the replacement at the tail: "one two") while the session
-    # spliced it in place ("two one"). The kept declaration makes both
+    # appended the replacement at the tail) while the session spliced it in
+    # place. The kept declaration makes both
     # reads identical, with no suppression diagnostics on the replay.
     class _FastSupersede(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             yield TranscriptionEvent.partial("b", "tw")
-            yield TranscriptionEvent.final("a", "one")
+            yield TranscriptionEvent.final("a", " one")
             yield TranscriptionEvent.supersede(["b"], ["c"])
             yield TranscriptionEvent.final("c", "two")
 
@@ -2136,9 +2187,9 @@ class _LossyReconnectContinuationSession(TranscriptionSession):
         await asyncio.sleep(0)
         yield TranscriptionEvent.final("seg-0", "hello", start=0.0, end=1.0)
         self.note_reconnect(1.0, 2.0, content_lost=True)
-        yield TranscriptionEvent.partial("seg-1", "wo")
+        yield TranscriptionEvent.partial("seg-1", " wo")
         await asyncio.sleep(0)
-        yield TranscriptionEvent.final("seg-1", "world", start=2.0, end=3.0)
+        yield TranscriptionEvent.final("seg-1", " world", start=2.0, end=3.0)
 
 
 def test_lossy_reconnect_content_lost_is_non_terminal_and_stream_matches_result() -> None:
@@ -2154,21 +2205,21 @@ def test_lossy_reconnect_content_lost_is_non_terminal_and_stream_matches_result(
         i for i, e in enumerate(events) if e.type == "error" and e.code == "content_lost"
     )
     content_lost = events[content_lost_i]
-    stream_text = " ".join(e.text or "" for e in events if e.type == "final")
+    stream_text = "".join(e.text or "" for e in events if e.type == "final")
 
-    assert [e.text for e in events if e.type == "final"] == ["hello", "world"]
+    assert [e.text for e in events if e.type == "final"] == ["hello", " world"]
     assert content_lost_i == progress_i + 1
     assert content_lost.recoverable is True
     assert content_lost.is_terminal is False
     # content_lost is non-terminal, so the session keeps emitting content after it.
     # The post-reconnect segment's partial ("wo") MAY be coalesced into its final
-    # ("world") depending on how promptly the consumer drains -- a legitimate
+    # (" world") depending on how promptly the consumer drains -- a legitimate
     # coalescing behavior (only reconnect events are drop-proof;
     # content partials are not) that varies with async scheduling across Python
     # versions. So assert the continuation via the drop-proof final, not the
     # transient partial.
     after = events[content_lost_i + 1 :]
-    assert [e.text for e in after if e.type == "final"] == ["world"]
+    assert [e.text for e in after if e.type == "final"] == [" world"]
     assert after[-1].type == "done"
     assert result_text == "hello world"
     assert stream_text == result_text
@@ -4540,10 +4591,10 @@ def test_reducer_preserves_arrival_order_without_timestamps() -> None:
     reducer = StreamReducer()
     # No start/end given (timestamp-less engine like Qwen streaming).
     reducer.add(TranscriptionEvent.final("s1", "world"))
-    reducer.add(TranscriptionEvent.final("s2", "hello"))
+    reducer.add(TranscriptionEvent.final("s2", " hello"))
     result = reducer.result()
-    # Arrival order preserved (there are no starts to sort on, and nothing is
-    # fabricated to make them sortable).
+    # Arrival order preserved (the reducer never sorts, and nothing is
+    # fabricated to give the segments a time position).
     assert result.text == "world hello"
     # The unmeasured spans are stored VERBATIM as None (the values are the
     # per-segment truth); exactly one warning diagnostic aggregates the count.
@@ -4553,7 +4604,7 @@ def test_reducer_preserves_arrival_order_without_timestamps() -> None:
     assert diag.param == "segments"
     assert "2 of 2" in diag.message
     assert result.segments is not None
-    assert [s.text for s in result.segments] == ["world", "hello"]
+    assert [s.text for s in result.segments] == ["world", " hello"]
     assert all(s.start is None and s.end is None for s in result.segments)
     assert all(s.timestamp_status == "unavailable" for s in result.segments)
 
@@ -4588,23 +4639,30 @@ def test_event_end_before_start_is_rejected() -> None:
     assert TranscriptionEvent.final("s1", "text", start=2.0, end=2.0).end == 2.0
 
 
-def test_reducer_sorts_when_all_have_timestamps() -> None:
-    """Fully timestamped finals sort by ``start`` with nothing to disclose."""
+def test_reducer_keeps_announced_order_when_all_have_timestamps() -> None:
+    """Fully timestamped finals keep the order the engine announced them in.
+
+    Announcing segments in time order is the engine's obligation; the
+    reducer does not re-sort, so its result matches what an application
+    running the reference reduce displayed.
+    """
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "second", start=5.0, end=6.0))
-    reducer.add(TranscriptionEvent.final("s2", "first", start=1.0, end=2.0))
+    reducer.add(TranscriptionEvent.final("s2", " first", start=1.0, end=2.0))
     result = reducer.result()
-    assert result.text == "first second"
+    assert result.text == "second first"
+    assert result.segments is not None
+    assert [s.start for s in result.segments] == [5.0, 1.0]
     # Every retained segment carries real timing -> nothing to disclose.
     assert result.diagnostics == []
 
 
-def test_reducer_no_sort_when_mixed_timestamps() -> None:
-    """Mixed timestamps preserve arrival order and disclose the placeholder count."""
+def test_reducer_mixed_timestamps_keep_arrival_order_and_disclose() -> None:
+    """Mixed timestamps keep arrival order and disclose the unmeasured count."""
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("s1", "b", start=5.0, end=6.0))
-    reducer.add(TranscriptionEvent.final("s2", "a"))  # no timestamp
-    # Mixed -> preserve arrival order, do not sort on a fabricated 0.0.
+    reducer.add(TranscriptionEvent.final("s2", " a"))  # no timestamp
+    # Arrival order, and no fabricated 0.0 for the unmeasured segment.
     result = reducer.result()
     assert result.text == "b a"
     # A partial disclosure is still a disclosure: one segment of two is a
@@ -4612,7 +4670,7 @@ def test_reducer_no_sort_when_mixed_timestamps() -> None:
     assert [d.code for d in result.diagnostics] == [DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE]
     assert "1 of 2" in result.diagnostics[0].message
     assert result.segments is not None
-    assert [s.text for s in result.segments] == ["b", "a"]
+    assert [s.text for s in result.segments] == ["b", " a"]
 
 
 def test_reducer_timestamp_diagnostic_ignores_superseded_segments() -> None:
@@ -4820,7 +4878,7 @@ def test_deadline_terminal_drains_admitted_but_undelivered_events_first() -> Non
     class _BurstThenSilentSession(TranscriptionSession):
         async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
             yield TranscriptionEvent.final("s0", "seen")
-            yield TranscriptionEvent.final("s1", "buffered")
+            yield TranscriptionEvent.final("s1", " buffered")
             await asyncio.sleep(10)  # then go silent (no terminal)
 
     async def run() -> tuple[list[TranscriptionEvent], str]:
@@ -4842,7 +4900,7 @@ def test_deadline_terminal_drains_admitted_but_undelivered_events_first() -> Non
 
     events, text = asyncio.run(run())
     # Both admitted finals are delivered, in order, before the terminal.
-    assert [e.text for e in events if e.type == "final"] == ["seen", "buffered"]
+    assert [e.text for e in events if e.type == "final"] == ["seen", " buffered"]
     assert events[-1].type == "error"
     assert events[-1].code == "session_timeout"
     assert text == "seen buffered"
@@ -5167,14 +5225,14 @@ def test_sync_pump_detects_frozen_loop_thread(monkeypatch: pytest.MonkeyPatch) -
 #: ``TranscriptionEvent.model_validate`` (the wire layer), pinning the
 #: two-layer isomorphism: same vectors, same order, same text. All segments
 #: are untimestamped unless a trace says otherwise, so list order IS the
-#: reading order (the spec's null-timestamp rule) and nothing is rescued by
-#: a timestamp sort.
+#: reading order (the spec's null-timestamp rule); the reducer never sorts by
+#: time in any case.
 _PLACEMENT_TRACES: list[dict[str, Any]] = [
     {
         "name": "replace-first-block",
         "events": [
             {"type": "final", "segment_id": "a", "text": "hello"},
-            {"type": "final", "segment_id": "b", "text": "world"},
+            {"type": "final", "segment_id": "b", "text": " world"},
             {"type": "supersede", "old_ids": ["a"], "new_ids": ["a2"]},
             {"type": "final", "segment_id": "a2", "text": "hi"},
         ],
@@ -5185,10 +5243,10 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
         "name": "replace-middle-block",
         "events": [
             {"type": "final", "segment_id": "a", "text": "one"},
-            {"type": "final", "segment_id": "b", "text": "two"},
-            {"type": "final", "segment_id": "c", "text": "three"},
+            {"type": "final", "segment_id": "b", "text": " two"},
+            {"type": "final", "segment_id": "c", "text": " three"},
             {"type": "supersede", "old_ids": ["b"], "new_ids": ["b2"]},
-            {"type": "final", "segment_id": "b2", "text": "TWO"},
+            {"type": "final", "segment_id": "b2", "text": " TWO"},
         ],
         "order": ["a", "b2", "c"],
         "text": "one TWO three",
@@ -5197,9 +5255,9 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
         "name": "replace-last-block",
         "events": [
             {"type": "final", "segment_id": "a", "text": "one"},
-            {"type": "final", "segment_id": "b", "text": "two"},
+            {"type": "final", "segment_id": "b", "text": " two"},
             {"type": "supersede", "old_ids": ["b"], "new_ids": ["b2"]},
-            {"type": "final", "segment_id": "b2", "text": "TWO"},
+            {"type": "final", "segment_id": "b2", "text": " TWO"},
         ],
         "order": ["a", "b2"],
         "text": "one TWO",
@@ -5208,11 +5266,11 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
         "name": "merge-many-to-one-mid-stream",
         "events": [
             {"type": "final", "segment_id": "s1", "text": "alpha"},
-            {"type": "final", "segment_id": "s2", "text": "beta"},
-            {"type": "final", "segment_id": "s3", "text": "gamma"},
-            {"type": "final", "segment_id": "s4", "text": "delta"},
+            {"type": "final", "segment_id": "s2", "text": " beta"},
+            {"type": "final", "segment_id": "s3", "text": " gamma"},
+            {"type": "final", "segment_id": "s4", "text": " delta"},
             {"type": "supersede", "old_ids": ["s2", "s3"], "new_ids": ["m"]},
-            {"type": "final", "segment_id": "m", "text": "beta-gamma"},
+            {"type": "final", "segment_id": "m", "text": " beta-gamma"},
         ],
         "order": ["s1", "m", "s4"],
         "text": "alpha beta-gamma delta",
@@ -5221,11 +5279,11 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
         "name": "split-one-to-many-mid-stream",
         "events": [
             {"type": "final", "segment_id": "s1", "text": "alpha"},
-            {"type": "final", "segment_id": "s2", "text": "betagamma"},
-            {"type": "final", "segment_id": "s3", "text": "delta"},
+            {"type": "final", "segment_id": "s2", "text": " betagamma"},
+            {"type": "final", "segment_id": "s3", "text": " delta"},
             {"type": "supersede", "old_ids": ["s2"], "new_ids": ["x", "y"]},
-            {"type": "final", "segment_id": "x", "text": "beta"},
-            {"type": "final", "segment_id": "y", "text": "gamma"},
+            {"type": "final", "segment_id": "x", "text": " beta"},
+            {"type": "final", "segment_id": "y", "text": " gamma"},
         ],
         "order": ["s1", "x", "y", "s3"],
         "text": "alpha beta gamma delta",
@@ -5234,12 +5292,12 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
         "name": "many-to-many-mid-stream",
         "events": [
             {"type": "final", "segment_id": "s1", "text": "a"},
-            {"type": "final", "segment_id": "s2", "text": "b"},
-            {"type": "final", "segment_id": "s3", "text": "c"},
-            {"type": "final", "segment_id": "s4", "text": "d"},
+            {"type": "final", "segment_id": "s2", "text": " b"},
+            {"type": "final", "segment_id": "s3", "text": " c"},
+            {"type": "final", "segment_id": "s4", "text": " d"},
             {"type": "supersede", "old_ids": ["s2", "s3"], "new_ids": ["t", "u"]},
-            {"type": "final", "segment_id": "t", "text": "B"},
-            {"type": "final", "segment_id": "u", "text": "C"},
+            {"type": "final", "segment_id": "t", "text": " B"},
+            {"type": "final", "segment_id": "u", "text": " C"},
         ],
         "order": ["s1", "t", "u", "s4"],
         "text": "a B C d",
@@ -5248,8 +5306,8 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
         "name": "pure-deletion-mid-stream",
         "events": [
             {"type": "final", "segment_id": "s1", "text": "keep"},
-            {"type": "final", "segment_id": "s2", "text": "drop"},
-            {"type": "final", "segment_id": "s3", "text": "tail"},
+            {"type": "final", "segment_id": "s2", "text": " drop"},
+            {"type": "final", "segment_id": "s3", "text": " tail"},
             {"type": "supersede", "old_ids": ["s2"], "new_ids": []},
         ],
         "order": ["s1", "s3"],
@@ -5259,7 +5317,7 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
         "name": "replacement-partial-before-final",
         "events": [
             {"type": "final", "segment_id": "a", "text": "hello"},
-            {"type": "final", "segment_id": "b", "text": "world"},
+            {"type": "final", "segment_id": "b", "text": " world"},
             {"type": "supersede", "old_ids": ["a"], "new_ids": ["a2"]},
             {"type": "partial", "segment_id": "a2", "text": "h"},
             {"type": "final", "segment_id": "a2", "text": "hi"},
@@ -5273,7 +5331,7 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
             # A -> B -> C where B never produces a partial/final: its
             # supersede-declared position still anchors the second splice.
             {"type": "final", "segment_id": "A", "text": "first"},
-            {"type": "final", "segment_id": "tail", "text": "last"},
+            {"type": "final", "segment_id": "tail", "text": " last"},
             {"type": "supersede", "old_ids": ["A"], "new_ids": ["B"]},
             {"type": "supersede", "old_ids": ["B"], "new_ids": ["C"]},
             {"type": "final", "segment_id": "C", "text": "FIRST"},
@@ -5287,7 +5345,7 @@ _PLACEMENT_TRACES: list[dict[str, Any]] = [
             # "a" is declared by a partial only; the replacement still takes
             # a's position, ahead of the finalized "b".
             {"type": "partial", "segment_id": "a", "text": "he"},
-            {"type": "final", "segment_id": "b", "text": "world"},
+            {"type": "final", "segment_id": "b", "text": " world"},
             {"type": "supersede", "old_ids": ["a"], "new_ids": ["a2"]},
             {"type": "final", "segment_id": "a2", "text": "hi"},
         ],
@@ -5317,7 +5375,7 @@ def test_supersede_placement_golden_traces_reduce_event(trace: dict[str, Any]) -
     for event in _wire_events(trace):
         reduce_event(order, texts, event)
     assert order == trace["order"]
-    display = " ".join(texts[sid] for sid in order if sid in texts)
+    display = "".join(texts[sid] for sid in order if sid in texts)
     assert display == trace["text"]
 
 
@@ -5339,21 +5397,20 @@ def test_supersede_placement_golden_traces_stream_reducer(trace: dict[str, Any])
     assert [segment.text for segment in result.segments] == [text for _, text in expected]
 
 
-def test_supersede_placement_with_timestamps_still_time_sorts() -> None:
-    # When EVERY retained segment carries a start, the timestamp sort stays
-    # authoritative (replacement carries the real re-measured span).
+def test_supersede_placement_with_timestamps_keeps_reading_order() -> None:
+    # Timed or not, the in-place splice decides the order: the reducer does
+    # not re-sort, and the replacement takes the retired segment's place.
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("a", "hello", start=0.0, end=1.0))
-    reducer.add(TranscriptionEvent.final("b", "world", start=1.0, end=2.0))
+    reducer.add(TranscriptionEvent.final("b", " world", start=1.0, end=2.0))
     reducer.add(TranscriptionEvent.supersede(["a"], ["a2"]))
     reducer.add(TranscriptionEvent.final("a2", "hi", start=0.0, end=1.0))
     assert reducer.result().text == "hi world"
 
-    # MIXED spans (one segment unmeasured) -> reading order governs, which
-    # after the in-place splice is already the correct order.
+    # MIXED spans (one segment unmeasured): the same reading order.
     mixed = StreamReducer()
     mixed.add(TranscriptionEvent.final("a", "hello", start=0.0, end=1.0))
-    mixed.add(TranscriptionEvent.final("b", "world"))
+    mixed.add(TranscriptionEvent.final("b", " world"))
     mixed.add(TranscriptionEvent.supersede(["a"], ["a2"]))
     mixed.add(TranscriptionEvent.final("a2", "hi"))
     assert mixed.result().text == "hi world"
@@ -5366,10 +5423,10 @@ def test_supersede_noncontiguous_old_block_is_suppressed_everywhere() -> None:
     # session guard suppresses with the same code (strict raises below).
     events = [
         TranscriptionEvent.final("a", "one"),
-        TranscriptionEvent.final("x", "keep"),
-        TranscriptionEvent.final("b", "two"),
+        TranscriptionEvent.final("x", " keep"),
+        TranscriptionEvent.final("b", " two"),
         TranscriptionEvent.supersede(["a", "b"], ["m"]),
-        TranscriptionEvent.final("m", "merged"),
+        TranscriptionEvent.final("m", " merged"),
     ]
     reducer = StreamReducer()
     for event in events:
@@ -5391,9 +5448,9 @@ def test_supersede_misordered_old_ids_are_suppressed() -> None:
     # in reading order (the replacement takes the block's place in it).
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("a", "one"))
-    reducer.add(TranscriptionEvent.final("b", "two"))
+    reducer.add(TranscriptionEvent.final("b", " two"))
     reducer.add(TranscriptionEvent.supersede(["b", "a"], ["m"]))
-    reducer.add(TranscriptionEvent.final("m", "merged"))
+    reducer.add(TranscriptionEvent.final("m", " merged"))
     result = reducer.result()
     assert result.text == "one two merged"
     assert any(d.code == "supersede_noncontiguous_old_ids" for d in result.diagnostics)
@@ -5489,7 +5546,7 @@ def test_session_reduces_mid_stream_supersede_in_place() -> None:
     # order (no timestamps anywhere).
     events = [
         TranscriptionEvent.final("a", "hello"),
-        TranscriptionEvent.final("b", "world"),
+        TranscriptionEvent.final("b", " world"),
         TranscriptionEvent.supersede(["a"], ["a2"]),
         TranscriptionEvent.final("a2", "hi"),
     ]
@@ -5524,7 +5581,7 @@ def test_reading_order_ledger_and_helper_edge_paths() -> None:
     # A partial for a RETIRED id cannot resurrect a reading-order position.
     reducer = StreamReducer()
     reducer.add(TranscriptionEvent.final("a", "one"))
-    reducer.add(TranscriptionEvent.final("b", "two"))
+    reducer.add(TranscriptionEvent.final("b", " two"))
     reducer.add(TranscriptionEvent.supersede(["a"], ["a2"]))
     reducer.add(TranscriptionEvent.partial("a", "zombie"))
     reducer.add(TranscriptionEvent.final("a2", "ONE"))
