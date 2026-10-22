@@ -23,10 +23,12 @@ Every leaf node is one of three archetypes -- **flag**, **bounded**, or
 strict / best_effort gating is consistent across the tree.
 
 Every typed leaf node also states its kind (:data:`CapabilityKind`) in a
-``kind`` field that its class pins: ``requestable`` when an application can
-ask for the feature, ``behavior`` when the engine does it on its own. Each
-``constraints`` submodel states ``limit``, and a container states no kind.
-A raw ``x_*`` node states a kind only when its declaration writes one.
+``kind`` field that its class pins. ``requestable`` means an application can
+ask for the feature. ``behavior`` means the node describes a property, a
+behavior, or a promise of the engine that no standard ``RuntimeParams``
+field requests. Each ``constraints`` submodel states ``limit``, and a
+container states no kind. A raw ``x_*`` node states a kind only when its
+declaration writes one.
 
 Applications query the tree with a dot-path, and a missing key is
 *fail-closed*. :meth:`DeclaredCapabilities.supports` answers whether the
@@ -62,8 +64,9 @@ _UNSUPPORTED_MODES = frozenset({"none", "unsupported"})
 #: ``x_*`` node has one only when its declaration writes it.
 #: ``requestable``: an application can ask for the feature in a request;
 #: a standard node is requested through a ``RuntimeParams`` field.
-#: ``behavior``: the engine does this on its own; an application can
-#: neither ask for it nor refuse it.
+#: ``behavior``: a property, a behavior, or a promise of the engine that no
+#: standard ``RuntimeParams`` field requests. A supported behavior node
+#: states a fact and grants nothing a request can ask for.
 #: ``limit``: a bound on a requestable feature (a ``constraints`` submodel).
 #: There is no ``observation`` kind: a declaration is static, so a fact that
 #: changes with the host machine lives outside the capability tree. Each
@@ -179,9 +182,14 @@ class _JsonExtraModel(JsonExtraModel):
     """Apply capability dot-path rules to the shared JSON-extra base."""
 
     # ``canonical_json()`` writes every field, defaults included, so the
-    # serialization-mode JSON Schema can list every field as required. That
-    # is how a client generated from the schema sees ``kind`` as a required
-    # ``const``; a validation-mode schema leaves a defaulted field optional.
+    # serialization-mode JSON Schema can list every field as required and
+    # show ``kind`` as a required ``const``. A validation-mode schema leaves
+    # a defaulted field optional. The schema covers fields only. The
+    # ``supported`` key that ``canonical_json()`` adds to every present
+    # container and mode domain, and to every enum/mode node such as
+    # ``FinalityCap``, is not a field of any class, so the schema lacks it.
+    # A complete schema of the capability endpoint is item 29 of the
+    # roadmap (issue #27).
     model_config = ConfigDict(json_schema_serialization_defaults_required=True)
 
     @classmethod
@@ -338,7 +346,7 @@ class DiarizationConstraints(_ConstraintNode):
 # Leaf capability nodes.
 # --------------------------------------------------------------------------- #
 class FlagCap(_FlagLikeNode):
-    """A supported / not-supported flag for something the engine does on its own.
+    """A supported / not-supported flag for a property, a behavior, or a promise of the engine.
 
     Its ``kind`` is ``behavior``: a supported flag tells an application a
     fact about the engine and grants nothing it can request, as with
@@ -974,10 +982,13 @@ class DeclaredCapabilities(_Container):
 
         Enforces the normative ``effective ⊆ declared`` invariant:
         the effective set may only *close* declared capabilities, never widen
-        them. This checks two things:
+        them. This checks three things:
 
         * **Set containment** -- every supported path in ``other`` is also
           supported here (no feature is enabled that this tree did not declare).
+        * **Same kind** -- at every path both trees hold, :meth:`kind_at`
+          gives the same answer, whether or not the node is supported there.
+          A path that ``other`` omits is a narrowing.
         * **Constraint narrowing** -- where both trees support a bounded or
           enum/mode node, ``other``'s limits MUST be no looser than this tree's
           (for example, a smaller-or-equal ``max``, a subset of ``granularities``, a
@@ -993,6 +1004,19 @@ class DeclaredCapabilities(_Container):
         mine = set(self.iter_supported_paths())
         for path in other.iter_supported_paths():
             if path not in mine:
+                return False
+        # A node's kind is data (design D3), and it does not depend on
+        # support, so the kind of every node both trees hold must agree,
+        # supported or not: a change in either direction changes what
+        # kind_at() and can_request() answer, and neither direction narrows.
+        # A path the effective tree omits is a narrowing the loop above
+        # already allowed, so only shared paths are compared.
+        for path in other.iter_queryable_paths():
+            effective_node = other._resolve(path)
+            declared_node = self._resolve(path)
+            if declared_node is None:
+                continue
+            if _derive_kind(declared_node) != _derive_kind(effective_node):
                 return False
         # Where both support a node, the effective node must not be looser.
         for path in other.iter_supported_paths():
@@ -1352,12 +1376,6 @@ def _node_narrows(declared: object, effective: object) -> bool:
     Returns:
         ``True`` if ``effective`` does not widen ``declared``.
     """
-    # kind: what a node states is data (design D3). A change between the
-    # declared and the effective tree changes what can_request() answers,
-    # and neither direction is a narrowing, so any change is a widening.
-    if _derive_kind(declared) != _derive_kind(effective):
-        return False
-
     # enum/mode nodes: the effective mode must be a reduction of the declared.
     declared_mode = _read_attr(declared, "mode")
     effective_mode = _read_attr(effective, "mode")

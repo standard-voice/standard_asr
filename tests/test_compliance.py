@@ -44,6 +44,7 @@ from standard_asr.contract.artifacts import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
+    CandidateLanguagesCap,
     DeclaredCapabilities,
     DiarizationCap,
     FinalityCap,
@@ -6035,6 +6036,25 @@ def test_requestable_kinds_check_runs_at_class_level_without_instantiation() -> 
     assert "batch.extra_feature" in ungated[0].message
     report = check_entrypoints(registry=_registry("ungated_requestable_factory"))
     assert [issue.code for issue in report.issues].count("requestable_node_ungated") == 1
+
+
+def test_requestable_kinds_check_covers_the_exempt_path_in_the_forward_direction() -> None:
+    # language.candidate_languages is requested through RuntimeParams and
+    # gated by effective_candidate_languages, so it is exempt from the gating
+    # table but still has to be requestable: a plugin that replaces the node
+    # with a subclass of another kind is reported.
+    class _Misclassified(CandidateLanguagesCap):
+        kind: Literal["behavior"] = "behavior"  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    caps = DeclaredCapabilities(
+        batch=BatchCapabilities(
+            language=LanguageCaps(candidate_languages=_Misclassified(supported=True))
+        )
+    )
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_kinds(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+    assert [issue.code for issue in issues] == ["gated_param_not_requestable"]
+    assert "batch.language.candidate_languages" in issues[0].message
 
 
 def test_requestable_kinds_check_flags_a_requestable_node_no_gate_checks(

@@ -105,9 +105,12 @@ _UNGATED_PORTABLE_FIELDS: frozenset[str] = frozenset(
 #: Requestable capability paths that no :data:`_GATED_PARAMS` row checks,
 #: each with the reason. Each entry is a dot-path suffix relative to the
 #: mode, like the table's second column, so one entry covers both modes.
-#: The compliance suite requires every standard node whose ``kind`` is
-#: ``requestable`` to be a :data:`_GATED_PARAMS` row or an entry here. A new
-#: requestable node that nothing gates is then reported as the error
+#: The compliance suite reads this set in both directions. Forward: under
+#: each declared mode, each entry must resolve to a node whose ``kind`` is
+#: ``requestable``, or the suite reports ``gated_param_not_requestable``.
+#: Reverse: a standard node whose ``kind`` is ``requestable`` and that is
+#: not a :data:`_GATED_PARAMS` row must be listed here. A new requestable
+#: node that nothing gates is then reported as the error
 #: ``requestable_node_ungated``; without the check, a request for it would
 #: reach the engine unchecked.
 _UNGATED_REQUESTABLE_PATHS: frozenset[str] = frozenset(

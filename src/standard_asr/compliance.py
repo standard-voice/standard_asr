@@ -1110,10 +1110,11 @@ def _check_requestable_kinds(
 ) -> None:
     """Check that the gating table and the tree's requestable nodes agree, both ways.
 
-    Forward: under each declared mode, every ``_GATED_PARAMS`` row resolves
-    to a node whose ``kind`` is ``requestable``. Reverse: every standard
-    node under a declared mode whose ``kind`` is ``requestable`` is a
-    ``_GATED_PARAMS`` row or an entry in ``_UNGATED_REQUESTABLE_PATHS``.
+    Forward: under each declared mode, every ``_GATED_PARAMS`` row and every
+    entry in ``_UNGATED_REQUESTABLE_PATHS`` resolves to a node whose ``kind``
+    is ``requestable``. Reverse: every standard node under a declared mode
+    whose ``kind`` is ``requestable`` is a ``_GATED_PARAMS`` row or an entry
+    in ``_UNGATED_REQUESTABLE_PATHS``.
     One direction alone leaves a hole. A requestable node that no gate
     checks makes ``can_request()`` answer ``True``, yet a request for it
     reaches the engine unchecked. An engine that does not support the
@@ -1137,7 +1138,9 @@ def _check_requestable_kinds(
         if getattr(declared, mode) is None:
             continue
         prefix = f"{mode}."
-        for _, suffix in _GATED_PARAMS:
+        # Forward: every path a request can reach, the table's rows and the
+        # named exemptions alike, resolves to a requestable node.
+        for suffix in sorted(gated | _UNGATED_REQUESTABLE_PATHS):
             path = prefix + suffix
             kind = declared.kind_at(path)
             if kind != "requestable":

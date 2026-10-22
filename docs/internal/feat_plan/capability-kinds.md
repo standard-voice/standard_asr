@@ -12,6 +12,7 @@ of statement:
 
 - **Requestable** — the caller can ask for the feature.
 - **Behavior** — the engine does this. The caller cannot ask for it or refuse it.
+  > Amended 2026-10-21, from the review of #124: a behavior is a property, a behavior, or a promise of the engine that no standard `RuntimeParams` field requests. A supported behavior node states a fact and grants nothing a request can ask for. The kind table of the specification says so (`docs/content/specification/protocol.md`, capabilities section 3.3). The wording above does not fit `streaming_input`, `streaming_output`, or `guidance.mutable_mid_stream`, which describe what the engine offers, not something it imposes.
 - **Limit** — a boundary on a requestable feature, for example a maximum term count.
 - **Observation** — a measurement that changes with the machine or the environment.
 
@@ -123,6 +124,8 @@ list in both schema modes. Set
 and generate the wire schema in serialization mode. The wire document always
 carries `kind`, because `canonical_json()` dumps defaults, so that schema
 describes the wire truthfully. Item 4 tests the result.
+
+> Amended 2026-10-21, from the review of #124: the serialization-mode schema lists the fields of the capability classes only. The derived `supported` that `canonical_json()` adds to every present container and mode domain and to every enum/mode node is not a field of any class. The schema does not describe it, so the schema is not a complete schema of the wire document. A complete schema of the capability endpoint, one a client can be generated from, is roadmap item 29 of #27. Capabilities R6 in the specification says the same.
 
 Pinning the kind per class exposes one place where the class inventory is too
 coarse today: `language.runtime_override` is requestable — it is the

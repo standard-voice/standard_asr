@@ -1490,15 +1490,24 @@ def test_x_star_dict_node_kind_is_read_strictly() -> None:
 def test_covers_rejects_a_kind_change_on_a_vendor_node() -> None:
     # Standard nodes pin their kind per class, so only a raw x_* node can
     # change kind between the declared and the effective tree. Either
-    # direction changes what can_request() answers, so neither narrows.
-    def tree(kind: str) -> DeclaredCapabilities:
+    # direction changes what kind_at() and can_request() answer, so neither
+    # narrows, and support does not matter: an unsupported node still has a
+    # kind, so a change on one is a widening too.
+    def tree(kind: str, supported: bool = True) -> DeclaredCapabilities:
         return DeclaredCapabilities.model_validate(
-            {"batch": {"x_vendor_thing": {"supported": True, "kind": kind}}}
+            {"batch": {"x_vendor_thing": {"supported": supported, "kind": kind}}}
         )
 
     assert tree("behavior").covers(tree("behavior")) is True
     assert tree("behavior").covers(tree("requestable")) is False
     assert tree("requestable").covers(tree("behavior")) is False
+    # Same kind, support dropped: a narrowing.
+    assert tree("requestable").covers(tree("requestable", supported=False)) is True
+    # A changed kind on a node that is not supported any more, or never was.
+    assert tree("requestable").covers(tree("behavior", supported=False)) is False
+    assert tree("requestable", supported=False).covers(tree("behavior", supported=False)) is False
+    # Omitting the node altogether stays a narrowing.
+    assert tree("requestable").covers(DeclaredCapabilities(batch=BatchCapabilities())) is True
 
 
 def test_container_rejects_a_kind_key() -> None:
@@ -1544,12 +1553,14 @@ def test_canonical_json_carries_kind_on_nodes_and_limits_not_containers() -> Non
 
 
 def test_serialization_schema_requires_kind_with_the_pinned_value() -> None:
-    """The generated schema is what a non-Python client reads (design D3).
+    """The serialization-mode schema requires ``kind`` with the value each class pins.
 
     Every concrete node and constraint definition carries ``kind`` as a
     required property whose ``const`` is the value the class pins. A
-    validation-mode schema would leave a defaulted ``kind`` optional, so the
-    serialization-mode schema is the contract.
+    validation-mode schema would leave a defaulted ``kind`` optional. The
+    schema lists the classes' fields only: it lacks the derived
+    ``supported`` that ``canonical_json()`` adds, so it is not a complete
+    schema of the capability endpoint (spec capabilities R6).
     """
     schema = DeclaredCapabilities.model_json_schema(mode="serialization")
     defs = cast("dict[str, dict[str, Any]]", schema["$defs"])

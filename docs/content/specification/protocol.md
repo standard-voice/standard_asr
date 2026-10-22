@@ -321,7 +321,7 @@ lang: zh-Hans
 | effective_capabilities（生效能力） | 引擎**实例化后**，根据实际配置可能**收窄**的能力子集。例如，引擎声明支持 `word_timestamps`，但用户未配 `forced_aligner`，则运行时不可用。**不变量 `effective ⊆ declared`**（只能关、不能凭空开）。合规测试强制校验此子集关系。 |
 | 引擎全局能力 | 不绑定在任何 mode 域内的正交能力。放在能力树顶层，如 `streaming_input`、`streaming_output`。 |
 | 节点原型 (archetype) | 能力树叶节点的三种固定形态：flag、bounded、enum/mode（详见 §3.3）。 |
-| 节点种类 (kind) | 节点陈述的是哪一类事实：`requestable`（应用可以请求的功能）、`behavior`（引擎自己就这样做）或 `limit`（可请求功能的限额）。每个标准叶节点和每个 `constraints` 子模型都带 `kind` 字段，容器不带；`x_*` 节点只在声明写了 `kind` 时才带（详见 §3.3、§4 R4）。 |
+| 节点种类 (kind) | 节点陈述的是哪一类事实：`requestable`（应用可以请求的功能）、`behavior`（任何标准 `RuntimeParams` 字段都不请求的引擎特性、行为或承诺）或 `limit`（可请求功能的限额）。每个标准叶节点和每个 `constraints` 子模型都带 `kind` 字段，容器不带；`x_*` 节点只在声明写了 `kind` 时才带（详见 §3.3、§4 R4）。 |
 | 点路径 (dot-path) | 用于点路径查询（`supports()`、`can_request()`、`kind_at()`，§4 R5）的字符串，以 `.` 分隔层级。从 mode 域或顶层正交能力起始，**不带** `capabilities.` 前缀。如 `"batch.word_timestamps"`、`"streaming.guidance.phrase_hints"`。 |
 | fail-closed | 能力系统的默认安全策略：任何未声明的能力键一律视为不支持，而非报错或假定支持。 |
 | `x_*` 命名空间 | 实验性能力的保留前缀，格式 `x_<vendor>_<feature>`。显式标记为非标准，遵循与标准能力相同的门控规则。 |
@@ -408,7 +408,7 @@ capabilities:
 | `kind` | 含义 | 标准节点 |
 |---|---|---|
 | `requestable`（可请求） | 应用可以在请求中要求这个功能；`supported=true` 表示可以要求。 | 各 mode 的 `language.runtime_override`、`language.candidate_languages`、`word_timestamps`、`guidance.prompt`、`guidance.phrase_hints`、`diarization` |
-| `behavior`（行为） | 引擎自己就这样做，应用既不能要求，也不能拒绝。被支持的 `behavior` 节点告知一项事实，不授予任何可请求的东西。 | 其余全部叶节点：引擎全局的 `streaming_input`、`streaming_output`、`self_resamples`；各 mode 的 `diarization.always_on`；流式的 `guidance.mutable_mid_stream`、`emits_partials`、`re_segments`、`partial_stability`、`reconnect`、`finality_level`、`timestamps` |
+| `behavior`（行为） | 引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它。被支持的 `behavior` 节点告知一项事实，不授予任何可请求的东西。 | 其余全部叶节点：引擎全局的 `streaming_input`、`streaming_output`、`self_resamples`；各 mode 的 `diarization.always_on`；流式的 `guidance.mutable_mid_stream`、`emits_partials`、`re_segments`、`partial_stability`、`reconnect`、`finality_level`、`timestamps` |
 | `limit`（限额） | 一个可请求功能的机器可校验限额，如 `guidance.phrase_hints.constraints.max_terms`（最多几个词条）。 | 每个 `constraints` 子模型 |
 
 每个节点类固定一个种类，与原型无关：同为 flag 原型，`FlagCap` 固定为 `behavior`，`RuntimeOverrideCap` 固定为 `requestable`。引擎不填写 `kind`；与节点类不符的值在构造期校验失败，容器带 `kind` 键的声明同样拒绝。引擎 MUST 让 declared 与 effective 两层同一路径的 `kind` 相同：不同即视为放宽，`covers()` 拒绝（§3.1）。因此 `language.runtime_override` 用它自己的节点类 `RuntimeOverrideCap` 声明，用 `FlagCap` 声明它无法通过校验。
@@ -439,7 +439,7 @@ capabilities:
 
 **R6 — canonical JSON。** `capabilities` 在 Python 侧是 typed pydantic 树；REST `GET .../capabilities` 暴露 canonical JSON，每个节点（叶节点 + **存在的容器/mode 域**）带（派生的）`supported` 字段。enum/mode 节点的 `supported` 由服务端注入（跨语言统一探针），实现见 `DeclaredCapabilities.canonical_json()`。结构契约（跨语言客户端 MUST 可依赖）：**根对象本身不带 `supported`**（它是所有 mode 的容器，非能力）；**缺席的 mode 域序列化为 `null`**（fail-closed，等价于不支持）；`constraints` 等限额子模型非能力节点，**不注入** `supported`（只保留其限额字段与 `kind`）；**每个标准叶节点带 `kind`**（`requestable` 或 `behavior`），**每个 `constraints` 子模型带 `kind: "limit"`**，容器、mode 域与根对象**不带 `kind`**——客户端把缺席读作「这个路径只给节点分组，不陈述事实」。`x_*` 节点只在声明写了 `kind` 时才带，客户端按 R4 读它。
 
-`kind` 是 wire 上的数据，不只是 Python 方法：非 Python 客户端调用不到 `can_request()`，它读 canonical JSON，并按 JSON Schema 生成类型。以 serialization 模式从 `DeclaredCapabilities` 生成的 JSON Schema（`model_json_schema(mode="serialization")`）中，每个节点类的定义都把 `kind` 列为 required 属性，其 `const` 是该类固定的那一个值。canonical JSON 写出每个字段（含默认值），所以这份 schema 如实地把每个字段都列为 required。validation 模式的 schema 不把带默认值的 `kind` 列为 required，描述 wire 文档的是 serialization 模式的 schema。
+`kind` 是 wire 上的数据，不只是 Python 方法：非 Python 客户端调用不到 `can_request()`，它读 canonical JSON。以 serialization 模式从 `DeclaredCapabilities` 生成的 JSON Schema（`model_json_schema(mode="serialization")`）中，每个节点类的定义都把 `kind` 列为 required 属性，其 `const` 是该类固定的那一个值。canonical JSON 写出每个字段（含默认值），所以这份 schema 把各个类的每个字段都列为 required；validation 模式的 schema 不把带默认值的 `kind` 列为 required。这份 schema 只描述类的字段：canonical JSON 给每个存在的容器与 mode 域、每个 enum/mode 节点注入的派生 `supported` 由投影代码写出，不是任何类的字段，所以 schema 里没有它（例如 `FinalityCap` 的定义只有 `kind` 与 `mode`）。因此它不是能力端点完整的 wire schema；可以据此生成客户端的完整 wire schema 留给路线图（#27）第 29 项（wire 形式化）。
 
 **R7 — Capabilities 与 Properties 边界（定死一处家）。**
 
