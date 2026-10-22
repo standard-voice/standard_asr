@@ -469,10 +469,11 @@ def _add_serve_subcommand(subparsers: Any) -> None:
         "serve",
         help="Start the FastAPI server for Standard ASR.",
         description=(
-            "Start the FastAPI server for Standard ASR. The server keeps one idle engine per "
-            "model it has served, with the model loaded, until it stops. An engine reads its "
-            "configuration from the environment when the server constructs it, so restart the "
-            "server after changing the environment."
+            "Start the FastAPI server for Standard ASR. After a call that succeeds, the server "
+            "keeps the engine instance, with the model weights it loaded, for the next call to "
+            "the same model key: at most one idle instance per model key. An instance reads its "
+            "init config from the environment once, when the server constructs it, so restart "
+            "the server after you change the environment."
         ),
         allow_abbrev=False,
     )

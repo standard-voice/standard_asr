@@ -18,10 +18,9 @@ not a substitute for a rate limiter.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -414,7 +413,9 @@ class _IdleEngines:
             keep: Whether the call succeeded and the server saw its work end.
         """
         if not keep:
-            logger.info("Dropped the engine for model %r: its call did not succeed", model)
+            logger.info(
+                "Dropped the engine for model %r: its call failed or did not end cleanly", model
+            )
         elif model in self._idle:
             logger.info("Dropped the engine for model %r: another instance is idle", model)
         else:
@@ -423,8 +424,8 @@ class _IdleEngines:
 
     def clear(self) -> None:
         """Drop every idle instance."""
-        if self._idle:
-            logger.info("Dropped %d idle engine instance(s) at shutdown", len(self._idle))
+        for model in self._idle:
+            logger.info("Dropped the idle engine for model %r at shutdown", model)
         self._idle.clear()
 
 
@@ -459,6 +460,11 @@ def create_app(
             one WebSocket session; exceeding it closes the socket with a policy
             error (see :data:`DEFAULT_MAX_WS_SESSION_BYTES`).
 
+    The application keeps at most one idle engine instance per model key
+    between calls (server API, section 5) and drops them in its shutdown
+    event. A host that never runs that event, such as a parent application
+    that mounts this one, keeps them until the application is collected.
+
     Returns:
         FastAPI application instance.
 
@@ -488,15 +494,12 @@ def create_app(
     globals()["WebSocket"] = _WebSocket
 
     idle = _IdleEngines()
-
-    @contextlib.asynccontextmanager
-    async def lifespan(_app: Any) -> AsyncGenerator[None, None]:
-        yield
-        # uvicorn has closed the open streams and waited for the requests in
-        # progress by now; the idle instances go with the application.
-        idle.clear()
-
-    app = FastAPI(title="Standard ASR", lifespan=lifespan)
+    # A shutdown handler, not a custom lifespan: FastAPI's default lifespan
+    # also runs the handlers an application registers on the returned app,
+    # and a custom one would silently skip them. By shutdown, uvicorn has
+    # closed the open WebSocket connections and waited for the requests in
+    # progress, so no call holds an instance.
+    app = FastAPI(title="Standard ASR", on_shutdown=[idle.clear])
     # Use the caller's registry when one is given -- even an empty one. A bare
     # ``registry or discover_models()`` would treat an explicitly passed empty
     # ``ModelRegistry({})`` as falsy (it is len 0) and silently fall back to
@@ -1351,7 +1354,8 @@ async def _bridge_stream(
 
     Returns:
         Whether the session yielded its terminal ``done`` and every step after
-        entry, forwarding and exit included, ended without a fault. The
+        entry ended without a fault: the audio input (no byte cap exceeded,
+        no receive failure), the forwarding of events, and the exit. The
         engine's work for the session has then finished, so the route can
         keep the engine for the next call. A canceled bridge returns nothing:
         the cancellation propagates.
@@ -1604,7 +1608,7 @@ async def _bridge_stream(
         except Exception:  # noqa: BLE001
             clean = False
             log_exception_safely(logger, "WebSocket session teardown failed")
-    return saw_done and clean
+    return saw_done and clean and not violation and not pump_failed
 
 
 async def _create_engine_or_http_error(

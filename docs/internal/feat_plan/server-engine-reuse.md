@@ -25,7 +25,7 @@ Read on `origin/main` of each repository on 2026-10-22: standard_asr 31612eb, st
 - When a WebSocket client disconnects, the server's audio pump treats it as the end of audio and calls `end_audio()`, and teardown starts at the next send. `TranscriptionSession.__aexit__` cancels the producer and feed tasks, awaits them, then awaits `_close` (`runtime/streaming.py`, lines 3098 to 3103). If std-faster-whisper's producer was waiting on a decode, the decode thread keeps running after `__aexit__` returns, and its session does not await it in `_close`.
 - When the engine's `_produce` yields a terminal event itself, or the event buffer overflows, the session stops iterating `_produce` without closing it (`runtime/streaming.py`, lines 3155 to 3166). The engine's async generator stays suspended, and its cleanup, such as a `finally` block that closes a connection, runs later in a task the event loop starts when the generator is collected, after `__aexit__` returned. A minimal reproduction of the pattern on 2026-10-22 showed the cleanup starting after the session had ended.
 
-**Shutdown.** uvicorn stops accepting connections, closes every open WebSocket with code 1012, and waits for the HTTP requests in progress and for the handlers to return (`uvicorn/server.py` in 0.54.0; `run()` in `server.py` passes no `timeout_graceful_shutdown`, so the wait has no limit). Then it runs the application's lifespan shutdown. The application defines no lifespan today.
+**Shutdown.** uvicorn stops accepting connections, closes every open WebSocket with code 1012, and waits for the HTTP requests in progress and for the handlers to return (`uvicorn/server.py` in 0.54.0; `run()` in `server.py` passes no `timeout_graceful_shutdown`, so the wait has no limit). Then it runs the application's lifespan shutdown. The application registers no startup or shutdown work today.
 
 **The protocol.**
 
@@ -79,7 +79,7 @@ Construction errors map to HTTP statuses and WebSocket error codes as they do to
 An instance returns to the holder only after a call that succeeded, and only when the server can see that the engine's work for the call has finished. Every other ending drops it.
 
 - **REST.** Kept when `transcribe` returned a result and the server encoded the response. Dropped on every exception, a caller's error included, and when the handler is canceled, which uvicorn does only at shutdown after a graceful timeout, while the worker thread may still be running.
-- **WebSocket.** Kept when the session yielded its terminal `done` event to the bridge and the session's `__aexit__` returned without raising. Dropped on every other ending: a terminal `error` event, whether the engine sent it or a deadline ended the session; a client that left before `done`; a fault while forwarding events; a fault in `_close`; a canceled handler; and every establishment failure. The bridge reports this verdict to the route as a private return value, because it catches a fault in `_close` and a failed send itself.
+- **WebSocket.** Kept when the session yielded its terminal `done` event to the bridge and the session's `__aexit__` returned without raising. Dropped on every other ending: a terminal `error` event, whether the engine sent it or a deadline ended the session; a client that left before `done`; audio that exceeded a byte cap, or an audio input that failed; a fault while forwarding events; a fault in `_close`; a canceled handler; and every establishment failure. The bridge reports this verdict to the route as a private return value, because it catches a fault in `_close` and a failed send itself.
 
 Why not keep the instance after a caller's error: `AudioProcessingError` and `UnsupportedFeatureError` usually come from the standard layer before the engine runs, but nothing stops an engine from raising either one after it loaded or changed state, and neither exception promises that the instance still works. Keeping only after success needs no such promise.
 
@@ -89,7 +89,7 @@ The cost: after an error, or a client that leaves before `done`, the next call f
 
 ### 5.3 Shutdown
 
-On an ordinary shutdown, uvicorn closes the open WebSocket sessions, so a session that had not yet yielded `done` ends without it and its instance is dropped. It waits for the HTTP requests in progress and for the handlers, and their instances are kept or dropped as in 5.2. Then the application's lifespan shutdown, new in this change, drops every idle instance. Two paths skip part of this: a second interrupt forces the exit without the wait or the lifespan shutdown, and an operator's graceful timeout cancels the handlers still running when it expires, which drops their instances. The protocol gets no engine-wide close in this change; item 19 needs one for eviction and can define it there. A thread that a canceled call left running finishes on its own, and the interpreter waits for it before the process exits.
+On an ordinary shutdown, uvicorn closes the open WebSocket sessions, so a session that had not yet yielded `done` ends without it and its instance is dropped. It waits for the HTTP requests in progress and for the handlers, and their instances are kept or dropped as in 5.2. Then a shutdown handler, new in this change, drops every idle instance. It is a handler rather than a custom lifespan, because FastAPI's default lifespan also runs the handlers an application registers on the app, and a custom one would skip them. Two paths skip part of this: a second interrupt forces the exit without the wait or the lifespan shutdown, and an operator's graceful timeout cancels the handlers still running when it expires, which drops their instances. The protocol gets no engine-wide close in this change; item 19 needs one for eviction and can define it there. A thread that a canceled call left running finishes on its own, and the interpreter waits for it before the process exits.
 
 ### 5.4 Two rules the protocol gains
 
@@ -112,7 +112,7 @@ Each problem in section 2 becomes a companion pull request in its plugin's repos
 
 - **std-qwen3-asr:** a session creates the HTTP client it streams with when it opens and closes it when it ends, as §6.5 already requires of every resource bound to an event loop, so no later batch call or session on another event loop receives a client bound to the first one (rule 1). A cache of clients per event loop would also work, but it would need its own cleanup, since every `SyncSession` runs its own loop.
 - **std-faster-whisper:** the session keeps the future of each decode, so that it stays awaitable after the producer is canceled, and waits for it in `_close` (rule 2).
-- **std-mlx-audio:** publish `_model` only after both the model-family check and the priming succeed, and fail the load otherwise, so that no call can use an unchecked model or generate on another thread without priming, which can abort the process; and update the stale comment in `_streaming.py`.
+- **std-mlx-audio:** publish `_model` only after the model-family check passes and the priming ran, so that a failed check leaves no model on the instance; and update the stale comment in `_streaming.py`. A failed priming stays a warning, as the plugin decided: a model family can reject 0.1 seconds of silence and still work on real audio. For such a family, a generate on another thread can still abort the process; the plugin's warning records it.
 
 ## 7. Evidence and tests
 
@@ -125,7 +125,7 @@ Each problem in section 2 becomes a companion pull request in its plugin's repos
 - a stream that ends with `done` keeps the instance, a `done` delivered at a deadline included; an engine `error`, a deadline that ends the session, a client that leaves early, and a fault in `_close` each drop it;
 - in the session runtime, an engine that yields its own terminal event, or overflows the buffer, has its producer closed and its cleanup finished before the terminal event reaches the consumer;
 - a canceled REST handler drops the instance;
-- the lifespan shutdown drops the idle instances.
+- the shutdown handler drops the idle instances, and an application's own shutdown handler still runs.
 
 ## 8. Alternatives not taken
 

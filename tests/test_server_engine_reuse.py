@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""The reference server keeps one idle engine instance per model key.
+"""The reference server keeps at most one idle engine instance per model key.
 
 The design is in ``docs/internal/feat_plan/server-engine-reuse.md``. Each test
 engine records its constructions, so a test can say how many engines the
@@ -60,6 +60,7 @@ def _reset() -> Iterator[None]:
     BEHAVIOR.update(transcribe="ok", session="done")
     yield
     _BatchEngine.gate = None
+    _BatchEngine.entered = None
 
 
 class _Config(BaseConfig[str]):
@@ -88,11 +89,16 @@ class _BatchEngine:
     #: Set by a test to hold ``transcribe`` until the test releases it.
     gate: ClassVar[threading.Barrier | threading.Event | None] = None
 
+    #: Set by a test to learn that ``transcribe`` has started.
+    entered: ClassVar[threading.Event | None] = None
+
     def __init__(self) -> None:
         self.config = _Config(engine="reuse-batch")
         CONSTRUCTED.append(self)
 
     def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        if self.entered is not None:
+            self.entered.set()
         if self.gate is not None:
             self.gate.wait(timeout=5)
         if BEHAVIOR["transcribe"] == "engine_error":
@@ -171,10 +177,10 @@ def _registry() -> ModelRegistry:
     return discover_models(eps=eps, strict=True)
 
 
-def _client() -> TestClient:
+def _client(**caps: int) -> TestClient:
     from fastapi.testclient import TestClient
 
-    return TestClient(server_module.create_app(registry=_registry()))
+    return TestClient(server_module.create_app(registry=_registry(), **caps))
 
 
 def _transcribe(client: TestClient) -> int:
@@ -208,11 +214,11 @@ def test_overlapping_calls_get_their_own_engines_and_one_stays_idle(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Two calls in flight at once each need an instance; when both end, one
-    # instance stays idle, so later calls construct nothing more.
-    client = _client()
+    # instance stays idle, so later calls construct nothing more. The client
+    # context runs every request on one event loop, as uvicorn does.
     _BatchEngine.gate = threading.Barrier(2)
     statuses: list[int] = []
-    try:
+    with _client() as client:
         with caplog.at_level(logging.INFO, logger="standard_asr.toolchain.server"):
             threads = [threading.Thread(target=lambda: statuses.append(_transcribe(client)))]
             threads.append(threading.Thread(target=lambda: statuses.append(_transcribe(client))))
@@ -220,12 +226,11 @@ def test_overlapping_calls_get_their_own_engines_and_one_stays_idle(
                 thread.start()
             for thread in threads:
                 thread.join(timeout=10)
-    finally:
         _BatchEngine.gate = None
-    assert statuses == [200, 200]
-    assert len(CONSTRUCTED) == 2
-    assert "another instance is idle" in caplog.text
-    assert [_transcribe(client) for _ in range(2)] == [200, 200]
+        assert statuses == [200, 200]
+        assert len(CONSTRUCTED) == 2
+        assert "another instance is idle" in caplog.text
+        assert [_transcribe(client) for _ in range(2)] == [200, 200]
     assert len(CONSTRUCTED) == 2
 
 
@@ -239,9 +244,7 @@ def test_a_call_that_raises_drops_its_engine(
     BEHAVIOR["transcribe"] = behavior
     with caplog.at_level(logging.INFO, logger="standard_asr.toolchain.server"):
         assert _transcribe(client) == status
-    assert (
-        "Dropped the engine for model 'reuse-batch/echo': its call did not succeed" in caplog.text
-    )
+    assert "Dropped the engine for model 'reuse-batch/echo': its call failed" in caplog.text
     BEHAVIOR["transcribe"] = "ok"
     assert _transcribe(client) == 200
     assert len(CONSTRUCTED) == 2
@@ -257,6 +260,7 @@ def test_a_canceled_call_drops_its_engine() -> None:
     idle = server_module._IdleEngines()  # pyright: ignore[reportPrivateUsage]
     release = threading.Event()
     _BatchEngine.gate = release
+    _BatchEngine.entered = threading.Event()
 
     async def run() -> None:
         call = asyncio.ensure_future(
@@ -264,7 +268,7 @@ def test_a_canceled_call_drops_its_engine() -> None:
                 _registry(), idle, "reuse-batch/echo", AudioBytes(data=b"x"), None, HTTPException
             )
         )
-        while not CONSTRUCTED:
+        while not _BatchEngine.entered.is_set():  # pyright: ignore[reportOptionalMemberAccess]
             await asyncio.sleep(0.01)
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -308,6 +312,21 @@ def test_a_client_that_leaves_before_done_drops_the_engine() -> None:
     assert len(CONSTRUCTED) == 2
 
 
+def test_a_stream_whose_audio_exceeds_the_cap_drops_the_engine() -> None:
+    # The session can still end with done, but the stream failed: the server
+    # sent payload_too_large, and every error drops the engine.
+    client = _client(max_ws_session_bytes=4)
+    with client.websocket_connect("/v1/stream/reuse-stream/echo") as ws:
+        ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_bytes(b"0123456789")
+        frames: list[dict[str, Any]] = []
+        while not frames or frames[-1]["type"] != "error":
+            frames.append(ws.receive_json())
+    assert frames[-1]["code"] == "payload_too_large"
+    assert _stream(client) == ["final", "done"]
+    assert len(CONSTRUCTED) == 2
+
+
 def test_a_failed_establishment_drops_the_engine() -> None:
     # An audio format the engine does not accept fails before the bridge.
     client = _client()
@@ -324,8 +343,21 @@ def test_shutdown_drops_the_idle_engines(caplog: pytest.LogCaptureFixture) -> No
     with caplog.at_level(logging.INFO, logger="standard_asr.toolchain.server"):
         with TestClient(server_module.create_app(registry=_registry())) as client:
             assert _transcribe(client) == 200
-        assert "Dropped 1 idle engine instance(s) at shutdown" in caplog.text
+        assert "Dropped the idle engine for model 'reuse-batch/echo' at shutdown" in caplog.text
         # An application that served nothing has nothing to drop.
         with TestClient(server_module.create_app(registry=_registry())):
             pass
     assert caplog.text.count("at shutdown") == 1
+
+
+def test_an_applications_shutdown_handler_still_runs() -> None:
+    # The idle engines are dropped by a shutdown handler, not a custom
+    # lifespan, which would skip the handlers an application registers.
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry())
+    ran: list[str] = []
+    app.router.add_event_handler("shutdown", lambda: ran.append("shutdown"))
+    with TestClient(app):
+        pass
+    assert ran == ["shutdown"]

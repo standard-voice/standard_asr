@@ -2677,7 +2677,13 @@ class TranscriptionSession(ABC):
         """Open engine resources bound to the event loop (override as needed)."""
 
     async def _close(self) -> None:
-        """Tear down engine resources (override as needed)."""
+        """Tear down engine resources (override as needed).
+
+        Return only after every operation the session started has finished,
+        work handed to a thread included; work that cannot be canceled is
+        waited for (protocol, streaming section 6.5). A host such as the
+        reference server reuses the engine instance once this returns.
+        """
 
     @abstractmethod
     def _produce(self) -> AsyncIterator[TranscriptionEvent]:
@@ -3162,15 +3168,18 @@ class TranscriptionSession(ABC):
         as a guard, so no exit path -- normal, early terminal, exception, or
         overflow -- can lose them.
 
-        **The engine's producer ends before a terminal event lands.** When the
-        engine yields its own terminal event, or the buffer overflows, the
-        session closes the ``_produce`` iterator and waits for its cleanup
-        (the ``finally`` blocks of an async generator) before it appends the
-        terminal event. A consumer that receives the terminal event therefore
-        knows that the engine's producer has finished. Left suspended, the
-        iterator would run its cleanup in a task the event loop starts when
-        the iterator is collected: after the session ended, or never, when
-        the loop closes first.
+        **Every terminal event this method appends follows the end of the
+        engine's producer.** Before it appends ``done``, the engine's own
+        terminal, or the error for an overflow or an exception, the session
+        closes the ``_produce`` iterator and waits for its cleanup (the
+        ``finally`` blocks of an async generator). If that cleanup raises,
+        the session ends with ``engine_error`` instead. A consumer that
+        receives ``done`` therefore knows that the engine's producer has
+        finished. A terminal event that a deadline synthesizes comes from the
+        consumer side, which cancels the producer instead of waiting for it.
+        Left suspended, the iterator would run its cleanup in a task the
+        event loop starts when the iterator is collected: after the session
+        ended, or, when the loop closes first, only in part or not at all.
         """
         terminal: TranscriptionEvent | None = None
         try:
