@@ -1,42 +1,63 @@
 name: Release
 
-# Publish standard-asr to PyPI via OIDC Trusted Publishing.
+# One pipeline, one human action. After the release pull request merges (it
+# sets `version` in pyproject.toml and adds the CHANGELOG section), run this
+# workflow from the default branch. The steps run in order of irreversibility:
+# every guard, the build, and the TestPyPI rehearsal come before the PyPI
+# upload; the GitHub Release and the dev-bump pull request come after it.
 #
-# Production path: publish a GitHub Release whose tag is vX.Y.Z and matches
-# project.version in pyproject.toml. The workflow refuses to publish unless that
-# commit is on the default branch and already has a successful checks-complete
-# CI result.
-#
-# Dry run: run this workflow manually from the default branch. Manual dispatch
-# publishes only to TestPyPI; production PyPI is intentionally Release-driven.
+# A second run of the same version resumes the first: the release commit is
+# the commit that set the version (scripts/release_commit.py), the build
+# recipe comes from that commit, the build is reproducible, and every step
+# after the build is idempotent. Design case:
+# docs/internal/feat_plan/release-pipeline-redesign.md.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
+  # The uv that runs this workflow's own commands. The uv that builds the
+  # release comes from the release commit (see the prepare job).
   UV_VERSION: "0.11.21"
 
 jobs:
-  build:
-    name: Build and verify distributions
+  prepare:
+    name: Guards, build, and state checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       checks: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Assert the run targets the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          echo "workflow ref:   ${GITHUB_REF}"
+          echo "default branch: ${DEFAULT_BRANCH}"
+          # The full ref, not GITHUB_REF_NAME: a tag named like the branch
+          # has the same short name.
+          if [ "${GITHUB_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::Run the release workflow from '${DEFAULT_BRANCH}'."
+            exit 1
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -44,57 +65,116 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
 
-      - name: Assert release tag matches project version
-        if: github.event_name == 'release'
+      - name: Read the version on the branch
+        id: version
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
           version="$(uv version --short)"
-          echo "release tag:     ${GITHUB_REF_NAME} (version part: ${tag})"
-          echo "project version: ${version}"
-          if [ "${tag}" != "${version}" ]; then
-            echo "::error::Release tag '${GITHUB_REF_NAME}' != pyproject version '${version}'. Bump 'version' in pyproject.toml and re-tag."
+          echo "version on ${GITHUB_REF_NAME}: ${version}"
+          # uv prints the normalized form. The release commit search compares
+          # the string pyproject.toml writes, so the two must be the same
+          # string.
+          written="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "${written}" != "${version}" ]; then
+            echo "::error::pyproject.toml writes the version as ${written}, which uv normalizes to ${version}. Write the normalized form in pyproject.toml."
             exit 1
           fi
+          # Guard: a development version means no release pull request merged
+          # since the last release. Between releases this is the normal state
+          # of the branch, so an accidental run stops here with nothing public.
+          # The script also refuses a version outside the versioning policy.
+          prerelease="$(uv run --no-project --with packaging python scripts/release_version.py classify "${version}")"
+          {
+            echo "version=${version}"
+            echo "prerelease=${prerelease}"
+          } >> "${GITHUB_OUTPUT}"
 
-      - name: Assert manual dry run targets the default branch
-        if: github.event_name == 'workflow_dispatch'
+      - name: Find the release commit and its build recipe
+        id: release
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          echo "workflow ref:   ${GITHUB_REF_NAME}"
-          echo "default branch: ${DEFAULT_BRANCH}"
-          if [ "${GITHUB_REF_NAME}" != "${DEFAULT_BRANCH}" ]; then
-            echo "::error::Manual TestPyPI dry runs must be dispatched from '${DEFAULT_BRANCH}'."
-            exit 1
-          fi
-
-      - name: Assert release commit is on the default branch and CI-green
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          echo "release candidate sha: ${GITHUB_SHA}"
-          compare_status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...${DEFAULT_BRANCH}" --jq '.status')"
-          echo "compare ${GITHUB_SHA}...${DEFAULT_BRANCH}: ${compare_status}"
-          if [ "${compare_status}" != "identical" ] && [ "${compare_status}" != "ahead" ]; then
-            echo "::error::Release candidate ${GITHUB_SHA} is not reachable from '${DEFAULT_BRANCH}'. Release only from mainline history."
-            exit 1
-          fi
+          # The release commit is the first-parent commit that set the
+          # version, not the tip of the branch: later merges belong to the
+          # next version, and a second run of the same version rebuilds the
+          # same commit. The uv version comes from that commit too.
+          python3 scripts/release_commit.py --version "${VERSION}" --workflows-against HEAD | tee release-commit.env
+          sha="$(sed -n 's/^sha=//p' release-commit.env)"
+          uv_build="$(sed -n 's/^uv=//p' release-commit.env)"
+          workflows_changed="$(sed -n 's/^workflows_changed=//p' release-commit.env)"
+          echo "release commit: ${sha} (uv ${uv_build})"
+          echo "commits on ${GITHUB_REF_NAME} since the release commit (they belong to the next version):"
+          git log --oneline --first-parent "${sha}..HEAD" | sed 's/^/  /' || true
 
-          checks_ok="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+          checks_ok="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs" \
             -F check_name='checks-complete' \
             --jq '[.check_runs[] | select(.app.slug == "github-actions" and .name == "checks-complete") | .conclusion] | any(. == "success")')"
-          echo "checks-complete success present: ${checks_ok}"
+          echo "checks-complete success on ${sha}: ${checks_ok}"
           if [ "${checks_ok}" != "true" ]; then
-            echo "::error::No successful 'checks-complete' check run found for ${GITHUB_SHA}. Wait for CI to pass before releasing."
+            echo "::error::No successful 'checks-complete' check run for ${sha}. Wait for CI to pass on the release commit, or re-run it if it was canceled."
             exit 1
           fi
+          {
+            echo "sha=${sha}"
+            echo "uv=${uv_build}"
+            echo "workflows_changed=${workflows_changed}"
+          } >> "${GITHUB_OUTPUT}"
 
-      - name: Build sdist and wheel (core package only)
-        run: uv build --package standard-asr --no-sources --out-dir dist --clear
+      - name: Take the release notes from the CHANGELOG section
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Through a file, not a pipe: awk stops at the next heading, and a
+          # pipe would then fail the step with git's broken-pipe exit.
+          git show "${SHA}:CHANGELOG.md" > changelog-at-release.md
+          awk -v heading="## [${VERSION}]" '
+              index($0, heading) == 1 { capture = 1; next }
+              capture && /^## \[/ { exit }
+              capture { print }
+            ' changelog-at-release.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md at ${SHA} has no section '## [${VERSION}]'. The release pull request adds it."
+            exit 1
+          fi
+          echo "release notes:"
+          cat release-notes.md
+
+      - name: Assert the tag and the release, if they exist, match this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          WORKFLOWS_CHANGED: ${{ steps.release.outputs.workflows_changed }}
+        # GitHub keeps an existing tag and ignores --target, so a stray tag
+        # would put the release on the wrong commit: check before anything
+        # is published, not only when the release is created. The check also
+        # warns when the workflow token will not be able to create the tag.
+        run: |
+          python3 scripts/release_github.py --repo "${GITHUB_REPOSITORY}" check \
+            --version "${VERSION}" --sha "${SHA}" --notes release-notes.md --prerelease "${PRERELEASE}" \
+            --workflows-changed "${WORKFLOWS_CHANGED}"
+
+      - name: Install the uv the release commit names
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ steps.release.outputs.uv }}
+          enable-cache: false
+
+      - name: Build sdist and wheel from the release commit
+        env:
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git checkout --quiet --detach "${SHA}"
+          git status --short
+          uv --version
+          uv build --package standard-asr --no-sources --out-dir dist --clear --no-create-gitignore
+          (cd dist && sha256sum ./*)
 
       - name: Assert the wheel ships only source files
         run: |
@@ -112,28 +192,38 @@ jobs:
           echo "Wheel is clean (source files only)."
 
       - name: Smoke test wheel and source distribution
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          version="$(uv version --short)"
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
           sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
-
-          uv run --isolated --no-project --with "${wheel}" python -c "import importlib.metadata as m; import standard_asr; assert m.version('standard-asr') == '${version}'; assert standard_asr.__all__"
+          uv run --isolated --no-project --with "${wheel}" python -c "import importlib.metadata as m; import standard_asr; assert m.version('standard-asr') == '${VERSION}'; assert standard_asr.__all__"
           uv run --isolated --no-project --with "${wheel}" standard-asr --help
-          uv run --isolated --no-project --with "${sdist}" python -c "import importlib.metadata as m; import standard_asr; assert m.version('standard-asr') == '${version}'; assert standard_asr.__all__"
+          uv run --isolated --no-project --with "${sdist}" python -c "import importlib.metadata as m; import standard_asr; assert m.version('standard-asr') == '${VERSION}'; assert standard_asr.__all__"
 
-      - name: Upload verified distributions
+      - name: Assert both indexes are absent or hold this build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        # Absent is a fresh release. Present with the same digests is a
+        # resume. Present with other digests is a burned version: bump.
+        run: |
+          git checkout --quiet -
+          python3 scripts/release_index.py --version "${VERSION}" --dist dist guard
+
+      - name: Upload the verified distributions and the release notes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: standard-asr-distributions
-          path: dist/
+          name: standard-asr-release
+          path: |
+            dist/
+            release-notes.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
 
   publish-testpypi:
     name: Publish to TestPyPI
-    if: github.event_name == 'workflow_dispatch'
-    needs: build
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -143,29 +233,105 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - name: Download verified distributions
+      - name: Download the release artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: standard-asr-distributions
-          path: dist/
+          name: standard-asr-release
+          path: release/
 
       - name: Publish to TestPyPI (Trusted Publishing + PEP 740 attestations)
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          packages-dir: dist
+          packages-dir: release/dist
           repository-url: https://test.pypi.org/legacy/
           attestations: true
           print-hash: true
-          # TestPyPI is a throwaway rehearsal index: allow re-running a dry run
-          # for the same version instead of failing on an immutable-file 409.
-          # Production PyPI below stays strict (no skip) so an accidental
-          # re-publish fails loudly.
+          # A resume skips the files the index already holds; the guard
+          # proved that those files are this build, and the verify job
+          # proves that the rest arrived.
           skip-existing: true
+
+  verify-testpypi:
+    name: Verify TestPyPI
+    needs: [prepare, publish-testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: standard-asr-release
+          path: release/
+
+      - name: Assert TestPyPI holds this build, with attestations
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_index.py --version "${VERSION}" --dist release/dist verify --index testpypi
+          python3 scripts/release_index.py --version "${VERSION}" --dist release/dist attestations --index testpypi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+
+      - name: Install from TestPyPI in isolation
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        # The package comes from TestPyPI alone, with no dependencies, and
+        # the dependencies then come from PyPI alone: a strategy that searches
+        # both indexes for every package could pick a dependency from
+        # TestPyPI. --default-index replaces PyPI; --index would only put
+        # TestPyPI in front of it, and uv would take the package from PyPI
+        # when TestPyPI has no page for it, so the check would pass on the
+        # wrong index. The simple index can lag the JSON API by a little, so
+        # the package install retries, and --refresh-package keeps a retry
+        # from reading the index page uv cached on the attempt before.
+        run: |
+          set -euo pipefail
+          uv venv --quiet venv-testpypi
+          export VIRTUAL_ENV="${PWD}/venv-testpypi"
+          installed=false
+          for attempt in 1 2 3 4 5 6; do
+            if uv pip install --quiet --no-deps --refresh-package standard-asr \
+                 --default-index https://test.pypi.org/simple/ "standard-asr==${VERSION}"; then
+              installed=true
+              break
+            fi
+            echo "attempt ${attempt}: TestPyPI did not serve standard-asr==${VERSION} yet; waiting"
+            sleep 30
+          done
+          if [ "${installed}" != "true" ]; then
+            echo "::error::Could not install standard-asr==${VERSION} from TestPyPI."
+            exit 1
+          fi
+          # The package's own dependencies, read from its metadata, without the
+          # extras: the core install is what a user gets from `pip install`.
+          uv run --no-project --with packaging python - > requirements-from-metadata.txt <<'PY'
+          import importlib.metadata as m
+          from packaging.requirements import Requirement
+          for line in m.requires("standard-asr") or []:
+              requirement = Requirement(line)
+              if requirement.marker is None or requirement.marker.evaluate({"extra": ""}):
+                  print(requirement)
+          PY
+          cat requirements-from-metadata.txt
+          uv pip install --quiet --default-index https://pypi.org/simple/ -r requirements-from-metadata.txt
+          uv pip check
+          "${VIRTUAL_ENV}/bin/python" -c "import importlib.metadata as m; import standard_asr; assert m.version('standard-asr') == '${VERSION}'; print('TestPyPI install ok:', m.version('standard-asr'))"
+          "${VIRTUAL_ENV}/bin/standard-asr" --help
 
   publish-pypi:
     name: Publish to PyPI
-    if: github.event_name == 'release'
-    needs: build
+    needs: verify-testpypi
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -175,15 +341,231 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - name: Download verified distributions
+      - name: Download the release artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: standard-asr-distributions
-          path: dist/
+          name: standard-asr-release
+          path: release/
 
       - name: Publish to PyPI (Trusted Publishing + PEP 740 attestations)
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          packages-dir: dist
+          packages-dir: release/dist
           attestations: true
           print-hash: true
+          # A partial upload from an earlier run is completed, never repeated:
+          # the guard already proved that what PyPI holds is this build.
+          skip-existing: true
+
+  verify-pypi:
+    name: Verify PyPI
+    needs: [prepare, publish-pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: standard-asr-release
+          path: release/
+
+      - name: Assert PyPI holds this build, with attestations
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_index.py --version "${VERSION}" --dist release/dist verify --index pypi
+          python3 scripts/release_index.py --version "${VERSION}" --dist release/dist attestations --index pypi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+
+      - name: Install from PyPI in isolation
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            if uv run --isolated --no-project --refresh-package standard-asr --with "standard-asr==${VERSION}" \
+                 python -c "import importlib.metadata as m; import standard_asr; assert m.version('standard-asr') == '${VERSION}'; print('PyPI install ok:', m.version('standard-asr'))"; then
+              uv run --isolated --no-project --with "standard-asr==${VERSION}" standard-asr --help
+              exit 0
+            fi
+            echo "attempt ${attempt}: PyPI did not serve standard-asr==${VERSION} yet; waiting"
+            sleep 30
+          done
+          echo "::error::Could not install standard-asr==${VERSION} from PyPI."
+          exit 1
+
+  github-release:
+    name: Create the GitHub Release
+    needs: [prepare, verify-pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Compare the workflow files with the default branch
+        id: workflows
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # The default branch can have moved since prepare ran, for example
+        # while the run waited for the pypi approval, so compare again with
+        # its current tip. actions/checkout sets origin/<branch> back to the
+        # commit the run started from when the branch has moved, so fetch it.
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          python3 scripts/release_commit.py --version "${VERSION}" --workflows-against "origin/${DEFAULT_BRANCH}" \
+            | tee release-commit.env
+          sed -n 's/^workflows_changed=/changed=/p' release-commit.env >> "${GITHUB_OUTPUT}"
+
+      - name: Download the release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: standard-asr-release
+          path: release/
+
+      - name: Create the release, or confirm the one that exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          WORKFLOWS_CHANGED: ${{ steps.workflows.outputs.changed }}
+        # The tag and the release are created together, after PyPI is live
+        # and verified. The script reads the state first: a release that
+        # already exists at the release commit with the same notes is left
+        # alone, and anything else is an error a person has to look at.
+        run: |
+          python3 scripts/release_github.py --repo "${GITHUB_REPOSITORY}" ensure \
+            --version "${VERSION}" --sha "${SHA}" --notes release/release-notes.md --prerelease "${PRERELEASE}" \
+            --workflows-changed "${WORKFLOWS_CHANGED}"
+
+  dev-bump:
+    name: Prepare the dev-bump branch
+    needs: [prepare, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+
+      - name: Move to the current tip of the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # The checkout is the commit the run started from. A re-run after the
+        # dev-bump pull request merged, or a long release, would otherwise
+        # read a version the branch no longer declares.
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "${DEFAULT_BRANCH}"
+          git checkout --quiet --detach "origin/${DEFAULT_BRANCH}"
+          echo "default branch tip: $(git rev-parse HEAD)"
+
+      - name: Commit the next development version to the dev-bump branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # The commit is created through the GraphQL API, which GitHub signs
+        # ("if supported", its documentation says; the runbook has the person
+        # check the badge once). The job prepares the branch and prints the
+        # link that opens its pull request; a person opens it. The workflow
+        # token may open a pull request only where the repository allows
+        # GitHub Actions to create pull requests, and the CI runs of one it
+        # opens wait for a person's approval, while a pull request a person
+        # opens runs CI at once.
+        run: |
+          set -euo pipefail
+          next="$(uv run --no-project --with packaging python scripts/release_version.py next "${VERSION}")"
+          branch="release/dev-bump-v${VERSION}"
+          echo "next development version: ${next} on ${branch}"
+
+          current="$(uv version --short)"
+          if [ "${current}" != "${VERSION}" ]; then
+            echo "The branch is already at ${current}, not ${VERSION}; someone moved it on. Nothing to do."
+            exit 0
+          fi
+          api="repos/${GITHUB_REPOSITORY}"
+          base="$(git rev-parse HEAD)"
+          head="$(python3 scripts/release_github.py --repo "${GITHUB_REPOSITORY}" branch-head --branch "${branch}")"
+          if [ "${head}" = absent ]; then
+            gh api "${api}/git/refs" -f ref="refs/heads/${branch}" -f sha="${base}" --jq .ref
+            head="${base}"
+          fi
+          ahead="$(gh api "${api}/compare/${base}...${head}" --jq .ahead_by)"
+          if [ "${ahead}" = 0 ]; then
+            # The branch holds no commit of its own: it is new, or a run
+            # failed before committing. The commit goes through the GraphQL
+            # mutation createCommitOnBranch, which GitHub signs ("if
+            # supported", its reference says);
+            # expectedHeadOid makes a concurrent push to the branch a loud
+            # failure instead of a lost update. uv version re-locks on its
+            # own; --no-sync keeps it from building a venv on the runner.
+            uv version "${next}" --no-sync
+            uv lock
+            python3 - "${GITHUB_REPOSITORY}" "${branch}" "${head}" "${next}" <<'PY' | gh api graphql --input - --jq .data.createCommitOnBranch.commit.oid
+          import base64, json, sys
+          repo, branch, head, next_version = sys.argv[1:]
+
+          def contents(path):
+              with open(path, "rb") as file:
+                  return base64.b64encode(file.read()).decode("ascii")
+
+          print(json.dumps({
+              "query": (
+                  "mutation ($input: CreateCommitOnBranchInput!) {"
+                  " createCommitOnBranch(input: $input) { commit { oid } } }"
+              ),
+              "variables": {"input": {
+                  "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+                  "expectedHeadOid": head,
+                  "message": {
+                      "headline": f"chore: bump version to {next_version}",
+                      "body": (
+                          "The release pipeline prepares this after each release, so an accidental "
+                          "run of the release workflow stops at its development-version guard."
+                      ),
+                  },
+                  "fileChanges": {"additions": [
+                      {"path": "pyproject.toml", "contents": contents("pyproject.toml")},
+                      {"path": "uv.lock", "contents": contents("uv.lock")},
+                  ]},
+              }},
+          }))
+          PY
+          else
+            echo "Branch ${branch} holds ${ahead} commit(s) of its own; keeping them."
+          fi
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${DEFAULT_BRANCH}...${branch}?expand=1"
+          echo "::notice title=Open the dev-bump pull request::${url}"
+          {
+            echo "### Open the dev-bump pull request"
+            echo
+            echo "Branch \`${branch}\` moves \`${DEFAULT_BRANCH}\` to ${next}. Open its pull request, wait for \`checks-complete\`, and merge it: ${url}"
+          } >> "${GITHUB_STEP_SUMMARY}"

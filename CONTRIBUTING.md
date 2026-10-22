@@ -134,7 +134,7 @@ GitHub Actions enforces the gates on every PR through a single workflow, [`ci.ym
 
 ## Releasing
 
-Maintainer release steps live in [`RELEASING.md`](RELEASING.md). The short version: release commits land on `main` with `checks-complete` green, manual workflow dispatch publishes only to TestPyPI, and production PyPI publishing is triggered only by a published GitHub Release whose tag matches `pyproject.toml`.
+Maintainer release steps live in [`RELEASING.md`](RELEASING.md). The short version: a release pull request sets the version in `pyproject.toml` and adds its `CHANGELOG.md` section. A maintainer then runs the Release workflow from `main`, which rehearses the upload on TestPyPI, publishes to PyPI, creates the GitHub Release, and prepares a branch that moves `main` to the next development version, with a link for a maintainer to open its pull request. Regular pull requests never touch the version.
 
 ## Contribution licensing
 
