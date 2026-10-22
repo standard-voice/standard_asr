@@ -1,6 +1,6 @@
 # Keeping Engines Alive in the Reference Server (Design Case)
 
-**Status:** Draft, 2026-10-22, for roadmap item 12 (#27). Section 4 asks the maintainer to choose what a second call gets while an instance is busy; the rest of the design follows from that choice and assumes the recommended option. Nothing is implemented yet.
+**Status:** 2026-10-22, roadmap item 12 (#27). Pull request #127 implements option A of section 4, which waits for the maintainer's decision; the rest of the design follows from that choice.
 
 ## 1. Problem
 
@@ -112,7 +112,7 @@ Each problem in section 2 becomes a companion pull request in its plugin's repos
 
 - **std-qwen3-asr:** a session creates the HTTP client it streams with when it opens and closes it when it ends, as §6.5 already requires of every resource bound to an event loop, so no later batch call or session on another event loop receives a client bound to the first one (rule 1). A cache of clients per event loop would also work, but it would need its own cleanup, since every `SyncSession` runs its own loop.
 - **std-faster-whisper:** the session keeps the future of each decode, so that it stays awaitable after the producer is canceled, and waits for it in `_close` (rule 2).
-- **std-mlx-audio:** publish `_model` only after the model-family check passes and the priming ran, so that a failed check leaves no model on the instance; and update the stale comment in `_streaming.py`. A failed priming stays a warning, as the plugin decided: a model family can reject 0.1 seconds of silence and still work on real audio. For such a family, a generate on another thread can still abort the process; the plugin's warning records it.
+- **std-mlx-audio:** publish `_model` only after the model-family check passes, so that a failed check leaves no model on the instance; and run every MLX operation, the load, the priming, and each generate, on one thread the instance owns. A failed priming then cannot leave a model that another thread generates with first, which can abort the process: the reviewer of #127 traced that path through a stream with no audio, which ends with `done` and keeps its instance without a single generate.
 
 ## 7. Evidence and tests
 

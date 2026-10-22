@@ -11,12 +11,15 @@ server built for a sequence of calls.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import threading
+import wave
 from collections.abc import AsyncIterator, Iterator
 from importlib.metadata import EntryPoint
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+import numpy as np
 import pytest
 
 from standard_asr.contract.capabilities import (
@@ -52,15 +55,21 @@ CONSTRUCTED: list[object] = []
 #: How the next calls end: set by each test, read by the engines.
 BEHAVIOR: dict[str, str] = {}
 
+#: One entry per call on the stream engine: the instance, the call type, the input.
+CALLS: list[tuple[int, str, str]] = []
+
 
 @pytest.fixture(autouse=True)
 def _reset() -> Iterator[None]:
     CONSTRUCTED.clear()
+    CALLS.clear()
     BEHAVIOR.clear()
     BEHAVIOR.update(transcribe="ok", session="done")
     yield
     _BatchEngine.gate = None
     _BatchEngine.entered = None
+    _Session.closing = None
+    _Session.release = None
 
 
 class _Config(BaseConfig[str]):
@@ -121,17 +130,38 @@ class _StreamProperties(_BatchProperties):
 class _Session(TranscriptionSession):
     """Ends the way ``BEHAVIOR["session"]`` says."""
 
+    #: Set by a test to learn that the server is closing the session.
+    closing: ClassVar[threading.Event | None] = None
+
+    #: Set by a test to hold ``_close`` until the test releases it.
+    release: ClassVar[threading.Event | None] = None
+
+    def __init__(self, engine: _StreamEngine) -> None:
+        super().__init__()
+        self._engine = engine
+
     async def _produce(self) -> AsyncIterator[TranscriptionEvent]:
-        async for chunk in self.audio_chunks():
-            yield TranscriptionEvent.final("s0", chunk.decode(), start=0.0, end=1.0)
-        if BEHAVIOR["session"] == "engine_error":
-            yield TranscriptionEvent.make_error("engine_error", recoverable=False)
-        elif BEHAVIOR["session"] == "linger":
-            # The client leaves before done: the producer never finishes.
-            yield TranscriptionEvent.final("s1", "late", start=1.0, end=2.0)
-            await asyncio.Event().wait()
+        try:
+            async for chunk in self.audio_chunks():
+                CALLS.append((id(self._engine), "stream", chunk.decode()))
+                yield TranscriptionEvent.final("s0", chunk.decode(), start=0.0, end=1.0)
+            if BEHAVIOR["session"] == "engine_error":
+                yield TranscriptionEvent.make_error("engine_error", recoverable=False)
+            elif BEHAVIOR["session"] == "linger":
+                # The client leaves before done: the producer never finishes.
+                yield TranscriptionEvent.final("s1", "late", start=1.0, end=2.0)
+                await asyncio.Event().wait()
+            elif BEHAVIOR["session"] == "cleanup_fault":
+                yield TranscriptionEvent.done()
+        finally:
+            if BEHAVIOR["session"] == "cleanup_fault":
+                raise RuntimeError("cleanup fault")
 
     async def _close(self) -> None:
+        if self.closing is not None:
+            self.closing.set()
+        while self.release is not None and not self.release.is_set():
+            await asyncio.sleep(0.01)
         if BEHAVIOR["session"] == "close_fault":
             raise RuntimeError("close fault")
 
@@ -149,7 +179,9 @@ class _StreamEngine(EngineBase):
         CONSTRUCTED.append(self)
 
     def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
-        return TranscriptionResult(text="")  # pragma: no cover - the batch path is unused
+        samples = 0 if prepared.array is None else prepared.array.size
+        CALLS.append((id(self), "rest", str(samples)))
+        return TranscriptionResult(text=f"{samples} samples")
 
     def _start_transcription(
         self,
@@ -158,7 +190,7 @@ class _StreamEngine(EngineBase):
         audio_format: Any = None,
         prepared_audio: PreparedAudio | None = None,
     ) -> TranscriptionSession:
-        return _Session()
+        return _Session(self)
 
 
 def _stream_factory() -> _StreamEngine:  # pyright: ignore[reportUnusedFunction]
@@ -183,6 +215,25 @@ def _client(**caps: int) -> TestClient:
     return TestClient(server_module.create_app(registry=_registry(), **caps))
 
 
+def _wav(samples: int) -> bytes:
+    """Return a mono 16-bit PCM WAV at 16 kHz with ``samples`` samples."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(np.zeros(samples, dtype=np.int16).tobytes())
+    return buffer.getvalue()
+
+
+def _transcribe_stream_engine(client: TestClient, samples: int) -> str:
+    """Send a REST call to the stream engine and return its transcript."""
+    files = {"file": ("audio.wav", _wav(samples), "audio/wav")}
+    response = client.post("/v1/transcribe", data={"model": "reuse-stream/echo"}, files=files)
+    assert response.status_code == 200, response.text
+    return response.json()["result"]["text"]
+
+
 def _transcribe(client: TestClient) -> int:
     files = {"file": ("audio.wav", b"fake", "audio/wav")}
     return client.post(
@@ -190,12 +241,12 @@ def _transcribe(client: TestClient) -> int:
     ).status_code
 
 
-def _stream(client: TestClient) -> list[str]:
+def _stream(client: TestClient, audio: bytes = b"hi") -> list[str]:
     """Run one session and return the types of the frames the server sent."""
     types: list[str] = []
     with client.websocket_connect("/v1/stream/reuse-stream/echo") as ws:
         ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
-        ws.send_bytes(b"hi")
+        ws.send_bytes(audio)
         ws.send_text("end")
         while not types or types[-1] not in ("done", "error"):
             types.append(ws.receive_json()["type"])
@@ -361,3 +412,58 @@ def test_an_applications_shutdown_handler_still_runs() -> None:
     with TestClient(app):
         pass
     assert ran == ["shutdown"]
+
+
+@pytest.mark.parametrize("rest_first", [True, False])
+def test_one_instance_alternates_rest_calls_and_sessions(rest_first: bool) -> None:
+    # The server keeps one instance for one model key across call types: REST
+    # calls run on worker threads and sessions on the event loop. Each call
+    # sees its own input, none of the previous one.
+    steps = [("rest", "8000"), ("stream", "one"), ("rest", "4000"), ("stream", "two")]
+    if not rest_first:
+        steps = [steps[1], steps[0], steps[3], steps[2]]
+    with _client() as client:
+        for kind, value in steps:
+            if kind == "rest":
+                assert _transcribe_stream_engine(client, int(value)) == f"{value} samples"
+            else:
+                assert _stream(client, value.encode()) == ["final", "done"]
+    assert len(CONSTRUCTED) == 1
+    assert {instance for instance, _, _ in CALLS} == {id(CONSTRUCTED[0])}
+    assert [(kind, value) for _, kind, value in CALLS] == steps
+
+
+def test_an_instance_stays_held_until_its_session_closes() -> None:
+    # While the server waits in a session's _close, the session still holds
+    # its instance, so a REST call constructs another one.
+    closing, release = threading.Event(), threading.Event()
+    _Session.closing, _Session.release = closing, release
+    with _client() as client:
+        with client.websocket_connect("/v1/stream/reuse-stream/echo") as ws:
+            ws.send_json({"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}})
+            ws.send_bytes(b"hi")
+            ws.send_text("end")
+            while ws.receive_json()["type"] != "done":
+                pass
+            assert closing.wait(timeout=5)
+            _Session.closing = None
+            assert _transcribe_stream_engine(client, 1600) == "1600 samples"
+            release.set()
+    assert len(CONSTRUCTED) == 2
+    stream_instance = next(instance for instance, kind, _ in CALLS if kind == "stream")
+    rest_instance = next(instance for instance, kind, _ in CALLS if kind == "rest")
+    assert stream_instance != rest_instance
+
+
+def test_a_producer_cleanup_that_raises_after_done_drops_the_engine() -> None:
+    # The session closes the engine's producer before it appends the engine's
+    # done. The cleanup raises, so the client gets an error and never done,
+    # and the server does not keep the instance.
+    client = _client()
+    BEHAVIOR["session"] = "cleanup_fault"
+    frames = _stream(client)
+    assert frames[-1] == "error"
+    assert "done" not in frames
+    BEHAVIOR["session"] = "done"
+    assert _stream(client) == ["final", "done"]
+    assert len(CONSTRUCTED) == 2
