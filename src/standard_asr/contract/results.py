@@ -635,10 +635,19 @@ class TranscriptionResult(BaseModel):
             standard-layer safety net.
         words: Every ``Word`` the engine supplied, in segment order: the
             first segment's words, then the second segment's, and so on.
-            Where two channels' segments overlap in time, the words stay
-            grouped by segment. A segment's own ``words``, when present,
-            are the words of this list that belong to it (spec TR.4). This
-            is an engine obligation that nothing checks.
+            When ``segments`` is ``None``, the list order is the reading
+            order the engine gives; the standard layer neither makes
+            segments from word timestamps nor reorders the words. Where two
+            channels' segments overlap in time, the words stay grouped by
+            segment. A segment's own ``words``, when present, are the words
+            of this list that belong to it (spec TR.4). This is an engine
+            obligation that nothing checks. Each word keeps its own field
+            values here, so a word
+            whose ``speaker`` is ``None`` stays ``None`` even when its
+            segment has a speaker. An application that needs the speaker
+            such a word inherits (spec TR.5) reads the word in its
+            segment's ``words``; it must not guess a word's segment from
+            timestamps.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
