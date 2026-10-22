@@ -165,6 +165,7 @@ Examples:
   standard-asr prepare faster-whisper/tiny            # warm up process-local engine state
   standard-asr serve --port 8000                      # expose every engine over HTTP + WebSocket
   standard-asr doctor                                 # diagnose environment / dependency issues
+  standard-asr doctor --network                       # also check the Hugging Face endpoint
 """
 
 
@@ -537,7 +538,20 @@ def _add_doctor_subcommand(subparsers: Any) -> None:
         None.
     """
     parser = subparsers.add_parser(
-        "doctor", help="Diagnose plugin dependency (numpy) conflicts.", allow_abbrev=False
+        "doctor",
+        help=(
+            "Diagnose plugin dependency (numpy) conflicts; "
+            "--network also checks the Hugging Face endpoint."
+        ),
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--network",
+        action="store_true",
+        help=(
+            "Also send one request to the Hugging Face endpoint through huggingface_hub and "
+            "report whether this machine reaches it."
+        ),
     )
     parser.set_defaults(func=_cmd_doctor)
 
@@ -549,15 +563,17 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         args: Parsed CLI arguments.
 
     Returns:
-        Exit code: ``0`` iff the report verdict is clean (no conflict detected
-        and conflict analysis ran -- ``DoctorReport.is_clean``), else ``1``.
+        Exit code: ``0`` iff the report verdict is clean
+        (``DoctorReport.is_clean``: no conflict detected, conflict analysis
+        ran, and, with ``--network``, the endpoint check found no problem),
+        else ``1``.
 
     Raises:
         None.
     """
     from standard_asr.toolchain.doctor import diagnose, format_report
 
-    report = diagnose()
+    report = diagnose(network=args.network)
     print(format_report(report))
     return 0 if report.is_clean else 1
 
