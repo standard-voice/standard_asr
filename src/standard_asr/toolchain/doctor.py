@@ -201,8 +201,9 @@ class EndpointCheck:
         remedy: What to do about a problem, or ``None``.
         proxies: The proxies Python resolves for this process, by scheme,
             from ``urllib.request.getproxies()``, which httpx and requests
-            read too. The ``no`` key lists the hosts that skip the proxy, an
-            entry with user information masked like a URL.
+            read too. The ``no`` key lists the hosts that skip the proxy;
+            when the list holds an ``@``, as a URL pasted into it can,
+            everything before the last ``@`` is masked.
         ambiguous_urls: The names of the configured URLs with a ``/``,
             ``?``, or ``#`` in the part the result masks, between the scheme
             and the last ``@``: ``endpoint``, or a proxy's scheme in
@@ -1097,12 +1098,11 @@ def check_endpoint(*, timeout: float = ENDPOINT_CHECK_TIMEOUT) -> EndpointCheck:
         The result of the check.
     """
     configured = sorted(urllib.request.getproxies().items())
-    # An entry of the no-proxy list is a host, but a URL pasted there is
-    # masked like any other.
-    proxies = {
-        scheme: ",".join(map(redact_url, value.split(","))) if scheme == "no" else redact_url(value)
-        for scheme, value in configured
-    }
+    # The no-proxy list is not a URL, but redact_url() masks everything
+    # before its last "@", so a URL pasted into the list is masked whole,
+    # even with a comma in its password. Splitting the list first would cut
+    # such a password in two and leave one half visible.
+    proxies = {scheme: redact_url(value) for scheme, value in configured}
     ambiguous = tuple(
         scheme for scheme, value in configured if scheme != "no" and _is_ambiguous(value)
     )

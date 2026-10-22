@@ -344,7 +344,10 @@ def test_credentials_never_reach_the_result(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         doctor.urllib.request,
         "getproxies",
-        lambda: {"https": "http://user:sec ret@proxy:8080", "no": "localhost,http://u:sec@m"},
+        lambda: {
+            "https": "http://user:sec ret@proxy:8080",
+            "no": "localhost,http://alice:LEFT,RIGHT@m.example,127.0.0.1",
+        },
     )
     # The error's message quotes the URL; the result names the error by its
     # type and never quotes the message.
@@ -356,10 +359,14 @@ def test_credentials_never_reach_the_result(monkeypatch: pytest.MonkeyPatch) -> 
     rendered = doctor.format_report(doctor.DoctorReport(python_version="3.13", endpoint=check))
     assert "sec" not in rendered
     assert check.endpoint == "http://***@mirror"
-    # A URL pasted into the no-proxy list is masked too.
-    assert check.proxies == {"https": "http://***@proxy:8080", "no": "localhost,http://***@m"}
+    # A URL pasted into the no-proxy list is masked whole, though its
+    # password holds the comma that separates the list's hosts.
+    assert check.proxies == {"https": "http://***@proxy:8080", "no": "***@m.example,127.0.0.1"}
     assert "proxies: https=http://***@proxy:8080" in rendered
-    assert "no proxy for: localhost,http://***@m" in rendered
+    assert "no proxy for: ***@m.example,127.0.0.1" in rendered
+    for piece in ("alice", "LEFT", "RIGHT"):
+        assert piece not in rendered
+        assert piece not in repr(check)
 
 
 def test_the_command_quotes_an_interpreter_path_with_a_space(
