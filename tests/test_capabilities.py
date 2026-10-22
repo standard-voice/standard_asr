@@ -1521,6 +1521,28 @@ def test_container_rejects_a_kind_key() -> None:
         DeclaredCapabilities.model_validate({"batch": {"language": {"kind": "limit"}}})
 
 
+def test_container_refuses_a_subclass_that_declares_a_kind_field() -> None:
+    # The extra-key check sees only unknown keys, and canonical_json() writes
+    # every declared field, so a subclass field named kind would reach the
+    # wire while kind_at() answers None. The class itself is refused, default
+    # value included, for a mode container, an inner grouping container, and
+    # the root.
+    tagged: list[tuple[type[object], str]] = [
+        (BatchCapabilities, "requestable"),
+        (GuidanceCaps, "behavior"),
+        (DeclaredCapabilities, "limit"),
+    ]
+    for base, value in tagged:
+        with pytest.raises(TypeError, match="declares a 'kind' field"):
+            type("Tagged", (base,), {"__annotations__": {"kind": str}, "kind": value})
+
+    # A subclass that adds an ordinary field is still allowed.
+    class Extended(BatchCapabilities):
+        x_vendor_note: str = ""
+
+    assert Extended().x_vendor_note == ""
+
+
 def test_bare_grouping_dict_states_no_kind() -> None:
     # A raw x_* dict without supported or mode groups nodes; a kind key on
     # it is vendor data that the query surface does not read.

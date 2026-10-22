@@ -164,6 +164,8 @@ resolves to a capability node or to a constraint node. A container renders in
 today. A client reads the absence as "this path groups nodes; it declares
 nothing".
 
+> Amended 2026-10-22, from the review of 36c3716 in #124: the rule is enforced in two places. A `kind` key in a container's input fails validation as an extra key, and `_Container.__pydantic_init_subclass__` refuses a container subclass that declares a `kind` field when the class is defined, default value included. Without the second check, such a subclass validated: `kind_at()` answered `None` for its path while `canonical_json()` published the field, so Python and the wire disagreed about one path.
+
 **D5 — Add `can_request(path)`. Keep `supports(path)` unchanged.**
 `supports(path)` keeps its current meaning and its fail-closed rule, so no
 existing caller breaks. The new query answers the question a user interface

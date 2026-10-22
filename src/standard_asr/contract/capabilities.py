@@ -605,16 +605,49 @@ class StreamTimestampsCap(_CapNode):
 # Container nodes (group leaves; not capabilities themselves).
 # --------------------------------------------------------------------------- #
 class _Container(_JsonExtraModel):
-    """Base for grouping containers; tolerant of unknown / ``x_*`` keys."""
+    """Base for grouping containers; tolerant of unknown / ``x_*`` keys, except ``kind``."""
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Refuse a container subclass that declares a ``kind`` field.
+
+        A container groups nodes and states no kind (design D4), so
+        ``kind_at()`` answers ``None`` for its path. ``canonical_json()``
+        writes every declared field, so a ``kind`` field on a subclass would
+        publish a kind that Python does not report.
+        :meth:`_validate_extra_keys` cannot catch the field, because it sees
+        only keys that no field declares. This check runs when the class is
+        defined, so it catches the field even when it has a default and no
+        input ever passes it. Pydantic calls this hook once ``model_fields``
+        is complete; ``__init_subclass__`` runs before the fields exist.
+
+        Args:
+            kwargs: Keyword arguments from the class definition that
+                pydantic does not use itself.
+
+        Raises:
+            TypeError: If the subclass declares a ``kind`` field.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        if "kind" in cls.model_fields:
+            raise TypeError(
+                f"{cls.__name__} declares a 'kind' field, but a container groups nodes "
+                "and states no kind; only a capability node or a constraints "
+                "submodel carries kind. Remove the field."
+            )
 
     @classmethod
     def _validate_extra_keys(cls, extras: Mapping[str, object]) -> None:
-        """Reject a ``kind`` key on a container, then apply the node-surface rules.
+        """Reject an extra ``kind`` key on a container, then apply the node-surface rules.
 
-        A container groups nodes and states no kind (design D4). An extra
-        ``kind`` here would be published by ``canonical_json()`` while
-        ``kind_at()`` answers ``None`` for the same path, so the two layers
-        would disagree; it is rejected at construction instead.
+        A container groups nodes and states no kind (design D4). This check
+        sees only the extras of the input, the keys that no field of the
+        class declares. An extra ``kind`` would be published by
+        ``canonical_json()`` while ``kind_at()`` answers ``None`` for the
+        same path, so it is rejected at construction. A ``kind`` field that
+        a subclass declares is not an extra:
+        :meth:`__pydantic_init_subclass__` refuses that class when it is
+        defined.
 
         Args:
             extras: Unknown capability fields with validated string keys.
