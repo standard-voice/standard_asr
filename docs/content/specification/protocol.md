@@ -701,7 +701,7 @@ Word:    start:float  end:float  text:str
 - `probability ∈ [0,1]`；若引擎给 logprob，**另立字段**，不与 probability 混。
 - **`Segment` 时间可空（normative）**：`start`/`end` 为 **`float | null`**，`null` = 引擎**未测量**该时间——是数据，不是缺字段；合法形状仅三种：`(float, float)`（**measured**，`end >= start`）、`(float, null)`（**start_only**，有真实起点但无可用区间）、`(null, null)`（**unavailable**）；`(null, float)`（有终点无起点）**不可表示**，构造期拒绝。衍生只读属性 `Segment.timestamp_status ∈ {"measured","start_only","unavailable"}` 由值派生（**不存储**，因此永不与值矛盾）。流式归约器把引擎的测量**原样存入**（绝不伪造 `0.0`），任一保留段非 measured 时结果级另发 `segment_timestamps_unavailable` diagnostic 作聚合披露；**逐段真相就是可空值本身**——消费者（含标准 SRT/VTT 渲染器）MUST 读值判定，MUST NOT 嗅探 `0.0` 或依赖任何 `extra` 标记（历史上的保留键 `timestamp_placeholder` 已删除；`Segment.extra` 完全归引擎所有，标准不保留任何键）。`TranscriptionEvent` 的 `partial`/`final` 同样拒绝 `(null, float)` 形状（两层同一不变量）。标准渲染器的策略针对**不可渲染（unrenderable）段**、由调用者显式选择：一个段不可渲染，当且仅当其无 measured span，**或** measured span 在输出毫秒格上量化为零（`_to_millis(end) <= _to_millis(start)`——`T --> T` cue 被播放器静默丢弃，渲染成功字符串却无人看见文本）。`to_srt`/`to_vtt` 的 `on_unrenderable ∈ {"error", "omit", "collapse"}`（`"error"` 为默认，抛 `SubtitleRenderingError`（携 `.unrenderable`/`.total` 计数）；`"omit"` 仅渲染可渲染段；`"collapse"` 整文单 cue；未知值响亮拒绝——Literal 不在运行时强制）。渲染器 MUST NOT 自行加宽 span（如捏造 1 ms）——那是未经授权的时间伪造；可渲染性是**渲染器属性**（取决于输出量化格），与模型的 `timestamp_status`（报告测量了什么）语义分离——无声丢字、无声隐藏与无声伪造时间皆为 cardinal sin，默认必须响亮。
 - **流批共享**：`TranscriptionEvent.segment/.words`（D10）MUST 用**同一** `Segment`/`Word`；流式专属字段（`stable_text` 等）加在**事件包装层**，不污染共享子模型。
-- **`session.result() -> TranscriptionResult`**：流式会话可归约为最终结果（反映 `final`；late `closed` 重格式化可更新它）。结果的 `segments` 是已定稿的段，按 §5.2 的阅读顺序排列，`text` 按 TR.1 把它们直接串接。
+- **`session.result() -> TranscriptionResult`**：流式会话可归约为最终结果（反映 `final`；late `closed` 重格式化可更新它）。结果的 `segments` 是已定稿的段，按 §5.2 的阅读顺序排列，`text` 按 TR.1 把它们直接串接。`words` 是各段 `words` 按同一顺序串接（TR.4）；没有任何段带 `words` 时为 `None`。归约器看不到请求，所以这个 `None` 分不出「未请求」和「请求了但没有词」（如请求了词级时间戳的静音会话）。
 
 ## TR.3 时间戳粒度
 `word_timestamps` 枚举 `word|segment|char`；char 级 reserve（additive）。
@@ -712,9 +712,15 @@ Word:    start:float  end:float  text:str
 - 顶层 `text`/`segments`/`words` **始终是全通道、说话人/通道无关的完整转写**——多通道时是**按时间合并所有通道**（不是 channel-0-only；使「无视 channels」安全无损）。
 - `channels: list[ChannelResult] | None`：`None`=未做通道分离（常态）；present=每 `ChannelResult{channel:int, text, segments, words}`，**每通道一条**。
 - 顶层 `Segment/Word.channel` 可选，给单遍 app 看 provenance（纳入 Google `channelTag` / EL `channel_index`）。
-- **不变量**：`channels` 不为 `None` 时，两个视图装的是同一批段。每个通道的 `segments` 是顶层 `segments` 的子序列：顶层里属于该通道的段，值相同、顺序不变；顶层每一段恰好属于一个通道。`words` 同理。顶层的顺序是 TR.2 的阅读顺序，段的边界空白也按这个顺序写，所以通道的 `text` 可能以空格开头或结尾（TR.1「多通道」）。这种对应是引擎义务，构造期和合规套件都不检查；要不要检查由 #48 决定。**构造期强制**（不可表示的非法形状 MUST 在模型构造时被拒绝）：
+- **不变量**：`channels` 不为 `None` 时，两个视图装的是同一批段。每个通道的 `segments` 是顶层 `segments` 的子序列：顶层里属于该通道的段，值相同、顺序不变；顶层每一段恰好属于一个通道。`words` 同理。顶层的顺序是 TR.2 的阅读顺序，段的边界空白也按这个顺序写，所以通道的 `text` 可能以空格开头或结尾（TR.1「多通道」）。这种对应是引擎义务（见本节末尾的「检查范围」）。**构造期强制**（不可表示的非法形状 MUST 在模型构造时被拒绝）：
   - `channels` 中任一通道携带 `segments`/`words` 而顶层对应字段为 `None` ——否则"无视 channels 安全无损"的承诺被静默打破（渲染器会把仅 channels 的结果坍缩成单条无时间 cue）。
   - `channels` 中 `channel` 索引**重复**——TR.4 语义是「每通道一条」，重复使顶层合并歧义、且按 channel 建字典的消费方静默丢一半数据。
+  - 任一段携带 `words`（`[]` 也算：它表示做过词级时间戳，只是没有词），而同一层的 `words` 为 `None`。顶层和每个 `ChannelResult` 各自检查，与有没有 `channels` 无关（错误类型 `standard_asr_words_top_level_missing`）——理由同第一条：只读扁平 `words` 的应用不能静默漏掉段里的词。所以把词嵌在段里的引擎也要填扁平的 `words`；只给扁平 `words` 的引擎不受影响。这一条只看 `words` 在不在，不比较值。
+- **通道的 `text`**：通道带 `segments` 时，它的 `text` 和顶层 `text` 的关系由 TR.1 的相等式和上面的子序列推出：通道的 `text` 就是顶层段文本中属于该通道的那些，按顺序串接起来。通道不带 `segments` 时，标准只承诺本节第一条：顶层 `text` 是所有通道的完整转写；通道的 `text` 怎样组成顶层 `text`，标准不规定。
+- **嵌套项的 `channel`**：`channels` 某一项里的段或词带 `channel` 时，值是这一项的 `channel`，不是这一项在列表里的位置（本节只要求通道索引不重复）。多通道结果的顶层段是否都必须带 `channel`，留给路线图（#27）第 29 项。
+- **顶层 `words` 与段里的 `words`**：顶层 `words` 列出引擎给出的每一个 `Word`，按段的顺序排列：先是第一段的词，然后是第二段的词，依此类推。`segments` 为 `None` 时没有段可以依照，`words` 的顺序就是引擎给出的阅读顺序；标准层不根据词的时间戳造出段，也不重排这些词。本节第一条说的「按时间合并」，对 `words` 来说以段为单位：两个通道的段在时间上重叠时，词仍按段分组，不按各自的时间交错（TR.2 给段排序，词跟着所在的段）。段里的 `words` 仍然可以不给（TR.1）。一段给了 `words`，它就是顶层 `words` 中属于这一段的词，值相同、顺序不变；所以每一段都给了 `words` 时，顶层 `words` 就是各段的 `words` 按段的顺序串接起来。词属于哪一段由引擎决定，不靠时间戳判断：一个词可以跨过段的测量边界，段也可以没有时间。词的计时和段对不上的引擎只给顶层 `words`，段里不给。每个 `ChannelResult` 内部同理。「每一个 `Word`」指引擎给出的每一条 `Word` 记录，并不保证词级数据覆盖整个转写。
+- **词的说话人**：同一个 `Word` 在各个视图里的值相同。`speaker` 为 `None` 的词按 TR.5 继承所在段的说话人，但顶层 `words` 不把继承来的值写进词里：标准层只从词合成段的说话人，不反过来给词填值。
+- **检查范围（诚实声明）**：本节的对应都是引擎义务。视图之间，构造期只检查 TR.1 的相等式和上面「构造期强制」列出的形状；除了那条相等式，它不比较不同视图里的值。合规套件不做任何跨视图检查：`check_transcription_result` 只对照能力声明，检查结果里有没有 speaker。`duration` 和 `detected_language` 只在顶层出现，`ChannelResult` 里没有，所以不涉及对应。把 `words` 拼起来不必等于 `text`（TR.1）。
 
 ## TR.5 说话人（Speaker Diarization）
 说话人分离（"谁说了什么"）经 [§Runtime 参数 3.4](#runtime-parameters) 的 `diarization` marker 请求，能力声明于 `capabilities.<mode>.diarization`（[§能力系统 3.2](#capabilities)）。结果语义（normative）：

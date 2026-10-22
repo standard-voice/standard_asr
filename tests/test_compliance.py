@@ -3407,6 +3407,9 @@ def test_check_transcription_result_flags_segment_word_speaker() -> None:
     result = TranscriptionResult(
         text="hi there",
         segments=[Segment(start=0.0, end=1.0, text="hi there", words=words)],
+        # An empty flat list satisfies the presence check and keeps the label
+        # only in the nested words, so the test isolates the nested scan.
+        words=[],
     )
     report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
     assert _flags_result_exceeds(report)

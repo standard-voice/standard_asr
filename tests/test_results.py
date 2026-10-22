@@ -167,15 +167,41 @@ def test_channel_segments_require_top_level_segments() -> None:
     # consumers (for example, the renderers) silently drop all per-channel timing, so
     # the shape is rejected at construction.
     chan = ChannelResult(channel=0, text="hi", segments=[Segment(start=0.0, end=1.0, text="hi")])
-    with pytest.raises(ValueError, match="time-merged union"):
+    with pytest.raises(ValueError, match="every channel's"):
         TranscriptionResult(text="hi", channels=[chan])
 
 
 def test_channel_words_require_top_level_words() -> None:
     # Same derivability invariant for the flattened word-level view.
     chan = ChannelResult(channel=0, text="hi", words=[Word(start=0.0, end=0.5, text="hi")])
-    with pytest.raises(ValueError, match="time-merged union"):
+    with pytest.raises(ValueError, match="every channel's"):
         TranscriptionResult(text="hi", channels=[chan])
+
+
+def test_segment_words_require_the_flat_words() -> None:
+    # A segment that carries words beside words=None would let a consumer of
+    # the flat list silently miss them (spec TR.4). The channel shape check
+    # above prevents the same loss. An empty list on a segment counts too:
+    # it says that word timestamps ran.
+    word = Word(start=0.0, end=0.5, text="hi")
+    nested = [Segment(start=0.0, end=1.0, text="hi", words=[word])]
+    with pytest.raises(ValidationError) as excinfo:
+        TranscriptionResult(text="hi", segments=nested)
+    (error,) = excinfo.value.errors()
+    assert error["type"] == "standard_asr_words_top_level_missing"
+    assert error["msg"].startswith("TranscriptionResult.segments carry words")
+    assert "Set words to every segment's words in segment order" in error["msg"]
+    empty = [Segment(start=0.0, end=1.0, text="hi", words=[])]
+    with pytest.raises(ValidationError) as excinfo:
+        ChannelResult(channel=0, text="hi", segments=empty)
+    (error,) = excinfo.value.errors()
+    assert error["type"] == "standard_asr_words_top_level_missing"
+    assert error["msg"].startswith("ChannelResult.segments carry words")
+    # The flat list makes both shapes construct, and a flat list with no
+    # nesting is fine on its own.
+    assert TranscriptionResult(text="hi", segments=nested, words=[word]).words == [word]
+    assert ChannelResult(channel=0, text="hi", segments=empty, words=[]).words == []
+    assert TranscriptionResult(text="hi", words=[word]).segments is None
 
 
 def test_channels_with_top_level_segments_and_words_construct() -> None:
