@@ -50,6 +50,17 @@ DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
 #: docstring names the calls that attach them.
 DIAG_TEXT_SEGMENTS_MISMATCH = "text_segments_mismatch"
 
+#: Diagnostic code, at level ``"warning"``, for one view of a result: the
+#: top level, or one :class:`ChannelResult`. It marks a view whose own
+#: ``words`` is ``None`` while any of its segments carries a ``words`` list,
+#: even ``[]`` (spec TR.4). "Flat" in this code means the view's own list,
+#: as opposed to the lists inside its segments.
+#: :func:`missing_words_diagnostics` builds these diagnostics.
+#: :func:`~standard_asr.runtime.interface.finalize_result` fills the missing
+#: ``words`` where it can and attaches a diagnostic with this code for each
+#: view it found, whose message says when it filled the view.
+DIAG_FLAT_WORDS_MISSING = "flat_words_missing"
+
 
 def to_json_value(value: object) -> JsonValue:
     """Project a Python value into the wire value space.
@@ -174,7 +185,9 @@ class Diagnostic(BaseModel):
     degradations, and similar non-ideal paths. They also disclose an engine
     fault in a result that the standard layer delivers instead of rejecting,
     such as a ``text`` that is not the segment texts concatenated
-    (``text_segments_mismatch``).
+    (``text_segments_mismatch``). The standard layer may also have corrected
+    the fault, as when it fills ``words`` that the engine left out
+    (``flat_words_missing``).
 
     Attributes:
         level: Severity, ``"info"`` or ``"warning"``.
@@ -376,7 +389,13 @@ class Segment(BaseModel):
             ``Word`` values in the same order (spec TR.4). ``None`` when the
             engine does not nest them. The engine decides which words
             belong to a segment, so a word can cross the segment's
-            measured boundary.
+            measured boundary. When a segment carries ``words``, even
+            ``[]``, the engine MUST also fill the ``words`` of the result or
+            channel that holds it (spec TR.4). If the engine leaves that
+            ``words`` as ``None``,
+            :func:`~standard_asr.runtime.interface.finalize_result` fills it
+            from the segments where it can, and attaches a
+            ``flat_words_missing`` diagnostic.
         speaker: Optional speaker label (authoritative diarization shape).
         channel: Optional channel index for provenance (``>= 0``).
         avg_logprob: Optional average log-probability.
@@ -569,7 +588,12 @@ class ChannelResult(BaseModel):
             ``Word`` values in the same order (spec TR.4), so they follow this
             channel's segment order. A segment's own ``words`` are the words
             of this list that belong to it. Nothing checks that these
-            values correspond either.
+            values correspond either. If the engine leaves ``words`` as
+            ``None`` while a segment of this channel carries ``words``, even
+            ``[]``, :func:`~standard_asr.runtime.interface.finalize_result`
+            attaches a ``flat_words_missing`` diagnostic. It also fills
+            ``words`` from this channel's segments, unless the top-level
+            ``words`` stays ``None``.
 
     Raises:
         ValueError: If field validation fails.
@@ -640,20 +664,23 @@ class TranscriptionResult(BaseModel):
             segments from word timestamps nor reorders the words. Where two
             channels' segments overlap in time, the words stay grouped by
             segment. A segment's own ``words``, when present, are the words
-            of this list that belong to it (spec TR.4). This is an engine
-            obligation that nothing checks. Each word keeps its own field
-            values here, so a word
-            whose ``speaker`` is ``None`` stays ``None`` even when its
-            segment has a speaker. An application that needs the speaker
-            such a word inherits (spec TR.5) reads the word in its
-            segment's ``words``; it must not guess a word's segment from
-            timestamps.
+            of this list that belong to it (spec TR.4). That correspondence
+            is an engine obligation that nothing checks. If the engine
+            leaves ``words`` as ``None`` while a segment carries ``words``,
+            even ``[]``, :func:`~standard_asr.runtime.interface.finalize_result`
+            fills it from the segments in segment order. It also attaches a
+            ``flat_words_missing`` diagnostic. Each word keeps its own field
+            values here, so a word whose ``speaker`` is ``None`` stays
+            ``None`` even when its segment has a speaker. An application that
+            needs the speaker such a word inherits (spec TR.5) reads the word
+            in its segment's ``words``; it must not guess a word's segment
+            from timestamps.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
         diagnostics: Conversion / best_effort / degradation diagnostics, and
             the standard layer's disclosures about the result itself, such
-            as ``text_segments_mismatch``.
+            as ``text_segments_mismatch`` and ``flat_words_missing``.
         extra: Engine-specific / experimental data (incl. provider formats).
 
     Raises:
@@ -894,9 +921,9 @@ def text_segments_diagnostics(result: TranscriptionResult) -> list[Diagnostic]:
 
     :meth:`~standard_asr.runtime.interface.EngineBase.transcribe` attaches
     these diagnostics to every result it returns, through
-    :func:`~standard_asr.runtime.interface.disclose_text_segments_mismatch`.
-    That function attaches them to a result from any engine and adds none
-    that the result already carries.
+    :func:`~standard_asr.runtime.interface.finalize_result`. That function
+    attaches them to a result from any engine and adds none that the result
+    already carries.
     :func:`~standard_asr.compliance.check_transcription_result` reports each
     one as an error. The streaming reducer builds ``text`` by the same
     concatenation, so a reduced result never produces one.
@@ -921,14 +948,129 @@ def text_segments_diagnostics(result: TranscriptionResult) -> list[Diagnostic]:
     return found
 
 
+_FLAT_WORDS_MISSING_FACTS = (
+    "The engine left {owner}.words as None, but {with_words} of its {total} "
+    "segments carry a words list. An empty list counts, because it says that "
+    "word timestamps ran. If words stays None, an application that reads only "
+    "{owner}.words misses the words in the segments. It also reads None as "
+    "'word timestamps were not requested' (spec TR.1). "
+)
+_FLAT_WORDS_MISSING_REMEDY = (
+    "The engine MUST fill words with every Word it supplied, in segment order, "
+    "and with [] when it supplied none (spec TR.4)."
+)
+_FLAT_WORDS_FILLED = (
+    "The standard layer filled words by copying those segments' words in "
+    "segment order, and checked nothing about them. "
+)
+
+
+def missing_words_counts(
+    words: Sequence[Word] | None, segments: Sequence[Segment] | None
+) -> tuple[int, int] | None:
+    """Count the segments that carry a ``words`` list when a view's ``words`` is missing.
+
+    Args:
+        words: The view's own ``words``.
+        segments: The view's ``segments``.
+
+    Returns:
+        ``(with_words, total)``: the number of segments whose ``words`` is a
+        list, and the number of segments. ``None`` when nothing is missing:
+        ``words`` is a list, ``segments`` is ``None`` or ``[]``, or no segment
+        carries a ``words`` list.
+    """
+    if words is not None or not segments:
+        return None
+    with_words = sum(1 for segment in segments if segment.words is not None)
+    if with_words == 0:
+        return None
+    return with_words, len(segments)
+
+
+def flat_words_missing_diagnostic(
+    owner: str, with_words: int, total: int, *, filled: bool
+) -> Diagnostic:
+    """Build the ``flat_words_missing`` diagnostic for one view.
+
+    Args:
+        owner: The view the message names (``TranscriptionResult`` or
+            ``ChannelResult(channel=N)``).
+        with_words: The number of the view's segments whose ``words`` is a list.
+        total: The number of the view's segments.
+        filled: Whether the standard layer filled the view's ``words``. The
+            message says so when it did; otherwise it states the defect only.
+
+    Returns:
+        A warning diagnostic with code ``flat_words_missing``.
+    """
+    facts = _FLAT_WORDS_MISSING_FACTS.format(owner=owner, with_words=with_words, total=total)
+    action = _FLAT_WORDS_FILLED if filled else ""
+    return Diagnostic(
+        level="warning",
+        code=DIAG_FLAT_WORDS_MISSING,
+        message=facts + action + _FLAT_WORDS_MISSING_REMEDY,
+    )
+
+
+def missing_words_diagnostics(result: TranscriptionResult) -> list[Diagnostic]:
+    """Return a diagnostic for each view of ``result`` whose ``words`` is missing.
+
+    The views are the top level and each ``ChannelResult``. A view's
+    ``words`` is missing when it is ``None`` while at least one of the
+    view's segments carries a ``words`` list. An empty list counts: it says
+    that word timestamps ran and found no words. When a segment carries a
+    ``words`` list, the engine MUST also fill the view's own ``words`` with
+    every ``Word`` it supplied for the view, in segment order (spec TR.4).
+    An application that reads only the view's ``words`` would otherwise
+    miss the segments' words. A view whose ``segments`` is ``None`` or
+    ``[]`` has nothing to report.
+
+    The function is pure: it returns one ``flat_words_missing`` warning
+    diagnostic per such view and modifies nothing. It looks only at whether
+    each ``words`` is ``None`` and compares no values. So it says nothing
+    about whether a ``words`` list the engine set agrees with the segments,
+    or whether two views agree with each other.
+
+    :func:`~standard_asr.runtime.interface.finalize_result` applies the
+    same test, fills the ``words`` it can, and attaches a diagnostic with
+    the same code; for a view it filled, the message says so. A view it
+    could not fill gets this function's diagnostic unchanged.
+    :func:`~standard_asr.compliance.check_transcription_result` reports the
+    ``flat_words_missing`` diagnostics a result carries and the ones this
+    function still finds in its data, each once. It reports each as an
+    error. The streaming reducer fills ``words`` from the segments by the
+    same rule, so a reduced result never produces one.
+
+    Args:
+        result: The result to check.
+
+    Returns:
+        The diagnostics, in view order: the top-level view first, then the
+        channels in list order. Empty when no view's ``words`` is missing.
+    """
+    found: list[Diagnostic] = []
+    counts = missing_words_counts(result.words, result.segments)
+    if counts is not None:
+        found.append(flat_words_missing_diagnostic("TranscriptionResult", *counts, filled=False))
+    for channel in result.channels or ():
+        counts = missing_words_counts(channel.words, channel.segments)
+        if counts is not None:
+            owner = f"ChannelResult(channel={channel.channel})"
+            found.append(flat_words_missing_diagnostic(owner, *counts, filled=False))
+    return found
+
+
 __all__ = [
     "ChannelResult",
     "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
+    "DIAG_FLAT_WORDS_MISSING",
     "DIAG_TEXT_SEGMENTS_MISMATCH",
     "Diagnostic",
     "Segment",
     "TranscriptionResult",
     "Word",
+    "missing_words_diagnostics",
     "synthesize_segment_speaker",
     "text_segments_diagnostics",
     "to_json_value",

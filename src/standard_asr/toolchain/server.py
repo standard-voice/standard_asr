@@ -49,7 +49,7 @@ from standard_asr.plugins.discovery import (
 )
 from standard_asr.runtime.interface import (
     bind_session_capabilities,
-    disclose_text_segments_mismatch,
+    finalize_result,
     require_engine_protocol,
 )
 from standard_asr.runtime.protocol_boundary import require_sync_result
@@ -1648,13 +1648,12 @@ async def _run_transcription(
         # ValidationError out of ``TranscribeResponse(...)`` past every arm below
         # (echoing engine input text past the scrubbed-500 contract).
         require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
-        # Nothing automatically attaches the text_segments_mismatch
-        # diagnostics (spec TR.1) to the result of an engine that does not
-        # derive from EngineBase. That result may lack them, and this call
-        # makes sure the response carries them for every engine the server
-        # serves. It adds none that the result already carries, so it
-        # returns an EngineBase result unchanged.
-        result = disclose_text_segments_mismatch(result)
+        # For an engine that does not derive from EngineBase, nothing
+        # automatically checks the text against the segments (spec TR.1) or
+        # fills missing words (spec TR.4). This call applies both rules for
+        # every engine the server serves. An EngineBase result already went
+        # through it, so the call returns that result unchanged.
+        result = finalize_result(result)
         response = TranscribeResponse(model=model, result=result)
         # Finish the wire projection INSIDE the fault-mapping region -- and
         # ONCE. The dump is encoded here (allow_nan=False: NaN/Infinity are

@@ -32,7 +32,7 @@ from standard_asr import (
     DiarizationRequest,
     RuntimeParams,
     TranscriptionResult,
-    disclose_text_segments_mismatch,
+    finalize_result,
 )
 from standard_asr.contract.artifacts import (
     ArtifactAction,
@@ -964,7 +964,7 @@ def test_server_discloses_text_segments_mismatch_for_a_structural_engine() -> No
     # A client that rebuilds the result from the JSON and runs the disclosure
     # itself gets the same object back: the diagnostic survived the round trip.
     parsed = TranscriptionResult.model_validate(result)
-    assert disclose_text_segments_mismatch(parsed) is parsed
+    assert finalize_result(parsed) is parsed
 
 
 def test_server_discloses_text_segments_mismatch_once_for_an_engine_base() -> None:
