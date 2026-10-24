@@ -686,7 +686,7 @@ def _segmented(segments: list[Segment], **kwargs: object) -> TranscriptionResult
             ``duration``).
 
     Returns:
-        The result, with ``text`` built as the construction check requires.
+        The result, with ``text`` built as TR.1 requires.
     """
     return TranscriptionResult(
         text="".join(segment.text for segment in segments),

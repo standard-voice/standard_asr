@@ -677,40 +677,63 @@ def bind_session_capabilities(session: TranscriptionSession, engine: StandardASR
     )
 
 
-def check_result_views(result: TranscriptionResult, engine: StandardASR) -> TranscriptionResult:
-    """Disclose each view of a batch result whose ``text`` breaks the TR.1 equality.
+def disclose_text_segments_mismatch(result: TranscriptionResult) -> TranscriptionResult:
+    """Attach each ``text_segments_mismatch`` diagnostic that a result lacks.
 
     When a view's ``segments`` is a list, the engine MUST build its ``text``
     as the segment texts concatenated in list order (spec TR.1). The views
-    are the top level and each ``ChannelResult``. This function appends one
-    ``text_segments_mismatch`` warning diagnostic for each view that differs.
-    Nothing else changes: ``text`` and every segment text stay as the engine
-    returned them, and this function does not choose between them.
+    are the top level and each ``ChannelResult``. For each view that
+    differs, :func:`~standard_asr.contract.results.text_segments_diagnostics`
+    returns one ``text_segments_mismatch`` warning diagnostic, and this
+    function appends it unless ``result.diagnostics`` already holds an equal
+    one. Equal is pydantic's model equality: the same class, and the same
+    value in every field, ``level`` included. Which fields were set
+    explicitly does not matter, so a diagnostic rebuilt from the reference
+    server's JSON equals the original. An instance of a subclass of
+    :class:`~standard_asr.contract.results.Diagnostic` is not equal to a
+    ``Diagnostic`` with the same values. The diagnostics already there keep
+    their order, and nothing else changes: ``text`` and every segment text
+    stay as the engine returned them.
 
-    :meth:`EngineBase.transcribe` runs this check on every result it returns,
-    so for an :class:`EngineBase` this function returns ``result`` unchanged.
-    An engine that implements the protocol without deriving from
-    :class:`EngineBase` returns its result unchecked. Call this function on
-    that result to get the same disclosure; the reference server's batch
-    routes and ``standard-asr transcribe`` do so. Call it once per result: a
-    second call on a result it already disclosed appends the same diagnostics
-    again.
+    Calling the function again on the result it returns changes nothing.
+    :meth:`EngineBase.transcribe` calls it on every result it returns, after
+    it merges the diagnostics from parameter gating, language resolution,
+    audio conversion, and the engine itself. So when an engine's
+    ``_transcribe`` returns the result of another engine's
+    :meth:`EngineBase.transcribe`, the application gets each
+    ``text_segments_mismatch`` diagnostic once. The standard layer does not
+    run this check for an engine that implements the protocol without
+    deriving from :class:`EngineBase`. Nothing attaches these diagnostics to
+    such an engine's result automatically. The result may still carry them,
+    for example when it came from another engine's
+    :meth:`EngineBase.transcribe` or the engine called this function itself.
+    Calling this function makes sure the result carries them; the reference
+    server's two batch endpoints and ``standard-asr transcribe`` call it on
+    every result.
+
+    The function adds diagnostics and never removes one. If an engine
+    changes ``text`` or the segments of another engine's result and keeps
+    that result's diagnostics, the disclosure may no longer describe the
+    result. Its message records the view, the first differing code point
+    index, and both lengths, so it stays accurate only if the change keeps
+    all of them. Such an engine drops those ``text_segments_mismatch``
+    diagnostics. Calling this function on the changed result then attaches
+    the ones that describe it. :meth:`EngineBase.transcribe` makes that
+    call for an engine that derives from :class:`EngineBase`.
 
     Args:
-        result: The result the engine returned.
-        engine: The engine that returned it.
+        result: The result an engine returned. It may already carry some or
+            all of these diagnostics.
 
     Returns:
-        ``result`` itself when ``engine`` is an :class:`EngineBase` or every
-        view keeps the equality. Otherwise, a copy of ``result`` with the new
-        diagnostics after the ones it already carries.
+        ``result`` itself when no diagnostic is missing. Otherwise, a copy of
+        ``result`` with the missing diagnostics, in view order, after the
+        ones it already carries.
     """
-    if isinstance(engine, EngineBase):
+    missing = [d for d in text_segments_diagnostics(result) if d not in result.diagnostics]
+    if not missing:
         return result
-    found = text_segments_diagnostics(result)
-    if not found:
-        return result
-    return result.model_copy(update={"diagnostics": [*result.diagnostics, *found]})
+    return result.model_copy(update={"diagnostics": [*result.diagnostics, *missing]})
 
 
 def require_engine_protocol(engine: object) -> BaseProperties:
@@ -1700,18 +1723,16 @@ class EngineBase(ABC):
         # reducer applies the same shared rule, so batch and streaming yield
         # the same Segment.speaker for the same engine output.
         result = _synthesize_result_speakers(result)
-        # A view whose text is not its segment texts concatenated is delivered
-        # as the engine returned it: the standard layer cannot tell which of
-        # the two values is right, so it appends text_segments_mismatch and
-        # rewrites neither (spec TR.1).
-        merged = [
-            *gate_diags,
-            *lang_diags,
-            *prepared.diagnostics,
-            *result.diagnostics,
-            *text_segments_diagnostics(result),
-        ]
-        return result.model_copy(update={"diagnostics": merged})
+        # When a view's text differs from its segment texts, the standard
+        # layer cannot tell which is right (spec TR.1). It delivers both as
+        # the engine returned them and discloses the mismatch. The reference
+        # server and the CLI call disclose_text_segments_mismatch() too, so
+        # the rule lives in one place. The call appends each missing warning
+        # after the merged diagnostics. A warning the result already carries,
+        # as when _transcribe returned another engine's transcribe() result,
+        # keeps its place and gets no second copy.
+        merged = [*gate_diags, *lang_diags, *prepared.diagnostics, *result.diagnostics]
+        return disclose_text_segments_mismatch(result.model_copy(update={"diagnostics": merged}))
 
     def _prepare_audio(self, audio: AudioInputLike) -> PreparedAudio:
         """Decode, negotiate, and resample an audio input (shared pipeline).
@@ -2478,7 +2499,7 @@ __all__ = [
     "EngineBase",
     "StandardASR",
     "bind_session_capabilities",
-    "check_result_views",
+    "disclose_text_segments_mismatch",
     "ensure_wire_format_supported",
     "require_engine_protocol",
 ]

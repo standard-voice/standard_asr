@@ -32,6 +32,7 @@ from standard_asr import (
     DiarizationRequest,
     RuntimeParams,
     TranscriptionResult,
+    disclose_text_segments_mismatch,
 )
 from standard_asr.contract.artifacts import (
     ArtifactAction,
@@ -942,10 +943,11 @@ def test_create_app_endpoints() -> None:
 
 
 def test_server_discloses_text_segments_mismatch_for_a_structural_engine() -> None:
-    # A structural engine runs no check of its result's views. The server
-    # runs it, so a client learns about a text that is not the concatenated
-    # segment texts the same way it would from an EngineBase engine: the
-    # result as the engine built it, plus the warning.
+    # The standard layer runs no check on its own for an engine that does
+    # not derive from EngineBase. The server runs it, so a client learns
+    # about a text that is not the concatenated segment texts the same way
+    # it would from an EngineBase engine: the result as the engine built
+    # it, plus the warning.
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -959,6 +961,10 @@ def test_server_discloses_text_segments_mismatch_for_a_structural_engine() -> No
     assert [d["code"] for d in result["diagnostics"]] == ["text_segments_mismatch"]
     assert result["diagnostics"][0]["level"] == "warning"
     assert "hello" not in result["diagnostics"][0]["message"]
+    # A client that rebuilds the result from the JSON and runs the disclosure
+    # itself gets the same object back: the diagnostic survived the round trip.
+    parsed = TranscriptionResult.model_validate(result)
+    assert disclose_text_segments_mismatch(parsed) is parsed
 
 
 def test_server_discloses_text_segments_mismatch_once_for_an_engine_base() -> None:

@@ -866,10 +866,11 @@ def text_segments_diagnostics(result: TranscriptionResult) -> list[Diagnostic]:
     result is built do not reject a mismatch: the standard layer delivers
     both values as the engine returned them, with these diagnostics.
 
-    :meth:`~standard_asr.runtime.interface.EngineBase.transcribe` appends
-    these diagnostics to every result it returns, and
-    :func:`~standard_asr.runtime.interface.check_result_views` does so for an
-    engine that does not derive from ``EngineBase``.
+    :meth:`~standard_asr.runtime.interface.EngineBase.transcribe` attaches
+    these diagnostics to every result it returns, through
+    :func:`~standard_asr.runtime.interface.disclose_text_segments_mismatch`.
+    That function attaches them to a result from any engine and adds none
+    that the result already carries.
     :func:`~standard_asr.compliance.check_transcription_result` reports each
     one as an error. The streaming reducer builds ``text`` by the same
     concatenation, so a reduced result never produces one.

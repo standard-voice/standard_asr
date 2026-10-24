@@ -50,7 +50,11 @@ from standard_asr.contract.exceptions import (
 )
 from standard_asr.contract.language import AUTO, DIAG_CANDIDATE_LANGUAGES_IGNORED
 from standard_asr.contract.params import ProviderParams, WordTimestampGranularity
-from standard_asr.contract.results import DIAG_TEXT_SEGMENTS_MISMATCH, Diagnostic
+from standard_asr.contract.results import (
+    DIAG_TEXT_SEGMENTS_MISMATCH,
+    Diagnostic,
+    text_segments_diagnostics,
+)
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -59,7 +63,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.runtime.config import LanguageConfigMixin
-from standard_asr.runtime.interface import check_result_views
+from standard_asr.runtime.interface import disclose_text_segments_mismatch
 from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionEvent, TranscriptionSession
 
 
@@ -531,19 +535,15 @@ def test_stripped_text_is_delivered_with_a_mismatch_diagnostic() -> None:
         d.code for d in async_result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH
     ]
     assert async_codes == [DIAG_TEXT_SEGMENTS_MISMATCH]
-    # check_result_views does nothing for an EngineBase: transcribe() ran the check.
-    assert check_result_views(result, _StrippedTextEngine()) is result
+    # disclose_text_segments_mismatch() adds nothing: transcribe() attached it.
+    assert disclose_text_segments_mismatch(result) is result
 
 
-def test_check_result_views_discloses_for_a_structural_engine() -> None:
+def test_disclose_text_segments_mismatch_for_a_structural_engine() -> None:
     # An engine that does not derive from EngineBase runs no check of its own.
     # The function appends the disclosure after the engine's own diagnostics
     # and changes nothing else; a result that keeps the equality comes back
     # as the same object.
-    class _Structural:
-        pass
-
-    engine = cast("StandardASR", _Structural())
     result = TranscriptionResult(
         text="hello world",
         segments=[
@@ -552,20 +552,64 @@ def test_check_result_views_discloses_for_a_structural_engine() -> None:
         ],
         diagnostics=[Diagnostic(code="engine_note", message="kept")],
     )
-    disclosed = check_result_views(result, engine)
+    disclosed = disclose_text_segments_mismatch(result)
     assert disclosed.text == "hello world"
     assert [d.code for d in disclosed.diagnostics] == ["engine_note", DIAG_TEXT_SEGMENTS_MISMATCH]
     clean = TranscriptionResult(text="hi")
-    assert check_result_views(clean, engine) is clean
-    # The original is untouched, and a second call on the disclosed copy
-    # appends the same diagnostic again, as the docstring says.
+    assert disclose_text_segments_mismatch(clean) is clean
+    # The original is untouched, and a second call on the disclosed copy adds
+    # nothing: the result already carries the diagnostic.
     assert [d.code for d in result.diagnostics] == ["engine_note"]
-    twice = check_result_views(disclosed, engine)
-    assert [d.code for d in twice.diagnostics] == [
-        "engine_note",
-        DIAG_TEXT_SEGMENTS_MISMATCH,
-        DIAG_TEXT_SEGMENTS_MISMATCH,
+    assert disclose_text_segments_mismatch(disclosed) is disclosed
+
+
+class _DelegatingEngine(_ArrayEngine):
+    """An EngineBase wrapper whose hook returns another engine's checked result."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return _StrippedTextEngine().transcribe(_audio())
+
+
+def test_wrapper_engine_delivers_the_disclosure_once() -> None:
+    # The inner transcribe() attached the diagnostic. The wrapper's own
+    # transcribe() finds it already there and adds nothing, so a result that
+    # passes through two EngineBase layers carries the warning once. A
+    # wrapper that does not derive from EngineBase and returns the inner
+    # result gets the same answer from the server's and the CLI's call.
+    result = _DelegatingEngine().transcribe(_audio())
+    codes = [d.code for d in result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH]
+    assert codes == [DIAG_TEXT_SEGMENTS_MISMATCH]
+    assert disclose_text_segments_mismatch(result) is result
+
+
+def test_disclosure_adds_only_the_diagnostics_a_result_lacks() -> None:
+    # A result can carry some of these diagnostics and lack others: the
+    # function keeps every diagnostic it has, in its order, and appends the
+    # missing ones in view order, the top level first, then the channels in
+    # list order. Equality is the whole diagnostic, so the same message at
+    # another level does not stand in for the warning.
+    segments = [
+        Segment(start=0.0, end=1.0, text="hello", channel=0),
+        Segment(start=1.0, end=2.0, text="world", channel=1),
     ]
+    result = TranscriptionResult(
+        text="hello world",
+        segments=segments,
+        channels=[
+            ChannelResult(channel=0, text="hello ", segments=[segments[0]]),
+            ChannelResult(channel=1, text="world ", segments=[segments[1]]),
+        ],
+    )
+    top_level, channel_0, channel_1 = text_segments_diagnostics(result)
+    note = Diagnostic(code="engine_note", message="kept")
+    partial = result.model_copy(update={"diagnostics": [note, channel_1]})
+    disclosed = disclose_text_segments_mismatch(partial)
+    assert disclosed.diagnostics == [note, channel_1, top_level, channel_0]
+    demoted = result.model_copy(
+        update={"diagnostics": [top_level.model_copy(update={"level": "info"})]}
+    )
+    levels = [d.level for d in disclose_text_segments_mismatch(demoted).diagnostics]
+    assert levels == ["info", "warning", "warning", "warning"]
 
 
 @pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
