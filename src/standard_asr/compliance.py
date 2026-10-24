@@ -47,7 +47,12 @@ from standard_asr.contract.protocol_version import (
     parse_protocol_version,
     require_supported_protocol,
 )
-from standard_asr.contract.results import Segment, TranscriptionResult, Word
+from standard_asr.contract.results import (
+    Segment,
+    TranscriptionResult,
+    Word,
+    text_segments_diagnostics,
+)
 from standard_asr.plugins.discovery import (
     FactoryLoadError,
     ModelRegistry,
@@ -2771,8 +2776,21 @@ def check_transcription_result(
     Behavioral check for batch engines that is **pure**, mirroring
     :func:`check_event_sequence`: it inspects a result the author already
     produced -- it never instantiates or calls an engine (invoking a cloud
-    engine from a compliance run would be a billable side effect). Today it
-    verifies the diarization couple: a result carrying speaker labels anywhere
+    engine from a compliance run would be a billable side effect). It runs
+    two checks.
+
+    The TR.1 text equality: when a view's ``segments`` is a list, the engine
+    MUST build its ``text`` as the segment texts concatenated in list order,
+    in the top-level view and in each ``channels[i]``.
+    ``EngineBase.transcribe()`` delivers a result that breaks it, with a
+    ``text_segments_mismatch`` warning diagnostic (see
+    :func:`~standard_asr.contract.results.text_segments_diagnostics`). This
+    check reports each such view as an error with code
+    ``result_invariant:text_segments_mismatch``, so a test that passes a
+    recorded result to it fails, while an application that receives the
+    same result gets only the warning diagnostic.
+
+    The diarization couple: a result carrying speaker labels anywhere
     (top-level ``segments[]`` / ``words[]``, a segment's ``words``, or any
     ``channels[i]`` view) while ``batch.diarization`` is unsupported (or the
     ``batch`` domain is absent -- fail-closed) is a capability⇄result desync,
@@ -2793,10 +2811,24 @@ def check_transcription_result(
             ``engine.declared_capabilities``).
 
     Returns:
-        A :class:`ComplianceReport`; ``passed`` is ``True`` when the result does
-        not exceed the declared capabilities.
+        A :class:`ComplianceReport`; ``passed`` is ``True`` when every view
+        keeps the text equality and the result carries no speaker label
+        beyond the declared ``batch.diarization`` capability.
     """
     issues: list[ComplianceIssue] = []
+    for diagnostic in text_segments_diagnostics(result):
+        # The diagnostic code passes through the way check_event_sequence
+        # passes its guard's codes through: CI can match
+        # ``result_invariant:<diagnostic_code>`` without parsing the message,
+        # and the message keeps the human-readable form.
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code=f"result_invariant:{diagnostic.code}",
+                message=f"result invariant violated ({diagnostic.code}): {diagnostic.message}",
+                model=None,
+            )
+        )
     _cross_check_result_capabilities(result, capabilities.batch, issues)
     return ComplianceReport(registry=None, issues=issues)
 

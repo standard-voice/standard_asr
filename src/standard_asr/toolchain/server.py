@@ -47,7 +47,11 @@ from standard_asr.plugins.discovery import (
     ModelRegistry,
     discover_models,
 )
-from standard_asr.runtime.interface import bind_session_capabilities, require_engine_protocol
+from standard_asr.runtime.interface import (
+    bind_session_capabilities,
+    check_result_views,
+    require_engine_protocol,
+)
 from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
     log_exception_safely,
@@ -1644,6 +1648,12 @@ async def _run_transcription(
         # ValidationError out of ``TranscribeResponse(...)`` past every arm below
         # (echoing engine input text past the scrubbed-500 contract).
         require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
+        # An engine that does not derive from EngineBase returns its result
+        # unchecked. Check the result's views here, so the server discloses a
+        # text that is not the segment texts concatenated (spec TR.1) for
+        # every engine it serves. For an EngineBase this call does nothing:
+        # transcribe() already ran the check.
+        result = check_result_views(result, asr)
         response = TranscribeResponse(model=model, result=result)
         # Finish the wire projection INSIDE the fault-mapping region -- and
         # ONCE. The dump is encoded here (allow_nan=False: NaN/Infinity are

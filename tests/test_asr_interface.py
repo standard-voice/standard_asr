@@ -50,6 +50,7 @@ from standard_asr.contract.exceptions import (
 )
 from standard_asr.contract.language import AUTO, DIAG_CANDIDATE_LANGUAGES_IGNORED
 from standard_asr.contract.params import ProviderParams, WordTimestampGranularity
+from standard_asr.contract.results import DIAG_TEXT_SEGMENTS_MISMATCH, Diagnostic
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -58,6 +59,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.runtime.config import LanguageConfigMixin
+from standard_asr.runtime.interface import check_result_views
 from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionEvent, TranscriptionSession
 
 
@@ -495,6 +497,75 @@ class _InvalidSegmentEngine(_ArrayEngine):
     def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
         bad = Segment(start=-1.0, end=1.0, text="x")
         return TranscriptionResult(text="x", segments=[bad])
+
+
+class _StrippedTextEngine(_ArrayEngine):
+    """Strips the whole text but not its segments: the usual TR.1 mistake."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        whisper = [
+            Segment(start=0.0, end=1.0, text=" Hello"),
+            Segment(start=1.0, end=2.0, text=" world."),
+        ]
+        return TranscriptionResult(text="Hello world.", segments=whisper)
+
+
+def test_stripped_text_is_delivered_with_a_mismatch_diagnostic() -> None:
+    # A text that is not the segment texts concatenated (spec TR.1) is an
+    # engine fault that transcribe() discloses instead of raising: the
+    # application gets the text and segment texts as the engine built them,
+    # plus one warning that names the index of the first differing code point
+    # and quotes no transcript text.
+    result = _StrippedTextEngine().transcribe(_audio())
+    assert result.text == "Hello world."
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == [" Hello", " world."]
+    mismatches = [d for d in result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH]
+    assert len(mismatches) == 1
+    assert mismatches[0].level == "warning"
+    assert "differ at code point index 0" in mismatches[0].message
+    assert "Hello" not in mismatches[0].message
+    # The async bridge runs transcribe(), so it carries the same one diagnostic.
+    async_result = asyncio.run(_StrippedTextEngine().transcribe_async(_audio()))
+    async_codes = [
+        d.code for d in async_result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH
+    ]
+    assert async_codes == [DIAG_TEXT_SEGMENTS_MISMATCH]
+    # check_result_views does nothing for an EngineBase: transcribe() ran the check.
+    assert check_result_views(result, _StrippedTextEngine()) is result
+
+
+def test_check_result_views_discloses_for_a_structural_engine() -> None:
+    # An engine that does not derive from EngineBase runs no check of its own.
+    # The function appends the disclosure after the engine's own diagnostics
+    # and changes nothing else; a result that keeps the equality comes back
+    # as the same object.
+    class _Structural:
+        pass
+
+    engine = cast("StandardASR", _Structural())
+    result = TranscriptionResult(
+        text="hello world",
+        segments=[
+            Segment(start=0.0, end=1.0, text="hello"),
+            Segment(start=1.0, end=2.0, text="world"),
+        ],
+        diagnostics=[Diagnostic(code="engine_note", message="kept")],
+    )
+    disclosed = check_result_views(result, engine)
+    assert disclosed.text == "hello world"
+    assert [d.code for d in disclosed.diagnostics] == ["engine_note", DIAG_TEXT_SEGMENTS_MISMATCH]
+    clean = TranscriptionResult(text="hi")
+    assert check_result_views(clean, engine) is clean
+    # The original is untouched, and a second call on the disclosed copy
+    # appends the same diagnostic again, as the docstring says.
+    assert [d.code for d in result.diagnostics] == ["engine_note"]
+    twice = check_result_views(disclosed, engine)
+    assert [d.code for d in twice.diagnostics] == [
+        "engine_note",
+        DIAG_TEXT_SEGMENTS_MISMATCH,
+        DIAG_TEXT_SEGMENTS_MISMATCH,
+    ]
 
 
 @pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
@@ -2082,11 +2153,15 @@ def _w(index: int, label: str | None) -> Word:
     return Word(start=index * 0.1, end=index * 0.1 + 0.1, text=f"w{index}", speaker=label)
 
 
-def _speaker_segment(labels: list[str | None], *, speaker: str | None = None) -> Segment:
+def _speaker_segment(
+    labels: list[str | None], *, speaker: str | None = None, leading_space: bool = False
+) -> Segment:
+    # A later segment carries the space that joins it to the one before
+    # (spec TR.1), so ``leading_space`` builds the second segment of a result.
     return Segment(
         start=0.0,
         end=1.0,
-        text=" ".join(f"w{i}" for i in range(len(labels))),
+        text=(" " if leading_space else "") + " ".join(f"w{i}" for i in range(len(labels))),
         words=[_w(i, label) for i, label in enumerate(labels)],
         speaker=speaker,
     )
@@ -2174,7 +2249,10 @@ def test_synthesize_result_speakers_branch_matrix() -> None:
     # Mixed list: only the derivable segment is rebuilt; untouched segments
     # keep object identity inside the new list.
     unchanged_segment = _speaker_segment(["A"], speaker="A")
-    mixed = TranscriptionResult(text="w0 w0", segments=[unchanged_segment, _speaker_segment(["B"])])
+    mixed = TranscriptionResult(
+        text="w0 w0",
+        segments=[unchanged_segment, _speaker_segment(["B"], leading_space=True)],
+    )
     synthesized = _synthesize_result_speakers(mixed)
     assert synthesized is not mixed
     assert synthesized.segments is not None
@@ -2189,7 +2267,10 @@ def test_synthesize_result_speakers_channels_matrix() -> None:
 
     # Channel entry without segments is reused; a derivable entry is rebuilt;
     # the top level (already speakered) stays identical.
-    top = [_speaker_segment(["A"], speaker="A"), _speaker_segment(["B"], speaker="B")]
+    top = [
+        _speaker_segment(["A"], speaker="A"),
+        _speaker_segment(["B"], speaker="B", leading_space=True),
+    ]
     no_segments_entry = ChannelResult(channel=0, text="w0")
     result = TranscriptionResult(
         text="w0 w0",

@@ -79,6 +79,7 @@ from standard_asr.contract.results import (
     Segment,
     TranscriptionResult,
     synthesize_segment_speaker,
+    text_segments_diagnostics,
 )
 from standard_asr.runtime.config import BaseConfig
 from standard_asr.runtime.downloads import allow_downloads
@@ -674,6 +675,42 @@ def bind_session_capabilities(session: TranscriptionSession, engine: StandardASR
     session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
         capabilities.streaming or StreamingCapabilities()
     )
+
+
+def check_result_views(result: TranscriptionResult, engine: StandardASR) -> TranscriptionResult:
+    """Disclose each view of a batch result whose ``text`` breaks the TR.1 equality.
+
+    When a view's ``segments`` is a list, the engine MUST build its ``text``
+    as the segment texts concatenated in list order (spec TR.1). The views
+    are the top level and each ``ChannelResult``. This function appends one
+    ``text_segments_mismatch`` warning diagnostic for each view that differs.
+    Nothing else changes: ``text`` and every segment text stay as the engine
+    returned them, and this function does not choose between them.
+
+    :meth:`EngineBase.transcribe` runs this check on every result it returns,
+    so for an :class:`EngineBase` this function returns ``result`` unchanged.
+    An engine that implements the protocol without deriving from
+    :class:`EngineBase` returns its result unchecked. Call this function on
+    that result to get the same disclosure; the reference server's batch
+    routes and ``standard-asr transcribe`` do so. Call it once per result: a
+    second call on a result it already disclosed appends the same diagnostics
+    again.
+
+    Args:
+        result: The result the engine returned.
+        engine: The engine that returned it.
+
+    Returns:
+        ``result`` itself when ``engine`` is an :class:`EngineBase` or every
+        view keeps the equality. Otherwise, a copy of ``result`` with the new
+        diagnostics after the ones it already carries.
+    """
+    if isinstance(engine, EngineBase):
+        return result
+    found = text_segments_diagnostics(result)
+    if not found:
+        return result
+    return result.model_copy(update={"diagnostics": [*result.diagnostics, *found]})
 
 
 def require_engine_protocol(engine: object) -> BaseProperties:
@@ -1546,7 +1583,8 @@ class EngineBase(ABC):
         needs no audio) -> resolve & validate the effective language axis ->
         coerce -> negotiate -> convert/resample -> call the engine ->
         synthesize missing segment speakers from word speakers (the pinned
-        synthesis rule) -> attach diagnostics.
+        synthesis rule) -> check each view's ``text`` against its segments
+        (spec TR.1) -> attach diagnostics.
 
         Parameter validation runs *before* the (potentially expensive) audio
         decode/resample so a swapped-engine ``provider_params`` bug or an
@@ -1559,7 +1597,11 @@ class EngineBase(ABC):
 
         Returns:
             The transcription result with gating / language / conversion
-            diagnostics attached.
+            diagnostics attached, plus one ``text_segments_mismatch`` warning
+            diagnostic for each view (top level, each channel) whose ``text``
+            is not its segment texts concatenated in list order (spec TR.1).
+            Such a result keeps ``text`` and every segment text as the engine
+            returned them; neither is rejected or rewritten.
 
         Raises:
             ProtocolCompatibilityError: If the engine's declared protocol
@@ -1658,11 +1700,16 @@ class EngineBase(ABC):
         # reducer applies the same shared rule, so batch and streaming yield
         # the same Segment.speaker for the same engine output.
         result = _synthesize_result_speakers(result)
+        # A view whose text is not its segment texts concatenated is delivered
+        # as the engine returned it: the standard layer cannot tell which of
+        # the two values is right, so it appends text_segments_mismatch and
+        # rewrites neither (spec TR.1).
         merged = [
             *gate_diags,
             *lang_diags,
             *prepared.diagnostics,
             *result.diagnostics,
+            *text_segments_diagnostics(result),
         ]
         return result.model_copy(update={"diagnostics": merged})
 
@@ -2431,6 +2478,7 @@ __all__ = [
     "EngineBase",
     "StandardASR",
     "bind_session_capabilities",
+    "check_result_views",
     "ensure_wire_format_supported",
     "require_engine_protocol",
 ]

@@ -18,6 +18,7 @@ import pytest
 
 from standard_asr import (
     RuntimeParams,
+    Segment,
     TranscriptionResult,
 )
 from standard_asr.audio.format import AudioFormat
@@ -211,6 +212,28 @@ class _ArtifactCliMissingMetadataEngine(_ArtifactCliEngine):
 
 def _artifact_cli_factory() -> _ArtifactCliEngine:  # pyright: ignore[reportUnusedFunction]
     raise AssertionError("show must not instantiate the selected engine")
+
+
+class _MismatchCliEngine(_ArtifactCliEngine):
+    """Structural engine whose ``text`` is not its segment texts concatenated."""
+
+    def transcribe(
+        self,
+        audio: object,
+        params: RuntimeParams | None = None,
+    ) -> TranscriptionResult:
+        del audio, params
+        return TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+
+
+def _mismatch_cli_factory() -> _MismatchCliEngine:  # pyright: ignore[reportUnusedFunction]
+    return _MismatchCliEngine(ArtifactReport.from_requirements(mode="batch", applicable=False))
 
 
 def _artifact_cli_legacy_factory() -> (  # pyright: ignore[reportUnusedFunction]
@@ -1835,6 +1858,39 @@ def test_cli_does_not_abbreviate_long_flags() -> None:
         with pytest.raises(SystemExit) as excinfo:
             parser.parse_args(argv)
         assert excinfo.value.code == 2
+
+
+def test_cli_transcribe_discloses_text_segments_mismatch_for_a_structural_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A structural engine runs no check of its result's views. The command
+    # runs it, as the server does: the transcript prints as the engine built
+    # it, and the warning goes to stderr (text view) or into the JSON view.
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="mismatch-cli/demo",
+                value="tests.test_cli:_mismatch_cli_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "mismatch-cli/demo", "dummy.wav"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "hello world\n"
+    assert "diagnostic [text_segments_mismatch]" in captured.err
+    assert "differ at code point index 5" in captured.err
+
+    exit_code = cli.main(["transcribe", "mismatch-cli/demo", "dummy.wav", "--json"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    document = json.loads(captured.out)
+    assert document["text"] == "hello world"
+    assert [d["code"] for d in document["diagnostics"]] == ["text_segments_mismatch"]
 
 
 def test_cli_transcribe_json(
