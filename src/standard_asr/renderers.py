@@ -281,10 +281,11 @@ def _whole_text_cue(result: TranscriptionResult, *, text: str | None = None) -> 
     """Build the single synthetic whole-text cue (or none for no visible text).
 
     Args:
-        result: The transcription result (the cue span's source).
-        text: The text the cue carries; defaults to ``result.text`` (the
-            ``segments is None`` fallback shape). The ``"collapse"`` policy
-            passes the text it owes the caller instead.
+        result: The transcription result. The cue takes its span from
+            ``result.duration``.
+        text: The text the cue carries. ``None`` means ``result.text``, as
+            in the ``segments is None`` fallback. The ``"collapse"`` policy
+            passes the text it chose (see :func:`_cues`).
 
     Returns:
         One cue spanning ``[0, duration]`` (or ``[0, 3 s]`` when ``duration``
@@ -351,11 +352,17 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
       span counts too: its cue would format as ``T --> T`` and be silently
       dropped by players.
     * ``"collapse"``: one synthetic whole-text cue (the ``segments is None``
-      fallback shape) -- every text survives, the per-segment timeline does
-      not. The cue carries ``result.text`` when it is visibly non-empty,
-      else the payload segments' texts in model order: "every text
-      survives" is a guarantee, not a hope that the engine mirrored its
-      segments into ``text``.
+      fallback shape) -- the text survives, the per-segment timeline does
+      not. The cue carries ``result.text``, which holds every segment's text
+      when the engine kept the TR.1 equality. When ``result.text`` has no
+      visible text while the segments do, the result broke that equality,
+      and carrying it would render an empty file while the segments hold
+      words. The cue then carries every segment's text, whitespace-only
+      segments included, concatenated in list order with no separator. A
+      visible ``result.text`` that differs from the segments is carried as
+      the engine returned it, so the cue can miss a segment's words.
+      ``EngineBase.transcribe()`` and ``disclose_text_segments_mismatch()``
+      attach a ``text_segments_mismatch`` diagnostic for either mismatch.
 
     Args:
         result: The transcription result.
@@ -412,21 +419,23 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
             )
         if on_unrenderable == "omit":
             return _sorted_timed([s for s in payload if _renderable(s)])
-        # "collapse": the caller trades the timeline for completeness -- so
-        # completeness is owed. ``result.text`` is the engine's canonical
-        # whole-transcript rendering and carries the cue when it is visibly
-        # non-empty; but an engine that populated only ``segments`` leaves
-        # it blank, and collapsing to it rendered an empty file while every
-        # word sat in the payload segments -- the exact silent total loss
-        # the caller's explicit choice was scoped to exclude. The cue then
-        # carries the payload segments' texts in model order (the
-        # transcript's own reading order) instead.
+        # "collapse": the caller gives up the timeline to keep the text. A
+        # blank result.text over visible segments breaks the TR.1 equality
+        # (EngineBase.transcribe() and disclose_text_segments_mismatch()
+        # attach a text_segments_mismatch diagnostic for it). Carrying it
+        # would render an empty file while the segments hold every word, a
+        # silent total loss, so the cue carries every segment's text
+        # concatenated in list order, with no separator (TR.1). A
+        # whitespace-only segment is a boundary the engine sent and stays in.
+        # A visible result.text is the engine's whole transcript and is
+        # carried as the engine returned it, even when it differs from the
+        # segments.
         return _whole_text_cue(
             result,
             text=(
                 result.text
                 if _has_visible_payload(result.text)
-                else " ".join(s.text.strip() for s in payload)
+                else "".join(s.text for s in result.segments)
             ),
         )
     return _whole_text_cue(result)

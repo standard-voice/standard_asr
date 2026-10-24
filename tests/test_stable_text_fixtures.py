@@ -79,8 +79,7 @@ def test_fixture_case(case: dict[str, Any]) -> None:
     assert [[sid, texts[sid]] for sid in order] == expected["display"]
     result = reducer.result()
     assert [s.text for s in result.segments or []] == expected["result_segments"]
-    if "result_text" in expected:
-        # Only single-segment cases pin the reduced text: how the texts of
-        # several segments are joined is not settled.
-        assert len(expected["result_segments"]) <= 1
-        assert result.text == expected["result_text"]
+    # The reduced text is the finalized segment texts concatenated in reading
+    # order, with no separator (spec TR.1).
+    assert expected["result_text"] == "".join(expected["result_segments"])
+    assert result.text == expected["result_text"]

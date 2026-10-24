@@ -75,7 +75,7 @@ async with engine.start_transcription(audio_format=audio_format) as session:
                 remove(old)  # engine re-segmented
 ```
 
-Those three event types (`partial` / `final` / `supersede`) are the core set every app handles. This sketch keys display by `segment_id` only; an app that renders joined text must also keep the reading order across a `supersede` -- use `standard_asr.runtime.streaming.reduce_event`, or see the full reduce in the [Streaming guide](./app-developers/streaming.md).
+Those three event types (`partial` / `final` / `supersede`) are the core set every app handles. This sketch keys display by `segment_id` only; an app that renders the concatenated text must also keep the reading order across a `supersede` -- use `standard_asr.runtime.streaming.reduce_event`, or see the full reduce in the [Streaming guide](./app-developers/streaming.md).
 
 ## Next steps
 
