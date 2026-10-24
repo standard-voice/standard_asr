@@ -62,7 +62,12 @@ from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
 from standard_asr.plugins.discovery import ModelInfo, ModelRegistry, ModelSpec, discover_models
 from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
-from standard_asr.runtime.interface import EngineBase, StandardASR, require_engine_protocol
+from standard_asr.runtime.interface import (
+    EngineBase,
+    StandardASR,
+    check_result_views,
+    require_engine_protocol,
+)
 from standard_asr.runtime.protocol_boundary import (
     require_sync_result,
     safe_type_name,
@@ -2123,6 +2128,12 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     # already validated above (see _run_engine_call).
     result = _run_engine_call(lambda: asr.transcribe(args.audio, params))
     require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
+    # An engine that does not derive from EngineBase returns its result
+    # unchecked. Check the result's views here, as the reference server does,
+    # so the command discloses a text that is not the segment texts
+    # concatenated (spec TR.1) for every engine. For an EngineBase this call
+    # does nothing: transcribe() already ran the check.
+    result = check_result_views(result, asr)
 
     if args.json:
         # The JSON view already carries `diagnostics`; the text view renders them

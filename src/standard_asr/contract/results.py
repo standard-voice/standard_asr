@@ -43,6 +43,13 @@ from pydantic_core import PydanticCustomError
 #: :mod:`standard_asr.contract.language` for the same reason.
 DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
 
+#: Diagnostic code, at level ``"warning"``, for one view of a result -- the
+#: top level, or one :class:`ChannelResult` -- whose ``segments`` is a list and
+#: whose ``text`` is not those segment texts concatenated in list order (spec
+#: TR.1). :func:`text_segments_diagnostics` builds these diagnostics, and its
+#: docstring names the calls that attach them.
+DIAG_TEXT_SEGMENTS_MISMATCH = "text_segments_mismatch"
+
 
 def to_json_value(value: object) -> JsonValue:
     """Project a Python value into the wire value space.
@@ -164,7 +171,10 @@ class Diagnostic(BaseModel):
     """A structured, non-fatal notification from the standard layer.
 
     Diagnostics report lossy conversions, assumed parameters, best_effort
-    degradations, and similar non-ideal paths.
+    degradations, and similar non-ideal paths. They also disclose an engine
+    fault in a result that the standard layer delivers instead of rejecting,
+    such as a ``text`` that is not the segment texts concatenated
+    (``text_segments_mismatch``).
 
     Attributes:
         level: Severity, ``"info"`` or ``"warning"``.
@@ -535,79 +545,19 @@ def synthesize_segment_speaker(words: Sequence[Word] | None) -> str | None:
     return max(counts, key=lambda label: (counts[label], -first_index[label]))
 
 
-def _require_text_is_joined_segments(
-    owner: str, text: str, segments: Sequence[Segment] | None
-) -> None:
-    """Reject a ``text`` that is not the segment texts concatenated in list order.
-
-    The rule is exact: no separator, no stripping, no whitespace collapsing.
-    A segment's text carries the spaces and punctuation that join it to its
-    neighbors, so the standard layer never inserts or removes a character.
-    The message names the first position where the two strings differ and
-    quotes no transcript text, because a transcript can be long or private.
-    An empty list gets its own message: there the remedy is ``segments=None``
-    when the engine has text, and the general remedy, building ``text`` from
-    the segments, would drop the transcript.
-
-    Args:
-        owner: The model name the message names (``TranscriptionResult`` or
-            ``ChannelResult``).
-        text: The model's ``text``.
-        segments: The model's ``segments``; ``None`` skips the check,
-            because ``text`` then stands alone.
-
-    Raises:
-        PydanticCustomError: If ``segments`` is a list and ``text`` differs
-            from ``"".join(segment.text for segment in segments)``.
-    """
-    if segments is None:
-        return
-    concatenated = "".join(segment.text for segment in segments)
-    if text == concatenated:
-        return
-    if not segments:
-        raise PydanticCustomError(
-            "standard_asr_text_segments_mismatch",
-            "{owner}.segments is an empty list, so text must be the empty string, "
-            "but text has {text_length} code points. An empty list means that "
-            "segmentation ran and found nothing. If the engine has text but no "
-            "segments, set segments=None and keep the text.",
-            {"owner": owner, "text_length": len(text)},
-        )
-    position = next(
-        (i for i, (a, b) in enumerate(zip(text, concatenated, strict=False)) if a != b),
-        min(len(text), len(concatenated)),
-    )
-    raise PydanticCustomError(
-        "standard_asr_text_segments_mismatch",
-        "{owner}.text is not the segment texts concatenated in list order. The two "
-        "differ at code point index {position}, counting from 0; text has "
-        "{text_length} code points, and the concatenated segment texts have "
-        "{concatenated_length}. Each segment text carries the spaces and "
-        "punctuation that join it to its neighbors, and text is "
-        '"".join(segment.text for segment in segments), with no separator and no '
-        "stripping. Build text from the segments, or put the missing space into "
-        "the segment text where it belongs.",
-        {
-            "owner": owner,
-            "position": position,
-            "text_length": len(text),
-            "concatenated_length": len(concatenated),
-        },
-    )
-
-
 class ChannelResult(BaseModel):
     """Per-channel transcription for multi-channel audio.
 
     Attributes:
         channel: Channel index.
         text: Full transcript for this channel. When ``segments`` is a list,
-            the engine builds ``text`` as the segment texts concatenated in
-            list order, with no separator (checked at construction). It can
-            start or end with a space. In the top-level list, this channel's
-            first or last segment can carry the space that joins it to
-            another channel's segment (spec TR.1).
+            the engine MUST build ``text`` as the segment texts concatenated
+            in list order, with no separator (spec TR.1). The validators that
+            run when the object is built do not check this; see
+            :func:`text_segments_diagnostics`. The ``text`` can start or end
+            with a space: in the top-level list, this channel's first or last
+            segment can carry the space that joins it to another channel's
+            segment (spec TR.1).
         segments: The top-level segments that belong to this channel, as the
             same ``Segment`` values in the same order (spec TR.4). This is an
             engine obligation that nothing checks.
@@ -616,8 +566,7 @@ class ChannelResult(BaseModel):
             either.
 
     Raises:
-        ValueError: If field validation fails, or if ``text`` is not the
-            concatenated segment texts.
+        ValueError: If field validation fails.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -634,20 +583,6 @@ class ChannelResult(BaseModel):
         default=None, description="Word-level details for this channel."
     )
 
-    @model_validator(mode="after")
-    def _check_text_is_joined_segments(self) -> ChannelResult:
-        """Reject a ``text`` that is not the concatenated segment texts.
-
-        Returns:
-            The validated channel result.
-
-        Raises:
-            ValueError: If ``segments`` is a list and ``text`` differs from
-                the segment texts concatenated in list order.
-        """
-        _require_text_is_joined_segments("ChannelResult", self.text, self.segments)
-        return self
-
 
 class TranscriptionResult(BaseModel):
     """The constant-shape result returned by ``transcribe`` and stream reduction.
@@ -658,20 +593,24 @@ class TranscriptionResult(BaseModel):
     alone, so ignoring ``channels`` is always safe and lossless.
 
     Attributes:
-        text: Full transcript (required). When ``segments`` is a list,
-            ``text`` is ``"".join(segment.text for segment in segments)``,
-            and construction checks it. Each segment text carries the spaces
-            and punctuation that join it to its neighbors; nothing adds a
-            separator or strips one. The standard layer keeps whatever the
-            engine sent, so ``text`` can start with a space, as Whisper's
-            does in English and other space-delimited scripts. ``[]``
-            segments therefore require ``text == ""``; an engine that has
-            text but no segments sets ``segments=None``. On a multi-channel
-            result the check runs on the top-level list too. Each segment's
-            boundary whitespace joins it to its neighbors in that list,
-            whichever channel they come from (spec TR.1). A ``ChannelResult``
-            holds the same values as its channel's segments in that list
-            (spec TR.4), so its ``text`` can start or end with a space.
+        text: Full transcript (required). When ``segments`` is a list, the
+            engine MUST build ``text`` as
+            ``"".join(segment.text for segment in segments)`` (spec TR.1), so
+            ``[]`` segments require ``text == ""``; an engine that has text
+            but no segments sets ``segments=None``. Each segment text carries
+            the spaces and punctuation that join it to its neighbors; nothing
+            adds a separator or strips one. The standard layer keeps whatever
+            the engine sent, so ``text`` can start with a space, as Whisper's
+            does in English and other space-delimited scripts. The
+            validators that run when the object is built do not check the
+            equality; :func:`text_segments_diagnostics` describes the check
+            and the diagnostic that a result breaking it carries. On a
+            multi-channel result the equality applies to the top-level list
+            and to each channel. Each segment's boundary whitespace joins it
+            to its neighbors in that list, whichever channel they come from
+            (spec TR.1). A ``ChannelResult`` holds the same values as its
+            channel's segments in that list (spec TR.4), so its ``text`` can
+            start or end with a space.
         detected_language: Detected language as a well-formed BCP-47 tag in
             ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
@@ -692,13 +631,14 @@ class TranscriptionResult(BaseModel):
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
-        diagnostics: Conversion / best_effort / degradation diagnostics.
+        diagnostics: Conversion / best_effort / degradation diagnostics, and
+            the standard layer's disclosures about the result itself, such
+            as ``text_segments_mismatch``.
         extra: Engine-specific / experimental data (incl. provider formats).
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative
-            ``duration``, a malformed ``detected_language``, or a ``text``
-            that is not the concatenated segment texts).
+            ``duration``, or a malformed ``detected_language``).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -843,33 +783,127 @@ class TranscriptionResult(BaseModel):
                     )
         return self
 
-    @model_validator(mode="after")
-    def _check_text_is_joined_segments(self) -> TranscriptionResult:
-        """Reject a top-level ``text`` that is not the concatenated segment texts.
 
-        Each ``ChannelResult`` checks its own ``text`` the same way. On a
-        multi-channel result this check runs on the top-level list, of which
-        each channel's ``segments`` is a subsequence (spec TR.4).
+def _text_segments_mismatch(
+    owner: str, text: str, segments: Sequence[Segment] | None
+) -> Diagnostic | None:
+    """Describe a ``text`` that is not the segment texts concatenated in list order.
 
-        Returns:
-            The validated result.
+    The rule is exact: no separator, no stripping, no whitespace collapsing
+    (spec TR.1). A segment's text carries the spaces and punctuation that
+    join it to its neighbors, so the standard layer never inserts or removes
+    a character. The message names the view, the first code point index at
+    which the two strings differ, and both lengths. It quotes no transcript
+    text, because a transcript can be long or private. An empty list gets
+    its own message: there the remedy is ``segments=None`` when the engine
+    has text, and the general remedy, building ``text`` from the segments,
+    would drop the transcript.
 
-        Raises:
-            ValueError: If ``segments`` is a list and ``text`` differs from
-                the segment texts concatenated in list order.
-        """
-        _require_text_is_joined_segments("TranscriptionResult", self.text, self.segments)
-        return self
+    Args:
+        owner: The view the message names (``TranscriptionResult`` or
+            ``ChannelResult(channel=N)``).
+        text: The view's ``text``.
+        segments: The view's ``segments``; ``None`` means that ``text``
+            stands alone, so there is nothing to check.
+
+    Returns:
+        A ``text_segments_mismatch`` warning diagnostic, or ``None`` when
+        ``segments`` is ``None`` or ``text`` equals
+        ``"".join(segment.text for segment in segments)``.
+    """
+    if segments is None:
+        return None
+    concatenated = "".join(segment.text for segment in segments)
+    if text == concatenated:
+        return None
+    if not segments:
+        return Diagnostic(
+            level="warning",
+            code=DIAG_TEXT_SEGMENTS_MISMATCH,
+            message=(
+                f"{owner}.segments is an empty list, but text is not empty. In code "
+                f"points, text has length {len(text)} and the concatenated segment "
+                "texts have length 0, so they differ at code point index 0, counting "
+                "from 0. The standard layer delivers both values as the engine "
+                "returned them, so an application that reads text and one that "
+                "renders the segments show different transcripts. An empty list means "
+                "that segmentation ran and found nothing, so the engine MUST set text "
+                "to the empty string (spec TR.1). An engine that has text but no "
+                "segments sets segments=None and keeps the text."
+            ),
+        )
+    position = next(
+        (i for i, (a, b) in enumerate(zip(text, concatenated, strict=False)) if a != b),
+        min(len(text), len(concatenated)),
+    )
+    return Diagnostic(
+        level="warning",
+        code=DIAG_TEXT_SEGMENTS_MISMATCH,
+        message=(
+            f"{owner}.text is not the segment texts concatenated in list order. They "
+            f"differ at code point index {position}, counting from 0. In code points, "
+            f"text has length {len(text)} and the concatenated segment texts have "
+            f"length {len(concatenated)}. The standard layer delivers both values as "
+            "the engine returned them, so an application that reads text and one that "
+            "renders the segments show different transcripts. The engine MUST build "
+            'text as "".join(segment.text for segment in segments), with no separator '
+            "and no stripping (spec TR.1). Each segment text therefore carries the "
+            "spaces and punctuation that join it to its neighbors. The fix is in the "
+            "engine: build text from the segments, or put the missing space into the "
+            "segment text that should carry it."
+        ),
+    )
+
+
+def text_segments_diagnostics(result: TranscriptionResult) -> list[Diagnostic]:
+    """Return a diagnostic for each view of ``result`` that breaks the TR.1 equality.
+
+    When a view's ``segments`` is a list, the engine MUST build its ``text``
+    as ``"".join(segment.text for segment in segments)`` (spec TR.1). The
+    views are the top level and each ``ChannelResult``. The function is pure:
+    it returns one ``text_segments_mismatch`` warning diagnostic per view
+    that differs and modifies nothing. The validators that run when the
+    result is built do not reject a mismatch: the standard layer delivers
+    both values as the engine returned them, with these diagnostics.
+
+    :meth:`~standard_asr.runtime.interface.EngineBase.transcribe` appends
+    these diagnostics to every result it returns, and
+    :func:`~standard_asr.runtime.interface.check_result_views` does so for an
+    engine that does not derive from ``EngineBase``.
+    :func:`~standard_asr.compliance.check_transcription_result` reports each
+    one as an error. The streaming reducer builds ``text`` by the same
+    concatenation, so a reduced result never produces one.
+
+    Args:
+        result: The result to check.
+
+    Returns:
+        The diagnostics, in view order: the top-level view first, then the
+        channels in list order. Empty when every view keeps the equality.
+    """
+    found: list[Diagnostic] = []
+    diagnostic = _text_segments_mismatch("TranscriptionResult", result.text, result.segments)
+    if diagnostic is not None:
+        found.append(diagnostic)
+    for channel in result.channels or ():
+        diagnostic = _text_segments_mismatch(
+            f"ChannelResult(channel={channel.channel})", channel.text, channel.segments
+        )
+        if diagnostic is not None:
+            found.append(diagnostic)
+    return found
 
 
 __all__ = [
     "ChannelResult",
     "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
+    "DIAG_TEXT_SEGMENTS_MISMATCH",
     "Diagnostic",
     "Segment",
     "TranscriptionResult",
     "Word",
     "synthesize_segment_speaker",
+    "text_segments_diagnostics",
     "to_json_value",
     "validate_speaker_label",
 ]

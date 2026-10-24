@@ -16,12 +16,14 @@ from standard_asr.contract import results as results_module
 from standard_asr.contract.exceptions import SubtitleRenderingError
 from standard_asr.contract.results import (
     DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE,
+    DIAG_TEXT_SEGMENTS_MISMATCH,
     ChannelResult,
     Diagnostic,
     Segment,
     TranscriptionResult,
     Word,
     synthesize_segment_speaker,
+    text_segments_diagnostics,
 )
 from standard_asr.renderers import to_srt, to_vtt
 from standard_asr.runtime import streaming as streaming_module
@@ -237,10 +239,9 @@ def test_trailing_space_style_ends_a_channel_text_with_a_space() -> None:
 
 def test_channel_view_correspondence_is_not_checked_at_construction() -> None:
     # TR.4 makes each channel's segments the top-level segments of that
-    # channel, as an engine obligation. Construction checks each view's text
-    # against its own segments and compares no segment values across the
-    # views. So a channel entry that holds a segment the top level lacks
-    # still constructs.
+    # channel, as an engine obligation. Nothing compares segment values
+    # across the views, so a channel entry that holds a segment the top
+    # level lacks still builds.
     top = Segment(start=0.0, end=0.8, text="Hello", channel=0)
     stray = Segment(start=1.0, end=1.8, text=" Yes.", channel=1)
     result = TranscriptionResult(
@@ -255,17 +256,16 @@ def test_channel_view_correspondence_is_not_checked_at_construction() -> None:
 def test_channel_local_boundaries_glue_the_top_level_text() -> None:
     # Written for channel 1 alone, "Yes." carries no space. The standard
     # layer adds none at the channel switch, so the top-level text glues
-    # "Yes." to "Hello". A top-level text with the space fails the check at
-    # that switch.
+    # "Yes." to "Hello". A top-level text with the space is disclosed as a
+    # mismatch at that switch.
     hello = Segment(start=0.0, end=0.8, text="Hello", channel=0)
     yes = Segment(start=1.0, end=1.8, text="Yes.", channel=1)
     world = Segment(start=2.0, end=2.8, text=" world.", channel=0)
     glued = TranscriptionResult(text="HelloYes. world.", segments=[hello, yes, world])
     assert glued.text == "HelloYes. world."
-    message = _mismatch_error(
-        lambda: TranscriptionResult(text="Hello Yes. world.", segments=[hello, yes, world])
-    )
-    assert "differ at code point index 5" in message
+    assert text_segments_diagnostics(glued) == []
+    spaced = TranscriptionResult(text="Hello Yes. world.", segments=[hello, yes, world])
+    assert "differ at code point index 5" in _mismatch_message(spaced)
 
 
 def test_multi_channel_result_in_a_script_without_spaces_adds_none() -> None:
@@ -288,8 +288,8 @@ def test_multi_channel_result_in_a_script_without_spaces_adds_none() -> None:
 
 
 def test_multi_channel_result_round_trips_through_json() -> None:
-    # Reading the JSON back runs both checks again, so a result the server
-    # sends is one the client can construct, boundary spaces included.
+    # Reading the JSON back builds the same result, so a client can build
+    # every result the server sends, boundary spaces included.
     result = _interleaved_result()
     parsed = TranscriptionResult.model_validate_json(result.model_dump_json())
     assert parsed == result
@@ -343,53 +343,105 @@ def test_out_of_order_segments_accepted_at_construction() -> None:
     assert [s.start for s in result.segments] == [5.0, 0.0]
 
 
-def _mismatch_error(build: Callable[[], object]) -> str:
-    """Return the message of the text/segments mismatch that ``build`` raises.
+def _mismatch_message(result: TranscriptionResult) -> str:
+    """Return the message of the one text/segments mismatch that ``result`` carries.
 
     Args:
-        build: Constructs the model under test.
+        result: A result in which exactly one view breaks the TR.1 equality.
 
     Returns:
-        The message of the one validation error, which must carry the
-        ``standard_asr_text_segments_mismatch`` type.
+        The message of the single ``text_segments_mismatch`` warning that
+        :func:`text_segments_diagnostics` reports for it.
     """
-    with pytest.raises(ValidationError) as excinfo:
-        build()
-    errors = excinfo.value.errors()
-    assert [error["type"] for error in errors] == ["standard_asr_text_segments_mismatch"]
-    return errors[0]["msg"]
+    [diagnostic] = text_segments_diagnostics(result)
+    assert diagnostic.code == DIAG_TEXT_SEGMENTS_MISMATCH
+    assert diagnostic.level == "warning"
+    # Building the result attaches nothing; transcribe() adds the diagnostic.
+    assert result.diagnostics == []
+    return diagnostic.message
 
 
-def test_result_text_must_be_the_concatenated_segment_texts() -> None:
+def test_result_text_that_is_not_the_concatenated_segment_texts_is_disclosed() -> None:
     # The space join that StreamReducer used to apply is exactly the shape
-    # construction now rejects: "hello world" over "hello" + "world".
+    # transcribe() now discloses: "hello world" over "hello" + "world".
+    # The result still builds, with both values as the engine sent them.
     segments = [
         Segment(start=0.0, end=1.0, text="hello"),
         Segment(start=1.0, end=2.0, text="world"),
     ]
-    message = _mismatch_error(lambda: TranscriptionResult(text="hello world", segments=segments))
-    # The message names the model and the first differing position, and
+    result = TranscriptionResult(text="hello world", segments=segments)
+    assert result.text == "hello world"
+    message = _mismatch_message(result)
+    # The message names the view and the first differing position, and
     # quotes no transcript text (a transcript can be long or private).
     assert message.startswith("TranscriptionResult.text is not the segment texts concatenated")
     assert "differ at code point index 5, counting from 0" in message
-    assert "text has 11 code points, and the concatenated segment texts have 10" in message
+    assert "text has length 11 and the concatenated segment texts have length 10" in message
     assert "hello" not in message and "world" not in message
 
-    # Stripping the result text is rejected the same way.
+    # Stripping the result text is disclosed the same way.
     whisper = [
         Segment(start=0.0, end=1.0, text=" Hello"),
         Segment(start=1.0, end=2.0, text=" world."),
     ]
-    message = _mismatch_error(lambda: TranscriptionResult(text="Hello world.", segments=whisper))
+    message = _mismatch_message(TranscriptionResult(text="Hello world.", segments=whisper))
     assert "differ at code point index 0" in message
+    # A result that keeps the equality gets nothing.
+    kept = TranscriptionResult(text=" Hello world.", segments=whisper)
+    assert text_segments_diagnostics(kept) == []
+    # The index counts code points, so a character above U+FFFF counts once.
+    # When one string is a prefix of the other, the index is the shorter length.
+    smile = [Segment(start=0.0, end=1.0, text="\U0001f600x")]
+    emoji = TranscriptionResult(text="\U0001f600y", segments=smile)
+    [diagnostic] = text_segments_diagnostics(emoji)
+    assert "differ at code point index 1, counting from 0" in diagnostic.message
+    assert "text has length 2 and the concatenated segment texts have length 2" in (
+        diagnostic.message
+    )
+    abc = [Segment(start=0.0, end=1.0, text="abc")]
+    [longer] = text_segments_diagnostics(TranscriptionResult(text="abcd", segments=abc))
+    assert "differ at code point index 3" in longer.message
+    [shorter] = text_segments_diagnostics(TranscriptionResult(text="ab", segments=abc))
+    assert "differ at code point index 2" in shorter.message
+    # The diagnostic sets no param, provided, or effective: nothing that could
+    # hold transcript text.
+    assert diagnostic.param is None
+    assert diagnostic.provided is None
+    assert diagnostic.effective is None
 
 
-def test_channel_result_text_must_be_the_concatenated_segment_texts() -> None:
+def test_channel_result_text_that_is_not_the_concatenated_segment_texts_is_disclosed() -> None:
     segments = [Segment(start=0.0, end=1.0, text="今天"), Segment(start=1.0, end=2.0, text="天气")]
-    message = _mismatch_error(lambda: ChannelResult(channel=0, text="今天 天气", segments=segments))
-    assert message.startswith("ChannelResult.text is not the segment texts concatenated")
+    result = TranscriptionResult(
+        text="今天天气",
+        segments=segments,
+        channels=[ChannelResult(channel=0, text="今天 天气", segments=segments)],
+    )
+    message = _mismatch_message(result)
+    assert message.startswith("ChannelResult(channel=0).text is not the segment texts concatenated")
     assert "今天" not in message
     assert ChannelResult(channel=0, text="今天天气", segments=segments).text == "今天天气"
+    # Each view is checked on its own, in view order: the top level first.
+    both = TranscriptionResult(
+        text="今天 天气",
+        segments=segments,
+        channels=[ChannelResult(channel=3, text="今天 天气", segments=segments)],
+    )
+    owners = [d.message.split(".text", 1)[0] for d in text_segments_diagnostics(both)]
+    assert owners == ["TranscriptionResult", "ChannelResult(channel=3)"]
+    # Channels are reported in list order, and a channel whose segments is
+    # None has nothing to check.
+    many = TranscriptionResult(
+        text="今天天气",
+        segments=segments,
+        channels=[
+            ChannelResult(channel=9, text="今天 天气", segments=segments),
+            ChannelResult(channel=1, text="anything"),
+            ChannelResult(channel=4, text="天气今天", segments=segments),
+        ],
+    )
+    owners = [d.message.split(".text", 1)[0] for d in text_segments_diagnostics(many)]
+    assert owners == ["ChannelResult(channel=9)", "ChannelResult(channel=4)"]
 
 
 def test_text_of_a_result_with_no_segments_stands_alone() -> None:
@@ -397,15 +449,35 @@ def test_text_of_a_result_with_no_segments_stands_alone() -> None:
     # legal. segments=[]: segmentation ran and found nothing, so text is "".
     assert TranscriptionResult(text=" any text, spaced  ").text == " any text, spaced  "
     assert TranscriptionResult(text="", segments=[]).segments == []
+    assert text_segments_diagnostics(TranscriptionResult(text="", segments=[])) == []
     # The general remedy, building text from the segments, would drop the
     # transcript here, so the message names the right one: segments=None.
-    message = _mismatch_error(lambda: TranscriptionResult(text="some text", segments=[]))
+    message = _mismatch_message(TranscriptionResult(text="some text", segments=[]))
     assert message.startswith("TranscriptionResult.segments is an empty list")
-    assert "text has 9 code points" in message
-    assert "set segments=None and keep the text" in message
+    assert "text has length 9" in message
+    assert "differ at code point index 0" in message
+    assert "concatenated segment texts have length 0" in message
+    assert "sets segments=None and keeps the text" in message
     assert "some text" not in message
-    message = _mismatch_error(lambda: ChannelResult(channel=1, text="x", segments=[]))
-    assert message.startswith("ChannelResult.segments is an empty list")
+    message = _mismatch_message(
+        TranscriptionResult(
+            text="x",
+            segments=[Segment(start=0.0, end=1.0, text="x")],
+            channels=[ChannelResult(channel=1, text="x", segments=[])],
+        )
+    )
+    assert message.startswith("ChannelResult(channel=1).segments is an empty list")
+
+
+def test_reduced_result_keeps_the_text_equality() -> None:
+    # The reducer builds text by the same concatenation, so a reduced result
+    # never carries the disclosure.
+    reducer = StreamReducer()
+    for i, text in enumerate(["今天", " 天气", "很好"]):
+        reducer.add(TranscriptionEvent.final(f"s{i}", text))
+    result = reducer.result()
+    assert result.text == "今天 天气很好"
+    assert text_segments_diagnostics(result) == []
 
 
 def test_result_keeps_engine_whitespace_verbatim() -> None:
@@ -484,12 +556,11 @@ def test_empty_segments_list_yields_no_cues() -> None:
     result = TranscriptionResult(text="", segments=[], duration=5.0)
     assert to_srt(result) == ""
     assert to_vtt(result) == "WEBVTT\n"
-    # Construction rejects non-empty text over [] segments; a result built
-    # without validation still renders zero cues, so the renderer never
-    # treats [] like None.
-    unchecked = TranscriptionResult.model_construct(text="some text", segments=[], duration=5.0)
-    assert to_srt(unchecked) == ""
-    assert to_vtt(unchecked) == "WEBVTT\n"
+    # Non-empty text over [] segments breaks TR.1 (transcribe() discloses it)
+    # and still renders zero cues: the renderer never treats [] like None.
+    contradictory = TranscriptionResult(text="some text", segments=[], duration=5.0)
+    assert to_srt(contradictory) == ""
+    assert to_vtt(contradictory) == "WEBVTT\n"
 
 
 def test_none_segments_with_text_synthesizes_one_cue() -> None:
@@ -765,18 +836,45 @@ def test_collapse_policy_renders_one_whole_text_cue() -> None:
     )
 
 
-def test_collapse_cannot_meet_a_blank_text_over_visible_segments() -> None:
-    """ "collapse" carries ``result.text``, and that text holds every segment.
+def test_collapse_carries_the_segment_texts_when_text_is_blank() -> None:
+    """ "collapse" carries the segment texts when ``result.text`` is blank.
 
-    A blank ``result.text`` over segments with visible text once collapsed
-    to an empty file. The shape is now unrepresentable: construction checks
-    that ``text`` is the segment texts concatenated (spec TR.1), so the
-    collapsed cue always carries every payload segment's text.
+    A blank ``result.text`` over segments with visible text breaks the TR.1
+    equality. The result still builds, and ``EngineBase.transcribe()``
+    discloses the mismatch. The collapsed cue then carries every segment's
+    text concatenated with no separator, so the file is never empty while
+    the segments hold words.
     """
     segs = [_unavailable_segment("hello"), _unavailable_segment(" world")]
     for blank in ("", " "):
-        with pytest.raises(ValidationError, match="standard_asr_text_segments_mismatch"):
-            TranscriptionResult(text=blank, segments=segs, duration=7.5)
+        broken = TranscriptionResult(text=blank, segments=segs, duration=7.5)
+        assert [d.code for d in text_segments_diagnostics(broken)] == [DIAG_TEXT_SEGMENTS_MISMATCH]
+        assert to_srt(broken, on_unrenderable="collapse") == (
+            "1\n00:00:00,000 --> 00:00:07,500\nhello world\n"
+        )
+    # A whitespace-only segment is a boundary the engine sent: it stays in
+    # the concatenation, so the words do not glue together.
+    spaced = TranscriptionResult(
+        text="",
+        segments=[
+            _unavailable_segment("hello"),
+            _unavailable_segment(" "),
+            _unavailable_segment("world"),
+        ],
+        duration=7.5,
+    )
+    assert to_srt(spaced, on_unrenderable="collapse") == (
+        "1\n00:00:00,000 --> 00:00:07,500\nhello world\n"
+    )
+    vtt = to_vtt(spaced, on_unrenderable="collapse")
+    assert "00:00:00.000 --> 00:00:07.500\nhello world" in vtt
+    # A visible text that differs from the segments is carried as the engine
+    # returned it: the cue can miss a segment's words. transcribe() discloses
+    # the mismatch on such a result.
+    visible = TranscriptionResult(text="other", segments=[_unavailable_segment("segment")])
+    assert to_srt(visible, on_unrenderable="collapse") == (
+        "1\n00:00:00,000 --> 00:00:03,000\nother\n"
+    )
 
     # Whitespace-only segments give a whitespace-only text: nothing visible
     # to carry, so the collapsed rendering is empty and nothing is fabricated.

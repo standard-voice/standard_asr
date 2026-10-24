@@ -277,12 +277,15 @@ def _sorted_timed(segments: Iterable[Segment]) -> list[_TimedCue]:
     )
 
 
-def _whole_text_cue(result: TranscriptionResult) -> list[_TimedCue]:
+def _whole_text_cue(result: TranscriptionResult, *, text: str | None = None) -> list[_TimedCue]:
     """Build the single synthetic whole-text cue (or none for no visible text).
 
     Args:
-        result: The transcription result; the cue carries ``result.text``
-            and takes its span from ``result.duration``.
+        result: The transcription result. The cue takes its span from
+            ``result.duration``.
+        text: The text the cue carries. ``None`` means ``result.text``, as
+            in the ``segments is None`` fallback. The ``"collapse"`` policy
+            passes the text it chose (see :func:`_cues`).
 
     Returns:
         One cue spanning ``[0, duration]`` (or ``[0, 3 s]`` when ``duration``
@@ -291,7 +294,8 @@ def _whole_text_cue(result: TranscriptionResult) -> list[_TimedCue]:
         would survive rendering (the renderers skip a payload-less cue, so
         emptiness is decided by the same rule, up front).
     """
-    if not _has_visible_payload(result.text):
+    carried = result.text if text is None else text
+    if not _has_visible_payload(carried):
         return []
     # A zero-duration synthetic cue is exactly the invisible artifact
     # (players silently drop it) this fallback's non-zero span exists to
@@ -307,7 +311,7 @@ def _whole_text_cue(result: TranscriptionResult) -> list[_TimedCue]:
         if duration is not None and _to_millis(duration) > 0
         else _SYNTHETIC_CUE_FALLBACK_END
     )
-    return [_TimedCue(0.0, end, Segment(start=0.0, end=end, text=result.text))]
+    return [_TimedCue(0.0, end, Segment(start=0.0, end=end, text=carried))]
 
 
 def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -> list[_TimedCue]:
@@ -348,10 +352,17 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
       span counts too: its cue would format as ``T --> T`` and be silently
       dropped by players.
     * ``"collapse"``: one synthetic whole-text cue (the ``segments is None``
-      fallback shape) -- every text survives, the per-segment timeline does
-      not. The cue carries ``result.text``, which construction guarantees
-      is every segment's text concatenated (spec TR.1), so every text
-      survives.
+      fallback shape) -- the text survives, the per-segment timeline does
+      not. The cue carries ``result.text``, which holds every segment's text
+      when the engine kept the TR.1 equality. When ``result.text`` has no
+      visible text while the segments do, the result broke that equality,
+      and carrying it would render an empty file while the segments hold
+      words. The cue then carries every segment's text, whitespace-only
+      segments included, concatenated in list order with no separator. A
+      visible ``result.text`` that differs from the segments is carried as
+      the engine returned it, so the cue can miss a segment's words.
+      ``EngineBase.transcribe()`` and ``check_result_views()`` disclose
+      either mismatch with a ``text_segments_mismatch`` diagnostic.
 
     Args:
         result: The transcription result.
@@ -408,10 +419,24 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
             )
         if on_unrenderable == "omit":
             return _sorted_timed([s for s in payload if _renderable(s)])
-        # "collapse": the caller trades the timeline for completeness. The
-        # result's construction check makes ``result.text`` the segment texts
-        # concatenated, so it carries every payload segment's text.
-        return _whole_text_cue(result)
+        # "collapse": the caller gives up the timeline to keep the text. A
+        # blank result.text over visible segments breaks the TR.1 equality
+        # (EngineBase.transcribe() and check_result_views() disclose it as
+        # text_segments_mismatch). Carrying it would render an empty file
+        # while the segments hold every word, a silent total loss, so the cue
+        # carries every segment's text concatenated in list order, with no
+        # separator (TR.1). A whitespace-only segment is a boundary the engine
+        # sent and stays in. A visible result.text is the engine's whole
+        # transcript and is carried as the engine returned it, even when it
+        # differs from the segments.
+        return _whole_text_cue(
+            result,
+            text=(
+                result.text
+                if _has_visible_payload(result.text)
+                else "".join(s.text for s in result.segments)
+            ),
+        )
     return _whole_text_cue(result)
 
 

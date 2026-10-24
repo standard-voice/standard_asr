@@ -50,6 +50,7 @@ from standard_asr.contract.exceptions import (
 )
 from standard_asr.contract.language import AUTO, DIAG_CANDIDATE_LANGUAGES_IGNORED
 from standard_asr.contract.params import ProviderParams, WordTimestampGranularity
+from standard_asr.contract.results import DIAG_TEXT_SEGMENTS_MISMATCH, Diagnostic
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -58,6 +59,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.runtime.config import LanguageConfigMixin
+from standard_asr.runtime.interface import check_result_views
 from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionEvent, TranscriptionSession
 
 
@@ -508,25 +510,65 @@ class _StrippedTextEngine(_ArrayEngine):
         return TranscriptionResult(text="Hello world.", segments=whisper)
 
 
-def test_stripped_text_fails_in_transcribe_as_a_transcription_error() -> None:
-    # The breaking change of #46: a text that is not the segment texts
-    # concatenated is rejected at construction, inside _transcribe, and the
-    # application sees one TranscriptionError with the ValidationError chained.
-    with pytest.raises(TranscriptionError) as exc_info:
-        _StrippedTextEngine().transcribe(_audio())
+def test_stripped_text_is_delivered_with_a_mismatch_diagnostic() -> None:
+    # A text that is not the segment texts concatenated (spec TR.1) is an
+    # engine fault that transcribe() discloses instead of raising: the
+    # application gets the text and segment texts as the engine built them,
+    # plus one warning that names the index of the first differing code point
+    # and quotes no transcript text.
+    result = _StrippedTextEngine().transcribe(_audio())
+    assert result.text == "Hello world."
+    assert result.segments is not None
+    assert [s.text for s in result.segments] == [" Hello", " world."]
+    mismatches = [d for d in result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH]
+    assert len(mismatches) == 1
+    assert mismatches[0].level == "warning"
+    assert "differ at code point index 0" in mismatches[0].message
+    assert "Hello" not in mismatches[0].message
+    # The async bridge runs transcribe(), so it carries the same one diagnostic.
+    async_result = asyncio.run(_StrippedTextEngine().transcribe_async(_audio()))
+    async_codes = [
+        d.code for d in async_result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH
+    ]
+    assert async_codes == [DIAG_TEXT_SEGMENTS_MISMATCH]
+    # check_result_views does nothing for an EngineBase: transcribe() ran the check.
+    assert check_result_views(result, _StrippedTextEngine()) is result
 
-    cause = exc_info.value.__cause__
-    assert isinstance(cause, ValidationError)
-    assert [error["type"] for error in cause.errors()] == ["standard_asr_text_segments_mismatch"]
-    assert "differ at code point index 0" in cause.errors()[0]["msg"]
-    assert "not the segment texts concatenated" in str(exc_info.value)
-    assert exc_info.value.hint is not None
-    assert "stripping text" in exc_info.value.hint
+
+def test_check_result_views_discloses_for_a_structural_engine() -> None:
+    # An engine that does not derive from EngineBase runs no check of its own.
+    # The function appends the disclosure after the engine's own diagnostics
+    # and changes nothing else; a result that keeps the equality comes back
+    # as the same object.
+    class _Structural:
+        pass
+
+    engine = cast("StandardASR", _Structural())
+    result = TranscriptionResult(
+        text="hello world",
+        segments=[
+            Segment(start=0.0, end=1.0, text="hello"),
+            Segment(start=1.0, end=2.0, text="world"),
+        ],
+        diagnostics=[Diagnostic(code="engine_note", message="kept")],
+    )
+    disclosed = check_result_views(result, engine)
+    assert disclosed.text == "hello world"
+    assert [d.code for d in disclosed.diagnostics] == ["engine_note", DIAG_TEXT_SEGMENTS_MISMATCH]
+    clean = TranscriptionResult(text="hi")
+    assert check_result_views(clean, engine) is clean
+    # The original is untouched, and a second call on the disclosed copy
+    # appends the same diagnostic again, as the docstring says.
+    assert [d.code for d in result.diagnostics] == ["engine_note"]
+    twice = check_result_views(disclosed, engine)
+    assert [d.code for d in twice.diagnostics] == [
+        "engine_note",
+        DIAG_TEXT_SEGMENTS_MISMATCH,
+        DIAG_TEXT_SEGMENTS_MISMATCH,
+    ]
 
 
-@pytest.mark.parametrize(
-    "engine_type", [_StaleResultEngine, _InvalidSegmentEngine, _StrippedTextEngine]
-)
+@pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
 def test_engine_validation_error_wraps_as_transcription_error(
     engine_type: type[_ArrayEngine],
 ) -> None:

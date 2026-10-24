@@ -666,7 +666,13 @@ TranscriptionResult:
 - **对象键的键域在两层同构（normative）**：JSON object key **只能是 string**，故每个 wire 可见 JSON 槽位（`extra`、`Diagnostic.provided`/`effective`、递归至任意深度的嵌套 object）的键 MUST 在构造期就要求是**精确 `str`**，**任何**非字符串键 fail-loud，绝不 coerce。pydantic 的宽松 `dict[str, …]` 会把 `bytes` 键**静默转成 `str`**（且逐层递归），于是 Python 调用方能构造 `extra={b"x": 1}`——一个任何 JSON 文档都表达不了、只在 Python 层被准入的键；更严重的是 `{"x": 1, b"x": 2}` 会**塌缩**成单个 `"x"`（后者胜出），两个不同的 Python 键静默合一——正是 wire 可见槽位绝不能产生的 silent wrong result，也是「Python-only 键改写 wire 可见内容」对 G5.2 两层同构的直接违反。要求精确 `str`（连 `str` 子类也拒——恶意子类可覆写 `__eq__`/`__hash__` 使两个都序列化成 `"x"` 的键在输入映射里保持相异，从而在序列化时重新引入该冲突）。来自真实 wire 文档的 object 键恒为字符串，故该规则只会为「越过 wire 键域的 Python 调用方」触发（参考实现 `contract.results.require_json_string_keys`，经 `mode="before"` 校验器统一挂在每个 wire JSON 槽位上）。
 - **null 规则（消歧）**：capability 声明「是否支持」；字段 `None`=**未请求/不适用**；`[]`=**请求但空**（如静音）。app 判「不支持」看 **capability**，不看字段 null。
 - **段文本的拼接规则（normative）**：段的 `text` 带着这一段给转写增加的**每一个字符**，包括把它和前后两段连起来的空格与标点。构造 `text`、归约流式结果、显示文本时，标准层和每个应用都按列表顺序**直接串接**段文本：不加分隔符，不裁剪空白，也不合并连续的空白（字幕 cue 是显示格式，另见 TR.6）。
-  - **相等式（构造期检查）**：`segments` 是列表时，引擎构造的 `text` MUST 等于 `"".join(segment.text for segment in segments)`。`TranscriptionResult` 和每个 `ChannelResult` 在构造时检查这一点，不相等就拒绝构造（错误类型 `standard_asr_text_segments_mismatch`）。`segments` 是 `null` 时，`text` 单独成立，不做检查。所以 `segments == []` 时 `text` MUST 是 `""`：有文字、没有分段的引擎用 `segments=null`。
+  - **相等式**：`segments` 是列表时，引擎 MUST 让 `text` 等于 `"".join(segment.text for segment in segments)`。
+    - **`null` 与 `[]`**：`segments` 是 `null` 时，`text` 单独成立，不做检查。`segments` 是 `[]` 时，段文本串起来是 `""`，所以引擎 MUST 让 `text` 也是 `""`。有文字、没有分段的引擎用 `segments=null`。
+    - **什么时候检查**：创建 `TranscriptionResult` 或 `ChannelResult` 对象时，pydantic 的校验器不检查这一点，不相等的对象照样能创建（理由见 TR.4「创建对象时拒绝，还是交付时披露」）。引擎的 `_transcribe` 返回结果后，`EngineBase.transcribe()` 先检查，再把结果交给应用；`transcribe_async()` 在线程里调用 `transcribe()`，所以同样检查。结果的顶层是一个视图，每个 `ChannelResult` 也各算一个视图（TR.4 说「两个视图」时，把全部通道合起来算一个），每个视图分别检查。
+    - **不相等时交付什么**：`text` 和每段的 `text` 都照引擎返回的样子交付。交付时，标准层不在两者之间选择，也不改写其中任何一个。每有一个不相等的视图，结果的 `diagnostics` 里就多一条 `warning` 级 diagnostic，code 是 `text_segments_mismatch`。
+    - **消息里有什么**：消息写明是哪个视图、`text` 和段文本串接结果第一个不同的码位下标（从 0 数起），以及两者的长度。消息不引用任何转写文字，因为转写可能很长，也可能是私密的。`segments == []` 而 `text` 不为空时，消息单独写，指出补救办法是 `segments=null`。
+    - **不从 `EngineBase` 派生的引擎**：引擎实现了协议、却不是从 `EngineBase` 派生的，它返回的结果就没有经过这项检查。`check_result_views(result, engine)` 对这样的结果做同样的检查，附上同样的 diagnostic。引擎从 `EngineBase` 派生时，`check_result_views` 原样返回结果，因为 `transcribe()` 已经检查过。参考服务器的两个批量端点（`POST /v1/transcribe` 和 `POST /v1/transcribe:json`）和 `standard-asr transcribe` 命令对每个结果都调用它；其他调用方也可以这样做。
+    - **合规套件**：`check_transcription_result` 把每个不相等的视图报成一个 error，code 是 `result_invariant:text_segments_mismatch`。所以同一个结果，应用拿到时只是多了 diagnostic（每个不相等的视图一条 warning），引擎作者在自己的测试里用它检查时，测试会失败。
   - **空格放在哪里由引擎决定**：空格可以放在前一段的末尾、后一段的开头，或者单独成为一段，但同一个空格只能出现一次。空字符串不增加任何字符；只含空白的段文本照原样计入。
   - **例子**（引号里是引擎送出的原文，空格照实写出）：
 
@@ -685,8 +691,8 @@ TranscriptionResult:
   - **开头的空格照样保留**：Whisper 系列在英文等以空格分词的文字里，每段文本都以空格开头（中文、日文的段不带），所以 `text` 也以空格开头。标准层不去掉它；不想要这个空格的引擎，自己去掉第一段开头的空格。
   - **引擎要做什么**：被包装的识别器或 API 给出了段之间的空白，引擎就原样保留。它只给出不带空白的词或句子时，引擎按它的完整文字或排版规则构造段文本。最省事的做法是把空格放在**后一段的开头**：引擎看到下一块时再决定，词前面加空格，逗号前面不加，前一段不必等待。引擎决定不了某个边界时，就推迟这一段的 `final`，或者送出更大的一段。
   - **`words` 不在相等式之内**：把 `words` 拼起来不必等于 `text`。`Word` 是识别或计时的单位，有的系统的词形和显示文字不同，例如显示文字做过逆文本规范化（ITN，把 `"一二三"` 写成 `"123"`）。
-  - **检查范围（诚实声明）**：构造期检查只保证上面的相等式。没有任何检查能证明引擎没有漏掉空格，合规报告也不这样声称。
-  - **多通道**：构造期检查同样作用于多通道结果的顶层 `text` 和每个通道的 `text`。段的边界空白按**顶层列表的顺序**写：一段的前后邻居，是顶层列表里挨着它的段，不论来自哪个通道。每个通道的 `segments` 是顶层 `segments` 的子序列，值相同（TR.4），所以同一批段同时满足两条相等式。于是在以空格分词的文字里，通道的 `text` 可能以空格开头或结尾：空格放在后一段开头时，一个通道的第一段如果不是顶层的第一段，就以空格开头；空格放在前一段末尾时，一个通道的最后一段如果不是顶层的最后一段，就以空格结尾。这个空格是顶层转写里的边界，标准层和引擎都不去掉它。例子：通道 0 的说话人说 `"Hello"`、`" world."`，通道 1 的说话人在两者之间说 `" Yes."`；顶层 `text` 是 `"Hello Yes. world."`，通道 0 的是 `"Hello world."`，通道 1 的是 `" Yes."`。理由：不看 `channels` 的应用只读顶层 `text`（TR.4）。边界若按本通道写、空格放在后一段开头，在以空格分词的文字里，一个通道的第一段只要跟在别的通道的段后面，顶层 `text` 就会把两个词粘在一起。通道在一句话中间交错时，顶层 `text` 是按时间合并的原文，标点可能紧贴另一个通道的词；要分人阅读的应用读 `channels`。
+  - **检查范围（诚实声明）**：相等式的检查只比较 `text` 和段文本的串接。没有任何检查能证明引擎没有漏掉空格，合规报告也不这样声称。
+  - **多通道**：相等式分别适用于顶层和每个通道（见上面「什么时候检查」）。段的边界空白按**顶层列表的顺序**写：一段的前后邻居，是顶层列表里挨着它的段，不论来自哪个通道。每个通道的 `segments` 是顶层 `segments` 的子序列，值相同（TR.4），所以同一批段同时满足两条相等式。于是在以空格分词的文字里，通道的 `text` 可能以空格开头或结尾：空格放在后一段开头时，一个通道的第一段如果不是顶层的第一段，就以空格开头；空格放在前一段末尾时，一个通道的最后一段如果不是顶层的最后一段，就以空格结尾。这个空格是顶层转写里的边界，标准层和引擎都不去掉它。例子：通道 0 的说话人说 `"Hello"`、`" world."`，通道 1 的说话人在两者之间说 `" Yes."`；顶层 `text` 是 `"Hello Yes. world."`，通道 0 的是 `"Hello world."`，通道 1 的是 `" Yes."`。理由：不看 `channels` 的应用只读顶层 `text`（TR.4）。边界若按本通道写、空格放在后一段开头，在以空格分词的文字里，一个通道的第一段只要跟在别的通道的段后面，顶层 `text` 就会把两个词粘在一起。通道在一句话中间交错时，顶层 `text` 是按时间合并的原文，标点可能紧贴另一个通道的词；要分人阅读的应用读 `channels`。
 
 ## TR.2 `Segment` / `Word`（流批共享子模型）
 ```
@@ -715,6 +721,12 @@ Word:    start:float  end:float  text:str
 - **不变量**：`channels` 不为 `None` 时，两个视图装的是同一批段。每个通道的 `segments` 是顶层 `segments` 的子序列：顶层里属于该通道的段，值相同、顺序不变；顶层每一段恰好属于一个通道。`words` 同理。顶层的顺序是 TR.2 的阅读顺序，段的边界空白也按这个顺序写，所以通道的 `text` 可能以空格开头或结尾（TR.1「多通道」）。这种对应是引擎义务，构造期和合规套件都不检查；要不要检查由 #48 决定。**构造期强制**（不可表示的非法形状 MUST 在模型构造时被拒绝）：
   - `channels` 中任一通道携带 `segments`/`words` 而顶层对应字段为 `None` ——否则"无视 channels 安全无损"的承诺被静默打破（渲染器会把仅 channels 的结果坍缩成单条无时间 cue）。
   - `channels` 中 `channel` 索引**重复**——TR.4 语义是「每通道一条」，重复使顶层合并歧义、且按 channel 建字典的消费方静默丢一半数据。
+- **创建对象时拒绝，还是交付时披露（判据）**：标准层在两个时候检查结果和事件。第一个时候是创建 `TranscriptionResult` 这类数据模型对象、pydantic 的校验器运行的那一刻：检查不通过，对象就创建不了。第二个时候是标准层把结果或事件交给应用之前，例如在 `EngineBase.transcribe()` 里，或者在流式会话转发事件时。每项检查放在哪个时候，按下面的判据决定，以后新增的检查也一样。
+  - **创建对象时拒绝**：只拒绝同时满足两个条件的形状：遵守规范的引擎产不出它，而且标准层对它做不了任何有用的事。上面列出的两种形状属于这一类：某个通道带 `segments` 或 `words` 而顶层对应字段为 `None`；`channel` 索引重复。
+  - **交付时披露**：对象能创建、结果仍然可用的不一致，在交给应用之前检查。结果照常交付，附一条 diagnostic 说明问题；合规套件把它报成失败。TR.1 的相等式属于这一类。
+  - **判据不决定要不要检查**：它只决定一项检查放在哪个时候。TR.2 的排序和上面的视图对应都不检查。
+  - **理由**：创建对象时就拒绝，应用拿不到结果，错误落在修不了引擎的应用开发者身上。diagnostic 随结果一起交付：应用照样能用这个结果；能修引擎的引擎作者，在自己的测试里和 `check_transcription_result` 的报告里都看得到这条 diagnostic。
+  - **先例**：流式会话已经这样处理引擎的违规。事件流超出能力声明时，会话照常投递事件，并记一条 warning 级 diagnostic（流式 [§9](#streaming)）；其他违规默认抑制或修正，也记 diagnostic。`check_event_sequence` 重放录下的事件时，把这些违规报成 error。
 
 ## TR.5 说话人（Speaker Diarization）
 说话人分离（"谁说了什么"）经 [§Runtime 参数 3.4](#runtime-parameters) 的 `diarization` marker 请求，能力声明于 `capabilities.<mode>.diarization`（[§能力系统 3.2](#capabilities)）。结果语义（normative）：
@@ -742,7 +754,10 @@ Word:    start:float  end:float  text:str
   - **VTT**：把**整个**（可能多行的）已消毒 cue 正文包进 `<v <label>>` voice tag——per W3C WebVTT，无闭合标签的 `<v>` span 合法地延伸到 cue payload 结尾，故整体包裹对多行 cue 无歧义。
   - **注入顺序（normative）**：speaker 标记 MUST 在上文 cue 文本消毒（行终止符归一/实体转义）**之后**注入，否则 voice tag 自身会被转义。**标签自身 MUST 针对其注入上下文消毒**：内部换行折叠为空格（模型验证器拒绝首尾空白但**不**拒绝内部换行——标签不得伪造 cue 结构）；VTT 的 voice-tag annotation 上下文额外转义 `&`→`&amp;`、`<`→`&lt;`、`>`→`&gt;`（先 `&`；裸 `>` 会提前终止 tag，字符引用在 annotation 中合法）。
   - `speaker` 为 `None` 的段不加前缀/tag；空文本段即便带 speaker 仍被跳过（无 payload 即无 cue）。
-- **cue 边缘的空白**：段文本带着边界空白（TR.1），而 cue 是显示格式，所以渲染器 MAY 裁剪每条 cue 首尾的空白。把几段放进同一条 cue 的渲染器，先把段文本直接串接，再裁剪。标准渲染器每段一条 cue，并裁剪首尾空白；`"collapse"` 的整文 cue 用 `text`，按 TR.1 它包含每一段的文字。
+- **cue 边缘的空白**：段文本带着边界空白（TR.1），而 cue 是显示格式，所以渲染器 MAY 裁剪每条 cue 首尾的空白。把几段放进同一条 cue 的渲染器，先把段文本直接串接，再裁剪。标准渲染器每段一条 cue，并裁剪首尾空白。有可见文字（空白以外的字符）的段里有不可渲染的段（TR.2），而调用方选了 `"collapse"` 时，渲染器改出一条整文 cue。cue 里放什么文字，只看 `text` 有没有可见文字，不拿它和段文本比较。分三种情况：
+  - **`text` 有可见文字，等于段文本的串接**：结果遵守 TR.1。cue 用 `text`，里面有每一段的文字。
+  - **`text` 有可见文字，不等于段文本的串接**：结果违反 TR.1 的相等式。cue 照原样用 `text`，可能缺少某些段的文字。
+  - **`text` 为空或只含空白**：段里有可见文字，所以结果违反 TR.1 的相等式。cue 改用各段的文本，按列表顺序直接串接，不加分隔符；只含空白的段也算在内。
 - provider 渲染的高保真格式仅作 **`result.extra["provider_formats"]["srt"]`** 透传，显式非可移植、非推荐路径。
 - 据此 `response_format`/`additional_formats` 退出可移植 runtime 集（渲染是事后，非参数）。
 
