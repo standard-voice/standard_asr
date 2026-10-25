@@ -1,6 +1,6 @@
 # Capability Kinds (Design Case)
 
-**Status:** Design settled 2026-08-08. Implemented by the pull request for roadmap item 4 (#27); section 5 lists what it built. This document closes issue #45. It also removes the block on issues #37, #8, and #19. The decisions change the engine protocol and the wire schema.
+**Status:** Design settled 2026-08-08. Implemented by the pull request for item 4 of the roadmap in issue #27; section 5 lists what it built. This document closes issue #45. It also removes the block on issues #37, #8, and #19. The decisions change the engine protocol and the wire schema.
 
 > Issue #45 calls this topic the "capability ontology". This document uses the
 > word **kind**, because `kind` is the name of the new field.
@@ -220,7 +220,7 @@ support.
 
 ## 5. Implementation items
 
-These items were implementation work, and they did not block the issues above. The pull request for roadmap item 4 did all eight:
+These items were implementation work, and they did not block the issues above. The pull request for roadmap item 4 (#27) did all eight:
 
 1. **Done.** Add a `_ConstraintNode` base for the four constraint classes. Add the `kind`
    field to `_CapNode` and to `_ConstraintNode`. Set the value on each node

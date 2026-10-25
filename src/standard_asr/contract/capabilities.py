@@ -22,12 +22,21 @@ Every leaf node is one of three archetypes -- **flag**, **bounded**, or
 **enum/mode** -- and all expose a uniform ``is_supported`` boolean so that
 strict / best_effort gating is consistent across the tree.
 
-Every typed leaf node also states its kind (:data:`CapabilityKind`) in a
-``kind`` field that its class pins. ``requestable`` means an application can
+The tree holds two sorts of object. A *capability node* (a leaf node,
+:class:`_CapNode`) states ``supported`` or ``mode``, and it may still carry
+children such as ``diarization.always_on`` or ``constraints``. A
+*container* (:class:`_Container`) only groups nodes: the root, the mode
+domains ``batch`` and ``streaming``, and groups such as ``language``.
+
+Every typed leaf node, one built from a class of this module, also states
+its kind (:data:`CapabilityKind`) in a ``kind`` field whose value its class
+fixes; an engine does not set it. ``requestable`` means an application can
 ask for the feature. ``behavior`` means the node describes a property, a
 behavior, or a promise of the engine that no standard ``RuntimeParams``
-field requests. Each ``constraints`` submodel states ``limit``, and a
-container states no kind. A raw ``x_*`` node states a kind only when its
+field requests, such as ``self_resamples``, ``streaming.emits_partials``,
+or ``streaming.finality_level``. Each ``constraints`` submodel states
+``limit``, and a container states no kind. A raw ``x_*`` node, a plain dict
+under a vendor's ``x_<vendor>_<feature>`` key, states a kind only when its
 declaration writes one.
 
 Applications query the tree with a dot-path, and a missing key is
@@ -218,9 +227,10 @@ class _CapNode(_JsonExtraModel):
     """
 
     # The shared type lets code that holds any node read ``node.kind``.
-    # Pyright reports each narrowing pin as an incompatible override because
-    # it cannot see that the models are frozen, so every pin carries an
-    # ignore for that one rule.
+    # Each subclass narrows it to one value. Pyright reports that narrowing
+    # as an incompatible override, because it cannot see that the models are
+    # frozen (``frozen=True`` in ``JsonExtraModel``) and so never reassigned.
+    # Every pin therefore carries an ignore for that one rule.
     kind: CapabilityKind
 
     @property
@@ -270,6 +280,7 @@ class _ConstraintNode(_JsonExtraModel):
     requestable feature, such as the maximum number of phrase-hint terms. It
     is not a capability node: it has no ``supported``, and
     :meth:`DeclaredCapabilities.supports` answers ``False`` for its path.
+    :meth:`DeclaredCapabilities.kind_at` answers ``"limit"`` for it.
     """
 
     kind: Literal["limit"] = "limit"
@@ -464,8 +475,8 @@ class DiarizationCap(_FlagLikeNode):
     ``partial_stability``. A supported ``always_on`` means the engine
     applies diarization to every request, because its architecture cannot
     DISABLE diarization. Speaker labels may then appear even when the
-    application did not ask for them (the documented exemption to
-    request-gated diarization). ``always_on`` grants nothing an application
+    application did not ask for them (the exemption to request-gated
+    diarization that spec TR.5 names). ``always_on`` grants nothing an application
     can request.
 
     ``always_on`` is a **regular queryable flag node**, uniform with
@@ -611,8 +622,9 @@ class _Container(_JsonExtraModel):
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         """Refuse a container subclass that declares a ``kind`` field.
 
-        A container groups nodes and states no kind (design D4), so
-        ``kind_at()`` answers ``None`` for its path. ``canonical_json()``
+        A container groups nodes and states no kind (design D4 in
+        ``docs/internal/feat_plan/capability-kinds.md``), so ``kind_at()``
+        answers ``None`` for its path. ``canonical_json()``
         writes every declared field, so a ``kind`` field on a subclass would
         publish a kind that Python does not report.
         :meth:`_validate_extra_keys` cannot catch the field, because it sees
@@ -1038,7 +1050,8 @@ class DeclaredCapabilities(_Container):
         for path in other.iter_supported_paths():
             if path not in mine:
                 return False
-        # A node's kind is data (design D3), and it does not depend on
+        # A node's kind is data (design D3 in
+        # docs/internal/feat_plan/capability-kinds.md), and it does not depend on
         # support, so the kind of every node both trees hold must agree,
         # supported or not: a change in either direction changes what
         # kind_at() and can_request() answer, and neither direction narrows.
@@ -1205,7 +1218,7 @@ def _derive_kind(node: object) -> CapabilityKind | None:
         return node.kind
     if isinstance(node, dict):
         mapping = cast("dict[str, object]", node)
-        # Only a capability node states a kind: a dict is one iff it carries
+        # Only a capability node states a kind: a dict is one exactly when it carries
         # ``supported`` or ``mode``, the same predicate _derive_supported and
         # _to_canonical use. A bare grouping dict groups nodes and states
         # nothing, whatever keys it carries.

@@ -321,10 +321,10 @@ lang: zh-Hans
 | effective_capabilities（生效能力） | 引擎**实例化后**，根据实际配置可能**收窄**的能力子集。例如，引擎声明支持 `word_timestamps`，但用户未配 `forced_aligner`，则运行时不可用。**不变量 `effective ⊆ declared`**（只能关、不能凭空开）。合规测试强制校验此子集关系。 |
 | 引擎全局能力 | 不绑定在任何 mode 域内的正交能力。放在能力树顶层，如 `streaming_input`、`streaming_output`。 |
 | 节点原型 (archetype) | 能力树叶节点的三种固定形态：flag、bounded、enum/mode（详见 §3.3）。 |
-| 节点种类 (kind) | 节点陈述的是哪一类事实：`requestable`（应用可以请求的功能）、`behavior`（任何标准 `RuntimeParams` 字段都不请求的引擎特性、行为或承诺）或 `limit`（可请求功能的限额）。每个标准叶节点和每个 `constraints` 子模型都带 `kind` 字段，容器不带；`x_*` 节点只在声明写了 `kind` 时才带（详见 §3.3、§4 R4）。 |
+| 节点种类 (kind) | 一个节点陈述的是哪一类事实，取三个值之一：`requestable`（可请求：应用可以在请求中要求这个功能）、`behavior`（行为：引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它）或 `limit`（限额：某个可请求功能的限额）。`RuntimeParams` 是一次转写请求携带的标准参数（[§Runtime 参数 3.1](#runtime-parameters)）。种类与节点原型是两回事：原型说明 `supported` 怎么得出，种类说明节点在陈述什么。每个标准叶节点和每个 `constraints` 子模型都带 `kind` 字段，容器不带；`x_*` 节点只在声明写了 `kind` 时才带（详见 §3.3、§4 R4）。 |
 | 点路径 (dot-path) | 用于点路径查询（`supports()`、`can_request()`、`kind_at()`，§4 R5）的字符串，以 `.` 分隔层级。从 mode 域或顶层正交能力起始，**不带** `capabilities.` 前缀。如 `"batch.word_timestamps"`、`"streaming.guidance.phrase_hints"`。 |
 | fail-closed | 能力系统的默认安全策略：任何未声明的能力键一律视为不支持，而非报错或假定支持。 |
-| `x_*` 命名空间 | 实验性能力的保留前缀，格式 `x_<vendor>_<feature>`。显式标记为非标准，遵循与标准能力相同的门控规则。 |
+| `x_*` 命名空间 | 实验性能力的保留前缀，格式 `x_<vendor>_<feature>`。显式标记为非标准。`x_*` 节点遵守与标准节点相同的查询与收窄规则（缺失即不支持，effective 只能收窄 declared）；对它的请求走 `provider_params`，标准层不对它做参数门控。 |
 
 ## 3. 声明与参数
 
@@ -379,13 +379,13 @@ capabilities:
 
 同一功能（如 `language`、`guidance`）在 `batch` 和 `streaming` 下**分别声明**——同一引擎在不同模式下的能力可以不同。
 
-清单中每个节点的 `kind` 是该节点类固定的值（§3.3）：引擎不填写它，canonical JSON 照样写出它（§4 R6）。容器与 mode 域没有 `kind`。
+清单中每个节点的 `kind` 由该节点所属的类固定（§3.3），不是引擎可以选择的值：引擎声明标准节点时不必写 `kind`，canonical JSON（能力端点输出的 JSON，§4 R6）照样把它写出来。容器（`language`、`guidance` 这类只给节点分组的键）与 mode 域没有 `kind`。
 
 **`diarization.always_on`（行为性 flag 节点，normative）。** `always_on` 是 `DiarizationCap` 上的一个**行为性 flag 节点**（`FlagCap`，`kind` 为 `behavior`），与 `self_resamples`（以及流式行为性 flag `emits_partials`/`re_segments`/`partial_stability`）同族——它描述引擎**做什么**（架构上不可关闭 diarization，未请求时也可能出现 speaker 标签），不授予应用可请求的任何东西。它**不进** `constraints`（§3.3：`constraints` 专用于机器可校验的限额，而 `always_on` 是行为事实）。
 
 但它是一个**普通的可查询 flag 节点**，与 `self_resamples` 一致：`supports("<mode>.diarization.always_on")` 是有效查询路径；声明 supported 时它出现在 `iter_supported_paths()` 中；canonical JSON 统一为它注入 `supported` 布尔值；`covers()` 通过标准集合包含把「declared 未声明 → effective 声明」的变化当作漂移（declaration drift）拒绝。矛盾态 `supported=false ∧ always_on 声明 supported` 仍**不可表示**（构造期 validator 拒绝）。
 
-`always_on` 与父节点 `diarization` 陈述的是两类事实，`kind` 字段直接写明这一区别（§3.3），不需要特例：`diarization` 是 `requestable`，`supported=true` 表示应用可以请求说话人分离；`always_on` 是 `behavior`，`supported=true` 表示引擎对每个请求都做说话人分离，未请求时也可能出现 speaker 标签（对请求门控 diarization 的具名豁免）。其填充豁免见 [§结果模型 TR.5](#transcription-result) 的具名豁免；架构上不可关闭的 joint 模型（如 joint ASR+diarization 解码器，speaker token 与文本 token 交织在同一输出序列）适用。**能关就必须关（normative）**：能够关闭 diarization 的引擎（原生 skip/disable 开关）MUST 在未请求时关闭；`always_on` 保留给架构上不可关的模型，MUST NOT 为省适配器工夫而声明（不可运行时验证，属声明诚实性义务，与 TR.3 的粒度声明诚实同类）。
+`always_on` 与父节点 `diarization` 陈述的是两类事实，`kind` 字段直接写明这一区别（§3.3），不需要特例：`diarization` 是 `requestable`，`supported=true` 表示应用可以请求说话人分离；`always_on` 是 `behavior`，`supported=true` 表示引擎对每个请求都做说话人分离，所以应用没有请求时，结果里也可能出现 speaker 标签。结果模型规定未请求的数据不得填进结果，`always_on` 引擎在这条规则上被点名豁免，见 [§结果模型 TR.5](#transcription-result) 的具名豁免。豁免适用于架构上不可关闭的 joint 模型（如 joint ASR+diarization 解码器，speaker token 与文本 token 交织在同一输出序列）。**能关就必须关（normative）**：能够关闭 diarization 的引擎（原生 skip/disable 开关）MUST 在未请求时关闭；`always_on` 保留给架构上不可关的模型，MUST NOT 为省适配器工夫而声明（不可运行时验证，属声明诚实性义务，与 TR.3 的粒度声明诚实同类）。
 
 ### 3.3 节点原型
 
@@ -403,21 +403,29 @@ capabilities:
 
 **enum/mode 强度序与 token 唯一性（normative）。** enum/mode 节点的合法收窄由**强度序**定义（如 `reconnect`：`seamless` > `lossy` > `unsupported`；`timestamps`：`native_frame_aligned` > `post_align` > `none`；`finality_level`：`closed` > `final`）——`effective` 的 mode MUST 是 `declared` 的同级或更弱级别，否则即放宽（违反 `effective ⊆ declared`）。该强度序按**裸 token 全局键控**（实现 `_MODE_REDUCTIONS`），故**不变量**：同一 major 内**新增**的标准 enum/mode 节点 MUST NOT 复用既有 token 而赋予**不同**的强度序（当前三族 token 互不相交）。未登记于强度序表的 token（含 `x_*` 实验节点的自定 token、未来未知 token）在收窄比较中 **fail-closed**（任何变化一律视为放宽拒绝）。
 
-**节点种类 `kind`（normative）。** 原型说明 `supported` 怎么得出，`kind` 说明节点陈述的是哪一类事实。每个标准叶节点带 `kind` 字段，取 `requestable` 或 `behavior`；每个 `constraints` 子模型带 `kind: "limit"`；容器、mode 域与根对象不带 `kind`，它们只给节点分组，不陈述事实。`x_*` 节点只在声明写了 `kind` 时才带（§4 R4）。三个取值（实现：`CapabilityKind`）：
+**节点种类 `kind`（normative）。** 原型说明 `supported` 怎么得出，`kind` 说明节点陈述的是哪一类事实。本节说到三类位置。**叶节点**（能力节点）陈述一项功能，带 `supported` 或 `mode`；它下面仍可以挂子节点，如 `diarization` 下的 `always_on` 与 `constraints`。**`constraints` 子模型**存放一个功能的限额，它不是能力节点：没有 `supported`，`supports()` 对它的路径返回 `False`。**容器**只给节点分组，如 `language`、`guidance`；mode 域与根对象也只分组。存在的容器与 mode 域在 `supports()` 下返回 `True`，在 canonical JSON 里带 `supported: true`（§4 R6），这只表示它们存在。每个标准叶节点带 `kind` 字段，取 `requestable` 或 `behavior`；每个 `constraints` 子模型带 `kind: "limit"`；容器、mode 域与根对象不带 `kind`，它们只给节点分组，不陈述事实。`x_*` 节点只在声明写了 `kind` 时才带（§4 R4）。三个取值（实现：`CapabilityKind`）：
 
 | `kind` | 含义 | 标准节点 |
 |---|---|---|
-| `requestable`（可请求） | 应用可以在请求中要求这个功能；`supported=true` 表示可以要求。 | 各 mode 的 `language.runtime_override`、`language.candidate_languages`、`word_timestamps`、`guidance.prompt`、`guidance.phrase_hints`、`diarization` |
+| `requestable`（可请求） | 应用可以在请求中要求这个功能；`supported=true` 表示可以要求。标准节点通过 [§Runtime 参数 3.1](#runtime-parameters) 表中的一个 `RuntimeParams` 字段请求。 | 各 mode 的 `language.runtime_override`、`language.candidate_languages`、`word_timestamps`、`guidance.prompt`、`guidance.phrase_hints`、`diarization` |
 | `behavior`（行为） | 引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它。被支持的 `behavior` 节点告知一项事实，不授予任何可请求的东西。 | 其余全部叶节点：引擎全局的 `streaming_input`、`streaming_output`、`self_resamples`；各 mode 的 `diarization.always_on`；流式的 `guidance.mutable_mid_stream`、`emits_partials`、`re_segments`、`partial_stability`、`reconnect`、`finality_level`、`timestamps` |
 | `limit`（限额） | 一个可请求功能的机器可校验限额，如 `guidance.phrase_hints.constraints.max_terms`（最多几个词条）。 | 每个 `constraints` 子模型 |
 
-每个节点类固定一个种类，与原型无关：同为 flag 原型，`FlagCap` 固定为 `behavior`，`RuntimeOverrideCap` 固定为 `requestable`。引擎不填写 `kind`；与节点类不符的值在构造期校验失败。容器带 `kind` 键的声明同样拒绝：输入里的 `kind` 键是未知键，构造期校验失败；容器子类把 `kind` 声明为字段的，定义这个类时就抛 `TypeError`，带默认值也一样。所以容器在 Python 里和 wire 上都不陈述种类。引擎 MUST 让 declared 与 effective 两层同一路径的 `kind` 相同：不同即视为放宽，`covers()` 拒绝（§3.1）。因此 `language.runtime_override` 用它自己的节点类 `RuntimeOverrideCap` 声明，用 `FlagCap` 声明它无法通过校验。
+每个节点类固定一个种类，与原型无关：同为 flag 原型，`FlagCap` 固定为 `behavior`，`RuntimeOverrideCap` 固定为 `requestable`。所以 `language.runtime_override` 有自己的节点类 `RuntimeOverrideCap`：这个字段的类型就是它，放一个 `FlagCap` 进去无法通过校验。引擎声明标准节点时不必填写 `kind`；填了与节点类不符的值，建立这个节点对象时，pydantic 的校验就拒绝它。容器带 `kind` 同样被拒绝，分两种情形：声明输入给容器写了 `kind` 键，这个键是未知键，建立容器对象时校验失败；有人定义容器子类、把 `kind` 声明为字段，定义这个类时就抛 `TypeError`，带默认值也一样。所以容器在 Python 里和 wire 上（即 canonical JSON 里，§4 R6）都不陈述种类。引擎 MUST 让 declared 与 effective 两层同一路径的 `kind` 相同。`covers()` 是检查 `effective ⊆ declared`（§3.1）的方法；两层同一路径的 `kind` 不同时，不论节点是否被支持、不论从哪一种改成哪一种，`covers()` 都拒绝：改变种类就改变了 `kind_at()` 与 `can_request()` 的回答，任何方向都不算收窄。
 
-**`requestable` 与参数门控一一对应（normative）。** [§Runtime 参数 3.1](#runtime-parameters) 表中「Capability 路径」一列列出的节点，正是全部 `requestable` 标准节点：该列的每个节点门控一个可移植请求字段，且是 `requestable`；每个 `requestable` 标准节点也都在该列。其中 `language.candidate_languages` 由 [§语言选择](#language-selection) R3 门控（不支持时归为 `None` 并附一条 diagnostic，从不抛错），其余由 [§Runtime 参数](#runtime-parameters) R2 门控。合规套件双向检查这一对应。正向：对引擎声明的每个 mode，门控字段的节点不是 `requestable`，报错 `gated_param_not_requestable`。反向：能力树里 `x_*` 子树之外的每个节点，包括根对象下的节点，只要 `kind_at()` 返回 `requestable`，又不是某个已声明 mode 下该列的节点，就报错 `requestable_node_ungated`，不论它是否被支持。反向检查与 `kind_at()`、`can_request()` 认同一批节点，所以以字典声明的节点陈述的 `kind` 也算。只查第一个方向会留下漏洞：一个无人门控的 `requestable` 节点让 `can_request()` 回答 `True`，请求却不经检查就到达引擎，不支持它的引擎会静默忽略它。
+**`requestable` 与参数门控一一对应（normative）。** 门控指标准层在请求到达引擎之前，按生效能力检查请求里的参数，不支持的参数按 strict/best_effort 策略抛错或丢弃并附 diagnostic（[§Runtime 参数](#runtime-parameters) R2）。[§Runtime 参数 3.1](#runtime-parameters) 表中「Capability 路径」一列列出的节点，正是全部 `requestable` 标准节点：该列的每个节点门控一个可移植请求字段（`RuntimeParams` 中跨引擎通用的标准字段），且是 `requestable`；每个 `requestable` 标准节点也都在该列。其中 `language.candidate_languages` 由 [§语言选择](#language-selection) R3 门控：不支持时，请求的候选语言列表归为 `None` 并附一条 diagnostic，从不抛错。其余由 [§Runtime 参数](#runtime-parameters) R2 门控。合规套件双向检查这一对应：
 
-`kind` 只有这三个取值，没有 `observation`（观测，即随宿主机器或环境变化的度量）：能力声明是静态的，来自引擎类；观测在两台机器上给出不同答案，两者生命周期不同。所以硬件事实与模型卡事实不进能力树，由树外的声明表面承载。节点上出现 `observation` 即为缺陷（决策记录：`capability-kinds`，docs/internal/feat_plan/）。
+- 正向：对引擎声明的每个 mode，如果某个门控字段对应的节点不是 `requestable`，报错 `gated_param_not_requestable`。
+- 反向：能力树里 `x_*` 子树之外的每个节点，包括根对象下的节点，只要 `kind_at()` 返回 `requestable`，又不是某个已声明 mode 下该列的节点，就报错 `requestable_node_ungated`，不论它是否被支持。该列的路径都在 mode 之下，所以根对象下的 `requestable` 节点总会报错。反向检查与 `kind_at()`、`can_request()` 认同一批节点，所以以字典声明的节点陈述的 `kind` 也算。在 `x_*` 之外，这样的节点只会出现在引擎改动了标准树的时候，例如用子类或 `model_construct()` 让某个字段存放普通字典。
 
-**可请求功能与行为分为两个节点（normative）。** 一个功能如果既能由应用请求，又可能被某些引擎无条件施加（如 [§Runtime 参数 R6](#runtime-parameters) 预留的 punctuation 与 ITN），标准 MUST 用两个节点表达，不把两种意思压进一个节点：一个 `requestable` 的功能节点，加一个 `behavior` 子节点，模式同 `diarization` 与 `diarization.always_on`（§3.2）。behavior 子节点只能在父节点被支持时被支持，由构造期校验保证（同 `DiarizationCap`）；否则引擎可以声明自己总在施加一个它并不支持的功能。
+只查正向会留下漏洞，情形有两种，反向检查都能发现：
+
+- 标准将来新增一个 `requestable` 节点和对应的 `RuntimeParams` 字段，却忘了在门控表里加一行。这时 `can_request()` 回答 `True`，而这个字段的值不经标准层检查就送到引擎；不支持这个功能的引擎可能静默忽略它。
+- 某个引擎在 `x_*` 之外的标准路径上自己加了一个 `requestable` 节点。没有任何标准请求字段能要求它，所以 `can_request()` 对一个谁也请求不到的功能回答 `True`，照这个答案生成的 UI 会画出一个没有作用的控件。合规套件的错误信息要求作者把这个节点移到 `x_<vendor>_<feature>` 之下，并通过 `provider_params` 接受对它的请求。
+
+`kind` 只有这三个取值，没有 `observation`（观测：随宿主机器或环境变化的度量）。能力声明是静态的，来自引擎类；观测在两台机器上给出不同答案，两者生命周期不同。所以硬件事实与模型卡（介绍模型本身的说明文档）事实不进能力树，由能力树之外的声明表面承载，即引擎类上的其他静态声明，如 Properties 与 `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)）。节点上出现 `observation` 即为缺陷（决策记录：`capability-kinds`，docs/internal/feat_plan/）。
+
+**可请求功能与行为分为两个节点（normative）。** 有的功能既能由应用请求，又可能被某些引擎无条件施加，如 punctuation（加标点）与 ITN（逆文本规范化，例如把「二零二六」写成「2026」），二者在 [§Runtime 参数 R6](#runtime-parameters) 中预留。为这样的功能定义标准节点时，标准 MUST 用两个节点表达，不把两种意思压进一个节点：一个 `requestable` 的功能节点，加一个 `behavior` 子节点，模式同 `diarization` 与 `diarization.always_on`（§3.2）。这条要求约束的是规范将来新增的节点。behavior 子节点只能在父节点被支持时被支持，由建立父节点对象时的校验保证（同 `DiarizationCap`）；否则引擎可以声明自己总在施加一个它并不支持的功能。
 
 ## 4. 行为（规范）
 
@@ -429,17 +437,17 @@ capabilities:
 
 **R3 — additive-within-major。** 同一 major 版本内，能力键只能**新增**，不能修改语义或删除（改/删 ⇒ major 升级）。**无 per-feature `version`**——兼容由协议大版本号统管。
 
-**R4 — 实验能力 `x_*`。** 保留 `x_<vendor>_<feature>` 命名空间供实验性能力；门控规则与标准能力相同。提升为标准能力时 MUST 去掉 `x_` 前缀（遵循 RFC 6648）。`x_*` 节点可以用 `kind` 键陈述种类（§3.3）：只有带 `supported` 或 `mode` 的 `x_*` 字典才是节点，只分组的 `x_*` 字典不陈述种类；节点上只有三个取值的精确拼写才算数，缺失或其他值都视为不陈述种类：`kind_at()` 返回 `None`，`can_request()` 返回 `False`（fail-closed）。可请求的 `x_*` 功能通过 `provider_params` 请求（[§Runtime 参数 3.2](#runtime-parameters)），没有对应的 `RuntimeParams` 字段，所以 §3.3 的门控对应检查跳过 `x_*` 子树。
+**R4 — 实验能力 `x_*`。** 保留 `x_<vendor>_<feature>` 命名空间供实验性能力。`x_*` 节点在能力树里遵守与标准节点相同的查询与收窄规则：缺失即不支持（R1），effective 只能收窄 declared（§3.1）；对 `x_*` 功能的请求则走 `provider_params`，标准层不对它做参数门控。提升为标准能力时 MUST 去掉 `x_` 前缀（遵循 RFC 6648）。`x_*` 节点可以用 `kind` 键陈述种类（§3.3），这是引擎需要自己写 `kind` 的唯一场合。只有带 `supported` 或 `mode` 的 `x_*` 字典才是节点；只用来分组的 `x_*` 字典不陈述种类，它即使写了 `kind` 键也被忽略，不报错。节点上的 `kind` 只认三个取值的精确拼写，缺失或其他值都视为不陈述种类：`kind_at()` 返回 `None`，`can_request()` 返回 `False`（fail-closed）。可请求的 `x_*` 功能通过 `provider_params`（引擎自己的逃生舱参数，[§Runtime 参数 3.2](#runtime-parameters)）请求，没有对应的 `RuntimeParams` 字段，所以 §3.3 的门控对应检查跳过 `x_*` 子树。
 
-**R5 — 点路径查询：`supports()`、`can_request()`、`kind_at()`。** 应用通过这三个点路径查询读取能力，MUST NOT 手动遍历能力树或捕获缺键异常。三者是能力树（`DeclaredCapabilities`；declared 与 effective 两层同型）的方法，向哪一层查询就按哪一层作答：declared 层回答引擎类声明了什么（发现、UI 生成），effective 层回答已构造的实例在当前配置下支持什么。引擎上的 `engine.supports(path)` 按生效能力作答。
+**R5 — 点路径查询：`supports()`、`can_request()`、`kind_at()`。** 应用通过这三个点路径查询读取能力，MUST NOT 手动遍历能力树或捕获缺键异常。三者是能力树对象的方法。declared 与 effective 两层都是 `DeclaredCapabilities` 类的实例，向哪一层查询就按哪一层作答：declared 层（引擎类的 `declared_capabilities`）回答引擎类声明了什么，用于发现与 UI 生成；effective 层（实例的 `effective_capabilities`，§3.1 中为可选的实例属性）回答已构造的实例在当前配置下支持什么。引擎实例本身只提供 `engine.supports(path)`，它按生效能力作答；`can_request()` 与 `kind_at()` 要在能力树上调用。
 
 - `supports(path)` 是唯一的「是否支持」查询。缺失路径返回 `False`（R1 的体现）。
 - `can_request(path)` 是唯一的「能否请求」查询：仅当节点被支持**且** `kind` 为 `requestable` 时返回 `True`；被支持的 `behavior` 节点、`constraints` 子模型、容器、缺失路径一律返回 `False`（fail-closed）。`supports()` 为 `True` 不表示可以请求：`supports("streaming.re_segments")` 只说明引擎可能发 `supersede` 事件，没有参数能要求它。
-- `kind_at(path)` 返回节点的 `kind`（§3.3）；容器、mode 域、缺失路径，以及没有可识别 `kind` 的 `x_*` 节点返回 `None`。种类与是否支持无关：不被支持的节点照样有种类。
+- `kind_at(path)` 返回节点的 `kind`（§3.3）：叶节点返回 `requestable` 或 `behavior`，`constraints` 子模型返回 `limit`；容器、mode 域、缺失路径，以及没有可识别 `kind` 的 `x_*` 节点返回 `None`。种类与是否支持无关：不被支持的节点照样有种类。所以 `kind_at()` 不能代替 `supports()`：一个功能显式声明为不支持时有种类，被省略时返回 `None`，两者对应用都表示不支持（R1）。
 
-**R6 — canonical JSON。** `capabilities` 在 Python 侧是 typed pydantic 树；REST `GET .../capabilities` 暴露 canonical JSON，每个节点（叶节点 + **存在的容器/mode 域**）带（派生的）`supported` 字段。enum/mode 节点的 `supported` 由服务端注入（跨语言统一探针），实现见 `DeclaredCapabilities.canonical_json()`。结构契约（跨语言客户端 MUST 可依赖）：**根对象本身不带 `supported`**（它是所有 mode 的容器，非能力）；**缺席的 mode 域序列化为 `null`**（fail-closed，等价于不支持）；`constraints` 等限额子模型非能力节点，**不注入** `supported`（只保留其限额字段与 `kind`）；**每个标准叶节点带 `kind`**（`requestable` 或 `behavior`），**每个 `constraints` 子模型带 `kind: "limit"`**，容器、mode 域与根对象**不带 `kind`**（带 `kind` 的容器一律被拒，见 §3.3）——客户端把缺席读作「这个路径只给节点分组，不陈述事实」。`x_*` 节点只在声明写了 `kind` 时才带，客户端按 R4 读它。
+**R6 — canonical JSON。** `capabilities` 在 Python 侧是 typed pydantic 树；REST `GET .../capabilities` 暴露 canonical JSON（能力树对外的标准 JSON 形式，跨语言客户端读的就是它），每个节点（叶节点 + **存在的容器/mode 域**）带（派生的）`supported` 字段。enum/mode 节点本身只有 `mode`，服务端在 canonical JSON 里替它算出 `supported` 并写入，这样任何语言的客户端都能在每个节点上读同一个 `supported` 字段判断是否支持，而不必知道哪些 `mode` 取值表示不支持；实现见 `DeclaredCapabilities.canonical_json()`。结构契约（跨语言客户端 MUST 可依赖）：**根对象本身不带 `supported`**（它是所有 mode 的容器，非能力）；**缺席的 mode 域序列化为 `null`**（fail-closed，等价于不支持）；`constraints` 等限额子模型非能力节点，**不注入** `supported`（只保留其限额字段与 `kind`）；**每个标准叶节点带 `kind`**（`requestable` 或 `behavior`），**每个 `constraints` 子模型带 `kind: "limit"`**，容器、mode 域与根对象**不带 `kind`**（带 `kind` 的容器一律被拒，见 §3.3）——客户端看到一个对象没有 `kind`，就把它读作「这个路径只给节点分组，不陈述事实」。`x_*` 节点只在声明写了 `kind` 时才带，客户端按 R4 读它。
 
-`kind` 是 wire 上的数据，不只是 Python 方法：非 Python 客户端调用不到 `can_request()`，它读 canonical JSON。以 serialization 模式从 `DeclaredCapabilities` 生成的 JSON Schema（`model_json_schema(mode="serialization")`）中，每个节点类的定义都把 `kind` 列为 required 属性，其 `const` 是该类固定的那一个值。canonical JSON 写出每个字段（含默认值），所以这份 schema 把各个类的每个字段都列为 required；validation 模式的 schema 不把带默认值的 `kind` 列为 required。这份 schema 只描述类的字段：canonical JSON 给每个存在的容器与 mode 域、每个 enum/mode 节点注入的派生 `supported` 由投影代码写出，不是任何类的字段，所以 schema 里没有它（例如 `FinalityCap` 的定义只有 `kind` 与 `mode`）。因此这份 schema 不是能力端点完整的 wire schema。能力端点完整的 wire schema，即足以用来生成客户端的那一份，留给路线图（#27）第 29 项（wire 形式化）。
+`kind` 是 wire 上的数据，不只是 Python 方法的返回值。wire 指跨进程、跨语言传输的那一侧，这里就是 canonical JSON：非 Python 客户端调用不到 `can_request()`，它读 canonical JSON 里的 `kind` 与 `supported`。用 pydantic 从 `DeclaredCapabilities` 生成 JSON Schema 时，serialization 模式（`model_json_schema(mode="serialization")`）描述输出的 JSON。这份 schema 中，每个节点类的定义都把 `kind` 列为 required 属性，其 `const`（JSON Schema 中「只能取这一个值」的关键字）是该类固定的那一个值。原因是 canonical JSON 写出每个字段（含默认值），所以这份 schema 把各个类的每个字段都列为 required；描述输入的 validation 模式 schema 不把带默认值的 `kind` 列为 required。这份 schema 只描述类的字段：canonical JSON 给每个存在的容器与 mode 域、每个 enum/mode 节点注入的派生 `supported` 由生成 JSON 的代码另外写出，不是任何类的字段，所以 schema 里没有它（例如 `FinalityCap` 的定义只有 `kind` 与 `mode`）。因此这份 schema 不是能力端点完整的 wire schema。能力端点完整的 wire schema，即足以用来生成客户端的那一份，留给路线图（#27）第 29 项（wire 形式化）。
 
 **R7 — Capabilities 与 Properties 边界（定死一处家）。**
 

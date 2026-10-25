@@ -1118,16 +1118,26 @@ def _check_requestable_kinds(
 ) -> None:
     """Check that the gating table and the tree's requestable nodes agree, both ways.
 
+    The gating table is ``_GATED_PARAMS`` in ``runtime/gating.py``: each row
+    pairs a ``RuntimeParams`` field with the mode-relative capability path
+    that gates it, such as ``("diarization", "diarization")``.
+    ``_UNGATED_REQUESTABLE_PATHS`` lists the requestable paths whose gate
+    lives outside that table.
+
     Forward: under each declared mode, every ``_GATED_PARAMS`` row and every
     entry in ``_UNGATED_REQUESTABLE_PATHS`` resolves to a node whose ``kind``
     is ``requestable``. Reverse: every path that ``iter_queryable_paths()``
-    yields, the root's own fields included, whose ``kind_at()`` is
-    ``requestable`` is one of those rows or entries under a declared mode.
-    The kind comes from ``kind_at()``, so a raw node that states its kind
-    counts, and the check judges the same nodes that ``kind_at()`` and
-    ``can_request()`` answer for. Support does not matter: ``kind_at()``
-    answers ``requestable`` for an unsupported node too, and that answer
-    says that a standard request field asks for the feature.
+    yields whose ``kind_at()`` is ``requestable`` is one of those rows or
+    entries under a declared mode. The walk includes the root's own fields
+    (``batch``, ``streaming``, ``streaming_input``, ``streaming_output``,
+    ``self_resamples``), so a requestable node at the root is always
+    reported. The kind comes from ``kind_at()``, so a raw dict
+    node that states its kind counts, and the check judges the same nodes
+    that ``kind_at()`` and ``can_request()`` answer for. Support does not
+    matter: ``kind_at()`` answers ``requestable`` for an unsupported node
+    too, and that answer says that a standard request field asks for the
+    feature.
+
     One direction alone leaves a hole. A requestable node that no gate
     checks makes ``can_request()`` answer ``True``, yet a request for it
     reaches the engine unchecked. An engine that does not support the
@@ -1135,11 +1145,11 @@ def _check_requestable_kinds(
     with an ``x_*`` segment: a vendor feature is requested through
     ``provider_params``, which no capability gates.
 
-    The standard tree passes both checks, because each node class pins its
-    kind. A finding means the engine's tree replaced a standard node or
-    added a requestable node of its own, or the installed core is
-    inconsistent. Each message names both readings, because a plugin author
-    can fix only the first.
+    The standard tree passes both checks, because each node class fixes its
+    kind. A finding has one of two causes: the engine's tree replaced a
+    standard node or added a requestable node of its own, or the installed
+    standard-asr is inconsistent. Each message names both causes, because a
+    plugin author can fix only the first.
 
     Args:
         declared: The engine's declared capability tree.
@@ -1176,10 +1186,10 @@ def _check_requestable_kinds(
                 )
     # Reverse: every path the application can query, at any depth and at the
     # root too, with the kind that kind_at() gives it. node_at() would see only
-    # typed nodes, but kind_at() also reads the kind a raw node states, and an
-    # application asks kind_at() and can_request(), so the check must see the
-    # same nodes. Support does not matter: the kind of an unsupported node is
-    # still a claim about the standard.
+    # typed nodes, but kind_at() also reads the kind a raw dict node states.
+    # An application asks kind_at() and can_request(), so the check must see
+    # the same nodes. Support does not matter: the kind of an unsupported node
+    # still claims that a standard request field asks for the feature.
     for path in declared.iter_queryable_paths():
         if any(_is_extension_key(part) for part in path.split(".")):
             continue

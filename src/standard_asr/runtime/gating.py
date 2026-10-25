@@ -102,15 +102,18 @@ _UNGATED_PORTABLE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: Requestable capability paths that no :data:`_GATED_PARAMS` row checks,
-#: each with the reason. Each entry is a dot-path suffix relative to the
-#: mode, like the table's second column, so one entry covers both modes.
+#: Requestable capability paths whose gate lives outside
+#: :data:`_GATED_PARAMS`, each with the reason and the code that gates it.
+#: Each entry is a dot-path suffix relative to the mode, like the table's
+#: second column, so one entry covers both modes.
 #: The compliance suite reads this set in both directions. Forward: under
 #: each declared mode, each entry must resolve to a node whose ``kind`` is
 #: ``requestable``, or the suite reports ``gated_param_not_requestable``.
-#: Reverse: a standard node whose ``kind`` is ``requestable`` and that is
-#: not a :data:`_GATED_PARAMS` row must be listed here. A new requestable
-#: node that nothing gates is then reported as the error
+#: Reverse: under a declared mode, a node outside the ``x_*`` subtrees, at
+#: any depth, whose ``kind`` is ``requestable`` must be a
+#: :data:`_GATED_PARAMS` row or listed here. A requestable node at the root
+#: of the tree can be neither, so the suite always reports it. A new
+#: requestable node that nothing gates is reported as the error
 #: ``requestable_node_ungated``; without the check, a request for it would
 #: reach the engine unchecked.
 _UNGATED_REQUESTABLE_PATHS: frozenset[str] = frozenset(
@@ -118,8 +121,9 @@ _UNGATED_REQUESTABLE_PATHS: frozenset[str] = frozenset(
         # Requested through RuntimeParams.candidate_languages, whose gating
         # language.effective_candidate_languages owns (see
         # _UNGATED_PORTABLE_FIELDS): an unsupported list resolves to None
-        # plus one diagnostic and never raises, which this table's
-        # strict-raises gating cannot express.
+        # plus one diagnostic and never raises, even under the strict
+        # policy. This table's gating raises under strict, so it cannot
+        # express that.
         "language.candidate_languages",
     }
 )
