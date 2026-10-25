@@ -21,11 +21,11 @@ layers:
   (see :meth:`Capabilities.covers`).
 
 The tree holds three sorts of object. A *capability node*
-(:class:`_CapabilityNode`) states ``supported`` or ``mode``, and it may
+(``_CapabilityNode``) states ``supported`` or ``mode``, and it may
 still carry children such as ``diarization.always_on`` or ``constraints``.
-A ``constraints`` *submodel* (:class:`_ConstraintNode`) holds the
+A ``constraints`` *submodel* (``_ConstraintNode``) holds the
 machine-checkable bounds of one requestable feature; it is not a capability
-node. A *container* (:class:`_Container`) only groups nodes: the root, the
+node. A *container* (``_Container``) only groups nodes: the root, the
 mode domains ``batch`` and ``streaming``, and groups such as ``language``.
 
 Every capability node has one of three shapes -- **flag**, **bounded**, or
@@ -1269,8 +1269,8 @@ def _to_canonical(node: object, *, inject_supported: bool) -> Any:
     """Recursively convert a capability tree, or part of one, to its JSON-ready form.
 
     Mirrors ``model_dump(mode="json")`` but injects a derived ``supported``
-    boolean at every capability node (:class:`_CapabilityNode`) and present container
-    (:class:`_Container`). Constraint submodels are not capabilities and get no
+    boolean at every capability node (``_CapabilityNode``) and present container
+    (``_Container``). Constraint submodels are not capabilities and get no
     ``supported`` key. See :meth:`Capabilities.to_protocol_dict`.
 
     Args:

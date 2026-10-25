@@ -67,7 +67,9 @@ class MyEngine(EngineBase):
     config_type: ClassVar[type[BaseConfig]] = MyConfig  # schema without instantiation
     declared_capabilities: ClassVar[Capabilities] = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True)),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         )
     )
     declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
