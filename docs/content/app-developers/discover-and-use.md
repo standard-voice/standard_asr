@@ -113,21 +113,22 @@ Missing capabilities are **fail-closed** (`supports(...)` returns `False`).
 
 ```python
 class TranscriptionResult:
-    text: str                                    # the whole transcript, required
-    detected_language: str | None = None         # BCP-47 tag, in auto mode
-    language_confidence: float | None = None     # 0 to 1
-    duration: float | None = None                # audio length in seconds
-    segments: list[Segment] | None = None        # in reading order
-    words: list[Word] | None = None              # every Word, in segment order
+    text: str  # the whole transcript, required
+    detected_language: str | None = None  # BCP-47 tag, in auto mode
+    language_confidence: float | None = None  # 0 to 1
+    duration: float | None = None  # audio length in seconds
+    segments: list[Segment] | None = None  # in reading order
+    words: list[Word] | None = None  # every Word, in segment order
     channels: list[ChannelResult] | None = None  # one entry per channel
-    diagnostics: list[Diagnostic] = []           # non-fatal reports
-    extra: dict[str, JsonValue] = {}             # engine-specific data
+    diagnostics: list[Diagnostic] = []  # non-fatal reports
+    extra: dict[str, JsonValue] = {}  # engine-specific data
+
 
 class Segment:
-    start: float | None                          # must be given; None if not measured
-    end: float | None                            # must be given; None if not measured
-    text: str                                    # includes its boundary spaces
-    words: list[Word] | None = None              # this segment's own words
+    start: float | None  # must be given; None if not measured
+    end: float | None  # must be given; None if not measured
+    text: str  # includes its boundary spaces
+    words: list[Word] | None = None  # this segment's own words
     speaker: str | None = None
     channel: int | None = None
     avg_logprob: float | None = None
@@ -136,29 +137,32 @@ class Segment:
     compression_ratio: float | None = None
     extra: dict[str, JsonValue] = {}
 
+
 class Word:
-    start: float                                 # seconds
-    end: float                                   # seconds
+    start: float  # seconds
+    end: float  # seconds
     text: str
-    probability: float | None = None             # 0 to 1
+    probability: float | None = None  # 0 to 1
     logprob: float | None = None
     speaker: str | None = None
     channel: int | None = None
     extra: dict[str, JsonValue] = {}
 
+
 class ChannelResult:
-    channel: int                                 # channel index
+    channel: int  # channel index
     text: str
     segments: list[Segment] | None = None
     words: list[Word] | None = None
 
+
 class Diagnostic:
     level: Literal["info", "warning"] = "info"
-    code: str                                    # stable, such as "flat_words_missing"
+    code: str  # stable, such as "flat_words_missing"
     message: str
-    param: str | None = None                     # the parameter concerned
-    provided: JsonValue = None                   # the value the application gave
-    effective: JsonValue = None                  # the value that took effect
+    param: str | None = None  # the parameter concerned
+    provided: JsonValue = None  # the value the application gave
+    effective: JsonValue = None  # the value that took effect
 ```
 
 ### Which field does what
