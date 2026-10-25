@@ -32,13 +32,13 @@ from standard_asr.compliance import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    CandidateLanguagesCap,
+    CandidateLanguagesCapability,
     CandidateLanguagesConstraints,
-    DeclaredCapabilities,
-    FlagCap,
-    LanguageCaps,
-    RuntimeOverrideCap,
+    Capabilities,
+    LanguageCapabilities,
+    LanguageOverrideCapability,
     StreamingCapabilities,
+    TraitFlagCapability,
 )
 from standard_asr.contract.exceptions import (
     AudioProcessingError,
@@ -86,9 +86,9 @@ class _ArrayProps(BaseProperties):
     detectable_languages: list[str] = ["en"]
 
 
-_CAPS = DeclaredCapabilities(
+_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+        language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True)),
     )
 )
 
@@ -99,7 +99,7 @@ class _MyParams(ProviderParams):
 
 class _ArrayEngine(EngineBase):
     properties: ClassVar[BaseProperties] = _ArrayProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _MyParams
 
     def __init__(self, *, strict: bool = True) -> None:
@@ -250,7 +250,7 @@ def test_standard_asr_protocol_includes_full_surface() -> None:
     class _Partial:
         config = _ArrayEngine().config
         properties = _ArrayProps()
-        declared_capabilities = DeclaredCapabilities()
+        declared_capabilities = Capabilities()
 
         def transcribe(self, audio: object, params: object = None) -> None:  # pragma: no cover
             return None
@@ -869,12 +869,14 @@ def test_engine_validation_error_wraps_as_transcription_error(
 class _StaleStreamingHookEngine(_ArrayEngine):
     """Streaming hook builds a contract model pydantic now rejects."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         ),
         streaming=StreamingCapabilities(),
-        streaming_input=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
     )
 
     def _start_transcription(
@@ -1235,11 +1237,11 @@ def test_no_language_axis_leaves_runtime_params_unchanged() -> None:
 # --- candidate-language validation runs in the standard layer ----------------
 
 
-_CAND_CAPS = DeclaredCapabilities(
+_CAND_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(
-            runtime_override=RuntimeOverrideCap(supported=True),
-            candidate_languages=CandidateLanguagesCap(
+        language=LanguageCapabilities(
+            runtime_override=LanguageOverrideCapability(supported=True),
+            candidate_languages=CandidateLanguagesCapability(
                 supported=True,
                 constraints=CandidateLanguagesConstraints(max=2),
             ),
@@ -1260,7 +1262,7 @@ class _AutoConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
 
 class _AutoEngine(_ArrayEngine):
     properties: ClassVar[BaseProperties] = _AutoProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAND_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAND_CAPS
 
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _AutoConfig(strict=strict)
@@ -1273,7 +1275,7 @@ class _AutoManyProps(_ArrayProps):
 
 class _CapturingAutoEngine(_CapturingArrayEngine):
     properties: ClassVar[BaseProperties] = _AutoManyProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAND_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAND_CAPS
 
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _AutoConfig(strict=strict)
@@ -1340,7 +1342,7 @@ class _NonCanonicalDetectableProps(_ArrayProps):
 
 class _NonCanonicalDetectableEngine(_CapturingArrayEngine):
     properties: ClassVar[BaseProperties] = _NonCanonicalDetectableProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAND_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAND_CAPS
 
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _AutoConfig(strict=strict)
@@ -1366,11 +1368,11 @@ class _NoCandConfig(LanguageConfigMixin, BaseConfig[Literal["arr"]]):
     default_language: str | None = "auto"
 
 
-_NO_CAND_CAPS = DeclaredCapabilities(
+_NO_CAND_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(
-            runtime_override=RuntimeOverrideCap(supported=True),
-            candidate_languages=CandidateLanguagesCap(supported=False),
+        language=LanguageCapabilities(
+            runtime_override=LanguageOverrideCapability(supported=True),
+            candidate_languages=CandidateLanguagesCapability(supported=False),
         )
     )
 )
@@ -1378,7 +1380,7 @@ _NO_CAND_CAPS = DeclaredCapabilities(
 
 class _NoCandEngine(_ArrayEngine):
     properties: ClassVar[BaseProperties] = _AutoProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _NO_CAND_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _NO_CAND_CAPS
 
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _NoCandConfig(strict=strict)
@@ -1447,15 +1449,15 @@ def test_runtime_language_best_effort_falls_back_to_default_for_engine_hook() ->
     assert diag.effective == "en"
 
 
-_NO_OVERRIDE_CAPS = DeclaredCapabilities(
+_NO_OVERRIDE_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=False)),
+        language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=False)),
     )
 )
 
 
 class _NoOverrideEngine(_CapturingArrayEngine):
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _NO_OVERRIDE_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _NO_OVERRIDE_CAPS
 
 
 def test_runtime_language_best_effort_unsupported_override_flows_default_to_hook() -> None:
@@ -1813,15 +1815,19 @@ class _StreamSession(TranscriptionSession):
 class _StreamEngine(_ArrayEngine):
     """Streaming engine overriding the new ``_start_transcription`` hook."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         ),
         streaming=StreamingCapabilities(
-            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     #: Captures the params the base handed to the hook (param-freeze assertions).
@@ -1869,11 +1875,11 @@ class _UndeclaredSupersedeEngine(_StreamEngine):
 class _DeclaredSupersedeEngine(_UndeclaredSupersedeEngine):
     """Declares re-segmentation, so the same stream is within its declaration."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         batch=BatchCapabilities(),
-        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming=StreamingCapabilities(re_segments=TraitFlagCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
@@ -1883,12 +1889,12 @@ class _NarrowedSupersedeEngine(_DeclaredSupersedeEngine):
     strict: ClassVar[bool] = False
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:
-        return DeclaredCapabilities(
+    def effective_capabilities(self) -> Capabilities:
+        return Capabilities(
             batch=BatchCapabilities(),
-            streaming=StreamingCapabilities(re_segments=FlagCap(supported=False)),
-            streaming_input=FlagCap(supported=True),
-            streaming_output=FlagCap(supported=True),
+            streaming=StreamingCapabilities(re_segments=TraitFlagCapability(supported=False)),
+            streaming_input=TraitFlagCapability(supported=True),
+            streaming_output=TraitFlagCapability(supported=True),
         )
 
     def _start_transcription(
@@ -1953,22 +1959,22 @@ class _StructuralStreamEngine:
     # A domain that differs from the default one, so a test can tell these
     # declared capabilities from the default domain that binds when a tree
     # has no streaming domain.
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        streaming=StreamingCapabilities(emits_partials=FlagCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        streaming=StreamingCapabilities(emits_partials=TraitFlagCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
     )
 
 
 class _StructuralNarrowedEngine(_StructuralStreamEngine):
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        streaming=StreamingCapabilities(re_segments=TraitFlagCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
     )
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:
-        return DeclaredCapabilities(
-            streaming=StreamingCapabilities(), streaming_input=FlagCap(supported=True)
+    def effective_capabilities(self) -> Capabilities:
+        return Capabilities(
+            streaming=StreamingCapabilities(), streaming_input=TraitFlagCapability(supported=True)
         )
 
 
@@ -1998,22 +2004,23 @@ class _StructuralFailingPropertyEngine(_StructuralNarrowedEngine):
     """Its ``effective_capabilities`` property raises ``AttributeError``."""
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:
+    def effective_capabilities(self) -> Capabilities:
         raise AttributeError("model")
 
 
 class _StructuralDynamicEngine(_StructuralStreamEngine):
     """Serves ``effective_capabilities`` through ``__getattr__``."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        streaming=StreamingCapabilities(re_segments=TraitFlagCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
     )
 
     def __getattr__(self, name: str) -> object:
         if name == "effective_capabilities":
-            return DeclaredCapabilities(
-                streaming=StreamingCapabilities(), streaming_input=FlagCap(supported=True)
+            return Capabilities(
+                streaming=StreamingCapabilities(),
+                streaming_input=TraitFlagCapability(supported=True),
             )
         raise AttributeError(name)
 
@@ -2042,22 +2049,26 @@ def test_bind_session_capabilities_does_not_hide_a_failing_capability_property()
 class _NoStreamingInputEngine(_StreamEngine):
     """Streaming hook is present, but incremental input is not declared."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         ),
-        streaming_output=FlagCap(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
 class _NoStreamingOutputEngine(_StreamEngine):
     """Streaming hook is present, but whole-input streaming output is not declared."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         ),
-        streaming_input=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
     )
 
 
@@ -2335,11 +2346,11 @@ def test_streaming_candidate_language_effective_params_flow_to_hook_and_diagnose
     # diagnostics through the session.
     class _StreamAutoEngine(_StreamEngine):
         properties: ClassVar[BaseProperties] = _AutoProps()
-        declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        declared_capabilities: ClassVar[Capabilities] = Capabilities(
             streaming=StreamingCapabilities(
-                language=LanguageCaps(
-                    runtime_override=RuntimeOverrideCap(supported=True),
-                    candidate_languages=CandidateLanguagesCap(
+                language=LanguageCapabilities(
+                    runtime_override=LanguageOverrideCapability(supported=True),
+                    candidate_languages=CandidateLanguagesCapability(
                         supported=True,
                         constraints=CandidateLanguagesConstraints(max=2),
                     ),
@@ -2347,7 +2358,7 @@ def test_streaming_candidate_language_effective_params_flow_to_hook_and_diagnose
             ),
             # Declares streaming_input so the bare incremental session below is
             # accepted by the capability gate.
-            streaming_input=FlagCap(supported=True),
+            streaming_input=TraitFlagCapability(supported=True),
         )
 
         def __init__(self, *, strict: bool = True) -> None:

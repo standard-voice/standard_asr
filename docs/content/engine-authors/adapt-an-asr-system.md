@@ -13,7 +13,7 @@ You implement **one** class. The standard layer gives you audio-input negotiatio
 Subclass `EngineBase` and provide:
 
 1. `properties: ClassVar[BaseProperties]` — static identity and I/O boundaries (`accepted_input`, `native_sample_rate`, `accepted_sample_rates`, `selectable_languages`, …). Pin `protocol_version` to the protocol the engine implements, never to the installed `standard-asr` version (spec AR.1). Bump it only after the engine fully implements the newer contract. It is not a package requirement either: declare the `standard-asr` version range your code imports from in your project metadata, because the two move independently.
-2. `declared_capabilities: ClassVar[DeclaredCapabilities]` — what you support, per mode (`batch` / `streaming`). Omit what you don't support (fail-closed). Each capability node states its `kind`, and its class fixes the value, so you never set it. The kind is `requestable` for a feature a request asks for, and `behavior` for a property, a behavior, or a promise of your engine that no standard `RuntimeParams` field requests (`self_resamples`, `streaming.emits_partials`, `streaming.finality_level`). Use the node class the field is typed with. `language.runtime_override` takes `RuntimeOverrideCap`: a `FlagCap` there fails validation, because `FlagCap` fixes its kind to `behavior`.
+2. `declared_capabilities: ClassVar[Capabilities]` — what you support, per mode (`batch` / `streaming`). Omit what you don't support (fail-closed). Each capability node states its `role`, which says what the node is for, and its class fixes the value, so you never set it. The role is `requestable` for a feature an application asks for in a request through one `RuntimeParams` field, such as `diarization` or `word_timestamps`. It is `trait` for a property, a behavior, or a promise of your engine that no standard `RuntimeParams` field requests, such as `streaming_input` (you accept incremental audio), `self_resamples` (you resample audio internally), `streaming.emits_partials` (you send interim results), `streaming.finality_level` (a promise about `final` events), or `diarization.always_on` (you apply diarization to every request). Each `constraints` submodel has the role `constraints`: it holds the machine-checkable bounds of one requestable feature. Under each mode, those are `language.candidate_languages.constraints.max` (how many candidate languages a request may list); `guidance.prompt.constraints.max_tokens` (the most tokens a prompt may have, checked against an estimated count); `max_terms`, `max_chars_per_term`, and `max_words_per_term` in `guidance.phrase_hints.constraints`; and `diarization.constraints.max_speakers`. Use the node class the field is typed with. `language.runtime_override` takes `LanguageOverrideCapability`: a `TraitFlagCapability` there fails validation, because `TraitFlagCapability` fixes its role to `trait`.
 3. `declared_metadata: ClassVar[DeclaredEngineMetadata]` — static metadata for the model preset. The protocol requires an authored `artifacts` section. Use `NO_ARTIFACT_LIFECYCLE` only when no supported context has an inference-artifact lifecycle.
 4. `provider_params_type: ClassVar[type[ProviderParams] | None]` — your typed escape-hatch model, or `None`. Publish your own **terminal** subclass: the bare `ProviderParams` base, a non-subclass, or a model that is not closed (`extra="forbid"`) is a compliance error (`provider_params_type_is_bare_base`, `provider_params_type_not_subclass`, or `provider_params_type_not_closed`).
 5. `__init__` — capture config only. **Keep it pure**: no filesystem, GPU, or network (spec IC.9). Load weights lazily, in a method of your own; the first-party plugins call theirs `_ensure_model_loaded`.
@@ -32,15 +32,15 @@ from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
     BatchCapabilities,
-    DeclaredCapabilities,
+    Capabilities,
     DeclaredEngineMetadata,
     EngineBase,
     InputKind,
-    LanguageCaps,
+    LanguageCapabilities,
     LanguageConfigMixin,
     NO_ARTIFACT_LIFECYCLE,
     PreparedAudio,
-    RuntimeOverrideCap,
+    LanguageOverrideCapability,
     RuntimeParams,
     TranscriptionResult,
 )
@@ -65,9 +65,9 @@ class MyProps(BaseProperties):
 class MyEngine(EngineBase):
     properties: ClassVar[BaseProperties] = MyProps()
     config_type: ClassVar[type[BaseConfig]] = MyConfig  # schema without instantiation
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+            language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True)),
         )
     )
     declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
@@ -131,7 +131,7 @@ You never write decode/resample/encode glue — declare `accepted_input` and the
 
 ## Streaming
 
-**Declare the transport axis first.** Set `streaming_input=FlagCap(supported=True)` if you accept incremental PCM frames, `streaming_output=FlagCap(supported=True)` if you return results incrementally, or both. These are engine-global behaviors: `FlagCap` fixes `kind` to `behavior`, because no request parameter asks for them. Either one may be supported only when you also declare a `streaming` domain. A `streaming` domain with neither axis is a streaming engine nobody can call: every `start_transcription()` raises `UnsupportedFeatureError`, and compliance reports the error `streaming_domain_without_axis`.
+**Declare the transport axis first.** Set `streaming_input=TraitFlagCapability(supported=True)` if you accept incremental PCM frames, `streaming_output=TraitFlagCapability(supported=True)` if you return results incrementally, or both. These are engine-global traits: `TraitFlagCapability` fixes `role` to `trait`, because no request parameter asks for them. Either one may be supported only when you also declare a `streaming` domain. A `streaming` domain with neither axis is a streaming engine nobody can call: every `start_transcription()` raises `UnsupportedFeatureError`, and compliance reports the error `streaming_domain_without_axis`.
 
 Subclass `TranscriptionSession`, implement async `_produce()` (read fed audio via `self.audio_chunks()`, yield `TranscriptionEvent` objects). The base provides `feed`/`send_audio`/`end_audio`, backpressure, the done-timeout, and the sync bridge — you only write `async`. See the spec §ST for the event model (`partial`/`final`/`supersede`/`progress`/`done`/`error`) and the `stable_text` rules.
 
@@ -255,20 +255,20 @@ Six streaming capabilities each gate one event field or event type. Your declare
 
 | If you emit…                     | …declare                                            |
 | -------------------------------- | --------------------------------------------------- |
-| a `partial` event | `streaming.emits_partials = FlagCap(supported=True)` |
-| a `partial` with non-empty `stable_text` | `streaming.partial_stability = FlagCap(supported=True)` |
-| a `supersede` event | `streaming.re_segments = FlagCap(supported=True)` |
+| a `partial` event | `streaming.emits_partials = TraitFlagCapability(supported=True)` |
+| a `partial` with non-empty `stable_text` | `streaming.partial_stability = TraitFlagCapability(supported=True)` |
+| a `supersede` event | `streaming.re_segments = TraitFlagCapability(supported=True)` |
 | an `audio_processed_until` cursor | `streaming.timestamps.mode` ≠ `"none"`              |
-| per-word `words`                 | `streaming.word_timestamps = WordTimestampsCap(supported=True, …)` |
-| a segment- or word-level `speaker` | `streaming.diarization = DiarizationCap(supported=True)` — add `always_on=FlagCap(supported=True)` if your model is architecturally unable to disable it |
+| per-word `words`                 | `streaming.word_timestamps = WordTimestampsCapability(supported=True, …)` |
+| a segment- or word-level `speaker` | `streaming.diarization = DiarizationCapability(supported=True)` — add `always_on=TraitFlagCapability(supported=True)` if your model is architecturally unable to disable it |
 
-Each `FlagCap` in the table, `always_on` included, declares a behavior: its `kind` is `behavior`, because no request parameter turns it on. `WordTimestampsCap` and `DiarizationCap` declare requestable features, which an application asks for per request.
+Each `TraitFlagCapability` in the table, `always_on` included, declares a trait: its `role` is `trait`, because no request parameter turns it on. `WordTimestampsCapability` and `DiarizationCapability` declare requestable features, which an application asks for per request.
 
-One more declaration promises events instead of gating them. Declare `streaming.finality_level = FinalityCap(mode="closed")` only if every segment that reaches `final`, and that no `supersede` retires, also reaches `closed` before the session ends with `done`. Otherwise keep the default mode, `"final"`, which neither promises nor forbids a `closed` final.
+One more declaration promises events instead of gating them. Declare `streaming.finality_level = FinalityCapability(mode="closed")` only if every segment that reaches `final`, and that no `supersede` retires, also reaches `closed` before the session ends with `done`. Otherwise keep the default mode, `"final"`, which neither promises nor forbids a `closed` final.
 
 The coherent **no-timestamp streaming profile** is the all-defaults combination, except that you declare `emits_partials` supported if you send `partial` events. Leave `partial_stability`, `timestamps` (mode `"none"`), `word_timestamps`, and `diarization` unsupported, and emit none of those fields (leave `stable_text` out of every `partial`, and omit `audio_processed_until`, `words`, and `speaker`). A mismatch — for example, declaring `partial_stability` unsupported while emitting a `partial` with non-empty `stable_text` — is a capability⇄stream desync a client trusting your capabilities would mishandle.
 
-The session checks every event it forwards against your engine's effective capabilities while it runs. It judges the event as you sent it, so a `partial` whose stable text the boundary repair empties still counts as carrying stable text. An event that the session suppresses for another reason is not checked. `EngineBase.start_transcription` gives the session your capabilities. An engine that implements the protocol without deriving from `EngineBase` does not. For such an engine, the reference server calls `bind_session_capabilities(session, engine)` for every session it opens, and any other caller can do the same (`from standard_asr import bind_session_capabilities`). That function reads the engine's `effective_capabilities` the ordinary way, so an attribute your engine serves through `__getattr__` counts. If reading it raises an exception, including an `AttributeError` raised inside an `effective_capabilities` property, the exception propagates, and the reference server opens no session. For an `AttributeError` or any other exception the server has no specific handling for, the client gets an `error` frame with code `internal_error`. The function uses the engine's `declared_capabilities` only when the engine has no `effective_capabilities` attribute, or the attribute does not hold a `DeclaredCapabilities`. A session that never gets the capabilities is not checked. The session records `stream_exceeds_emits_partials`, `stream_exceeds_partial_stability`, `stream_exceeds_re_segments`, `stream_exceeds_timestamps`, `stream_exceeds_word_timestamps`, or `stream_exceeds_diarization` for a field or event type your declaration does not back. It records `finality_level_not_reached` when you declare finality mode `"closed"` and the session reaches `done` while a segment is still `final` and not `closed`. Each code is recorded once per session, in `session.diagnostics()`. Because of this check, the session never removes the field or drops the event: removing the field would hide your bug, and dropping a `supersede` would leave the retired segments in place and duplicate the replacement text. With `strict_lifecycle=True`, the first mismatch ends the session instead, with a terminal `error` event whose code is `engine_error`. The contract is still yours to keep.
+The session checks every event it forwards against your engine's effective capabilities while it runs. It judges the event as you sent it, so a `partial` whose stable text the boundary repair empties still counts as carrying stable text. An event that the session suppresses for another reason is not checked. `EngineBase.start_transcription` gives the session your capabilities. An engine that implements the protocol without deriving from `EngineBase` does not. For such an engine, the reference server calls `bind_session_capabilities(session, engine)` for every session it opens, and any other caller can do the same (`from standard_asr import bind_session_capabilities`). That function reads the engine's `effective_capabilities` the ordinary way, so an attribute your engine serves through `__getattr__` counts. If reading it raises an exception, including an `AttributeError` raised inside an `effective_capabilities` property, the exception propagates, and the reference server opens no session. For an `AttributeError` or any other exception the server has no specific handling for, the client gets an `error` frame with code `internal_error`. The function uses the engine's `declared_capabilities` only when the engine has no `effective_capabilities` attribute, or the attribute does not hold a `Capabilities`. A session that never gets the capabilities is not checked. The session records `stream_exceeds_emits_partials`, `stream_exceeds_partial_stability`, `stream_exceeds_re_segments`, `stream_exceeds_timestamps`, `stream_exceeds_word_timestamps`, or `stream_exceeds_diarization` for a field or event type your declaration does not back. It records `finality_level_not_reached` when you declare finality mode `"closed"` and the session reaches `done` while a segment is still `final` and not `closed`. Each code is recorded once per session, in `session.diagnostics()`. Because of this check, the session never removes the field or drops the event: removing the field would hide your bug, and dropping a `supersede` would leave the retired segments in place and duplicate the replacement text. With `strict_lifecycle=True`, the first mismatch ends the session instead, with a terminal `error` event whose code is `engine_error`. The contract is still yours to keep.
 
 To find a mismatch before you publish, record a real session and assert it with `check_event_sequence(events, capabilities=engine.declared_capabilities)`. It runs the same check and reports each code once, as an error, however many events break the declaration. Capabilities that declare no `streaming` domain are checked against the default `StreamingCapabilities()`, in which none of the capabilities in the table is supported. That call checks your declared capabilities, and the session checks your effective ones. Your effective capabilities can be narrower, so a configuration that turns a capability off can produce a session diagnostic even when the compliance report is clean.
 

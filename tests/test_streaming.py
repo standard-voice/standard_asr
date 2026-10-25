@@ -22,13 +22,13 @@ from standard_asr.contract.artifacts import (
     ArtifactRequirement,
 )
 from standard_asr.contract.capabilities import (
-    DeclaredCapabilities,
-    DiarizationCap,
-    FinalityCap,
-    FlagCap,
+    Capabilities,
+    DiarizationCapability,
+    FinalityCapability,
     StreamingCapabilities,
-    StreamTimestampsCap,
-    WordTimestampsCap,
+    StreamTimestampsCapability,
+    TraitFlagCapability,
+    WordTimestampsCapability,
 )
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
@@ -2982,7 +2982,9 @@ def test_guard_records_an_event_the_declared_capabilities_do_not_cover(
     # The event is forwarded unchanged: removing the field would hide the
     # engine's fault, and dropping a supersede would duplicate text.
     guard = _LifecycleGuard(
-        capabilities=StreamingCapabilities(emits_partials=FlagCap(supported=emits_partials))
+        capabilities=StreamingCapabilities(
+            emits_partials=TraitFlagCapability(supported=emits_partials)
+        )
     )
     if event.type == "supersede":
         guard.admit(TranscriptionEvent.final("s0", "h"))
@@ -3027,12 +3029,12 @@ def test_guard_records_each_capability_mismatch_once_per_session(
 
 def test_guard_accepts_events_the_declared_capabilities_cover() -> None:
     capabilities = StreamingCapabilities(
-        emits_partials=FlagCap(supported=True),
-        partial_stability=FlagCap(supported=True),
-        re_segments=FlagCap(supported=True),
-        timestamps=StreamTimestampsCap(mode="post_align"),
-        word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
-        diarization=DiarizationCap(supported=True),
+        emits_partials=TraitFlagCapability(supported=True),
+        partial_stability=TraitFlagCapability(supported=True),
+        re_segments=TraitFlagCapability(supported=True),
+        timestamps=StreamTimestampsCapability(mode="post_align"),
+        word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
+        diarization=DiarizationCapability(supported=True),
     )
     guard = _LifecycleGuard(capabilities=capabilities)
     guard.admit(
@@ -3075,7 +3077,7 @@ def test_guard_strict_raises_for_a_capability_mismatch() -> None:
 
 
 def test_guard_reports_finals_left_unclosed_under_finality_level_closed() -> None:
-    capabilities = StreamingCapabilities(finality_level=FinalityCap(mode="closed"))
+    capabilities = StreamingCapabilities(finality_level=FinalityCapability(mode="closed"))
     guard = _LifecycleGuard(capabilities=capabilities)
     guard.admit(TranscriptionEvent.final("s0", "hello"))
     guard.admit(TranscriptionEvent.closed("s0", "Hello."))
@@ -3112,7 +3114,7 @@ def test_guard_judges_the_event_as_sent_not_as_repaired() -> None:
     # The boundary repair empties this partial's stable text. The engine
     # still sent stable text that its capabilities do not support.
     guard = _LifecycleGuard(
-        capabilities=StreamingCapabilities(emits_partials=FlagCap(supported=True))
+        capabilities=StreamingCapabilities(emits_partials=TraitFlagCapability(supported=True))
     )
     out = guard.admit(TranscriptionEvent.partial("s0", "e" + _ACUTE + "x", stable_text="e"))
     assert out is not None and out.stable_text == ""
@@ -3140,7 +3142,7 @@ def test_session_reports_finals_left_unclosed_under_finality_level_closed(
     async def run() -> tuple[list[TranscriptionEvent], list[str]]:
         session = _ScriptedSession(script, strict_lifecycle=strict)
         session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
-            StreamingCapabilities(finality_level=FinalityCap(mode="closed"))
+            StreamingCapabilities(finality_level=FinalityCapability(mode="closed"))
         )
         events = await _collect(session)
         return events, [d.code for d in session.diagnostics()]
@@ -3187,7 +3189,7 @@ def test_bound_capabilities_reach_the_session_diagnostics(
         session = _ScriptedSession(script)
         bind_session_capabilities(
             session,
-            cast("StandardASR", SimpleNamespace(declared_capabilities=DeclaredCapabilities())),
+            cast("StandardASR", SimpleNamespace(declared_capabilities=Capabilities())),
         )
         events = await _collect(session)
         return events, session.result().text, [d.code for d in session.diagnostics()]
@@ -3219,7 +3221,7 @@ def test_bound_capabilities_in_strict_mode_end_the_session(
         session = _ScriptedSession(script, strict_lifecycle=True)
         bind_session_capabilities(
             session,
-            cast("StandardASR", SimpleNamespace(declared_capabilities=DeclaredCapabilities())),
+            cast("StandardASR", SimpleNamespace(declared_capabilities=Capabilities())),
         )
         return await _collect(session)
 

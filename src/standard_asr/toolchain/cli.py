@@ -202,7 +202,7 @@ def _add_strict_discovery_flag(parser: Any) -> None:
 
 
 def _add_json_output_flag(parser: argparse.ArgumentParser, *, noun: str) -> None:
-    """Register a shared canonical-JSON output flag.
+    """Register the shared ``--json`` flag, which prints the result as JSON.
 
     Args:
         parser: Subcommand parser to extend.
@@ -214,7 +214,7 @@ def _add_json_output_flag(parser: argparse.ArgumentParser, *, noun: str) -> None
     parser.add_argument(
         "--json",
         action="store_true",
-        help=f"Print the canonical JSON {noun}.",
+        help=f"Print the {noun} as JSON.",
     )
 
 
@@ -669,9 +669,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _print_declared_capabilities(engine_class: Any) -> None:
-    """Print an engine's DeclaredCapabilities without instantiating it.
+    """Print an engine's Capabilities without instantiating it.
 
-    ``standard-asr show`` is a consumer of DeclaredCapabilities. The
+    ``standard-asr show`` is a consumer of Capabilities. The
     capabilities are read from the engine *class* (ClassVar), so no engine is
     constructed and no credentials are resolved. The caller (``show``)
     resolved the class and ran the protocol-line gate already.
@@ -694,14 +694,15 @@ def _print_declared_capabilities(engine_class: Any) -> None:
     if caps is None:
         print("  Capabilities: <none declared>")
         return
-    # Render the *canonical* JSON (the single capability serialization shared with
-    # `GET /v1/.../capabilities`), so a `show` output can be compared
-    # field-for-field with the wire view: every node carries the derived
-    # `supported` boolean and the reader never has to know the "none"/"unsupported"
-    # sentinels.
-    canonical_json = _run_engine_call(lambda: getattr(caps, "canonical_json", None))
-    if not callable(canonical_json):
-        # `declared_capabilities` is not a DeclaredCapabilities model (for example, an
+    # Render the capability JSON document, the dict `GET /v1/capabilities/{model}`
+    # also returns, so a `show` output can be compared field-for-field with the
+    # HTTP API: every capability node and present container below the root
+    # carries the derived `supported` boolean (the root and each `constraints`
+    # submodel carry none), and the reader never has to know the
+    # "none"/"unsupported" sentinels.
+    to_protocol_dict = _run_engine_call(lambda: getattr(caps, "to_protocol_dict", None))
+    if not callable(to_protocol_dict):
+        # `declared_capabilities` is not a Capabilities model (for example, an
         # engine mis-declared it as a dict). discovery.py consumes metadata
         # defensively via getattr; mirror that here so the rest of `show`
         # (Engine ID, Module, and so on) still renders and the author is pointed at the
@@ -709,12 +710,12 @@ def _print_declared_capabilities(engine_class: Any) -> None:
         type_name = safe_type_name(caps)
         print(
             f"  Capabilities: <invalid: declared_capabilities is not a "
-            f"DeclaredCapabilities model (got {type_name}); run "
+            f"Capabilities model (got {type_name}); run "
             f"'standard-asr compliance entrypoints' for diagnostics>"
         )
         return
     print("  Capabilities:")
-    rendered = json.dumps(_run_engine_call(canonical_json), indent=2, sort_keys=True)
+    rendered = json.dumps(_run_engine_call(to_protocol_dict), indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -734,7 +735,7 @@ def _print_declared_metadata(engine_class: Any) -> None:
         None.
 
     Raises:
-        _EngineFaultError: If a plugin descriptor or canonical serializer raises a
+        _EngineFaultError: If a plugin descriptor or ``to_protocol_dict()`` raises a
             ``ValueError`` family exception.
     """
     metadata = _run_engine_call(lambda: getattr(engine_class, "declared_metadata", None))
@@ -747,12 +748,12 @@ def _print_declared_metadata(engine_class: Any) -> None:
             f"DeclaredEngineMetadata model (got {safe_type_name(metadata)})>"
         )
         return
-    canonical_json = _run_engine_call(lambda: getattr(metadata, "canonical_json", None))
-    if not callable(canonical_json):
-        print("  Declared metadata: <invalid: canonical_json is not callable>")
+    to_protocol_dict = _run_engine_call(lambda: getattr(metadata, "to_protocol_dict", None))
+    if not callable(to_protocol_dict):
+        print("  Declared metadata: <invalid: to_protocol_dict is not callable>")
         return
     print("  Declared metadata:")
-    rendered = json.dumps(_run_engine_call(canonical_json), indent=2, sort_keys=True)
+    rendered = json.dumps(_run_engine_call(to_protocol_dict), indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -1132,7 +1133,7 @@ def _render_artifact_report(report: ArtifactReport, *, as_json: bool) -> None:
 
     Args:
         report: Artifact report to render.
-        as_json: Whether to emit canonical JSON instead of human-readable text.
+        as_json: Whether to emit the report as JSON instead of human-readable text.
 
     Returns:
         None.

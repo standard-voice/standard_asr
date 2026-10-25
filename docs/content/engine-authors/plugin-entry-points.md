@@ -105,7 +105,7 @@ Helper APIs:
 Your factory MUST return a compliant engine (typically an `EngineBase` subclass) that exposes:
 
 - `properties`: a `BaseProperties` instance (class attribute / `ClassVar`).
-- `declared_capabilities`: a `DeclaredCapabilities` instance (`ClassVar`).
+- `declared_capabilities`: a `Capabilities` instance (`ClassVar`).
 - `declared_metadata`: a `DeclaredEngineMetadata` instance (`ClassVar`). Its required `artifacts` section must be authored by the plugin class hierarchy, not inherited from the core fail-loud placeholder. Additional producer sections use the `x_<vendor>_<name>` namespace. A future protocol version can add standard sections without the `x_` prefix, which older readers preserve.
 - `config`: a `BaseConfig` instance (captured at initialization).
 - `transcribe(audio, params)` returning `TranscriptionResult`, where `params` is an optional `RuntimeParams`. Subclassing `EngineBase` gives you this `transcribe` template for free; you implement only `_transcribe(prepared, params)`.

@@ -77,7 +77,7 @@ lang: zh-Hans
 | `wire_encodings` | `list[str] \| None` | 否 | 流式 `audio_format` 会话允许的 wire 编码白名单（如 `["pcm_s16le", "mulaw"]`）。缺席语义见下。 |
 | `description` | `str \| None` | 否 | 仅**展示性**的人类可读描述。MUST NOT 承载影响协商/门控的机器可读数据。 |
 
-仅行为性 `self_resamples: bool` 放 Capabilities（见 [§能力系统 R7](#capabilities)）。引擎身份字段（`engine_id`/`model_name`/`protocol_version`）同属 Properties，但 normative 定义各有归属，不在本表：`engine_id` 的路由身份、entrypoint 派生与碰撞处理见 [§Init Config IC.2](#init-config)；`protocol_version` 的语法与版本语义见 [§推理工件生命周期 AR.1](#artifact-lifecycle)；`model_name` 是 entrypoint 名 `<engine_id>/<model_name>` 的第二段，表面语法由 contract 层校验（`validate_model_name`）。生命周期与运营性静态事实（如推理工件声明）不入 Properties，归第四个声明表面 `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)）。
+仅 `self_resamples: bool` 这项引擎特性放 Capabilities（见 [§能力系统 R7](#capabilities)）。引擎身份字段（`engine_id`/`model_name`/`protocol_version`）同属 Properties，但 normative 定义各有归属，不在本表：`engine_id` 的路由身份、entrypoint 派生与碰撞处理见 [§Init Config IC.2](#init-config)；`protocol_version` 的语法与版本语义见 [§推理工件生命周期 AR.1](#artifact-lifecycle)；`model_name` 是 entrypoint 名 `<engine_id>/<model_name>` 的第二段，表面语法由 contract 层校验（`validate_model_name`）。生命周期与运营性静态事实（如推理工件声明）不入 Properties，归第四个声明表面 `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)）。
 
 **无 blanket metadata（normative）。** Properties **不含**自由 `extra: dict` 元数据口袋——与 §C 对能力树「砍掉 blanket `metadata`」（无已知用例、鼓励非结构化信息、破坏机器可读性）的决策对称。引擎需表达的机器可读信息 MUST 走结构化通道：标准字段（additive-minor 提案）或能力树的 `x_<vendor>_*` 实验命名空间；纯展示文本走 `description`。这避免在 wire 层形成无 schema、不可移植的私有并行声明通道。
 
@@ -197,7 +197,7 @@ lang: zh-Hans
 - **为何用独立的 `AudioStorageUri` 变体而非放宽 `AudioUrl`**：两者安全模型根本不同。`AudioUrl` 是 HTTPS 可公开拉取的 URL，标准的 SSRF 校验器（HTTPS-only + 拒私网 IP）正是为它而设。provider 云存储 URI（`s3://`/`gs://`/…）则由**引擎用自己的云 SDK 凭证**解析——标准无法、也不应在无凭证下拉取它，对它跑 public-IP SSRF 校验既无意义又会硬拒掉整类合法云引擎（AWS Transcribe batch 强绑 S3 URI、Google STT v2 仅接受 `gs://`）。把它放进 `AudioUrl` 会迫使一个变体承载两套互斥的安全语义；独立变体让"标准侧无 SSRF 面、引擎侧凭证解析"这一事实在类型与协商矩阵中显式可见，且 scheme 白名单在构造期即 fail-loud。
 - **为何 encoder 输出到 BytesIO**：临时文件有泄漏风险、在只读 FS 上失败、有 TOCTOU 竞态。BytesIO 在进程内完成全部操作。
 - **为何 canonical = WAV/16-bit PCM LE**：最简单的无压缩容器 + 行业标准量化深度 + 主流 CPU 字节序 = 最大兼容性。
-- **为何采样率放 Properties**：采样率是引擎的静态 I/O 边界，不随功能/模式改变。唯一例外 `self_resamples`（行为性）归 Capabilities。
+- **为何采样率放 Properties**：采样率是引擎的静态 I/O 边界，不随功能/模式改变。唯一例外 `self_resamples`（引擎特性）归 Capabilities。
 - **为何 8 kHz 走 preset**：8 kHz 模型是完全不同的模型（训练数据、声学特征不同），不是"同一模型的低采样率版"。阿里/Google 均明确警告升采样掉精度。
 - **重采样许可证**：soxr (LGPL) 不能 vendoring 进 Apache-2.0 核心。内置 FFT 实现（算法不可版权化）确保许可证干净。
 - **为何 HTTP server 不预解码**：工具链 server 收到上传后 MUST 以 `AudioBytes`（multipart）/`AudioBase64`（JSON）形态喂入引擎自身的标准协商，MUST NOT 自行预解码/归一到 16 kHz。否则会破坏按引擎的采样率要求（R7，如 8 kHz 电话被静默升采样、24 kHz realtime 无法协商），也会让只接受 encoded/url 的云引擎无法被 server 暴露（违背 G.2.2"封装任何引擎"）。base64 仅作传输编码，由协商层解码。
@@ -242,7 +242,7 @@ lang: zh-Hans
 | 能力路径 | 节点类型 | 含义 |
 |---|---|---|
 | `capabilities.<mode>.language.runtime_override` | flag `{supported}` | 是否允许单次请求通过 `language` 参数覆盖 `default_language`（`false` = 初始化后锁定） |
-| `capabilities.<mode>.language.candidate_languages` | bounded `{supported, constraints:{max}}` | 是否支持候选语言；`max` = 数量上限（一般 ≤ 4--5）。**原 Properties 中的 `max_candidate_languages` 已移至此处**（见 [§能力系统 C.6](#capabilities)） |
+| `capabilities.<mode>.language.candidate_languages` | bounded `{supported, constraints:{max}}` | 是否支持候选语言；`max` = 数量上限（一般 ≤ 4--5）。**原 Properties 中的 `max_candidate_languages` 已移至此处**（见 [§能力系统 R7](#capabilities)） |
 
 **应用传入的参数：**
 
@@ -293,7 +293,7 @@ lang: zh-Hans
 ## 6. 附注与理由
 
 - **R1 为何如此严格（修复 totality 漏洞）**：R2 步 2 会回退到 `default_language`。旧规则"仅多语言或支持 runtime override 的引擎才必填"在**单语言**引擎上留有漏洞——该引擎既非多语言、又不支持 runtime override，按旧规则无需提供 `default_language`，但 R2 步 2 仍会读取它 → 行为未定义。改为"有语言轴就必填"，以保证 R2 为全函数（total function）。
-- **`max_candidate_languages` 归位**：从 Properties 移入 `capabilities.<mode>.language.candidate_languages.constraints.max`——"只有在某功能被支持时才有意义的上限"应与该功能定义在一起（[§能力系统 C.6](#capabilities) 的边界规则）。旧 Properties 中的表述以本节为准。
+- **`max_candidate_languages` 归位**：从 Properties 移入 `capabilities.<mode>.language.candidate_languages.constraints.max`——"只有在某功能被支持时才有意义的上限"应与该功能定义在一起（[§能力系统 R7](#capabilities) 的边界规则）。旧 Properties 中的表述以本节为准。
 
 
 ---
@@ -315,14 +315,14 @@ lang: zh-Hans
 
 | 术语 | 含义 |
 |---|---|
-| Capabilities（能力） | 引擎支持的功能集合。以层级化树结构表达，按 mode 域分组。每个叶节点携带 `supported` 信息，告知应用该功能是否可用。 |
+| Capabilities（能力） | 引擎支持的功能集合。以层级化树结构表达，按 mode 域分组，树的类是 `Capabilities`。树中陈述一项功能的节点叫能力节点，每个能力节点带 `supported` 或 `mode`，告知应用该功能是否可用；只给节点分组的键（如 `language`）叫容器（详见 §3.3）。 |
 | mode 域 (mode domain) | 能力树的顶层分区。当前标准定义两个封闭的 mode 域：`batch`（对应 `transcribe`）和 `streaming`（对应 `start_transcription`）。`job` 保留待 major 版本扩展。引擎不支持某 mode 时，省略该域。 |
-| DeclaredCapabilities（声明能力） | 引擎在**类级别 (ClassVar)** 静态声明的能力全集。无需实例化引擎、无需鉴权即可发现。`standard-asr show`、注册表、UI 生成、REST `GET .../capabilities` 均读取此值。 |
-| effective_capabilities（生效能力） | 引擎**实例化后**，根据实际配置可能**收窄**的能力子集。例如，引擎声明支持 `word_timestamps`，但用户未配 `forced_aligner`，则运行时不可用。**不变量 `effective ⊆ declared`**（只能关、不能凭空开）。合规测试强制校验此子集关系。 |
+| declared_capabilities（声明能力） | 引擎在**类级别 (ClassVar)** 静态声明的能力全集，是引擎类上的一个 `Capabilities` 实例。无需实例化引擎、无需鉴权即可发现。`standard-asr show`、注册表、UI 生成、REST `GET .../capabilities` 均读取此值。 |
+| effective_capabilities（生效能力） | 引擎**实例化后**，根据实际配置可能**收窄**的能力子集，同样是一个 `Capabilities` 实例。例如，引擎声明支持 `word_timestamps`，但用户未配 `forced_aligner`，则运行时不可用。**不变量 `effective ⊆ declared`**（只能关、不能凭空开）。合规测试强制校验此子集关系。 |
 | 引擎全局能力 | 不绑定在任何 mode 域内的正交能力。放在能力树顶层，如 `streaming_input`、`streaming_output`。 |
-| 节点原型 (archetype) | 能力树叶节点的三种固定形态：flag、bounded、enum/mode（详见 §3.3）。 |
-| 节点种类 (kind) | 一个节点陈述的是哪一类事实，取三个值之一：`requestable`（可请求：应用可以在请求中要求这个功能）、`behavior`（行为：引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它）或 `limit`（限额：某个可请求功能的限额）。`RuntimeParams` 是一次转写请求携带的标准参数（[§Runtime 参数 3.1](#runtime-parameters)）。种类与节点原型是两回事：原型说明 `supported` 怎么得出，种类说明节点在陈述什么。每个标准叶节点和每个 `constraints` 子模型都带 `kind` 字段，容器不带；`x_*` 节点只在声明写了 `kind` 时才带（详见 §3.3、§4 R4）。 |
-| 点路径 (dot-path) | 用于点路径查询（`supports()`、`can_request()`、`kind_at()`，§4 R5）的字符串，以 `.` 分隔层级。从 mode 域或顶层正交能力起始，**不带** `capabilities.` 前缀。如 `"batch.word_timestamps"`、`"streaming.guidance.phrase_hints"`。 |
+| 节点形态 | 能力节点的结构，固定为三种之一：flag、bounded、enum/mode（详见 §3.3）。形态和用途是给节点分类的两个独立维度：形态说明节点由哪些字段组成、`supported` 怎么得出；用途（下一行）说明节点陈述的是哪一类事实。同为 flag 形态，`language.runtime_override` 的用途是 `requestable`，`streaming.emits_partials` 的用途是 `trait`。 |
+| 节点用途 (role) | 一个节点陈述的是哪一类事实，写在节点的 `role` 字段里，取三个值之一。`requestable`（可请求）：应用可以在请求里要求的功能；标准节点通过 `RuntimeParams`（一次转写请求携带的标准参数，[§Runtime 参数 3.1](#runtime-parameters)）的一个字段要求，如 `diarization`、`word_timestamps`。`trait`（特性）：引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它，如 `streaming_input`（接受增量音频）、`emits_partials`（会发中途结果）、`finality_level`（对 `final` 事件的承诺）、`diarization.always_on`（每个请求都做说话人分离）。`constraints`（约束）：一个可请求功能的约束。约束是放在功能节点的 `constraints` 对象里、机器可以检查的上限，标准定义的约束字段是 `language.candidate_languages.constraints.max`（一次请求最多列几个候选语言）、`guidance.prompt.constraints.max_tokens`（prompt 最多几个 token，按估算）、`guidance.phrase_hints.constraints` 的 `max_terms`、`max_chars_per_term`、`max_words_per_term`（词条数、每条字符数、每条词数的上限），以及 `diarization.constraints.max_speakers`（最多几个说话人）。每个标准能力节点和每个 `constraints` 子模型都带 `role` 字段，容器不带；`x_*` 节点只在声明写了 `role` 时才带（详见 §3.3、§4 R4）。 |
+| 点路径 (dot-path) | 用于点路径查询（`supports()`、`can_request()`、`role_at()`，§4 R5）的字符串，以 `.` 分隔层级。从 mode 域或顶层正交能力起始，**不带** `capabilities.` 前缀。如 `"batch.word_timestamps"`、`"streaming.guidance.phrase_hints"`。 |
 | fail-closed | 能力系统的默认安全策略：任何未声明的能力键一律视为不支持，而非报错或假定支持。 |
 | `x_*` 命名空间 | 实验性能力的保留前缀，格式 `x_<vendor>_<feature>`。显式标记为非标准。`x_*` 节点遵守与标准节点相同的查询与收窄规则（缺失即不支持，effective 只能收窄 declared）；对它的请求走 `provider_params`，标准层不对它做参数门控。 |
 
@@ -330,12 +330,12 @@ lang: zh-Hans
 
 ### 3.1 两层能力模型：Declared / Effective
 
-| 层 | 类型 | 生命周期 | 用途 | 约束 |
+| 层 | 类型 | 生命周期 | 作用 | 要求 |
 |---|---|---|---|---|
-| `DeclaredCapabilities` | ClassVar（类级别静态量） | 免实例化、免鉴权即可读取 | 发现与展示 | MUST 是 class-level 静态；MUST NOT 依赖运行时配置 |
-| `effective_capabilities` | 实例属性（可选） | `__init__(config)` 后产生 | 运行时门控 | `effective ⊆ declared`（只能关闭已声明的能力）|
+| declared：引擎类的 `declared_capabilities` | `Capabilities` 实例，ClassVar（类级别静态量） | 免实例化、免鉴权即可读取 | 发现与展示 | MUST 是 class-level 静态；MUST NOT 依赖运行时配置 |
+| effective：实例的 `effective_capabilities` | `Capabilities` 实例，实例属性（可选） | `__init__(config)` 后产生 | 运行时门控 | `effective ⊆ declared`（只能关闭已声明的能力）|
 
-`--no-instantiate` 发现路径（CLI `show`、注册表查询）只读 `DeclaredCapabilities`。
+`--no-instantiate` 发现路径（CLI `show`、注册表查询）只读引擎类的 `declared_capabilities`。
 
 ### 3.2 层级结构与 mode 域
 
@@ -347,85 +347,85 @@ capabilities:
   # ── batch mode ──
   batch:
     language:
-      runtime_override:     { kind: requestable, supported }
-      candidate_languages:  { kind: requestable, supported, constraints: { kind: limit, max } }
-    word_timestamps:        { kind: requestable, supported, granularities: [word, segment, char] }
+      runtime_override:     { role: requestable, supported }
+      candidate_languages:  { role: requestable, supported, constraints: { role: constraints, max } }
+    word_timestamps:        { role: requestable, supported, granularities: [word, segment, char] }
     guidance:
-      prompt:               { kind: requestable, supported, constraints: { kind: limit, max_tokens? } }
-      phrase_hints:         { kind: requestable, supported, constraints: { kind: limit, max_terms, max_chars_per_term, max_words_per_term } }
-    diarization:            { kind: requestable, supported, always_on: { kind: behavior, supported }, constraints: { kind: limit, max_speakers? } }
+      prompt:               { role: requestable, supported, constraints: { role: constraints, max_tokens? } }
+      phrase_hints:         { role: requestable, supported, constraints: { role: constraints, max_terms, max_chars_per_term, max_words_per_term } }
+    diarization:            { role: requestable, supported, always_on: { role: trait, supported }, constraints: { role: constraints, max_speakers? } }
 
   # ── streaming mode ──
   streaming:
     language:               { ... }                         # MAY 与 batch 不同
-    word_timestamps:        { kind: requestable, supported, granularities: [word, segment, char] }
-    guidance:                                               # MAY 与 batch 不同（限额/可变性）
-      prompt:               { kind: requestable, supported, constraints: { kind: limit, max_tokens? } }
-      phrase_hints:         { kind: requestable, supported, constraints: { kind: limit, max_terms, max_chars_per_term, max_words_per_term } }
-      mutable_mid_stream:   { kind: behavior, supported }   # 中途可变 guidance（§RT 3.3；流式专有；默认 false=会话锁定）
-    diarization:            { kind: requestable, supported, always_on: { kind: behavior, supported }, constraints: { kind: limit, max_speakers? } }
-    emits_partials:         { kind: behavior, supported }
-    re_segments:            { kind: behavior, supported }   # 是否可能发 supersede 事件
-    partial_stability:      { kind: behavior, supported }   # partial 事件是否可能携带非空 stable_text
-    reconnect:              { kind: behavior, mode: seamless | lossy | unsupported }
-    finality_level:         { kind: behavior, mode: final | closed }
-    timestamps:             { kind: behavior, mode: native_frame_aligned | post_align | none }
+    word_timestamps:        { role: requestable, supported, granularities: [word, segment, char] }
+    guidance:                                               # MAY 与 batch 不同（约束/可变性）
+      prompt:               { role: requestable, supported, constraints: { role: constraints, max_tokens? } }
+      phrase_hints:         { role: requestable, supported, constraints: { role: constraints, max_terms, max_chars_per_term, max_words_per_term } }
+      mutable_mid_stream:   { role: trait, supported }   # 中途可变 guidance（§RT 3.3；流式专有；默认 false=会话锁定）
+    diarization:            { role: requestable, supported, always_on: { role: trait, supported }, constraints: { role: constraints, max_speakers? } }
+    emits_partials:         { role: trait, supported }
+    re_segments:            { role: trait, supported }   # 是否可能发 supersede 事件
+    partial_stability:      { role: trait, supported }   # partial 事件是否可能携带非空 stable_text
+    reconnect:              { role: trait, mode: seamless | lossy | unsupported }
+    finality_level:         { role: trait, mode: final | closed }
+    timestamps:             { role: trait, mode: native_frame_aligned | post_align | none }
 
   # ── 引擎全局正交能力 ──
-  streaming_input:          { kind: behavior, supported }
-  streaming_output:         { kind: behavior, supported }
-  self_resamples:           { kind: behavior, supported }   # 行为性能力之一（§AI 3.2）；仅信息性，R7 仍以 accepted_sample_rates 为权威
+  streaming_input:          { role: trait, supported }
+  streaming_output:         { role: trait, supported }
+  self_resamples:           { role: trait, supported }   # 引擎特性之一（§AI 3.2）；仅信息性，R7 仍以 accepted_sample_rates 为权威
 ```
 
 同一功能（如 `language`、`guidance`）在 `batch` 和 `streaming` 下**分别声明**——同一引擎在不同模式下的能力可以不同。
 
-清单中每个节点的 `kind` 由该节点所属的类固定（§3.3），不是引擎可以选择的值：引擎声明标准节点时不必写 `kind`，canonical JSON（能力端点输出的 JSON，§4 R6）照样把它写出来。容器（`language`、`guidance` 这类只给节点分组的键）与 mode 域没有 `kind`。
+清单中每个节点的 `role` 由该节点所属的类固定（§3.3），不是引擎可以选择的值：引擎声明标准节点时不必写 `role`，能力 JSON 文档照样把它写出来。能力 JSON 文档指 `Capabilities.to_protocol_dict()` 返回的字典，REST `GET .../capabilities` 回传的正是它：根对象之下，每个能力节点、每个存在的容器与 mode 域都带算好的 `supported`，缺席的 mode 域是 `null`（完整结构见 §4 R6）。它不是为了比对或计算哈希而规范化的 JSON。容器（`language`、`guidance` 这类只给节点分组的键）与 mode 域没有 `role`。
 
-**`diarization.always_on`（行为性 flag 节点，normative）。** `always_on` 是 `DiarizationCap` 上的一个**行为性 flag 节点**（`FlagCap`，`kind` 为 `behavior`），与 `self_resamples`（以及流式行为性 flag `emits_partials`/`re_segments`/`partial_stability`）同族——它描述引擎**做什么**（架构上不可关闭 diarization，未请求时也可能出现 speaker 标签），不授予应用可请求的任何东西。它**不进** `constraints`（§3.3：`constraints` 专用于机器可校验的限额，而 `always_on` 是行为事实）。
+**`diarization.always_on`（特性 flag 节点，normative）。** `always_on` 是 `DiarizationCapability` 上的一个**特性 flag 节点**（`TraitFlagCapability`，`role` 为 `trait`），与 `self_resamples`（以及流式的特性 flag `emits_partials`/`re_segments`/`partial_stability`）同族——它描述引擎**做什么**（架构上不可关闭 diarization，未请求时也可能出现 speaker 标签），不授予应用可请求的任何东西。它**不进** `constraints`（§3.3：`constraints` 专用于机器可校验的约束，而 `always_on` 陈述的是引擎的一项特性）。
 
-但它是一个**普通的可查询 flag 节点**，与 `self_resamples` 一致：`supports("<mode>.diarization.always_on")` 是有效查询路径；声明 supported 时它出现在 `iter_supported_paths()` 中；canonical JSON 统一为它注入 `supported` 布尔值；`covers()` 通过标准集合包含把「declared 未声明 → effective 声明」的变化当作漂移（declaration drift）拒绝。矛盾态 `supported=false ∧ always_on 声明 supported` 仍**不可表示**（构造期 validator 拒绝）。
+但它是一个**普通的可查询 flag 节点**，与 `self_resamples` 一致：`supports("<mode>.diarization.always_on")` 是有效查询路径；声明 supported 时它出现在 `iter_supported_paths()` 中；能力 JSON 文档统一为它注入 `supported` 布尔值；`covers()` 通过标准集合包含把「declared 未声明 → effective 声明」的变化当作漂移（declaration drift）拒绝。矛盾态 `supported=false ∧ always_on 声明 supported` 仍**不可表示**（建立 `DiarizationCapability` 对象时，校验器就拒绝它）。
 
-`always_on` 与父节点 `diarization` 陈述的是两类事实，`kind` 字段直接写明这一区别（§3.3），不需要特例：`diarization` 是 `requestable`，`supported=true` 表示应用可以请求说话人分离；`always_on` 是 `behavior`，`supported=true` 表示引擎对每个请求都做说话人分离，所以应用没有请求时，结果里也可能出现 speaker 标签。结果模型规定未请求的数据不得填进结果，`always_on` 引擎在这条规则上被点名豁免，见 [§结果模型 TR.5](#transcription-result) 的具名豁免。豁免适用于架构上不可关闭的 joint 模型（如 joint ASR+diarization 解码器，speaker token 与文本 token 交织在同一输出序列）。**能关就必须关（normative）**：能够关闭 diarization 的引擎（原生 skip/disable 开关）MUST 在未请求时关闭；`always_on` 保留给架构上不可关的模型，MUST NOT 为省适配器工夫而声明（不可运行时验证，属声明诚实性义务，与 TR.3 的粒度声明诚实同类）。
+`always_on` 与父节点 `diarization` 陈述的是两类事实，`role` 字段直接写明这一区别（§3.3），不需要特例：`diarization` 是 `requestable`，`supported=true` 表示应用可以请求说话人分离；`always_on` 是 `trait`，`supported=true` 表示引擎对每个请求都做说话人分离，所以应用没有请求时，结果里也可能出现 speaker 标签。结果模型规定未请求的数据不得填进结果，`always_on` 引擎在这条规则上被点名豁免，见 [§结果模型 TR.5](#transcription-result) 的具名豁免。豁免适用于架构上不可关闭的 joint 模型（如 joint ASR+diarization 解码器，speaker token 与文本 token 交织在同一输出序列）。**能关就必须关（normative）**：能够关闭 diarization 的引擎（原生 skip/disable 开关）MUST 在未请求时关闭；`always_on` 保留给架构上不可关的模型，MUST NOT 为省适配器工夫而声明（不可运行时验证，属声明诚实性义务，与 TR.3 的粒度声明诚实同类）。
 
-### 3.3 节点原型
+### 3.3 节点形态
 
-每个叶节点采用三种固定原型之一。所有原型都可派生出统一的 `.supported` 布尔值，使 strict/best_effort 门控对所有节点一致：
+每个能力节点采用三种固定形态之一。所有形态都可派生出统一的 `.supported` 布尔值，使 strict/best_effort 门控对所有节点一致：
 
-| 原型 | 结构 | `.supported` 派生 | 适用场景 |
+| 形态 | 结构 | `.supported` 派生 | 适用场景 |
 |---|---|---|---|
 | **flag** | `{ supported: bool }` | 直接取值 | 简单支持/不支持，如 `emits_partials` |
-| **bounded** | `{ supported: bool, constraints: { ... } }` | 直接取值 | 支持且有标准层机器可校验的限额，如 `candidate_languages` |
+| **bounded** | `{ supported: bool, constraints: { ... } }` | 直接取值 | 支持且有标准层机器可校验的约束，如 `candidate_languages` |
 | **enum/mode** | `{ mode: Literal[...] }` | `supported := mode not in {"none", "unsupported"}` | 多种互斥实现级别，如 `reconnect` |
 
-`constraints` 专用于标准层**机器可校验**的限额。自由描述性信息 MUST NOT 塞入节点；标准**无 blanket `metadata`**（已废弃）。
+`constraints` 专用于标准层**机器可校验**的约束。自由描述性信息 MUST NOT 塞入节点；标准**无 blanket `metadata`**（已废弃）。
 
-**空枚举语义（normative）。** bounded 节点的**枚举型**限额（如 `word_timestamps.granularities`）取空列表时语义为「**未列举 = 不约束（全部）**」，而非「不提供任何值」。但对标准 typed 节点这是**不可表示**态：典型如 `WordTimestampsCap` 的校验器强制 `supported=true` 时 `granularities` MUST 非空（消除「supported 却未列举」的歧义——静默兑现一个未列举的粒度是 cardinal sin）。因此「空 = 全部」仅对 JSON 来源的 raw `x_*`/dict 节点（无 typed 校验器）可达，并仅用于收窄比较（`covers()`）：从「空（全部）」收窄到任意具体子集均合法。运行时参数门控**不**依赖此语义——支持的 `word_timestamps` 总是列举其 granularities，故请求值 MUST ∈ 已列举集合。
+**空枚举语义（normative）。** bounded 节点上列举可选值的**枚举型**字段（如 `word_timestamps.granularities`）取空列表时语义为「**未列举 = 不约束（全部）**」，而非「不提供任何值」。但对标准 typed 节点这是**不可表示**态：典型如 `WordTimestampsCapability` 的校验器强制 `supported=true` 时 `granularities` MUST 非空（消除「supported 却未列举」的歧义——静默兑现一个未列举的粒度是 cardinal sin）。因此「空 = 全部」仅对 JSON 来源的 raw `x_*`/dict 节点（无 typed 校验器）可达，并仅用于收窄比较（`covers()`）：从「空（全部）」收窄到任意具体子集均合法。运行时参数门控**不**依赖此语义——支持的 `word_timestamps` 总是列举其 granularities，故请求值 MUST ∈ 已列举集合。
 
 **enum/mode 强度序与 token 唯一性（normative）。** enum/mode 节点的合法收窄由**强度序**定义（如 `reconnect`：`seamless` > `lossy` > `unsupported`；`timestamps`：`native_frame_aligned` > `post_align` > `none`；`finality_level`：`closed` > `final`）——`effective` 的 mode MUST 是 `declared` 的同级或更弱级别，否则即放宽（违反 `effective ⊆ declared`）。该强度序按**裸 token 全局键控**（实现 `_MODE_REDUCTIONS`），故**不变量**：同一 major 内**新增**的标准 enum/mode 节点 MUST NOT 复用既有 token 而赋予**不同**的强度序（当前三族 token 互不相交）。未登记于强度序表的 token（含 `x_*` 实验节点的自定 token、未来未知 token）在收窄比较中 **fail-closed**（任何变化一律视为放宽拒绝）。
 
-**节点种类 `kind`（normative）。** 原型说明 `supported` 怎么得出，`kind` 说明节点陈述的是哪一类事实。本节说到三类位置。**叶节点**（能力节点）陈述一项功能，带 `supported` 或 `mode`；它下面仍可以挂子节点，如 `diarization` 下的 `always_on` 与 `constraints`。**`constraints` 子模型**存放一个功能的限额，它不是能力节点：没有 `supported`，`supports()` 对它的路径返回 `False`。**容器**只给节点分组，如 `language`、`guidance`；mode 域与根对象也只分组。存在的容器与 mode 域在 `supports()` 下返回 `True`，在 canonical JSON 里带 `supported: true`（§4 R6），这只表示它们存在。每个标准叶节点带 `kind` 字段，取 `requestable` 或 `behavior`；每个 `constraints` 子模型带 `kind: "limit"`；容器、mode 域与根对象不带 `kind`，它们只给节点分组，不陈述事实。`x_*` 节点只在声明写了 `kind` 时才带（§4 R4）。三个取值（实现：`CapabilityKind`）：
+**节点用途 `role`（normative）。** 形态说明 `supported` 怎么得出，`role` 说明节点陈述的是哪一类事实。本节说到三类位置。**能力节点**陈述一项功能，带 `supported` 或 `mode`；它下面仍可以挂子节点，如 `diarization` 下的 `always_on` 与 `constraints`。**`constraints` 子模型**存放一个功能的约束，它不是能力节点：没有 `supported`，`supports()` 对它的路径返回 `False`。**容器**只给节点分组，如 `language`、`guidance`；mode 域与根对象也只分组。存在的容器与 mode 域在 `supports()` 下返回 `True`，在能力 JSON 文档里带 `supported: true`（§4 R6），这只表示它们存在。每个标准能力节点带 `role` 字段，取 `requestable` 或 `trait`；每个 `constraints` 子模型带 `role: "constraints"`；容器、mode 域与根对象不带 `role`，它们只给节点分组，不陈述事实。`x_*` 节点只在声明写了 `role` 时才带（§4 R4）。三个取值（实现：`CapabilityRole`）：
 
-| `kind` | 含义 | 标准节点 |
+| `role` | 含义 | 标准节点 |
 |---|---|---|
-| `requestable`（可请求） | 应用可以在请求中要求这个功能；`supported=true` 表示可以要求。标准节点通过 [§Runtime 参数 3.1](#runtime-parameters) 表中的一个 `RuntimeParams` 字段请求。 | 各 mode 的 `language.runtime_override`、`language.candidate_languages`、`word_timestamps`、`guidance.prompt`、`guidance.phrase_hints`、`diarization` |
-| `behavior`（行为） | 引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它。被支持的 `behavior` 节点告知一项事实，不授予任何可请求的东西。 | 其余全部叶节点：引擎全局的 `streaming_input`、`streaming_output`、`self_resamples`；各 mode 的 `diarization.always_on`；流式的 `guidance.mutable_mid_stream`、`emits_partials`、`re_segments`、`partial_stability`、`reconnect`、`finality_level`、`timestamps` |
-| `limit`（限额） | 一个可请求功能的机器可校验限额，如 `guidance.phrase_hints.constraints.max_terms`（最多几个词条）。 | 每个 `constraints` 子模型 |
+| `requestable`（可请求） | 应用可以在请求里要求的功能；`supported=true` 表示可以要求。标准节点通过一个 `RuntimeParams` 字段要求，如 `diarization`、`word_timestamps`；每个节点对应哪个字段，见 [§Runtime 参数 3.1](#runtime-parameters) 表。 | 各 mode 的 `language.runtime_override`、`language.candidate_languages`、`word_timestamps`、`guidance.prompt`、`guidance.phrase_hints`、`diarization` |
+| `trait`（特性） | 引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它，如 `streaming_input`（接受增量音频）、`emits_partials`（会发中途结果）、`finality_level`（对 `final` 事件的承诺）、`diarization.always_on`（每个请求都做说话人分离）。被支持的 `trait` 节点告知一项事实，不授予任何可请求的东西。 | 其余全部能力节点：引擎全局的 `streaming_input`、`streaming_output`、`self_resamples`；各 mode 的 `diarization.always_on`；流式的 `guidance.mutable_mid_stream`、`emits_partials`、`re_segments`、`partial_stability`、`reconnect`、`finality_level`、`timestamps` |
+| `constraints`（约束） | 一个可请求功能的约束，即放在该功能节点 `constraints` 对象里、机器可以检查的上限：`language.candidate_languages.constraints.max`（一次请求最多列几个候选语言）、`guidance.prompt.constraints.max_tokens`（prompt 最多几个 token，按估算）、`guidance.phrase_hints.constraints` 的 `max_terms`、`max_chars_per_term`、`max_words_per_term`（词条数、每条字符数、每条词数的上限）、`diarization.constraints.max_speakers`（最多几个说话人）。 | 每个 `constraints` 子模型（实现：各 `*Constraints` 类） |
 
-每个节点类固定一个种类，与原型无关：同为 flag 原型，`FlagCap` 固定为 `behavior`，`RuntimeOverrideCap` 固定为 `requestable`。所以 `language.runtime_override` 有自己的节点类 `RuntimeOverrideCap`：这个字段的类型就是它，放一个 `FlagCap` 进去无法通过校验。引擎声明标准节点时不必填写 `kind`；填了与节点类不符的值，建立这个节点对象时，pydantic 的校验就拒绝它。容器带 `kind` 同样被拒绝，分两种情形：声明输入给容器写了 `kind` 键，这个键是未知键，建立容器对象时校验失败；有人定义容器子类、把 `kind` 声明为字段，定义这个类时就抛 `TypeError`，带默认值也一样。所以容器在 Python 里和 wire 上（即 canonical JSON 里，§4 R6）都不陈述种类。引擎 MUST 让 declared 与 effective 两层同一路径的 `kind` 相同。`covers()` 是检查 `effective ⊆ declared`（§3.1）的方法；两层同一路径的 `kind` 不同时，不论节点是否被支持、不论从哪一种改成哪一种，`covers()` 都拒绝：改变种类就改变了 `kind_at()` 与 `can_request()` 的回答，任何方向都不算收窄。
+每个节点类固定一个用途，与形态无关：同为 flag 形态，`TraitFlagCapability` 固定为 `trait`，`LanguageOverrideCapability` 固定为 `requestable`。所以 `language.runtime_override` 有自己的节点类 `LanguageOverrideCapability`：这个字段的类型就是它，放一个 `TraitFlagCapability` 进去无法通过校验。引擎声明标准节点时不必填写 `role`；填了与节点类不符的值，建立这个节点对象时，pydantic 的校验就拒绝它。容器带 `role` 同样被拒绝，分两种情形：声明输入给容器写了 `role` 键，这个键是未知键，建立容器对象时校验失败；有人定义容器子类、把 `role` 声明为字段，定义这个类时就抛 `TypeError`，带默认值也一样。所以容器在 Python 里和 wire 上（即能力 JSON 文档里，§4 R6）都不陈述用途。引擎 MUST 让 declared 与 effective 两层同一路径的 `role` 相同。`covers()` 是检查 `effective ⊆ declared`（§3.1）的方法；两层同一路径的 `role` 不同时，不论节点是否被支持、不论从哪个用途改成哪个用途，`covers()` 都拒绝：改变用途就改变了 `role_at()` 与 `can_request()` 的回答，任何方向都不算收窄。
 
 **`requestable` 与参数门控一一对应（normative）。** 门控指标准层在请求到达引擎之前，按生效能力检查请求里的参数，不支持的参数按 strict/best_effort 策略抛错或丢弃并附 diagnostic（[§Runtime 参数](#runtime-parameters) R2）。[§Runtime 参数 3.1](#runtime-parameters) 表中「Capability 路径」一列列出的节点，正是全部 `requestable` 标准节点：该列的每个节点门控一个可移植请求字段（`RuntimeParams` 中跨引擎通用的标准字段），且是 `requestable`；每个 `requestable` 标准节点也都在该列。其中 `language.candidate_languages` 由 [§语言选择](#language-selection) R3 门控：不支持时，请求的候选语言列表归为 `None` 并附一条 diagnostic，从不抛错。其余由 [§Runtime 参数](#runtime-parameters) R2 门控。合规套件双向检查这一对应：
 
-- 正向：对引擎声明的每个 mode，如果某个门控字段对应的节点不是 `requestable`，报错 `gated_param_not_requestable`。
-- 反向：能力树里 `x_*` 子树之外的每个节点，包括根对象下的节点，只要 `kind_at()` 返回 `requestable`，又不是某个已声明 mode 下该列的节点，就报错 `requestable_node_ungated`，不论它是否被支持。该列的路径都在 mode 之下，所以根对象下的 `requestable` 节点总会报错。反向检查与 `kind_at()`、`can_request()` 认同一批节点，所以以字典声明的节点陈述的 `kind` 也算。在 `x_*` 之外，这样的节点只会出现在引擎改动了标准树的时候，例如用子类或 `model_construct()` 让某个字段存放普通字典。
+- 正向：对引擎声明的每个 mode，如果某个门控字段对应的节点不是 `requestable`，报错 `gate_target_not_requestable`。
+- 反向：能力树里 `x_*` 子树之外的每个节点，包括根对象下的节点，只要 `role_at()` 返回 `requestable`，又不是某个已声明 mode 下该列的节点，就报错 `requestable_node_ungated`，不论它是否被支持。该列的路径都在 mode 之下，所以根对象下的 `requestable` 节点总会报错。反向检查与 `role_at()`、`can_request()` 认同一批节点，所以以字典声明的节点陈述的 `role` 也算。在 `x_*` 之外，这样的节点只会出现在引擎改动了标准树的时候，例如用子类或 `model_construct()` 让某个字段存放普通字典。
 
 只查正向会留下漏洞，情形有两种，反向检查都能发现：
 
 - 标准将来新增一个 `requestable` 节点和对应的 `RuntimeParams` 字段，却忘了在门控表里加一行。这时 `can_request()` 回答 `True`，而这个字段的值不经标准层检查就送到引擎；不支持这个功能的引擎可能静默忽略它。
 - 某个引擎在 `x_*` 之外的标准路径上自己加了一个 `requestable` 节点。没有任何标准请求字段能要求它，所以 `can_request()` 对一个谁也请求不到的功能回答 `True`，照这个答案生成的 UI 会画出一个没有作用的控件。合规套件的错误信息要求作者把这个节点移到 `x_<vendor>_<feature>` 之下，并通过 `provider_params` 接受对它的请求。
 
-`kind` 只有这三个取值，没有 `observation`（观测：随宿主机器或环境变化的度量）。能力声明是静态的，来自引擎类；观测在两台机器上给出不同答案，两者生命周期不同。所以硬件事实与模型卡（介绍模型本身的说明文档）事实不进能力树，由能力树之外的声明表面承载，即引擎类上的其他静态声明，如 Properties 与 `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)）。节点上出现 `observation` 即为缺陷（决策记录：`capability-kinds`，docs/internal/feat_plan/）。
+`role` 只有这三个取值，没有 `observation`（观测：随宿主机器或环境变化的度量）。能力声明是静态的，来自引擎类；观测在两台机器上给出不同答案，两者生命周期不同。所以硬件事实与模型卡（介绍模型本身的说明文档）事实不进能力树，由能力树之外的声明表面承载，即引擎类上的其他静态声明，如 Properties 与 `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)）。节点上出现 `observation` 即为缺陷（决策记录：`capability-kinds`，docs/internal/feat_plan/）。
 
-**可请求功能与行为分为两个节点（normative）。** 有的功能既能由应用请求，又可能被某些引擎无条件施加，如 punctuation（加标点）与 ITN（逆文本规范化，例如把「二零二六」写成「2026」），二者在 [§Runtime 参数 R6](#runtime-parameters) 中预留。为这样的功能定义标准节点时，标准 MUST 用两个节点表达，不把两种意思压进一个节点：一个 `requestable` 的功能节点，加一个 `behavior` 子节点，模式同 `diarization` 与 `diarization.always_on`（§3.2）。这条要求约束的是规范将来新增的节点。behavior 子节点只能在父节点被支持时被支持，由建立父节点对象时的校验保证（同 `DiarizationCap`）；否则引擎可以声明自己总在施加一个它并不支持的功能。
+**可请求功能与特性分为两个节点（normative）。** 有的功能既能由应用请求，又可能被某些引擎无条件施加，如 punctuation（加标点）与 ITN（逆文本规范化，例如把「二零二六」写成「2026」），二者在 [§Runtime 参数 R6](#runtime-parameters) 中预留。为这样的功能定义标准节点时，标准 MUST 用两个节点表达，不把两种意思压进一个节点：一个 `requestable` 的功能节点，加一个 `trait` 子节点，模式同 `diarization` 与 `diarization.always_on`（§3.2）。这条要求针对的是规范将来新增的节点。`trait` 子节点只能在父节点被支持时被支持，由建立父节点对象时的校验保证（同 `DiarizationCapability`）；否则引擎可以声明自己总在施加一个它并不支持的功能。
 
 ## 4. 行为（规范）
 
@@ -437,29 +437,29 @@ capabilities:
 
 **R3 — additive-within-major。** 同一 major 版本内，能力键只能**新增**，不能修改语义或删除（改/删 ⇒ major 升级）。**无 per-feature `version`**——兼容由协议大版本号统管。
 
-**R4 — 实验能力 `x_*`。** 保留 `x_<vendor>_<feature>` 命名空间供实验性能力。`x_*` 节点在能力树里遵守与标准节点相同的查询与收窄规则：缺失即不支持（R1），effective 只能收窄 declared（§3.1）；对 `x_*` 功能的请求则走 `provider_params`，标准层不对它做参数门控。提升为标准能力时 MUST 去掉 `x_` 前缀（遵循 RFC 6648）。`x_*` 节点可以用 `kind` 键陈述种类（§3.3），这是引擎需要自己写 `kind` 的唯一场合。只有带 `supported` 或 `mode` 的 `x_*` 字典才是节点；只用来分组的 `x_*` 字典不陈述种类，它即使写了 `kind` 键也被忽略，不报错。节点上的 `kind` 只认三个取值的精确拼写，缺失或其他值都视为不陈述种类：`kind_at()` 返回 `None`，`can_request()` 返回 `False`（fail-closed）。可请求的 `x_*` 功能通过 `provider_params`（引擎自己的逃生舱参数，[§Runtime 参数 3.2](#runtime-parameters)）请求，没有对应的 `RuntimeParams` 字段，所以 §3.3 的门控对应检查跳过 `x_*` 子树。
+**R4 — 实验能力 `x_*`。** 保留 `x_<vendor>_<feature>` 命名空间供实验性能力。`x_*` 节点在能力树里遵守与标准节点相同的查询与收窄规则：缺失即不支持（R1），effective 只能收窄 declared（§3.1）；对 `x_*` 功能的请求则走 `provider_params`，标准层不对它做参数门控。提升为标准能力时 MUST 去掉 `x_` 前缀（遵循 RFC 6648）。`x_*` 节点可以用 `role` 键陈述用途（§3.3），这是引擎需要自己写 `role` 的唯一场合。只有带 `supported` 或 `mode` 的 `x_*` 字典才是节点；只用来分组的 `x_*` 字典不陈述用途，它即使写了 `role` 键也被忽略，不报错。节点上的 `role` 只认三个取值的精确拼写，缺失或其他值都视为不陈述用途：`role_at()` 返回 `None`，`can_request()` 返回 `False`（fail-closed）。可请求的 `x_*` 功能通过 `provider_params`（引擎自己的逃生舱参数，[§Runtime 参数 3.2](#runtime-parameters)）请求，没有对应的 `RuntimeParams` 字段，所以 §3.3 的门控对应检查跳过 `x_*` 子树。
 
-**R5 — 点路径查询：`supports()`、`can_request()`、`kind_at()`。** 应用通过这三个点路径查询读取能力，MUST NOT 手动遍历能力树或捕获缺键异常。三者是能力树对象的方法。declared 与 effective 两层都是 `DeclaredCapabilities` 类的实例，向哪一层查询就按哪一层作答：declared 层（引擎类的 `declared_capabilities`）回答引擎类声明了什么，用于发现与 UI 生成；effective 层（实例的 `effective_capabilities`，§3.1 中为可选的实例属性）回答已构造的实例在当前配置下支持什么。引擎实例本身只提供 `engine.supports(path)`，它按生效能力作答；`can_request()` 与 `kind_at()` 要在能力树上调用。
+**R5 — 点路径查询：`supports()`、`can_request()`、`role_at()`。** 应用通过这三个点路径查询读取能力，MUST NOT 手动遍历能力树或捕获缺键异常。三者是能力树对象的方法。declared 与 effective 两层都是 `Capabilities` 类的实例，向哪一层查询就按哪一层作答：declared 层（引擎类的 `declared_capabilities`）回答引擎类声明了什么，用于发现与 UI 生成；effective 层（实例的 `effective_capabilities`，§3.1 中为可选的实例属性）回答已构造的实例在当前配置下支持什么。引擎实例本身只提供 `engine.supports(path)`，它按生效能力作答；`can_request()` 与 `role_at()` 要在能力树上调用。
 
 - `supports(path)` 是唯一的「是否支持」查询。缺失路径返回 `False`（R1 的体现）。
-- `can_request(path)` 是唯一的「能否请求」查询：仅当节点被支持**且** `kind` 为 `requestable` 时返回 `True`；被支持的 `behavior` 节点、`constraints` 子模型、容器、缺失路径一律返回 `False`（fail-closed）。`supports()` 为 `True` 不表示可以请求：`supports("streaming.re_segments")` 只说明引擎可能发 `supersede` 事件，没有参数能要求它。
-- `kind_at(path)` 返回节点的 `kind`（§3.3）：叶节点返回 `requestable` 或 `behavior`，`constraints` 子模型返回 `limit`；容器、mode 域、缺失路径，以及没有可识别 `kind` 的 `x_*` 节点返回 `None`。种类与是否支持无关：不被支持的节点照样有种类。所以 `kind_at()` 不能代替 `supports()`：一个功能显式声明为不支持时有种类，被省略时返回 `None`，两者对应用都表示不支持（R1）。
+- `can_request(path)` 是唯一的「能否请求」查询：仅当节点被支持**且** `role` 为 `requestable` 时返回 `True`；被支持的 `trait` 节点、`constraints` 子模型、容器、缺失路径一律返回 `False`（fail-closed）。`supports()` 为 `True` 不表示可以请求：`supports("streaming.re_segments")` 只说明引擎可能发 `supersede` 事件，没有参数能要求它。
+- `role_at(path)` 返回节点的 `role`（§3.3）：能力节点返回 `requestable` 或 `trait`，`constraints` 子模型返回 `constraints`；容器、mode 域、缺失路径，以及没有可识别 `role` 的 `x_*` 节点返回 `None`。用途与是否支持无关：不被支持的节点照样有用途。所以 `role_at()` 不能代替 `supports()`：一个功能显式声明为不支持时有用途，被省略时返回 `None`，两者对应用都表示不支持（R1）。
 
-**R6 — canonical JSON。** `capabilities` 在 Python 侧是 typed pydantic 树；REST `GET .../capabilities` 暴露 canonical JSON（能力树对外的标准 JSON 形式，跨语言客户端读的就是它），每个节点（叶节点 + **存在的容器/mode 域**）带（派生的）`supported` 字段。enum/mode 节点本身只有 `mode`，服务端在 canonical JSON 里替它算出 `supported` 并写入，这样任何语言的客户端都能在每个节点上读同一个 `supported` 字段判断是否支持，而不必知道哪些 `mode` 取值表示不支持；实现见 `DeclaredCapabilities.canonical_json()`。结构契约（跨语言客户端 MUST 可依赖）：**根对象本身不带 `supported`**（它是所有 mode 的容器，非能力）；**缺席的 mode 域序列化为 `null`**（fail-closed，等价于不支持）；`constraints` 等限额子模型非能力节点，**不注入** `supported`（只保留其限额字段与 `kind`）；**每个标准叶节点带 `kind`**（`requestable` 或 `behavior`），**每个 `constraints` 子模型带 `kind: "limit"`**，容器、mode 域与根对象**不带 `kind`**（带 `kind` 的容器一律被拒，见 §3.3）——客户端看到一个对象没有 `kind`，就把它读作「这个路径只给节点分组，不陈述事实」。`x_*` 节点只在声明写了 `kind` 时才带，客户端按 R4 读它。
+**R6 — 能力 JSON 文档。** `capabilities` 在 Python 侧是 typed pydantic 树；REST `GET .../capabilities` 暴露能力 JSON 文档（能力树对外的 JSON 形式，跨语言客户端读的就是它），每个节点（能力节点 + **存在的容器/mode 域**）带（派生的）`supported` 字段。enum/mode 节点本身只有 `mode`，服务端在能力 JSON 文档里替它算出 `supported` 并写入，这样任何语言的客户端都能在每个节点上读同一个 `supported` 字段判断是否支持，而不必知道哪些 `mode` 取值表示不支持；实现见 `Capabilities.to_protocol_dict()`。结构契约（跨语言客户端 MUST 可依赖）：**根对象本身不带 `supported`**（它是所有 mode 的容器，非能力）；**缺席的 mode 域序列化为 `null`**（fail-closed，等价于不支持）；`constraints` 等约束子模型非能力节点，**不注入** `supported`（只保留其约束字段与 `role`）；**每个标准能力节点带 `role`**（`requestable` 或 `trait`），**每个 `constraints` 子模型带 `role: "constraints"`**，容器、mode 域与根对象**不带 `role`**（带 `role` 的容器一律被拒，见 §3.3）——客户端看到一个对象没有 `role`，就把它读作「这个路径只给节点分组，不陈述事实」。`x_*` 节点只在声明写了 `role` 时才带，客户端按 R4 读它。
 
-`kind` 是 wire 上的数据，不只是 Python 方法的返回值。wire 指跨进程、跨语言传输的那一侧，这里就是 canonical JSON：非 Python 客户端调用不到 `can_request()`，它读 canonical JSON 里的 `kind` 与 `supported`。用 pydantic 从 `DeclaredCapabilities` 生成 JSON Schema 时，serialization 模式（`model_json_schema(mode="serialization")`）描述输出的 JSON。这份 schema 中，每个节点类的定义都把 `kind` 列为 required 属性，其 `const`（JSON Schema 中「只能取这一个值」的关键字）是该类固定的那一个值。原因是 canonical JSON 写出每个字段（含默认值），所以这份 schema 把各个类的每个字段都列为 required；描述输入的 validation 模式 schema 不把带默认值的 `kind` 列为 required。这份 schema 只描述类的字段：canonical JSON 给每个存在的容器与 mode 域、每个 enum/mode 节点注入的派生 `supported` 由生成 JSON 的代码另外写出，不是任何类的字段，所以 schema 里没有它（例如 `FinalityCap` 的定义只有 `kind` 与 `mode`）。因此这份 schema 不是能力端点完整的 wire schema。能力端点完整的 wire schema，即足以用来生成客户端的那一份，留给路线图（#27）第 29 项（wire 形式化）。
+`role` 是 wire 上的数据，不只是 Python 方法的返回值。wire 指跨进程、跨语言传输的那一侧，这里就是能力 JSON 文档：非 Python 客户端调用不到 `can_request()`，它读能力 JSON 文档里的 `role` 与 `supported`。用 pydantic 从 `Capabilities` 生成 JSON Schema 时，serialization 模式（`model_json_schema(mode="serialization")`）描述输出的 JSON。这份 schema 中，每个节点类的定义都把 `role` 列为 required 属性，其 `const`（JSON Schema 中「只能取这一个值」的关键字）是该类固定的那一个值。原因是能力 JSON 文档写出每个字段（含默认值），所以这份 schema 把各个类的每个字段都列为 required；描述输入的 validation 模式 schema 不把带默认值的 `role` 列为 required。这份 schema 只描述类的字段：能力 JSON 文档给每个存在的容器与 mode 域、每个 enum/mode 节点注入的派生 `supported` 由生成 JSON 的代码另外写出，不是任何类的字段，所以 schema 里没有它（例如 `FinalityCapability` 的定义只有 `role` 与 `mode`）。因此这份 schema 不是能力端点完整的 wire schema。能力端点完整的 wire schema，即足以用来生成客户端的那一份，留给路线图（#27）第 29 项（wire 形式化）。
 
 **R7 — Capabilities 与 Properties 边界（定死一处家）。**
 
 | 判定标准 | 归属 | 示例 |
 |---|---|---|
-| 只有当特性 X 被支持时才有意义的限额 | X 的能力节点 `constraints` | `batch.language.candidate_languages.constraints.max` |
+| 只有当功能 X 被支持时才有意义的约束 | X 的能力节点 `constraints` | `batch.language.candidate_languages.constraints.max` |
 | 引擎固有 I/O 边界值 | Properties | `accepted_sample_rates`、`max_file_size` |
 | 转写请求之外的静态生命周期/运营事实（不 gate 任何 runtime 参数） | `declared_metadata`（[§推理工件生命周期](#artifact-lifecycle)） | `declared_metadata.artifacts.supports_explicit_acquisition` |
 
 据此 **`max_candidate_languages` 已从 Properties 移入** `capabilities.<mode>.language.candidate_languages.constraints.max`。
 
-第三行的裁决标准是**消费场景**而非「是否被 gate」——能力树本就含仅信息性的 behavior 节点（`self_resamples` 等）。工件声明被排除出能力树，是因为它描述转写请求之外的**管理操作**：放入能力树会让 `supports()` 覆盖非推理操作（决策记录：`engine-metadata-surface`，docs/internal/feat_plan/）。
+第三行的裁决标准是**消费场景**而非「是否被 gate」——能力树本就含仅信息性的 `trait` 节点（`self_resamples` 等）。工件声明被排除出能力树，是因为它描述转写请求之外的**管理操作**：放入能力树会让 `supports()` 覆盖非推理操作（决策记录：`engine-metadata-surface`，docs/internal/feat_plan/）。
 
 ## 5. 示例
 
@@ -475,13 +475,13 @@ engine.supports("streaming_input")  # → True（顶层正交能力）
 
 如果应用在 streaming 下传入 `phrase_hints`，strict 抛 `UnsupportedFeatureError`；best_effort 忽略并返回 diagnostic。
 
-**effective 能力收窄：** 引擎声明 `batch.word_timestamps.supported=true`，但用户未配 `forced_aligner` → `effective_capabilities` 中该项为 `false`。DeclaredCapabilities 不变（CLI/注册表仍显示"支持"），运行时门控拒绝该请求。子集不变量保持。
+**effective 能力收窄：** 引擎声明 `batch.word_timestamps.supported=true`，但用户未配 `forced_aligner` → `effective_capabilities` 中该项为 `false`。引擎类的 `declared_capabilities` 不变（CLI/注册表仍显示"支持"），运行时门控拒绝该请求。子集不变量保持。
 
 ## 6. 附注与理由
 
 - **废弃三套旧系统**：`supports_*`（无分域、无约束）、`FeatureFlag`（无法表达 batch/streaming 差异）、`feat_flag`（per-feature version 无用——协议兼容是大版本全有或全无）。统一层级树是三者的超集。
 - **fail-closed 而非 fail-open**：声明不完整的引擎不会被误认为支持所有功能。应用可放心依据 `engine.supports()` 做决策。
-- **边界规则(R7)**：消除「同一限额两个真相源」的歧义——限额与所约束的功能始终同住。
+- **边界规则（R7）**：消除「同一约束两个真相源」的歧义——约束与它所限制的功能始终同住。
 - **砍掉 blanket `metadata`**：无已知用例、鼓励非结构化信息、破坏机器可读性。需要时可通过 additive-minor 以结构化字段添加。
 
 
@@ -546,7 +546,7 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 | Channel | 类型 | Capability 约束 | 映射 |
 |---|---|---|---|
 | `prompt` | `str \| None` | `{supported, max_tokens?}` | OpenAI `prompt` / Whisper `initial_prompt` / Qwen `context` / 火山 `context` |
-| `phrase_hints` | `list[str] \| None` | `{supported, max_terms, max_chars_per_term, max_words_per_term}`（**per-mode**，batch/streaming 限额可不同） | ElevenLabs `keyterms` / faster-whisper `hotwords` / Tencent/FunASR hotwords |
+| `phrase_hints` | `list[str] \| None` | `{supported, max_terms, max_chars_per_term, max_words_per_term}`（**per-mode**，batch/streaming 的约束可不同） | ElevenLabs `keyterms` / faster-whisper `hotwords` / Tencent/FunASR hotwords |
 
 **共享契约**：每 channel = optional · best-effort · 非绑定 · **正极性** · capability 协商 · **永不静默降级**。
 
@@ -777,7 +777,7 @@ Word:    start:float  end:float  text:str
 
 - **`Segment.speaker`（权威）+ `Word.speaker`（可选细化）。继承规则**：`Word.speaker` 为 `None` 时继承所在段的 `Segment.speaker`；非 `None` 时在词级**覆盖**段级值（混合说话人段的词级细化）。**不**加顶层 `speakers[]` roster（YAGNI，需要时 additive）。
 - **`None` 语义（TR.1 重申）**：diarization **激活**时 `speaker=None` = "引擎无法判定该段/词的说话人"（显式的「不知道」）；未请求时 = 不适用。应用判「引擎是否支持/做了 diarization」MUST 看 capability，MUST NOT 看字段 null（TR.1 null 规则；always-on 豁免见下，使字段 null 判定更加不可靠）。
-- **段级 speaker 合成（标准层，单一钉死规则）**：当 `Segment.speaker is None` 而其 `words` 携带非 `None` speaker 时，标准层合成段级 speaker。规则**唯一且钉死**：**按词数多数决；平手取并列 speaker 中最早出现（最低下标）的词的 speaker；`speaker=None` 的词不投票；无携带 speaker 的词则保持 `None`**。该合成以同一实现跑在两条路径上：batch 在 `EngineBase.transcribe` 的结果后处理（作用于顶层 `segments[]` **与**每个 `channels[i].segments`——TR.4 两视图必须一致），streaming 在标准归约器（`session.result()`）。适配器 MAY 自行预填 `Segment.speaker`（原生段级引擎如此）；标准层仅在段级为 `None` 时合成，且不论 diarization 是否被请求（always-on 数据同样受益）。钉死单一规则的理由：同一引擎+同一音频 MUST 经任何路径/实现得到相同的 `Segment.speaker`——两条相近规则（majority vs first）会静默分叉，破坏本特性存在的可移植性。
+- **段级 speaker 合成（标准层，单一钉死规则）**：当 `Segment.speaker is None` 而其 `words` 携带非 `None` speaker 时，标准层合成段级 speaker。规则**唯一且钉死**：**按词数多数决；平手取并列 speaker 中最早出现（最低下标）的词的 speaker；`speaker=None` 的词不投票；无携带 speaker 的词则保持 `None`**。该合成以同一实现跑在两条路径上：batch 在 `EngineBase.transcribe` 的结果后处理（作用于顶层 `segments[]` **与**每个 `channels[i].segments`——TR.4 两视图必须一致），streaming 在标准归约器（`session.result()`）。适配器 MAY 自行预填 `Segment.speaker`（原生段级引擎如此）；标准层仅在段级为 `None` 时合成，且不论 diarization 是否被请求（always-on 数据同样受益）。钉死单一规则的理由：同一引擎+同一音频 MUST 经任何路径/实现得到相同的 `Segment.speaker`——两条相近规则（majority vs first）会静默分叉，破坏这项合成要保证的可移植性。
 - **标签有效性（构造期强制）**：`speaker` 标签 MUST 非空、非纯空白、且无首尾空白——`Segment` / `Word` / `TranscriptionEvent` 构造期拒绝（`""` 是既非 `None` 又非真实标签的第三种未定义状态；`"A "` 与 `"A"` 是两个不同字串 = 两个不同说话人，一个适配器 off-by-one 即静默打破一致性；**拒绝而非归一化**，与 `phrase_hints` 词条的 fail-loud 立场同款）。`None` 合法。标准**不**规定标签格式（`"speaker_0"`、`"A"`、known-speaker 场景的真实姓名皆可）。
 - **result 内一致性（适配器义务）**：同一结果内同一字串 = 同一说话人、不同说话人 = 不同字串。一致性范围横跨**所有**标签载体——顶层 `segments[]`、`words[]`、以及 `channels[]` 子结果：逐通道独立 diarize 的引擎（两个通道都把各自第一个说话人标 `"0"`）MUST 由适配器在组装前重标进同一个 result 级命名空间，否则同一字串静默指代两个人。非空性之外的一致性无法构造期强制，合规套件亦**不**校验——套件只提供下方「合规范围」条的负向 presence 交叉检查（`stream_exceeds_diarization` / `result_exceeds_diarization`：只比对「是否携带 speaker」与声明能力，**绝不**比对标签字串一致性）；一致性在无多说话人 fixtures 时不可验证，标准层不假装强制。与 TR.2 排序（同为引擎义务、构造期不强制、套件不校验，但渲染器在自身边界防御性重排兜底）不同，此项是**纯适配器义务**——连渲染器都不代为修复，没有任何标准层安全网。
 - 标签跨会话**不**稳定、**不**关联身份、**不**跨引擎可比。
@@ -939,7 +939,7 @@ nested 引擎声明 submodel（按 model-family）表达多文件 bundle 的 ini
 
 `StandardASR` 与 `EngineBase` 增加必填类变量 `declared_metadata: ClassVar[DeclaredEngineMetadata]`。它是 **typed 聚合、不是自由 metadata 口袋**（与 §AI 3.2「无 blanket metadata」相容）：已知节 closed（`extra="forbid"`），根层未知的字符串键+JSON 值**原样保留**（与能力树同一 tolerant JSON-extra 机制），生产者的未知非 `x_<vendor>_*` 键由合规套件标记为疑似 typo。未来 #8（静态硬件声明）与 #19（model card）作为**同一聚合的兄弟节**落地，不再新增类变量（决策记录：`engine-metadata-surface`）。
 
-Wire 投影：`GET /v1/metadata/{model}`（逐模型、走既有 metadata fault boundary）；`standard-asr show` 渲染同一 canonical JSON。**批量面保持零 import**：`standard-asr list` 与 `GET /v1/models` MUST NOT 解析 entry point、import 插件或读取本表面——一个坏插件不得拖垮整个发现列表（DEP.4 的 numpy 冲突亦然）。
+Wire 投影：`GET /v1/metadata/{model}`（逐模型、走既有 metadata fault boundary）；`standard-asr show` 渲染同一份 JSON（`DeclaredEngineMetadata.to_protocol_dict()` 返回的字典）。**批量面保持零 import**：`standard-asr list` 与 `GET /v1/models` MUST NOT 解析 entry point、import 插件或读取本表面——一个坏插件不得拖垮整个发现列表（DEP.4 的 numpy 冲突亦然）。
 
 ### 3.2 `ArtifactDeclaration` 三个正交上界
 
@@ -959,7 +959,7 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 
 ## 4. 行为（规范）
 
-**AR.1 — 协议版本与 pre-stable 语义。** `properties.protocol_version` MUST 为 canonical `MAJOR.MINOR.PATCH`（`parse_protocol_version`；长度上限 32；每个数字分量 MUST 在 `[0, 4294967295]`（u32）内——版本是跨语言 wire token，此界让任何实现语言无需任意精度算术即可精确表示与比较分量）。协议版本与 core 包版本是**两条独立的版本线**：前者命名引擎实现的契约世代（跨语言、跨包的兼容性 token），后者命名本 Python 实现的一次发布——两者当前同处 0.x 系是巧合，MUST NOT 假设 lockstep，插件也 MUST NOT 让声明跟随已安装 core 自动升版（声明的是插件自己完整实现的世代）。**major 0 = pre-stable**：每个 `0.MINOR` 世代 MAY 不兼容地改动契约，故 major 0 之下 **minor 是 breaking 轴**——核心恰支持一条 `0.MINOR` 线（当前 0.2；feature 最低版本表：`artifact_lifecycle → 0.2.0`，`PROTOCOL_FEATURE_MINIMUMS`），引擎声明其他 `(major, minor)` 组合即得 typed `ProtocolCompatibilityError`（invoker 可修，修复方向见下方错误消息规则；CLI exit 2）。该 minor 匹配规则**永久**内建于 `require_supported_protocol()`（`require_protocol_feature()` 委托它），进入 major 1 后自然休眠。**PATCH 语义**：同一线内（`0.MINOR` 线，或稳定 major 的同一 minor）PATCH 只允许不改变既有语法与行为的修订——缺陷修正、编辑性澄清、旧消费者可安全忽略的补充；需要消费者感知的变更 MUST 走 feature 最低版本（表条目可带非零 patch，`require_protocol_feature()` 据此比较）或新的 minor。**世代冻结点**：一个 `0.MINOR` 世代的契约在**首个携带它的 core 公开发布**时冻结。「公开发布」指任何可被仓库外消费者获取并依赖的分发构件——wheel、sdist、容器镜像，无论 stable 还是 alpha/beta/RC 预发布（本仓库的 TestPyPI dry-run 是发布演练，不算）。冻结前（core 包处于对应 `.dev` 版本期间，例如本世代的 `0.2.0.dev`）该世代的契约 MAY 就地修订而不升 minor——此窗口的消费者只有与 core lockstep 演进的仓库，当前（core 是协议的唯一发布者）包版本的 `.dev` 标记即是「本世代尚未冻结」的机器可读信号——长期的冻结记录归协议发布台账所有——台账在**首个世代冻结时**建立（首个携带 `0.2` 的公开发布），居所为本规范的世代台账附录，每个冻结世代记录：协议 token、冻结日期、规范快照 commit、兼容性分类、新增 feature 最低版本、被取代世代、任何有界别名；包 CHANGELOG 不得成为协议演进的事实 source of truth（协议 token 自身不携带 dev 标记：canonical 语法与跨语言 wire 面不为此复杂化）。冻结后：同线非破坏修订 = PATCH，任何 breaking 改动 MUST 开新 minor。**1.0 冻结前的 RC 窗口没有单独的可变期**：RC 是公开发布，包版本 `1.0.0rcN` 声明（并照常冻结）当时最新的 `0.N` 世代；RC 期间的 breaking 改动 MUST 开新 `0.MINOR`（由下一个 RC 携带）；最终稳定发布把最后冻结的世代语义**原样**命名为 `1.0.0`。可公开获取却仍可就地变动的契约没有可表示的身份——canonical 语法没有预发布后缀，这正是 `.dev` 可变窗口以「消费者仅限 lockstep 仓库」为前提的原因。**执法拓扑（normative）**：引擎门（`require_engine_protocol()`——typed `BaseProperties` 检查 + 一般线守卫 `require_supported_protocol()`，不查 feature 表）是每个 selected-engine 语义面共享的**唯一 fail-closed 边界**：`properties` 缺失或非 typed `BaseProperties` 同样 fail-closed（协议线无法确立的引擎比线错误的引擎**更**不可知，绝不更可信）。强制 seam：`ModelRegistry.create()`（工具链共享的构造 seam；可解析的类声明在工厂运行前预检——未类型化的类声明与线不匹配同样在构造前拒绝，构造时故障不得掩盖类契约裁决；并要求工厂返回的实例的类**恰为**入口点解析出的声明类——精确同一性而非 isinstance，子类可覆写任何类级契约面——且 instance properties **等于**类级声明：类读面投影声明类、runtime 执行返回类，二者必须看到同一份声明）；`EngineBase` 的推理入口（`transcribe` / `transcribe_async` / `start_transcription`：线外引擎的转写语义按定义不可知，结构上有效但语义漂移的结果正是 cardinal sin，故推理 MUST NOT 运行；`transcribe_async` 与 `acquire_artifacts` 经**虚派发**调用公开成员，各自独立设门，七个公开模板——三个推理入口、两个工件操作、下述两个协商面——标记 `@final` 且合规以 `public_template_overridden` 拒绝覆盖公开模板的 `EngineBase` 子类）；语义协商面（`supports` 与 `recommended_wire_format`——能力答案与 wire 推荐都是对声明的语义解读，线不匹配时 MUST NOT 给出）；工件成员查找之前（typed 错误而非 `AttributeError`，且 MUST NOT 被解读为 `NO_ARTIFACT_LIFECYCLE`）；类元数据投影面（`GET /v1/metadata|capabilities|params-schema|config-schema/{model}`、`ModelRegistry.config_schema()`、CLI `show` 的语义段——线不匹配的声明不得按当前语义序列化：server 映射 scrubbed 500，`show` 打印 entry-point 身份行后停止投影、经共享 arm 以 exit 2 结束）；以及合规套件（`protocol_version_unsupported`，类与 instance 两级共用同一守卫，线不匹配后 MUST 停止按当前世代的一切解读——类级其余声明检查与 instance 行为探测都不再运行，该引擎只得这一条错误；类级 `properties` 缺失或未类型化（`missing_class_properties`）同样在此停止且不实例化，与 `create()` 的类预检一致，instance 层的同类缺失报 `missing_instance_properties` 而非版本错误；类级裁决只对声明类成立，工厂返回其他类以 `factory_return_class_mismatch` 拒绝并停止 instance 探测）。仅插件发现与 `list` / `GET /v1/models`（import-free 面）不设版本门。**结构边界的归属**：`StandardASR` 是结构协议，core 无法向任意第三方实现的方法体注入守卫，故上述 seam 全部落在 core 拥有的边界上；`EngineBase` 的每入口门是纵深防御，不是结构世界可依赖的替代。不经 `ModelRegistry.create()` 取得引擎的宿主（直接构造、自定义装载或注入）MUST 在任何语义使用前对该对象运行一次 `require_engine_protocol(engine)`——协议兼容性是消费者拥有的选型前置条件，不是结构方法体的内在义务。错误消息 MUST 按方向给出修复建议：引擎较旧 ⇒ 升级插件；引擎较新 ⇒ 升级 core（或安装匹配线的插件版本）。**冻结计划**：首个稳定发布把当时的契约语义**原样**冻结并命名为 `1.0.0`（`SUPPORTED_PROTOCOL_MAJOR = 1`；「原样」指语义契约——版本 token 本身当然改变）。冻入 1.0 baseline 的 feature 的表条目 MUST **保留并改写为 `1.0.0`**，不得删除：`PROTOCOL_FEATURE_MINIMUMS` 与 `require_protocol_feature()` 是规范点名的公开内省面，删除条目会把一个已知 feature 的兼容性查询变成 `ValueError`（runtime 守卫不依赖该表——引擎门走一般线守卫——所以保留纯为公开查询面的稳定）；自 major 1 起 additive 特性 = minor（同 major 内较新 minor 对旧 feature 保持可用；其未知标准 metadata 节按 tolerant reader 保留，见 §3.3），改动既有契约、删除、或新增改变消费者控制流的状态 = major。冻结日算法与 tolerant-reader 行为由合成常数测试预先钉死（`tests/test_protocol_version.py`、`tests/test_artifact_interface.py`、`tests/test_compliance.py` 的 freeze 测试）。冻结发布还 MUST 显式决定并记录三件事：(1) 对声明**确切冻结 0.N token** 的插件的处理——语义与 1.0.0 逐字相同，直接拒绝会制造纯声明性 flag day；零外部插件时 lockstep 升级即可，否则定义有界别名或 RC 双接受期——别名 MUST 是在一切比较之前把 `0.N.P` 规范化为 `1.0.0` 的单一操作（线守卫、feature 最低版本比较、合规的 producer/reader 排序共用），而非线守卫里的局部放行：只放行线守卫的别名仍会在 `require_protocol_feature()` 拿原 token 与已改写为 `1.0.0` 的最低版本比较时失败；(2) `SUPPORTED_PROTOCOL_MAJOR` 单值是 pre-stable 简化，不是永久架构法则——引入 major 2 之前 MUST 重新评估多 major 并存政策（成熟生态无法原子升级全部生产者与消费者）；(3) 把 `1.0.0` 的晋升——含前两项决定——记入协议发布台账（台账自首个世代冻结起已存在，见上文世代冻结点）。**wire 版本轴（normative）**：`/v1` 路径组件版本化的是 HTTP 传输封套；`properties.protocol_version` 版本化的是应用—引擎语义契约。两个数字互不派生；一次 wire API 修订 MUST 声明它能忠实投影哪些语义协议世代——当前 `/v1` 投影且仅投影协议 0.2 线；换到不兼容语义线 MUST 要么修订该声明（并给出客户端区分世代的设计）、要么开新 wire 修订；稳定冻结把 0.N 语义原样晋升为 `1.0.0` 的同一发布 MUST 修订该声明——wire 表示不变时 `/v1` 加入 `1.0.x` 线（预期结果），否则开新 wire 修订（server-api.md 载有该 normative 声明）。
+**AR.1 — 协议版本与 pre-stable 语义。** `properties.protocol_version` MUST 为 canonical `MAJOR.MINOR.PATCH`（`parse_protocol_version`；长度上限 32；每个数字分量 MUST 在 `[0, 4294967295]`（u32）内——版本是跨语言 wire token，此界让任何实现语言无需任意精度算术即可精确表示与比较分量）。协议版本与 core 包版本是**两条独立的版本线**：前者命名引擎实现的契约世代（跨语言、跨包的兼容性 token），后者命名本 Python 实现的一次发布——两者当前同处 0.x 系是巧合，MUST NOT 假设 lockstep，插件也 MUST NOT 让声明跟随已安装 core 自动升版（声明的是插件自己完整实现的世代）。**major 0 = pre-stable**：每个 `0.MINOR` 世代 MAY 不兼容地改动契约，故 major 0 之下 **minor 是 breaking 轴**——核心恰支持一条 `0.MINOR` 线（当前 0.2；feature 最低版本表：`artifact_lifecycle → 0.2.0`，`PROTOCOL_FEATURE_MINIMUMS`），引擎声明其他 `(major, minor)` 组合即得 typed `ProtocolCompatibilityError`（invoker 可修，修复方向见下方错误消息规则；CLI exit 2）。该 minor 匹配规则**永久**内建于 `require_supported_protocol()`（`require_protocol_feature()` 委托它），进入 major 1 后自然休眠。**PATCH 语义**：同一线内（`0.MINOR` 线，或稳定 major 的同一 minor）PATCH 只允许不改变既有语法与行为的修订——缺陷修正、编辑性澄清、旧消费者可安全忽略的补充；需要消费者感知的变更 MUST 走 feature 最低版本（表条目可带非零 patch，`require_protocol_feature()` 据此比较）或新的 minor。**世代冻结点**：一个 `0.MINOR` 世代的契约在**首个携带它的 core 公开发布**时冻结。「公开发布」指任何可被仓库外消费者获取并依赖的分发构件——wheel、sdist、容器镜像，无论 stable 还是 alpha/beta/RC 预发布（本仓库的 TestPyPI dry-run 是发布演练，不算）。冻结前（core 包处于对应 `.dev` 版本期间，例如本世代的 `0.2.0.dev`）该世代的契约 MAY 就地修订而不升 minor——此窗口的消费者只有与 core lockstep 演进的仓库，当前（core 是协议的唯一发布者）包版本的 `.dev` 标记即是「本世代尚未冻结」的机器可读信号——长期的冻结记录归协议发布台账所有——台账在**首个世代冻结时**建立（首个携带 `0.2` 的公开发布），居所为本规范的世代台账附录，每个冻结世代记录：协议 token、冻结日期、规范快照 commit、兼容性分类、新增 feature 最低版本、被取代世代、任何有界别名；包 CHANGELOG 不得成为协议演进的事实 source of truth（协议 token 自身不携带 dev 标记：canonical 语法与跨语言 wire 面不为此复杂化）。冻结后：同线非破坏修订 = PATCH，任何 breaking 改动 MUST 开新 minor。**1.0 冻结前的 RC 窗口没有单独的可变期**：RC 是公开发布，包版本 `1.0.0rcN` 声明（并照常冻结）当时最新的 `0.N` 世代；RC 期间的 breaking 改动 MUST 开新 `0.MINOR`（由下一个 RC 携带）；最终稳定发布把最后冻结的世代语义**原样**命名为 `1.0.0`。可公开获取却仍可就地变动的契约没有可表示的身份——canonical 语法没有预发布后缀，这正是 `.dev` 可变窗口以「消费者仅限 lockstep 仓库」为前提的原因。**执法拓扑（normative）**：引擎门（`require_engine_protocol()`——typed `BaseProperties` 检查 + 一般线守卫 `require_supported_protocol()`，不查 feature 表）是每个 selected-engine 语义面共享的**唯一 fail-closed 边界**：`properties` 缺失或非 typed `BaseProperties` 同样 fail-closed（协议线无法确立的引擎比线错误的引擎**更**不可知，绝不更可信）。强制 seam：`ModelRegistry.create()`（工具链共享的构造 seam；可解析的类声明在工厂运行前预检——未类型化的类声明与线不匹配同样在构造前拒绝，构造时故障不得掩盖类契约裁决；并要求工厂返回的实例的类**恰为**入口点解析出的声明类——精确同一性而非 isinstance，子类可覆写任何类级契约面——且 instance properties **等于**类级声明：类读面投影声明类、runtime 执行返回类，二者必须看到同一份声明）；`EngineBase` 的推理入口（`transcribe` / `transcribe_async` / `start_transcription`：线外引擎的转写语义按定义不可知，结构上有效但语义漂移的结果正是 cardinal sin，故推理 MUST NOT 运行；`transcribe_async` 与 `acquire_artifacts` 经**虚派发**调用公开成员，各自独立设门，七个公开模板——三个推理入口、两个工件操作、下述两个协商面——标记 `@final` 且合规以 `public_template_overridden` 拒绝覆盖公开模板的 `EngineBase` 子类）；语义协商面（`supports` 与 `recommended_wire_format`——能力答案与 wire 推荐都是对声明的语义解读，线不匹配时 MUST NOT 给出）；工件成员查找之前（typed 错误而非 `AttributeError`，且 MUST NOT 被解读为 `NO_ARTIFACT_LIFECYCLE`）；类元数据投影面（`GET /v1/metadata|capabilities|params-schema|config-schema/{model}`、`ModelRegistry.config_schema()`、CLI `show` 的语义段——线不匹配的声明不得按当前语义序列化：server 映射 scrubbed 500，`show` 打印 entry-point 身份行后停止投影、经共享 arm 以 exit 2 结束）；以及合规套件（`protocol_version_unsupported`，类与 instance 两级共用同一守卫，线不匹配后 MUST 停止按当前世代的一切解读——类级其余声明检查与 instance 行为探测都不再运行，该引擎只得这一条错误；类级 `properties` 缺失或未类型化（`missing_class_properties`）同样在此停止且不实例化，与 `create()` 的类预检一致，instance 层的同类缺失报 `missing_instance_properties` 而非版本错误；类级裁决只对声明类成立，工厂返回其他类以 `factory_return_class_mismatch` 拒绝并停止 instance 探测）。仅插件发现与 `list` / `GET /v1/models`（import-free 面）不设版本门。**结构边界的归属**：`StandardASR` 是结构协议，core 无法向任意第三方实现的方法体注入守卫，故上述 seam 全部落在 core 拥有的边界上；`EngineBase` 的每入口门是纵深防御，不是结构世界可依赖的替代。不经 `ModelRegistry.create()` 取得引擎的宿主（直接构造、自定义装载或注入）MUST 在任何语义使用前对该对象运行一次 `require_engine_protocol(engine)`——协议兼容性是消费者拥有的选型前置条件，不是结构方法体的内在义务。错误消息 MUST 按方向给出修复建议：引擎较旧 ⇒ 升级插件；引擎较新 ⇒ 升级 core（或安装匹配线的插件版本）。**冻结计划**：首个稳定发布把当时的契约语义**原样**冻结并命名为 `1.0.0`（`SUPPORTED_PROTOCOL_MAJOR = 1`；「原样」指语义契约——版本 token 本身当然改变）。冻入 1.0 baseline 的 feature 的表条目 MUST **保留并改写为 `1.0.0`**，不得删除：`PROTOCOL_FEATURE_MINIMUMS` 与 `require_protocol_feature()` 是规范点名的公开内省面，删除条目会把一个已知 feature 的兼容性查询变成 `ValueError`（runtime 守卫不依赖该表——引擎门走一般线守卫——所以保留纯为公开查询面的稳定）；自 major 1 起 additive feature = minor（同 major 内较新 minor 对旧 feature 保持可用；其未知标准 metadata 节按 tolerant reader 保留，见 §3.3），改动既有契约、删除、或新增改变消费者控制流的状态 = major。冻结日算法与 tolerant-reader 行为由合成常数测试预先钉死（`tests/test_protocol_version.py`、`tests/test_artifact_interface.py`、`tests/test_compliance.py` 的 freeze 测试）。冻结发布还 MUST 显式决定并记录三件事：(1) 对声明**确切冻结 0.N token** 的插件的处理——语义与 1.0.0 逐字相同，直接拒绝会制造纯声明性 flag day；零外部插件时 lockstep 升级即可，否则定义有界别名或 RC 双接受期——别名 MUST 是在一切比较之前把 `0.N.P` 规范化为 `1.0.0` 的单一操作（线守卫、feature 最低版本比较、合规的 producer/reader 排序共用），而非线守卫里的局部放行：只放行线守卫的别名仍会在 `require_protocol_feature()` 拿原 token 与已改写为 `1.0.0` 的最低版本比较时失败；(2) `SUPPORTED_PROTOCOL_MAJOR` 单值是 pre-stable 简化，不是永久架构法则——引入 major 2 之前 MUST 重新评估多 major 并存政策（成熟生态无法原子升级全部生产者与消费者）；(3) 把 `1.0.0` 的晋升——含前两项决定——记入协议发布台账（台账自首个世代冻结起已存在，见上文世代冻结点）。**wire 版本轴（normative）**：`/v1` 路径组件版本化的是 HTTP 传输封套；`properties.protocol_version` 版本化的是应用—引擎语义契约。两个数字互不派生；一次 wire API 修订 MUST 声明它能忠实投影哪些语义协议世代——当前 `/v1` 投影且仅投影协议 0.2 线；换到不兼容语义线 MUST 要么修订该声明（并给出客户端区分世代的设计）、要么开新 wire 修订；稳定冻结把 0.N 语义原样晋升为 `1.0.0` 的同一发布 MUST 修订该声明——wire 表示不变时 `/v1` 加入 `1.0.x` 线（预期结果），否则开新 wire 修订（server-api.md 载有该 normative 声明）。
 
 **AR.2 — `artifact_status()` 只读契约。** 运行于配置解析后的实例（IC.9 纯构造是前提）。对可移植参数**一律 best-effort** gating（不论引擎 strict 策略；诊断并入报告；语言轴走 best-effort 解析路径），**唯 wrong-engine `provider_params` 仍无条件抛**（§RT 5.4 swap 安全是策略无关规则）。MUST NOT：加载权重、初始化加速器、跑推理、发起应用级网络请求、创建/修复/删除文件。MAY：检视文件系统、本地缓存索引、OS 资产清单；以 `unknown` 代替昂贵完整性检查（`corrupt` 仅在已有可靠证据时报告；unknown 永不等于 ready）。外部状态未变时重复调用 MUST 返回相同报告。status 不承诺知晓远端审批/条款状态（那些由获取失败发现并随错误返回新 action）。文件系统检查可能因 NFS 阻塞——协议不承诺有界延迟，扫描多模型的应用自行下线程与 deadline。宣告 `applicable=False` 的模型恒返回 not-applicable 报告；动态报告 MUST 只**收窄**静态上界（模板强制：`applicable`、`can_acquire_now`、`may_acquire_during_inference` 任一越界 = `EngineContractError`）。
 
@@ -981,7 +981,7 @@ applicable / supports_explicit_acquisition / may_acquire_during_inference : bool
 
 ## 5. 附注与理由
 
-- **为何拒绝 `local | cloud | hybrid`**：捆绑互不蕴含的事实、分类的是部署而非本特性拥有的工件操作。`qwen3-asr/1.7b` 命名开源权重 checkpoint、当前引擎却调用独立部署的 vLLM——工件获取对它不适用，与 loopback 无关。
+- **为何拒绝 `local | cloud | hybrid`**：捆绑互不蕴含的事实、分类的是部署而非本功能拥有的工件操作。`qwen3-asr/1.7b` 命名开源权重 checkpoint、当前引擎却调用独立部署的 vLLM——工件获取对它不适用，与 loopback 无关。
 - **为何三个正交布尔而非互斥模式**：显式获取、推理内自动获取、外部前置动作**并存**（faster-whisper 同时有 `download_model()` 与构造器隐式下载；Vosk 按 config 在 path-only 与自动下载间切换）；正交声明 + 动态 action 覆盖组合而无需 `other/hybrid` 桶。
 - **为何 `pull` ≠ `prepare`**：持久化获取与进程内预热的后置条件、成本、生命周期都不同；native 下载 API 可以不把多 GB 模型留在 RAM。`pull --refresh` 补上 docker/ollama/hf 生态中「pull 可变名 = 重解析」的缺口，而普通 `pull` 的帮助文本言明不检查浮动源更新。
 - **为何删除推迟**：HF 共享 blob/revision 语义使通用删除不安全（上游 `delete_revisions()` 本身就是 plan-and-execute）；首版以 status + acquire 解决应用缺口而不引入破坏性行为。远端管理端点同理推迟（Speaches 证明有需求；reference server 尚无 operator 授权/角色/磁盘政策；#7 daemon-hub 是重启该讨论的 forcing function）。
@@ -1559,7 +1559,7 @@ async with engine.start_transcription(audio=AudioPath("meeting.mp3")) as session
 | `streaming.reconnect` | enum `{mode: seamless\|lossy\|unsupported}` | 重连能力 |
 | `streaming.finality_level` | enum `{mode: final\|closed}` | 能保证到哪级终态。`final`：不保证每个段都会收到 `closed`，也不禁止 `closed`；`closed`：每个到达 `final` 且没有被 `supersede` 撤回的段，都在会话以 `done` 结束之前到达 `closed`（§4.2「各阶段还允许什么变化」） |
 | `streaming.timestamps` | enum `{mode: native_frame_aligned\|post_align\|none}` | 流式时间戳来源 |
-| `streaming.guidance.*` | 同 §R.4 | 流式引导（可与 batch 限额不同） |
+| `streaming.guidance.*` | 同 §R.4 | 流式引导（约束可与 batch 不同） |
 | `streaming.language.*` | 同 §LANG.3 | 流式语言能力（可与 batch 不同） |
 
 **事件流超出能力声明时（normative）**：下面七种情况，表示事件流用到了引擎不支持的能力，或者没有做到引擎声明的终态级别。会话按引擎的生效能力判断，合规套件按传给它的能力声明判断。括号里是对应的 code：

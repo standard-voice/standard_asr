@@ -23,11 +23,11 @@ from __future__ import annotations
 from typing import cast
 
 from standard_asr.contract.capabilities import (
-    DeclaredCapabilities,
+    Capabilities,
     ModeName,
-    PhraseHintsCap,
-    PromptCap,
-    WordTimestampsCap,
+    PhraseHintsCapability,
+    PromptCapability,
+    WordTimestampsCapability,
 )
 from standard_asr.contract.exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from standard_asr.contract.params import DiarizationRequest, ProviderParams, RuntimeParams
@@ -79,14 +79,15 @@ _GATED_PARAMS: tuple[tuple[str, str], ...] = (
     ("prompt", "guidance.prompt"),
 )
 
-#: Portable fields that are deliberately NOT in :data:`_GATED_PARAMS`, each with
-#: the reason it is exempt from capability gating. Maintained alongside the gated
-#: table so the drift guard below can prove the two together cover *every*
-#: ``RuntimeParams`` field -- a future field that is neither gated nor explicitly
-#: exempted would otherwise reach the engine ungated, and an unsupported engine
-#: would silently ignore it (the cardinal sin), undetected by tests or the
-#: compliance suite.
-_UNGATED_PORTABLE_FIELDS: frozenset[str] = frozenset(
+#: ``RuntimeParams`` fields that are deliberately NOT in :data:`_GATED_PARAMS`,
+#: each with the reason the table does not gate it. ``candidate_languages`` is
+#: still gated, by ``effective_candidate_languages``; the others are not
+#: checked against a capability. Maintained alongside the gated table so the
+#: drift guard below can prove the two together cover *every* ``RuntimeParams``
+#: field -- a future field that is in neither set would otherwise reach the
+#: engine ungated, and an unsupported engine would silently ignore it (the
+#: cardinal sin), undetected by tests or the compliance suite.
+_FIELDS_OUTSIDE_GATE_TABLE: frozenset[str] = frozenset(
     {
         # Owned solely by language.effective_candidate_languages: its unsupported
         # path resolves to None + one diagnostic and never raises, which is
@@ -102,25 +103,25 @@ _UNGATED_PORTABLE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: Requestable capability paths whose gate lives outside
-#: :data:`_GATED_PARAMS`, each with the reason and the code that gates it.
+#: The requestable nodes whose gate lives outside :data:`_GATED_PARAMS`,
+#: each with the reason and the code that gates it.
 #: Each entry is a dot-path suffix relative to the mode, like the table's
 #: second column, so one entry covers both modes.
 #: The compliance suite reads this set in both directions. Forward: under
-#: each declared mode, each entry must resolve to a node whose ``kind`` is
-#: ``requestable``, or the suite reports ``gated_param_not_requestable``.
+#: each declared mode, each entry must resolve to a node whose ``role`` is
+#: ``requestable``, or the suite reports ``gate_target_not_requestable``.
 #: Reverse: under a declared mode, a node outside the ``x_*`` subtrees, at
-#: any depth, whose ``kind`` is ``requestable`` must be a
+#: any depth, whose ``role`` is ``requestable`` must be a
 #: :data:`_GATED_PARAMS` row or listed here. A requestable node at the root
 #: of the tree can be neither, so the suite always reports it. A new
 #: requestable node that nothing gates is reported as the error
 #: ``requestable_node_ungated``; without the check, a request for it would
 #: reach the engine unchecked.
-_UNGATED_REQUESTABLE_PATHS: frozenset[str] = frozenset(
+_SEPARATELY_GATED_REQUESTABLE_SUFFIXES: frozenset[str] = frozenset(
     {
         # Requested through RuntimeParams.candidate_languages, whose gating
         # language.effective_candidate_languages owns (see
-        # _UNGATED_PORTABLE_FIELDS): an unsupported list resolves to None
+        # _FIELDS_OUTSIDE_GATE_TABLE): an unsupported list resolves to None
         # plus one diagnostic and never raises, even under the strict
         # policy. This table's gating raises under strict, so it cannot
         # express that.
@@ -128,17 +129,17 @@ _UNGATED_REQUESTABLE_PATHS: frozenset[str] = frozenset(
     }
 )
 
-#: Drift guard (import-time, mirrored by a drift test): every portable
-#: ``RuntimeParams`` field MUST be either capability-gated (in _GATED_PARAMS) or
-#: explicitly exempt (in _UNGATED_PORTABLE_FIELDS) -- never silently neither. When
+#: Drift guard (import-time, mirrored by a drift test): every
+#: ``RuntimeParams`` field MUST be either in the gate table (_GATED_PARAMS) or
+#: listed outside it with a reason (_FIELDS_OUTSIDE_GATE_TABLE) -- never silently neither. When
 #: the standard set grows by an additive-minor field, this fails loudly until the
 #: author classifies it, closing the "new param silently bypasses gating" hole.
-assert {field for field, _ in _GATED_PARAMS} | _UNGATED_PORTABLE_FIELDS == set(
+assert {field for field, _ in _GATED_PARAMS} | _FIELDS_OUTSIDE_GATE_TABLE == set(
     RuntimeParams.model_fields
 ), (
     "RuntimeParams field set drifted from param gating: every portable field must "
-    "be in _GATED_PARAMS or _UNGATED_PORTABLE_FIELDS (see the drift guard). "
-    f"Gated={ {f for f, _ in _GATED_PARAMS} }, exempt={set(_UNGATED_PORTABLE_FIELDS)}, "
+    "be in _GATED_PARAMS or _FIELDS_OUTSIDE_GATE_TABLE (see the drift guard). "
+    f"Gated={ {f for f, _ in _GATED_PARAMS} }, exempt={set(_FIELDS_OUTSIDE_GATE_TABLE)}, "
     f"fields={set(RuntimeParams.model_fields)}."
 )
 
@@ -188,7 +189,7 @@ def _is_unset(field_name: str, value: object) -> bool:
 
 def gate_params(
     params: RuntimeParams,
-    capabilities: DeclaredCapabilities,
+    capabilities: Capabilities,
     mode: Mode,
     *,
     strict: bool,
@@ -281,7 +282,7 @@ def gate_params(
 
 def _gate_granularity(
     params: RuntimeParams,
-    capabilities: DeclaredCapabilities,
+    capabilities: Capabilities,
     mode: Mode,
     updates: dict[str, object],
     diagnostics: list[Diagnostic],
@@ -317,13 +318,13 @@ def _gate_granularity(
     if requested is None:
         return False
     node = capabilities.node_at(f"{mode}.word_timestamps")
-    # A non-WordTimestampsCap node (for example, an ``x_*`` override declared as a bare
+    # A non-WordTimestampsCapability node (for example, an ``x_*`` override declared as a bare
     # flag) carries no granularity list; treat it as offering only the value it
     # was queried as supporting -- that is, do not over-constrain unknown shapes.
-    if not isinstance(node, WordTimestampsCap):
+    if not isinstance(node, WordTimestampsCapability):
         return False
-    # A supported WordTimestampsCap always enumerates its granularities
-    # (enforced by WordTimestampsCap's validator), so there is no "empty =>
+    # A supported WordTimestampsCapability always enumerates its granularities
+    # (enforced by WordTimestampsCapability's validator), so there is no "empty =>
     # honor anything" ambiguity here -- the requested value MUST be offered.
     if requested.value in set(node.granularities):
         return False
@@ -525,7 +526,7 @@ def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
 
 def _enforce_prompt_limit(
     params: RuntimeParams,
-    capabilities: DeclaredCapabilities,
+    capabilities: Capabilities,
     mode: Mode,
     updates: dict[str, object],
     diagnostics: list[Diagnostic],
@@ -566,7 +567,7 @@ def _enforce_prompt_limit(
     if prompt is None:
         return
     node = capabilities.node_at(f"{mode}.guidance.prompt")
-    if not isinstance(node, PromptCap):
+    if not isinstance(node, PromptCapability):
         return
     max_tokens = node.constraints.max_tokens
     if max_tokens is None:
@@ -616,7 +617,7 @@ def _truncate_term(term: str, *, max_chars: int | None, max_words: int | None) -
 
 def _enforce_phrase_hints_limits(
     params: RuntimeParams,
-    capabilities: DeclaredCapabilities,
+    capabilities: Capabilities,
     mode: Mode,
     updates: dict[str, object],
     diagnostics: list[Diagnostic],
@@ -647,7 +648,7 @@ def _enforce_phrase_hints_limits(
     if not hints:
         return
     node = capabilities.node_at(f"{mode}.guidance.phrase_hints")
-    if not isinstance(node, PhraseHintsCap):
+    if not isinstance(node, PhraseHintsCapability):
         return
     c = node.constraints
     violation = (c.max_terms is not None and len(hints) > c.max_terms) or any(
@@ -737,7 +738,7 @@ _PHRASE_HINTS_FRAME_PREFIX = "Relevant terms: "
 
 def _try_degrade_to_prompt(
     params: RuntimeParams,
-    capabilities: DeclaredCapabilities,
+    capabilities: Capabilities,
     mode: Mode,
     updates: dict[str, object],
     diagnostics: list[Diagnostic],
@@ -803,7 +804,7 @@ def _try_degrade_to_prompt(
     combined = f"{existing}\n{framed}" if existing else framed
 
     node = capabilities.node_at(f"{mode}.guidance.prompt")
-    max_tokens = node.constraints.max_tokens if isinstance(node, PromptCap) else None
+    max_tokens = node.constraints.max_tokens if isinstance(node, PromptCapability) else None
     if max_tokens is not None and _count_tokens(combined) > max_tokens:
         if strict:
             raise UnsupportedFeatureError(

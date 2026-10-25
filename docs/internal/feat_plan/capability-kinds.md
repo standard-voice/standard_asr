@@ -2,6 +2,18 @@
 
 **Status:** Design settled 2026-08-08. Implemented by the pull request for item 4 of the roadmap in issue #27; section 5 lists what it built. This document closes issue #45. It also removes the block on issues #37, #8, and #19. The decisions change the engine protocol and the wire schema.
 
+> Amended 2026-10-24, from the review of #124: the names below changed after this document was written. The body of the document keeps the names it was written with.
+>
+> - The field `kind` is now `role`, `CapabilityKind` is now `CapabilityRole`, and `kind_at()` is now `role_at()`. Readers took "kind" for the node's shape (flag, bounded, or enum/mode), which is a different axis; "role" says what the node is for.
+> - The value `behavior` is now `trait`. The definition is "a property, a behavior, or a promise of the engine that no standard `RuntimeParams` field requests", and "behavior" names only one of those three; `streaming_input`, which says the engine accepts incremental audio, is a trait and not a behavior.
+> - The value `limit` is now `constraints`. The value tags the whole `constraints` object, not one number (`PhraseHintsConstraints` holds three bounds), and it now matches the field and class names.
+> - `FlagCap` is now `TraitFlagCapability`, the class of a boolean trait node; its name says "trait" because a requestable boolean needs a class of its own. `RuntimeOverrideCap` is now `LanguageOverrideCapability`, and every other `*Cap` node class is now `*Capability`, such as `PromptCapability` and `DiarizationCapability`. The containers `LanguageCaps`, `GuidanceCaps`, and `StreamingGuidanceCaps` are now `LanguageCapabilities`, `GuidanceCapabilities`, and `StreamingGuidanceCapabilities`. Readers took "Cap" for "upper limit", which is what the constraints are.
+> - `DeclaredCapabilities` is now `Capabilities`. The same class types both layers, `declared_capabilities` at class level and `effective_capabilities` at instance level, so the attribute names the layer and the class does not.
+> - `canonical_json()` is now `to_protocol_dict()`, on `Capabilities` and on `DeclaredEngineMetadata`. Readers took "canonical JSON" for a byte-level canonical form made for hashing; the method returns the capability JSON document, or the metadata JSON document, the JSON-ready dict the protocol defines.
+> - The compliance code `gated_param_not_requestable` is now `gate_target_not_requestable`, because the finding is that the path a gate targets is missing or is not a requestable node. `requestable_node_ungated` keeps its name.
+> - Private names: `_UNGATED_REQUESTABLE_PATHS` is now `_SEPARATELY_GATED_REQUESTABLE_SUFFIXES`, because its entries are mode-relative suffixes, which `effective_candidate_languages` gates instead of the table. `_UNGATED_PORTABLE_FIELDS` is now `_FIELDS_OUTSIDE_GATE_TABLE`, because one of its fields, `candidate_languages`, is gated, by `effective_candidate_languages`; what the fields share is that the table does not list them. `_CapNode` is now `_CapabilityNode`, for the reason given for the `*Cap` classes.
+> - Words: "leaf node" is now "capability node", because a capability node can still carry children such as `always_on` and `constraints`. "Archetype" is now "shape": flag, bounded, and enum/mode are the three shapes of a capability node, and shape and role are two separate axes. A class now "fixes" its role value, where the prose said "pins". The prose no longer says "wire"; it says "clients in other languages" or "the HTTP API".
+
 > Issue #45 calls this topic the "capability ontology". This document uses the
 > word **kind**, because `kind` is the name of the new field.
 

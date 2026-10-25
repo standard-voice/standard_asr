@@ -311,7 +311,7 @@ def _checked_artifact_report(report: object) -> ArtifactReport:
     if not isinstance(report, ArtifactReport):
         raise TypeError(f"report must be an ArtifactReport, not {type(report).__name__}.")
     # ``warnings=False`` on the intermediate dump only, for the reason
-    # DeclaredEngineMetadata.canonical_json() gives: serializing a field whose
+    # DeclaredEngineMetadata.to_protocol_dict() gives: serializing a field whose
     # value is not its declared type emits a pydantic serializer warning, and
     # the ValidationError below carries everything that warning would.
     return ArtifactReport.model_validate(report.model_dump(mode="python", warnings=False))

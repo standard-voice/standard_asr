@@ -41,14 +41,14 @@ from standard_asr.contract.artifacts import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    CandidateLanguagesCap,
+    CandidateLanguagesCapability,
     CandidateLanguagesConstraints,
-    DeclaredCapabilities,
-    DiarizationCap,
-    FlagCap,
-    LanguageCaps,
-    RuntimeOverrideCap,
+    Capabilities,
+    DiarizationCapability,
+    LanguageCapabilities,
+    LanguageOverrideCapability,
     StreamingCapabilities,
+    TraitFlagCapability,
 )
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
@@ -97,9 +97,9 @@ class _DummyParams(ProviderParams):
     beam: int = 1
 
 
-_DUMMY_CAPS = DeclaredCapabilities(
+_DUMMY_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=RuntimeOverrideCap(supported=True)),
+        language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True)),
     )
 )
 
@@ -110,7 +110,7 @@ class _DummyASR:
     tests, none of which depend on audio negotiation."""
 
     properties: ClassVar[_DummyProperties] = _DummyProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _DUMMY_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _DUMMY_CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _DummyParams
 
     def __init__(self) -> None:
@@ -706,9 +706,7 @@ class _StaleResultEngine(EngineBase):
     """
 
     properties: ClassVar[BaseProperties] = _StaleResultProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        batch=BatchCapabilities()
-    )
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(batch=BatchCapabilities())
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="dummy")
@@ -744,7 +742,7 @@ def _mismatch_engine_base_factory() -> _MismatchEngineBase:  # pyright: ignore[r
 #: shape/rate/bytes the standard negotiation actually produced.
 _RECORDED: dict[str, Any] = {}
 
-_REC_CAPS = DeclaredCapabilities(batch=BatchCapabilities())
+_REC_CAPS = Capabilities(batch=BatchCapabilities())
 
 
 def _wav_bytes(rate: int, samples: int = 1600) -> bytes:
@@ -773,7 +771,7 @@ class _RecordingArray8kASR(EngineBase):
     silently up-sampled to 16 kHz."""
 
     properties: ClassVar[BaseProperties] = _Array8kProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _REC_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _REC_CAPS
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="rec")
@@ -804,7 +802,7 @@ class _RecordingEncodedASR(EngineBase):
     receive the original encoded bytes byte-for-byte (passthrough)."""
 
     properties: ClassVar[BaseProperties] = _EncodedProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _REC_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _REC_CAPS
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="rec")
@@ -837,11 +835,11 @@ class _AutoLangConfig(LanguageConfigMixin, BaseConfig[str]):
     default_language: str | None = "auto"
 
 
-_AUTO_LANG_CAPS = DeclaredCapabilities(
+_AUTO_LANG_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(
-            runtime_override=RuntimeOverrideCap(supported=True),
-            candidate_languages=CandidateLanguagesCap(
+        language=LanguageCapabilities(
+            runtime_override=LanguageOverrideCapability(supported=True),
+            candidate_languages=CandidateLanguagesCapability(
                 supported=True,
                 constraints=CandidateLanguagesConstraints(max=2),
             ),
@@ -859,7 +857,7 @@ class _AutoLangASR(EngineBase):
     """
 
     properties: ClassVar[BaseProperties] = _AutoLangProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _AUTO_LANG_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _AUTO_LANG_CAPS
 
     def __init__(self) -> None:
         self.config = _AutoLangConfig(engine="rec")
@@ -2211,7 +2209,7 @@ def _audio_error_factory() -> _AudioErrorASR:  # pyright: ignore[reportUnusedFun
 
 
 class _NoCapsASR(_DummyASR):
-    declared_capabilities: ClassVar[DeclaredCapabilities | None] = None  # type: ignore[assignment]
+    declared_capabilities: ClassVar[Capabilities | None] = None  # type: ignore[assignment]
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
 
 
@@ -2290,9 +2288,9 @@ def _raising_schema_factory() -> _RaisingSchemaASR:  # pyright: ignore[reportUnu
 
 
 class _UnencodableCaps:
-    """Declared capabilities whose canonical JSON is not JSON at all."""
+    """Declared capabilities whose capability JSON document is not JSON at all."""
 
-    def canonical_json(self) -> dict[str, Any]:
+    def to_protocol_dict(self) -> dict[str, Any]:
         """Return a payload no conforming JSON parser accepts.
 
         Returns:
@@ -3210,10 +3208,10 @@ class _StreamEchoSession(TranscriptionSession):
 
 class _StreamEchoEngine(EngineBase):
     properties: ClassVar[BaseProperties] = _StreamProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     def __init__(self) -> None:
@@ -3340,10 +3338,10 @@ class _SpeakerStreamSession(TranscriptionSession):
 class _SpeakerStreamEngine(_StreamEchoEngine):
     """Streaming engine that declares diarization and labels its finals."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     def _start_transcription(
@@ -3427,13 +3425,13 @@ class _StableTextStreamSession(TranscriptionSession):
 class _StableTextStreamEngine(_StreamEchoEngine):
     """Streaming engine that marks stable text on a partial."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            emits_partials=FlagCap(supported=True),
-            partial_stability=FlagCap(supported=True),
+            emits_partials=TraitFlagCapability(supported=True),
+            partial_stability=TraitFlagCapability(supported=True),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     def _start_transcription(
@@ -3582,10 +3580,10 @@ class _WsStructuralSupersedeEngine:
     """The same stream from an engine that is not an ``EngineBase``."""
 
     properties: ClassVar[BaseProperties] = _StreamProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
 
@@ -3608,14 +3606,14 @@ def _ws_structural_supersede_factory() -> (  # pyright: ignore[reportUnusedFunct
 class _WsFailingCapabilitiesEngine(_WsStructuralSupersedeEngine):
     """Its ``effective_capabilities`` property raises ``AttributeError``."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        streaming=StreamingCapabilities(re_segments=TraitFlagCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:
+    def effective_capabilities(self) -> Capabilities:
         raise AttributeError("model")
 
 
@@ -5027,7 +5025,7 @@ def test_metadata_endpoints_contain_plugin_faults_and_never_leak(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Resolving the class was mapped, but EVERYTHING after it -- the
-    # descriptor read, canonical_json(), model_json_schema() -- ran outside
+    # descriptor read, to_protocol_dict(), model_json_schema() -- ran outside
     # any boundary and left the endpoint through Starlette's unhandled path:
     # an undocumented plain 500, and log_exception_safely never ran, so the
     # ASGI server's own traceback logger rendered the chain natively. A
