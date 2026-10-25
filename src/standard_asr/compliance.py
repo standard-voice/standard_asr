@@ -48,7 +48,15 @@ from standard_asr.contract.protocol_version import (
     parse_protocol_version,
     require_supported_protocol,
 )
-from standard_asr.contract.results import Segment, TranscriptionResult, Word
+from standard_asr.contract.results import (
+    DIAG_FLAT_WORDS_MISSING,
+    Diagnostic,
+    Segment,
+    TranscriptionResult,
+    Word,
+    missing_words_diagnostics,
+    text_segments_diagnostics,
+)
 from standard_asr.plugins.discovery import (
     FactoryLoadError,
     ModelRegistry,
@@ -2865,8 +2873,40 @@ def check_transcription_result(
     Behavioral check for batch engines that is **pure**, mirroring
     :func:`check_event_sequence`: it inspects a result the author already
     produced -- it never instantiates or calls an engine (invoking a cloud
-    engine from a compliance run would be a billable side effect). Today it
-    verifies the diarization couple: a result carrying speaker labels anywhere
+    engine from a compliance run would be a billable side effect). It runs
+    three checks.
+
+    The TR.1 text equality: when a view's ``segments`` is a list, the engine
+    MUST build its ``text`` as the segment texts concatenated in list order,
+    in the top-level view and in each ``channels[i]``.
+    ``EngineBase.transcribe()`` delivers a result that breaks it, with a
+    ``text_segments_mismatch`` warning diagnostic (see
+    :func:`~standard_asr.contract.results.text_segments_diagnostics`). This
+    check reports each such view as an error with code
+    ``result_invariant:text_segments_mismatch``, so a test that passes a
+    recorded result to it fails, while an application that receives the
+    same result gets only the warning diagnostic.
+
+    The TR.4 words rule: when a segment of a view carries a ``words`` list,
+    even ``[]``, the engine MUST also set the view's own ``words``.
+    ``EngineBase.transcribe()`` fills a missing ``words`` from the segments
+    where it can and attaches a ``flat_words_missing`` warning diagnostic
+    (see :func:`~standard_asr.runtime.interface.finalize_result`). After the
+    fill, the data no longer shows the defect. So this check reports each
+    ``flat_words_missing`` diagnostic the result carries, and each view that
+    :func:`~standard_asr.contract.results.missing_words_diagnostics` still
+    finds in the data, as an error with code
+    ``result_invariant:flat_words_missing``. Two equal diagnostics count
+    once; a view whose carried diagnostic differs from the detector's, as
+    when an engine attached the detector's diagnostic itself and
+    ``transcribe()`` then filled the view, is reported for each. A test
+    therefore fails whether it passes the result of ``transcribe()`` or the
+    one ``_transcribe`` returned, for example a result recorded straight
+    from the engine. The
+    text equality needs no such step: the standard layer delivers ``text``
+    and the segment texts unchanged, so the data still shows a mismatch.
+
+    The diarization couple: a result carrying speaker labels anywhere
     (top-level ``segments[]`` / ``words[]``, a segment's ``words``, or any
     ``channels[i]`` view) while ``batch.diarization`` is unsupported (or the
     ``batch`` domain is absent -- fail-closed) is a capability⇄result desync,
@@ -2887,10 +2927,31 @@ def check_transcription_result(
             ``engine.declared_capabilities``).
 
     Returns:
-        A :class:`ComplianceReport`; ``passed`` is ``True`` when the result does
-        not exceed the declared capabilities.
+        A :class:`ComplianceReport`; ``passed`` is ``True`` when every view
+        keeps the text equality and the result carries no speaker label
+        beyond the declared ``batch.diarization`` capability. It also
+        requires that the result carries no ``flat_words_missing``
+        diagnostic and that no view's ``words`` is missing.
     """
     issues: list[ComplianceIssue] = []
+    carried = [d for d in result.diagnostics if d.code == DIAG_FLAT_WORDS_MISSING]
+    words_diagnostics: list[Diagnostic] = []
+    for diagnostic in [*carried, *missing_words_diagnostics(result)]:
+        if diagnostic not in words_diagnostics:
+            words_diagnostics.append(diagnostic)
+    for diagnostic in [*text_segments_diagnostics(result), *words_diagnostics]:
+        # The diagnostic code passes through the way check_event_sequence
+        # passes its guard's codes through: CI can match
+        # ``result_invariant:<diagnostic_code>`` without parsing the message,
+        # and the message keeps the human-readable form.
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code=f"result_invariant:{diagnostic.code}",
+                message=f"result invariant violated ({diagnostic.code}): {diagnostic.message}",
+                model=None,
+            )
+        )
     _cross_check_result_capabilities(result, capabilities.batch, issues)
     return ComplianceReport(registry=None, issues=issues)
 

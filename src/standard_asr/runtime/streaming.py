@@ -349,7 +349,9 @@ class TranscriptionEvent(BaseModel):
     Attributes:
         type: The event type.
         segment_id: Stable id of the segment this event concerns.
-        text: The segment's complete current text (cumulative/replace).
+        text: The segment's complete current text (cumulative/replace),
+            including the spaces and punctuation that join it to its
+            neighbors (spec TR.1).
         stable_text: For ``partial`` and ``final``, the prefix of ``text``
             that does not change for as long as the segment lives. A later
             ``partial`` or plain ``final`` of the segment keeps and extends
@@ -632,7 +634,8 @@ class TranscriptionEvent(BaseModel):
 
         Args:
             segment_id: The segment id.
-            text: The segment's complete current text.
+            text: The segment's complete current text, including its
+                boundary whitespace.
             **kw: Additional event fields.
 
         Returns:
@@ -646,7 +649,8 @@ class TranscriptionEvent(BaseModel):
 
         Args:
             segment_id: The segment id.
-            text: The segment's final text.
+            text: The segment's final text, including its boundary
+                whitespace.
             **kw: Additional event fields. Leave ``stable_text`` out: on a
                 ``final`` it is always the whole text.
 
@@ -850,9 +854,10 @@ def reduce_event(order: list[str], texts: dict[str, str], event: TranscriptionEv
     is "list order IS reading order", and a mid-stream ``supersede`` must
     splice its replacements into the retired block's position -- a plain
     dict can only append, which silently reorders the transcript (the
-    cardinal sin). Display text is ``texts`` joined in ``order``
-    (``" ".join(texts[sid] for sid in order if sid in texts)`` for
-    space-delimited languages). Non-text events are ignored.
+    cardinal sin). Display text is ``texts`` concatenated in ``order``
+    with no separator (``"".join(texts[sid] for sid in order if sid in
+    texts)``): each segment text carries its own boundary whitespace, in
+    every language. Non-text events are ignored.
 
     This helper assumes a lifecycle-legal stream, which is what
     :class:`TranscriptionSession` delivers (its guard suppresses illegal
@@ -1041,9 +1046,8 @@ class StreamReducer:
     The engine's measurement is stored VERBATIM -- a missing ``start``/``end``
     stays ``None`` on the reduced :class:`~standard_asr.contract.results.Segment`
     (``timestamp_status`` derives from the values; nothing is fabricated and
-    there is no side-channel marker) -- and the reducer preserves reading
-    order, sorting by ``start`` only when *every* retained segment
-    carries one.
+    there is no side-channel marker) -- and the reducer keeps the reading
+    order the engine announced, timed or not.
     """
 
     def __init__(self) -> None:
@@ -1201,13 +1205,13 @@ class StreamReducer:
         """Build the reduced transcription result.
 
         Returns:
-            A :class:`TranscriptionResult` from the committed segments.
-            Ordered by ``start`` when every retained segment carries one
-            (``measured`` and ``start_only`` alike -- a real onset is a real
-            time position); otherwise the ledger's reading order is used
-            (declaration order with supersede replacements IN PLACE), and
-            ``text`` joins segment texts in the same list order either
-            way. When any retained segment lacks a full measured span
+            A :class:`TranscriptionResult` from the committed segments, in
+            the ledger's reading order: the order in which the engine first
+            announced each segment, with supersede replacements IN PLACE.
+            The reducer never re-sorts by time. ``text`` is the segment
+            texts concatenated in that order with no separator, so it keeps
+            every space the engine sent, a leading one included. When any
+            retained segment lacks a full measured span
             (``timestamp_status != "measured"``), the result carries the
             aggregate ``segment_timestamps_unavailable`` warning diagnostic;
             the per-segment truth is the nullable ``start``/``end`` values
@@ -1223,18 +1227,32 @@ class StreamReducer:
             state, and the renderers' null rule (``None`` + non-empty text
             synthesizes a whole-text fallback cue; ``[]`` renders zero
             cues) depends on the distinction being kept on the wire.
+
+            ``words`` is the retained segments' words, concatenated in the
+            same reading order (spec TR.4), or ``None`` when no retained
+            segment carries a ``words`` list. The reducer has no other
+            source of words and never sees the request, so ``None`` here
+            means only that no retained segment carries words. It does
+            not show that word timestamps were not requested: a silent
+            session that requested them also gives ``None``, not ``[]``.
         """
         order = [sid for sid in self._ledger.order() if sid in self._segments]
-        starts = {sid: seg.start for sid in order if (seg := self._segments[sid]).start is not None}
-        if order and len(starts) == len(order):
-            order.sort(key=lambda sid: starts[sid])
         segments = [self._segments[sid] for sid in order]
-        # Strip each segment and drop empties so a segment carrying edge
-        # whitespace (or an empty committed segment) does not inject a double
-        # space / stray separator into the reduced transcript. Segments are
-        # space-joined as the standard default; a no-space-language (CJK) separator is a
-        # separate spec question, not silently changed here.
-        text = " ".join(part for part in (segment.text.strip() for segment in segments) if part)
+        # Each segment text carries its own boundary whitespace (spec TR.1),
+        # so the transcript is the plain concatenation: whether two segments
+        # need a space between them is known only to the engine.
+        text = "".join(segment.text for segment in segments)
+        # The flat words are the segments' words in reading order (spec
+        # TR.4), so a consumer of ``result.words`` sees what the segments
+        # carry. None when no retained segment carries a list, because []
+        # would claim that word timestamps ran. The reducer never sees the
+        # request, so this None cannot tell "not requested" from a silent
+        # session that requested them.
+        words = (
+            [word for segment in segments for word in segment.words or []]
+            if any(segment.words is not None for segment in segments)
+            else None
+        )
         diagnostics: list[Diagnostic] = list(self._suppressions)
         unmeasured = [sid for sid in order if self._segments[sid].timestamp_status != "measured"]
         if unmeasured:
@@ -1264,6 +1282,7 @@ class StreamReducer:
             # `None` with non-empty text synthesizes a whole-text fallback
             # cue -- an empty session must never fabricate one.
             segments=segments,
+            words=words,
             detected_language=self._detected_language,
             diagnostics=diagnostics,
         )

@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from pydantic import Field
 
-from standard_asr import TranscriptionResult
+from standard_asr import TranscriptionResult, finalize_result
 from standard_asr import compliance as compliance_module
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import InputKind
@@ -3432,6 +3432,9 @@ def test_check_transcription_result_flags_segment_word_speaker() -> None:
     result = TranscriptionResult(
         text="hi there",
         segments=[Segment(start=0.0, end=1.0, text="hi there", words=words)],
+        # An empty flat list satisfies the presence check and keeps the label
+        # only in the nested words, so the test isolates the nested scan.
+        words=[],
     )
     report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
     assert _flags_result_exceeds(report)
@@ -3460,6 +3463,133 @@ def test_check_transcription_result_flags_channel_speaker() -> None:
     )
     report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
     assert _flags_result_exceeds(report)
+
+
+def test_check_transcription_result_flags_text_that_is_not_the_concatenated_segments() -> None:
+    # An engine author's test fails on a TR.1 mismatch: transcribe() only
+    # warns, the compliance check fails, with the diagnostic code passed through.
+    result = TranscriptionResult(
+        text="hello world",
+        segments=[
+            Segment(start=0.0, end=1.0, text="hello"),
+            Segment(start=1.0, end=2.0, text="world"),
+        ],
+    )
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is False
+    [issue] = [i for i in report.issues if i.code == "result_invariant:text_segments_mismatch"]
+    assert issue.level == "error"
+    assert "differ at code point index 5" in issue.message
+    assert "hello" not in issue.message
+
+
+def test_check_transcription_result_flags_text_over_an_empty_segment_list() -> None:
+    result = TranscriptionResult(text="x", segments=[])
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is False
+    [issue] = [i for i in report.issues if i.code == "result_invariant:text_segments_mismatch"]
+    assert "segments is an empty list" in issue.message
+
+
+def test_check_transcription_result_flags_an_already_disclosed_result() -> None:
+    # transcribe() attaches the warning to the result an author records. The
+    # compliance check still reports the mismatch as an error: it recomputes
+    # the equality instead of reading the diagnostics.
+    result = finalize_result(
+        TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+    )
+    assert [d.code for d in result.diagnostics] == ["text_segments_mismatch"]
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is False
+    assert [i for i in report.issues if i.code == "result_invariant:text_segments_mismatch"]
+
+
+def test_check_transcription_result_flags_missing_flat_words_raw_and_finalized() -> None:
+    # The raw result shows the defect in its data; the finalized result no
+    # longer does, because transcribe() filled the words, so the check reads
+    # the diagnostic it carries instead. Both fail with the same code.
+    raw = TranscriptionResult(
+        text="a",
+        segments=[
+            Segment(start=0.0, end=1.0, text="a", words=[Word(start=0.0, end=0.1, text="a")])
+        ],
+    )
+    for result in (raw, finalize_result(raw)):
+        report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+        assert report.passed is False
+        [issue] = [i for i in report.issues if i.code == "result_invariant:flat_words_missing"]
+        assert issue.level == "error"
+    assert finalize_result(raw).words is not None
+
+
+def test_check_transcription_result_reports_each_missing_words_view_once() -> None:
+    # An unfilled channel: finalize_result() attaches the detector's own
+    # diagnostic, so the carried one and the recomputed one are equal and the
+    # view is reported once. Two equal carried diagnostics count once too. A
+    # wrapper that adds an unfilled channel to a finalized result gets both
+    # views reported: the filled top level from its diagnostic, the channel
+    # from the data.
+    word = Word(start=0.0, end=0.1, text="c")
+    channel_segment = Segment(start=0.0, end=1.0, text="c", words=[word], channel=1)
+    exception = finalize_result(
+        TranscriptionResult(
+            text="c",
+            segments=[Segment(start=0.0, end=1.0, text="c", channel=1)],
+            channels=[ChannelResult(channel=1, text="c", segments=[channel_segment])],
+        )
+    )
+    assert exception.channels is not None
+    assert exception.channels[0].words is None
+    report = check_transcription_result(exception, capabilities=_DIAR_BATCH_CAPS)
+    assert [i.code for i in report.issues] == ["result_invariant:flat_words_missing"]
+    duplicated = exception.model_copy(
+        update={"diagnostics": [*exception.diagnostics, *exception.diagnostics]}
+    )
+    report = check_transcription_result(duplicated, capabilities=_DIAR_BATCH_CAPS)
+    assert [i.code for i in report.issues] == ["result_invariant:flat_words_missing"]
+    filled = finalize_result(
+        TranscriptionResult(
+            text="c", segments=[Segment(start=0.0, end=1.0, text="c", words=[word])]
+        )
+    )
+    wrapped = filled.model_copy(
+        update={"channels": [ChannelResult(channel=1, text="c", segments=[channel_segment])]}
+    )
+    report = check_transcription_result(wrapped, capabilities=_DIAR_BATCH_CAPS)
+    assert [i.code for i in report.issues] == ["result_invariant:flat_words_missing"] * 2
+    assert "TranscriptionResult.words" in report.issues[0].message
+    assert "ChannelResult(channel=1).words" in report.issues[1].message
+
+
+def test_check_transcription_result_passes_a_result_with_its_own_flat_words() -> None:
+    result = TranscriptionResult(
+        text="a",
+        segments=[
+            Segment(start=0.0, end=1.0, text="a", words=[Word(start=0.0, end=0.1, text="a")])
+        ],
+        words=[Word(start=0.0, end=0.1, text="a")],
+    )
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert not [i for i in report.issues if i.code.startswith("result_invariant:")]
+
+
+def test_check_transcription_result_passes_the_text_equality() -> None:
+    result = TranscriptionResult(
+        text="hello world",
+        segments=[
+            Segment(start=0.0, end=1.0, text="hello"),
+            Segment(start=1.0, end=2.0, text=" world"),
+        ],
+    )
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is True
+    assert not any(i.code.startswith("result_invariant:") for i in report.issues)
 
 
 def test_check_transcription_result_passes_when_supported() -> None:

@@ -32,6 +32,7 @@ from standard_asr import (
     DiarizationRequest,
     RuntimeParams,
     TranscriptionResult,
+    finalize_result,
 )
 from standard_asr.contract.artifacts import (
     ArtifactAction,
@@ -59,6 +60,7 @@ from standard_asr.contract.metadata import (
     DeclaredEngineMetadata,
 )
 from standard_asr.contract.params import ProviderParams
+from standard_asr.contract.results import Segment, Word
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -136,6 +138,45 @@ class _CjkASR(_DummyASR):
 
 def _cjk_factory() -> _CjkASR:  # pyright: ignore[reportUnusedFunction]
     return _CjkASR()
+
+
+class _MismatchASR(_DummyASR):
+    """Returns a text that is not its segment texts concatenated (a TR.1 fault)."""
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+
+
+def _mismatch_factory() -> _MismatchASR:  # pyright: ignore[reportUnusedFunction]
+    return _MismatchASR()
+
+
+class _NestedWordsASR(_DummyASR):
+    """Nests words in its segment and leaves the flat ``words`` as ``None`` (a TR.4 fault)."""
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(
+            text="hello",
+            segments=[
+                Segment(
+                    start=0.0,
+                    end=0.5,
+                    text="hello",
+                    words=[Word(start=0.0, end=0.5, text="hello")],
+                )
+            ],
+            words=None,
+        )
+
+
+def _nested_words_factory() -> _NestedWordsASR:  # pyright: ignore[reportUnusedFunction]
+    return _NestedWordsASR()
 
 
 def _fail_factory() -> _FailASR:  # pyright: ignore[reportUnusedFunction]
@@ -680,6 +721,23 @@ def _stale_result_factory() -> _StaleResultEngine:  # pyright: ignore[reportUnus
     return _StaleResultEngine()
 
 
+class _MismatchEngineBase(_StaleResultEngine):
+    """A real ``EngineBase`` whose ``_transcribe`` builds a text that breaks TR.1."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+
+
+def _mismatch_engine_base_factory() -> _MismatchEngineBase:  # pyright: ignore[reportUnusedFunction]
+    return _MismatchEngineBase()
+
+
 # --- Real EngineBase engines that record what negotiation hands them ----------
 
 #: Set by the recording engines' ``_transcribe`` so tests can assert on the
@@ -905,6 +963,102 @@ def test_create_app_endpoints() -> None:
     transcribe: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert transcribe.status_code == 200
     assert transcribe.json()["result"]["text"] == "dummy"
+
+
+def test_server_discloses_text_segments_mismatch_for_a_structural_engine() -> None:
+    # The standard layer runs no check on its own for an engine that does
+    # not derive from EngineBase. The server runs it, so a client learns
+    # about a text that is not the concatenated segment texts the same way
+    # it would from an EngineBase engine: the result as the engine built
+    # it, plus the warning.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_mismatch_factory"))
+    client = TestClient(app)
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode("utf-8")}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["text"] == "hello world"
+    assert [d["code"] for d in result["diagnostics"]] == ["text_segments_mismatch"]
+    assert result["diagnostics"][0]["level"] == "warning"
+    assert "hello" not in result["diagnostics"][0]["message"]
+    # A client that rebuilds the result from the JSON and runs the disclosure
+    # itself gets the same object back: the diagnostic survived the round trip.
+    parsed = TranscriptionResult.model_validate(result)
+    assert finalize_result(parsed) is parsed
+
+
+def test_server_discloses_text_segments_mismatch_once_for_an_engine_base() -> None:
+    # transcribe() ran the check inside EngineBase, so the server's own call
+    # adds nothing: the response carries the warning exactly once, on the JSON
+    # route and on the multipart route alike.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_mismatch_engine_base_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(_wav_bytes(16000)).decode()}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["text"] == "hello world"
+    codes = [d["code"] for d in result["diagnostics"]]
+    assert codes.count("text_segments_mismatch") == 1
+
+    files = {"file": ("audio.wav", _wav_bytes(rate=16000), "audio/wav")}
+    resp = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    codes = [d["code"] for d in resp.json()["result"]["diagnostics"]]
+    assert codes.count("text_segments_mismatch") == 1
+
+    # The structural engine gets the same disclosure on the multipart route.
+    app = server_module.create_app(registry=_registry_for("_mismatch_factory"))
+    client = TestClient(app)
+    resp = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    assert [d["code"] for d in resp.json()["result"]["diagnostics"]] == ["text_segments_mismatch"]
+
+
+def test_server_fills_the_flat_words_for_a_structural_engine() -> None:
+    # The same call that checks the text fills a missing `words` (spec TR.4).
+    # A client of either batch route gets the words the engine nested in its
+    # segment, in the flat list too, plus the warning diagnostic that says
+    # the standard layer filled it.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    def assert_filled(result: Any) -> None:
+        assert result["text"] == "hello"
+        assert result["words"] == result["segments"][0]["words"]
+        assert [w["text"] for w in result["words"]] == ["hello"]
+        assert [d["code"] for d in result["diagnostics"]] == ["flat_words_missing"]
+        assert result["diagnostics"][0]["level"] == "warning"
+        assert "filled" in result["diagnostics"][0]["message"]
+        # Rebuilt from the JSON, the result is valid and still carries the
+        # filled words and the diagnostic. The data no longer shows that
+        # `words` was missing, so the diagnostic is the only record of the
+        # fill. A second finalization finds nothing to add and returns the
+        # same object.
+        parsed = TranscriptionResult.model_validate(result)
+        assert parsed.segments is not None
+        assert parsed.words == parsed.segments[0].words
+        assert [d.code for d in parsed.diagnostics] == ["flat_words_missing"]
+        assert finalize_result(parsed) is parsed
+
+    app = server_module.create_app(registry=_registry_for("_nested_words_factory"))
+    client = TestClient(app)
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode("utf-8")}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    assert_filled(resp.json()["result"])
+
+    files = {"file": ("audio.wav", _wav_bytes(rate=16000), "audio/wav")}
+    resp = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    assert_filled(resp.json()["result"])
 
 
 def test_server_array_engine_keeps_native_rate_through_negotiation() -> None:

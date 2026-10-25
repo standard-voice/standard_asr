@@ -43,6 +43,24 @@ from pydantic_core import PydanticCustomError
 #: :mod:`standard_asr.contract.language` for the same reason.
 DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE = "segment_timestamps_unavailable"
 
+#: Diagnostic code, at level ``"warning"``, for one view of a result -- the
+#: top level, or one :class:`ChannelResult` -- whose ``segments`` is a list and
+#: whose ``text`` is not those segment texts concatenated in list order (spec
+#: TR.1). :func:`text_segments_diagnostics` builds these diagnostics, and its
+#: docstring names the calls that attach them.
+DIAG_TEXT_SEGMENTS_MISMATCH = "text_segments_mismatch"
+
+#: Diagnostic code, at level ``"warning"``, for one view of a result: the
+#: top level, or one :class:`ChannelResult`. It marks a view whose own
+#: ``words`` is ``None`` while any of its segments carries a ``words`` list,
+#: even ``[]`` (spec TR.4). "Flat" in this code means the view's own list,
+#: as opposed to the lists inside its segments.
+#: :func:`missing_words_diagnostics` builds these diagnostics.
+#: :func:`~standard_asr.runtime.interface.finalize_result` fills the missing
+#: ``words`` where it can and attaches a diagnostic with this code for each
+#: view it found, whose message says when it filled the view.
+DIAG_FLAT_WORDS_MISSING = "flat_words_missing"
+
 
 def to_json_value(value: object) -> JsonValue:
     """Project a Python value into the wire value space.
@@ -164,7 +182,12 @@ class Diagnostic(BaseModel):
     """A structured, non-fatal notification from the standard layer.
 
     Diagnostics report lossy conversions, assumed parameters, best_effort
-    degradations, and similar non-ideal paths.
+    degradations, and similar non-ideal paths. They also disclose an engine
+    fault in a result that the standard layer delivers instead of rejecting,
+    such as a ``text`` that is not the segment texts concatenated
+    (``text_segments_mismatch``). The standard layer may also have corrected
+    the fault, as when it fills ``words`` that the engine left out
+    (``flat_words_missing``).
 
     Attributes:
         level: Severity, ``"info"`` or ``"warning"``.
@@ -341,17 +364,38 @@ class Segment(BaseModel):
         channel)`` overlapping segments, ``None`` sorting before any real
         label). A ``start=None`` segment has no time position: the producer
         keeps the list in READING order instead (list order is the reading
-        order, and ``TranscriptionResult.text`` joins segment texts in list
-        order), so a single unmeasured segment never scrambles -- or forces
-        fabricated positions into -- an otherwise real timeline.
+        order, and ``TranscriptionResult.text`` is the segment texts
+        concatenated in list order), so a single unmeasured segment never
+        scrambles -- or forces fabricated positions into -- an otherwise real
+        timeline.
+
+        Text: ``text`` carries every character this segment adds to the
+        transcript, including the spaces and punctuation that join it to the
+        segments around it. A space may end one segment, start the next, or
+        be a segment of its own, but it appears only once. Concatenating the texts of
+        consecutive segments with no separator gives the transcript: English
+        ``"Hello"`` then ``" world."``, Chinese ``"今天"`` then ``"天气很好。"``.
+        The standard layer never inserts, strips, or collapses whitespace,
+        so an engine that sends ``"Hello"`` then ``"world"`` produces
+        ``"Helloworld"`` everywhere.
 
     Attributes:
         start: Segment start time in seconds (origin = first submitted sample;
             non-negative, finite), or ``None`` when unmeasured.
         end: Segment end time in seconds (non-negative, finite, ``>= start``),
             or ``None`` when unmeasured. Requires ``start``.
-        text: Segment transcript text.
-        words: Optional word-level details for this segment.
+        text: Segment transcript text, boundary whitespace included.
+        words: The result's words that belong to this segment, as the same
+            ``Word`` values in the same order (spec TR.4). ``None`` when the
+            engine does not nest them. The engine decides which words
+            belong to a segment, so a word can cross the segment's
+            measured boundary. When a segment carries ``words``, even
+            ``[]``, the engine MUST also fill the ``words`` of the result or
+            channel that holds it (spec TR.4). If the engine leaves that
+            ``words`` as ``None``,
+            :func:`~standard_asr.runtime.interface.finalize_result` fills it
+            from the segments where it can, and attaches a
+            ``flat_words_missing`` diagnostic.
         speaker: Optional speaker label (authoritative diarization shape).
         channel: Optional channel index for provenance (``>= 0``).
         avg_logprob: Optional average log-probability.
@@ -381,7 +425,9 @@ class Segment(BaseModel):
             "unmeasured; requires a non-null start."
         ),
     )
-    text: str = Field(..., description="Segment transcript text.")
+    text: str = Field(
+        ..., description="Segment text, including the spaces that join it to its neighbors."
+    )
     words: list[Word] | None = Field(
         default=None, description="Word-level details for this segment."
     )
@@ -527,9 +573,27 @@ class ChannelResult(BaseModel):
 
     Attributes:
         channel: Channel index.
-        text: Full transcript for this channel.
-        segments: Optional segment-level details for this channel.
-        words: Optional flattened word-level details for this channel.
+        text: Full transcript for this channel. When ``segments`` is a list,
+            the engine MUST build ``text`` as the segment texts concatenated
+            in list order, with no separator (spec TR.1). The validators that
+            run when the object is built do not check this; see
+            :func:`text_segments_diagnostics`. The ``text`` can start or end
+            with a space: in the top-level list, this channel's first or last
+            segment can carry the space that joins it to another channel's
+            segment (spec TR.1).
+        segments: The top-level segments that belong to this channel, as the
+            same ``Segment`` values in the same order (spec TR.4). This is an
+            engine obligation that nothing checks.
+        words: The top-level words that belong to this channel, as the same
+            ``Word`` values in the same order (spec TR.4), so they follow this
+            channel's segment order. A segment's own ``words`` are the words
+            of this list that belong to it. Nothing checks that these
+            values correspond either. If the engine leaves ``words`` as
+            ``None`` while a segment of this channel carries ``words``, even
+            ``[]``, :func:`~standard_asr.runtime.interface.finalize_result`
+            attaches a ``flat_words_missing`` diagnostic. It also fills
+            ``words`` from this channel's segments, unless the top-level
+            ``words`` stays ``None``.
 
     Raises:
         ValueError: If field validation fails.
@@ -538,7 +602,10 @@ class ChannelResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     channel: int = Field(..., ge=0, description="Channel index (>= 0).")
-    text: str = Field(..., description="Full transcript for this channel.")
+    text: str = Field(
+        ...,
+        description="Channel transcript; the segment texts concatenated when segments is a list.",
+    )
     segments: list[Segment] | None = Field(
         default=None, description="Segment-level details for this channel."
     )
@@ -552,41 +619,83 @@ class TranscriptionResult(BaseModel):
 
     The top-level ``text`` / ``segments`` / ``words`` are always the complete,
     channel- and speaker-agnostic transcription. For multi-channel audio they
-    are the time-merge of all channels (never channel-0-only), so ignoring
-    ``channels`` is always safe and lossless.
+    hold every channel's segments and words in reading order, not channel 0
+    alone, so ignoring ``channels`` is always safe and lossless.
 
     Attributes:
-        text: Full transcript (required).
+        text: Full transcript (required). When ``segments`` is a list, the
+            engine MUST build ``text`` as
+            ``"".join(segment.text for segment in segments)`` (spec TR.1), so
+            ``[]`` segments require ``text == ""``; an engine that has text
+            but no segments sets ``segments=None``. Each segment text carries
+            the spaces and punctuation that join it to its neighbors; nothing
+            adds a separator or strips one. The standard layer keeps whatever
+            the engine sent, so ``text`` can start with a space, as Whisper's
+            does in English and other space-delimited scripts. The
+            validators that run when the object is built do not check the
+            equality; :func:`text_segments_diagnostics` describes the check
+            and the diagnostic that a result breaking it carries. On a
+            multi-channel result the equality applies to the top-level list
+            and to each channel. Each segment's boundary whitespace joins it
+            to its neighbors in that list, whichever channel they come from
+            (spec TR.1). A ``ChannelResult`` holds the same values as its
+            channel's segments in that list (spec TR.4), so its ``text`` can
+            start or end with a space.
         detected_language: Detected language as a well-formed BCP-47 tag in
             ``auto`` mode; ``None`` when not applicable.
         language_confidence: Detection confidence in ``[0, 1]``.
         duration: Audio duration in seconds, if known (non-negative, finite).
-        segments: Segments across all channels, if available. Segments WITH a
-            ``start`` SHOULD be sorted by ``(start, channel, speaker)``
-            (monotonic within a channel; ``speaker`` is the final tie-break,
-            ``None`` sorting first); a ``start=None`` segment has no time
-            position, so the list stays in READING order instead (list order
-            is the reading order; ``text`` joins segment texts in list
-            order). The ordering is an **engine obligation**, neither
-            enforced at construction nor checked by the compliance suite
-            (the streaming reducer keeps arrival order whenever any retained
-            segment lacks a ``start``). The SRT/VTT renderers' defensive
-            re-sort of measured cues is the only standard-layer safety net.
-        words: Flattened word-level details, if available.
+        segments: Segments across all channels, if available. List order is
+            the reading order, and ``text`` is the segment texts
+            concatenated in that order. Segments WITH a ``start`` SHOULD be
+            sorted by ``(start, channel, speaker)`` (monotonic within a
+            channel; ``speaker`` is the final tie-break, ``None`` sorting
+            first); a ``start=None`` segment has no time position, so the
+            engine places it by reading order. The ordering is an **engine
+            obligation**, neither enforced at construction nor checked by
+            the compliance suite: the streaming reducer keeps the order in
+            which the engine announced the segments and never re-sorts. The
+            SRT/VTT renderers' defensive re-sort of measured cues is the only
+            standard-layer safety net.
+        words: Every ``Word`` the engine supplied, in segment order: the
+            first segment's words, then the second segment's, and so on.
+            When ``segments`` is ``None``, the list order is the reading
+            order the engine gives; the standard layer neither makes
+            segments from word timestamps nor reorders the words. Where two
+            channels' segments overlap in time, the words stay grouped by
+            segment. A segment's own ``words``, when present, are the words
+            of this list that belong to it (spec TR.4). That correspondence
+            is an engine obligation that nothing checks. If the engine
+            leaves ``words`` as ``None`` while a segment carries ``words``,
+            even ``[]``, :func:`~standard_asr.runtime.interface.finalize_result`
+            fills it from the segments in segment order. It also attaches a
+            ``flat_words_missing`` diagnostic. Each word keeps its own field
+            values here, so a word whose ``speaker`` is ``None`` stays
+            ``None`` even when its segment has a speaker. An application that
+            needs the speaker such a word inherits (spec TR.5) reads the word
+            in its segment's ``words``; it must not guess a word's segment
+            from timestamps.
         channels: Per-channel results when channel separation was performed. Each
             ``channel`` index MUST be unique (one entry per channel),
             enforced at construction.
-        diagnostics: Conversion / best_effort / degradation diagnostics.
+        diagnostics: Conversion / best_effort / degradation diagnostics, and
+            the standard layer's disclosures about the result itself, such
+            as ``text_segments_mismatch`` and ``flat_words_missing``.
         extra: Engine-specific / experimental data (incl. provider formats).
 
     Raises:
         ValueError: If field validation fails (incl. NaN/Inf, a negative
-            ``duration``, or a malformed ``detected_language``).
+            ``duration``, or a malformed ``detected_language``). Also if two
+            ``channels`` entries share a ``channel`` index, or if a
+            ``channels`` entry carries ``segments`` or ``words`` while the
+            top-level field is ``None``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    text: str = Field(..., description="Full transcript text.")
+    text: str = Field(
+        ..., description="Full transcript; the segment texts concatenated when segments is a list."
+    )
     detected_language: str | None = Field(
         default=None, description="Detected language (well-formed BCP-47) in auto mode."
     )
@@ -597,7 +706,8 @@ class TranscriptionResult(BaseModel):
         default=None, ge=0.0, description="Audio duration in seconds, if known (>= 0)."
     )
     segments: list[Segment] | None = Field(
-        default=None, description="Time-ordered segments, if available."
+        default=None,
+        description="Segments in reading order, if available; text is their texts concatenated.",
     )
     words: list[Word] | None = Field(
         default=None, description="Flattened word-level details, if available."
@@ -673,14 +783,14 @@ class TranscriptionResult(BaseModel):
         ``start`` sorted by ``(start, channel, speaker)``, monotonic within a
         channel; ``start=None`` segments keeping reading order) is
         intentionally *not* enforced here: the streaming reducer
-        (:class:`~standard_asr.runtime.streaming.StreamReducer`) legitimately preserves
-        arrival order whenever any retained segment lacks a ``start`` and
-        sorts only by ``start`` otherwise (no channel/speaker tie-break), so
-        a strict ``(start, channel,
-        speaker)`` construct-time check would reject valid reduced results. For
-        the same reason the compliance suite does not check ordering either;
-        ordering is an engine obligation, and the renderers' defensive re-sort
-        at their boundary is the only standard-layer safety net.
+        (:class:`~standard_asr.runtime.streaming.StreamReducer`) keeps the
+        order in which the engine announced the segments and never re-sorts,
+        so a strict ``(start, channel, speaker)`` construct-time check would
+        reject a reduced result whenever the engine announced segments out
+        of time order. For the same reason the compliance suite does not
+        check ordering either; ordering is an engine obligation, and the
+        renderers' defensive re-sort at their boundary is the only
+        standard-layer safety net.
 
         Returns:
             The validated result.
@@ -713,25 +823,256 @@ class TranscriptionResult(BaseModel):
                         + name
                         + " but the top-level "
                         + name
-                        + " is None; the standard requires the top level to be "
-                        "derivable from channels (ignoring channels must be "
-                        "lossless). Populate the top-level "
+                        + " is None; the standard requires the top level to hold "
+                        "every channel's "
                         + name
-                        + " with the time-merged union of all channels' "
+                        + " (ignoring channels must be lossless). Populate the "
+                        "top-level "
                         + name
-                        + ".",
+                        + " with every channel's "
+                        + name
+                        + " in the order TR.4 gives: segments in reading order, "
+                        "words in segment order.",
                     )
         return self
+
+
+def _text_segments_mismatch(
+    owner: str, text: str, segments: Sequence[Segment] | None
+) -> Diagnostic | None:
+    """Describe a ``text`` that is not the segment texts concatenated in list order.
+
+    The rule is exact: no separator, no stripping, no whitespace collapsing
+    (spec TR.1). A segment's text carries the spaces and punctuation that
+    join it to its neighbors, so the standard layer never inserts or removes
+    a character. The message names the view, the first code point index at
+    which the two strings differ, and both lengths. It quotes no transcript
+    text, because a transcript can be long or private. An empty list gets
+    its own message: there the remedy is ``segments=None`` when the engine
+    has text, and the general remedy, building ``text`` from the segments,
+    would drop the transcript.
+
+    Args:
+        owner: The view the message names (``TranscriptionResult`` or
+            ``ChannelResult(channel=N)``).
+        text: The view's ``text``.
+        segments: The view's ``segments``; ``None`` means that ``text``
+            stands alone, so there is nothing to check.
+
+    Returns:
+        A ``text_segments_mismatch`` warning diagnostic, or ``None`` when
+        ``segments`` is ``None`` or ``text`` equals
+        ``"".join(segment.text for segment in segments)``.
+    """
+    if segments is None:
+        return None
+    concatenated = "".join(segment.text for segment in segments)
+    if text == concatenated:
+        return None
+    if not segments:
+        return Diagnostic(
+            level="warning",
+            code=DIAG_TEXT_SEGMENTS_MISMATCH,
+            message=(
+                f"{owner}.segments is an empty list, but text is not empty. In code "
+                f"points, text has length {len(text)} and the concatenated segment "
+                "texts have length 0, so they differ at code point index 0, counting "
+                "from 0. The standard layer delivers both values as the engine "
+                "returned them, so an application that reads text and one that "
+                "renders the segments show different transcripts. An empty list means "
+                "that segmentation ran and found nothing, so the engine MUST set text "
+                "to the empty string (spec TR.1). An engine that has text but no "
+                "segments sets segments=None and keeps the text."
+            ),
+        )
+    position = next(
+        (i for i, (a, b) in enumerate(zip(text, concatenated, strict=False)) if a != b),
+        min(len(text), len(concatenated)),
+    )
+    return Diagnostic(
+        level="warning",
+        code=DIAG_TEXT_SEGMENTS_MISMATCH,
+        message=(
+            f"{owner}.text is not the segment texts concatenated in list order. They "
+            f"differ at code point index {position}, counting from 0. In code points, "
+            f"text has length {len(text)} and the concatenated segment texts have "
+            f"length {len(concatenated)}. The standard layer delivers both values as "
+            "the engine returned them, so an application that reads text and one that "
+            "renders the segments show different transcripts. The engine MUST build "
+            'text as "".join(segment.text for segment in segments), with no separator '
+            "and no stripping (spec TR.1). Each segment text therefore carries the "
+            "spaces and punctuation that join it to its neighbors. The fix is in the "
+            "engine: build text from the segments, or put the missing space into the "
+            "segment text that should carry it."
+        ),
+    )
+
+
+def text_segments_diagnostics(result: TranscriptionResult) -> list[Diagnostic]:
+    """Return a diagnostic for each view of ``result`` that breaks the TR.1 equality.
+
+    When a view's ``segments`` is a list, the engine MUST build its ``text``
+    as ``"".join(segment.text for segment in segments)`` (spec TR.1). The
+    views are the top level and each ``ChannelResult``. The function is pure:
+    it returns one ``text_segments_mismatch`` warning diagnostic per view
+    that differs and modifies nothing. The validators that run when the
+    result is built do not reject a mismatch: the standard layer delivers
+    both values as the engine returned them, with these diagnostics.
+
+    :meth:`~standard_asr.runtime.interface.EngineBase.transcribe` attaches
+    these diagnostics to every result it returns, through
+    :func:`~standard_asr.runtime.interface.finalize_result`. That function
+    attaches them to a result from any engine and adds none that the result
+    already carries.
+    :func:`~standard_asr.compliance.check_transcription_result` reports each
+    one as an error. The streaming reducer builds ``text`` by the same
+    concatenation, so a reduced result never produces one.
+
+    Args:
+        result: The result to check.
+
+    Returns:
+        The diagnostics, in view order: the top-level view first, then the
+        channels in list order. Empty when every view keeps the equality.
+    """
+    found: list[Diagnostic] = []
+    diagnostic = _text_segments_mismatch("TranscriptionResult", result.text, result.segments)
+    if diagnostic is not None:
+        found.append(diagnostic)
+    for channel in result.channels or ():
+        diagnostic = _text_segments_mismatch(
+            f"ChannelResult(channel={channel.channel})", channel.text, channel.segments
+        )
+        if diagnostic is not None:
+            found.append(diagnostic)
+    return found
+
+
+_FLAT_WORDS_MISSING_FACTS = (
+    "The engine left {owner}.words as None, but {with_words} of its {total} "
+    "segments carry a words list. An empty list counts, because it says that "
+    "word timestamps ran. If words stays None, an application that reads only "
+    "{owner}.words misses the words in the segments. It also reads None as "
+    "'word timestamps were not requested' (spec TR.1). "
+)
+_FLAT_WORDS_MISSING_REMEDY = (
+    "The engine MUST fill words with every Word it supplied, in segment order, "
+    "and with [] when it supplied none (spec TR.4)."
+)
+_FLAT_WORDS_FILLED = (
+    "The standard layer filled words by copying those segments' words in "
+    "segment order, and checked nothing about them. "
+)
+
+
+def missing_words_counts(
+    words: Sequence[Word] | None, segments: Sequence[Segment] | None
+) -> tuple[int, int] | None:
+    """Count the segments that carry a ``words`` list when a view's ``words`` is missing.
+
+    Args:
+        words: The view's own ``words``.
+        segments: The view's ``segments``.
+
+    Returns:
+        ``(with_words, total)``: the number of segments whose ``words`` is a
+        list, and the number of segments. ``None`` when nothing is missing:
+        ``words`` is a list, ``segments`` is ``None`` or ``[]``, or no segment
+        carries a ``words`` list.
+    """
+    if words is not None or not segments:
+        return None
+    with_words = sum(1 for segment in segments if segment.words is not None)
+    if with_words == 0:
+        return None
+    return with_words, len(segments)
+
+
+def flat_words_missing_diagnostic(
+    owner: str, with_words: int, total: int, *, filled: bool
+) -> Diagnostic:
+    """Build the ``flat_words_missing`` diagnostic for one view.
+
+    Args:
+        owner: The view the message names (``TranscriptionResult`` or
+            ``ChannelResult(channel=N)``).
+        with_words: The number of the view's segments whose ``words`` is a list.
+        total: The number of the view's segments.
+        filled: Whether the standard layer filled the view's ``words``. The
+            message says so when it did; otherwise it states the defect only.
+
+    Returns:
+        A warning diagnostic with code ``flat_words_missing``.
+    """
+    facts = _FLAT_WORDS_MISSING_FACTS.format(owner=owner, with_words=with_words, total=total)
+    action = _FLAT_WORDS_FILLED if filled else ""
+    return Diagnostic(
+        level="warning",
+        code=DIAG_FLAT_WORDS_MISSING,
+        message=facts + action + _FLAT_WORDS_MISSING_REMEDY,
+    )
+
+
+def missing_words_diagnostics(result: TranscriptionResult) -> list[Diagnostic]:
+    """Return a diagnostic for each view of ``result`` whose ``words`` is missing.
+
+    The views are the top level and each ``ChannelResult``. A view's
+    ``words`` is missing when it is ``None`` while at least one of the
+    view's segments carries a ``words`` list. An empty list counts: it says
+    that word timestamps ran and found no words. When a segment carries a
+    ``words`` list, the engine MUST also fill the view's own ``words`` with
+    every ``Word`` it supplied for the view, in segment order (spec TR.4).
+    An application that reads only the view's ``words`` would otherwise
+    miss the segments' words. A view whose ``segments`` is ``None`` or
+    ``[]`` has nothing to report.
+
+    The function is pure: it returns one ``flat_words_missing`` warning
+    diagnostic per such view and modifies nothing. It looks only at whether
+    each ``words`` is ``None`` and compares no values. So it says nothing
+    about whether a ``words`` list the engine set agrees with the segments,
+    or whether two views agree with each other.
+
+    :func:`~standard_asr.runtime.interface.finalize_result` applies the
+    same test, fills the ``words`` it can, and attaches a diagnostic with
+    the same code; for a view it filled, the message says so. A view it
+    could not fill gets this function's diagnostic unchanged.
+    :func:`~standard_asr.compliance.check_transcription_result` reports the
+    ``flat_words_missing`` diagnostics a result carries and the ones this
+    function still finds in its data, each once. It reports each as an
+    error. The streaming reducer fills ``words`` from the segments by the
+    same rule, so a reduced result never produces one.
+
+    Args:
+        result: The result to check.
+
+    Returns:
+        The diagnostics, in view order: the top-level view first, then the
+        channels in list order. Empty when no view's ``words`` is missing.
+    """
+    found: list[Diagnostic] = []
+    counts = missing_words_counts(result.words, result.segments)
+    if counts is not None:
+        found.append(flat_words_missing_diagnostic("TranscriptionResult", *counts, filled=False))
+    for channel in result.channels or ():
+        counts = missing_words_counts(channel.words, channel.segments)
+        if counts is not None:
+            owner = f"ChannelResult(channel={channel.channel})"
+            found.append(flat_words_missing_diagnostic(owner, *counts, filled=False))
+    return found
 
 
 __all__ = [
     "ChannelResult",
     "DIAG_SEGMENT_TIMESTAMPS_UNAVAILABLE",
+    "DIAG_FLAT_WORDS_MISSING",
+    "DIAG_TEXT_SEGMENTS_MISMATCH",
     "Diagnostic",
     "Segment",
     "TranscriptionResult",
     "Word",
+    "missing_words_diagnostics",
     "synthesize_segment_speaker",
+    "text_segments_diagnostics",
     "to_json_value",
     "validate_speaker_label",
 ]
