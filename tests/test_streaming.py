@@ -36,7 +36,7 @@ from standard_asr.contract.exceptions import (
     InvalidSessionUseError,
     StreamClosedError,
 )
-from standard_asr.contract.results import Word
+from standard_asr.contract.results import TranscriptionResult, Word
 from standard_asr.runtime import streaming as streaming_module
 from standard_asr.runtime._text import (
     is_combining_mark,
@@ -550,6 +550,67 @@ def test_stream_reducer_no_speakers_stays_none() -> None:
     result = reducer.result()
     assert result.segments is not None
     assert [segment.speaker for segment in result.segments] == [None, None]
+
+
+def test_stream_reducer_flattens_segment_words_in_reading_order() -> None:
+    # The flat words are the retained segments' words in reading order
+    # (spec TR.4), so a consumer of result.words sees what the segments
+    # carry. The segments are announced out of time order, so a time sort
+    # would put third before first. A segment without words adds none and
+    # keeps its own None.
+    reducer = StreamReducer()
+    first = _speaker_words(None, None)
+    third = [Word(start=1.0, end=1.5, text="w2")]
+    reducer.add(TranscriptionEvent.final("s1", "w0 w1", start=2.0, end=3.0, words=first))
+    reducer.add(TranscriptionEvent.final("s2", " bare", start=0.0, end=1.0))
+    reducer.add(TranscriptionEvent.final("s3", " w2", start=1.0, end=1.5, words=third))
+    result = reducer.result()
+    assert result.words == first + third
+    assert result.segments is not None
+    assert [segment.words for segment in result.segments] == [first, None, third]
+
+
+def test_stream_reducer_words_follow_the_segments_through_their_lifecycle() -> None:
+    # The flat words are computed from the retained segments, so every
+    # change to a segment shows in them: an explicit empty list stays [],
+    # a later final replaces a segment's words instead of adding to them,
+    # and a supersede drops the retired words and puts the replacement's
+    # words where the retired segment was.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "w0", start=0.0, end=0.5, words=[]))
+    assert reducer.result().words == []
+    old_words = _speaker_words(None)
+    reducer.add(TranscriptionEvent.final("s1", "w0", start=0.0, end=0.5, words=old_words))
+    assert reducer.result().words == old_words
+    new_words = [Word(start=0.0, end=0.4, text="w0", speaker="A")]
+    reducer.add(TranscriptionEvent.final("s1", "w0", start=0.0, end=0.5, words=new_words))
+    assert reducer.result().words == new_words
+    later = [Word(start=1.0, end=1.5, text="w1")]
+    reducer.add(TranscriptionEvent.final("s2", " w1", start=1.0, end=1.5, words=later))
+    replacement = [Word(start=0.0, end=0.5, text="w0r")]
+    reducer.add(TranscriptionEvent.supersede(["s1"], ["s3"]))
+    reducer.add(TranscriptionEvent.final("s3", "w0r", start=0.0, end=0.5, words=replacement))
+    result = reducer.result()
+    assert result.words == replacement + later
+    assert result.segments is not None
+    assert [segment.text for segment in result.segments] == ["w0r", " w1"]
+    # A pure deletion takes its words away, and the result survives a JSON
+    # round trip with the same words in the same order.
+    reducer.add(TranscriptionEvent.supersede(["s3"], []))
+    result = reducer.result()
+    assert result.words == later
+    parsed = TranscriptionResult.model_validate_json(result.model_dump_json())
+    assert parsed.words == later
+    assert parsed == result
+
+
+def test_stream_reducer_words_stay_none_without_any_words() -> None:
+    # No retained segment carries words, so words is None rather than [].
+    # The reducer never sees the request, so this None says only that the
+    # engine sent no words, not that word timestamps were not requested.
+    reducer = StreamReducer()
+    reducer.add(TranscriptionEvent.final("s1", "hello", start=0.0, end=1.0))
+    assert reducer.result().words is None
 
 
 # --------------------------------------------------------------------------- #

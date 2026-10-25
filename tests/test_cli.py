@@ -20,6 +20,7 @@ from standard_asr import (
     RuntimeParams,
     Segment,
     TranscriptionResult,
+    Word,
 )
 from standard_asr.audio.format import AudioFormat
 from standard_asr.compliance import (
@@ -234,6 +235,33 @@ class _MismatchCliEngine(_ArtifactCliEngine):
 
 def _mismatch_cli_factory() -> _MismatchCliEngine:  # pyright: ignore[reportUnusedFunction]
     return _MismatchCliEngine(ArtifactReport.from_requirements(mode="batch", applicable=False))
+
+
+class _NestedWordsCliEngine(_ArtifactCliEngine):
+    """Structural engine that nests words in its segment and leaves ``words`` as ``None``."""
+
+    def transcribe(
+        self,
+        audio: object,
+        params: RuntimeParams | None = None,
+    ) -> TranscriptionResult:
+        del audio, params
+        return TranscriptionResult(
+            text="hello",
+            segments=[
+                Segment(
+                    start=0.0,
+                    end=0.5,
+                    text="hello",
+                    words=[Word(start=0.0, end=0.5, text="hello")],
+                )
+            ],
+            words=None,
+        )
+
+
+def _nested_words_cli_factory() -> _NestedWordsCliEngine:  # pyright: ignore[reportUnusedFunction]
+    return _NestedWordsCliEngine(ArtifactReport.from_requirements(mode="batch", applicable=False))
 
 
 def _artifact_cli_legacy_factory() -> (  # pyright: ignore[reportUnusedFunction]
@@ -1891,6 +1919,43 @@ def test_cli_transcribe_discloses_text_segments_mismatch_for_a_structural_engine
     document = json.loads(captured.out)
     assert document["text"] == "hello world"
     assert [d["code"] for d in document["diagnostics"]] == ["text_segments_mismatch"]
+
+
+def test_cli_transcribe_fills_the_flat_words_for_a_structural_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The same call that checks the text fills a missing `words` (spec TR.4).
+    # The text view prints the transcript and writes the diagnostic to
+    # stderr. The JSON view carries the filled words and the diagnostic.
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="nested-words-cli/demo",
+                value="tests.test_cli:_nested_words_cli_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "nested-words-cli/demo", "dummy.wav"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "hello\n"
+    assert "diagnostic [flat_words_missing]" in captured.err
+    assert "filled" in captured.err
+
+    exit_code = cli.main(["transcribe", "nested-words-cli/demo", "dummy.wav", "--json"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    document = json.loads(captured.out)
+    assert document["words"] == document["segments"][0]["words"]
+    assert [w["text"] for w in document["words"]] == ["hello"]
+    assert [d["code"] for d in document["diagnostics"]] == ["flat_words_missing"]
+    parsed = TranscriptionResult.model_validate(document)
+    assert parsed.segments is not None
+    assert parsed.words == parsed.segments[0].words
 
 
 def test_cli_transcribe_json(

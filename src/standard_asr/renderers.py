@@ -361,8 +361,8 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
       segments included, concatenated in list order with no separator. A
       visible ``result.text`` that differs from the segments is carried as
       the engine returned it, so the cue can miss a segment's words.
-      ``EngineBase.transcribe()`` and ``disclose_text_segments_mismatch()``
-      attach a ``text_segments_mismatch`` diagnostic for either mismatch.
+      ``EngineBase.transcribe()`` and ``finalize_result()`` attach a
+      ``text_segments_mismatch`` diagnostic for either mismatch.
 
     Args:
         result: The transcription result.
@@ -421,8 +421,8 @@ def _cues(result: TranscriptionResult, *, on_unrenderable: UnrenderablePolicy) -
             return _sorted_timed([s for s in payload if _renderable(s)])
         # "collapse": the caller gives up the timeline to keep the text. A
         # blank result.text over visible segments breaks the TR.1 equality
-        # (EngineBase.transcribe() and disclose_text_segments_mismatch()
-        # attach a text_segments_mismatch diagnostic for it). Carrying it
+        # (EngineBase.transcribe() and finalize_result() attach a
+        # text_segments_mismatch diagnostic for it). Carrying it
         # would render an empty file while the segments hold every word, a
         # silent total loss, so the cue carries every segment's text
         # concatenated in list order, with no separator (TR.1). A

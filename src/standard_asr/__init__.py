@@ -124,7 +124,7 @@ from standard_asr.renderers import UnrenderablePolicy, to_srt, to_vtt
 from standard_asr.runtime.interface import (
     StandardASR,
     bind_session_capabilities,
-    disclose_text_segments_mismatch,
+    finalize_result,
     require_engine_protocol,
 )
 from standard_asr.runtime.streaming import (
@@ -227,7 +227,7 @@ __all__ = [
     "Word",
     "WordTimestampGranularity",
     "bind_session_capabilities",
-    "disclose_text_segments_mismatch",
+    "finalize_result",
     "discover_models",
     "require_engine_protocol",
     "to_srt",

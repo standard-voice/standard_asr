@@ -51,8 +51,10 @@ from standard_asr.contract.exceptions import (
 from standard_asr.contract.language import AUTO, DIAG_CANDIDATE_LANGUAGES_IGNORED
 from standard_asr.contract.params import ProviderParams, WordTimestampGranularity
 from standard_asr.contract.results import (
+    DIAG_FLAT_WORDS_MISSING,
     DIAG_TEXT_SEGMENTS_MISMATCH,
     Diagnostic,
+    missing_words_diagnostics,
     text_segments_diagnostics,
 )
 from standard_asr.engine import (
@@ -63,7 +65,7 @@ from standard_asr.engine import (
     SampleRateRange,
 )
 from standard_asr.runtime.config import LanguageConfigMixin
-from standard_asr.runtime.interface import disclose_text_segments_mismatch
+from standard_asr.runtime.interface import finalize_result
 from standard_asr.runtime.streaming import StreamDeadlines, TranscriptionEvent, TranscriptionSession
 
 
@@ -535,11 +537,11 @@ def test_stripped_text_is_delivered_with_a_mismatch_diagnostic() -> None:
         d.code for d in async_result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH
     ]
     assert async_codes == [DIAG_TEXT_SEGMENTS_MISMATCH]
-    # disclose_text_segments_mismatch() adds nothing: transcribe() attached it.
-    assert disclose_text_segments_mismatch(result) is result
+    # finalize_result() adds nothing: transcribe() attached it.
+    assert finalize_result(result) is result
 
 
-def test_disclose_text_segments_mismatch_for_a_structural_engine() -> None:
+def test_finalize_result_for_a_structural_engine() -> None:
     # An engine that does not derive from EngineBase runs no check of its own.
     # The function appends the disclosure after the engine's own diagnostics
     # and changes nothing else; a result that keeps the equality comes back
@@ -552,15 +554,15 @@ def test_disclose_text_segments_mismatch_for_a_structural_engine() -> None:
         ],
         diagnostics=[Diagnostic(code="engine_note", message="kept")],
     )
-    disclosed = disclose_text_segments_mismatch(result)
+    disclosed = finalize_result(result)
     assert disclosed.text == "hello world"
     assert [d.code for d in disclosed.diagnostics] == ["engine_note", DIAG_TEXT_SEGMENTS_MISMATCH]
     clean = TranscriptionResult(text="hi")
-    assert disclose_text_segments_mismatch(clean) is clean
+    assert finalize_result(clean) is clean
     # The original is untouched, and a second call on the disclosed copy adds
     # nothing: the result already carries the diagnostic.
     assert [d.code for d in result.diagnostics] == ["engine_note"]
-    assert disclose_text_segments_mismatch(disclosed) is disclosed
+    assert finalize_result(disclosed) is disclosed
 
 
 class _DelegatingEngine(_ArrayEngine):
@@ -579,7 +581,7 @@ def test_wrapper_engine_delivers_the_disclosure_once() -> None:
     result = _DelegatingEngine().transcribe(_audio())
     codes = [d.code for d in result.diagnostics if d.code == DIAG_TEXT_SEGMENTS_MISMATCH]
     assert codes == [DIAG_TEXT_SEGMENTS_MISMATCH]
-    assert disclose_text_segments_mismatch(result) is result
+    assert finalize_result(result) is result
 
 
 def test_disclosure_adds_only_the_diagnostics_a_result_lacks() -> None:
@@ -603,13 +605,235 @@ def test_disclosure_adds_only_the_diagnostics_a_result_lacks() -> None:
     top_level, channel_0, channel_1 = text_segments_diagnostics(result)
     note = Diagnostic(code="engine_note", message="kept")
     partial = result.model_copy(update={"diagnostics": [note, channel_1]})
-    disclosed = disclose_text_segments_mismatch(partial)
+    disclosed = finalize_result(partial)
     assert disclosed.diagnostics == [note, channel_1, top_level, channel_0]
     demoted = result.model_copy(
         update={"diagnostics": [top_level.model_copy(update={"level": "info"})]}
     )
-    levels = [d.level for d in disclose_text_segments_mismatch(demoted).diagnostics]
+    levels = [d.level for d in finalize_result(demoted).diagnostics]
     assert levels == ["info", "warning", "warning", "warning"]
+
+
+def _word(text: str) -> Word:
+    return Word(start=0.0, end=0.1, text=text)
+
+
+def _worded(text: str, words: list[Word] | None, channel: int | None = None) -> Segment:
+    return Segment(start=0.0, end=1.0, text=text, words=words, channel=channel)
+
+
+def test_finalize_result_leaves_a_result_without_segment_words_alone() -> None:
+    # No segment carries a words list, so there is nothing to fill and nothing
+    # to disclose: the same object comes back, whatever the segments field is.
+    for result in (
+        TranscriptionResult(text="a"),
+        TranscriptionResult(text="", segments=[]),
+        TranscriptionResult(text="a", segments=[_worded("a", None)]),
+    ):
+        assert finalize_result(result) is result
+        assert missing_words_diagnostics(result) == []
+
+
+def test_finalize_result_fills_the_flat_words_from_the_segments() -> None:
+    # The engine nested words but left the result's own words as None. The
+    # standard layer fills words with every segment's words in segment order,
+    # a segment without a list contributes nothing, and one warning says so.
+    # The detector reports the raw result and nothing after the fill.
+    result = TranscriptionResult(
+        text="ab", segments=[_worded("a", [_word("a")]), _worded("b", None)]
+    )
+    assert [d.code for d in missing_words_diagnostics(result)] == [DIAG_FLAT_WORDS_MISSING]
+    filled = finalize_result(result)
+    assert filled is not result
+    assert filled.words == [_word("a")]
+    assert filled.segments is result.segments
+    assert [d.code for d in filled.diagnostics] == [DIAG_FLAT_WORDS_MISSING]
+    assert filled.diagnostics[0].level == "warning"
+    assert "TranscriptionResult.words" in filled.diagnostics[0].message
+    assert "The standard layer filled words" in filled.diagnostics[0].message
+    assert "The standard layer filled words" not in missing_words_diagnostics(result)[0].message
+    assert missing_words_diagnostics(filled) == []
+    # Filled once: a second call, and a call on the JSON round trip, add nothing.
+    assert finalize_result(filled) is filled
+    parsed = TranscriptionResult.model_validate_json(filled.model_dump_json())
+    assert parsed == filled
+    assert finalize_result(parsed) is parsed
+
+
+def test_finalize_result_fills_an_empty_list_when_the_segments_carry_only_empty_lists() -> None:
+    # A segment's [] says that word timestamps ran and found nothing, so the
+    # result's own words become [] too, and the fill is disclosed.
+    result = TranscriptionResult(text="a", segments=[_worded("a", [])])
+    filled = finalize_result(result)
+    assert filled.words == []
+    assert [d.code for d in filled.diagnostics] == [DIAG_FLAT_WORDS_MISSING]
+
+
+def test_finalize_result_keeps_a_flat_list_the_engine_sent() -> None:
+    # The rule looks at presence only: a flat list, even [] beside nested
+    # words, is the engine's value and stays, with no diagnostic.
+    result = TranscriptionResult(text="a", segments=[_worded("a", [_word("a")])], words=[])
+    assert finalize_result(result) is result
+    assert missing_words_diagnostics(result) == []
+
+
+def test_finalize_result_fills_each_channel_from_its_own_segments() -> None:
+    # The top level and each channel are filled on their own. With the
+    # top-level words present, a channel that lacks its list gets it; with
+    # both missing, both are filled, the top level first.
+    top = [_worded("a", [_word("a")], 0)]
+    channel_lacking = TranscriptionResult(
+        text="a",
+        segments=top,
+        words=[_word("a")],
+        channels=[ChannelResult(channel=0, text="a", segments=top)],
+    )
+    filled = finalize_result(channel_lacking)
+    assert filled.channels is not None
+    assert filled.channels[0].words == [_word("a")]
+    assert [d.code for d in filled.diagnostics] == [DIAG_FLAT_WORDS_MISSING]
+    assert "ChannelResult(channel=0).words" in filled.diagnostics[0].message
+    assert TranscriptionResult.model_validate_json(filled.model_dump_json()) == filled
+    both_lacking = TranscriptionResult(
+        text="a", segments=top, channels=[ChannelResult(channel=0, text="a", segments=top)]
+    )
+    filled = finalize_result(both_lacking)
+    assert filled.words == [_word("a")]
+    assert filled.channels is not None
+    assert filled.channels[0].words == [_word("a")]
+    owners = [d.message.split(" left ")[1].split(".words")[0] for d in filled.diagnostics]
+    assert owners == ["TranscriptionResult", "ChannelResult(channel=0)"]
+    assert TranscriptionResult.model_validate_json(filled.model_dump_json()) == filled
+
+
+def test_finalize_result_does_not_fill_a_channel_the_top_level_cannot_match() -> None:
+    # The top-level segments carry no words, so the top-level words stay None.
+    # Filling the channel would give it words the top level lacks, a shape the
+    # validators reject when the result is rebuilt, so the standard layer only
+    # discloses the channel's missing list, with the detector's own diagnostic.
+    result = TranscriptionResult(
+        text="a",
+        segments=[_worded("a", None, 0)],
+        channels=[ChannelResult(channel=0, text="a", segments=[_worded("a", [_word("a")], 0)])],
+    )
+    disclosed = finalize_result(result)
+    assert disclosed.words is None
+    assert disclosed.channels is not None
+    assert disclosed.channels[0].words is None
+    [diagnostic] = disclosed.diagnostics
+    assert diagnostic.code == DIAG_FLAT_WORDS_MISSING
+    assert "ChannelResult(channel=0).words" in diagnostic.message
+    # Nothing was filled, so the diagnostic is the detector's own.
+    assert diagnostic == missing_words_diagnostics(result)[0]
+    assert TranscriptionResult.model_validate_json(disclosed.model_dump_json()) == disclosed
+    assert finalize_result(disclosed) is disclosed
+
+
+def test_finalize_result_appends_text_and_words_diagnostics_it_lacks_in_rule_order() -> None:
+    # Text diagnostics come first, then words diagnostics, each in view order;
+    # one the result already carries keeps its place and is not repeated.
+    result = TranscriptionResult(
+        text="a b", segments=[_worded("a", [_word("a")]), _worded("b", None)]
+    )
+    finalized = finalize_result(result)
+    assert [d.code for d in finalized.diagnostics] == [
+        DIAG_TEXT_SEGMENTS_MISMATCH,
+        DIAG_FLAT_WORDS_MISSING,
+    ]
+    partial = result.model_copy(update={"diagnostics": [finalized.diagnostics[1]]})
+    again = finalize_result(partial)
+    assert [d.code for d in again.diagnostics] == [
+        DIAG_FLAT_WORDS_MISSING,
+        DIAG_TEXT_SEGMENTS_MISMATCH,
+    ]
+    assert again.words == [_word("a")]
+
+
+class _NestedWordsEngine(_ArrayEngine):
+    """Nests words in its segment and leaves the result's own words as None."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(text="a", segments=[_worded("a", [_word("a")])])
+
+
+class _DelegatingWordsEngine(_ArrayEngine):
+    """An EngineBase wrapper whose hook returns a result transcribe() already filled."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return _NestedWordsEngine().transcribe(_audio())
+
+
+def test_transcribe_fills_the_flat_words_and_discloses_it() -> None:
+    # transcribe() delivers the filled list with the warning; the async bridge
+    # runs transcribe(), so it delivers the same; a wrapper engine that returns
+    # this result finds the words filled and the diagnostic present, so the
+    # application gets the diagnostic once.
+    result = _NestedWordsEngine().transcribe(_audio())
+    assert result.words == [_word("a")]
+    assert [d.code for d in result.diagnostics if d.code == DIAG_FLAT_WORDS_MISSING] == [
+        DIAG_FLAT_WORDS_MISSING
+    ]
+    async_result = asyncio.run(_NestedWordsEngine().transcribe_async(_audio()))
+    assert async_result.words == [_word("a")]
+    assert [d.code for d in async_result.diagnostics if d.code == DIAG_FLAT_WORDS_MISSING] == [
+        DIAG_FLAT_WORDS_MISSING
+    ]
+    assert finalize_result(result) is result
+    wrapped = _DelegatingWordsEngine().transcribe(_audio())
+    assert wrapped.words == [_word("a")]
+    assert [d.code for d in wrapped.diagnostics if d.code == DIAG_FLAT_WORDS_MISSING] == [
+        DIAG_FLAT_WORDS_MISSING
+    ]
+
+
+def test_finalize_result_concatenates_words_in_segment_order_and_fills_beside_an_empty_list() -> (
+    None
+):
+    # Several word-bearing segments: the flat list follows segment order, not
+    # word timing. A top-level [] counts as a list, so a channel can be filled
+    # beside it; a top level with segments=[] cannot, so its channel keeps
+    # None with the detector's diagnostic.
+    first = _worded(
+        "a b ", [Word(start=0.5, end=0.6, text="a"), Word(start=0.6, end=0.7, text="b")], 0
+    )
+    second = _worded("c", [Word(start=0.0, end=0.1, text="c")], 1)
+    result = TranscriptionResult(text="a b c", segments=[first, second])
+    assert [w.text for w in finalize_result(result).words or []] == ["a", "b", "c"]
+    channel_beside_empty_top = TranscriptionResult(
+        text="c",
+        segments=[_worded("c", [], 1)],
+        words=[],
+        channels=[ChannelResult(channel=1, text="c", segments=[second])],
+    )
+    filled = finalize_result(channel_beside_empty_top)
+    assert filled.words == []
+    assert filled.channels is not None
+    assert filled.channels[0].words == [Word(start=0.0, end=0.1, text="c")]
+    assert TranscriptionResult.model_validate_json(filled.model_dump_json()) == filled
+    empty_top = TranscriptionResult(
+        text="", segments=[], channels=[ChannelResult(channel=1, text="c", segments=[second])]
+    )
+    disclosed = finalize_result(empty_top)
+    assert disclosed.words is None
+    assert disclosed.channels is not None
+    assert disclosed.channels[0].words is None
+    assert disclosed.diagnostics == missing_words_diagnostics(empty_top)
+    assert TranscriptionResult.model_validate_json(disclosed.model_dump_json()) == disclosed
+
+
+def test_transcribe_synthesizes_speakers_and_fills_words_together() -> None:
+    # Speaker synthesis runs first and writes only Segment.speaker; the fill
+    # then copies the words as they are, so each word keeps its own speaker.
+    canned = TranscriptionResult(text="w0 w1", segments=[_speaker_segment(["A", "A"])])
+    result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
+    assert result.segments is not None
+    assert result.segments[0].speaker == "A"
+    assert result.words is not None
+    assert [w.speaker for w in result.words] == ["A", "A"]
+    assert result.segments[0].words == result.words
+    assert [d.code for d in result.diagnostics if d.code == DIAG_FLAT_WORDS_MISSING] == [
+        DIAG_FLAT_WORDS_MISSING
+    ]
 
 
 @pytest.mark.parametrize("engine_type", [_StaleResultEngine, _InvalidSegmentEngine])
@@ -2211,6 +2435,21 @@ def _speaker_segment(
     )
 
 
+def _flat(segments: list[Segment]) -> list[Word]:
+    # The flat words are every segment's words in segment order (spec TR.4).
+    # An engine fills them itself; these fixtures do, so transcribe() has
+    # nothing to fill and the tests see only the speaker synthesis.
+    return [word for segment in segments for word in segment.words or []]
+
+
+def _speaker_result(text: str, segments: list[Segment]) -> TranscriptionResult:
+    return TranscriptionResult(text=text, segments=segments, words=_flat(segments))
+
+
+def _speaker_channel(channel: int, text: str, segments: list[Segment]) -> ChannelResult:
+    return ChannelResult(channel=channel, text=text, segments=segments, words=_flat(segments))
+
+
 class _CannedResultEngine(_ArrayEngine):
     """Array engine returning a canned result, for the synthesis post-processing."""
 
@@ -2223,7 +2462,7 @@ class _CannedResultEngine(_ArrayEngine):
 
 
 def test_transcribe_synthesizes_segment_speaker_from_words() -> None:
-    canned = TranscriptionResult(text="w0 w1 w2", segments=[_speaker_segment(["A", "A", "B"])])
+    canned = _speaker_result("w0 w1 w2", [_speaker_segment(["A", "A", "B"])])
     result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
     assert result.segments is not None
     assert result.segments[0].speaker == "A"  # majority by word count
@@ -2232,7 +2471,7 @@ def test_transcribe_synthesizes_segment_speaker_from_words() -> None:
 def test_transcribe_keeps_adapter_populated_speaker() -> None:
     # A pre-populated (engine-native) Segment.speaker is authoritative: the
     # standard layer synthesizes ONLY when it is None, even when words disagree.
-    canned = TranscriptionResult(text="w0 w1", segments=[_speaker_segment(["A", "A"], speaker="B")])
+    canned = _speaker_result("w0 w1", [_speaker_segment(["A", "A"], speaker="B")])
     result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
     assert result.segments is not None
     assert result.segments[0].speaker == "B"
@@ -2241,12 +2480,12 @@ def test_transcribe_keeps_adapter_populated_speaker() -> None:
 def test_transcribe_synthesis_applies_to_channels() -> None:
     # The result contract promises the top-level and per-channel views agree;
     # synthesizing only the top level would silently desync them.
+    top = [_speaker_segment(["B", "A", "A"])]
     canned = TranscriptionResult(
         text="w0 w1 w2",
-        segments=[_speaker_segment(["B", "A", "A"])],
-        channels=[
-            ChannelResult(channel=0, text="w0 w1 w2", segments=[_speaker_segment(["B", "A", "A"])])
-        ],
+        segments=top,
+        words=_flat(top),
+        channels=[_speaker_channel(0, "w0 w1 w2", [_speaker_segment(["B", "A", "A"])])],
     )
     result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
     assert result.segments is not None and result.channels is not None
@@ -2259,7 +2498,7 @@ def test_transcribe_synthesis_applies_to_channels() -> None:
 def test_transcribe_no_speaker_words_leaves_result_identical() -> None:
     # Identity fast path: nothing derivable -> the segments list object is
     # passed through untouched (transcribe only rebuilds for diagnostics).
-    canned = TranscriptionResult(text="w0 w1", segments=[_speaker_segment([None, None])])
+    canned = _speaker_result("w0 w1", [_speaker_segment([None, None])])
     result = _CannedResultEngine(canned).transcribe(_audio(), RuntimeParams(language="en"))
     assert result.segments is canned.segments
     assert result.segments is not None
@@ -2269,7 +2508,7 @@ def test_transcribe_no_speaker_words_leaves_result_identical() -> None:
 def test_transcribe_synthesis_runs_without_diarization_request() -> None:
     # The synthesis runs regardless of the request (always-on engines emit
     # unrequested-but-legal word speakers; a named exemption).
-    canned = TranscriptionResult(text="w0", segments=[_speaker_segment(["A"])])
+    canned = _speaker_result("w0", [_speaker_segment(["A"])])
     result = _CannedResultEngine(canned).transcribe(_audio())  # params=None
     assert result.segments is not None
     assert result.segments[0].speaker == "A"
@@ -2288,14 +2527,13 @@ def test_synthesize_result_speakers_branch_matrix() -> None:
     assert _synthesize_result_speakers(no_words) is no_words
     # All words speaker=None: synthesis yields None -> identity (never writes
     # a None back, never rebuilds).
-    no_votes = TranscriptionResult(text="w0", segments=[_speaker_segment([None])])
+    no_votes = _speaker_result("w0", [_speaker_segment([None])])
     assert _synthesize_result_speakers(no_votes) is no_votes
     # Mixed list: only the derivable segment is rebuilt; untouched segments
     # keep object identity inside the new list.
     unchanged_segment = _speaker_segment(["A"], speaker="A")
-    mixed = TranscriptionResult(
-        text="w0 w0",
-        segments=[unchanged_segment, _speaker_segment(["B"], leading_space=True)],
+    mixed = _speaker_result(
+        "w0 w0", [unchanged_segment, _speaker_segment(["B"], leading_space=True)]
     )
     synthesized = _synthesize_result_speakers(mixed)
     assert synthesized is not mixed
@@ -2319,10 +2557,8 @@ def test_synthesize_result_speakers_channels_matrix() -> None:
     result = TranscriptionResult(
         text="w0 w0",
         segments=top,
-        channels=[
-            no_segments_entry,
-            ChannelResult(channel=1, text="w0", segments=[_speaker_segment(["B"])]),
-        ],
+        words=_flat(top),
+        channels=[no_segments_entry, _speaker_channel(1, "w0", [_speaker_segment(["B"])])],
     )
     synthesized = _synthesize_result_speakers(result)
     assert synthesized is not result
