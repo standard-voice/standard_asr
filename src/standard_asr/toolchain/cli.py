@@ -139,6 +139,43 @@ def _run_engine_call(invoke: Callable[[], Any]) -> Any:
         raise _EngineFaultError(exc) from exc
 
 
+def _render_json_document(document: object, what: str) -> str:
+    """Encode one of the JSON documents ``show`` prints, or refuse it.
+
+    The document is encoded with finite numbers only. ``NaN`` and
+    ``Infinity`` are Python floats but not JSON. By default the encoder
+    writes them out anyway, so ``show`` would print a document that no
+    conforming JSON parser accepts and exit 0. The reference server checks
+    the same documents the same way before it serves them
+    (``toolchain.server._prove_json_projectable``). A document that cannot be
+    encoded comes from a declaration the engine got wrong, so the error is an
+    :class:`EngineContractError`, and ``main`` prints its message on stderr
+    and exits 1. Each caller renders the document before it prints the
+    section heading, so a refused document leaves no part of its section on
+    stdout.
+
+    Args:
+        document: The JSON-ready dict that a ``to_protocol_dict()`` returned,
+            or a generated JSON Schema.
+        what: The name of the document, such as ``"the config schema"``,
+            used in the error message.
+
+    Returns:
+        The document as indented JSON text, with its keys sorted.
+
+    Raises:
+        EngineContractError: If the document holds a value JSON cannot carry,
+            such as a non-finite number or a set.
+    """
+    try:
+        return json.dumps(document, indent=2, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise EngineContractError(
+            f"Cannot render {what} as JSON (engine fault): {exc}. The engine's author must "
+            "change the declaration behind it to use only JSON values and finite numbers."
+        ) from exc
+
+
 #: ASCII status markers. The CLI prints transcripts and decorative status lines
 #: to stdout/stderr; on Windows a redirected stream defaults to the ANSI code
 #: page with ``errors="strict"`` (PEP 686's UTF-8 default only lands in Python
@@ -635,7 +672,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
             are printed first; the semantic projections are not (exit 2).
         EngineContractError: When the engine class does not declare
             ``properties`` as a typed ``BaseProperties`` ClassVar, so no
-            protocol line can be established (an engine fault: exit 1).
+            protocol line can be established, or when the capability JSON
+            document, the metadata JSON document, or the config schema cannot
+            be encoded as JSON (an engine fault: exit 1).
     """
     registry = discover_models(strict=args.strict_discovery)
     spec = registry.spec(args.name)
@@ -686,6 +725,8 @@ def _print_declared_capabilities(engine_class: Any) -> None:
         _EngineFaultError: When the class-level ``declared_capabilities`` lookup
             executes a plugin descriptor that raises the ``ValueError``
             family -- the same engine-fault seam as an instance call.
+        EngineContractError: When the capability JSON document cannot be
+            encoded as JSON (see :func:`_render_json_document`).
     """
     # A class-level attribute read is still plugin code: `declared_capabilities`
     # can be a descriptor/property on the engine class (or its metaclass), so
@@ -714,8 +755,9 @@ def _print_declared_capabilities(engine_class: Any) -> None:
             f"'standard-asr compliance entrypoints' for diagnostics>"
         )
         return
+    document = _run_engine_call(to_protocol_dict)
+    rendered = _render_json_document(document, "the capability JSON document")
     print("  Capabilities:")
-    rendered = json.dumps(_run_engine_call(to_protocol_dict), indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -737,6 +779,8 @@ def _print_declared_metadata(engine_class: Any) -> None:
     Raises:
         _EngineFaultError: If a plugin descriptor or ``to_protocol_dict()`` raises a
             ``ValueError`` family exception.
+        EngineContractError: If the metadata JSON document cannot be encoded
+            as JSON (see :func:`_render_json_document`).
     """
     metadata = _run_engine_call(lambda: getattr(engine_class, "declared_metadata", None))
     if metadata is None:
@@ -752,8 +796,9 @@ def _print_declared_metadata(engine_class: Any) -> None:
     if not callable(to_protocol_dict):
         print("  Declared metadata: <invalid: to_protocol_dict is not callable>")
         return
+    document = _run_engine_call(to_protocol_dict)
+    rendered = _render_json_document(document, "the metadata JSON document")
     print("  Declared metadata:")
-    rendered = json.dumps(_run_engine_call(to_protocol_dict), indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -774,6 +819,10 @@ def _print_config_schema(registry: ModelRegistry, name: str) -> None:
     Args:
         registry: The discovered model registry.
         name: Model key in ``<engine>/<model>`` format.
+
+    Raises:
+        EngineContractError: If the config schema cannot be encoded as JSON
+            (see :func:`_render_json_document`).
     """
     try:
         schema = registry.config_schema(name)
@@ -783,8 +832,8 @@ def _print_config_schema(registry: ModelRegistry, name: str) -> None:
     if schema is None:
         print("  Config schema: <none: engine declares no init config (config_type)>")
         return
+    rendered = _render_json_document(schema, "the config schema")
     print("  Config schema:")
-    rendered = json.dumps(schema, indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 

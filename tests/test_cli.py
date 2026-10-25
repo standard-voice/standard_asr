@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 import pytest
+from pydantic import ConfigDict
 
 from standard_asr import (
     RuntimeParams,
@@ -700,6 +701,109 @@ class _DictCapsASR:
 
 def _dict_caps_factory() -> _DictCapsASR:  # pyright: ignore[reportUnusedFunction]
     return _DictCapsASR()
+
+
+class _UnencodableCaps:
+    """Declared capabilities whose capability JSON document holds a value JSON cannot carry."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"limit": float("inf")}
+
+
+class _UnencodableCapsASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Any] = _UnencodableCaps()
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _unencodable_caps_factory() -> _UnencodableCapsASR:  # pyright: ignore[reportUnusedFunction]
+    return _UnencodableCapsASR()
+
+
+class _NestedNanCaps:
+    """Declared capabilities whose capability JSON document nests NaN and negative infinity."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"batch": {"x_acme": {"supported": True, "scores": [float("nan"), float("-inf")]}}}
+
+
+class _NestedNanCapsASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Any] = _NestedNanCaps()
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _nested_nan_caps_factory() -> _NestedNanCapsASR:  # pyright: ignore[reportUnusedFunction]
+    return _NestedNanCapsASR()
+
+
+class _UnencodableMetadata(DeclaredEngineMetadata):
+    """Declared metadata whose metadata JSON document holds a value JSON cannot carry."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"limit": float("inf")}
+
+
+class _UnencodableMetadataASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _UnencodableMetadata.model_validate(
+        _ARTIFACT_CLI_METADATA.model_dump()
+    )
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _unencodable_metadata_factory() -> _UnencodableMetadataASR:  # pyright: ignore[reportUnusedFunction]
+    return _UnencodableMetadataASR()
+
+
+class _UnserializableMetadata(DeclaredEngineMetadata):
+    """Declared metadata whose metadata JSON document holds a value that is not JSON at all."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"limit": {1, 2}}
+
+
+class _UnserializableMetadataASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _UnserializableMetadata.model_validate(
+        _ARTIFACT_CLI_METADATA.model_dump()
+    )
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _unserializable_metadata_factory() -> _UnserializableMetadataASR:  # pyright: ignore[reportUnusedFunction]
+    return _UnserializableMetadataASR()
+
+
+class _InfSchemaConfig(BaseConfig[Literal["infschema"]]):
+    """An init config whose JSON Schema carries a non-finite example."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [float("inf")]})
+    engine: Literal["infschema"] = "infschema"
+
+
+class _InfSchemaASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _ARTIFACT_CLI_METADATA
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _InfSchemaConfig
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _inf_schema_factory() -> _InfSchemaASR:  # pyright: ignore[reportUnusedFunction]
+    return _InfSchemaASR()
 
 
 class _StreamConfig(BaseConfig[Literal["stream"]]):
@@ -3713,6 +3817,58 @@ def test_cli_models_show_defends_mistyped_capabilities(
     # The capabilities line names the problem and points at compliance.
     assert "invalid" in output
     assert "compliance entrypoints" in output
+
+
+_SHOW_SECTIONS = ("Capabilities:", "Declared metadata:", "Config schema:")
+
+
+@pytest.mark.parametrize(
+    ("factory", "section", "document"),
+    [
+        ("_unencodable_caps_factory", "Capabilities:", "the capability JSON document"),
+        ("_nested_nan_caps_factory", "Capabilities:", "the capability JSON document"),
+        ("_unencodable_metadata_factory", "Declared metadata:", "the metadata JSON document"),
+        ("_unserializable_metadata_factory", "Declared metadata:", "the metadata JSON document"),
+        ("_inf_schema_factory", "Config schema:", "the config schema"),
+    ],
+)
+def test_cli_show_rejects_a_document_that_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    factory: str,
+    section: str,
+    document: str,
+) -> None:
+    # A non-finite float is a Python float but not JSON, and a set is not JSON
+    # at all. `show` printed the float as `Infinity` and exited 0, while the
+    # server rejects the same document. The document is an engine fault: exit
+    # 1, stderr names the document, the sections before it stay on stdout,
+    # and neither the failing section nor a later one is started.
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="alpha/first",
+                value=f"tests.test_cli:{factory}",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "alpha/first"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Infinity" not in captured.out
+    assert "NaN" not in captured.out
+    assert "Engine ID" in captured.out
+    failing = _SHOW_SECTIONS.index(section)
+    for heading in _SHOW_SECTIONS[:failing]:
+        assert heading in captured.out
+    for heading in _SHOW_SECTIONS[failing:]:
+        assert heading not in captured.out
+    assert f"Cannot render {document} as JSON (engine fault)" in captured.err
 
 
 # ---------------------------------------------------------------------------
