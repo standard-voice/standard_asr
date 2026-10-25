@@ -20,8 +20,8 @@ an *engine* author implements and declares against:
   :func:`nearest_accepted_sample_rate` helpers an engine reuses so its
   ``accepted_sample_rates`` membership and resample-target choices match the
   standard's;
-- the full capability vocabulary (:class:`Capabilities` and every
-  ``*Cap`` / ``*Constraints`` node);
+- the full capability vocabulary (:class:`Capabilities`, every
+  ``*Capability`` node, and every ``*Constraints`` submodel);
 - language resolution, artifact-lifecycle types, and the download-policy
   helpers (:func:`effective_language`, :data:`AUTO`, :func:`allow_downloads`,
   :func:`resolve_download_root`, :func:`resolve_cache_dir`,

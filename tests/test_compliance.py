@@ -6152,7 +6152,7 @@ def test_requestable_roles_check_skips_an_absent_mode_and_x_star_nodes() -> None
     assert issues == []
 
 
-def test_requestable_roles_check_flags_a_gated_row_whose_node_is_a_behavior(
+def test_requestable_roles_check_flags_a_gated_row_whose_node_is_a_trait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A gating row that points at a trait node is the mismatch the class

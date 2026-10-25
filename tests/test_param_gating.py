@@ -1108,9 +1108,10 @@ def test_diarization_marker_has_no_fields_drift_guard() -> None:
     assert not DiarizationRequest.model_fields
 
 
-def test_ungated_requestable_paths_are_requestable_and_not_gated() -> None:
-    # The gating table and the exemption set together name every requestable
-    # node of the standard tree, in both modes, and never the same path twice.
+def test_gate_table_and_separately_gated_suffixes_name_every_requestable_path() -> None:
+    # The gating table and the separately gated suffixes together name every
+    # requestable node of the standard tree, in both modes, and never the same
+    # path twice.
     # The compliance suite proves the same for an engine's declared tree.
     from standard_asr.runtime.gating import (
         _GATED_PARAMS,  # pyright: ignore[reportPrivateUsage]

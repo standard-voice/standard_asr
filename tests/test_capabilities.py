@@ -1044,8 +1044,9 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
     # enum families have disjoint token sets -- otherwise a future enum node that
     # reuses an existing token (for example, 'none'/'final') would silently inherit another
     # family's reduction order. Guard the invariant: collect the Literal tokens of
-    # every standard enum/mode Cap and assert no token is shared across families,
-    # and that every reduction-map key/value is one of those declared tokens.
+    # every standard enum/mode capability node and assert no token is shared across
+    # families, and that every reduction-map key/value is one of those declared
+    # tokens.
     enum_families: dict[str, set[str]] = {}
     all_tokens: set[str] = set()
     for name, obj in vars(cap_module).items():
