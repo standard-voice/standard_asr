@@ -245,7 +245,9 @@ def test_covers_rejects_granularity_widening() -> None:
 def test_covers_empty_declared_granularities_is_unbounded() -> None:
     # An empty declared granularities list means "unbounded (all)", so a
     # narrowing from it to any concrete subset is a valid effective ⊆ declared
-    # (must NOT false-fail). Mirrors param_gating's empty="offers all" semantics.
+    # (must NOT false-fail). Only covers() reads an empty list this way:
+    # runtime gating admits only the granularities a node lists, so an empty
+    # list admits none.
     # Typed WordTimestampsCapability can't be empty+supported (the granularities-enumeration
     # validator), so the empty-declared case is exercised via an x_* dict node
     # carrying the field.
@@ -256,6 +258,214 @@ def test_covers_empty_declared_granularities_is_unbounded() -> None:
     assert declared.covers(effective) is True
     # And empty -> empty is trivially covered.
     assert declared.covers(declared) is True
+
+
+def test_covers_empty_effective_granularities_is_a_widening() -> None:
+    # The same rule read the other way: on a raw node an empty, omitted, or
+    # None enumeration means "all", so an effective tree that stops
+    # enumerating offers more than a declared tree that enumerated a finite
+    # set. A value that is not a list of strings proves no narrowing either.
+    declared = _x_caps({"x_wt": {"supported": True, "granularities": ["word"]}})
+    assert declared.covers(_x_caps({"x_wt": {"supported": True, "granularities": []}})) is False
+    assert declared.covers(_x_caps({"x_wt": {"supported": True}})) is False
+    assert declared.covers(_x_caps({"x_wt": {"supported": True, "granularities": None}})) is False
+    assert declared.covers(_x_caps({"x_wt": {"supported": True, "granularities": "word"}})) is False
+    assert (
+        declared.covers(_x_caps({"x_wt": {"supported": True, "granularities": ["word"]}})) is True
+    )
+    # A declared node that never enumerated is narrowed by anything, a
+    # malformed effective value included: there is no restriction to prove.
+    for unbounded in (
+        _x_caps({"x_wt": {"supported": True}}),
+        _x_caps({"x_wt": {"supported": True, "granularities": []}}),
+        _x_caps({"x_wt": {"supported": True, "granularities": None}}),
+    ):
+        for value in (["word"], [], None, "word"):
+            assert (
+                unbounded.covers(_x_caps({"x_wt": {"supported": True, "granularities": value}}))
+                is True
+            )
+        assert unbounded.covers(declared) is True
+
+
+def test_covers_sees_a_vendor_node_under_an_unsupported_typed_node() -> None:
+    # supports(), can_request() and to_protocol_dict() read an x_* extra of an
+    # unsupported typed node as the vendor declared it, so the supported-path
+    # walk must reach it too. Otherwise a vendor node the effective tree
+    # supports under a feature the declared tree does not escapes covers().
+    def tree(supported: bool) -> Capabilities:
+        return Capabilities.model_validate(
+            {
+                "batch": {
+                    "diarization": {
+                        "supported": False,
+                        "x_acme_extra": {"supported": supported, "role": "requestable"},
+                    }
+                }
+            }
+        )
+
+    path = "batch.diarization.x_acme_extra"
+    assert tree(True).supports(path) is True
+    assert tree(True).can_request(path) is True
+    assert path in set(tree(True).iter_supported_paths())
+    assert path not in set(tree(False).iter_supported_paths())
+    assert tree(False).covers(tree(True)) is False
+    assert tree(True).covers(tree(False)) is True
+    assert tree(True).covers(tree(True)) is True
+    # The unsupported node's standard children still add no path, and a
+    # grouping dict under it is walked the way it is anywhere else.
+    assert "batch.diarization.constraints" not in set(tree(True).iter_supported_paths())
+    nested = Capabilities.model_validate(
+        {"batch": {"diarization": {"supported": False, "x_acme": {"deep": {"supported": True}}}}}
+    )
+    assert "batch.diarization.x_acme.deep" in set(nested.iter_supported_paths())
+    assert "batch.diarization.x_acme" not in set(nested.iter_supported_paths())
+    # The same holds one level down, inside the unsupported node's constraints.
+    deep = "batch.diarization.constraints.x_acme_extra"
+
+    def deeper(supported: bool) -> Capabilities:
+        return Capabilities.model_validate(
+            {
+                "batch": {
+                    "diarization": {
+                        "supported": False,
+                        "constraints": {"x_acme_extra": {"supported": supported}},
+                    }
+                }
+            }
+        )
+
+    assert deeper(True).supports(deep) is True
+    assert deep in set(deeper(True).iter_supported_paths())
+    assert deeper(False).covers(deeper(True)) is False
+    assert deeper(True).covers(deeper(False)) is True
+
+    # The constraint comparison reaches a vendor node under an unsupported
+    # feature too: a bound that grows there is a widening.
+    def bounded(max_value: int) -> Capabilities:
+        return Capabilities.model_validate(
+            {
+                "batch": {
+                    "diarization": {
+                        "supported": False,
+                        "x_acme_extra": {"supported": True, "constraints": {"max": max_value}},
+                    }
+                }
+            }
+        )
+
+    assert bounded(5).covers(bounded(4)) is True
+    assert bounded(5).covers(bounded(6)) is False
+
+
+@pytest.mark.parametrize(
+    "tree",
+    [
+        Capabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities()),
+        Capabilities.model_validate(
+            {
+                "batch": {
+                    "diarization": {
+                        "supported": False,
+                        "x_acme_extra": {"supported": True},
+                        "constraints": {"x_acme_bound": {"supported": True}},
+                    },
+                    "x_vendor_group": {"inner": {"supported": True}, "x_other": {"mode": "fast"}},
+                    "unknown_key": {"supported": True},
+                },
+                "streaming": {
+                    "word_timestamps": {"supported": True, "granularities": ["word"]},
+                    "x_vendor_off": {"supported": False, "x_child": {"supported": True}},
+                },
+            }
+        ),
+    ],
+)
+def test_supported_paths_are_the_queryable_paths_that_supports_accepts(
+    tree: Capabilities,
+) -> None:
+    # iter_supported_paths() and supports() are two readings of one fact, so
+    # they must agree at every queryable path, wherever the node hangs.
+    assert set(tree.iter_supported_paths()) == {
+        path for path in tree.iter_queryable_paths() if tree.supports(path)
+    }
+
+
+def test_covers_rejects_a_dropped_or_malformed_mode() -> None:
+    # A supported enum/mode node that stops stating its mode, or states one
+    # that is not a token, proves no narrowing of the declared mode.
+    declared = _x_caps({"x_m": {"mode": "alpha"}})
+    assert declared.covers(_x_caps({"x_m": {"mode": "alpha"}})) is True
+    assert declared.covers(_x_caps({"x_m": {"supported": True}})) is False
+    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": None}})) is False
+    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": 1}})) is False
+    # Disabling the node stays a narrowing.
+    assert declared.covers(_x_caps({"x_m": {"supported": False}})) is True
+    assert declared.covers(_x_caps({"x_m": {"mode": "unsupported"}})) is True
+    # A declared mode that is not a token states no mode restriction.
+    malformed = _x_caps({"x_m": {"supported": True, "mode": 1}})
+    assert malformed.covers(malformed) is True
+    assert malformed.covers(_x_caps({"x_m": {"mode": "alpha"}})) is True
+
+
+def test_covers_rejects_a_malformed_bound() -> None:
+    # A declared finite bound is met only by an effective int no larger than
+    # it. A float, a string, a bool, or null in its place is not a bound, so
+    # it claims nothing the declared bound allows.
+    def tree(max_value: object) -> Capabilities:
+        return _x_caps({"x_b": {"supported": True, "constraints": {"max": max_value}}})
+
+    declared = tree(5)
+    assert declared.covers(tree(5)) is True
+    assert declared.covers(tree(4)) is True
+    assert declared.covers(tree(7)) is False
+    assert declared.covers(tree(6.5)) is False
+    assert declared.covers(tree(4.5)) is False
+    assert declared.covers(tree("4")) is False
+    assert declared.covers(tree(True)) is False
+    assert declared.covers(tree(None)) is False
+    # A declared bound that is not an int states no bound.
+    assert tree("5").covers(tree(7)) is True
+    assert tree(None).covers(tree(7)) is True
+
+
+def test_covers_ignores_an_unknown_extra_on_a_typed_node() -> None:
+    # An unknown key tolerated on parse is not a protocol field: `mode` or
+    # `granularities` as an extra of a container carries no meaning, so it
+    # must not make covers() compare anything.
+    assert _x_caps({"mode": "alpha"}).covers(_x_caps({"mode": "beta"})) is True
+    assert _x_caps({"granularities": ["word"]}).covers(_x_caps({"granularities": []})) is True
+
+
+def test_covers_treats_a_malformed_enumeration_as_no_enumeration() -> None:
+    # A list that is not a list of strings is not an enumeration. Declared, it
+    # states no restriction; effective, it proves no narrowing. Neither raises.
+    finite = _x_caps({"x_wt": {"supported": True, "granularities": ["word"]}})
+    malformed = _x_caps({"x_wt": {"supported": True, "granularities": ["word", {}]}})
+    assert finite.covers(malformed) is False
+    assert finite.covers(_x_caps({"x_wt": {"supported": True, "granularities": [1]}})) is False
+    assert malformed.covers(finite) is True
+    assert malformed.covers(malformed) is True
+
+
+def test_covers_rejects_a_typed_enumeration_emptied_after_construction() -> None:
+    # The validator rejects a supported WordTimestampsCapability with an empty
+    # list when it is built, but the list itself is mutable afterwards. An
+    # effective tree emptied that way offers "all" and must not pass.
+    declared = Capabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
+        )
+    )
+    effective = Capabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
+        )
+    )
+    assert effective.batch is not None
+    effective.batch.word_timestamps.granularities.clear()
+    assert declared.covers(effective) is False
 
 
 def test_word_timestamps_supported_requires_granularities() -> None:

@@ -182,30 +182,30 @@ def _reject_separator_keys_on_node_surface(extras: Mapping[str, object]) -> None
 
 
 def granularity_offers_all(granularities: Sequence[str]) -> bool:
-    """Return whether a declared ``granularities`` list means "unbounded (all)".
+    """Return whether a ``granularities`` list means every granularity.
 
-    An empty enumeration on a bounded node is the "engine did not enumerate" /
-    unbounded case, not "offers nothing" (on a node of the bounded shape an
-    empty enumeration list does not constrain). The **only** consumer is the
-    capability-narrowing comparison :func:`_node_narrows` /
-    :meth:`Capabilities.covers`, and there only on the **raw dict /
-    ``x_*`` path**: a typed :class:`WordTimestampsCapability` cannot reach this case
-    because its validator makes ``supported=True`` with an empty
-    ``granularities`` unrepresentable, so "empty == all" survives solely for
-    untyped JSON-sourced nodes.
+    On a bounded node, an empty enumeration means that the engine did not
+    enumerate, so the node offers every granularity. It does not mean that
+    the node offers none. :meth:`Capabilities.covers` reads ``granularities``
+    by the same rule, on the declared node and on the effective node, and
+    also reads an omitted or ``None`` field as every granularity.
 
-    This is deliberately NOT shared with runtime parameter gating:
-    ``runtime.gating._gate_granularity`` does not call this function and takes the
-    opposite stance (a supported ``WordTimestampsCapability`` *always* enumerates its
-    granularities, so a requested value MUST be one of them -- no "empty => honor
-    anything"). The two modules agree because that typed-validator invariant
-    closes the empty case, not because they share this helper.
+    The validator of :class:`WordTimestampsCapability` rejects building a
+    supported node with an empty list. The list stays mutable after the node
+    is built, though, and :meth:`Capabilities.covers` reads an emptied list
+    as every granularity too. A raw ``x_*`` node has no validator and can
+    state an empty list directly.
+
+    Runtime parameter gating does not use this rule.
+    ``runtime.gating._gate_granularity`` accepts a requested granularity
+    only when a :class:`WordTimestampsCapability` lists it, so an emptied
+    list accepts none.
 
     Args:
-        granularities: The declared granularity list (possibly empty).
+        granularities: A ``granularities`` list, possibly empty.
 
     Returns:
-        ``True`` if the list is empty (unbounded -- every granularity offered).
+        ``True`` if the list is empty, which means every granularity.
     """
     return not granularities
 
@@ -425,10 +425,10 @@ class WordTimestampsCapability(_FlagLikeNode):
     granularity: an engine that declares ``supported=True`` but lists no
     granularities is ambiguous -- gating could not tell whether a
     requested granularity is offered, and silently honoring an unlisted one is
-    the cardinal sin. Requiring explicit enumeration makes the "supported but
-    unenumerated" state unrepresentable, so gating always validates against a
-    real set. When ``supported=False`` the list is ignored (it defaults to
-    empty and carries no meaning).
+    the cardinal sin. The validator therefore rejects building a node in the
+    "supported but unenumerated" state, so gating validates a requested
+    granularity against the listed set. When ``supported=False`` the list is
+    ignored (it defaults to empty and carries no meaning).
 
     Attributes:
         supported: Whether word timestamps are supported.
@@ -1010,14 +1010,17 @@ class Capabilities(_Container):
         return node if isinstance(node, _CapabilityNode) else None
 
     def iter_supported_paths(self) -> Iterator[str]:
-        """Yield every dot-path in the tree whose node is supported.
+        """Yield the dot-path of every supported node in the tree.
 
-        Only the children of a *supported* typed node are descended into, so an
-        unsupported feature's constraint sub-containers (which are always
-        present, never ``None``) do not appear. A raw ``x_*`` dict subtree is
-        walked unconditionally (see :meth:`_iter_paths`) so nested explicit
-        vendor capabilities stay discoverable. Used to verify the
-        ``effective ⊆ declared`` invariant.
+        The paths are exactly the paths of :meth:`iter_queryable_paths` at
+        which :meth:`supports` answers ``True``. Support is read at the node a
+        path addresses, so an unsupported ancestor hides nothing: a supported
+        ``x_*`` node on an unsupported feature, or inside a ``constraints``
+        submodel, is yielded. A typed ``constraints`` submodel is never
+        yielded, because it is not a capability, and neither is a raw dict
+        that carries neither ``supported`` nor ``mode``. :meth:`covers`
+        compares these paths to check that an effective tree only narrows a
+        declared one.
 
         Yields:
             Dot-paths of supported capability nodes and present containers.
@@ -1058,8 +1061,10 @@ class Capabilities(_Container):
         the effective set may only *close* declared capabilities, never widen
         them. This checks three things:
 
-        * **Set containment** -- every supported path in ``other`` is also
-          supported here (no feature is enabled that this tree did not declare).
+        * **Set containment** -- every path that :meth:`iter_supported_paths`
+          yields for ``other`` is also supported here (no feature is enabled
+          that this tree did not declare), a path under an unsupported node
+          included.
         * **Same role** -- at every path both trees hold, :meth:`role_at`
           gives the same answer, whether or not the node is supported there.
           A path that ``other`` omits is a narrowing.
@@ -1068,6 +1073,25 @@ class Capabilities(_Container):
           (for example, a smaller-or-equal ``max``, a subset of ``granularities``, a
           ``mode`` that is the same or a reduction). A widening (declared
           ``max=2`` -> effective ``max=999``) is rejected.
+
+        A restriction this tree states must be met by a well-formed value in
+        ``other``, and a comparison that cannot be made counts as a widening.
+        This tree states a restriction only with a string ``mode``, an
+        ``int`` bound that is not a ``bool``, or a nonempty list of strings
+        in ``granularities``. Where it states one, a node that ``other``
+        still supports widens this tree when it drops the value or gives it
+        in the wrong shape: a ``None`` or ``1`` mode, a ``6.5``, ``"6"``, or
+        ``True`` bound, or a ``granularities`` that is not a list of
+        strings. An empty, omitted, or ``None`` ``granularities`` means
+        every granularity, in either tree: in ``other`` it widens a nonempty
+        list in this tree, and in this tree it restricts nothing. A value of
+        any other shape in this tree restricts nothing too. The constraint
+        narrowing compares only these standard fields, on a standard node and
+        an ``x_*`` node alike: ``mode``, ``granularities``, and the upper
+        bounds ``max``, ``max_tokens``, ``max_terms``, ``max_chars_per_term``,
+        ``max_words_per_term``, and ``max_speakers`` in ``constraints``. A
+        vendor's other fields mean what the vendor says, and nothing compares
+        them.
 
         Args:
             other: A (typically narrowed, effective) capability tree.
@@ -1309,24 +1333,31 @@ def _to_canonical(node: object, *, inject_supported: bool) -> Any:
 
 
 def _iter_paths(node: object, prefix: str) -> Iterator[str]:
-    """Recursively yield supported dot-paths under ``node``.
+    """Recursively yield the supported dot-paths under ``node``.
 
-    A *typed* node's children are only descended into when the node itself is
-    supported, so nothing under an *unsupported* feature, such as an ``x_*``
-    extra on it, joins the set used for the ``effective ⊆ declared``
-    comparison. Its ``constraints`` submodel would add no path either way:
-    :func:`_derive_supported` answers ``False`` for it.
+    The walk visits every node whose path
+    :meth:`Capabilities.iter_queryable_paths` yields, supported or not. It
+    yields a path exactly when
+    :func:`_derive_supported` answers ``True`` for the path's node, which is
+    the answer :meth:`Capabilities.supports` gives for that path. Support is
+    a fact about the addressed node, so an unsupported ancestor hides
+    nothing.
 
-    A *raw dict* child is descended into unconditionally: a
-    JSON-sourced ``x_*`` subtree has no always-present inert submodels, and
-    :meth:`to_protocol_dict` likewise recurses into every dict child, so matching
-    that descent keeps the in-process query and the capability JSON document
-    isomorphic -- a nested explicit capability (``{"supported": true}``) under
-    a bare grouping dict (which itself is *not* a capability, so its own path
-    is not yielded) stays discoverable on both layers. A bare ``constraints``
-    dict is reached this way too, but contributes no path because every key
-    under it is non-capability data (``_derive_supported`` is fail-closed for
-    it).
+    The standard children of an unsupported standard feature add no path.
+    Its ``constraints`` submodel is never a capability
+    (:func:`_derive_supported` answers ``False`` for it). A trait child such
+    as ``always_on`` is not supported there either, because the parent's
+    validator rejects that pair when the parent is built. An ``x_*`` node on
+    the feature, or on its ``constraints`` submodel, is the vendor's own
+    node. :meth:`Capabilities.supports` and
+    :meth:`Capabilities.to_protocol_dict` read it as the vendor declared it,
+    so the walk yields its path when it is supported.
+
+    A bare grouping dict, with neither ``supported`` nor ``mode``, is not a
+    capability, so its own path is not yielded, while a nested explicit
+    capability (``{"supported": true}``) under it is. A bare ``constraints``
+    dict such as ``{"max": 5}`` adds no path either: it is not a capability,
+    and its values are not nodes.
 
     Args:
         node: A pydantic model or dict to walk.
@@ -1342,14 +1373,12 @@ def _iter_paths(node: object, prefix: str) -> Iterator[str]:
         supported = _derive_supported(child)
         if supported:
             yield path
-        # Descend into a supported typed node, OR into any dict child (whose own
-        # support is irrelevant to whether it *contains* supported capabilities --
-        # mirroring to_protocol_dict's unconditional dict recursion). An unsupported
-        # typed node is not descended, so nothing under it counts as supported.
-        descend = supported or isinstance(child, dict)
-        if descend:
-            # `child` stays a plain object here (the dict-narrowing above is only a
-            # descent predicate); _iter_paths re-dispatches on its runtime type.
+        # Walk every node, supported or not. Support decides whether a path is
+        # yielded, never whether its subtree is walked, so the set agrees with
+        # supports() at every path. to_protocol_dict() renders the subtree of
+        # an unsupported node too, so the walk and the capability JSON
+        # document cover the same nodes.
+        if isinstance(child, (BaseModel, dict)):
             yield from _iter_paths(cast("object", child), path)
 
 
@@ -1447,96 +1476,149 @@ _MODE_REDUCTIONS: dict[str, frozenset[str]] = {
 def _node_narrows(declared: object, effective: object) -> bool:
     """Return whether ``effective`` is no looser than ``declared`` for one node.
 
-    Implements the per-node half of the ``effective ⊆ declared`` invariant for
-    bounded (``constraints``) and enum/mode nodes. Flag-only nodes always pass
-    (set containment already covered them).
+    This is the per-node half of the ``effective ⊆ declared`` invariant. It
+    compares the standard restrictions a node can state: its ``mode``, its
+    ``granularities`` enumeration, and the upper bounds in its
+    ``constraints``. A node that states none of them, such as a flag node,
+    always passes, because set containment already covered it.
+    :meth:`Capabilities.covers` calls this only at paths that both trees
+    support.
 
     Args:
-        declared: The declared node (or sub-value).
-        effective: The corresponding effective node (or sub-value).
+        declared: The declared node.
+        effective: The effective node at the same path.
 
     Returns:
         ``True`` if ``effective`` does not widen ``declared``.
     """
-    # enum/mode nodes: the effective mode must be a reduction of the declared.
+    # One rule covers every restriction below. A restriction the declared
+    # node states must be met by a well-formed effective value that narrows
+    # it. A comparison that cannot be made, because the effective value is
+    # missing, None, or not the shape the field has, proves no narrowing, so
+    # it fails (fail-closed), as a changed mode with no known strength order
+    # does. A restriction the declared node does not state, or states in a
+    # shape this function does not read, restricts nothing, so any effective
+    # value narrows it.
+
+    # enum/mode nodes: the effective mode must be the declared mode or a
+    # reduction of it. A token outside _MODE_REDUCTIONS, such as the token of
+    # an x_* enum node or a token from a later version, has no known strength
+    # order, so a change from or to such a token fails rather than passing as
+    # a narrowing. A dropped mode fails too. The effective node is still
+    # supported here, so a missing, None, or non-string mode proves no
+    # narrowing.
     declared_mode = _read_attr(declared, "mode")
     effective_mode = _read_attr(effective, "mode")
-    if (
-        isinstance(declared_mode, str)
-        and isinstance(effective_mode, str)
-        and declared_mode != effective_mode
-    ):
-        # An identical mode is trivially a non-widening; a CHANGE must be a
-        # provably weaker mode. Tokens outside _MODE_REDUCTIONS (an x_*
-        # experimental enum node, or an unknown future token) have no known
-        # strength order, so a change between them is fail-CLOSED: it MUST NOT
-        # silently pass as a legal narrowing.
-        allowed = _MODE_REDUCTIONS.get(declared_mode)
-        if allowed is None or effective_mode not in allowed:
+    if isinstance(declared_mode, str):
+        if not isinstance(effective_mode, str):
             return False
-
-    # granularities: effective set MUST be a subset of declared set. An empty
-    # declared list means "unbounded (all)" (see granularity_offers_all), so any
-    # effective list is a valid narrowing of it -- skip the subset check then.
-    declared_grans = _read_attr(declared, "granularities")
-    effective_grans = _read_attr(effective, "granularities")
-    if isinstance(declared_grans, list) and isinstance(effective_grans, list):
-        if not granularity_offers_all(cast("list[str]", declared_grans)) and not set(
-            cast("list[object]", effective_grans)
-        ).issubset(set(cast("list[object]", declared_grans))):
-            return False
-
-    # bounded constraints: each numeric upper-bound MUST NOT increase.
-    declared_c = _read_attr(declared, "constraints")
-    effective_c = _read_attr(effective, "constraints")
-    if declared_c is not None and effective_c is not None:
-        for field in _MAX_CONSTRAINT_FIELDS:
-            d_val = _read_attr(declared_c, field)
-            e_val = _read_attr(effective_c, field)
-            # A declared finite bound must not be loosened. An effective bound
-            # may not appear where the declared one was unbounded (None) and
-            # then claim a value -- that is also a widening of an open bound.
-            if isinstance(d_val, int) and isinstance(e_val, int):
-                if e_val > d_val:
-                    return False
-            elif d_val is not None and e_val is None:
-                # Declared bounded, effective claims unbounded -> widening.
+        if declared_mode != effective_mode:
+            allowed = _MODE_REDUCTIONS.get(declared_mode)
+            if allowed is None or effective_mode not in allowed:
                 return False
-    elif declared_c is not None and effective_c is None:
-        # Dropping the WHOLE constraints submodel is semantically
-        # identical to nulling each bounded field (the `d_val is not None and
-        # e_val is None` case above): it claims "unbounded" where the declared
-        # set was bounded. The only typed node whose `constraints` may be None is
-        # CandidateLanguagesCapability (None == no max); raw x_*/dict nodes may likewise
-        # omit the key. For both, a declared finite upper bound that vanishes is a
-        # widening and MUST be rejected, otherwise `effective ⊆ declared` is
-        # bypassable through compliance (which
-        # enforces the invariant via covers()). A declared constraints submodel
-        # that carries no finite bound (for example, an all-None PromptConstraints) is
-        # genuinely unbounded, so losing it widens nothing -- fall through to True.
-        if any(isinstance(_read_attr(declared_c, field), int) for field in _MAX_CONSTRAINT_FIELDS):
+
+    # granularities: the effective enumeration must be a subset of the
+    # declared one. An empty, omitted, or None enumeration means "not
+    # enumerated, so every granularity" on either side, by the
+    # specification's rule on empty enumerations, which
+    # granularity_offers_all also states. So a declared node that did not
+    # enumerate is narrowed by any effective value, and an effective node
+    # that stops enumerating widens a finite declared enumeration. A value
+    # that is not a list of strings is not an enumeration. On the declared
+    # side it restricts nothing, and on the effective side it proves no
+    # narrowing.
+    declared_grans = _enumeration(_read_attr(declared, "granularities"))
+    if declared_grans:
+        effective_grans = _enumeration(_read_attr(effective, "granularities"))
+        if not effective_grans or not effective_grans <= declared_grans:
             return False
-    # The remaining case -- declared_c is None -- means the declared bound was
-    # already unbounded, so any effective constraints (present or absent) is a
-    # valid narrowing; nothing to reject.
+
+    # constraints: no upper bound may grow. A declared finite bound must be
+    # met by an effective finite bound no larger than it. An effective bound
+    # that is missing, None, a bool, a float, or a string states no readable
+    # bound where the declared node had one, which is a widening. Dropping
+    # the whole constraints submodel makes the same claim for every bound at
+    # once. The only typed node whose `constraints` may be None is
+    # CandidateLanguagesCapability, where None means no maximum, and a raw
+    # x_* or dict node may omit the key. A declared constraints submodel
+    # with no finite bound, such as an all-None PromptConstraints, restricts
+    # nothing, so losing it widens nothing.
+    declared_c = _read_attr(declared, "constraints")
+    if declared_c is not None:
+        effective_c = _read_attr(effective, "constraints")
+        for field in _MAX_CONSTRAINT_FIELDS:
+            d_val = _bound(_read_attr(declared_c, field))
+            if d_val is None:
+                continue
+            e_val = _bound(_read_attr(effective_c, field)) if effective_c is not None else None
+            if e_val is None or e_val > d_val:
+                return False
+    # A declared node without constraints states no bound, so the effective
+    # node narrows it whether or not it has constraints.
     return True
 
 
+def _enumeration(value: object) -> frozenset[str] | None:
+    """Read an enumeration field's value as the set of tokens it offers.
+
+    Args:
+        value: The field's value on a node, ``None`` when the field is absent
+            or holds ``None``.
+
+    Returns:
+        The tokens as a set. The set is empty when the node did not
+        enumerate, which means every token: an empty list, an absent field,
+        and ``None`` all read this way. ``None`` when the value is not a list
+        of strings, because such a value is not an enumeration at all.
+    """
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list):
+        return None
+    tokens = cast("list[object]", value)
+    if not all(isinstance(token, str) for token in tokens):
+        return None
+    return frozenset(cast("list[str]", tokens))
+
+
+def _bound(value: object) -> int | None:
+    """Read a constraint field's value as a finite upper bound.
+
+    Args:
+        value: The field's value on a ``constraints`` submodel or dict,
+            ``None`` when the field is absent or holds ``None``.
+
+    Returns:
+        The bound when the value is an ``int``. A ``bool`` does not count,
+        although Python treats it as an ``int``. ``None`` for any other
+        value, because an absent, ``None``, or malformed value states no
+        bound.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def _read_attr(node: object, name: str) -> object:
-    """Read ``name`` from a model (field or extra) or dict, else ``None``.
+    """Read the protocol field ``name`` of a typed node or a dict, else ``None``.
+
+    On a typed node, only a declared field counts. An extra key with that
+    name is either an ``x_*`` node, which is never a field, or an unknown key
+    that parsing tolerates (spec R2). Neither carries the field's meaning, so
+    the narrowing comparison must not read it. On a raw dict, every key is
+    the vendor's field.
 
     Args:
         node: A pydantic model, dict, or other value.
-        name: The attribute / key name.
+        name: The field or key name.
 
     Returns:
-        The value, or ``None`` if absent.
+        The value, or ``None`` if the field is absent.
     """
     if isinstance(node, BaseModel):
         if name in type(node).model_fields:
             return getattr(node, name)
-        extra: dict[str, Any] = node.model_extra or {}
-        return extra.get(name)
+        return None
     if isinstance(node, dict):
         return cast("dict[str, object]", node).get(name)
     return None

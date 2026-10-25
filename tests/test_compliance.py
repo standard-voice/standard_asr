@@ -274,6 +274,36 @@ def widened_factory() -> _WidenedASR:  # pyright: ignore[reportUnusedFunction]
     return _WidenedASR()
 
 
+class _VendorWidenedASR(_GoodASR):
+    # The only widening is a vendor node under an unsupported typed node: the
+    # effective tree supports batch.diarization.x_acme_extra, the declared tree
+    # does not. supports() reads the node as declared, so covers() must too.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "batch": {
+                "diarization": {
+                    "supported": False,
+                    "x_acme_extra": {"supported": False, "role": "requestable"},
+                }
+            }
+        }
+    )
+    effective_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "batch": {
+                "diarization": {
+                    "supported": False,
+                    "x_acme_extra": {"supported": True, "role": "requestable"},
+                }
+            }
+        }
+    )
+
+
+def vendor_widened_factory() -> _VendorWidenedASR:  # pyright: ignore[reportUnusedFunction]
+    return _VendorWidenedASR()
+
+
 class _BatchWithUngatedFeature(BatchCapabilities):
     # A typed requestable node at a path no gate checks: a request for it
     # would reach the engine unchecked.
@@ -562,6 +592,16 @@ def test_check_entrypoints_effective_widens_declared() -> None:
     report = check_entrypoints(registry=_registry("widened_factory"))
     assert report.passed is False
     assert any("not a subset" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_reports_a_vendor_widening_under_an_unsupported_node() -> None:
+    # A supported x_* child of an unsupported typed node used to escape the
+    # supported-path walk, so this widening passed compliance although
+    # supports() and the capability JSON document both showed the child as
+    # supported.
+    report = check_entrypoints(registry=_registry("vendor_widened_factory"))
+    assert report.passed is False
+    assert any(i.code == "effective_widens_declared" for i in report.issues)
 
 
 def test_check_entrypoints_raising_effective_caps_is_reported_not_crash() -> None:
