@@ -17,8 +17,6 @@ _close
 _cues
 _env_override
 _flat_input_keys
-_iter_paths
-_node_narrows
 _normalize_segment
 _open
 _pick_sub_constraint_probe
