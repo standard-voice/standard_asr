@@ -49,7 +49,7 @@ from standard_asr.contract.artifacts import (
     ArtifactReport,
     ArtifactRequirement,
 )
-from standard_asr.contract.capabilities import DeclaredCapabilities, StreamingCapabilities
+from standard_asr.contract.capabilities import Capabilities, StreamingCapabilities
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
@@ -78,7 +78,10 @@ from standard_asr.contract.results import (
     Diagnostic,
     Segment,
     TranscriptionResult,
+    flat_words_missing_diagnostic,
+    missing_words_counts,
     synthesize_segment_speaker,
+    text_segments_diagnostics,
 )
 from standard_asr.runtime.config import BaseConfig
 from standard_asr.runtime.downloads import allow_downloads
@@ -116,7 +119,7 @@ class StandardASR(Protocol):
     """
 
     properties: ClassVar[BaseProperties]
-    declared_capabilities: ClassVar[DeclaredCapabilities]
+    declared_capabilities: ClassVar[Capabilities]
     declared_metadata: ClassVar[DeclaredEngineMetadata]
 
     @property
@@ -646,7 +649,7 @@ def bind_session_capabilities(session: TranscriptionSession, engine: StandardASR
     ``effective_capabilities`` property. The function uses the engine's
     ``declared_capabilities`` only when the engine has no
     ``effective_capabilities`` attribute, or the attribute does not hold a
-    ``DeclaredCapabilities``. A tree with no ``streaming`` domain binds the
+    ``Capabilities``. A tree with no ``streaming`` domain binds the
     default ``StreamingCapabilities()``, in which ``emits_partials``,
     ``partial_stability``, ``re_segments``, ``timestamps``,
     ``word_timestamps``, and ``diarization`` are unsupported and
@@ -669,11 +672,139 @@ def bind_session_capabilities(session: TranscriptionSession, engine: StandardASR
     except AttributeError:
         if inspect.getattr_static(engine, "effective_capabilities", None) is not None:
             raise
-    if not isinstance(capabilities, DeclaredCapabilities):
+    if not isinstance(capabilities, Capabilities):
         capabilities = engine.declared_capabilities
     session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
         capabilities.streaming or StreamingCapabilities()
     )
+
+
+def finalize_result(result: TranscriptionResult) -> TranscriptionResult:
+    """Apply the TR.1 text check and the TR.4 words fill to a batch result.
+
+    The function applies two rules of the specification to each view of
+    ``result``. The views are the top level and each ``ChannelResult``.
+
+    The text rule: when a view's ``segments`` is a list, the engine MUST
+    build its ``text`` as the segment texts concatenated in list order
+    (spec TR.1). For each view that breaks it,
+    :func:`~standard_asr.contract.results.text_segments_diagnostics`
+    returns one ``text_segments_mismatch`` warning diagnostic. The function
+    attaches it and rewrites nothing: ``text`` and every segment text stay
+    as the engine returned them.
+
+    The words rule: when a segment carries a ``words`` list, even ``[]``,
+    the engine MUST also set the ``words`` of the view that holds the
+    segment (spec TR.4).
+    :func:`~standard_asr.contract.results.missing_words_diagnostics` finds
+    each view whose ``words`` is still ``None``. The function sets that
+    ``words`` to the segments' words concatenated in segment order. A
+    segment whose ``words`` is ``None`` adds nothing, so the filled list
+    holds only the words the segments carry, and is ``[]`` when every list
+    they carry is empty. A result whose top-level ``words`` is ``None``
+    cannot have a channel that carries ``words`` (spec TR.4). So the
+    function fills a channel only when the top-level ``words`` is a list,
+    as the engine set it or as the function filled it. It leaves any other
+    channel as the engine returned it. Each view the rule finds gets one
+    ``flat_words_missing`` warning diagnostic; for a view the function
+    filled, the message says so, and a view it left alone gets the
+    diagnostic that ``missing_words_diagnostics`` returns for it. The rule
+    looks only at whether ``words`` is ``None`` and compares no values. A
+    ``words`` list the engine set, even ``[]``, stays as it is, and the
+    function checks nothing about the words it copies.
+
+    The function appends each diagnostic unless ``result.diagnostics``
+    already holds an equal one. Equal is pydantic's model equality: the same
+    class, and the same value in every field, ``level`` included. Which
+    fields were set explicitly does not matter, so a diagnostic rebuilt
+    from the reference server's JSON equals the original. An instance of a
+    subclass of :class:`~standard_asr.contract.results.Diagnostic` is not
+    equal to a ``Diagnostic`` with the same values. The diagnostics already
+    there keep their order. Apart from the filled ``words`` and the added
+    diagnostics, nothing changes.
+
+    The function checks no other rule, so the result it returns can still
+    break the specification. For example, nothing checks that the views
+    hold the same segments and words (spec TR.4), or that a view's
+    ``words`` agree with its segments' ``words``. Nothing checks either that
+    the engine put a space wherever one belongs (spec TR.1).
+
+    Calling the function again on the result it returns changes nothing.
+    :meth:`EngineBase.transcribe` calls it on every result it returns, after
+    it merges the diagnostics from parameter gating, language resolution,
+    audio conversion, and the engine itself. So when an engine's
+    ``_transcribe`` returns the result of another engine's
+    :meth:`EngineBase.transcribe`, the application gets each
+    ``text_segments_mismatch`` and ``flat_words_missing`` diagnostic once.
+    The standard layer does not apply these rules inside an engine that
+    implements the protocol without deriving from :class:`EngineBase`. Such
+    an engine, or the code that calls it, should call this function on
+    each result. The reference server's two batch endpoints and
+    ``standard-asr transcribe`` call it on every result.
+
+    The function adds diagnostics and never removes one. If an engine
+    changes ``text`` or the segments of another engine's result and keeps
+    that result's diagnostics, a ``text_segments_mismatch`` diagnostic may
+    no longer describe the result. Its message records the view, the first
+    differing code point index, and both lengths, so it stays accurate only
+    if the change keeps all of them. Such an engine drops those
+    ``text_segments_mismatch`` diagnostics. Calling this function on the
+    changed result then attaches the ones that describe it.
+    :meth:`EngineBase.transcribe` makes that call for an engine that derives
+    from :class:`EngineBase`. Dropping a ``flat_words_missing`` diagnostic
+    is different when its view was filled. The filled ``words`` no longer
+    show that the engine left them out, so no call attaches the diagnostic
+    again, and the disclosure is lost. For the same reason,
+    :func:`~standard_asr.compliance.check_transcription_result` reports the
+    ``flat_words_missing`` diagnostics a result carries as well as the
+    views whose ``words`` its data still shows as missing.
+
+    Args:
+        result: The result an engine returned. It may already carry some or
+            all of these diagnostics.
+
+    Returns:
+        ``result`` itself when there is nothing to fill and no diagnostic to
+        add. Otherwise, a copy of ``result`` with the filled ``words``, and
+        with the missing diagnostics after the ones it already carries. The
+        ``text_segments_mismatch`` ones come first, then the
+        ``flat_words_missing`` ones, each in view order.
+    """
+    found: list[Diagnostic] = list(text_segments_diagnostics(result))
+    update: dict[str, object] = {}
+    top_words = result.words
+    counts = missing_words_counts(result.words, result.segments)
+    if counts is not None and result.segments is not None:
+        top_words = [word for segment in result.segments for word in segment.words or []]
+        update["words"] = top_words
+        found.append(flat_words_missing_diagnostic("TranscriptionResult", *counts, filled=True))
+    if result.channels is not None:
+        channels: list[ChannelResult] = []
+        filled_any = False
+        for channel in result.channels:
+            counts = missing_words_counts(channel.words, channel.segments)
+            if counts is None or channel.segments is None:
+                channels.append(channel)
+                continue
+            owner = f"ChannelResult(channel={channel.channel})"
+            if top_words is None:
+                # A channel MUST NOT carry words the top level lacks (spec
+                # TR.4), so the fill would make a result the validators
+                # reject when it is rebuilt. Disclose without filling.
+                channels.append(channel)
+                found.append(flat_words_missing_diagnostic(owner, *counts, filled=False))
+                continue
+            words = [word for segment in channel.segments for word in segment.words or []]
+            channels.append(channel.model_copy(update={"words": words}))
+            filled_any = True
+            found.append(flat_words_missing_diagnostic(owner, *counts, filled=True))
+        if filled_any:
+            update["channels"] = channels
+    missing = [d for d in found if d not in result.diagnostics]
+    if not update and not missing:
+        return result
+    update["diagnostics"] = [*result.diagnostics, *missing]
+    return result.model_copy(update=update)
 
 
 def require_engine_protocol(engine: object) -> BaseProperties:
@@ -815,7 +946,7 @@ class EngineBase(ABC):
     """
 
     properties: ClassVar[BaseProperties]
-    declared_capabilities: ClassVar[DeclaredCapabilities]
+    declared_capabilities: ClassVar[Capabilities]
     #: Fail-loud placeholder, not a usable default. Compliance requires a
     #: plugin-owned :class:`DeclaredEngineMetadata` value; an engine that
     #: inherits this placeholder gets the typed declaration error from the
@@ -891,7 +1022,7 @@ class EngineBase(ABC):
         return self._language_sets_cache
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:
+    def effective_capabilities(self) -> Capabilities:
         """Runtime-effective capabilities (default: the declared set).
 
         Engines that narrow capabilities based on configuration override this;
@@ -982,7 +1113,7 @@ class EngineBase(ABC):
         # ``model_copy(update=...)`` declaration stores whatever it was given,
         # and every consumer of the result gates on plain truthiness -- a
         # truthy non-bool such as the string "false" would enable an
-        # acquisition path here while ``canonical_json()`` publishes ``false``
+        # acquisition path here while ``to_protocol_dict()`` publishes ``false``
         # for the same metadata (two verdicts for one declaration).
         # Re-validation applies the model's own construction semantics
         # (``revalidate_instances``): a value the constructor would coerce
@@ -1546,7 +1677,9 @@ class EngineBase(ABC):
         needs no audio) -> resolve & validate the effective language axis ->
         coerce -> negotiate -> convert/resample -> call the engine ->
         synthesize missing segment speakers from word speakers (the pinned
-        synthesis rule) -> attach diagnostics.
+        synthesis rule) -> attach diagnostics -> :func:`finalize_result`,
+        which checks each view's ``text`` against its segments (spec TR.1)
+        and fills each view's missing ``words`` (spec TR.4).
 
         Parameter validation runs *before* the (potentially expensive) audio
         decode/resample so a swapped-engine ``provider_params`` bug or an
@@ -1559,7 +1692,15 @@ class EngineBase(ABC):
 
         Returns:
             The transcription result with gating / language / conversion
-            diagnostics attached.
+            diagnostics attached, plus one ``text_segments_mismatch`` warning
+            diagnostic for each view (top level, each channel) whose ``text``
+            is not its segment texts concatenated in list order (spec TR.1).
+            Such a result keeps ``text`` and every segment text as the engine
+            returned them; neither is rejected or rewritten. A view whose
+            ``words`` the engine left as ``None`` while a segment carries a
+            ``words`` list gets ``words`` filled from the segments where
+            :func:`finalize_result` can fill it, and one
+            ``flat_words_missing`` warning diagnostic (spec TR.4).
 
         Raises:
             ProtocolCompatibilityError: If the engine's declared protocol
@@ -1658,13 +1799,19 @@ class EngineBase(ABC):
         # reducer applies the same shared rule, so batch and streaming yield
         # the same Segment.speaker for the same engine output.
         result = _synthesize_result_speakers(result)
-        merged = [
-            *gate_diags,
-            *lang_diags,
-            *prepared.diagnostics,
-            *result.diagnostics,
-        ]
-        return result.model_copy(update={"diagnostics": merged})
+        # finalize_result() applies two rules before delivery. When a view's
+        # text differs from its segment texts, the standard layer cannot tell
+        # which is right (spec TR.1). It delivers both as the engine returned
+        # them and discloses the mismatch. When a view's words is None while
+        # a segment carries a words list, it fills words from the segments
+        # where it can and discloses that (spec TR.4). The reference server
+        # and the CLI call finalize_result() too, so the rules live in one
+        # place. The call appends each missing diagnostic after the merged
+        # ones. A diagnostic the result already carries, as when _transcribe
+        # returned another engine's transcribe() result, keeps its place and
+        # gets no second copy.
+        merged = [*gate_diags, *lang_diags, *prepared.diagnostics, *result.diagnostics]
+        return finalize_result(result.model_copy(update={"diagnostics": merged}))
 
     def _prepare_audio(self, audio: AudioInputLike) -> PreparedAudio:
         """Decode, negotiate, and resample an audio input (shared pipeline).
@@ -2431,6 +2578,7 @@ __all__ = [
     "EngineBase",
     "StandardASR",
     "bind_session_capabilities",
+    "finalize_result",
     "ensure_wire_format_supported",
     "require_engine_protocol",
 ]

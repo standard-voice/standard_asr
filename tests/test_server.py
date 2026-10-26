@@ -32,6 +32,7 @@ from standard_asr import (
     DiarizationRequest,
     RuntimeParams,
     TranscriptionResult,
+    finalize_result,
 )
 from standard_asr.contract.artifacts import (
     ArtifactAction,
@@ -40,13 +41,14 @@ from standard_asr.contract.artifacts import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    CandidateLanguagesCap,
+    CandidateLanguagesCapability,
     CandidateLanguagesConstraints,
-    DeclaredCapabilities,
-    DiarizationCap,
-    FlagCap,
-    LanguageCaps,
+    Capabilities,
+    DiarizationCapability,
+    LanguageCapabilities,
+    LanguageOverrideCapability,
     StreamingCapabilities,
+    TraitFlagCapability,
 )
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
@@ -58,6 +60,7 @@ from standard_asr.contract.metadata import (
     DeclaredEngineMetadata,
 )
 from standard_asr.contract.params import ProviderParams
+from standard_asr.contract.results import Segment, Word
 from standard_asr.engine import (
     BaseConfig,
     BaseProperties,
@@ -94,9 +97,9 @@ class _DummyParams(ProviderParams):
     beam: int = 1
 
 
-_DUMMY_CAPS = DeclaredCapabilities(
+_DUMMY_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True)),
     )
 )
 
@@ -107,7 +110,7 @@ class _DummyASR:
     tests, none of which depend on audio negotiation."""
 
     properties: ClassVar[_DummyProperties] = _DummyProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _DUMMY_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _DUMMY_CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _DummyParams
 
     def __init__(self) -> None:
@@ -135,6 +138,45 @@ class _CjkASR(_DummyASR):
 
 def _cjk_factory() -> _CjkASR:  # pyright: ignore[reportUnusedFunction]
     return _CjkASR()
+
+
+class _MismatchASR(_DummyASR):
+    """Returns a text that is not its segment texts concatenated (a TR.1 fault)."""
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+
+
+def _mismatch_factory() -> _MismatchASR:  # pyright: ignore[reportUnusedFunction]
+    return _MismatchASR()
+
+
+class _NestedWordsASR(_DummyASR):
+    """Nests words in its segment and leaves the flat ``words`` as ``None`` (a TR.4 fault)."""
+
+    def transcribe(self, audio: Any, options: Any = None) -> TranscriptionResult:
+        return TranscriptionResult(
+            text="hello",
+            segments=[
+                Segment(
+                    start=0.0,
+                    end=0.5,
+                    text="hello",
+                    words=[Word(start=0.0, end=0.5, text="hello")],
+                )
+            ],
+            words=None,
+        )
+
+
+def _nested_words_factory() -> _NestedWordsASR:  # pyright: ignore[reportUnusedFunction]
+    return _NestedWordsASR()
 
 
 def _fail_factory() -> _FailASR:  # pyright: ignore[reportUnusedFunction]
@@ -664,9 +706,7 @@ class _StaleResultEngine(EngineBase):
     """
 
     properties: ClassVar[BaseProperties] = _StaleResultProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        batch=BatchCapabilities()
-    )
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(batch=BatchCapabilities())
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="dummy")
@@ -679,13 +719,30 @@ def _stale_result_factory() -> _StaleResultEngine:  # pyright: ignore[reportUnus
     return _StaleResultEngine()
 
 
+class _MismatchEngineBase(_StaleResultEngine):
+    """A real ``EngineBase`` whose ``_transcribe`` builds a text that breaks TR.1."""
+
+    def _transcribe(self, prepared: PreparedAudio, params: RuntimeParams) -> TranscriptionResult:
+        return TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+
+
+def _mismatch_engine_base_factory() -> _MismatchEngineBase:  # pyright: ignore[reportUnusedFunction]
+    return _MismatchEngineBase()
+
+
 # --- Real EngineBase engines that record what negotiation hands them ----------
 
 #: Set by the recording engines' ``_transcribe`` so tests can assert on the
 #: shape/rate/bytes the standard negotiation actually produced.
 _RECORDED: dict[str, Any] = {}
 
-_REC_CAPS = DeclaredCapabilities(batch=BatchCapabilities())
+_REC_CAPS = Capabilities(batch=BatchCapabilities())
 
 
 def _wav_bytes(rate: int, samples: int = 1600) -> bytes:
@@ -714,7 +771,7 @@ class _RecordingArray8kASR(EngineBase):
     silently up-sampled to 16 kHz."""
 
     properties: ClassVar[BaseProperties] = _Array8kProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _REC_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _REC_CAPS
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="rec")
@@ -745,7 +802,7 @@ class _RecordingEncodedASR(EngineBase):
     receive the original encoded bytes byte-for-byte (passthrough)."""
 
     properties: ClassVar[BaseProperties] = _EncodedProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _REC_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _REC_CAPS
 
     def __init__(self) -> None:
         self.config = _DummyConfig(engine="rec")
@@ -778,11 +835,11 @@ class _AutoLangConfig(LanguageConfigMixin, BaseConfig[str]):
     default_language: str | None = "auto"
 
 
-_AUTO_LANG_CAPS = DeclaredCapabilities(
+_AUTO_LANG_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(
-            runtime_override=FlagCap(supported=True),
-            candidate_languages=CandidateLanguagesCap(
+        language=LanguageCapabilities(
+            runtime_override=LanguageOverrideCapability(supported=True),
+            candidate_languages=CandidateLanguagesCapability(
                 supported=True,
                 constraints=CandidateLanguagesConstraints(max=2),
             ),
@@ -800,7 +857,7 @@ class _AutoLangASR(EngineBase):
     """
 
     properties: ClassVar[BaseProperties] = _AutoLangProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _AUTO_LANG_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _AUTO_LANG_CAPS
 
     def __init__(self) -> None:
         self.config = _AutoLangConfig(engine="rec")
@@ -904,6 +961,102 @@ def test_create_app_endpoints() -> None:
     transcribe: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
     assert transcribe.status_code == 200
     assert transcribe.json()["result"]["text"] == "dummy"
+
+
+def test_server_discloses_text_segments_mismatch_for_a_structural_engine() -> None:
+    # The standard layer runs no check on its own for an engine that does
+    # not derive from EngineBase. The server runs it, so a client learns
+    # about a text that is not the concatenated segment texts the same way
+    # it would from an EngineBase engine: the result as the engine built
+    # it, plus the warning.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_mismatch_factory"))
+    client = TestClient(app)
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode("utf-8")}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["text"] == "hello world"
+    assert [d["code"] for d in result["diagnostics"]] == ["text_segments_mismatch"]
+    assert result["diagnostics"][0]["level"] == "warning"
+    assert "hello" not in result["diagnostics"][0]["message"]
+    # A client that rebuilds the result from the JSON and runs the disclosure
+    # itself gets the same object back: the diagnostic survived the round trip.
+    parsed = TranscriptionResult.model_validate(result)
+    assert finalize_result(parsed) is parsed
+
+
+def test_server_discloses_text_segments_mismatch_once_for_an_engine_base() -> None:
+    # transcribe() ran the check inside EngineBase, so the server's own call
+    # adds nothing: the response carries the warning exactly once, on the JSON
+    # route and on the multipart route alike.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    app = server_module.create_app(registry=_registry_for("_mismatch_engine_base_factory"))
+    client = TestClient(app)
+
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(_wav_bytes(16000)).decode()}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["text"] == "hello world"
+    codes = [d["code"] for d in result["diagnostics"]]
+    assert codes.count("text_segments_mismatch") == 1
+
+    files = {"file": ("audio.wav", _wav_bytes(rate=16000), "audio/wav")}
+    resp = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    codes = [d["code"] for d in resp.json()["result"]["diagnostics"]]
+    assert codes.count("text_segments_mismatch") == 1
+
+    # The structural engine gets the same disclosure on the multipart route.
+    app = server_module.create_app(registry=_registry_for("_mismatch_factory"))
+    client = TestClient(app)
+    resp = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    assert [d["code"] for d in resp.json()["result"]["diagnostics"]] == ["text_segments_mismatch"]
+
+
+def test_server_fills_the_flat_words_for_a_structural_engine() -> None:
+    # The same call that checks the text fills a missing `words` (spec TR.4).
+    # A client of either batch route gets the words the engine nested in its
+    # segment, in the flat list too, plus the warning diagnostic that says
+    # the standard layer filled it.
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    def assert_filled(result: Any) -> None:
+        assert result["text"] == "hello"
+        assert result["words"] == result["segments"][0]["words"]
+        assert [w["text"] for w in result["words"]] == ["hello"]
+        assert [d["code"] for d in result["diagnostics"]] == ["flat_words_missing"]
+        assert result["diagnostics"][0]["level"] == "warning"
+        assert "filled" in result["diagnostics"][0]["message"]
+        # Rebuilt from the JSON, the result is valid and still carries the
+        # filled words and the diagnostic. The data no longer shows that
+        # `words` was missing, so the diagnostic is the only record of the
+        # fill. A second finalization finds nothing to add and returns the
+        # same object.
+        parsed = TranscriptionResult.model_validate(result)
+        assert parsed.segments is not None
+        assert parsed.words == parsed.segments[0].words
+        assert [d.code for d in parsed.diagnostics] == ["flat_words_missing"]
+        assert finalize_result(parsed) is parsed
+
+    app = server_module.create_app(registry=_registry_for("_nested_words_factory"))
+    client = TestClient(app)
+    payload = {"model": "dummy/echo", "audio": base64.b64encode(b"fake").decode("utf-8")}
+    resp: httpx2.Response = client.post("/v1/transcribe:json", json=payload)
+    assert resp.status_code == 200
+    assert_filled(resp.json()["result"])
+
+    files = {"file": ("audio.wav", _wav_bytes(rate=16000), "audio/wav")}
+    resp = client.post("/v1/transcribe", data={"model": "dummy/echo"}, files=files)
+    assert resp.status_code == 200
+    assert_filled(resp.json()["result"])
 
 
 def test_server_array_engine_keeps_native_rate_through_negotiation() -> None:
@@ -2056,7 +2209,7 @@ def _audio_error_factory() -> _AudioErrorASR:  # pyright: ignore[reportUnusedFun
 
 
 class _NoCapsASR(_DummyASR):
-    declared_capabilities: ClassVar[DeclaredCapabilities | None] = None  # type: ignore[assignment]
+    declared_capabilities: ClassVar[Capabilities | None] = None  # type: ignore[assignment]
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
 
 
@@ -2135,9 +2288,9 @@ def _raising_schema_factory() -> _RaisingSchemaASR:  # pyright: ignore[reportUnu
 
 
 class _UnencodableCaps:
-    """Declared capabilities whose canonical JSON is not JSON at all."""
+    """Declared capabilities whose capability JSON document is not JSON at all."""
 
-    def canonical_json(self) -> dict[str, Any]:
+    def to_protocol_dict(self) -> dict[str, Any]:
         """Return a payload no conforming JSON parser accepts.
 
         Returns:
@@ -3055,10 +3208,10 @@ class _StreamEchoSession(TranscriptionSession):
 
 class _StreamEchoEngine(EngineBase):
     properties: ClassVar[BaseProperties] = _StreamProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     def __init__(self) -> None:
@@ -3185,10 +3338,10 @@ class _SpeakerStreamSession(TranscriptionSession):
 class _SpeakerStreamEngine(_StreamEchoEngine):
     """Streaming engine that declares diarization and labels its finals."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     def _start_transcription(
@@ -3272,13 +3425,13 @@ class _StableTextStreamSession(TranscriptionSession):
 class _StableTextStreamEngine(_StreamEchoEngine):
     """Streaming engine that marks stable text on a partial."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            emits_partials=FlagCap(supported=True),
-            partial_stability=FlagCap(supported=True),
+            emits_partials=TraitFlagCapability(supported=True),
+            partial_stability=TraitFlagCapability(supported=True),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     def _start_transcription(
@@ -3427,10 +3580,10 @@ class _WsStructuralSupersedeEngine:
     """The same stream from an engine that is not an ``EngineBase``."""
 
     properties: ClassVar[BaseProperties] = _StreamProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
     provider_params_type: ClassVar[type[ProviderParams] | None] = None
 
@@ -3453,14 +3606,14 @@ def _ws_structural_supersede_factory() -> (  # pyright: ignore[reportUnusedFunct
 class _WsFailingCapabilitiesEngine(_WsStructuralSupersedeEngine):
     """Its ``effective_capabilities`` property raises ``AttributeError``."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
-        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        streaming=StreamingCapabilities(re_segments=TraitFlagCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:
+    def effective_capabilities(self) -> Capabilities:
         raise AttributeError("model")
 
 
@@ -4872,7 +5025,7 @@ def test_metadata_endpoints_contain_plugin_faults_and_never_leak(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Resolving the class was mapped, but EVERYTHING after it -- the
-    # descriptor read, canonical_json(), model_json_schema() -- ran outside
+    # descriptor read, to_protocol_dict(), model_json_schema() -- ran outside
     # any boundary and left the endpoint through Starlette's unhandled path:
     # an undocumented plain 500, and log_exception_safely never ran, so the
     # ASGI server's own traceback logger rendered the chain natively. A

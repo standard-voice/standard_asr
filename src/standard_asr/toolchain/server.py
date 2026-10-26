@@ -47,7 +47,11 @@ from standard_asr.plugins.discovery import (
     ModelRegistry,
     discover_models,
 )
-from standard_asr.runtime.interface import bind_session_capabilities, require_engine_protocol
+from standard_asr.runtime.interface import (
+    bind_session_capabilities,
+    finalize_result,
+    require_engine_protocol,
+)
 from standard_asr.runtime.protocol_boundary import require_sync_result
 from standard_asr.runtime.redaction import (
     log_exception_safely,
@@ -507,7 +511,7 @@ def create_app(
 
     @app.get("/v1/metadata/{model:path}")
     def declared_metadata(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-        """Return an engine's declared metadata as canonical JSON.
+        """Return an engine's declared metadata as the metadata JSON document.
 
         The endpoint resolves one engine class without instantiating it. It
         checks the engine's protocol version before reading
@@ -521,13 +525,14 @@ def create_app(
             model: Model key in ``engine/model`` format.
 
         Returns:
-            The engine's canonical declared metadata.
+            The metadata JSON document that
+            ``DeclaredEngineMetadata.to_protocol_dict()`` returns.
 
         Raises:
             HTTPException: 404 if the model key is unknown; scrubbed 500 if
                 the plugin fails to load, its declared protocol line is
-                unsupported, its declaration is invalid, or its canonical
-                JSON is unencodable.
+                unsupported, its declaration is invalid, or its metadata JSON
+                document cannot be encoded.
         """
 
         def _project(engine_class: Any) -> dict[str, Any]:
@@ -536,7 +541,7 @@ def create_app(
             metadata = getattr(engine_class, "declared_metadata", None)
             if not isinstance(metadata, DeclaredEngineMetadata):
                 raise EngineContractError("The engine must declare typed engine metadata.")
-            return metadata.canonical_json()
+            return metadata.to_protocol_dict()
 
         return _metadata_or_http_error(model_registry, model, HTTPException, project=_project)
 
@@ -637,7 +642,7 @@ def create_app(
 
     @app.get("/v1/capabilities/{model:path}")
     def capabilities(model: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-        """Return an engine's declared capabilities as canonical JSON.
+        """Return an engine's declared capabilities as the capability JSON document.
 
         Read from the engine **class** without instantiating it (declared
         metadata is readable without instantiation or authentication).
@@ -646,14 +651,15 @@ def create_app(
             model: Model key in ``engine/model`` format.
 
         Returns:
-            The declared capability tree.
+            The capability JSON document that ``Capabilities.to_protocol_dict()``
+            returns for the declared capability tree.
 
         Raises:
             HTTPException: 404 if the model key is unknown or the engine
                 declares no capabilities; scrubbed 500 if the registered
                 model's plugin fails to load, its declared protocol line is
                 unsupported, its capability descriptor
-                raises, or its canonical JSON is unencodable (see
+                raises, or its capability JSON document cannot be encoded (see
                 :func:`_metadata_or_http_error`).
         """
 
@@ -661,7 +667,7 @@ def create_app(
             caps = getattr(engine_class, "declared_capabilities", None)
             if caps is None:
                 raise HTTPException(status_code=404, detail="No capabilities declared.")
-            return caps.canonical_json()
+            return caps.to_protocol_dict()
 
         return _metadata_or_http_error(model_registry, model, HTTPException, project=_project)
 
@@ -1644,6 +1650,12 @@ async def _run_transcription(
         # ValidationError out of ``TranscribeResponse(...)`` past every arm below
         # (echoing engine input text past the scrubbed-500 contract).
         require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
+        # For an engine that does not derive from EngineBase, nothing
+        # automatically checks the text against the segments (spec TR.1) or
+        # fills missing words (spec TR.4). This call applies both rules for
+        # every engine the server serves. An EngineBase result already went
+        # through it, so the call returns that result unchanged.
+        result = finalize_result(result)
         response = TranscribeResponse(model=model, result=result)
         # Finish the wire projection INSIDE the fault-mapping region -- and
         # ONCE. The dump is encoded here (allow_nan=False: NaN/Infinity are
@@ -1830,7 +1842,7 @@ def _metadata_or_http_error(
     ``_is_protocol`` / ``transcribe`` duck-type reads (metaclass/descriptor
     dispatch), then reading ``declared_capabilities`` /
     ``provider_params_type`` / ``config_type`` (whatever descriptor the
-    plugin put there), ``canonical_json()`` and ``model_json_schema()``
+    plugin put there), ``to_protocol_dict()`` and ``model_json_schema()``
     (plugin methods, and a custom ``__get_pydantic_json_schema__`` runs
     inside the latter). A raise anywhere in that stretch that is not one of
     the mapped failures otherwise left the endpoint through Starlette's

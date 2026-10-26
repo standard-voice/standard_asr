@@ -16,8 +16,9 @@ from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import pytest
+from pydantic import Field
 
-from standard_asr import TranscriptionResult
+from standard_asr import TranscriptionResult, finalize_result
 from standard_asr import compliance as compliance_module
 from standard_asr.audio.format import AudioFormat
 from standard_asr.audio.input import InputKind
@@ -44,17 +45,19 @@ from standard_asr.contract.artifacts import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    DeclaredCapabilities,
-    DiarizationCap,
-    FinalityCap,
-    FlagCap,
-    GuidanceCaps,
-    LanguageCaps,
-    PromptCap,
+    CandidateLanguagesCapability,
+    Capabilities,
+    DiarizationCapability,
+    FinalityCapability,
+    GuidanceCapabilities,
+    LanguageCapabilities,
+    LanguageOverrideCapability,
+    PromptCapability,
     PromptConstraints,
     StreamingCapabilities,
-    StreamTimestampsCap,
-    WordTimestampsCap,
+    StreamTimestampsCapability,
+    TraitFlagCapability,
+    WordTimestampsCapability,
 )
 from standard_asr.contract.exceptions import (
     ConfigError,
@@ -112,8 +115,10 @@ class _Props(BaseProperties):
     selectable_languages: list[str] = ["en"]
 
 
-_CAPS = DeclaredCapabilities(
-    batch=BatchCapabilities(language=LanguageCaps(runtime_override=FlagCap(supported=True)))
+_CAPS = Capabilities(
+    batch=BatchCapabilities(
+        language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True))
+    )
 )
 
 
@@ -123,8 +128,8 @@ class _GoodParams(ProviderParams):
 
 class _GoodASR:
     properties: ClassVar[BaseProperties] = _Props()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
-    effective_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
+    effective_capabilities: ClassVar[Capabilities] = _CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _GoodParams
     # The supported protocol line carries the artifact lifecycle, so a
     # compliant structural engine authors the metadata and exposes both
@@ -255,16 +260,38 @@ def future_major_factory() -> _FutureMajorASR:  # pyright: ignore[reportUnusedFu
 
 class _WidenedASR(_GoodASR):
     # effective declares MORE than declared (word_timestamps) -> not a subset.
-    effective_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    effective_capabilities: ClassVar[Capabilities] = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
         )
     )
 
 
 def widened_factory() -> _WidenedASR:  # pyright: ignore[reportUnusedFunction]
     return _WidenedASR()
+
+
+class _BatchWithUngatedFeature(BatchCapabilities):
+    # A typed requestable node at a path no gate checks: a request for it
+    # would reach the engine unchecked.
+    extra_feature: PromptCapability = PromptCapability()
+
+
+class _UngatedRequestableASR(_GoodASR):
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
+        batch=_BatchWithUngatedFeature(
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            )
+        )
+    )
+
+
+def ungated_requestable_factory() -> _UngatedRequestableASR:  # pyright: ignore[reportUnusedFunction]
+    return _UngatedRequestableASR()
 
 
 class _OpenParams(ProviderParams):
@@ -307,7 +334,7 @@ class _RaisingEffectiveASR(_GoodASR):
     properties: ClassVar[BaseProperties] = _Props(engine_id="dummy2")
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:  # type: ignore[override]
+    def effective_capabilities(self) -> Capabilities:  # type: ignore[override]
         raise RuntimeError("effective boom")
 
 
@@ -376,7 +403,7 @@ class _AxisNoDefaultEngine(EngineBase):
     """EngineBase engine with a language axis but no default_language (a config bug)."""
 
     properties: ClassVar[BaseProperties] = _Props()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
 
     def __init__(self) -> None:
         self.config = _ConfigNoLang(engine="dummy")
@@ -559,7 +586,7 @@ def test_check_entrypoints_wrong_typed_effective_caps_fails() -> None:
     # invariant cannot be evaded by returning the wrong type.
     report = check_entrypoints(registry=_registry("wrong_type_effective_factory"))
     assert report.passed is False
-    assert any("is not a DeclaredCapabilities" in i.message for i in report.issues)
+    assert any("is not a Capabilities" in i.message for i in report.issues)
 
 
 def test_check_entrypoints_none_effective_caps_passes() -> None:
@@ -773,8 +800,8 @@ def no_wire_format_factory() -> _NoWireFormatASR:  # pyright: ignore[reportUnuse
 class _NoPropertiesProbeASR:
     """Engine exposing the methods but no ``properties`` attribute at all."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
-    effective_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
+    effective_capabilities: ClassVar[Capabilities] = _CAPS
     provider_params_type: ClassVar[type[ProviderParams] | None] = _GoodParams
 
     def __init__(self) -> None:
@@ -794,10 +821,10 @@ def no_properties_probe_factory() -> _NoPropertiesProbeASR:  # pyright: ignore[r
     return _NoPropertiesProbeASR()
 
 
-_STREAMING_CAPS = DeclaredCapabilities(
+_STREAMING_CAPS = Capabilities(
     batch=BatchCapabilities(),
     streaming=StreamingCapabilities(),
-    streaming_output=FlagCap(supported=True),
+    streaming_output=TraitFlagCapability(supported=True),
 )
 
 
@@ -808,8 +835,8 @@ class _StreamingNoStartASR(_GoodASR):
     fixture must actively SHADOW it with a non-callable to model omission.
     """
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_CAPS
-    effective_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _STREAMING_CAPS
+    effective_capabilities: ClassVar[Capabilities] = _STREAMING_CAPS
     start_transcription: ClassVar[None] = None  # pyright: ignore[reportAssignmentType, reportIncompatibleMethodOverride]
 
 
@@ -836,10 +863,10 @@ def batch_only_no_start_factory() -> _BatchOnlyNoStartASR:  # pyright: ignore[re
 # wire-mistranscription window on an audio_format session, so the compliance
 # suite nudges it with a WARNING (not an error -- a self-managed-wire-format
 # engine legitimately leaves it unset). Declaring wire_encodings clears it.
-_STREAMING_INPUT_CAPS = DeclaredCapabilities(
+_STREAMING_INPUT_CAPS = Capabilities(
     batch=BatchCapabilities(),
     streaming=StreamingCapabilities(),
-    streaming_input=FlagCap(supported=True),
+    streaming_input=TraitFlagCapability(supported=True),
 )
 
 
@@ -850,8 +877,8 @@ class _WireProps(_Props):
 class _StreamingInputNoWireASR(_GoodASR):
     """Declares streaming_input but leaves wire_encodings unset (warning)."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_INPUT_CAPS
-    effective_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_INPUT_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _STREAMING_INPUT_CAPS
+    effective_capabilities: ClassVar[Capabilities] = _STREAMING_INPUT_CAPS
 
     def start_transcription(self, **kwargs: Any) -> TranscriptionSession:
         raise NotImplementedError  # pragma: no cover - presence is all the check needs
@@ -875,14 +902,14 @@ def streaming_input_with_wire_factory() -> (  # pyright: ignore[reportUnusedFunc
     return _StreamingInputWithWireASR()
 
 
-_STREAMING_NO_AXIS_CAPS = DeclaredCapabilities(streaming=StreamingCapabilities())
+_STREAMING_NO_AXIS_CAPS = Capabilities(streaming=StreamingCapabilities())
 
 
 class _StreamingNoAxisASR(_GoodASR):
     """Populates the streaming domain but neither axis flag (uncallable)."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_NO_AXIS_CAPS
-    effective_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_NO_AXIS_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _STREAMING_NO_AXIS_CAPS
+    effective_capabilities: ClassVar[Capabilities] = _STREAMING_NO_AXIS_CAPS
 
     def start_transcription(self, **kwargs: Any) -> TranscriptionSession:
         raise NotImplementedError  # pragma: no cover - presence is all the check needs
@@ -1521,20 +1548,26 @@ def test_supports_effective_narrowing_engine_agrees_with_effective() -> None:
     answers mean current usability -- an engine that narrows effective below
     declared and answers from effective is exactly compliant.
     """
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         batch=BatchCapabilities(
-            diarization=DiarizationCap(supported=True),
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            diarization=DiarizationCapability(supported=True),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         )
     )
-    effective = DeclaredCapabilities(
-        batch=BatchCapabilities(language=LanguageCaps(runtime_override=FlagCap(supported=True)))
+    effective = Capabilities(
+        batch=BatchCapabilities(
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            )
+        )
     )
     assert declared.covers(effective)
 
     class _NarrowedASR(_GoodASR):
-        declared_capabilities: ClassVar[DeclaredCapabilities] = declared
-        effective_capabilities: ClassVar[DeclaredCapabilities] = effective
+        declared_capabilities: ClassVar[Capabilities] = declared
+        effective_capabilities: ClassVar[Capabilities] = effective
 
         def supports(self, dot_path: str) -> bool:
             return self.effective_capabilities.supports(dot_path)
@@ -1565,11 +1598,11 @@ def test_supports_sweep_skips_when_no_valid_tree_is_reachable() -> None:
             return False
 
         @property
-        def effective_capabilities(self) -> DeclaredCapabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
             raise RuntimeError("effective exploded")
 
         @property
-        def declared_capabilities(self) -> DeclaredCapabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        def declared_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
             raise RuntimeError("declared exploded")
 
     codes = _supports_contract_codes(_RaisingTreeASR())
@@ -3098,9 +3131,9 @@ def test_check_event_sequence_flags_final_after_final() -> None:
 # --------------------------------------------------------------------------- #
 # Streaming caps with the timestamp/stability sub-caps left at their (unsupported)
 # defaults -- the "no-timestamp streaming" profile.
-_NO_TS_STREAMING_CAPS = DeclaredCapabilities(
-    streaming=StreamingCapabilities(emits_partials=FlagCap(supported=True)),
-    streaming_input=FlagCap(supported=True),
+_NO_TS_STREAMING_CAPS = Capabilities(
+    streaming=StreamingCapabilities(emits_partials=TraitFlagCapability(supported=True)),
+    streaming_input=TraitFlagCapability(supported=True),
 )
 
 
@@ -3123,7 +3156,7 @@ def test_event_sequence_cross_check_treats_a_missing_streaming_domain_as_unsuppo
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
-    report = check_event_sequence(stable_partial, capabilities=DeclaredCapabilities())
+    report = check_event_sequence(stable_partial, capabilities=Capabilities())
     assert [i.code for i in report.issues] == [
         "stream_exceeds_emits_partials",
         "stream_exceeds_partial_stability",
@@ -3133,14 +3166,14 @@ def test_event_sequence_cross_check_treats_a_missing_streaming_domain_as_unsuppo
         TranscriptionEvent.supersede(["s0"], []),
         TranscriptionEvent.done(),
     ]
-    report = check_event_sequence(withdrawal, capabilities=DeclaredCapabilities())
+    report = check_event_sequence(withdrawal, capabilities=Capabilities())
     assert [i.code for i in report.issues] == ["stream_exceeds_re_segments"]
     plain = [
         TranscriptionEvent.partial("s0", "hel"),
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
-    report = check_event_sequence(plain, capabilities=DeclaredCapabilities())
+    report = check_event_sequence(plain, capabilities=Capabilities())
     assert report.passed is False
     assert [i.code for i in report.issues] == ["stream_exceeds_emits_partials"]
     # A stream that uses nothing the default domain withholds passes.
@@ -3148,7 +3181,7 @@ def test_event_sequence_cross_check_treats_a_missing_streaming_domain_as_unsuppo
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
-    assert check_event_sequence(finals_only, capabilities=DeclaredCapabilities()).passed is True
+    assert check_event_sequence(finals_only, capabilities=Capabilities()).passed is True
 
 
 @pytest.mark.parametrize("emits_partials", [False, True])
@@ -3159,9 +3192,11 @@ def test_event_sequence_checks_emits_partials(emits_partials: bool) -> None:
         TranscriptionEvent.final("s0", "hello"),
         TranscriptionEvent.done(),
     ]
-    caps = DeclaredCapabilities(
-        streaming=StreamingCapabilities(emits_partials=FlagCap(supported=emits_partials)),
-        streaming_output=FlagCap(supported=True),
+    caps = Capabilities(
+        streaming=StreamingCapabilities(
+            emits_partials=TraitFlagCapability(supported=emits_partials)
+        ),
+        streaming_output=TraitFlagCapability(supported=True),
     )
     report = check_event_sequence(events, capabilities=caps)
     assert report.passed is emits_partials
@@ -3215,9 +3250,9 @@ def test_event_sequence_accepts_supersede_with_re_segments() -> None:
         TranscriptionEvent.final("s1", "goodbye"),
         TranscriptionEvent.done(),
     ]
-    caps = DeclaredCapabilities(
-        streaming=StreamingCapabilities(re_segments=FlagCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
+    caps = Capabilities(
+        streaming=StreamingCapabilities(re_segments=TraitFlagCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
     )
     report = check_event_sequence(events, capabilities=caps)
     assert report.passed is True, [i.message for i in report.issues]
@@ -3248,14 +3283,14 @@ def test_event_sequence_consistent_stream_passes_cross_check() -> None:
     # When the caps DECLARE these fields supported, the same stream is consistent --
     # no cross-check error fires (the check is one-directional: stream must not
     # exceed declared caps, but may use less).
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         streaming=StreamingCapabilities(
-            emits_partials=FlagCap(supported=True),
-            partial_stability=FlagCap(supported=True),
-            timestamps=StreamTimestampsCap(mode="native_frame_aligned"),
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
+            emits_partials=TraitFlagCapability(supported=True),
+            partial_stability=TraitFlagCapability(supported=True),
+            timestamps=StreamTimestampsCapability(mode="native_frame_aligned"),
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
         ),
-        streaming_input=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
     )
     events = [
         TranscriptionEvent.partial("s0", "hi", stable_text="h", audio_processed_until=1.0),
@@ -3270,11 +3305,11 @@ def test_event_sequence_consistent_stream_passes_cross_check() -> None:
 
 # Word timestamps supported, diarization NOT: isolates the diarization
 # cross-check from stream_exceeds_word_timestamps on word-speaker events.
-_WORD_TS_ONLY_STREAMING_CAPS = DeclaredCapabilities(
+_WORD_TS_ONLY_STREAMING_CAPS = Capabilities(
     streaming=StreamingCapabilities(
-        word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
+        word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
     ),
-    streaming_input=FlagCap(supported=True),
+    streaming_input=TraitFlagCapability(supported=True),
 )
 
 
@@ -3317,9 +3352,9 @@ def test_event_sequence_speakerless_words_pass_diarization_cross_check() -> None
 
 
 def test_event_sequence_speaker_with_diarization_supported_passes() -> None:
-    caps = DeclaredCapabilities(
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True)),
-        streaming_input=FlagCap(supported=True),
+    caps = Capabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=True)),
+        streaming_input=TraitFlagCapability(supported=True),
     )
     events = [
         TranscriptionEvent.final("s0", "hi", speaker="A"),
@@ -3333,11 +3368,13 @@ def test_event_sequence_always_on_speaker_never_flagged() -> None:
     # always_on supported forces supported=True (model validator), so an
     # always-on engine's unrequested labels can never trip the cross-check --
     # there is no request context in a recorded stream to distinguish them by.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         streaming=StreamingCapabilities(
-            diarization=DiarizationCap(supported=True, always_on=FlagCap(supported=True))
+            diarization=DiarizationCapability(
+                supported=True, always_on=TraitFlagCapability(supported=True)
+            )
         ),
-        streaming_input=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
     )
     events = [
         TranscriptionEvent.final("s0", "hi", speaker="A"),
@@ -3378,10 +3415,10 @@ def test_check_event_sequence_reports_cross_speaker_supersede() -> None:
 # --------------------------------------------------------------------------- #
 # check_transcription_result: the batch twin of the diarization cross-check.
 # --------------------------------------------------------------------------- #
-_DIAR_BATCH_CAPS = DeclaredCapabilities(
-    batch=BatchCapabilities(diarization=DiarizationCap(supported=True))
+_DIAR_BATCH_CAPS = Capabilities(
+    batch=BatchCapabilities(diarization=DiarizationCapability(supported=True))
 )
-_NO_DIAR_BATCH_CAPS = DeclaredCapabilities(batch=BatchCapabilities())
+_NO_DIAR_BATCH_CAPS = Capabilities(batch=BatchCapabilities())
 
 
 def _flags_result_exceeds(report: ComplianceReport) -> bool:
@@ -3407,6 +3444,9 @@ def test_check_transcription_result_flags_segment_word_speaker() -> None:
     result = TranscriptionResult(
         text="hi there",
         segments=[Segment(start=0.0, end=1.0, text="hi there", words=words)],
+        # An empty flat list satisfies the presence check and keeps the label
+        # only in the nested words, so the test isolates the nested scan.
+        words=[],
     )
     report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
     assert _flags_result_exceeds(report)
@@ -3435,6 +3475,133 @@ def test_check_transcription_result_flags_channel_speaker() -> None:
     )
     report = check_transcription_result(result, capabilities=_NO_DIAR_BATCH_CAPS)
     assert _flags_result_exceeds(report)
+
+
+def test_check_transcription_result_flags_text_that_is_not_the_concatenated_segments() -> None:
+    # An engine author's test fails on a TR.1 mismatch: transcribe() only
+    # warns, the compliance check fails, with the diagnostic code passed through.
+    result = TranscriptionResult(
+        text="hello world",
+        segments=[
+            Segment(start=0.0, end=1.0, text="hello"),
+            Segment(start=1.0, end=2.0, text="world"),
+        ],
+    )
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is False
+    [issue] = [i for i in report.issues if i.code == "result_invariant:text_segments_mismatch"]
+    assert issue.level == "error"
+    assert "differ at code point index 5" in issue.message
+    assert "hello" not in issue.message
+
+
+def test_check_transcription_result_flags_text_over_an_empty_segment_list() -> None:
+    result = TranscriptionResult(text="x", segments=[])
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is False
+    [issue] = [i for i in report.issues if i.code == "result_invariant:text_segments_mismatch"]
+    assert "segments is an empty list" in issue.message
+
+
+def test_check_transcription_result_flags_an_already_disclosed_result() -> None:
+    # transcribe() attaches the warning to the result an author records. The
+    # compliance check still reports the mismatch as an error: it recomputes
+    # the equality instead of reading the diagnostics.
+    result = finalize_result(
+        TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+    )
+    assert [d.code for d in result.diagnostics] == ["text_segments_mismatch"]
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is False
+    assert [i for i in report.issues if i.code == "result_invariant:text_segments_mismatch"]
+
+
+def test_check_transcription_result_flags_missing_flat_words_raw_and_finalized() -> None:
+    # The raw result shows the defect in its data; the finalized result no
+    # longer does, because transcribe() filled the words, so the check reads
+    # the diagnostic it carries instead. Both fail with the same code.
+    raw = TranscriptionResult(
+        text="a",
+        segments=[
+            Segment(start=0.0, end=1.0, text="a", words=[Word(start=0.0, end=0.1, text="a")])
+        ],
+    )
+    for result in (raw, finalize_result(raw)):
+        report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+        assert report.passed is False
+        [issue] = [i for i in report.issues if i.code == "result_invariant:flat_words_missing"]
+        assert issue.level == "error"
+    assert finalize_result(raw).words is not None
+
+
+def test_check_transcription_result_reports_each_missing_words_view_once() -> None:
+    # An unfilled channel: finalize_result() attaches the detector's own
+    # diagnostic, so the carried one and the recomputed one are equal and the
+    # view is reported once. Two equal carried diagnostics count once too. A
+    # wrapper that adds an unfilled channel to a finalized result gets both
+    # views reported: the filled top level from its diagnostic, the channel
+    # from the data.
+    word = Word(start=0.0, end=0.1, text="c")
+    channel_segment = Segment(start=0.0, end=1.0, text="c", words=[word], channel=1)
+    exception = finalize_result(
+        TranscriptionResult(
+            text="c",
+            segments=[Segment(start=0.0, end=1.0, text="c", channel=1)],
+            channels=[ChannelResult(channel=1, text="c", segments=[channel_segment])],
+        )
+    )
+    assert exception.channels is not None
+    assert exception.channels[0].words is None
+    report = check_transcription_result(exception, capabilities=_DIAR_BATCH_CAPS)
+    assert [i.code for i in report.issues] == ["result_invariant:flat_words_missing"]
+    duplicated = exception.model_copy(
+        update={"diagnostics": [*exception.diagnostics, *exception.diagnostics]}
+    )
+    report = check_transcription_result(duplicated, capabilities=_DIAR_BATCH_CAPS)
+    assert [i.code for i in report.issues] == ["result_invariant:flat_words_missing"]
+    filled = finalize_result(
+        TranscriptionResult(
+            text="c", segments=[Segment(start=0.0, end=1.0, text="c", words=[word])]
+        )
+    )
+    wrapped = filled.model_copy(
+        update={"channels": [ChannelResult(channel=1, text="c", segments=[channel_segment])]}
+    )
+    report = check_transcription_result(wrapped, capabilities=_DIAR_BATCH_CAPS)
+    assert [i.code for i in report.issues] == ["result_invariant:flat_words_missing"] * 2
+    assert "TranscriptionResult.words" in report.issues[0].message
+    assert "ChannelResult(channel=1).words" in report.issues[1].message
+
+
+def test_check_transcription_result_passes_a_result_with_its_own_flat_words() -> None:
+    result = TranscriptionResult(
+        text="a",
+        segments=[
+            Segment(start=0.0, end=1.0, text="a", words=[Word(start=0.0, end=0.1, text="a")])
+        ],
+        words=[Word(start=0.0, end=0.1, text="a")],
+    )
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert not [i for i in report.issues if i.code.startswith("result_invariant:")]
+
+
+def test_check_transcription_result_passes_the_text_equality() -> None:
+    result = TranscriptionResult(
+        text="hello world",
+        segments=[
+            Segment(start=0.0, end=1.0, text="hello"),
+            Segment(start=1.0, end=2.0, text=" world"),
+        ],
+    )
+    report = check_transcription_result(result, capabilities=_DIAR_BATCH_CAPS)
+    assert report.passed is True
+    assert not any(i.code.startswith("result_invariant:") for i in report.issues)
 
 
 def test_check_transcription_result_passes_when_supported() -> None:
@@ -3474,15 +3641,13 @@ def test_check_transcription_result_flags_when_batch_domain_absent() -> None:
     result = TranscriptionResult(
         text="hi", segments=[Segment(start=0.0, end=1.0, text="hi", speaker="A")]
     )
-    report = check_transcription_result(result, capabilities=DeclaredCapabilities())
+    report = check_transcription_result(result, capabilities=Capabilities())
     assert _flags_result_exceeds(report)
 
 
 def test_check_transcription_result_registry_is_none() -> None:
     # Behavioral checks never operate on a registry (mirrors the other checks).
-    report = check_transcription_result(
-        TranscriptionResult(text=""), capabilities=DeclaredCapabilities()
-    )
+    report = check_transcription_result(TranscriptionResult(text=""), capabilities=Capabilities())
     assert report.registry is None
     assert report.passed is True
 
@@ -3596,13 +3761,13 @@ def test_compliance_admits_a_final_whose_text_ends_with_a_joiner() -> None:
     assert_stable_text_invariant(events)  # no raise
 
 
-def _closed_level_caps() -> DeclaredCapabilities:
-    return DeclaredCapabilities(
+def _closed_level_caps() -> Capabilities:
+    return Capabilities(
         streaming=StreamingCapabilities(
-            finality_level=FinalityCap(mode="closed"),
-            re_segments=FlagCap(supported=True),
+            finality_level=FinalityCapability(mode="closed"),
+            re_segments=TraitFlagCapability(supported=True),
         ),
-        streaming_input=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
     )
 
 
@@ -3646,8 +3811,8 @@ def test_event_sequence_finality_level_closed_is_met(events: list[TranscriptionE
 
 def test_event_sequence_finality_level_final_does_not_require_closed() -> None:
     events = [TranscriptionEvent.final("s0", "hello"), TranscriptionEvent.done()]
-    caps = DeclaredCapabilities(
-        streaming=StreamingCapabilities(), streaming_input=FlagCap(supported=True)
+    caps = Capabilities(
+        streaming=StreamingCapabilities(), streaming_input=TraitFlagCapability(supported=True)
     )
     assert check_event_sequence(events, capabilities=caps).passed is True
 
@@ -3693,10 +3858,10 @@ class _StreamProps(BaseProperties):
     selectable_languages: list[str] = []  # no language axis -> no default needed
 
 
-_STREAM_CAPS = DeclaredCapabilities(
+_STREAM_CAPS = Capabilities(
     streaming=StreamingCapabilities(),
-    streaming_input=FlagCap(supported=True),
-    streaming_output=FlagCap(supported=True),
+    streaming_input=TraitFlagCapability(supported=True),
+    streaming_output=TraitFlagCapability(supported=True),
 )
 
 
@@ -3712,7 +3877,7 @@ class _GatingStreamEngine(EngineBase):
     """Streaming engine that relies on the base template's gating (compliant)."""
 
     properties: ClassVar[BaseProperties] = _StreamProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAM_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _STREAM_CAPS
 
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _Config(engine="dummy", strict=strict)
@@ -3749,7 +3914,7 @@ class _BatchOnlyEngine(EngineBase):
     """No streaming support declared; start_transcription raises unsupported."""
 
     properties: ClassVar[BaseProperties] = _StreamProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
 
     def __init__(self) -> None:
         self.config = _Config(engine="dummy")
@@ -3767,16 +3932,16 @@ class _AllSupportedStreamEngine(_GatingStreamEngine):
     fallback can build a violating request.
     """
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            word_timestamps=WordTimestampsCap(
+            word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
-            diarization=DiarizationCap(supported=True),
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            diarization=DiarizationCapability(supported=True),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
@@ -3787,32 +3952,32 @@ class _AllSupportedStreamEngine(_GatingStreamEngine):
 class _PromptConstrainedStreamEngine(_GatingStreamEngine):
     """Supports every probed feature; prompt carries a small ``max_tokens`` budget."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            word_timestamps=WordTimestampsCap(
+            word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=3))
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(supported=True, constraints=PromptConstraints(max_tokens=3))
             ),
-            diarization=DiarizationCap(supported=True),
+            diarization=DiarizationCapability(supported=True),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
 class _GranularityLimitedStreamEngine(_GatingStreamEngine):
     """Supports every probed feature; word timestamps offer only ``word``."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
-            guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
-            diarization=DiarizationCap(supported=True),
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            diarization=DiarizationCapability(supported=True),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
@@ -3921,7 +4086,7 @@ def test_streaming_gating_structural_engine_without_effective_caps_not_failed() 
 
     class _StructuralAllSupports:
         properties: ClassVar[BaseProperties] = _WireProps()
-        declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_INPUT_CAPS
+        declared_capabilities: ClassVar[Capabilities] = _STREAMING_INPUT_CAPS
 
         def __init__(self) -> None:
             self.config = _Config(engine="dummy")
@@ -4097,15 +4262,15 @@ def test_pick_sub_constraint_probe_none_without_streaming_domain() -> None:
 class _DiarizationUnsupportedStreamEngine(_GatingStreamEngine):
     """Supports the earlier probes; diarization stays fail-closed unsupported."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            word_timestamps=WordTimestampsCap(
+            word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
@@ -4159,16 +4324,18 @@ def test_gating_probe_diarization_ungated_best_effort_fails() -> None:
 class _ExtremeBudgetEngine(_GatingStreamEngine):
     """Legal-but-extreme ``max_tokens`` (no upper bound exists on the field)."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"]),
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=10**9))
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=10**9)
+                )
             ),
-            diarization=DiarizationCap(supported=True),
+            diarization=DiarizationCapability(supported=True),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
@@ -4190,20 +4357,20 @@ def test_streaming_gating_extreme_max_tokens_without_other_probe_is_clean() -> N
     # Past the cap with every granularity offered there is no violable
     # sub-constraint left: the check completes as a clean no-op pass.
     class _ExtremeBudgetOnlyEngine(_GatingStreamEngine):
-        declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+        declared_capabilities: ClassVar[Capabilities] = Capabilities(
             streaming=StreamingCapabilities(
-                word_timestamps=WordTimestampsCap(
+                word_timestamps=WordTimestampsCapability(
                     supported=True, granularities=["word", "segment", "char"]
                 ),
-                guidance=GuidanceCaps(
-                    prompt=PromptCap(
+                guidance=GuidanceCapabilities(
+                    prompt=PromptCapability(
                         supported=True, constraints=PromptConstraints(max_tokens=10**9)
                     )
                 ),
-                diarization=DiarizationCap(supported=True),
+                diarization=DiarizationCapability(supported=True),
             ),
-            streaming_input=FlagCap(supported=True),
-            streaming_output=FlagCap(supported=True),
+            streaming_input=TraitFlagCapability(supported=True),
+            streaming_output=TraitFlagCapability(supported=True),
         )
 
     report = check_streaming_param_gating(_ExtremeBudgetOnlyEngine(strict=True))
@@ -4217,7 +4384,7 @@ def test_streaming_gating_probe_selection_crash_contained() -> None:
     # error, never escape a function promising ``Raises: None``.
     class _BrokenCapsEngine(_GatingStreamEngine):
         @property
-        def effective_capabilities(self) -> DeclaredCapabilities:
+        def effective_capabilities(self) -> Capabilities:
             raise RuntimeError("capabilities exploded")
 
     report = check_streaming_param_gating(_BrokenCapsEngine(strict=True))
@@ -4524,7 +4691,7 @@ class _StreamingDeclaredNoHookEngine(EngineBase):
     """Declares streaming_input/output but never overrides _start_transcription."""
 
     properties: ClassVar[BaseProperties] = _StreamProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAM_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _STREAM_CAPS
 
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _Config(engine="dummy", strict=strict)
@@ -4587,9 +4754,9 @@ def test_gating_strict_flags_streaming_declared_but_hook_not_implemented() -> No
 class _FailLoudOnMissingFormatEngine(_GatingStreamEngine):
     """Compliant engine that REQUIRES an audio_format (does not self-manage wire)."""
 
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_input=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
     )
 
     def _start_transcription(
@@ -4650,9 +4817,9 @@ class _OutputOnlyStreamEngine(EngineBase):
     """streaming_output only (no streaming_input); overrides the hook."""
 
     properties: ClassVar[BaseProperties] = _StreamProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_output=FlagCap(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
     def __init__(self, *, strict: bool = True) -> None:
@@ -4819,7 +4986,7 @@ class _SwapSafeEngine(EngineBase):
     """Relies on the base template, which enforces provider_params swap-safety."""
 
     properties: ClassVar[BaseProperties] = _StreamProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
 
     def __init__(self, *, strict: bool = True) -> None:
         self.config = _Config(engine="dummy", strict=strict)
@@ -5270,7 +5437,7 @@ class _ArtifactNoMetadataASR:
     # declared_metadata, and this double models an engine whose whole
     # hierarchy never authored it.
     properties: ClassVar[BaseProperties] = _ArtifactProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
 
     def __init__(self) -> None:
         self.config = _Config(engine="dummy")
@@ -5287,7 +5454,7 @@ def artifact_no_metadata_factory() -> (  # pyright: ignore[reportUnusedFunction]
 
 class _ArtifactCorePlaceholderEngine(EngineBase):
     properties: ClassVar[BaseProperties] = _ArtifactProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
 
     def __init__(self) -> None:
         self.config = _Config(engine="dummy")
@@ -5469,7 +5636,7 @@ def artifact_future_metadata_factory() -> (  # pyright: ignore[reportUnusedFunct
 
 class _ArtifactHookBase(EngineBase):
     properties: ClassVar[BaseProperties] = _ArtifactProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
     declared_metadata: ClassVar[DeclaredEngineMetadata] = _EXPLICIT_ARTIFACT_METADATA
 
     def __init__(self) -> None:
@@ -5546,7 +5713,7 @@ def artifact_async_acquisition_hook_factory() -> (  # pyright: ignore[reportUnus
 
 class _ArtifactMissingRequirementsHook(EngineBase):
     properties: ClassVar[BaseProperties] = _ArtifactProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _CAPS
+    declared_capabilities: ClassVar[Capabilities] = _CAPS
     declared_metadata: ClassVar[DeclaredEngineMetadata] = _EXPLICIT_ARTIFACT_METADATA
 
     def __init__(self) -> None:
@@ -5957,3 +6124,145 @@ def test_compliance_requires_hooks_promised_by_static_booleans() -> None:
     )
     assert inference_only.passed is True, [issue.message for issue in inference_only.issues]
     assert not_applicable.passed is True, [issue.message for issue in not_applicable.issues]
+
+
+# --------------------------------------------------------------------------- #
+# Capability roles: the gating table and the tree prove each other
+# --------------------------------------------------------------------------- #
+def _standard_tree() -> Capabilities:
+    return Capabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities())
+
+
+def test_requestable_roles_check_passes_for_the_standard_tree() -> None:
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_roles(  # pyright: ignore[reportPrivateUsage]
+        _standard_tree(), "m", issues
+    )
+    assert issues == []
+
+
+def test_requestable_roles_check_skips_an_absent_mode_and_x_star_nodes() -> None:
+    # A vendor feature is requested through provider_params, which no
+    # capability gates, so a requestable x_* node is not an ungated node.
+    caps = Capabilities.model_validate(
+        {"batch": {"x_vendor_ask": {"supported": True, "role": "requestable"}}}
+    )
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_roles(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+    assert issues == []
+
+
+def test_requestable_roles_check_flags_a_gated_row_whose_node_is_a_trait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A gating row that points at a trait node is the mismatch the class
+    # split for language.runtime_override removed; the check reports it.
+    monkeypatch.setattr(
+        compliance_module, "_GATED_PARAMS", (("diarization", "diarization.always_on"),)
+    )
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_roles(  # pyright: ignore[reportPrivateUsage]
+        _standard_tree(), "m", issues
+    )
+    codes = [issue.code for issue in issues]
+    assert codes.count("gate_target_not_requestable") == 2  # once per declared mode
+    assert any("batch.diarization.always_on" in issue.message for issue in issues)
+
+
+def test_requestable_roles_check_runs_at_class_level_without_instantiation() -> None:
+    # The declaration is static, so the check runs with the class checks and
+    # does not need the engine constructed; with instantiation it still
+    # reports each finding once.
+    report = check_entrypoints(registry=_registry("ungated_requestable_factory"), instantiate=False)
+    ungated = [issue for issue in report.issues if issue.code == "requestable_node_ungated"]
+    assert len(ungated) == 1
+    assert "batch.extra_feature" in ungated[0].message
+    report = check_entrypoints(registry=_registry("ungated_requestable_factory"))
+    assert [issue.code for issue in report.issues].count("requestable_node_ungated") == 1
+
+
+def test_requestable_roles_check_covers_the_exempt_path_in_the_forward_direction() -> None:
+    # language.candidate_languages is requested through RuntimeParams and
+    # gated by effective_candidate_languages, so it is exempt from the gating
+    # table but still has to be requestable: a plugin that replaces the node
+    # with a subclass of another role is reported.
+    class _Misclassified(CandidateLanguagesCapability):
+        role: Literal["trait"] = "trait"  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    caps = Capabilities(
+        batch=BatchCapabilities(
+            language=LanguageCapabilities(candidate_languages=_Misclassified(supported=True))
+        )
+    )
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_roles(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+    assert [issue.code for issue in issues] == ["gate_target_not_requestable"]
+    assert "batch.language.candidate_languages" in issues[0].message
+
+
+def test_requestable_roles_check_sees_every_node_the_application_can_query() -> None:
+    # The reverse check must recognize the nodes role_at() and can_request()
+    # recognize: a raw node that states its role, and a node at the root. A
+    # requestable one that no gate checks is a finding whether or not it is
+    # supported, because the role does not depend on support.
+    def raw(supported: bool) -> dict[str, object]:
+        return {"supported": supported, "role": "requestable"}
+
+    class RawBatch(BatchCapabilities):
+        extra_feature: dict[str, object] = Field(default_factory=lambda: raw(True))
+
+    class UnsupportedRawBatch(BatchCapabilities):
+        extra_feature: dict[str, object] = Field(default_factory=lambda: raw(False))
+
+    class RootNode(Capabilities):
+        prompt_root: PromptCapability = Field(
+            default_factory=lambda: PromptCapability(supported=True)
+        )
+
+    class UnsupportedRootNode(Capabilities):
+        prompt_root: PromptCapability = Field(
+            default_factory=lambda: PromptCapability(supported=False)
+        )
+
+    cases: list[tuple[Capabilities, str, bool]] = [
+        (Capabilities(batch=RawBatch()), "batch.extra_feature", True),
+        (Capabilities(batch=UnsupportedRawBatch()), "batch.extra_feature", False),
+        (RootNode(batch=BatchCapabilities()), "prompt_root", True),
+        (UnsupportedRootNode(batch=BatchCapabilities()), "prompt_root", False),
+    ]
+    for caps, path, supported in cases:
+        assert caps.role_at(path) == "requestable"
+        assert caps.can_request(path) is supported
+        issues: list[ComplianceIssue] = []
+        compliance_module._check_requestable_roles(caps, "m", issues)  # pyright: ignore[reportPrivateUsage]
+        assert [issue.code for issue in issues] == ["requestable_node_ungated"], path
+        assert path in issues[0].message
+
+    # A vendor node stays exempt wherever it sits, as a field or as an extra.
+    class VendorBatch(BatchCapabilities):
+        x_vendor_feature: dict[str, object] = Field(default_factory=lambda: raw(True))
+
+    exempt = Capabilities.model_validate({"batch": VendorBatch(), "x_vendor_root": raw(True)})
+    assert exempt.can_request("batch.x_vendor_feature") is True
+    issues_exempt: list[ComplianceIssue] = []
+    compliance_module._check_requestable_roles(exempt, "m", issues_exempt)  # pyright: ignore[reportPrivateUsage]
+    assert issues_exempt == []
+
+
+def test_requestable_roles_check_flags_a_requestable_node_no_gate_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Dropping the diarization row leaves a requestable node that no gate
+    # checks: a request for it would reach the engine unchecked.
+    rows = tuple(
+        row
+        for row in compliance_module._GATED_PARAMS  # pyright: ignore[reportPrivateUsage]
+        if row[1] != "diarization"
+    )
+    monkeypatch.setattr(compliance_module, "_GATED_PARAMS", rows)
+    issues: list[ComplianceIssue] = []
+    compliance_module._check_requestable_roles(  # pyright: ignore[reportPrivateUsage]
+        Capabilities(batch=BatchCapabilities()), "m", issues
+    )
+    assert [issue.code for issue in issues] == ["requestable_node_ungated"]
+    assert "batch.diarization" in issues[0].message

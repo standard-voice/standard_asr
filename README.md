@@ -100,6 +100,7 @@ Engines differ — that's the point. Instead of guessing, ask:
 ```python
 engine.supports("batch.word_timestamps")  # True / False, fail-closed
 engine.supports("batch.diarization")  # speaker labels ("who said what")?
+engine.declared_capabilities.can_request("batch.diarization")  # can a request ask for it?
 engine.supports("streaming.guidance.phrase_hints")
 engine.supports("streaming_input")  # can it consume live audio?
 
@@ -164,7 +165,8 @@ async with engine.start_transcription(audio_format=audio_format) as session:
                 order.remove(old_id)
                 texts.pop(old_id, None)
             order[pos:pos] = event.new_ids  # replacements take the block's place
-        render(order, texts)
+        # No separator: each segment's text carries its own spaces.
+        render("".join(texts[sid] for sid in order if sid in texts))
 
 print(session.result().text)  # collapse the session into a TranscriptionResult
 ```

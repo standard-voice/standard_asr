@@ -8,31 +8,33 @@ from __future__ import annotations
 import inspect
 import types
 import typing
+from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from standard_asr.contract import capabilities as cap_module
 from standard_asr.contract.capabilities import (
     _MAX_CONSTRAINT_FIELDS,  # pyright: ignore[reportPrivateUsage]
     _MODE_REDUCTIONS,  # pyright: ignore[reportPrivateUsage]
     BatchCapabilities,
-    CandidateLanguagesCap,
+    CandidateLanguagesCapability,
     CandidateLanguagesConstraints,
-    DeclaredCapabilities,
-    DiarizationCap,
+    Capabilities,
+    DiarizationCapability,
     DiarizationConstraints,
-    FlagCap,
-    GuidanceCaps,
-    LanguageCaps,
+    GuidanceCapabilities,
+    LanguageCapabilities,
+    LanguageOverrideCapability,
     PhraseHintsConstraints,
-    PromptCap,
+    PromptCapability,
     PromptConstraints,
-    ReconnectCap,
+    ReconnectCapability,
     StreamingCapabilities,
-    StreamingGuidanceCaps,
-    StreamTimestampsCap,
-    WordTimestampsCap,
+    StreamingGuidanceCapabilities,
+    StreamTimestampsCapability,
+    TraitFlagCapability,
+    WordTimestampsCapability,
     _children,  # pyright: ignore[reportPrivateUsage]
     _get_child,  # pyright: ignore[reportPrivateUsage]
     _read_attr,  # pyright: ignore[reportPrivateUsage]
@@ -40,25 +42,27 @@ from standard_asr.contract.capabilities import (
 )
 
 
-def _rich() -> DeclaredCapabilities:
-    return DeclaredCapabilities(
+def _rich() -> Capabilities:
+    return Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                runtime_override=FlagCap(supported=True),
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True),
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=3),
                 ),
             ),
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word", "segment"]),
-            guidance=GuidanceCaps(prompt=PromptCap(supported=True)),
+            word_timestamps=WordTimestampsCapability(
+                supported=True, granularities=["word", "segment"]
+            ),
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
         ),
         streaming=StreamingCapabilities(
-            emits_partials=FlagCap(supported=True),
-            reconnect=ReconnectCap(mode="lossy"),
+            emits_partials=TraitFlagCapability(supported=True),
+            reconnect=ReconnectCapability(mode="lossy"),
         ),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
 
 
@@ -87,21 +91,21 @@ def test_supports_fail_closed_missing_key() -> None:
 def test_supports_mode_node() -> None:
     caps = _rich()
     assert caps.supports("streaming.reconnect") is True  # lossy != unsupported
-    caps2 = DeclaredCapabilities(
-        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="unsupported"))
+    caps2 = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="unsupported"))
     )
     assert caps2.supports("streaming.reconnect") is False
 
 
 def test_omitted_streaming_domain_unsupported() -> None:
-    caps = DeclaredCapabilities(batch=BatchCapabilities())
+    caps = Capabilities(batch=BatchCapabilities())
     assert caps.supports("streaming") is False
     assert caps.supports("streaming.emits_partials") is False
     assert caps.supports("batch") is True
 
 
 def test_default_is_fail_closed() -> None:
-    caps = DeclaredCapabilities()
+    caps = Capabilities()
     assert caps.supports("batch") is False
     assert caps.supports("streaming_input") is False
 
@@ -110,20 +114,22 @@ def test_covers_subset_invariant() -> None:
     declared = _rich()
     # Effective narrows: drop word_timestamps support, the streaming domain and
     # (per fail-closed consistency) the streaming axis flags along with it.
-    effective = DeclaredCapabilities(
+    effective = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
         ),
     )
     assert declared.covers(effective) is True
 
 
 def test_covers_rejects_widening() -> None:
-    declared = DeclaredCapabilities(batch=BatchCapabilities())
+    declared = Capabilities(batch=BatchCapabilities())
     # Effective claims more than declared -> not covered.
-    effective = DeclaredCapabilities(
+    effective = Capabilities(
         batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
         )
     )
     assert declared.covers(effective) is False
@@ -132,20 +138,20 @@ def test_covers_rejects_widening() -> None:
 def test_covers_rejects_constraint_widening() -> None:
     # Declared max=2; effective claims max=999 -> widening, must be rejected
     # even though the SET of supported paths is identical.
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=2),
                 )
             )
         )
     )
-    effective = DeclaredCapabilities(
+    effective = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=999),
                 )
@@ -156,20 +162,20 @@ def test_covers_rejects_constraint_widening() -> None:
 
 
 def test_covers_allows_constraint_narrowing() -> None:
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=5),
                 )
             )
         )
     )
-    effective = DeclaredCapabilities(
+    effective = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=2),
                 )
@@ -211,24 +217,26 @@ def test_numeric_constraints_reject_non_positive_values() -> None:
 
 
 def test_covers_rejects_granularity_widening() -> None:
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word", "segment"])
+            word_timestamps=WordTimestampsCapability(
+                supported=True, granularities=["word", "segment"]
+            )
         )
     )
     # Effective adds "char" -> widening the offered granularity set.
-    effective = DeclaredCapabilities(
+    effective = Capabilities(
         batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(
+            word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             )
         )
     )
     assert declared.covers(effective) is False
     # Narrowing to a subset is allowed.
-    narrowed = DeclaredCapabilities(
+    narrowed = Capabilities(
         batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
         )
     )
     assert declared.covers(narrowed) is True
@@ -238,7 +246,7 @@ def test_covers_empty_declared_granularities_is_unbounded() -> None:
     # An empty declared granularities list means "unbounded (all)", so a
     # narrowing from it to any concrete subset is a valid effective ⊆ declared
     # (must NOT false-fail). Mirrors param_gating's empty="offers all" semantics.
-    # Typed WordTimestampsCap can't be empty+supported (the granularities-enumeration
+    # Typed WordTimestampsCapability can't be empty+supported (the granularities-enumeration
     # validator), so the empty-declared case is exercised via an x_* dict node
     # carrying the field.
     assert granularity_offers_all([]) is True
@@ -251,15 +259,17 @@ def test_covers_empty_declared_granularities_is_unbounded() -> None:
 
 
 def test_word_timestamps_supported_requires_granularities() -> None:
-    # A typed WordTimestampsCap that declares supported=True MUST
+    # A typed WordTimestampsCapability that declares supported=True MUST
     # enumerate at least one granularity (no "supported but unenumerated"
     # ambiguity). Unsupported keeps the empty default.
     with pytest.raises(ValueError, match="non-empty"):
-        WordTimestampsCap(supported=True)
+        WordTimestampsCapability(supported=True)
     # supported=False with empty granularities is fine.
-    assert WordTimestampsCap(supported=False).granularities == []
+    assert WordTimestampsCapability(supported=False).granularities == []
     # supported=True with a granularity is fine.
-    assert WordTimestampsCap(supported=True, granularities=["word"]).granularities == ["word"]
+    assert WordTimestampsCapability(supported=True, granularities=["word"]).granularities == [
+        "word"
+    ]
 
 
 def test_word_timestamps_rejects_duplicate_granularities() -> None:
@@ -267,36 +277,40 @@ def test_word_timestamps_rejects_duplicate_granularities() -> None:
     # a declaration error, rejected like the other declaration-list duplicate
     # guards. Distinct granularities stay accepted.
     with pytest.raises(ValueError, match="duplicate"):
-        WordTimestampsCap(supported=True, granularities=["word", "word"])
-    assert WordTimestampsCap(supported=True, granularities=["word", "segment"]).granularities == [
+        WordTimestampsCapability(supported=True, granularities=["word", "word"])
+    assert WordTimestampsCapability(
+        supported=True, granularities=["word", "segment"]
+    ).granularities == [
         "word",
         "segment",
     ]
 
 
 def test_covers_rejects_mode_widening() -> None:
-    declared = DeclaredCapabilities(
-        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="lossy"))
+    declared = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="lossy"))
     )
     # Effective claims the stronger "seamless" mode -> widening.
-    effective = DeclaredCapabilities(
-        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="seamless"))
+    effective = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="seamless"))
     )
     assert declared.covers(effective) is False
     # Reducing lossy -> unsupported is a valid close (handled by set logic, and
     # the reduction map permits it).
-    reduced = DeclaredCapabilities(
-        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="unsupported"))
+    reduced = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="unsupported"))
     )
     assert declared.covers(reduced) is True
 
 
 def test_covers_rejects_timestamps_mode_widening() -> None:
-    declared = DeclaredCapabilities(
-        streaming=StreamingCapabilities(timestamps=StreamTimestampsCap(mode="post_align"))
+    declared = Capabilities(
+        streaming=StreamingCapabilities(timestamps=StreamTimestampsCapability(mode="post_align"))
     )
-    effective = DeclaredCapabilities(
-        streaming=StreamingCapabilities(timestamps=StreamTimestampsCap(mode="native_frame_aligned"))
+    effective = Capabilities(
+        streaming=StreamingCapabilities(
+            timestamps=StreamTimestampsCapability(mode="native_frame_aligned")
+        )
     )
     assert declared.covers(effective) is False
 
@@ -304,11 +318,11 @@ def test_covers_rejects_timestamps_mode_widening() -> None:
 def test_covers_allows_standard_mode_reduction_between_supported_modes() -> None:
     # A change to a provably weaker (but still supported) standard mode is a
     # legal narrowing: the fail-closed guard must fall through, not reject it.
-    declared = DeclaredCapabilities(
-        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="seamless"))
+    declared = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="seamless"))
     )
-    effective = DeclaredCapabilities(
-        streaming=StreamingCapabilities(reconnect=ReconnectCap(mode="lossy"))
+    effective = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="lossy"))
     )
     assert declared.covers(effective) is True
 
@@ -332,31 +346,33 @@ def test_streaming_flags_require_streaming_domain() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match="streaming_output"):
-        DeclaredCapabilities(streaming_output=FlagCap(supported=True))
+        Capabilities(streaming_output=TraitFlagCapability(supported=True))
     with pytest.raises(ValidationError, match="streaming_input"):
-        DeclaredCapabilities(
-            streaming_input=FlagCap(supported=True),
-            streaming_output=FlagCap(supported=True),
+        Capabilities(
+            streaming_input=TraitFlagCapability(supported=True),
+            streaming_output=TraitFlagCapability(supported=True),
         )
     # Flags + domain is the legitimate streaming declaration.
-    ok = DeclaredCapabilities(
+    ok = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_input=FlagCap(supported=True),
-        streaming_output=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
     assert ok.supports("streaming_input") is True
     # No flags + no domain (batch-only) stays valid.
-    batch_only = DeclaredCapabilities(batch=BatchCapabilities())
+    batch_only = Capabilities(batch=BatchCapabilities())
     assert batch_only.supports("streaming") is False
 
 
 def test_unsupported_feature_constraints_not_in_supported_paths() -> None:
     # An unsupported feature's constraint sub-container MUST NOT appear as a
     # supported path (constraints is a default-factory, never None).
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False)),
-            guidance=GuidanceCaps(prompt=PromptCap(supported=False)),
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(supported=False)
+            ),
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=False)),
         )
     )
     paths = set(caps.iter_supported_paths())
@@ -369,15 +385,15 @@ def test_supports_fail_closed_on_constraints_subpaths() -> None:
     # A constraints submodel is NOT a capability node -- supports() on a
     # constraints sub-path is fail-CLOSED, even when the feature IS supported,
     # and obviously when it is not.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=3),
                 )
             ),
-            guidance=GuidanceCaps(prompt=PromptCap(supported=False)),
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=False)),
         )
     )
     # Real capability paths still answer True.
@@ -389,22 +405,22 @@ def test_supports_fail_closed_on_constraints_subpaths() -> None:
 
 
 def test_node_at_returns_typed_node() -> None:
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(supported=True, granularities=["word"])
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
         )
     )
     node = caps.node_at("batch.word_timestamps")
-    assert isinstance(node, WordTimestampsCap)
+    assert isinstance(node, WordTimestampsCapability)
     assert node.granularities == ["word"]
-    # Containers and missing paths return None (not a leaf node).
+    # Containers and missing paths return None (not a capability node).
     assert caps.node_at("batch") is None
     assert caps.node_at("batch.nope") is None
 
 
 def test_unknown_x_namespace_key_tolerated() -> None:
     # Forward-compat: extra keys parse without error and are queryable.
-    caps = DeclaredCapabilities.model_validate(
+    caps = Capabilities.model_validate(
         {
             "batch": {"x_acme_beamsearch": {"supported": True}},
             "streaming_input": {"supported": False},
@@ -419,19 +435,17 @@ def test_supports_fail_closed_on_unknown_non_extension_segment() -> None:
     # key is fail-closed (returns False), even when the typo'd key was tolerated
     # on parse (containers use extra="allow" for forward compat). A typo of a real
     # capability MUST NOT read as supported and weaken the gating contract.
-    assert DeclaredCapabilities().supports("streamnig") is False
+    assert Capabilities().supports("streamnig") is False
     # A typo'd top-level key that landed in model_extra still fails closed.
-    top_typo = DeclaredCapabilities.model_validate({"streamnig": {"supported": True}})
+    top_typo = Capabilities.model_validate({"streamnig": {"supported": True}})
     assert top_typo.supports("streamnig") is False
     assert "streamnig" not in set(top_typo.iter_supported_paths())
     # A typo'd field inside a typed container (batch.word_timestmaps) too.
-    nested_typo = DeclaredCapabilities.model_validate(
-        {"batch": {"word_timestmaps": {"supported": True}}}
-    )
+    nested_typo = Capabilities.model_validate({"batch": {"word_timestmaps": {"supported": True}}})
     assert nested_typo.supports("batch.word_timestmaps") is False
     assert "batch.word_timestmaps" not in set(nested_typo.iter_supported_paths())
     # A real declared standard path and a real x_* path still resolve correctly.
-    declared = DeclaredCapabilities.model_validate(
+    declared = Capabilities.model_validate(
         {
             "batch": {
                 "word_timestamps": {"supported": True, "granularities": ["word"]},
@@ -448,21 +462,23 @@ def test_supports_fail_closed_on_unknown_non_extension_segment() -> None:
 def test_iter_queryable_paths_covers_every_node_supported_or_not() -> None:
     """The queryable-path set is the full NODE set, not the supported subset.
 
-    Unsupported leaves and their constraint submodels are yielded (a consumer
+    Unsupported capability nodes and their constraint submodels are yielded (a consumer
     verifying fail-closed ``False`` answers needs them); scalar field
     internals are not nodes; an absent (``None``) mode domain contributes
     nothing; and every yielded path answers ``supports()`` with a real bool.
     """
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False)),
-            guidance=GuidanceCaps(prompt=PromptCap(supported=False)),
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(supported=False)
+            ),
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=False)),
         )
     )
     paths = set(caps.iter_queryable_paths())
-    # Containers and supported/unsupported leaves are all nodes.
+    # Containers and supported or unsupported capability nodes are all nodes.
     assert {"batch", "batch.language", "batch.guidance"} <= paths
-    assert "batch.language.candidate_languages" in paths  # unsupported leaf
+    assert "batch.language.candidate_languages" in paths  # unsupported capability node
     assert "batch.guidance.prompt.constraints" in paths  # constraints submodel
     # An absent mode domain (streaming=None) is not a node.
     assert "streaming" not in paths
@@ -481,7 +497,7 @@ def test_iter_queryable_paths_x_star_gate_matches_the_query_surface() -> None:
     raw ``x_*`` subtree -- including a bare grouping dict and its nested
     explicit capability -- is.
     """
-    caps = DeclaredCapabilities.model_validate(
+    caps = Capabilities.model_validate(
         {
             "batch": {
                 "x_container": {"nested": {"supported": True}},
@@ -501,14 +517,12 @@ def test_supports_descends_non_extension_keys_inside_x_star_subtree() -> None:
     # The x_* filter applies only to extra keys on typed standard nodes. Inside a
     # raw x_* subtree the vendor owns the whole structure, so non-x_* child keys
     # (for example, "nested") still resolve and appear as supported paths.
-    caps = DeclaredCapabilities.model_validate(
-        {"batch": {"x_container": {"nested": {"supported": True}}}}
-    )
+    caps = Capabilities.model_validate({"batch": {"x_container": {"nested": {"supported": True}}}})
     assert caps.supports("batch.x_container.nested") is True
     paths = set(caps.iter_supported_paths())
     # The bare grouping dict `x_container` (no supported/mode) is NOT a
     # capability node, so its own path is not yielded; descent into it still finds
-    # the nested explicit capability (matching canonical_json's dict recursion).
+    # the nested explicit capability (matching to_protocol_dict's dict recursion).
     assert "batch.x_container" not in paths
     assert "batch.x_container.nested" in paths
 
@@ -518,8 +532,8 @@ def test_supports_descends_non_extension_keys_inside_x_star_subtree() -> None:
 # helpers (_get_child, _read_attr, _node_items, _derive_supported) must handle
 # dicts as well as typed models. These exercise those dict branches.
 # --------------------------------------------------------------------------- #
-def _x_caps(batch_extra: dict[str, object]) -> DeclaredCapabilities:
-    return DeclaredCapabilities.model_validate({"batch": batch_extra})
+def _x_caps(batch_extra: dict[str, object]) -> Capabilities:
+    return Capabilities.model_validate({"batch": batch_extra})
 
 
 def test_dict_node_supports_via_mode_and_supported_keys() -> None:
@@ -543,7 +557,7 @@ def test_dict_node_supports_via_mode_and_supported_keys() -> None:
     # A bare dict (no supported/mode) is fail-closed, not a "present
     # container" -- its own probe is False and its path is not yielded, but descent
     # still surfaces the nested explicit capability (two-layer consistent with
-    # canonical_json, which injects no `supported` on the bare dict either).
+    # to_protocol_dict, which injects no `supported` on the bare dict either).
     assert caps.supports("batch.x_container") is False
     paths = set(caps.iter_supported_paths())
     assert "batch.x_container" not in paths
@@ -569,8 +583,8 @@ def test_dict_node_supported_is_strict_boolean() -> None:
     assert caps.supports("batch.x_num_one") is False
     assert caps.supports("batch.x_real_true") is True
     assert caps.supports("batch.x_real_false") is False
-    # canonical_json injects the same fail-closed value for cross-language clients.
-    cj = caps.canonical_json()
+    # to_protocol_dict injects the same fail-closed value for cross-language clients.
+    cj = caps.to_protocol_dict()
     assert cj["batch"]["x_str_false"]["supported"] is False
     assert cj["batch"]["x_real_true"]["supported"] is True
 
@@ -594,7 +608,7 @@ def test_dict_node_mode_does_not_override_explicit_supported_false() -> None:
 
 
 def test_dict_node_mode_is_strict_string() -> None:
-    # A raw x_* dict node's `mode` is read as a STRICT string archetype token: a
+    # A raw x_* dict node's `mode` is read as a STRICT string mode token: a
     # non-string (bool, number, None) is a malformed declaration and is
     # fail-CLOSED to False, never silently promoted to supported. Without the type
     # guard, `True`/`1` would pass the `not in {off-modes}` frozenset check (the
@@ -612,8 +626,8 @@ def test_dict_node_mode_is_strict_string() -> None:
     assert caps.supports("batch.x_mode_none") is False
     # A real string mode (not an off-mode) still derives as supported.
     assert caps.supports("batch.x_mode_str") is True
-    # canonical_json injects the same fail-closed value for cross-language clients.
-    cj = caps.canonical_json()
+    # to_protocol_dict injects the same fail-closed value for cross-language clients.
+    cj = caps.to_protocol_dict()
     assert cj["batch"]["x_mode_true"]["supported"] is False
     assert cj["batch"]["x_mode_str"]["supported"] is True
 
@@ -639,24 +653,24 @@ def test_covers_rejects_dict_node_unbounding() -> None:
 
 
 def test_covers_rejects_dropping_whole_constraints_typed() -> None:
-    # Declared CandidateLanguagesCap(constraints=max=2); effective sets
+    # Declared CandidateLanguagesCapability(constraints=max=2); effective sets
     # the WHOLE constraints submodel to None (== unbounded). Dropping the entire
     # submodel is the same widening as nulling its only bounded field, so it MUST
     # be rejected -- the previous code only compared when BOTH sides had a
     # non-None constraints, letting this bypass `effective ⊆ declared`.
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True, constraints=CandidateLanguagesConstraints(max=2)
                 )
             )
         )
     )
-    effective = DeclaredCapabilities(
+    effective = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(supported=True, constraints=None)
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(supported=True, constraints=None)
             )
         )
     )
@@ -695,21 +709,21 @@ def test_traversal_helpers_handle_non_container_nodes() -> None:
     assert _children("scalar") == []
 
 
-def test_canonical_json_injects_derived_supported() -> None:
+def test_to_protocol_dict_injects_derived_supported() -> None:
     import json
 
-    from standard_asr.contract.capabilities import FinalityCap
+    from standard_asr.contract.capabilities import FinalityCapability
 
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(),
         streaming=StreamingCapabilities(
-            reconnect=ReconnectCap(mode="unsupported"),
-            timestamps=StreamTimestampsCap(mode="native_frame_aligned"),
-            finality_level=FinalityCap(mode="closed"),
+            reconnect=ReconnectCapability(mode="unsupported"),
+            timestamps=StreamTimestampsCapability(mode="native_frame_aligned"),
+            finality_level=FinalityCapability(mode="closed"),
         ),
-        streaming_input=FlagCap(supported=True),
+        streaming_input=TraitFlagCapability(supported=True),
     )
-    cj = caps.canonical_json()
+    cj = caps.to_protocol_dict()
 
     # The root is the container of all modes, not a capability: no supported key.
     assert "supported" not in cj
@@ -719,29 +733,34 @@ def test_canonical_json_injects_derived_supported() -> None:
     # Flag nodes keep their real supported field.
     assert cj["streaming_input"]["supported"] is True
     # enum/mode nodes now expose a uniform derived supported alongside mode.
-    assert cj["streaming"]["reconnect"] == {"mode": "unsupported", "supported": False}
+    assert cj["streaming"]["reconnect"] == {
+        "role": "trait",
+        "mode": "unsupported",
+        "supported": False,
+    }
     assert cj["streaming"]["timestamps"]["supported"] is True
     assert cj["streaming"]["finality_level"]["supported"] is True
     # The whole tree is JSON-serializable.
     json.dumps(cj)
 
 
-def test_canonical_json_preserves_unknown_extra_keys() -> None:
-    # Containers tolerate unknown keys (forward-compat); canonical JSON passes
-    # them through, including nested dict values, without injecting supported.
-    caps = DeclaredCapabilities.model_validate(
+def test_to_protocol_dict_preserves_unknown_extra_keys() -> None:
+    # Containers tolerate unknown keys (forward-compat); the capability JSON
+    # document passes them through, including nested dict values, without
+    # injecting supported.
+    caps = Capabilities.model_validate(
         {"batch": {"x_vendor": {"flavor": "fast"}, "streaming_input": True}}
     )
-    cj = caps.canonical_json()
+    cj = caps.to_protocol_dict()
     assert cj["batch"]["x_vendor"] == {"flavor": "fast"}
 
 
-def test_canonical_json_injects_supported_on_json_sourced_x_star_dicts() -> None:
+def test_to_protocol_dict_injects_supported_on_json_sourced_x_star_dicts() -> None:
     # An x_* capability parsed from JSON lands in model_extra as a raw
-    # dict. canonical_json MUST inject the derived `supported` so cross-language
+    # dict. to_protocol_dict MUST inject the derived `supported` so cross-language
     # clients get the same uniform probe as typed nodes. A bare constraints-like
     # dict (no mode/supported) stays untouched.
-    caps = DeclaredCapabilities.model_validate(
+    caps = Capabilities.model_validate(
         {
             "batch": {
                 "x_acme_flag": {"supported": True},
@@ -751,7 +770,7 @@ def test_canonical_json_injects_supported_on_json_sourced_x_star_dicts() -> None
             }
         }
     )
-    cj = caps.canonical_json()
+    cj = caps.to_protocol_dict()
     assert cj["batch"]["x_acme_flag"]["supported"] is True
     # mode dict gains a derived supported alongside its mode.
     assert cj["batch"]["x_acme_mode"] == {"mode": "lossy", "supported": True}
@@ -766,8 +785,8 @@ def test_canonical_json_injects_supported_on_json_sourced_x_star_dicts() -> None
 def test_bare_x_star_dict_is_fail_closed_and_two_layer_consistent() -> None:
     # A raw x_* dict with neither `supported` nor `mode` is NOT a
     # capability node. The in-process probe (supports / iter_supported_paths) and
-    # the wire view (canonical_json) MUST agree -- previously supports() read True
-    # ("present container dict") while canonical_json injected no `supported`,
+    # the wire view (to_protocol_dict) MUST agree -- previously supports() read True
+    # ("present container dict") while to_protocol_dict injected no `supported`,
     # so the two layers disagreed and a flag-less malformed vendor node read as
     # supported.
     caps = _x_caps({"x_acme_thing": {"foo": 1}})
@@ -775,7 +794,7 @@ def test_bare_x_star_dict_is_fail_closed_and_two_layer_consistent() -> None:
     assert caps.supports("batch.x_acme_thing") is False
     assert "batch.x_acme_thing" not in set(caps.iter_supported_paths())
     # Wire: passed through verbatim, NO derived `supported` key (same verdict).
-    cj = caps.canonical_json()
+    cj = caps.to_protocol_dict()
     assert cj["batch"]["x_acme_thing"] == {"foo": 1}
     assert "supported" not in cj["batch"]["x_acme_thing"]
     # Consistency for a SUPPORTED bounded x_* dict too: its constraints sub-dict is
@@ -785,43 +804,49 @@ def test_bare_x_star_dict_is_fail_closed_and_two_layer_consistent() -> None:
     assert "batch.x_feat" in paths
     assert "batch.x_feat.constraints" not in paths
     assert bounded.supports("batch.x_feat.constraints") is False
-    assert "supported" not in bounded.canonical_json()["batch"]["x_feat"]["constraints"]
+    assert "supported" not in bounded.to_protocol_dict()["batch"]["x_feat"]["constraints"]
 
 
 def test_self_resamples_is_declarable_engine_global_flag() -> None:
-    # `self_resamples` is the one behavioral capability the spec places
-    # in Capabilities. It is engine-global, queried via
+    # `self_resamples` is a trait that the spec places in Capabilities, not
+    # in Properties. It is engine-global, queried via
     # `supports("self_resamples")` like streaming_input/streaming_output, and is
     # informational only -- it does not change any resampling decision.
-    declared = DeclaredCapabilities(self_resamples=FlagCap(supported=True))
+    declared = Capabilities(self_resamples=TraitFlagCapability(supported=True))
     assert declared.supports("self_resamples") is True
-    # Appears in canonical JSON with its real supported field.
-    assert declared.canonical_json()["self_resamples"] == {"supported": True}
+    # Appears in the capability JSON document with its real supported field.
+    assert declared.to_protocol_dict()["self_resamples"] == {"role": "trait", "supported": True}
     # Absent => False (fail-closed), and the node defaults to not-supported.
-    default = DeclaredCapabilities()
+    default = Capabilities()
     assert default.supports("self_resamples") is False
-    assert default.canonical_json()["self_resamples"] == {"supported": False}
+    assert default.to_protocol_dict()["self_resamples"] == {"role": "trait", "supported": False}
 
 
 def test_mutable_mid_stream_is_a_queryable_streaming_guidance_flag() -> None:
-    # The `mutable_mid_stream` declaration site is a FlagCap
+    # The `mutable_mid_stream` declaration site is a TraitFlagCapability
     # node on the STREAMING guidance family, queryable via supports(). Default is
     # fail-closed (session-locked); an engine may declare it true.
-    default = DeclaredCapabilities(streaming=StreamingCapabilities())
+    default = Capabilities(streaming=StreamingCapabilities())
     assert default.supports("streaming.guidance.mutable_mid_stream") is False
-    # The default streaming guidance is the StreamingGuidanceCaps variant, so the
-    # node exists (and is False), and appears in canonical JSON for wire clients.
-    cj = default.canonical_json()
-    assert cj["streaming"]["guidance"]["mutable_mid_stream"] == {"supported": False}
+    # The default streaming guidance is the StreamingGuidanceCapabilities variant, so the
+    # node exists (and is False), and appears in the capability JSON document
+    # for clients in other languages.
+    cj = default.to_protocol_dict()
+    assert cj["streaming"]["guidance"]["mutable_mid_stream"] == {
+        "role": "trait",
+        "supported": False,
+    }
 
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         streaming=StreamingCapabilities(
-            guidance=StreamingGuidanceCaps(mutable_mid_stream=FlagCap(supported=True))
+            guidance=StreamingGuidanceCapabilities(
+                mutable_mid_stream=TraitFlagCapability(supported=True)
+            )
         )
     )
     assert declared.supports("streaming.guidance.mutable_mid_stream") is True
     assert (
-        declared.canonical_json()["streaming"]["guidance"]["mutable_mid_stream"]["supported"]
+        declared.to_protocol_dict()["streaming"]["guidance"]["mutable_mid_stream"]["supported"]
         is True
     )
     # The inherited prompt/phrase_hints channels still resolve on the subclass.
@@ -832,19 +857,21 @@ def test_mutable_mid_stream_absent_on_batch_guidance() -> None:
     # Mid-stream mutability is meaningless for batch (single shot), so
     # the flag lives ONLY on the streaming guidance family; the batch path is a
     # fail-closed miss, never a real node.
-    caps = DeclaredCapabilities(batch=BatchCapabilities())
+    caps = Capabilities(batch=BatchCapabilities())
     assert caps.supports("batch.guidance.mutable_mid_stream") is False
-    assert "mutable_mid_stream" not in caps.canonical_json()["batch"]["guidance"]
+    assert "mutable_mid_stream" not in caps.to_protocol_dict()["batch"]["guidance"]
 
 
 def test_mutable_mid_stream_covers_rejects_widening() -> None:
-    # Modeled as a FlagCap, so the effective <= declared invariant is
+    # Modeled as a TraitFlagCapability, so the effective <= declared invariant is
     # enforced by covers() set-containment with no special-casing -- declared
     # false -> effective true is a widening and is rejected; the reverse narrows.
-    declared_false = DeclaredCapabilities(streaming=StreamingCapabilities())
-    effective_true = DeclaredCapabilities(
+    declared_false = Capabilities(streaming=StreamingCapabilities())
+    effective_true = Capabilities(
         streaming=StreamingCapabilities(
-            guidance=StreamingGuidanceCaps(mutable_mid_stream=FlagCap(supported=True))
+            guidance=StreamingGuidanceCapabilities(
+                mutable_mid_stream=TraitFlagCapability(supported=True)
+            )
         )
     )
     assert declared_false.covers(effective_true) is False
@@ -853,38 +880,42 @@ def test_mutable_mid_stream_covers_rejects_widening() -> None:
 
 def test_streaming_capabilities_accepts_plain_guidance_caps() -> None:
     # backward tolerance: the streaming guidance field is typed as the
-    # base GuidanceCaps, so an engine that declares a plain GuidanceCaps still
+    # base GuidanceCapabilities, so an engine that declares a plain GuidanceCapabilities still
     # validates. The before-validator normalizes it to the streaming subtype, so
     # ``mutable_mid_stream`` is a real (fail-closed) node rather than an invisible
-    # extra -- keeping the typed Python and canonical-JSON layers in agreement.
-    streaming = StreamingCapabilities(guidance=GuidanceCaps())
-    assert type(streaming.guidance) is StreamingGuidanceCaps
-    caps = DeclaredCapabilities(streaming=streaming)
+    # extra -- keeping the typed Python tree and the capability JSON document in
+    # agreement.
+    streaming = StreamingCapabilities(guidance=GuidanceCapabilities())
+    assert type(streaming.guidance) is StreamingGuidanceCapabilities
+    caps = Capabilities(streaming=streaming)
     assert caps.supports("streaming.guidance.mutable_mid_stream") is False
-    assert caps.canonical_json()["streaming"]["guidance"]["mutable_mid_stream"] == {
-        "supported": False
+    assert caps.to_protocol_dict()["streaming"]["guidance"]["mutable_mid_stream"] == {
+        "role": "trait",
+        "supported": False,
     }
 
 
 def test_mutable_mid_stream_survives_json_round_trip() -> None:
     # Two-layer isomorphism: a mutable_mid_stream declared true must survive
-    # the wire round-trip (canonical_json -> model_validate) and remain queryable.
+    # the wire round-trip (to_protocol_dict -> model_validate) and remain queryable.
     # Pre-fix the dict path coerced guidance to the base type, so the flag landed
     # in model_extra and supports() reported False while the wire said True.
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         streaming=StreamingCapabilities(
-            guidance=StreamingGuidanceCaps(mutable_mid_stream=FlagCap(supported=True))
+            guidance=StreamingGuidanceCapabilities(
+                mutable_mid_stream=TraitFlagCapability(supported=True)
+            )
         )
     )
-    wire = declared.canonical_json()
-    restored = DeclaredCapabilities.model_validate(wire)
+    wire = declared.to_protocol_dict()
+    restored = Capabilities.model_validate(wire)
     assert restored.supports("streaming.guidance.mutable_mid_stream") is True
     assert restored.node_at("streaming.guidance.mutable_mid_stream") is not None
     assert "streaming.guidance.mutable_mid_stream" in set(restored.iter_supported_paths())
-    assert restored.canonical_json() == wire
+    assert restored.to_protocol_dict() == wire
 
     # The same holds for a bare dict built directly (cross-language / wire client).
-    from_dict = DeclaredCapabilities.model_validate(
+    from_dict = Capabilities.model_validate(
         {"streaming": {"guidance": {"mutable_mid_stream": {"supported": True}}}}
     )
     assert from_dict.supports("streaming.guidance.mutable_mid_stream") is True
@@ -894,10 +925,10 @@ def test_mutable_mid_stream_covers_rejects_widening_on_json_path() -> None:
     # The effective <= declared invariant must hold on the JSON path,
     # not only the typed-Python path. Pre-fix covers() was blind to the flag built
     # via model_validate(dict), so it could not reject the widening.
-    declared_false = DeclaredCapabilities.model_validate(
+    declared_false = Capabilities.model_validate(
         {"streaming": {"guidance": {"mutable_mid_stream": {"supported": False}}}}
     )
-    effective_true = DeclaredCapabilities.model_validate(
+    effective_true = Capabilities.model_validate(
         {"streaming": {"guidance": {"mutable_mid_stream": {"supported": True}}}}
     )
     assert declared_false.covers(effective_true) is False
@@ -914,32 +945,32 @@ def test_streaming_guidance_rejects_non_coercible_value() -> None:
             StreamingCapabilities(guidance=bad)  # pyright: ignore[reportArgumentType]
 
 
-def test_canonical_json_absent_domain_is_null() -> None:
+def test_to_protocol_dict_absent_domain_is_null() -> None:
     # An unsupported mode domain serializes as null (fail-closed), never as a
     # present-but-empty container.
-    caps = DeclaredCapabilities(streaming=StreamingCapabilities())
-    cj = caps.canonical_json()
+    caps = Capabilities(streaming=StreamingCapabilities())
+    cj = caps.to_protocol_dict()
     assert cj["batch"] is None
     assert cj["streaming"]["supported"] is True
 
 
-def test_canonical_json_preserves_constraints_without_supported() -> None:
+def test_to_protocol_dict_preserves_constraints_without_supported() -> None:
     # Constraint submodels are not capabilities: they keep their fields but get
     # no injected supported key.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=3),
                 ),
             )
         )
     )
-    cj = caps.canonical_json()
+    cj = caps.to_protocol_dict()
     cand = cj["batch"]["language"]["candidate_languages"]
     assert cand["supported"] is True
-    assert cand["constraints"] == {"max": 3}
+    assert cand["constraints"] == {"role": "constraints", "max": 3}
 
 
 def test_covers_continues_past_unresolvable_node() -> None:
@@ -1013,8 +1044,9 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
     # enum families have disjoint token sets -- otherwise a future enum node that
     # reuses an existing token (for example, 'none'/'final') would silently inherit another
     # family's reduction order. Guard the invariant: collect the Literal tokens of
-    # every standard enum/mode Cap and assert no token is shared across families,
-    # and that every reduction-map key/value is one of those declared tokens.
+    # every standard enum/mode capability node and assert no token is shared across
+    # families, and that every reduction-map key/value is one of those declared
+    # tokens.
     enum_families: dict[str, set[str]] = {}
     all_tokens: set[str] = set()
     for name, obj in vars(cap_module).items():
@@ -1048,23 +1080,23 @@ def test_mode_reduction_tokens_are_globally_unique_per_enum_family() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Diarization capability: streaming node + always_on behavioral flag.
+# Diarization capability: streaming node + always_on trait flag.
 # --------------------------------------------------------------------------- #
 def test_streaming_diarization_defaults_fail_closed() -> None:
     # StreamingCapabilities gains a diarization node with the same fail-closed
     # default as batch: declaring a streaming domain does NOT imply diarization.
     assert StreamingCapabilities().diarization.supported is False
-    caps = DeclaredCapabilities(streaming=StreamingCapabilities())
+    caps = Capabilities(streaming=StreamingCapabilities())
     assert caps.supports("streaming.diarization") is False
 
 
 def test_streaming_diarization_supported_path_and_node_at() -> None:
-    caps = DeclaredCapabilities(
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    caps = Capabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=True))
     )
     assert caps.supports("streaming.diarization") is True
     node = caps.node_at("streaming.diarization")
-    assert isinstance(node, DiarizationCap)
+    assert isinstance(node, DiarizationCapability)
     assert node.always_on.is_supported is False
 
 
@@ -1072,48 +1104,55 @@ def test_always_on_requires_supported() -> None:
     # always_on supported + supported=False is self-contradictory (an engine
     # that cannot disable diarization necessarily supports it) and is made
     # unrepresentable by the model validator. The constructive shapes pass.
-    assert DiarizationCap(supported=True, always_on=FlagCap(supported=True)).always_on.is_supported
-    assert DiarizationCap(supported=True).always_on.is_supported is False
-    assert DiarizationCap().always_on.is_supported is False
+    assert DiarizationCapability(
+        supported=True, always_on=TraitFlagCapability(supported=True)
+    ).always_on.is_supported
+    assert DiarizationCapability(supported=True).always_on.is_supported is False
+    assert DiarizationCapability().always_on.is_supported is False
     with pytest.raises(ValueError, match="declared supported while supported=False"):
-        DiarizationCap(supported=False, always_on=FlagCap(supported=True))
+        DiarizationCapability(supported=False, always_on=TraitFlagCapability(supported=True))
 
 
 def test_always_on_is_a_queryable_flag_node() -> None:
-    # always_on is a behavioral fact in the same family as self_resamples, but
-    # it IS a regular queryable FlagCap node: supports() resolves it, it appears
-    # in iter_supported_paths() when supported, and canonical_json injects a
-    # uniform `supported` boolean. The semantic inversion (True = imposed, not
-    # requestable) is documented prose, not a representation difference.
-    supported = DeclaredCapabilities(
+    # always_on is a trait in the same family as self_resamples, and it IS a
+    # regular queryable TraitFlagCapability node: supports() resolves it, it appears
+    # in iter_supported_paths() when supported, and to_protocol_dict injects a
+    # uniform `supported` boolean. The role states how it differs from its
+    # parent: diarization is requestable, and a supported always_on is a trait
+    # that means the engine applies diarization to every request.
+    supported = Capabilities(
         streaming=StreamingCapabilities(
-            diarization=DiarizationCap(supported=True, always_on=FlagCap(supported=True))
+            diarization=DiarizationCapability(
+                supported=True, always_on=TraitFlagCapability(supported=True)
+            )
         )
     )
     assert supported.supports("streaming.diarization.always_on") is True
     assert "streaming.diarization.always_on" in set(supported.iter_supported_paths())
-    node = supported.canonical_json()["streaming"]["diarization"]["always_on"]
+    node = supported.to_protocol_dict()["streaming"]["diarization"]["always_on"]
     assert node["supported"] is True
 
     # Diarization supported but always_on defaulted: the path is fail-closed and
     # absent from the supported-path set.
-    default_on = DeclaredCapabilities(
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    default_on = Capabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=True))
     )
     assert default_on.supports("streaming.diarization.always_on") is False
     assert "streaming.diarization.always_on" not in set(default_on.iter_supported_paths())
 
 
 def test_always_on_covers_rejects_declaration_drift() -> None:
-    # With a FlagCap node, covers() rejects a declared-unsupported ->
+    # With a TraitFlagCapability node, covers() rejects a declared-unsupported ->
     # effective-supported widening (declaration drift) by plain set containment;
     # identical trees cover each other.
-    declared = DeclaredCapabilities(
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    declared = Capabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=True))
     )
-    effective_on = DeclaredCapabilities(
+    effective_on = Capabilities(
         streaming=StreamingCapabilities(
-            diarization=DiarizationCap(supported=True, always_on=FlagCap(supported=True))
+            diarization=DiarizationCapability(
+                supported=True, always_on=TraitFlagCapability(supported=True)
+            )
         )
     )
     assert declared.covers(effective_on) is False
@@ -1126,33 +1165,35 @@ def test_always_on_rejects_bare_bool() -> None:
     # pydantic validation loudly (pre-release, no bool-coercion shim).
     from pydantic import ValidationError
 
-    validated = DiarizationCap.model_validate({"supported": True, "always_on": {"supported": True}})
+    validated = DiarizationCapability.model_validate(
+        {"supported": True, "always_on": {"supported": True}}
+    )
     assert validated.always_on.is_supported is True
     with pytest.raises(ValidationError):
-        DiarizationCap.model_validate({"supported": True, "always_on": True})
+        DiarizationCapability.model_validate({"supported": True, "always_on": True})
 
 
 def test_diarization_covers_narrowing() -> None:
     # Set containment: declared supported=True covers an effective that dropped
     # it; declared False never covers an effective True (a widening).
-    supported = DeclaredCapabilities(
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=True))
+    supported = Capabilities(
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=True))
     )
-    unsupported = DeclaredCapabilities(streaming=StreamingCapabilities())
+    unsupported = Capabilities(streaming=StreamingCapabilities())
     assert supported.covers(unsupported) is True
     assert unsupported.covers(supported) is False
     # max_speakers is a registered upper bound (_MAX_CONSTRAINT_FIELDS):
     # declared 4 -> effective 8 is a constraint widening and is rejected.
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         streaming=StreamingCapabilities(
-            diarization=DiarizationCap(
+            diarization=DiarizationCapability(
                 supported=True, constraints=DiarizationConstraints(max_speakers=4)
             )
         )
     )
-    wider = DeclaredCapabilities(
+    wider = Capabilities(
         streaming=StreamingCapabilities(
-            diarization=DiarizationCap(
+            diarization=DiarizationCapability(
                 supported=True, constraints=DiarizationConstraints(max_speakers=8)
             )
         )
@@ -1162,25 +1203,25 @@ def test_diarization_covers_narrowing() -> None:
 
 
 def test_diarization_survives_json_round_trip() -> None:
-    # Two-layer isomorphism stance: the wire view (canonical_json -> model_validate)
+    # Two-layer isomorphism stance: the wire view (to_protocol_dict -> model_validate)
     # must preserve supported AND always_on, and remain queryable/typed.
-    declared = DeclaredCapabilities(
+    declared = Capabilities(
         streaming=StreamingCapabilities(
-            diarization=DiarizationCap(
+            diarization=DiarizationCapability(
                 supported=True,
-                always_on=FlagCap(supported=True),
+                always_on=TraitFlagCapability(supported=True),
                 constraints=DiarizationConstraints(max_speakers=6),
             )
         )
     )
-    wire = declared.canonical_json()
-    restored = DeclaredCapabilities.model_validate(wire)
+    wire = declared.to_protocol_dict()
+    restored = Capabilities.model_validate(wire)
     assert restored.supports("streaming.diarization") is True
     node = restored.node_at("streaming.diarization")
-    assert isinstance(node, DiarizationCap)
+    assert isinstance(node, DiarizationCapability)
     assert node.always_on.is_supported is True
     assert node.constraints.max_speakers == 6
-    assert restored.canonical_json() == wire
+    assert restored.to_protocol_dict() == wire
 
 
 def test_extension_extras_are_closed_to_the_json_value_space() -> None:
@@ -1210,24 +1251,24 @@ def test_extension_extras_are_closed_to_the_json_value_space() -> None:
         {"nested": [float("nan")]},
     ):
         with pytest.raises(ValidationError):
-            FlagCap(supported=True, x_vendor=bad)  # pyright: ignore[reportCallIssue]
+            TraitFlagCapability(supported=True, x_vendor=bad)  # pyright: ignore[reportCallIssue]
 
     # A nested mapping KEY that is not a string has no JSON object form.
     with pytest.raises(ValidationError):
-        FlagCap(supported=True, x_vendor={"outer": {1: "#"}})  # pyright: ignore[reportCallIssue]
+        TraitFlagCapability(supported=True, x_vendor={"outer": {1: "#"}})  # pyright: ignore[reportCallIssue]
 
     # A canonicalizable value (a str SUBCLASS -- display machinery aside,
-    # its content is plain text) settles to its canonical JSON form AT
+    # its content is plain text) settles to its JSON document form AT
     # CONSTRUCTION: the stored tree and the wire document agree, rather
     # than coercing only at dump time.
-    settled = FlagCap(supported=True, x_note=type("S", (str,), {})("plain"))  # pyright: ignore[reportCallIssue]
+    settled = TraitFlagCapability(supported=True, x_note=type("S", (str,), {})("plain"))  # pyright: ignore[reportCallIssue]
     assert settled.model_extra is not None
     assert settled.model_extra == {"x_note": "plain"}
     assert type(settled.model_extra["x_note"]) is str
 
     # The legal shapes keep working: a nested extension tree with every JSON
     # scalar; and the two-layer view over it is identical by construction.
-    cap = FlagCap(
+    cap = TraitFlagCapability(
         supported=True,
         x_vendor={"supported": True, "limits": {"max": 8, "codecs": ["opus"], "note": None}},  # pyright: ignore[reportCallIssue]
     )
@@ -1242,9 +1283,9 @@ def test_extension_extras_are_closed_to_the_json_value_space() -> None:
     # The round trip through the wire document is byte-identical.
     doc = json.loads(json.dumps(canonical))
     assert (
-        DeclaredCapabilities.model_validate(
-            {"batch": {"x_acme": doc["x_vendor"]}}
-        ).canonical_json()["batch"]["x_acme"]
+        Capabilities.model_validate({"batch": {"x_acme": doc["x_vendor"]}}).to_protocol_dict()[
+            "batch"
+        ]["x_acme"]
         == doc["x_vendor"]
     )
 
@@ -1254,7 +1295,7 @@ def test_extension_extras_are_closed_to_the_json_value_space() -> None:
 
     # Forward-compat tolerance is unchanged: unknown keys with JSON values
     # still parse; typo'd non-extension keys stay fail-closed for queries.
-    tolerated = DeclaredCapabilities.model_validate({"batch": {"future_field": {"max": 5}}})
+    tolerated = Capabilities.model_validate({"batch": {"future_field": {"max": 5}}})
     assert tolerated.batch is not None
     assert tolerated.supports("batch.future_field") is False
 
@@ -1271,7 +1312,7 @@ def test_extension_extras_key_domain_is_exact_str() -> None:
 
     def rejects_on_key(payload: dict[object, object]) -> None:
         with pytest.raises(ValidationError) as excinfo:
-            FlagCap.model_validate(payload)
+            TraitFlagCapability.model_validate(payload)
         assert {e["type"] for e in excinfo.value.errors()} == {"standard_asr_json_object_key"}
 
     # A bytes key can neither override a declared field (either insertion
@@ -1289,7 +1330,7 @@ def test_extension_extras_key_domain_is_exact_str() -> None:
     # A nested capability node enforces the same rule through its own
     # validator: the laundered key never reaches the tree.
     with pytest.raises(ValidationError) as excinfo:
-        DeclaredCapabilities.model_validate({"batch": {b"future_field": {"max": 5}}})
+        Capabilities.model_validate({"batch": {b"future_field": {"max": 5}}})
     assert {e["type"] for e in excinfo.value.errors()} == {"standard_asr_json_object_key"}
 
 
@@ -1312,12 +1353,12 @@ def test_queryable_surface_keys_cannot_embed_the_path_separator() -> None:
         {"x_vendor": {"a": {"b.c": {"supported": True}}}},  # any dict depth
     ):
         with pytest.raises(ValidationError, match="dot-path separator"):
-            DeclaredCapabilities.model_validate(payload)
+            Capabilities.model_validate(payload)
 
     # Outside the path space, dotted names remain representable: keys of
     # dicts inside LISTS are field internals (never nodes), scalar values
     # are values, and non-extension extras are not queryable.
-    caps = DeclaredCapabilities.model_validate(
+    caps = Capabilities.model_validate(
         {
             "x_vendor": {
                 "models": ["v1.2"],
@@ -1332,3 +1373,261 @@ def test_queryable_surface_keys_cannot_embed_the_path_separator() -> None:
     # spelling of a declared node).
     resolved = {path: caps.supports(path) for path in caps.iter_queryable_paths()}
     assert resolved["x_vendor"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Capability roles (design case: docs/internal/feat_plan/capability-kinds.md)
+# --------------------------------------------------------------------------- #
+def _concrete_role_classes() -> list[type[BaseModel]]:
+    bases = {
+        cap_module._CapabilityNode,  # pyright: ignore[reportPrivateUsage]
+        cap_module._FlagLikeNode,  # pyright: ignore[reportPrivateUsage]
+        cap_module._ConstraintNode,  # pyright: ignore[reportPrivateUsage]
+    }
+    node_bases = (
+        cap_module._CapabilityNode,  # pyright: ignore[reportPrivateUsage]
+        cap_module._ConstraintNode,  # pyright: ignore[reportPrivateUsage]
+    )
+    return [
+        cls
+        for cls in vars(cap_module).values()
+        if inspect.isclass(cls) and issubclass(cls, node_bases) and cls not in bases
+    ]
+
+
+#: Every concrete node and constraint class with the role the design case
+#: decides for it (docs/internal/feat_plan/capability-kinds.md, section 2
+#: and D4): the gated features are requestable, every other flag and every
+#: enum/mode node is a trait, and the constraint submodels have the role
+#: constraints.
+_DECIDED_ROLES: dict[str, str] = {
+    "CandidateLanguagesCapability": "requestable",
+    "DiarizationCapability": "requestable",
+    "PhraseHintsCapability": "requestable",
+    "PromptCapability": "requestable",
+    "LanguageOverrideCapability": "requestable",
+    "WordTimestampsCapability": "requestable",
+    "FinalityCapability": "trait",
+    "TraitFlagCapability": "trait",
+    "ReconnectCapability": "trait",
+    "StreamTimestampsCapability": "trait",
+    "CandidateLanguagesConstraints": "constraints",
+    "DiarizationConstraints": "constraints",
+    "PhraseHintsConstraints": "constraints",
+    "PromptConstraints": "constraints",
+}
+
+
+def test_every_node_class_pins_one_role() -> None:
+    """Each concrete node and constraint class fixes ``role`` to one value.
+
+    A single-value Literal with a default makes the wrong role a validation
+    error and renders as a ``const`` in the generated schema (design D4).
+    """
+    classes = {cls.__name__: cls for cls in _concrete_role_classes()}
+    # The test lists the inventory by name, so a new class must be classified
+    # here, and a changed role value fails this test, not only the schema test.
+    assert set(classes) == set(_DECIDED_ROLES)
+    for name, decided in _DECIDED_ROLES.items():
+        field = classes[name].model_fields["role"]
+        assert typing.get_origin(field.annotation) is typing.Literal, name
+        assert typing.get_args(field.annotation) == (decided,), name
+        assert field.default == decided, name
+
+
+def test_role_is_pinned_per_class_and_the_wrong_value_is_rejected() -> None:
+    assert TraitFlagCapability().role == "trait"
+    assert LanguageOverrideCapability().role == "requestable"
+    assert DiarizationCapability().role == "requestable"
+    assert DiarizationCapability().always_on.role == "trait"
+    assert ReconnectCapability().role == "trait"
+    assert PromptConstraints().role == "constraints"
+    with pytest.raises(ValidationError):
+        TraitFlagCapability.model_validate({"supported": True, "role": "requestable"})
+    with pytest.raises(ValidationError):
+        WordTimestampsCapability.model_validate({"supported": False, "role": "trait"})
+    with pytest.raises(ValidationError):
+        PromptConstraints.model_validate({"role": "trait"})
+
+
+def test_runtime_override_needs_its_own_class() -> None:
+    # language.runtime_override is requestable (the `language` row of
+    # _GATED_PARAMS) and TraitFlagCapability fixes trait, so a TraitFlagCapability no longer
+    # validates there (design D4). The JSON shape is unchanged: a dict with
+    # no role takes the value the class fixes.
+    with pytest.raises(ValidationError):
+        LanguageCapabilities.model_validate(
+            {"runtime_override": TraitFlagCapability(supported=True)}
+        )
+    caps = LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True))
+    assert caps.runtime_override.role == "requestable"
+    parsed = LanguageCapabilities.model_validate({"runtime_override": {"supported": True}})
+    assert parsed.runtime_override == caps.runtime_override
+
+
+def test_can_request_is_true_only_for_a_supported_requestable_node() -> None:
+    caps = Capabilities(
+        batch=BatchCapabilities(
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=True)
+            ),
+            diarization=DiarizationCapability(
+                supported=True, always_on=TraitFlagCapability(supported=True)
+            ),
+            word_timestamps=WordTimestampsCapability(supported=False),
+        ),
+        self_resamples=TraitFlagCapability(supported=True),
+    )
+    assert caps.can_request("batch.language.runtime_override") is True
+    assert caps.can_request("batch.diarization") is True
+    # A supported trait cannot be asked for.
+    assert caps.can_request("batch.diarization.always_on") is False
+    assert caps.can_request("self_resamples") is False
+    # An unsupported requestable node, a container, a constraints submodel, an
+    # absent mode, and an absent path all answer False.
+    assert caps.can_request("batch.word_timestamps") is False
+    assert caps.can_request("batch") is False
+    assert caps.can_request("batch.diarization.constraints") is False
+    assert caps.can_request("streaming.diarization") is False
+    assert caps.can_request("batch.nope") is False
+
+
+def test_role_at_reports_each_node_and_nothing_for_a_container() -> None:
+    caps = Capabilities(batch=BatchCapabilities())
+    assert caps.role_at("batch.diarization") == "requestable"
+    assert caps.role_at("batch.diarization.always_on") == "trait"
+    assert caps.role_at("batch.diarization.constraints") == "constraints"
+    assert caps.role_at("batch.language.runtime_override") == "requestable"
+    assert caps.role_at("batch") is None
+    assert caps.role_at("batch.language") is None
+    assert caps.role_at("streaming") is None
+    assert caps.role_at("batch.nope") is None
+
+
+def test_x_star_dict_node_role_is_read_strictly() -> None:
+    # A vendor node states its role as data. Anything but the three tokens
+    # states nothing, so a vendor node never reads as requestable by accident.
+    caps = Capabilities.model_validate(
+        {
+            "batch": {
+                "x_vendor_ask": {"supported": True, "role": "requestable"},
+                "x_vendor_does": {"supported": True, "role": "trait"},
+                "x_vendor_bad": {"supported": True, "role": "REQUESTABLE"},
+                "x_vendor_none": {"supported": True},
+            }
+        }
+    )
+    assert caps.can_request("batch.x_vendor_ask") is True
+    assert caps.role_at("batch.x_vendor_does") == "trait"
+    assert caps.can_request("batch.x_vendor_does") is False
+    assert caps.role_at("batch.x_vendor_bad") is None
+    assert caps.can_request("batch.x_vendor_bad") is False
+    assert caps.role_at("batch.x_vendor_none") is None
+
+
+def test_covers_rejects_a_role_change_on_a_vendor_node() -> None:
+    # Each standard node class fixes its role, so only a raw x_* node can
+    # change role between the declared and the effective tree. Either
+    # direction changes what role_at() and can_request() answer, so neither
+    # narrows, and support does not matter: an unsupported node still has a
+    # role, so a change on one is a widening too.
+    def tree(role: str, supported: bool = True) -> Capabilities:
+        return Capabilities.model_validate(
+            {"batch": {"x_vendor_thing": {"supported": supported, "role": role}}}
+        )
+
+    assert tree("trait").covers(tree("trait")) is True
+    assert tree("trait").covers(tree("requestable")) is False
+    assert tree("requestable").covers(tree("trait")) is False
+    # Same role, support dropped: a narrowing.
+    assert tree("requestable").covers(tree("requestable", supported=False)) is True
+    # A changed role on a node that is not supported any more, or never was.
+    assert tree("requestable").covers(tree("trait", supported=False)) is False
+    assert tree("requestable", supported=False).covers(tree("trait", supported=False)) is False
+    # Omitting the node altogether stays a narrowing.
+    assert tree("requestable").covers(Capabilities(batch=BatchCapabilities())) is True
+
+
+def test_container_rejects_a_role_key() -> None:
+    # A container states no role (design D4). An extra role key would reach
+    # to_protocol_dict() while role_at() answers None, so it is rejected.
+    with pytest.raises(ValidationError, match="states no role"):
+        Capabilities.model_validate({"batch": {"role": "requestable"}})
+    with pytest.raises(ValidationError, match="states no role"):
+        Capabilities.model_validate({"role": "trait"})
+    with pytest.raises(ValidationError, match="states no role"):
+        Capabilities.model_validate({"batch": {"language": {"role": "constraints"}}})
+
+
+def test_container_refuses_a_subclass_that_declares_a_role_field() -> None:
+    # The extra-key check sees only unknown keys, and to_protocol_dict() writes
+    # every declared field, so a subclass field named role would reach the
+    # capability JSON document while role_at() answers None. The class itself
+    # is refused, default value included, for a mode container, an inner
+    # grouping container, and the root.
+    tagged: list[tuple[type[object], str]] = [
+        (BatchCapabilities, "requestable"),
+        (GuidanceCapabilities, "trait"),
+        (Capabilities, "constraints"),
+    ]
+    for base, value in tagged:
+        with pytest.raises(TypeError, match="declares a 'role' field"):
+            type("Tagged", (base,), {"__annotations__": {"role": str}, "role": value})
+
+    # A subclass that adds an ordinary field is still allowed.
+    class Extended(BatchCapabilities):
+        x_vendor_note: str = ""
+
+    assert Extended().x_vendor_note == ""
+
+
+def test_bare_grouping_dict_states_no_role() -> None:
+    # A raw x_* dict without supported or mode groups nodes; a role key on
+    # it is vendor data that the query surface does not read.
+    caps = Capabilities.model_validate(
+        {"batch": {"x_group": {"role": "requestable", "nested": {"supported": True}}}}
+    )
+    assert caps.role_at("batch.x_group") is None
+    assert caps.can_request("batch.x_group") is False
+    assert caps.role_at("batch.x_group.nested") is None
+
+
+def test_to_protocol_dict_carries_role_on_nodes_and_constraints_not_containers() -> None:
+    caps = Capabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities())
+    cj = caps.to_protocol_dict()
+    assert "role" not in cj
+    assert "role" not in cj["batch"]
+    assert "role" not in cj["batch"]["language"]
+    assert cj["batch"]["language"]["runtime_override"]["role"] == "requestable"
+    assert cj["batch"]["diarization"]["role"] == "requestable"
+    assert cj["batch"]["diarization"]["always_on"]["role"] == "trait"
+    assert cj["batch"]["diarization"]["constraints"]["role"] == "constraints"
+    assert cj["streaming"]["reconnect"]["role"] == "trait"
+    assert cj["self_resamples"]["role"] == "trait"
+    # The capability JSON document and the query surface agree on every node.
+    for path in caps.iter_queryable_paths():
+        node: dict[str, object] = cj
+        for part in path.split("."):
+            node = cast("dict[str, object]", node[part])
+        assert node.get("role") == caps.role_at(path), path
+
+
+def test_serialization_schema_requires_role_with_the_pinned_value() -> None:
+    """The serialization-mode schema requires ``role`` with the value each class fixes.
+
+    Every concrete node and constraint definition carries ``role`` as a
+    required property whose ``const`` is the value the class fixes. A
+    validation-mode schema would leave a defaulted ``role`` optional. The
+    schema lists the classes' fields only: it lacks the derived
+    ``supported`` that ``to_protocol_dict()`` adds, so it is not a complete
+    schema of the capability endpoint (spec capabilities R6).
+    """
+    schema = Capabilities.model_json_schema(mode="serialization")
+    defs = cast("dict[str, dict[str, Any]]", schema["$defs"])
+    for cls in _concrete_role_classes():
+        assert cls.__name__ in defs, cls
+        definition = defs[cls.__name__]
+        assert "role" in definition["required"], cls
+        assert definition["properties"]["role"]["const"] == _DECIDED_ROLES[cls.__name__], cls
+    assert "role" not in defs["BatchCapabilities"]["properties"]
+    assert "role" not in defs["LanguageCapabilities"]["properties"]

@@ -92,8 +92,11 @@ class DeclaredEngineMetadata(JsonExtraModel):
 
     artifacts: ArtifactDeclaration
 
-    def canonical_json(self) -> dict[str, JsonValue]:
-        """Return the canonical JSON projection of the metadata.
+    def to_protocol_dict(self) -> dict[str, JsonValue]:
+        """Return the metadata JSON document: the declaration as a JSON-ready dict.
+
+        This is the form the protocol defines for clients in other languages,
+        and what ``GET /v1/metadata/{model}`` returns.
 
         The value is re-validated first. An ``isinstance`` check at the call
         sites proves the class, not the contents: ``model_copy(update=...)``

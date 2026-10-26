@@ -34,7 +34,7 @@ from standard_asr.contract.artifacts import (
 )
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    DeclaredCapabilities,
+    Capabilities,
     StreamingCapabilities,
 )
 from standard_asr.contract.exceptions import (
@@ -104,8 +104,8 @@ _NO_EXPLICIT_METADATA = DeclaredEngineMetadata(
     )
 )
 _NO_ARTIFACT_METADATA = DeclaredEngineMetadata(artifacts=NO_ARTIFACT_LIFECYCLE)
-_BATCH_CAPABILITIES = DeclaredCapabilities(batch=BatchCapabilities())
-_STREAMING_CAPABILITIES = DeclaredCapabilities(streaming=StreamingCapabilities())
+_BATCH_CAPABILITIES = Capabilities(batch=BatchCapabilities())
+_STREAMING_CAPABILITIES = Capabilities(streaming=StreamingCapabilities())
 
 
 def _requirement(
@@ -154,7 +154,7 @@ def _ready(requirement: ArtifactRequirement) -> ArtifactRequirement:
 
 class _ArtifactEngine(EngineBase):
     properties: ClassVar[BaseProperties] = _ArtifactProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _BATCH_CAPABILITIES
+    declared_capabilities: ClassVar[Capabilities] = _BATCH_CAPABILITIES
     declared_metadata: ClassVar[DeclaredEngineMetadata] = _ARTIFACT_METADATA
     provider_params_type: ClassVar[type[ProviderParams] | None] = _OwnProviderParams
 
@@ -247,15 +247,15 @@ class _ArtifactEngine(EngineBase):
 
 
 class _StreamingArtifactEngine(_ArtifactEngine):
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAMING_CAPABILITIES
+    declared_capabilities: ClassVar[Capabilities] = _STREAMING_CAPABILITIES
 
 
 class _NoModesArtifactEngine(_ArtifactEngine):
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
 
 
 class _NoArtifactEngine(_ArtifactEngine):
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
     declared_metadata = _NO_ARTIFACT_METADATA
 
 
@@ -509,7 +509,7 @@ def test_status_requires_a_typed_artifacts_section() -> None:
 def test_status_enforces_declaration_values_that_skipped_validation() -> None:
     # The isinstance proves the section's class, not its values: model_copy
     # stores the string "false", which is TRUTHY, so the AR.2 narrowing guard
-    # accepted can_acquire_now=True while canonical_json() publishes false for
+    # accepted can_acquire_now=True while to_protocol_dict() publishes false for
     # the same metadata -- two verdicts for one declaration. Re-validation
     # applies construction semantics ("false" coerces to False), and the
     # guard then rejects the report as widening the static bound.
@@ -522,7 +522,7 @@ def test_status_enforces_declaration_values_that_skipped_validation() -> None:
             }
         )
 
-    assert _CoercibleDeclarationEngine.declared_metadata.canonical_json() == {
+    assert _CoercibleDeclarationEngine.declared_metadata.to_protocol_dict() == {
         "artifacts": {
             "applicable": True,
             "supports_explicit_acquisition": False,

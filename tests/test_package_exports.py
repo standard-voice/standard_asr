@@ -105,24 +105,24 @@ def test_mode_is_one_literal_with_one_home() -> None:
 
     # The cap classes are usable straight from the facade import.
     from standard_asr.engine import (
-        CandidateLanguagesCap,
+        CandidateLanguagesCapability,
         CandidateLanguagesConstraints,
-        FlagCap,
-        ReconnectCap,
+        ReconnectCapability,
+        TraitFlagCapability,
         WordTimestampGranularityName,
-        WordTimestampsCap,
+        WordTimestampsCapability,
         granularity_offers_all,
     )
 
-    assert FlagCap(supported=True).is_supported is True
-    assert WordTimestampsCap(supported=True, granularities=["word"]).is_supported is True
+    assert TraitFlagCapability(supported=True).is_supported is True
+    assert WordTimestampsCapability(supported=True, granularities=["word"]).is_supported is True
     assert (
-        CandidateLanguagesCap(
+        CandidateLanguagesCapability(
             supported=True, constraints=CandidateLanguagesConstraints(max=3)
         ).is_supported
         is True
     )
-    assert ReconnectCap(mode="lossy").is_supported is True
+    assert ReconnectCapability(mode="lossy").is_supported is True
     # The granularity vocabulary (declaration side) is exported and non-empty.
     assert get_args(WordTimestampGranularityName)
     assert granularity_offers_all([]) is True
@@ -153,8 +153,8 @@ _CURATED_OFF_TOP_LEVEL: tuple[str, ...] = (
     "EngineBase",
     "BaseConfig",
     "BaseProperties",
-    "DeclaredCapabilities",
-    "FlagCap",
+    "Capabilities",
+    "TraitFlagCapability",
     "PreparedAudio",
     "InputKind",
     "Mode",

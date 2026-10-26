@@ -62,7 +62,12 @@ from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
 from standard_asr.plugins.discovery import ModelInfo, ModelRegistry, ModelSpec, discover_models
 from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
-from standard_asr.runtime.interface import EngineBase, StandardASR, require_engine_protocol
+from standard_asr.runtime.interface import (
+    EngineBase,
+    StandardASR,
+    finalize_result,
+    require_engine_protocol,
+)
 from standard_asr.runtime.protocol_boundary import (
     require_sync_result,
     safe_type_name,
@@ -134,6 +139,43 @@ def _run_engine_call(invoke: Callable[[], Any]) -> Any:
         raise _EngineFaultError(exc) from exc
 
 
+def _render_json_document(document: object, what: str) -> str:
+    """Encode one of the JSON documents ``show`` prints, or refuse it.
+
+    The document is encoded with finite numbers only. ``NaN`` and
+    ``Infinity`` are Python floats but not JSON. By default the encoder
+    writes them out anyway, so ``show`` would print a document that no
+    conforming JSON parser accepts and exit 0. The reference server checks
+    the same documents the same way before it serves them
+    (``toolchain.server._prove_json_projectable``). A document that cannot be
+    encoded comes from a declaration the engine got wrong, so the error is an
+    :class:`EngineContractError`, and ``main`` prints its message on stderr
+    and exits 1. Each caller renders the document before it prints the
+    section heading, so a refused document leaves no part of its section on
+    stdout.
+
+    Args:
+        document: The JSON-ready dict that a ``to_protocol_dict()`` returned,
+            or a generated JSON Schema.
+        what: The name of the document, such as ``"the config schema"``,
+            used in the error message.
+
+    Returns:
+        The document as indented JSON text, with its keys sorted.
+
+    Raises:
+        EngineContractError: If the document holds a value JSON cannot carry,
+            such as a non-finite number or a set.
+    """
+    try:
+        return json.dumps(document, indent=2, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise EngineContractError(
+            f"Cannot render {what} as JSON (engine fault): {exc}. The engine's author must "
+            "change the declaration behind it to use only JSON values and finite numbers."
+        ) from exc
+
+
 #: ASCII status markers. The CLI prints transcripts and decorative status lines
 #: to stdout/stderr; on Windows a redirected stream defaults to the ANSI code
 #: page with ``errors="strict"`` (PEP 686's UTF-8 default only lands in Python
@@ -197,7 +239,7 @@ def _add_strict_discovery_flag(parser: Any) -> None:
 
 
 def _add_json_output_flag(parser: argparse.ArgumentParser, *, noun: str) -> None:
-    """Register a shared canonical-JSON output flag.
+    """Register the shared ``--json`` flag, which prints the result as JSON.
 
     Args:
         parser: Subcommand parser to extend.
@@ -209,7 +251,7 @@ def _add_json_output_flag(parser: argparse.ArgumentParser, *, noun: str) -> None
     parser.add_argument(
         "--json",
         action="store_true",
-        help=f"Print the canonical JSON {noun}.",
+        help=f"Print the {noun} as JSON.",
     )
 
 
@@ -630,7 +672,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
             are printed first; the semantic projections are not (exit 2).
         EngineContractError: When the engine class does not declare
             ``properties`` as a typed ``BaseProperties`` ClassVar, so no
-            protocol line can be established (an engine fault: exit 1).
+            protocol line can be established, or when the capability JSON
+            document, the metadata JSON document, or the config schema cannot
+            be encoded as JSON (an engine fault: exit 1).
     """
     registry = discover_models(strict=args.strict_discovery)
     spec = registry.spec(args.name)
@@ -664,9 +708,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _print_declared_capabilities(engine_class: Any) -> None:
-    """Print an engine's DeclaredCapabilities without instantiating it.
+    """Print an engine's Capabilities without instantiating it.
 
-    ``standard-asr show`` is a consumer of DeclaredCapabilities. The
+    ``standard-asr show`` is a consumer of Capabilities. The
     capabilities are read from the engine *class* (ClassVar), so no engine is
     constructed and no credentials are resolved. The caller (``show``)
     resolved the class and ran the protocol-line gate already.
@@ -681,6 +725,8 @@ def _print_declared_capabilities(engine_class: Any) -> None:
         _EngineFaultError: When the class-level ``declared_capabilities`` lookup
             executes a plugin descriptor that raises the ``ValueError``
             family -- the same engine-fault seam as an instance call.
+        EngineContractError: When the capability JSON document cannot be
+            encoded as JSON (see :func:`_render_json_document`).
     """
     # A class-level attribute read is still plugin code: `declared_capabilities`
     # can be a descriptor/property on the engine class (or its metaclass), so
@@ -689,14 +735,15 @@ def _print_declared_capabilities(engine_class: Any) -> None:
     if caps is None:
         print("  Capabilities: <none declared>")
         return
-    # Render the *canonical* JSON (the single capability serialization shared with
-    # `GET /v1/.../capabilities`), so a `show` output can be compared
-    # field-for-field with the wire view: every node carries the derived
-    # `supported` boolean and the reader never has to know the "none"/"unsupported"
-    # sentinels.
-    canonical_json = _run_engine_call(lambda: getattr(caps, "canonical_json", None))
-    if not callable(canonical_json):
-        # `declared_capabilities` is not a DeclaredCapabilities model (for example, an
+    # Render the capability JSON document, the dict `GET /v1/capabilities/{model}`
+    # also returns, so a `show` output can be compared field-for-field with the
+    # HTTP API: every capability node and present container below the root
+    # carries the derived `supported` boolean (the root and each `constraints`
+    # submodel carry none), and the reader never has to know the
+    # "none"/"unsupported" sentinels.
+    to_protocol_dict = _run_engine_call(lambda: getattr(caps, "to_protocol_dict", None))
+    if not callable(to_protocol_dict):
+        # `declared_capabilities` is not a Capabilities model (for example, an
         # engine mis-declared it as a dict). discovery.py consumes metadata
         # defensively via getattr; mirror that here so the rest of `show`
         # (Engine ID, Module, and so on) still renders and the author is pointed at the
@@ -704,12 +751,13 @@ def _print_declared_capabilities(engine_class: Any) -> None:
         type_name = safe_type_name(caps)
         print(
             f"  Capabilities: <invalid: declared_capabilities is not a "
-            f"DeclaredCapabilities model (got {type_name}); run "
+            f"Capabilities model (got {type_name}); run "
             f"'standard-asr compliance entrypoints' for diagnostics>"
         )
         return
+    document = _run_engine_call(to_protocol_dict)
+    rendered = _render_json_document(document, "the capability JSON document")
     print("  Capabilities:")
-    rendered = json.dumps(_run_engine_call(canonical_json), indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -729,8 +777,10 @@ def _print_declared_metadata(engine_class: Any) -> None:
         None.
 
     Raises:
-        _EngineFaultError: If a plugin descriptor or canonical serializer raises a
+        _EngineFaultError: If a plugin descriptor or ``to_protocol_dict()`` raises a
             ``ValueError`` family exception.
+        EngineContractError: If the metadata JSON document cannot be encoded
+            as JSON (see :func:`_render_json_document`).
     """
     metadata = _run_engine_call(lambda: getattr(engine_class, "declared_metadata", None))
     if metadata is None:
@@ -742,12 +792,13 @@ def _print_declared_metadata(engine_class: Any) -> None:
             f"DeclaredEngineMetadata model (got {safe_type_name(metadata)})>"
         )
         return
-    canonical_json = _run_engine_call(lambda: getattr(metadata, "canonical_json", None))
-    if not callable(canonical_json):
-        print("  Declared metadata: <invalid: canonical_json is not callable>")
+    to_protocol_dict = _run_engine_call(lambda: getattr(metadata, "to_protocol_dict", None))
+    if not callable(to_protocol_dict):
+        print("  Declared metadata: <invalid: to_protocol_dict is not callable>")
         return
+    document = _run_engine_call(to_protocol_dict)
+    rendered = _render_json_document(document, "the metadata JSON document")
     print("  Declared metadata:")
-    rendered = json.dumps(_run_engine_call(canonical_json), indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -768,6 +819,10 @@ def _print_config_schema(registry: ModelRegistry, name: str) -> None:
     Args:
         registry: The discovered model registry.
         name: Model key in ``<engine>/<model>`` format.
+
+    Raises:
+        EngineContractError: If the config schema cannot be encoded as JSON
+            (see :func:`_render_json_document`).
     """
     try:
         schema = registry.config_schema(name)
@@ -777,8 +832,8 @@ def _print_config_schema(registry: ModelRegistry, name: str) -> None:
     if schema is None:
         print("  Config schema: <none: engine declares no init config (config_type)>")
         return
+    rendered = _render_json_document(schema, "the config schema")
     print("  Config schema:")
-    rendered = json.dumps(schema, indent=2, sort_keys=True)
     for line in rendered.splitlines():
         print(f"    {line}")
 
@@ -1127,7 +1182,7 @@ def _render_artifact_report(report: ArtifactReport, *, as_json: bool) -> None:
 
     Args:
         report: Artifact report to render.
-        as_json: Whether to emit canonical JSON instead of human-readable text.
+        as_json: Whether to emit the report as JSON instead of human-readable text.
 
     Returns:
         None.
@@ -2123,6 +2178,12 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     # already validated above (see _run_engine_call).
     result = _run_engine_call(lambda: asr.transcribe(args.audio, params))
     require_sync_result(result, "transcribe()", expected_type=TranscriptionResult)
+    # For an engine that does not derive from EngineBase, nothing
+    # automatically checks the text against the segments (spec TR.1) or
+    # fills missing words (spec TR.4). This call applies both rules for every
+    # engine, as the reference server does. An EngineBase result already went
+    # through it, so the call returns that result unchanged.
+    result = finalize_result(result)
 
     if args.json:
         # The JSON view already carries `diagnostics`; the text view renders them

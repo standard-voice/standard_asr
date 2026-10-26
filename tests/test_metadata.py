@@ -83,12 +83,12 @@ def test_metadata_preserves_unknown_json_sections_in_canonical_projection() -> N
             "future_section": {"nested": [1, "two", None]},
         }
     )
-    projected = metadata.canonical_json()
+    projected = metadata.to_protocol_dict()
     assert projected["future_section"] == {"nested": [1, "two", None]}
-    assert DeclaredEngineMetadata.model_validate(projected).canonical_json() == projected
+    assert DeclaredEngineMetadata.model_validate(projected).to_protocol_dict() == projected
 
 
-def test_canonical_json_rejects_a_declaration_that_skipped_validation() -> None:
+def test_to_protocol_dict_rejects_a_declaration_that_skipped_validation() -> None:
     # An isinstance check at the call sites proves the class, not the contents.
     # ``model_copy(update=...)`` and ``model_construct`` both leave a section
     # that never met a validator, and pydantic then SERIALIZES it with a
@@ -101,10 +101,10 @@ def test_canonical_json_rejects_a_declaration_that_skipped_validation() -> None:
     forged = metadata.model_copy(update={"artifacts": {"applicable": "not-a-bool"}})
     assert isinstance(forged, DeclaredEngineMetadata)
     with pytest.raises(ValidationError):
-        forged.canonical_json()
+        forged.to_protocol_dict()
 
 
-def test_canonical_json_reports_one_error_type_under_warnings_as_errors() -> None:
+def test_to_protocol_dict_reports_one_error_type_under_warnings_as_errors() -> None:
     # The intermediate dump of a mistyped section emits a pydantic serializer
     # warning. Callers running with warnings-as-errors must still get the
     # documented ValidationError, not a UserWarning that depends on their
@@ -116,7 +116,7 @@ def test_canonical_json_reports_one_error_type_under_warnings_as_errors() -> Non
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(ValidationError):
-            forged.canonical_json()
+            forged.to_protocol_dict()
 
 
 def test_metadata_rejects_python_only_extra_value() -> None:

@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 import pytest
+from pydantic import ConfigDict
 
 from standard_asr import (
     RuntimeParams,
+    Segment,
     TranscriptionResult,
+    Word,
 )
 from standard_asr.audio.format import AudioFormat
 from standard_asr.compliance import (
@@ -44,9 +47,9 @@ from standard_asr.contract.artifacts import (
     ArtifactRequirement,
 )
 from standard_asr.contract.capabilities import (
-    DeclaredCapabilities,
-    FlagCap,
+    Capabilities,
     StreamingCapabilities,
+    TraitFlagCapability,
 )
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
@@ -211,6 +214,55 @@ class _ArtifactCliMissingMetadataEngine(_ArtifactCliEngine):
 
 def _artifact_cli_factory() -> _ArtifactCliEngine:  # pyright: ignore[reportUnusedFunction]
     raise AssertionError("show must not instantiate the selected engine")
+
+
+class _MismatchCliEngine(_ArtifactCliEngine):
+    """Structural engine whose ``text`` is not its segment texts concatenated."""
+
+    def transcribe(
+        self,
+        audio: object,
+        params: RuntimeParams | None = None,
+    ) -> TranscriptionResult:
+        del audio, params
+        return TranscriptionResult(
+            text="hello world",
+            segments=[
+                Segment(start=0.0, end=1.0, text="hello"),
+                Segment(start=1.0, end=2.0, text="world"),
+            ],
+        )
+
+
+def _mismatch_cli_factory() -> _MismatchCliEngine:  # pyright: ignore[reportUnusedFunction]
+    return _MismatchCliEngine(ArtifactReport.from_requirements(mode="batch", applicable=False))
+
+
+class _NestedWordsCliEngine(_ArtifactCliEngine):
+    """Structural engine that nests words in its segment and leaves ``words`` as ``None``."""
+
+    def transcribe(
+        self,
+        audio: object,
+        params: RuntimeParams | None = None,
+    ) -> TranscriptionResult:
+        del audio, params
+        return TranscriptionResult(
+            text="hello",
+            segments=[
+                Segment(
+                    start=0.0,
+                    end=0.5,
+                    text="hello",
+                    words=[Word(start=0.0, end=0.5, text="hello")],
+                )
+            ],
+            words=None,
+        )
+
+
+def _nested_words_cli_factory() -> _NestedWordsCliEngine:  # pyright: ignore[reportUnusedFunction]
+    return _NestedWordsCliEngine(ArtifactReport.from_requirements(mode="batch", applicable=False))
 
 
 def _artifact_cli_legacy_factory() -> (  # pyright: ignore[reportUnusedFunction]
@@ -399,7 +451,7 @@ def test_cli_models_show(
     assert exit_code == 0
     assert "Engine ID" in output
     assert "alpha/first" in output
-    # models show MUST surface DeclaredCapabilities (no instantiation).
+    # models show MUST surface Capabilities (no instantiation).
     assert "Capabilities:" in output
     assert "runtime_override" in output
     # It also surfaces the init-config schema; this engine declares none, so the
@@ -519,10 +571,12 @@ def test_cli_declared_metadata_rejects_noncallable_canonical_projection(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(DeclaredEngineMetadata, "canonical_json", None)
+    monkeypatch.setattr(DeclaredEngineMetadata, "to_protocol_dict", None)
     cli._print_declared_metadata(_ArtifactCliEngine)  # pyright: ignore[reportPrivateUsage]
 
-    assert "Declared metadata: <invalid: canonical_json is not callable>" in capsys.readouterr().out
+    assert (
+        "Declared metadata: <invalid: to_protocol_dict is not callable>" in capsys.readouterr().out
+    )
 
 
 def test_cli_models_show_unresolvable_class(
@@ -649,6 +703,109 @@ def _dict_caps_factory() -> _DictCapsASR:  # pyright: ignore[reportUnusedFunctio
     return _DictCapsASR()
 
 
+class _UnencodableCaps:
+    """Declared capabilities whose capability JSON document holds a value JSON cannot carry."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"limit": float("inf")}
+
+
+class _UnencodableCapsASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Any] = _UnencodableCaps()
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _unencodable_caps_factory() -> _UnencodableCapsASR:  # pyright: ignore[reportUnusedFunction]
+    return _UnencodableCapsASR()
+
+
+class _NestedNanCaps:
+    """Declared capabilities whose capability JSON document nests NaN and negative infinity."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"batch": {"x_acme": {"supported": True, "scores": [float("nan"), float("-inf")]}}}
+
+
+class _NestedNanCapsASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Any] = _NestedNanCaps()
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _nested_nan_caps_factory() -> _NestedNanCapsASR:  # pyright: ignore[reportUnusedFunction]
+    return _NestedNanCapsASR()
+
+
+class _UnencodableMetadata(DeclaredEngineMetadata):
+    """Declared metadata whose metadata JSON document holds a value JSON cannot carry."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"limit": float("inf")}
+
+
+class _UnencodableMetadataASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _UnencodableMetadata.model_validate(
+        _ARTIFACT_CLI_METADATA.model_dump()
+    )
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _unencodable_metadata_factory() -> _UnencodableMetadataASR:  # pyright: ignore[reportUnusedFunction]
+    return _UnencodableMetadataASR()
+
+
+class _UnserializableMetadata(DeclaredEngineMetadata):
+    """Declared metadata whose metadata JSON document holds a value that is not JSON at all."""
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {"limit": {1, 2}}
+
+
+class _UnserializableMetadataASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _UnserializableMetadata.model_validate(
+        _ARTIFACT_CLI_METADATA.model_dump()
+    )
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _unserializable_metadata_factory() -> _UnserializableMetadataASR:  # pyright: ignore[reportUnusedFunction]
+    return _UnserializableMetadataASR()
+
+
+class _InfSchemaConfig(BaseConfig[Literal["infschema"]]):
+    """An init config whose JSON Schema carries a non-finite example."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [float("inf")]})
+    engine: Literal["infschema"] = "infschema"
+
+
+class _InfSchemaASR:
+    properties: ClassVar[BaseProperties] = _ArtifactCliProperties()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = _ARTIFACT_CLI_METADATA
+    config_type: ClassVar[type[BaseConfig[str]] | None] = _InfSchemaConfig
+
+    def transcribe(self, audio: object, options: object = None) -> object:
+        return None
+
+
+def _inf_schema_factory() -> _InfSchemaASR:  # pyright: ignore[reportUnusedFunction]
+    return _InfSchemaASR()
+
+
 class _StreamConfig(BaseConfig[Literal["stream"]]):
     engine: Literal["stream"] = "stream"
 
@@ -668,10 +825,10 @@ class _StreamBadProps(_StreamOkProps):
     model_name: str = "bad"  # model_id == 'stream/bad'
 
 
-_STREAM_CAPS = DeclaredCapabilities(
+_STREAM_CAPS = Capabilities(
     streaming=StreamingCapabilities(),
-    streaming_input=FlagCap(supported=True),
-    streaming_output=FlagCap(supported=True),
+    streaming_input=TraitFlagCapability(supported=True),
+    streaming_output=TraitFlagCapability(supported=True),
 )
 
 
@@ -687,7 +844,7 @@ class _GatingStreamEngine(EngineBase):
     """Streaming engine that relies on the base template's gating (compliant)."""
 
     properties: ClassVar[BaseProperties] = _StreamOkProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _STREAM_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _STREAM_CAPS
     declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
         artifacts=ArtifactDeclaration(
             applicable=False,
@@ -748,7 +905,7 @@ class _BatchOnlyEngine(EngineBase):
     """Batch-only compliant engine (no streaming capabilities)."""
 
     properties: ClassVar[BaseProperties] = _BatchOnlyProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities()
+    declared_capabilities: ClassVar[Capabilities] = Capabilities()
     declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
         artifacts=ArtifactDeclaration(
             applicable=False,
@@ -924,9 +1081,9 @@ class _OutputOnlyStreamEngine(_GatingStreamEngine):
     """Output-only streaming engine: streaming_output WITHOUT streaming_input."""
 
     properties: ClassVar[BaseProperties] = _StreamOutOnlyProps()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = DeclaredCapabilities(
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(),
-        streaming_output=FlagCap(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
     )
     config_type: ClassVar[type[BaseConfig[str]] | None] = _StreamOutConfig
 
@@ -1835,6 +1992,76 @@ def test_cli_does_not_abbreviate_long_flags() -> None:
         with pytest.raises(SystemExit) as excinfo:
             parser.parse_args(argv)
         assert excinfo.value.code == 2
+
+
+def test_cli_transcribe_discloses_text_segments_mismatch_for_a_structural_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A structural engine runs no check of its result's views. The command
+    # runs it, as the server does: the transcript prints as the engine built
+    # it, and the warning goes to stderr (text view) or into the JSON view.
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="mismatch-cli/demo",
+                value="tests.test_cli:_mismatch_cli_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "mismatch-cli/demo", "dummy.wav"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "hello world\n"
+    assert "diagnostic [text_segments_mismatch]" in captured.err
+    assert "differ at code point index 5" in captured.err
+
+    exit_code = cli.main(["transcribe", "mismatch-cli/demo", "dummy.wav", "--json"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    document = json.loads(captured.out)
+    assert document["text"] == "hello world"
+    assert [d["code"] for d in document["diagnostics"]] == ["text_segments_mismatch"]
+
+
+def test_cli_transcribe_fills_the_flat_words_for_a_structural_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The same call that checks the text fills a missing `words` (spec TR.4).
+    # The text view prints the transcript and writes the diagnostic to
+    # stderr. The JSON view carries the filled words and the diagnostic.
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="nested-words-cli/demo",
+                value="tests.test_cli:_nested_words_cli_factory",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["transcribe", "nested-words-cli/demo", "dummy.wav"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "hello\n"
+    assert "diagnostic [flat_words_missing]" in captured.err
+    assert "filled" in captured.err
+
+    exit_code = cli.main(["transcribe", "nested-words-cli/demo", "dummy.wav", "--json"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    document = json.loads(captured.out)
+    assert document["words"] == document["segments"][0]["words"]
+    assert [w["text"] for w in document["words"]] == ["hello"]
+    assert [d["code"] for d in document["diagnostics"]] == ["flat_words_missing"]
+    parsed = TranscriptionResult.model_validate(document)
+    assert parsed.segments is not None
+    assert parsed.words == parsed.segments[0].words
 
 
 def test_cli_transcribe_json(
@@ -3534,19 +3761,19 @@ def test_cli_transcribe_json_mode_keeps_diagnostics_off_stderr(
 
 
 # ---------------------------------------------------------------------------
-# Models show renders canonical_json (derived `supported` at every
+# Models show renders to_protocol_dict (derived `supported` at every
 # node) and defends against a mis-typed declared_capabilities.
 # ---------------------------------------------------------------------------
 
 
-def test_cli_models_show_uses_canonical_json(
+def test_cli_models_show_uses_to_protocol_dict(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # The rendered capabilities must be the CANONICAL shape --
     # every node, INCLUDING container nodes like the `batch` domain, carries a
     # derived `supported` boolean (REST and CLI agree). A bare `"supported" in
     # output` is non-discriminating: model_dump(mode="json") also emits `supported`
-    # on leaf flags. Assert it on a container node, which only canonical_json injects.
+    # on leaf flags. Assert it on a container node, which only to_protocol_dict injects.
     import json
 
     registry = _demo_registry()
@@ -3561,7 +3788,7 @@ def test_cli_models_show_uses_canonical_json(
     caps_block = output.split("Capabilities:", 1)[1].split("Declared metadata:", 1)[0]
     caps = json.loads(caps_block)
     # The `batch` domain is a container with no `supported` field of its own;
-    # canonical_json derives one (true here), model_dump(mode="json") would not.
+    # to_protocol_dict derives one (true here), model_dump(mode="json") would not.
     assert caps["batch"]["supported"] is True
 
 
@@ -3590,6 +3817,58 @@ def test_cli_models_show_defends_mistyped_capabilities(
     # The capabilities line names the problem and points at compliance.
     assert "invalid" in output
     assert "compliance entrypoints" in output
+
+
+_SHOW_SECTIONS = ("Capabilities:", "Declared metadata:", "Config schema:")
+
+
+@pytest.mark.parametrize(
+    ("factory", "section", "document"),
+    [
+        ("_unencodable_caps_factory", "Capabilities:", "the capability JSON document"),
+        ("_nested_nan_caps_factory", "Capabilities:", "the capability JSON document"),
+        ("_unencodable_metadata_factory", "Declared metadata:", "the metadata JSON document"),
+        ("_unserializable_metadata_factory", "Declared metadata:", "the metadata JSON document"),
+        ("_inf_schema_factory", "Config schema:", "the config schema"),
+    ],
+)
+def test_cli_show_rejects_a_document_that_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    factory: str,
+    section: str,
+    document: str,
+) -> None:
+    # A non-finite float is a Python float but not JSON, and a set is not JSON
+    # at all. `show` printed the float as `Infinity` and exited 0, while the
+    # server rejects the same document. The document is an engine fault: exit
+    # 1, stderr names the document, the sections before it stay on stdout,
+    # and neither the failing section nor a later one is started.
+    registry = discover_models(
+        eps=[
+            EntryPoint(
+                name="alpha/first",
+                value=f"tests.test_cli:{factory}",
+                group="standard_asr.models",
+            )
+        ],
+        strict=True,
+    )
+    _patch_discover(monkeypatch, registry)
+
+    exit_code = cli.main(["show", "alpha/first"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Infinity" not in captured.out
+    assert "NaN" not in captured.out
+    assert "Engine ID" in captured.out
+    failing = _SHOW_SECTIONS.index(section)
+    for heading in _SHOW_SECTIONS[:failing]:
+        assert heading in captured.out
+    for heading in _SHOW_SECTIONS[failing:]:
+        assert heading not in captured.out
+    assert f"Cannot render {document} as JSON (engine fault)" in captured.err
 
 
 # ---------------------------------------------------------------------------
