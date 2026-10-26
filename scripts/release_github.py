@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: The Standard ASR Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check and create the GitHub tag and release for one version.
+"""Check and create the GitHub tag, release, and dev-bump pull request.
 
 The release workflow (``.github/workflows/release.yml``) creates the tag and
 the GitHub Release last, after PyPI holds the files, and it has to be safe to
@@ -27,8 +27,6 @@ change merged after the release commit and the tag does not exist yet,
 command a person runs instead, after PyPI holds the files. When the tag
 exists, ``ensure`` creates the release without ``--target``, which GitHub
 ignores for an existing tag.
-* ``branch-head``: the commit a branch points at, or ``absent``, for the
-  dev-bump job.
 
 Drafts: GitHub lists a draft release only to a token with write access to
 the repository. The ``check`` command runs with read access, so it sees
@@ -37,6 +35,14 @@ and sees drafts as well. A stray draft therefore stops the run at the
 release step, after the indexes hold the files, and a person publishes or
 deletes the draft before the next run.
 
+The dev-bump job, which runs after the release, uses two more commands:
+
+* ``branch-head``: the commit a branch points at, or ``absent``.
+* ``dev-bump-pr``: find or open the pull request that moves the default
+  branch to the next development version, and assign it to the person who
+  started the run (``dev_bump_pull_request`` says what it does with a
+  merged or closed one).
+
 It talks to GitHub through the ``gh`` command, which the runner has, with the
 workflow's token. Only the standard library is used otherwise.
 """
@@ -44,6 +50,7 @@ workflow's token. Only the standard library is used otherwise.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import subprocess
 import sys
@@ -366,8 +373,7 @@ def ensure(
             "default branch's, and GitHub lets a token create a tag at such a commit only "
             "if the token may change workflows, which the workflow token never may. PyPI "
             f"holds {tag}. Create the release yourself, with credentials that may change "
-            "workflows, then run this workflow again to prepare the dev-bump branch and "
-            "print the link that opens its pull request. "
+            "workflows, then run this workflow again to open the dev-bump pull request. "
             "release-notes.md is in the workflow artifact standard-asr-release:"
         )
         print(manual_create_command(repo, version, sha, prerelease))
@@ -389,8 +395,328 @@ def ensure(
     return check(repo, version, sha, notes_path, prerelease, run)
 
 
+#: The repository setting that lets the workflow token open a pull request.
+PULL_REQUEST_SETTING = (
+    "Settings > Actions > General > Workflow permissions > "
+    '"Allow GitHub Actions to create and approve pull requests"'
+)
+
+
+class PullRequestRefusedError(GitHubError):
+    """GitHub refused to open a pull request for the workflow token."""
+
+
+def _number(entry: dict[str, object]) -> int:
+    value = entry.get("number")
+    return value if isinstance(value, int) else 0
+
+
+def _field(entry: object, *path: str) -> str:
+    """Return the string at ``path`` in a GitHub object, or ``""``."""
+    value = entry
+    for key in path:
+        value = cast("dict[str, object]", value).get(key) if isinstance(value, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def pull_requests_from(repo: str, branch: str, run: Runner = run_gh) -> list[dict[str, object]]:
+    """Return the pull requests whose head is ``branch`` in ``repo`` itself.
+
+    GitHub filters by ``owner:branch``, which leaves out a fork that another
+    account owns but not one the same owner holds, so the function also
+    keeps only the pull requests whose head repository is ``repo``.
+
+    Args:
+        repo: ``owner/name``.
+        branch: The head branch name.
+        run: The ``gh`` runner, replaceable in tests.
+
+    Returns:
+        The pull requests, open and closed, newest first, up to 100.
+
+    Raises:
+        GitHubError: When the lookup fails.
+    """
+    owner = repo.split("/", 1)[0]
+    document = _api(repo, f"pulls?head={owner}:{branch}&state=all&per_page=100", run)
+    if not isinstance(document, list):
+        raise GitHubError(
+            f"GitHub answered the pull requests from {branch} with something other than a list"
+        )
+    pulls = [
+        cast("dict[str, object]", entry)
+        for entry in cast("list[object]", document)
+        if isinstance(entry, dict)
+    ]
+    own = repo.lower()
+    return [pull for pull in pulls if _field(pull, "head", "repo", "full_name").lower() == own]
+
+
+def _post(repo: str, path: str, fields: list[str], run: Runner) -> tuple[int, str, str]:
+    args = ["api", f"repos/{repo}/{path}", "--method", "POST"]
+    for field in fields:
+        args += ["-f", field]
+    return run(args)
+
+
+def assign(repo: str, number: int, login: str, run: Runner = run_gh) -> None:
+    """Assign a pull request to ``login``, and check that GitHub did.
+
+    GitHub can leave out an assignee without reporting an error, so the
+    function reads the assignees back from GitHub's answer.
+
+    Args:
+        repo: ``owner/name``.
+        number: The pull request number.
+        login: The account to assign.
+        run: The ``gh`` runner, replaceable in tests.
+
+    Raises:
+        GitHubError: When the call fails, or the answer does not list
+            ``login`` among the assignees.
+    """
+    code, out, err = _post(repo, f"issues/{number}/assignees", [f"assignees[]={login}"], run)
+    if code != 0:
+        raise GitHubError(
+            f"Assigning pull request #{number} to {login} failed: {err.strip() or f'exit {code}'}"
+        )
+    document: object = json.loads(out or "{}")
+    entries = (
+        cast("dict[str, object]", document).get("assignees") if isinstance(document, dict) else None
+    )
+    logins = [
+        str(cast("dict[str, object]", entry).get("login", "")).lower()
+        for entry in (cast("list[object]", entries) if isinstance(entries, list) else [])
+        if isinstance(entry, dict)
+    ]
+    if login.lower() not in logins:
+        raise GitHubError(
+            f"GitHub did not assign pull request #{number} to {login}: its answer does not "
+            f"list {login} among the assignees, and GitHub can leave an assignee out without "
+            "an error. Assign the pull request yourself."
+        )
+
+
+def dev_bump_pull_request(
+    repo: str,
+    branch: str,
+    base: str,
+    title: str,
+    body: str,
+    assignee: str,
+    run: Runner = run_gh,
+) -> tuple[int, str, bool]:
+    """Find or open the pull request from ``branch``, and assign it.
+
+    The newest pull request from the branch decides. An open one into
+    ``base`` is kept and assigned again, so a second run opens nothing new.
+    An open one into another branch, a merged one, and a closed one are
+    errors: the dev-bump job calls this only while ``base`` still declares
+    the released version, so a merged one means something set the version
+    back or it merged elsewhere, and a closed one means a person closed it.
+    When the branch has no pull request, the function opens one.
+
+    Args:
+        repo: ``owner/name``.
+        branch: The head branch, in ``repo`` itself.
+        base: The branch the pull request merges into.
+        title: The title of a new pull request.
+        body: The body of a new pull request.
+        assignee: The account to assign.
+        run: The ``gh`` runner, replaceable in tests.
+
+    Returns:
+        The pull request number, its URL, and whether this call opened it.
+
+    Raises:
+        PullRequestRefusedError: When GitHub refuses to open the pull request.
+        GitHubError: When a lookup or the assignment fails, or the newest
+            pull request from the branch is merged or closed.
+    """
+    pulls = pull_requests_from(repo, branch, run)
+    if pulls:
+        newest = max(pulls, key=_number)
+        number = _number(newest)
+        into = _field(newest, "base", "ref")
+        if newest.get("merged_at"):
+            cause = (
+                "something set the version back"
+                if into == base
+                else f"the pull request merged into {into}, not {base}"
+            )
+            raise GitHubError(
+                f"Pull request #{number} from {branch} was merged, yet {base} still declares "
+                f"the released version: {cause}. Find out why before you run the workflow again."
+            )
+        if newest.get("state") != "open":
+            raise GitHubError(
+                f"Pull request #{number} from {branch} was closed without merging. This job "
+                "does not open another, because a person closed it: reopen it and merge it, "
+                f"or open a new one from {branch} yourself."
+            )
+        if into != base:
+            raise GitHubError(
+                f"Pull request #{number} from {branch} merges into {into}, not {base}. "
+                f"Change its base branch to {base}, then run the workflow again."
+            )
+        url = str(newest.get("html_url", ""))
+        created = False
+    else:
+        fields = [f"head={branch}", f"base={base}", f"title={title}", f"body={body}"]
+        code, out, err = _post(repo, "pulls", fields, run)
+        if code != 0:
+            raise PullRequestRefusedError(
+                f"GitHub refused to open a pull request from {branch}: "
+                f"{err.strip() or f'exit {code}'}. When GitHub says that Actions may not "
+                f"create pull requests, turn on {PULL_REQUEST_SETTING} and run the workflow "
+                "again, or open the pull request yourself from the link that follows."
+            )
+        document: object = json.loads(out or "{}")
+        opened = cast("dict[str, object]", document) if isinstance(document, dict) else {}
+        number = _number(opened)
+        url = str(opened.get("html_url", ""))
+        if not number:
+            raise GitHubError(
+                f"GitHub answered the new pull request from {branch} without its number"
+            )
+        created = True
+    assign(repo, number, assignee, run)
+    return number, url, created
+
+
+def declared_version(repo: str, ref: str, run: Runner = run_gh) -> str:
+    """Return ``project.version`` from ``pyproject.toml`` at ``ref``.
+
+    Args:
+        repo: ``owner/name``.
+        ref: A branch, a tag, or a commit.
+        run: The ``gh`` runner, replaceable in tests.
+
+    Returns:
+        The version, as the file writes it.
+
+    Raises:
+        GitHubError: When the lookup fails, or the file or its version is
+            missing or unreadable.
+    """
+    # The type-checking floor is Python 3.10, which has no tomllib; this
+    # function runs on the release runner's python3.
+    import tomllib  # pyright: ignore[reportMissingTypeStubs]  # noqa: PLC0415
+
+    document = _object(repo, f"contents/pyproject.toml?ref={ref}", run)
+    if document is None:
+        raise GitHubError(f"{ref} has no pyproject.toml")
+    content = document.get("content")
+    if document.get("encoding") != "base64" or not isinstance(content, str):
+        raise GitHubError(f"GitHub answered pyproject.toml at {ref} without base64 content")
+    try:
+        data: object = tomllib.loads(base64.b64decode(content).decode("utf-8"))
+    except ValueError as error:
+        raise GitHubError(f"pyproject.toml at {ref} cannot be read: {error}") from error
+    version = _field(data, "project", "version")
+    if not version:
+        raise GitHubError(f"pyproject.toml at {ref} declares no project.version")
+    return version
+
+
+def dev_bump_body(version: str, next_version: str, base: str) -> str:
+    """Return the body of the dev-bump pull request.
+
+    Args:
+        version: The version just released.
+        next_version: The development version the pull request sets.
+        base: The branch the pull request merges into.
+
+    Returns:
+        The Markdown body.
+    """
+    return (
+        f"The release workflow opened this pull request after it released v{version}. It "
+        f"sets the version on `{base}` to {next_version}. Until it merges, `{base}` declares "
+        f"{version} while its content moves past that release, so an install from `{base}` "
+        "reports the wrong version. After it merges, a run of the release workflow started "
+        "by mistake stops at its first guard.\n\n"
+        "GitHub holds the CI runs of a pull request that the workflow token opens. Select "
+        "**Approve workflows to run** in the merge box, wait for `checks-complete` to pass, "
+        "and merge."
+    )
+
+
+def open_dev_bump(
+    repo: str,
+    *,
+    branch: str,
+    base: str,
+    version: str,
+    next_version: str,
+    assignee: str,
+    compare_url: str,
+    summary: Path | None,
+    run: Runner = run_gh,
+) -> int:
+    """Check the dev-bump branch, find or open its pull request, and report it.
+
+    The branch must declare ``next_version``: a branch that already held
+    commits of its own is kept as it is, so this is where the job finds out
+    whether those commits set the version.
+
+    Args:
+        repo: ``owner/name``.
+        branch: The dev-bump branch.
+        base: The default branch.
+        version: The version just released.
+        next_version: The development version the branch sets.
+        assignee: The account that started the run.
+        compare_url: The page where a person opens the pull request by hand,
+            printed when GitHub refuses to open it.
+        summary: The file GitHub shows as the run's summary page, or ``None``.
+        run: The ``gh`` runner, replaceable in tests.
+
+    Returns:
+        The process exit code: 0 when the branch declares ``next_version`` and
+        its pull request is open and assigned, 1 otherwise.
+    """
+    try:
+        declared = declared_version(repo, branch, run)
+    except GitHubError as error:
+        print(f"::error::{error}")
+        return 1
+    if declared != next_version:
+        print(
+            f"::error::Branch {branch} declares version {declared}, not {next_version}. "
+            "The job keeps commits a person added to the branch, so set the version there "
+            f"to {next_version} (uv version {next_version}, then uv lock), or delete the "
+            "branch so that the next run commits it, then run the workflow again."
+        )
+        return 1
+    title = f"chore: bump version to {next_version}"
+    body = dev_bump_body(version, next_version, base)
+    try:
+        number, url, created = dev_bump_pull_request(repo, branch, base, title, body, assignee, run)
+    except PullRequestRefusedError as error:
+        print(f"::error::{error}")
+        print(f"::error title=Open the dev-bump pull request yourself::{compare_url}")
+        return 1
+    except GitHubError as error:
+        print(f"::error::{error}")
+        return 1
+    found = "Opened pull request" if created else "Found the open pull request"
+    print(f"{found} #{number} and assigned it to {assignee}: {url}")
+    print(f"::notice title=Merge the dev-bump pull request::{url}")
+    if summary is not None:
+        with summary.open("a", encoding="utf-8") as file:
+            file.write(
+                "### Merge the dev-bump pull request\n\n"
+                f"Pull request #{number} sets the version on `{base}` to {next_version}, and "
+                f"it is assigned to @{assignee}. Open it; if GitHub holds its CI runs, select "
+                "**Approve workflows to run**. Wait for `checks-complete` to pass, and merge "
+                f"it: {url}\n"
+            )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Run one of the three commands; see the module docstring.
+    """Run one of the four commands; see the module docstring.
 
     Args:
         argv: The command line, without the program name.
@@ -398,7 +724,9 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         The process exit code.
     """
-    parser = argparse.ArgumentParser(description="Check and create the GitHub tag and release.")
+    parser = argparse.ArgumentParser(
+        description="Check and create the GitHub tag, release, and dev-bump pull request."
+    )
     parser.add_argument("--repo", required=True, help="owner/name")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("check", "ensure"):
@@ -414,7 +742,27 @@ def main(argv: list[str] | None = None) -> int:
             help="whether the release commit's workflow files differ from the default branch's",
         )
     commands.add_parser("branch-head").add_argument("--branch", required=True)
+    bump = commands.add_parser("dev-bump-pr")
+    bump.add_argument("--branch", required=True)
+    bump.add_argument("--base", required=True, help="the default branch")
+    bump.add_argument("--version", required=True, help="the version just released")
+    bump.add_argument("--next", required=True, help="the development version the branch sets")
+    bump.add_argument("--assignee", required=True, help="the person who started the run")
+    bump.add_argument("--compare-url", required=True, help="the page that opens it by hand")
+    bump.add_argument("--summary", type=Path, help="the run's summary file")
     args = parser.parse_args(argv)
+    if args.command == "dev-bump-pr":
+        return open_dev_bump(
+            args.repo,
+            branch=args.branch,
+            base=args.base,
+            version=args.version,
+            next_version=args.next,
+            assignee=args.assignee,
+            compare_url=args.compare_url,
+            summary=args.summary,
+            run=run_gh,
+        )
     if args.command == "branch-head":
         try:
             print(branch_head(args.repo, args.branch, run_gh) or "absent")

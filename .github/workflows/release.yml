@@ -458,12 +458,13 @@ jobs:
             --workflows-changed "${WORKFLOWS_CHANGED}"
 
   dev-bump:
-    name: Prepare the dev-bump branch
+    name: Open the dev-bump pull request
     needs: [prepare, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -487,19 +488,26 @@ jobs:
           git checkout --quiet --detach "origin/${DEFAULT_BRANCH}"
           echo "default branch tip: $(git rev-parse HEAD)"
 
-      - name: Commit the next development version to the dev-bump branch
+      - name: Commit the next development version and open its pull request
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASER: ${{ github.actor }}
         # The commit is created through the GraphQL API, which GitHub signs
         # ("if supported", its documentation says; the runbook has the person
-        # check the badge once). The job prepares the branch and prints the
-        # link that opens its pull request; a person opens it. The workflow
-        # token may open a pull request only where the repository allows
-        # GitHub Actions to create pull requests, and the CI runs of one it
-        # opens wait for a person's approval, while a pull request a person
-        # opens runs CI at once.
+        # check the badge once). The job then opens the pull request and
+        # assigns it to github.actor, the account that started the run, which
+        # a re-run by someone else keeps, so the last step of a release does
+        # not depend on anyone remembering it. The workflow token may open a
+        # pull request only where the repository allows GitHub Actions to
+        # create pull requests (RELEASING.md, one-time setup), and GitHub
+        # holds the CI runs of a pull request it opens until a person approves
+        # them. When GitHub refuses, the job fails and prints the link that
+        # opens the pull request by hand. Before it opens the pull request,
+        # the script checks that the branch declares the next version,
+        # because a branch that already held commits of its own is kept as it
+        # is.
         run: |
           set -euo pipefail
           next="$(uv run --no-project --with packaging python scripts/release_version.py next "${VERSION}")"
@@ -548,8 +556,9 @@ jobs:
                   "message": {
                       "headline": f"chore: bump version to {next_version}",
                       "body": (
-                          "The release pipeline prepares this after each release, so an accidental "
-                          "run of the release workflow stops at its development-version guard."
+                          "The release pipeline makes this commit after each release, so an "
+                          "accidental run of the release workflow stops at its development-version "
+                          "guard."
                       ),
                   },
                   "fileChanges": {"additions": [
@@ -563,9 +572,6 @@ jobs:
             echo "Branch ${branch} holds ${ahead} commit(s) of its own; keeping them."
           fi
           url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${DEFAULT_BRANCH}...${branch}?expand=1"
-          echo "::notice title=Open the dev-bump pull request::${url}"
-          {
-            echo "### Open the dev-bump pull request"
-            echo
-            echo "Branch \`${branch}\` moves \`${DEFAULT_BRANCH}\` to ${next}. Open its pull request, wait for \`checks-complete\`, and merge it: ${url}"
-          } >> "${GITHUB_STEP_SUMMARY}"
+          python3 scripts/release_github.py --repo "${GITHUB_REPOSITORY}" dev-bump-pr \
+            --branch "${branch}" --base "${DEFAULT_BRANCH}" --version "${VERSION}" --next "${next}" \
+            --assignee "${RELEASER}" --compare-url "${url}" --summary "${GITHUB_STEP_SUMMARY}"

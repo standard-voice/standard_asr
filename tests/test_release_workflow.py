@@ -137,3 +137,23 @@ def test_workflow_comparison_sees_the_current_default_branch(tmp_path: Path) -> 
     assert result.returncode == 0, result.stdout + result.stderr
     assert output.read_text(encoding="utf-8") == "changed=true\n"
     assert f"sha={release_commit}" in result.stdout
+
+
+def test_dev_bump_opens_its_pull_request_for_the_person_who_ran_the_release() -> None:
+    # The pull request itself reminds the person who released to merge it,
+    # so the job opens it and assigns it to the account that started the
+    # run. That needs pull-requests: write, which only this job holds.
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    job = text[text.index("\n  dev-bump:\n") :]
+    permissions = job[job.index("permissions:") : job.index("steps:")]
+    assert "pull-requests: write" in permissions
+    assert text.count("pull-requests: write") == 1
+    script = " ".join(
+        _step_script("Commit the next development version and open its pull request")
+        .replace("\\\n", " ")
+        .split()
+    )
+    assert 'release_github.py --repo "${GITHUB_REPOSITORY}" dev-bump-pr' in script
+    assert '--assignee "${RELEASER}"' in script
+    assert "RELEASER: ${{ github.actor }}" in job
+    assert '--compare-url "${url}"' in script

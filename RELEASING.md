@@ -13,8 +13,8 @@ After the one-time setup exists, a release takes three actions from a maintainer
    3. `publish-pypi` waits for a maintainer to approve the `pypi` environment, then uploads to PyPI.
    4. `verify-pypi` runs the same checks against PyPI.
    5. `github-release` creates the tag `vX.Y.Z` and the GitHub Release, with the CHANGELOG section as the notes.
-   6. `dev-bump` commits the next development version to a branch and prints the link that opens its pull request.
-3. **Open the dev-bump pull request from the link the run prints, and merge it.** The link is on the run's summary page. The pull request runs CI as any other does; merge it after `checks-complete` passes.
+   6. `dev-bump` commits the next development version to a branch, opens its pull request, and assigns it to you.
+3. **Merge the dev-bump pull request.** GitHub holds its CI runs until you select **Approve workflows to run** in its merge box. Merge it after `checks-complete` passes.
 
 There are no long-lived PyPI API tokens: the publish jobs authenticate with Trusted Publishing. A run that fails can run again: a second run of the same version resumes the first, with the same bytes (see "When a run fails").
 
@@ -44,7 +44,7 @@ The workflow runs seven jobs, and each holds only the permissions it needs:
 | `publish-pypi` | `id-token: write`, `contents: read`; environment `pypi` | Downloads the workflow artifact and uploads the wheel and the sdist to PyPI, after approval. |
 | `verify-pypi` | `contents: read` | Runs the same checks against PyPI. |
 | `github-release` | `contents: write` | Creates the tag and the GitHub Release, or confirms the ones that exist. |
-| `dev-bump` | `contents: write` | Commits the next development version to the branch `release/dev-bump-vX.Y.Z` and prints the link that opens its pull request. |
+| `dev-bump` | `contents: write`, `pull-requests: write` | Commits the next development version to the branch `release/dev-bump-vX.Y.Z`, opens its pull request, and assigns it to the account that started the run. |
 
 The two publish jobs are the only ones that can request an OIDC token, and they only download the files `prepare` checked and upload them. This keeps the high-privilege jobs small and auditable.
 
@@ -117,14 +117,22 @@ Do not add PyPI secrets. Trusted Publishing does not use them.
 
 Branch protection for `main` should require exactly the aggregate `checks-complete` status. The release workflow requires the same status on the release commit.
 
-### 6. Checks for the first run on this pipeline
+### 6. Let GitHub Actions open pull requests
+
+The `dev-bump` job opens its pull request with the workflow token, and GitHub allows that only where the repository does. In GitHub: **Settings -> Actions -> General**, under **Workflow permissions**, turn on **Allow GitHub Actions to create and approve pull requests**, and save. Leave the default workflow permissions above it at read access. A repository in an organization starts from the organization's choice: if you cannot turn the box on here, an organization owner turns on the same box under the organization's **Settings -> Actions -> General** first.
+
+Without it, the job fails after the release is complete and prints the link that opens the pull request by hand (see "When a run fails").
+
+The same box lets a workflow approve a pull request. While `main` requires no approving review, such an approval changes nothing. If a ruleset on `main` ever requires one, any workflow that holds `pull-requests: write` could give it, `dependency-review.yml` included, so look at this setting again then.
+
+### 7. Checks for the first run on this pipeline
 
 Before the first run:
 
 - Check that the `release-tags` ruleset lets the GitHub Actions token create tags. The `github-release` job creates `vX.Y.Z` through `gh release create` after PyPI is live, so a ruleset that blocks it stops the run there. Give the token a bypass if the ruleset needs one (design case, sections 5 and 7).
 - Check that both trusted publishers name the workflow `release.yml` and their environment, `pypi` or `testpypi`.
 
-When you open the first dev-bump pull request:
+When the first dev-bump pull request opens:
 
 - Check that its commit shows GitHub's "Verified" badge. The job makes the commit through the GraphQL mutation `createCommitOnBranch`, which GitHub signs "if supported" ([GraphQL reference](https://docs.github.com/en/graphql/reference/commits#mutation-createcommitonbranch)). A ruleset that requires signed commits would block the merge of an unsigned one.
 
@@ -157,7 +165,7 @@ Merge the release pull request last, after everything the release should contain
 1. GitHub -> **Actions** -> **Release** -> **Run workflow**. Select `main`; there are no inputs.
 2. Read the log of the `prepare` job. It prints the release commit and the commits on `main` after it, which are not part of this release. If the release commit is not the one you expect, cancel the run: nothing is public yet.
 3. When the run pauses before `publish-pypi`, look at the rehearsal on <https://test.pypi.org/project/standard-asr/>: the README, the classifiers, the project URLs, and the metadata should render correctly. Then approve the `pypi` environment.
-4. The run uploads to PyPI, checks PyPI, creates the GitHub Release `vX.Y.Z` at the release commit, and prepares the dev-bump branch.
+4. The run uploads to PyPI, checks PyPI, creates the GitHub Release `vX.Y.Z` at the release commit, and opens the dev-bump pull request.
 
 The workflow checks each index after its upload, so these checks need no manual step:
 
@@ -175,11 +183,13 @@ uv run --isolated --no-project --refresh-package standard-asr --with "standard-a
 
 ### Step 3 — the dev-bump pull request
 
-The `dev-bump` job commits `chore: bump version to <next>` to the branch `release/dev-bump-vX.Y.Z`. It sets the next development version, `X.Y.(Z+1).dev0` after a final release or `X.Y.Zrc(N+1).dev0` after `X.Y.ZrcN`, and updates `uv.lock`. Then it prints the link that opens the pull request, as a notice on the run and on the run's summary page.
+The `dev-bump` job commits `chore: bump version to <next>` to the branch `release/dev-bump-vX.Y.Z`. It sets the next development version, `X.Y.(Z+1).dev0` after a final release or `X.Y.Zrc(N+1).dev0` after `X.Y.ZrcN`, and updates `uv.lock`. Then it opens the pull request from that branch and assigns it to the account that started the run, so GitHub notifies you by default. The run's summary page links to it too.
 
-Open the pull request from that link, and merge it after `checks-complete` passes. The job does not open it itself: the workflow token may open a pull request only where the repository allows GitHub Actions to create pull requests, a setting that also lets workflows approve them, and GitHub holds the CI runs of a pull request the workflow token opens until a person approves them ([GitHub docs](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs)). A pull request you open runs CI at once.
+1. Open the pull request. GitHub holds the CI runs of a pull request that the workflow token opens ([GitHub docs](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs)), so select **Approve workflows to run** in its merge box. A pull request you opened yourself runs CI at once.
+2. Wait for `checks-complete` to pass.
+3. Merge it.
 
-Until it merges, `main` still declares `X.Y.Z`, and a second run of the workflow resumes the release. After it merges, the first guard stops every run until the next release pull request merges.
+Until it merges, `main` still declares `X.Y.Z`, and a second run of the workflow resumes the release. After it merges, the first guard stops every new run from `main` until the next release pull request merges.
 
 Merge it right after its CI passes. Until it merges, an install from `main`, which the first-party plugins use, reports version `X.Y.Z` while it contains the commits after the release, so a requirement such as `standard-asr>=X.Y.Z` cannot tell the two apart.
 
@@ -212,13 +222,19 @@ Read the error in the job that failed. A second run of the same version resumes 
 | `verify-testpypi`, `verify-pypi` | The index holds a file "with other content", or "has no attestation" for one. | `X.Y.Z` on that index | The index keeps those filenames, and a file uploaded without an attestation never gets one. Release a new version. |
 | `github-release` | "a draft release" for the tag exists. | `X.Y.Z` on both indexes | `prepare` cannot see drafts, because GitHub lists them only to a token with write access. Publish the draft or delete it, then run again. |
 | `github-release` | A tag or release check fails. | `X.Y.Z` on both indexes | As for the same check in `prepare`. |
-| `github-release` | The workflow files at the release commit "differ from the default branch's". | `X.Y.Z` on both indexes | A workflow change merged after the release commit, and GitHub lets a token create a tag at such a commit only if it may change workflows, which the workflow token never may. `prepare` warned about it at the start of the run. Run the `gh release create` command the log prints, with your own credentials, from a directory that holds `release-notes.md` from the run's workflow artifact `standard-asr-release`. Then run the workflow again: it finds the release, and the dev-bump job prepares its branch. |
+| `github-release` | The workflow files at the release commit "differ from the default branch's". | `X.Y.Z` on both indexes | A workflow change merged after the release commit, and GitHub lets a token create a tag at such a commit only if it may change workflows, which the workflow token never may. `prepare` warned about it at the start of the run. Run the `gh release create` command the log prints, with your own credentials, from a directory that holds `release-notes.md` from the run's workflow artifact `standard-asr-release`. Then run the workflow again: it finds the release, and the dev-bump job opens its pull request. |
 | `github-release` | `gh release create` failed. | `X.Y.Z` on both indexes; the release may exist | Look at the release first (`gh release view vX.Y.Z`), because a timeout can leave it created. If the `release-tags` ruleset refused the tag, let the GitHub Actions token create tags. Then run again. |
-| `dev-bump` | Creating the branch or the commit failed. | The release is complete | Run the workflow again: the job keeps a branch that already holds its commit and prints the link again. If it fails again, make the change by hand in a pull request: `uv version <next>`, then `uv lock`. |
+| `dev-bump` | Creating the branch or the commit failed. | The release is complete | Run the workflow again: the job keeps a branch that already holds its commit, and opens its pull request. If it fails again, make the change by hand in a pull request: `uv version <next>`, then `uv lock`. |
+| `dev-bump` | The dev-bump branch "declares version" something other than the next development version. | The release is complete; the branch holds commits a person added | The job keeps a branch's own commits, so it does not change them. Set the version on the branch to the one the message names (`uv version <next>`, then `uv lock`), or delete the branch so that the next run commits it. Then run the workflow again. |
+| `dev-bump` | "GitHub refused to open a pull request". | The release is complete; the branch holds its commit | When GitHub's message says that GitHub Actions may not create pull requests, turn the setting on (one-time setup, step 6) and run the workflow again. Or open the pull request yourself from the link the log prints. |
+| `dev-bump` | The pull request "was closed without merging". | The release is complete | A person closed it, so the job does not open another. Reopen it and merge it, or open a new one from the branch. |
+| `dev-bump` | The pull request "was merged, yet" `main` "still declares the released version". | The release is complete | The message says which: something set the version on `main` back to `X.Y.Z`, or the pull request merged into another branch. Find out why before you run the workflow again. |
+| `dev-bump` | The pull request "merges into" another branch, "not main". | The release is complete; the pull request is open | Change its base branch to `main`, then run the workflow again. |
+| `dev-bump` | "GitHub did not assign" the pull request. | The release is complete; the pull request is open | Assign it yourself, then merge it as step 3 says. |
 
 ### After the dev-bump pull request merges
 
-A second run of `X.Y.Z` resumes only while `main` declares `X.Y.Z`. Once the dev-bump pull request merges, the first guard stops every run of it. If the GitHub Release is still missing then, create it by hand at the release commit, with the command the workflow uses:
+A second run of `X.Y.Z` resumes only while `main` declares `X.Y.Z`. Once the dev-bump pull request merges, the first guard stops every new run of it from `main`. If the GitHub Release is still missing then, create it by hand at the release commit, with the command the workflow uses:
 
 ```bash
 gh release create vX.Y.Z --repo standard-voice/standard_asr --target <release commit> --title vX.Y.Z --notes-file release-notes.md
