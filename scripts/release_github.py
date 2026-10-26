@@ -366,7 +366,8 @@ def ensure(
             "default branch's, and GitHub lets a token create a tag at such a commit only "
             "if the token may change workflows, which the workflow token never may. PyPI "
             f"holds {tag}. Create the release yourself, with credentials that may change "
-            "workflows, then run this workflow again to open the dev-bump pull request. "
+            "workflows, then run this workflow again to prepare the dev-bump branch and "
+            "print the link that opens its pull request. "
             "release-notes.md is in the workflow artifact standard-asr-release:"
         )
         print(manual_create_command(repo, version, sha, prerelease))
