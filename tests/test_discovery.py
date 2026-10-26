@@ -21,9 +21,9 @@ from standard_asr.audio.input import InputKind
 from standard_asr.compliance import check_entrypoints
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    DeclaredCapabilities,
-    FlagCap,
-    LanguageCaps,
+    Capabilities,
+    LanguageCapabilities,
+    LanguageOverrideCapability,
 )
 from standard_asr.contract.exceptions import (
     ConfigError,
@@ -74,16 +74,16 @@ class _DummyProperties(BaseProperties):
     selectable_languages: list[str] = ["en"]
 
 
-_DUMMY_CAPS = DeclaredCapabilities(
+_DUMMY_CAPS = Capabilities(
     batch=BatchCapabilities(
-        language=LanguageCaps(runtime_override=FlagCap(supported=True)),
+        language=LanguageCapabilities(runtime_override=LanguageOverrideCapability(supported=True)),
     )
 )
 
 
 class _DummyASR:
     properties: ClassVar[_DummyProperties] = _DummyProperties()
-    declared_capabilities: ClassVar[DeclaredCapabilities] = _DUMMY_CAPS
+    declared_capabilities: ClassVar[Capabilities] = _DUMMY_CAPS
     # The supported protocol line carries the artifact lifecycle, so even this
     # minimal structural fixture authors the metadata and answers both
     # lifecycle operations (the CLI transcribe preflight calls
@@ -1018,7 +1018,7 @@ def test_check_entrypoints_reports_per_attribute_gaps_behind_the_gate() -> None:
 
     errors = list(report.iter_level("error"))
     assert any("BaseConfig" in issue.message for issue in errors)
-    assert any("DeclaredCapabilities" in issue.message for issue in errors)
+    assert any("Capabilities" in issue.message for issue in errors)
 
 
 def test_check_entrypoints_model_id_mismatch() -> None:

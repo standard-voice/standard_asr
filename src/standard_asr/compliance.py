@@ -20,10 +20,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from standard_asr.audio.format import AudioFormat
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    DeclaredCapabilities,
-    PromptCap,
+    Capabilities,
+    PromptCapability,
     StreamingCapabilities,
-    WordTimestampsCap,
+    WordTimestampsCapability,
+    _is_extension_key,  # pyright: ignore[reportPrivateUsage]
 )
 from standard_asr.contract.exceptions import (
     ConfigError,
@@ -64,6 +65,8 @@ from standard_asr.plugins.discovery import (
 )
 from standard_asr.runtime.config import BaseConfig
 from standard_asr.runtime.gating import (
+    _GATED_PARAMS,  # pyright: ignore[reportPrivateUsage]
+    _SEPARATELY_GATED_REQUESTABLE_SUFFIXES,  # pyright: ignore[reportPrivateUsage]
     DIAG_PROMPT_TRUNCATED,
     DIAG_UNSUPPORTED_GRANULARITY_IGNORED,
     DIAG_UNSUPPORTED_PARAMETER_IGNORED,
@@ -186,12 +189,12 @@ def _pick_sub_constraint_probe(engine: StandardASR) -> tuple[str, RuntimeParams,
     # pass, not an engine fault. A PRESENT-but-raising attribute still
     # propagates to the caller's containment (a broken surface stays loud).
     capabilities = getattr(engine, "effective_capabilities", None)
-    if not isinstance(capabilities, DeclaredCapabilities):
+    if not isinstance(capabilities, Capabilities):
         capabilities = getattr(engine, "declared_capabilities", None)
-    if not isinstance(capabilities, DeclaredCapabilities):
+    if not isinstance(capabilities, Capabilities):
         return None
     prompt = capabilities.node_at("streaming.guidance.prompt")
-    if isinstance(prompt, PromptCap) and prompt.is_supported:
+    if isinstance(prompt, PromptCapability) and prompt.is_supported:
         max_tokens = prompt.constraints.max_tokens
         if max_tokens is not None and max_tokens < _SUB_CONSTRAINT_PROBE_MAX_TOKENS:
             # Gating's own _count_tokens is the reference: one whitespace word
@@ -204,7 +207,7 @@ def _pick_sub_constraint_probe(engine: StandardASR) -> tuple[str, RuntimeParams,
             if _count_tokens(over_budget) > max_tokens:  # pragma: no branch
                 return "prompt", RuntimeParams(prompt=over_budget), DIAG_PROMPT_TRUNCATED
     timestamps = capabilities.node_at("streaming.word_timestamps")
-    if isinstance(timestamps, WordTimestampsCap) and timestamps.is_supported:
+    if isinstance(timestamps, WordTimestampsCapability) and timestamps.is_supported:
         offered = set(timestamps.granularities)
         missing = next((g for g in WordTimestampGranularity if g.value not in offered), None)
         if missing is not None:
@@ -783,7 +786,7 @@ def _check_supports_contract(
        real capability MUST answer literal ``False``
        (``supports_not_fail_closed``).
     3. **Equivalence sweep**: for every queryable node path
-       (:meth:`~standard_asr.contract.capabilities.DeclaredCapabilities.iter_queryable_paths`
+       (:meth:`~standard_asr.contract.capabilities.Capabilities.iter_queryable_paths`
        -- supported nodes, unsupported nodes, containers, constraint
        submodels, ``x_*`` subtrees) the answer MUST be identical to the
        engine's own capability tree's answer. The baseline is
@@ -954,7 +957,7 @@ def _check_supports_tree_agreement(
     )
 
 
-def _supports_baseline_tree(instance: object) -> DeclaredCapabilities | None:
+def _supports_baseline_tree(instance: object) -> Capabilities | None:
     """Pick the tree ``supports()`` is expected to answer from, defensively.
 
     ``effective_capabilities`` (an ``EngineBase`` convenience, not a protocol
@@ -975,7 +978,7 @@ def _supports_baseline_tree(instance: object) -> DeclaredCapabilities | None:
             tree = getattr(instance, attr, None)
         except Exception:  # noqa: BLE001 - a raising convenience property
             continue
-        if isinstance(tree, DeclaredCapabilities):
+        if isinstance(tree, Capabilities):
             return tree
     return None
 
@@ -1110,6 +1113,109 @@ def _check_instance_config(
     _check_language_axis_config(instance, name, issues)
 
 
+def _check_requestable_roles(
+    declared: Capabilities, name: str, issues: list[ComplianceIssue]
+) -> None:
+    """Check that the gating table and the tree's requestable nodes agree, both ways.
+
+    The gating table is ``_GATED_PARAMS`` in ``runtime/gating.py``: each row
+    pairs a ``RuntimeParams`` field with the mode-relative capability path
+    that gates it, such as ``("diarization", "diarization")``.
+    ``_SEPARATELY_GATED_REQUESTABLE_SUFFIXES`` lists, as mode-relative
+    suffixes, the requestable nodes whose gate lives outside that table:
+    ``language.candidate_languages``, which ``effective_candidate_languages``
+    gates.
+
+    Forward: under each declared mode, every ``_GATED_PARAMS`` row and every
+    entry in ``_SEPARATELY_GATED_REQUESTABLE_SUFFIXES`` resolves to a node
+    whose ``role`` is ``requestable``; a path that is missing or is not a
+    requestable node is the error ``gate_target_not_requestable``. Reverse:
+    every path that ``iter_queryable_paths()`` yields whose ``role_at()`` is
+    ``requestable`` is one of those rows or entries under a declared mode,
+    or it is the error ``requestable_node_ungated``. The walk includes the
+    root's own fields (``batch``, ``streaming``, ``streaming_input``,
+    ``streaming_output``, ``self_resamples``), so a requestable node at the
+    root is always reported. The role comes from ``role_at()``, so a raw dict
+    node that states its role counts, and the check judges the same nodes
+    that ``role_at()`` and ``can_request()`` answer for. Support does not
+    matter: ``role_at()`` answers ``requestable`` for an unsupported node
+    too, and that answer says that a standard request field asks for the
+    feature.
+
+    One direction alone leaves a hole. A requestable node that no gate
+    checks makes ``can_request()`` answer ``True``, yet a request for it
+    reaches the engine unchecked. An engine that does not support the
+    feature then ignores it in silence. The reverse check skips every path
+    with an ``x_*`` segment: a vendor feature is requested through
+    ``provider_params``, which no capability gates.
+
+    The standard tree passes both checks, because each node class fixes its
+    role. A finding has one of two causes: the engine's tree replaced a
+    standard node or added a requestable node of its own, or the installed
+    standard-asr is inconsistent. Each message names both causes, because a
+    plugin author can fix only the first.
+
+    Args:
+        declared: The engine's declared capability tree.
+        name: The model key (for issue attribution).
+        issues: The mutable list of issues to append to.
+    """
+    gated = {suffix for _, suffix in _GATED_PARAMS}
+    checked: set[str] = set()
+    for mode in ("batch", "streaming"):
+        if getattr(declared, mode) is None:
+            continue
+        prefix = f"{mode}."
+        checked.update(prefix + suffix for suffix in gated | _SEPARATELY_GATED_REQUESTABLE_SUFFIXES)
+        # Forward: every path a request can reach, the table's rows and the
+        # separately gated suffixes alike, resolves to a requestable node.
+        for suffix in sorted(gated | _SEPARATELY_GATED_REQUESTABLE_SUFFIXES):
+            path = prefix + suffix
+            role = declared.role_at(path)
+            if role != "requestable":
+                issues.append(
+                    ComplianceIssue(
+                        level="error",
+                        code="gate_target_not_requestable",
+                        message=(
+                            f"{path} must be a requestable node, because Standard ASR gates a "
+                            f"RuntimeParams field on it, but role_at({path!r}) returns "
+                            f"{role!r}. Build the node from its standard class, without a "
+                            "subclass or model_construct(). If your declaration already does, "
+                            "the installed standard-asr is inconsistent: report it to Standard "
+                            "ASR."
+                        ),
+                        model=name,
+                    )
+                )
+    # Reverse: every path the application can query, at any depth and at the
+    # root too, with the role that role_at() gives it. node_at() would see only
+    # typed nodes, but role_at() also reads the role a raw dict node states.
+    # An application asks role_at() and can_request(), so the check must see
+    # the same nodes. Support does not matter: the role of an unsupported node
+    # still claims that a standard request field asks for the feature.
+    for path in declared.iter_queryable_paths():
+        if any(_is_extension_key(part) for part in path.split(".")):
+            continue
+        if declared.role_at(path) != "requestable" or path in checked:
+            continue
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="requestable_node_ungated",
+                message=(
+                    f"{path} is a requestable node, but Standard ASR gates no "
+                    "RuntimeParams field on it, so a request for it would reach the "
+                    "engine unchecked. If your engine added this node, declare the "
+                    "feature under an x_<vendor>_<feature> key and accept its request in "
+                    "your provider_params. Otherwise the installed standard-asr is "
+                    "inconsistent: report it to Standard ASR."
+                ),
+                model=name,
+            )
+        )
+
+
 def _check_instance_capabilities(
     instance: object,
     name: str,
@@ -1123,14 +1229,12 @@ def _check_instance_capabilities(
         issues: The mutable list of issues to append to.
     """
     declared = getattr(instance, "declared_capabilities", None)
-    if not isinstance(declared, DeclaredCapabilities):
+    if not isinstance(declared, Capabilities):
         issues.append(
             ComplianceIssue(
                 level="error",
                 code="missing_declared_capabilities",
-                message=(
-                    "Instance is missing a DeclaredCapabilities 'declared_capabilities' attribute."
-                ),
+                message=("Instance is missing a Capabilities 'declared_capabilities' attribute."),
                 model=name,
             )
         )
@@ -1147,14 +1251,14 @@ def _check_instance_capabilities(
                 code="effective_capabilities_raised",
                 message=(
                     f"Reading effective_capabilities raised {safe_exception_summary(exc)}; the "
-                    "property MUST return a DeclaredCapabilities (or None) "
+                    "property MUST return a Capabilities (or None) "
                     "without raising."
                 ),
                 model=name,
             )
         )
         return
-    if isinstance(effective, DeclaredCapabilities):
+    if isinstance(effective, Capabilities):
         if not declared.covers(effective):
             issues.append(
                 ComplianceIssue(
@@ -1177,9 +1281,9 @@ def _check_instance_capabilities(
                 level="error",
                 code="effective_capabilities_wrong_type",
                 message=(
-                    "effective_capabilities is not a DeclaredCapabilities "
+                    "effective_capabilities is not a Capabilities "
                     f"(got {safe_type_name(effective)!r}); it MUST be a "
-                    "DeclaredCapabilities (or None) so the effective-narrows-declared "
+                    "Capabilities (or None) so the effective-narrows-declared "
                     "invariant can be verified."
                 ),
                 model=name,
@@ -1354,11 +1458,11 @@ def _check_required_surface(
     # raised elsewhere) simply means nothing can be asserted here, so the check
     # does not over-report.
     declared = getattr(instance, "declared_capabilities", None)
-    declares_streaming = isinstance(declared, DeclaredCapabilities) and (
+    declares_streaming = isinstance(declared, Capabilities) and (
         declared.supports("streaming_input") or declared.supports("streaming_output")
     )
     if not declares_streaming:
-        if isinstance(declared, DeclaredCapabilities):
+        if isinstance(declared, Capabilities):
             # Presence alone does not verify the protocol's batch-only
             # promise; the refusal probe below does. Skipped when
             # declared_capabilities is unreadable (the check cannot know the engine
@@ -1686,13 +1790,13 @@ def _check_streaming_wire_encodings_declared(
 
     Args:
         declared: The engine's class-level ``declared_capabilities`` (any object;
-            only acted on when it is a :class:`DeclaredCapabilities`).
+            only acted on when it is a :class:`Capabilities`).
         properties: The engine's class-level ``properties`` (any object; only
             acted on when it is a :class:`BaseProperties`).
         name: The model key (for issue attribution).
         issues: The mutable list of issues to append to.
     """
-    if not (isinstance(declared, DeclaredCapabilities) and isinstance(properties, BaseProperties)):
+    if not (isinstance(declared, Capabilities) and isinstance(properties, BaseProperties)):
         return
     if declared.supports("streaming_input") and properties.wire_encodings is None:
         issues.append(
@@ -1728,7 +1832,7 @@ def _check_streaming_axis_declared(
     ``start_transcription`` call rejects: shipped, discoverable as "streaming", and
     uncallable. The inverse mistake (a flag without the domain) is already a
     construction-time ``ValueError``
-    (:meth:`~standard_asr.contract.capabilities.DeclaredCapabilities.\
+    (:meth:`~standard_asr.contract.capabilities.Capabilities.\
 _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on the
     silent side.
 
@@ -1740,11 +1844,11 @@ _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on th
 
     Args:
         declared: The engine's class-level ``declared_capabilities`` (any object;
-            only acted on when it is a :class:`DeclaredCapabilities`).
+            only acted on when it is a :class:`Capabilities`).
         name: The model key (for issue attribution).
         issues: The mutable list of issues to append to.
     """
-    if not isinstance(declared, DeclaredCapabilities):
+    if not isinstance(declared, Capabilities):
         return
     if declared.streaming is not None and not (
         declared.supports("streaming_input") or declared.supports("streaming_output")
@@ -1758,8 +1862,8 @@ _require_streaming_domain_for_streaming_flags`); this closes the asymmetry on th
                     "'streaming_input' nor 'streaming_output' is supported; every "
                     "start_transcription call then fails closed "
                     "(UnsupportedFeatureError) -- a streaming engine nobody can call. "
-                    "Declare streaming_input=FlagCap(supported=True) and/or "
-                    "streaming_output=FlagCap(supported=True), or drop the streaming "
+                    "Declare streaming_input=TraitFlagCapability(supported=True) and/or "
+                    "streaming_output=TraitFlagCapability(supported=True), or drop the streaming "
                     "domain."
                 ),
                 model=name,
@@ -2342,7 +2446,7 @@ def _check_class_level_metadata(
     _check_public_templates(engine_class, name, issues)
 
     declared = inspect.getattr_static(engine_class, "declared_capabilities", None)
-    if not isinstance(declared, DeclaredCapabilities):
+    if not isinstance(declared, Capabilities):
         issues.append(
             ComplianceIssue(
                 level="error",
@@ -2355,6 +2459,8 @@ def _check_class_level_metadata(
                 model=name,
             )
         )
+    else:
+        _check_requestable_roles(declared, name, issues)
 
     config_type = inspect.getattr_static(engine_class, "config_type", None)
     if config_type is None:
@@ -2437,7 +2543,7 @@ def check_event_sequence(
     events: Iterable[TranscriptionEvent],
     *,
     allow_empty: bool = False,
-    capabilities: DeclaredCapabilities | None = None,
+    capabilities: Capabilities | None = None,
 ) -> ComplianceReport:
     """Validate a *recorded* streaming event sequence against the invariants.
 
@@ -2772,7 +2878,7 @@ def _cross_check_result_capabilities(
 def check_transcription_result(
     result: TranscriptionResult,
     *,
-    capabilities: DeclaredCapabilities,
+    capabilities: Capabilities,
 ) -> ComplianceReport:
     """Cross-check a *recorded* batch result against the declared capabilities.
 

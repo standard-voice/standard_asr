@@ -11,19 +11,19 @@ import pytest
 
 from standard_asr.contract.capabilities import (
     BatchCapabilities,
-    CandidateLanguagesCap,
+    CandidateLanguagesCapability,
     CandidateLanguagesConstraints,
-    DeclaredCapabilities,
-    DiarizationCap,
-    FlagCap,
-    GuidanceCaps,
-    LanguageCaps,
-    PhraseHintsCap,
+    Capabilities,
+    DiarizationCapability,
+    GuidanceCapabilities,
+    LanguageCapabilities,
+    LanguageOverrideCapability,
+    PhraseHintsCapability,
     PhraseHintsConstraints,
-    PromptCap,
+    PromptCapability,
     PromptConstraints,
     StreamingCapabilities,
-    WordTimestampsCap,
+    WordTimestampsCapability,
 )
 from standard_asr.contract.exceptions import InvalidProviderParamError, UnsupportedFeatureError
 from standard_asr.contract.params import (
@@ -68,13 +68,15 @@ def test_gating_diagnostic_code_constants_match_their_wire_literals() -> None:
 
 def _caps(
     *, prompt: bool = False, phrase_hints: bool = False, override: bool = False
-) -> DeclaredCapabilities:
-    return DeclaredCapabilities(
+) -> Capabilities:
+    return Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(runtime_override=FlagCap(supported=override)),
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=prompt),
-                phrase_hints=PhraseHintsCap(supported=phrase_hints),
+            language=LanguageCapabilities(
+                runtime_override=LanguageOverrideCapability(supported=override)
+            ),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(supported=prompt),
+                phrase_hints=PhraseHintsCapability(supported=phrase_hints),
             ),
         )
     )
@@ -207,10 +209,10 @@ def test_degrade_but_prompt_unsupported_strict_raises() -> None:
 # --------------------------------------------------------------------------- #
 # word_timestamps granularity validated against the offered granularities.
 # --------------------------------------------------------------------------- #
-def _wt_caps(*granularities: str) -> DeclaredCapabilities:
-    return DeclaredCapabilities(
+def _wt_caps(*granularities: str) -> Capabilities:
+    return Capabilities(
         batch=BatchCapabilities(
-            word_timestamps=WordTimestampsCap(
+            word_timestamps=WordTimestampsCapability(
                 supported=True,
                 granularities=list(granularities),  # type: ignore[arg-type]
             )
@@ -243,7 +245,7 @@ def test_granularity_not_offered_best_effort_drops() -> None:
 
 
 def test_supported_word_timestamps_cannot_have_empty_granularities() -> None:
-    # A supported WordTimestampsCap MUST enumerate granularities, so the
+    # A supported WordTimestampsCapability MUST enumerate granularities, so the
     # ambiguous "empty => honor anything" state is unrepresentable. Constructing
     # _wt_caps() (supported=True, no granularities) raises at validation time.
     with pytest.raises(ValueError, match="non-empty"):
@@ -252,7 +254,7 @@ def test_supported_word_timestamps_cannot_have_empty_granularities() -> None:
 
 def test_word_timestamps_feature_unsupported_strict_raises() -> None:
     params = RuntimeParams(word_timestamps=WordTimestampGranularity.WORD)
-    caps = DeclaredCapabilities(batch=BatchCapabilities())  # supported=False default
+    caps = Capabilities(batch=BatchCapabilities())  # supported=False default
     with pytest.raises(UnsupportedFeatureError):
         gate_params(params, caps, "batch", strict=True)
 
@@ -271,20 +273,20 @@ def test_empty_phrase_hints_not_gated_when_unsupported() -> None:
 
 def test_gated_params_drift_guard_covers_every_portable_field() -> None:
     # Every RuntimeParams field MUST be either capability-gated
-    # (_GATED_PARAMS) or explicitly exempt (_UNGATED_PORTABLE_FIELDS) -- never
+    # (_GATED_PARAMS) or explicitly exempt (_FIELDS_OUTSIDE_GATE_TABLE) -- never
     # silently neither. A future additive-minor field that is registered in
     # neither would reach the engine ungated and be silently ignored when
     # unsupported (the cardinal sin). This mirrors the import-time assertion in
     # param_gating and fails the moment the field set drifts.
     from standard_asr.runtime.gating import (
+        _FIELDS_OUTSIDE_GATE_TABLE,  # pyright: ignore[reportPrivateUsage]
         _GATED_PARAMS,  # pyright: ignore[reportPrivateUsage]
-        _UNGATED_PORTABLE_FIELDS,  # pyright: ignore[reportPrivateUsage]
     )
 
     gated = {field for field, _ in _GATED_PARAMS}
-    assert gated | _UNGATED_PORTABLE_FIELDS == set(RuntimeParams.model_fields)
+    assert gated | _FIELDS_OUTSIDE_GATE_TABLE == set(RuntimeParams.model_fields)
     # The two sets are disjoint: a field is gated XOR exempt, never both.
-    assert gated.isdisjoint(_UNGATED_PORTABLE_FIELDS)
+    assert gated.isdisjoint(_FIELDS_OUTSIDE_GATE_TABLE)
 
 
 def test_empty_string_prompt_is_a_real_value_gated_when_unsupported() -> None:
@@ -315,9 +317,11 @@ def test_candidate_languages_not_gated_here_when_unsupported() -> None:
     # non-empty request in strict mode passes through untouched (no raise, no
     # diagnostic). language.effective_candidate_languages resolves the axis to
     # None + a single diagnostic; that is asserted in test_language.py.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(candidate_languages=CandidateLanguagesCap(supported=False))
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(supported=False)
+            )
         )
     )
     for value in ([], ["en", "ja"]):
@@ -345,10 +349,10 @@ def test_gate_granularity_no_request_returns_false() -> None:
 
 
 def test_gate_granularity_non_word_timestamps_node_returns_false() -> None:
-    # word_timestamps does not resolve to a WordTimestampsCap leaf (here: the
+    # word_timestamps does not resolve to a WordTimestampsCapability leaf (here: the
     # whole mode domain is absent, so node_at returns None) -> the helper does not
     # over-constrain an unknown/missing shape and reports no change.
-    caps = DeclaredCapabilities()  # no batch domain at all
+    caps = Capabilities()  # no batch domain at all
     updates: dict[str, object] = {}
     diags: list[Diagnostic] = []
     changed = _gate_granularity(
@@ -387,15 +391,15 @@ def _guidance_caps(
     hints_max_terms: int | None = None,
     hints_max_chars: int | None = None,
     hints_max_words: int | None = None,
-) -> DeclaredCapabilities:
-    return DeclaredCapabilities(
+) -> Capabilities:
+    return Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
                     supported=True,
                     constraints=PromptConstraints(max_tokens=prompt_max_tokens),
                 ),
-                phrase_hints=PhraseHintsCap(
+                phrase_hints=PhraseHintsCapability(
                     supported=True,
                     constraints=PhraseHintsConstraints(
                         max_terms=hints_max_terms,
@@ -700,11 +704,13 @@ def test_phrase_hints_within_limits_passes() -> None:
 def test_degrade_respects_max_tokens_best_effort_truncates() -> None:
     # phrase_hints unsupported -> degrade; but the framed prompt exceeds the
     # prompt channel's max_tokens, so it is truncated (not silently emitted).
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=3)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=3)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -728,11 +734,13 @@ def test_degrade_truncation_drops_all_hints_emits_distinct_signal() -> None:
     # phrase-hint term, so no hint content reaches the prompt. The degrade must
     # then emit a distinct, explicit diagnostic instead of the misleading
     # guidance_degraded_to_prompt (which would imply the hints were honored).
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=2)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=2)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -759,11 +767,13 @@ def test_degrade_truncation_drops_hints_but_keeps_free_prompt_text_signals_loss(
     # The original bug: free prompt text is ordered before the framed hints, so a
     # tight budget keeps the free text and silently cuts the hints while still
     # reporting a successful degrade. The fix makes that loss explicit.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=2)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=2)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -786,11 +796,13 @@ def test_degrade_dropped_signal_not_fooled_by_hint_substring_in_prompt() -> None
     # SUBSTRING of a surviving original-prompt word (here "cat" inside
     # "categorize") must NOT be mistaken for surviving hint content -- otherwise
     # the degrade falsely reports success when every hint was truncated away.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=1)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=1)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -821,11 +833,13 @@ def test_degrade_dropped_signal_not_fooled_by_marker_literal_in_user_prompt() ->
     # Token math: user prompt = 6 tokens, framed "Relevant terms: alpha" = 3
     # (combined 9); max_tokens=8 keeps the user prompt + framed "Relevant terms:"
     # but cuts the framed "alpha" (token 9).
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=8)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=8)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -849,11 +863,13 @@ def test_try_degrade_blank_term_does_not_falsely_report_survival() -> None:
     # but the survival check also guards itself (``if hint.strip()``) regardless of
     # call site -- a direct call with a blank term must NOT let ``"" in x`` (always
     # true) fake a successful degrade when the real content was cut.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=1)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=1)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -877,11 +893,13 @@ def test_degrade_with_over_budget_prompt_yields_single_coherent_truncation() -> 
     # BEFORE prompt, the degrade composes on the request prompt, and the budget
     # is enforced exactly once on the composed value -- no diagnostic is ever
     # emitted and then retroactively deleted.
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=4)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=4)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -907,11 +925,13 @@ def test_degrade_with_over_budget_prompt_yields_single_coherent_truncation() -> 
 
 
 def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=3)),
-                phrase_hints=PhraseHintsCap(supported=False),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=3)
+                ),
+                phrase_hints=PhraseHintsCapability(supported=False),
             )
         )
     )
@@ -928,10 +948,12 @@ def test_degrade_over_max_tokens_strict_raises_not_silent() -> None:
 def test_guidance_limits_enforced_in_streaming_mode() -> None:
     # Mode-correctness: the same guidance-limit enforcement applies under
     # mode="streaming" (the streaming path wires gate_params(mode="streaming")).
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         streaming=StreamingCapabilities(
-            guidance=GuidanceCaps(
-                prompt=PromptCap(supported=True, constraints=PromptConstraints(max_tokens=2)),
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=2)
+                ),
             )
         )
     )
@@ -943,7 +965,7 @@ def test_guidance_limits_enforced_in_streaming_mode() -> None:
 
 def test_enforce_prompt_limit_guards() -> None:
     # Defensive guards (exercised directly; gate_params filters these earlier):
-    # no prompt -> no-op; a non-PromptCap node (here: missing domain) -> no-op.
+    # no prompt -> no-op; a non-PromptCapability node (here: missing domain) -> no-op.
     updates: dict[str, object] = {}
     diags: list[Diagnostic] = []
     _enforce_prompt_limit(
@@ -952,7 +974,7 @@ def test_enforce_prompt_limit_guards() -> None:
     assert updates == {} and diags == []
     _enforce_prompt_limit(
         RuntimeParams(prompt="a b c"),
-        DeclaredCapabilities(),  # no batch domain -> node_at returns None
+        Capabilities(),  # no batch domain -> node_at returns None
         "batch",
         updates,
         diags,
@@ -970,7 +992,7 @@ def test_enforce_phrase_hints_limits_guards() -> None:
     assert updates == {} and diags == []
     _enforce_phrase_hints_limits(
         RuntimeParams(phrase_hints=["a", "b"]),
-        DeclaredCapabilities(),  # no batch domain -> node_at returns None
+        Capabilities(),  # no batch domain -> node_at returns None
         "batch",
         updates,
         diags,
@@ -983,10 +1005,10 @@ def test_candidate_languages_supported_passes_through_untouched() -> None:
     # Even when supported, gate_params leaves candidate_languages alone (it is
     # not in _GATED_PARAMS); resolution/validation happens in language.py.
     params = RuntimeParams(candidate_languages=["en", "ja"])
-    caps = DeclaredCapabilities(
+    caps = Capabilities(
         batch=BatchCapabilities(
-            language=LanguageCaps(
-                candidate_languages=CandidateLanguagesCap(
+            language=LanguageCapabilities(
+                candidate_languages=CandidateLanguagesCapability(
                     supported=True,
                     constraints=CandidateLanguagesConstraints(max=3),
                 )
@@ -1002,10 +1024,10 @@ def test_candidate_languages_supported_passes_through_untouched() -> None:
 # Diarization gating: a feature-level gate on <mode>.diarization
 # -- the empty marker carries no fields, so there is no sub-gate.
 # --------------------------------------------------------------------------- #
-def _diar_caps(*, batch: bool, streaming: bool) -> DeclaredCapabilities:
-    return DeclaredCapabilities(
-        batch=BatchCapabilities(diarization=DiarizationCap(supported=batch)),
-        streaming=StreamingCapabilities(diarization=DiarizationCap(supported=streaming)),
+def _diar_caps(*, batch: bool, streaming: bool) -> Capabilities:
+    return Capabilities(
+        batch=BatchCapabilities(diarization=DiarizationCapability(supported=batch)),
+        streaming=StreamingCapabilities(diarization=DiarizationCapability(supported=streaming)),
     )
 
 
@@ -1084,3 +1106,25 @@ def test_diarization_marker_has_no_fields_drift_guard() -> None:
     # graduates onto DiarizationRequest (for example, num_speakers), sub-gating must be
     # written -- this pin fails alongside the import-time assert until it is.
     assert not DiarizationRequest.model_fields
+
+
+def test_gate_table_and_separately_gated_suffixes_name_every_requestable_path() -> None:
+    # The gating table and the separately gated suffixes together name every
+    # requestable node of the standard tree, in both modes, and never the same
+    # path twice.
+    # The compliance suite proves the same for an engine's declared tree.
+    from standard_asr.runtime.gating import (
+        _GATED_PARAMS,  # pyright: ignore[reportPrivateUsage]
+        _SEPARATELY_GATED_REQUESTABLE_SUFFIXES,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    gated = {suffix for _, suffix in _GATED_PARAMS}
+    assert gated.isdisjoint(_SEPARATELY_GATED_REQUESTABLE_SUFFIXES)
+    caps = Capabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities())
+    for mode in ("batch", "streaming"):
+        requestable = {
+            path[len(mode) + 1 :]
+            for path in caps.iter_queryable_paths()
+            if path.startswith(f"{mode}.") and caps.role_at(path) == "requestable"
+        }
+        assert requestable == gated | _SEPARATELY_GATED_REQUESTABLE_SUFFIXES, mode

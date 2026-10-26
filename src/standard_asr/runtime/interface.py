@@ -49,7 +49,7 @@ from standard_asr.contract.artifacts import (
     ArtifactReport,
     ArtifactRequirement,
 )
-from standard_asr.contract.capabilities import DeclaredCapabilities, StreamingCapabilities
+from standard_asr.contract.capabilities import Capabilities, StreamingCapabilities
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
@@ -119,7 +119,7 @@ class StandardASR(Protocol):
     """
 
     properties: ClassVar[BaseProperties]
-    declared_capabilities: ClassVar[DeclaredCapabilities]
+    declared_capabilities: ClassVar[Capabilities]
     declared_metadata: ClassVar[DeclaredEngineMetadata]
 
     @property
@@ -649,7 +649,7 @@ def bind_session_capabilities(session: TranscriptionSession, engine: StandardASR
     ``effective_capabilities`` property. The function uses the engine's
     ``declared_capabilities`` only when the engine has no
     ``effective_capabilities`` attribute, or the attribute does not hold a
-    ``DeclaredCapabilities``. A tree with no ``streaming`` domain binds the
+    ``Capabilities``. A tree with no ``streaming`` domain binds the
     default ``StreamingCapabilities()``, in which ``emits_partials``,
     ``partial_stability``, ``re_segments``, ``timestamps``,
     ``word_timestamps``, and ``diarization`` are unsupported and
@@ -672,7 +672,7 @@ def bind_session_capabilities(session: TranscriptionSession, engine: StandardASR
     except AttributeError:
         if inspect.getattr_static(engine, "effective_capabilities", None) is not None:
             raise
-    if not isinstance(capabilities, DeclaredCapabilities):
+    if not isinstance(capabilities, Capabilities):
         capabilities = engine.declared_capabilities
     session._bind_streaming_capabilities(  # pyright: ignore[reportPrivateUsage]
         capabilities.streaming or StreamingCapabilities()
@@ -946,7 +946,7 @@ class EngineBase(ABC):
     """
 
     properties: ClassVar[BaseProperties]
-    declared_capabilities: ClassVar[DeclaredCapabilities]
+    declared_capabilities: ClassVar[Capabilities]
     #: Fail-loud placeholder, not a usable default. Compliance requires a
     #: plugin-owned :class:`DeclaredEngineMetadata` value; an engine that
     #: inherits this placeholder gets the typed declaration error from the
@@ -1022,7 +1022,7 @@ class EngineBase(ABC):
         return self._language_sets_cache
 
     @property
-    def effective_capabilities(self) -> DeclaredCapabilities:
+    def effective_capabilities(self) -> Capabilities:
         """Runtime-effective capabilities (default: the declared set).
 
         Engines that narrow capabilities based on configuration override this;
@@ -1113,7 +1113,7 @@ class EngineBase(ABC):
         # ``model_copy(update=...)`` declaration stores whatever it was given,
         # and every consumer of the result gates on plain truthiness -- a
         # truthy non-bool such as the string "false" would enable an
-        # acquisition path here while ``canonical_json()`` publishes ``false``
+        # acquisition path here while ``to_protocol_dict()`` publishes ``false``
         # for the same metadata (two verdicts for one declaration).
         # Re-validation applies the model's own construction semantics
         # (``revalidate_instances``): a value the constructor would coerce
