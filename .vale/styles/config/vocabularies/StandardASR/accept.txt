@@ -300,6 +300,7 @@
 (?i)rewriter
 (?i)rfind
 (?i)routable
+(?i)ruleset
 (?i)runbook
 (?i)runtime
 (?i)sanitization
