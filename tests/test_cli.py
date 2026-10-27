@@ -1164,6 +1164,35 @@ def test_cli_doctor(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixtu
     assert "Standard ASR" in output or "plugins" in output.lower()
 
 
+def test_cli_doctor_network_runs_the_endpoint_check_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Without --network doctor sends nothing; with it, a problem the endpoint
+    # check finds makes the command exit 1.
+    from standard_asr.toolchain import doctor as doctor_module
+
+    calls: list[None] = []
+
+    def no_plugins(*, group: str) -> list[object]:
+        return []
+
+    def check_endpoint() -> doctor_module.EndpointCheck:
+        calls.append(None)
+        return doctor_module.EndpointCheck(
+            "timed_out", "https://huggingface.co", "x", None, "No answer arrived.", "Fix.", {}
+        )
+
+    monkeypatch.setattr(doctor_module, "entry_points", no_plugins)
+    monkeypatch.setattr(doctor_module, "check_endpoint", check_endpoint)
+    assert cli.main(["doctor"]) == 0
+    assert "Network: not checked." in capsys.readouterr().out
+    assert calls == []
+    assert cli.main(["doctor", "--network"]) == 1
+    output = capsys.readouterr().out
+    assert "[FAIL] No answer arrived." in output
+    assert calls == [None]
+
+
 def test_cli_doctor_conflict_returns_1(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
