@@ -179,10 +179,42 @@ jobs:
         # paths and falls back to FFmpeg for everything else; the `[audio]` extra
         # is deliberately absent here so its soundfile and scipy constraints stay
         # out of the resolution this lane proves. FFmpeg is a system tool, not a
-        # Python dependency, so installing it keeps the resolution bare.
+        # Python dependency, so installing it keeps the resolution bare. The
+        # suite needs both `ffmpeg` and `ffprobe`.
+        #
+        # The binaries come from a static build that BtbN/FFmpeg-Builds
+        # publishes as a GitHub release, pinned by the three values below,
+        # instead of from apt. Ubuntu's ffmpeg package pulls 87 .deb files
+        # (63 MB) from the runner's mirror, azure.archive.ubuntu.com. That mirror
+        # at times serves them at 50-200 kB/s, which pushed this step into the
+        # 20-minute job timeout. Dependabot cannot see this URL, so bump the
+        # three values together by hand. BtbN deletes daily builds after 14 days
+        # and keeps the last build of each month for two years, so pick a
+        # month-end tag; this one lasts until about September 2028. The LGPL
+        # variant is enough: the suite only decodes audio, which needs none of
+        # the GPL-only libraries.
+        timeout-minutes: 5
+        env:
+          FFMPEG_RELEASE: "autobuild-2026-09-30-13-08"
+          FFMPEG_BUILD: "ffmpeg-n9.0.2-17-g2a571b6068-linux64-lgpl-9.0"
+          FFMPEG_SHA256: "2d41cbea0ca1a15029b638330740f78d6f5aeb062355bf425433fc938705350a"
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/${FFMPEG_BUILD}.tar.xz"
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE}/${FFMPEG_BUILD}.tar.xz"
+          # curl abandons a transfer that stays under 1 MiB/s for 20 seconds
+          # and retries it on a new connection; the step timeout caps the total.
+          if ! curl -fsSL --retry 3 --speed-limit 1048576 --speed-time 20 -o "${archive}" "${url}"; then
+            echo "::error::Could not download FFmpeg from ${url}."
+            exit 1
+          fi
+          echo "${FFMPEG_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/ffmpeg"
+          tar -xJf "${archive}" -C "${RUNNER_TEMP}/ffmpeg" --strip-components=2 \
+            "${FFMPEG_BUILD}/bin/ffmpeg" "${FFMPEG_BUILD}/bin/ffprobe"
+          echo "${RUNNER_TEMP}/ffmpeg" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/ffmpeg/ffmpeg" -version
+          "${RUNNER_TEMP}/ffmpeg/ffprobe" -version
       - name: Resolve the core dependencies at their lowest compatible versions
         run: |
           uv venv
