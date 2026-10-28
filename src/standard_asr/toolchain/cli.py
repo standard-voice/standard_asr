@@ -2071,8 +2071,10 @@ def _transcribe_artifact_preflight(
     warning names each contradicted claim and the command continues. When
     the report claims that inference may acquire artifacts while downloads
     are allowed, a second warning says the transcription may download and
-    how to block it. Caller-input, configuration, and other contract
-    failures remain loud.
+    how to block it. Otherwise, when the declaration allows inference to
+    acquire artifacts, the notice for an unknown readiness follows, without
+    the pointer to ``pull``, which stops on the same report. Caller-input,
+    configuration, and other contract failures remain loud.
 
     Args:
         asr: Configured engine instance.
@@ -2098,17 +2100,27 @@ def _transcribe_artifact_preflight(
         )
         return
     except ArtifactReportContradictionError as exc:
-        # The core builds this message from the declaration's field names; it
-        # carries no engine text, so it is printed as it is.
+        # The exception type is public, so plugin code can raise it with its
+        # own text: the message is scrubbed, and the claims are named from
+        # ``contradictions``, which scrubbing cannot remove.
         _print_error(
-            f"{_WARN} {exc} The plugin is at fault; report it to its authors. "
-            "Transcription continues."
+            f"{_WARN} The engine's artifact status contradicts its artifact declaration "
+            f"({', '.join(exc.contradictions)}). The plugin is at fault; report it to "
+            f"its authors. Transcription continues. {safe_exception_summary(exc)}"
         )
-        if "may_acquire_during_inference" in exc.contradictions and allow_downloads():
+        if "may_acquire_during_inference" in exc.contradictions:
+            if allow_downloads():
+                _print_error(
+                    f"{_WARN} This transcription may download inference artifacts "
+                    "although the engine declares that inference never does. Set "
+                    "STANDARD_ASR_ALLOW_DOWNLOAD=0 to block downloads."
+                )
+        elif _static_inference_acquisition(asr):
+            # No report survives the error, so readiness is unknown. `pull`
+            # stops on the same report, so the notice does not point to it.
             _print_error(
-                f"{_WARN} This transcription may download inference artifacts although "
-                "the engine declares that inference never does. Set "
-                "STANDARD_ASR_ALLOW_DOWNLOAD=0 to block downloads."
+                f"{_INFO} Required artifact readiness is unknown. This transcription "
+                "may acquire inference artifacts."
             )
         return
 

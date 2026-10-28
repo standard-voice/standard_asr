@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 import pytest
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from standard_asr import (
     RuntimeParams,
@@ -1855,11 +1855,145 @@ def test_cli_transcribe_artifact_contradiction_warns_and_continues(
 
     assert exit_code == 0
     assert captured.out == "artifact transcript\n"
-    assert "[WARN] Artifact status reports what the declared metadata does not allow" in (
-        captured.err
+    assert (
+        "[WARN] The engine's artifact status contradicts its artifact declaration "
+        "(may_acquire_during_inference)" in captured.err
     )
     assert "The plugin is at fault" in captured.err
+    assert "inference acquisition: inference may acquire an artifact" in captured.err
     assert ("may download inference artifacts" in captured.err) is (downloads == "1")
+    assert engine.transcribe_calls == 1
+
+
+def _collector_contradiction(
+    report: ArtifactReport,
+    declaration: ArtifactDeclaration,
+) -> ArtifactReportContradictionError:
+    """Return the error the core's report check raises for this pair."""
+
+    with pytest.raises(ArtifactReportContradictionError) as caught:
+        EngineBase._artifact_report_matches_declaration(  # pyright: ignore[reportPrivateUsage]
+            report, declaration
+        )
+    return caught.value
+
+
+def test_cli_transcribe_names_both_acquisition_contradictions(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The core's own check finds both acquisition contradictions in one
+    # report; the CLI names both and still warns that inference may download.
+    monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "1")
+    declaration = ArtifactDeclaration(
+        applicable=True,
+        supports_explicit_acquisition=False,
+        may_acquire_during_inference=False,
+    )
+    report = _artifact_report(
+        _artifact_requirement(
+            state=ARTIFACT_MISSING,
+            can_acquire_now=True,
+            may_acquire_during_inference=True,
+        )
+    )
+
+    class _NoAcquisitionEngine(_ArtifactCliEngine):
+        declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+            artifacts=declaration
+        )
+
+    engine = _NoAcquisitionEngine(
+        report, status_error=_collector_contradiction(report, declaration)
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "(supports_explicit_acquisition, may_acquire_during_inference)" in captured.err
+    assert "may download inference artifacts" in captured.err
+    assert "Required artifact readiness is unknown" not in captured.err
+    assert engine.transcribe_calls == 1
+
+
+@pytest.mark.parametrize("inference_may_acquire", [True, False])
+def test_cli_transcribe_explicit_contradiction_keeps_the_acquisition_notice(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    inference_may_acquire: bool,
+) -> None:
+    # A contradiction that does not concern inference still loses the report,
+    # so readiness is unknown: the notice follows the declaration, and it does
+    # not point to pull, which stops on the same report.
+    declaration = ArtifactDeclaration(
+        applicable=True,
+        supports_explicit_acquisition=False,
+        may_acquire_during_inference=inference_may_acquire,
+    )
+    report = _artifact_report(
+        _artifact_requirement(
+            state=ARTIFACT_MISSING,
+            can_acquire_now=True,
+            may_acquire_during_inference=inference_may_acquire,
+        )
+    )
+
+    class _NoExplicitEngine(_ArtifactCliEngine):
+        declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+            artifacts=declaration
+        )
+
+    error = _collector_contradiction(report, declaration)
+    assert error.contradictions == ("supports_explicit_acquisition",)
+    engine = _NoExplicitEngine(report, status_error=error)
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "(supports_explicit_acquisition)" in captured.err
+    assert (
+        "Required artifact readiness is unknown. This transcription may acquire "
+        "inference artifacts." in captured.err
+    ) is inference_may_acquire
+    assert "standard-asr pull" not in captured.err
+    assert "may download inference artifacts" not in captured.err
+    assert engine.transcribe_calls == 1
+
+
+class _SecretCount(BaseModel):
+    """Model whose validation error echoes the rejected input."""
+
+    count: int
+
+
+def test_cli_transcribe_contradiction_warning_scrubs_plugin_text(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The exception type is public, so a plugin can raise it with text that
+    # interpolates a ValidationError echoing a secret. The warning withholds
+    # that text and still names the claim from ``contradictions``.
+    secret = "sk-test-0123456789abcdef"
+    with pytest.raises(ValidationError) as caught:
+        _SecretCount.model_validate({"count": secret})
+    error = ArtifactReportContradictionError(
+        f"Report check failed: {caught.value}", contradictions=("applicable",)
+    )
+    error.__cause__ = caught.value
+    engine = _ArtifactCliEngine(_artifact_report(_artifact_requirement()), status_error=error)
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert secret not in captured.err
+    assert "(applicable)" in captured.err
+    assert "message withheld" in captured.err
     assert engine.transcribe_calls == 1
 
 
