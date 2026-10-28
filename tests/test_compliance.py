@@ -461,8 +461,9 @@ def class_dropping_factory() -> _ClassDroppingASR:  # pyright: ignore[reportUnus
 
 
 class _TaggedCapabilities(Capabilities):
-    # Private state that a deep copy does not reproduce equal.
-    _tag: object = PrivateAttr(default_factory=object)
+    # Private state that cannot be copied at all: the suite must neither copy
+    # it nor compare it.
+    _lock: object = PrivateAttr(default_factory=threading.Lock)
 
 
 class _AcmeBatch(BatchCapabilities):
@@ -517,6 +518,47 @@ class _UndeclaredASR(_GoodASR):
 
 def undeclared_factory() -> _UndeclaredASR:  # pyright: ignore[reportUnusedFunction]
     return _UndeclaredASR()
+
+
+class _RetypingASR(_GoodASR):
+    # While its effective tree is read, it rewrites `supported: true` in the
+    # class declaration to `1`, which the tree reads as unsupported, and
+    # returns an independent tree made before the change.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_feature": {"supported": True}}}
+    )
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        declared = type(self).declared_capabilities
+        before = Capabilities.model_validate(declared.model_dump())
+        assert declared.batch is not None
+        assert declared.batch.model_extra is not None
+        declared.batch.model_extra["x_acme_feature"]["supported"] = 1
+        return before
+
+
+def retyping_factory() -> _RetypingASR:  # pyright: ignore[reportUnusedFunction]
+    return _RetypingASR()
+
+
+class _RetypedShadowASR(_GoodASR):
+    # Shadows the class declaration with a tree that differs only in
+    # `supported: 1` instead of `true`.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_feature": {"supported": True}}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.declared_capabilities = Capabilities.model_validate(  # pyright: ignore[reportAttributeAccessIssue]
+            {"batch": {"x_acme_feature": {"supported": 1}}}
+        )
+
+
+def retyped_shadow_factory() -> _RetypedShadowASR:  # pyright: ignore[reportUnusedFunction]
+    return _RetypedShadowASR()
 
 
 class _ContainerRoleASR(_GoodASR):
@@ -940,6 +982,7 @@ def test_check_entrypoints_compares_what_the_tree_states_not_private_state() -> 
     # with its own typed field: nothing changes, so nothing is reported.
     report = check_entrypoints(registry=_registry("private_state_factory"))
     codes = {i.code for i in report.issues}
+    assert "engine_check_crashed" not in codes
     assert "declared_capabilities_mutated" not in codes
     assert "effective_widens_declared" not in codes
 
@@ -960,6 +1003,21 @@ def test_check_entrypoints_without_any_declaration_checks_the_effective_keys() -
     assert "missing_declared_capabilities" in codes
     assert "extension_reserved_key_malformed" in codes
     assert "effective_widens_declared" not in codes
+
+
+def test_check_entrypoints_tells_a_boolean_from_a_number_in_declarations() -> None:
+    # `True == 1` in Python, but the tree reads `supported: 1` as unsupported,
+    # so the change is a change; the effective tree is a valid old copy, so
+    # only the declaration checks can catch it.
+    try:
+        report = check_entrypoints(registry=_registry("retyping_factory"))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        _RetypingASR.declared_capabilities = Capabilities.model_validate(
+            {"batch": {"x_acme_feature": {"supported": True}}}
+        )
+    report = check_entrypoints(registry=_registry("retyped_shadow_factory"))
+    assert any(i.code == "instance_declared_capabilities_diverge" for i in report.issues)
 
 
 def test_check_entrypoints_reports_container_roles_without_crashing() -> None:

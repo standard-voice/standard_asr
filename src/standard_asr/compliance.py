@@ -564,15 +564,14 @@ def _check_engine_unguarded(
         )
         return
 
-    # Copy the class-level declaration before the factory builds the engine.
-    # The instance check compares the declaration with this copy to find out
-    # whether plugin code changed it while the suite built the engine and
-    # read its effective tree. The usual cause is an engine that edits a
-    # shallow model_copy() of the declaration, whose nested nodes are the
-    # declaration's own objects. A deep copy keeps every node's class, so
-    # the copy answers exactly as the declaration did.
+    # Record what the class-level declaration states before the factory
+    # builds the engine. The instance check compares the declaration with
+    # this record to find out whether plugin code changed it while the suite
+    # built the engine and read its effective tree. The usual cause is an
+    # engine that edits a shallow model_copy() of the declaration, whose
+    # nested nodes are the declaration's own objects.
     class_declared = _class_declared_capabilities(spec)
-    declared_snapshot = class_declared.model_copy(deep=True) if class_declared is not None else None
+    declared_snapshot = _tree_content(class_declared) if class_declared is not None else None
 
     try:
         instance = factory()
@@ -1261,20 +1260,24 @@ def _class_declared_capabilities(spec: ModelSpec) -> Capabilities | None:
 
 
 def _tree_content(node: object) -> object:
-    """Return what a capability tree states, without its private state.
+    """Return what a capability tree states, as new plain data.
 
-    Pydantic's ``==`` also compares private attributes, so a deep copy of a
-    ``Capabilities`` subclass that keeps an object in one would differ from
-    the original although the tree says the same thing. This reads the
-    fields of each node's own class, which ``model_dump()`` does not do for
-    a subclass held in a field annotated with its base, and the extras.
+    The result holds no object from the tree, so plugin code that edits the
+    tree later cannot change it, and it never copies a node's private
+    state, which pydantic's ``==`` would also compare and which may not be
+    copyable at all. It reads the fields of each node's own class, which
+    ``model_dump()`` does not do for a subclass held in a field annotated
+    with its base, and the extras. Each scalar keeps its type, because
+    ``True == 1`` in Python while the capability tree reads ``supported: 1``
+    as unsupported.
 
     Args:
         node: A capability tree, a node in one, or a value inside a node.
 
     Returns:
         A value that compares equal for two trees exactly when every node has
-        the same class, the same field values, and the same extras.
+        the same class, the same field values, and the same extras, with
+        every scalar of the same type.
     """
     if isinstance(node, BaseModel):
         fields = {name: _tree_content(getattr(node, name)) for name in type(node).model_fields}
@@ -1286,7 +1289,7 @@ def _tree_content(node: object) -> object:
         }
     if isinstance(node, list):
         return [_tree_content(value) for value in cast("list[object]", node)]
-    return node
+    return (type(node), node)
 
 
 def _check_instance_capabilities(
@@ -1295,29 +1298,30 @@ def _check_instance_capabilities(
     name: str,
     issues: list[ComplianceIssue],
     *,
-    declared_snapshot: Capabilities | None,
+    declared_snapshot: object | None,
 ) -> None:
     """Verify ``declared_capabilities`` and the ``effective ⊆ declared`` invariant.
 
     The effective tree is read first, because its getter is plugin code that
     may replace or remove either declaration; every declaration check runs
     on what is there after it. The effective tree is compared with the
-    declaration on the engine class as it was before the factory ran,
-    because discovery, ``show``, and ``GET /v1/capabilities`` read the
-    class. Two more problems are reported: an instance whose own
-    ``declared_capabilities`` attribute holds a different tree from the
-    class, and a class declaration that no longer equals
-    ``declared_snapshot``, which means plugin code changed, replaced, or
-    removed it after the snapshot was taken.
+    declaration on the engine class, because discovery, ``show``, and
+    ``GET /v1/capabilities`` read the class. Two more problems are
+    reported: an instance whose own ``declared_capabilities`` attribute
+    holds a different tree from the class, and a class declaration whose
+    content no longer equals ``declared_snapshot``, which means plugin code
+    changed, replaced, or removed it after the snapshot was taken. The
+    effective tree is then measured against the changed declaration, and
+    the engine fails the check on the change either way.
 
     Args:
         instance: The instantiated engine.
         spec: The entry point's model spec (to resolve the engine class).
         name: The model key (for issue attribution).
         issues: The mutable list of issues to append to.
-        declared_snapshot: A deep copy of the class-level declaration, taken
-            before the factory ran, or ``None`` when the class could not be
-            loaded or declared no ``Capabilities`` tree.
+        declared_snapshot: :func:`_tree_content` of the class-level
+            declaration, taken before the factory ran, or ``None`` when the
+            class could not be loaded or declared no ``Capabilities`` tree.
     """
     effective: object = None
     try:
@@ -1341,7 +1345,7 @@ def _check_instance_capabilities(
     declared = getattr(instance, "declared_capabilities", None)
     class_declared = _class_declared_capabilities(spec)
     if declared_snapshot is not None and (
-        class_declared is None or _tree_content(class_declared) != _tree_content(declared_snapshot)
+        class_declared is None or _tree_content(class_declared) != declared_snapshot
     ):
         issues.append(
             ComplianceIssue(
@@ -1388,11 +1392,11 @@ def _check_instance_capabilities(
                 model=name,
             )
         )
-    # Measure against what applications read before any engine existed: the
-    # class declaration as the snapshot recorded it. Without a snapshot the
-    # class could not be loaded, and the instance is the only declaration;
-    # without either, there is nothing to measure against.
-    baseline = declared_snapshot
+    # Measure against what applications read: the class declaration. When
+    # the class cannot be loaded or no longer holds a tree, the instance's
+    # declaration is the only one left; without either, there is nothing to
+    # measure against.
+    baseline = class_declared
     if baseline is None and isinstance(declared, Capabilities):
         baseline = declared
     if isinstance(effective, Capabilities):
