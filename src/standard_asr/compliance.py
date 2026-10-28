@@ -3342,11 +3342,12 @@ def check_effective_capabilities(
     does not have: the effective tree comes from the configuration, not
     from the hardware.
 
-    This function copies the class declaration when it starts, so
-    ``declared_capabilities_mutated`` reports only a change made while it
-    reads ``effective_capabilities``. A change made earlier, for example in
-    the engine's constructor, is reported by :func:`check_entrypoints`,
-    which copies the declaration before the factory runs.
+    This function records what the class declaration states when it
+    starts, so ``declared_capabilities_mutated`` reports only a change made
+    while it reads ``effective_capabilities``. A change made earlier, for
+    example in the engine's constructor, is reported by
+    :func:`check_entrypoints`, which records the declaration before the
+    factory runs.
 
     Args:
         engine: A configured engine instance.
