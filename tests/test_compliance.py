@@ -6897,3 +6897,17 @@ def test_check_effective_capabilities_reports_a_raising_surface(
     assert crashed[0].model == "dummy/demo"
     assert "broken" in crashed[0].message
     assert not report.passed
+
+
+class _WrongEffectiveThenRaisingSupportsASR(_RaisingSupportsASR):
+    effective_capabilities: ClassVar[Any] = {"batch": {}}
+
+
+def test_check_effective_capabilities_keeps_issues_found_before_a_crash() -> None:
+    report = check_effective_capabilities(
+        cast(StandardASR, _WrongEffectiveThenRaisingSupportsASR())
+    )
+    assert [i.code for i in report.issues] == [
+        "effective_capabilities_wrong_type",
+        "engine_check_crashed",
+    ]
