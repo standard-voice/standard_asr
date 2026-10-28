@@ -16,7 +16,7 @@ from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import pytest
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from standard_asr import TranscriptionResult, finalize_result
 from standard_asr import compliance as compliance_module
@@ -460,6 +460,65 @@ def class_dropping_factory() -> _ClassDroppingASR:  # pyright: ignore[reportUnus
     return _ClassDroppingASR()
 
 
+class _TaggedCapabilities(Capabilities):
+    # Private state that a deep copy does not reproduce equal.
+    _tag: object = PrivateAttr(default_factory=object)
+
+
+class _AcmeBatch(BatchCapabilities):
+    # A typed field only this subclass has; `Capabilities.batch` is
+    # annotated with the base class, so model_dump() leaves the field out.
+    x_acme_flag: TraitFlagCapability = Field(
+        default_factory=lambda: TraitFlagCapability(supported=True)
+    )
+
+
+class _PrivateStateASR(_GoodASR):
+    declared_capabilities: ClassVar[Capabilities] = _TaggedCapabilities.model_validate(
+        {"batch": _AcmeBatch(), "x_acme_langs": {"supported": True, "codes": ["en", "fr"]}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def private_state_factory() -> _PrivateStateASR:  # pyright: ignore[reportUnusedFunction]
+    return _PrivateStateASR()
+
+
+class _DroppedAndWidenedASR(_GoodASR):
+    # Removes the instance's declaration and widens its effective tree while
+    # the tree is read: the snapshot still measures the widening.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate({"batch": {}})
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        self.declared_capabilities = None  # pyright: ignore[reportAttributeAccessIssue]
+        return Capabilities.model_validate(
+            {
+                "batch": {
+                    "x_acme_feature": {"supported": True, "mode": 123},
+                    "diarization": {"supported": True},
+                }
+            }
+        )
+
+
+def dropped_and_widened_factory() -> _DroppedAndWidenedASR:  # pyright: ignore[reportUnusedFunction]
+    return _DroppedAndWidenedASR()
+
+
+class _UndeclaredASR(_GoodASR):
+    # Neither the class nor the instance carries a declaration, so there is
+    # nothing to measure the effective tree against.
+    declared_capabilities: ClassVar[Any] = None
+    effective_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_level": {"mode": 1}}}
+    )
+
+
+def undeclared_factory() -> _UndeclaredASR:  # pyright: ignore[reportUnusedFunction]
+    return _UndeclaredASR()
+
+
 class _ContainerRoleASR(_GoodASR):
     # A role that is a JSON array or object must be reported, not crash the
     # reserved-key check.
@@ -874,6 +933,33 @@ def test_check_entrypoints_reports_a_declaration_the_effective_getter_removed() 
         assert "missing_declared_capabilities" in codes
     finally:
         _ClassDroppingASR.declared_capabilities = original
+
+
+def test_check_entrypoints_compares_what_the_tree_states_not_private_state() -> None:
+    # A Capabilities subclass with private state, and a container subclass
+    # with its own typed field: nothing changes, so nothing is reported.
+    report = check_entrypoints(registry=_registry("private_state_factory"))
+    codes = {i.code for i in report.issues}
+    assert "declared_capabilities_mutated" not in codes
+    assert "effective_widens_declared" not in codes
+
+
+def test_check_entrypoints_keeps_checking_after_the_declaration_is_removed() -> None:
+    report = check_entrypoints(registry=_registry("dropped_and_widened_factory"))
+    codes = {i.code for i in report.issues}
+    assert {
+        "missing_declared_capabilities",
+        "effective_widens_declared",
+        "extension_reserved_key_malformed",
+    } <= codes
+
+
+def test_check_entrypoints_without_any_declaration_checks_the_effective_keys() -> None:
+    report = check_entrypoints(registry=_registry("undeclared_factory"))
+    codes = {i.code for i in report.issues}
+    assert "missing_declared_capabilities" in codes
+    assert "extension_reserved_key_malformed" in codes
+    assert "effective_widens_declared" not in codes
 
 
 def test_check_entrypoints_reports_container_roles_without_crashing() -> None:

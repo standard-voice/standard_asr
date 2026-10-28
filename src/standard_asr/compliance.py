@@ -1260,6 +1260,35 @@ def _class_declared_capabilities(spec: ModelSpec) -> Capabilities | None:
     return declared if isinstance(declared, Capabilities) else None
 
 
+def _tree_content(node: object) -> object:
+    """Return what a capability tree states, without its private state.
+
+    Pydantic's ``==`` also compares private attributes, so a deep copy of a
+    ``Capabilities`` subclass that keeps an object in one would differ from
+    the original although the tree says the same thing. This reads the
+    fields of each node's own class, which ``model_dump()`` does not do for
+    a subclass held in a field annotated with its base, and the extras.
+
+    Args:
+        node: A capability tree, a node in one, or a value inside a node.
+
+    Returns:
+        A value that compares equal for two trees exactly when every node has
+        the same class, the same field values, and the same extras.
+    """
+    if isinstance(node, BaseModel):
+        fields = {name: _tree_content(getattr(node, name)) for name in type(node).model_fields}
+        extras = {key: _tree_content(value) for key, value in (node.model_extra or {}).items()}
+        return (type(node), fields, extras)
+    if isinstance(node, dict):
+        return {
+            key: _tree_content(value) for key, value in cast("dict[object, object]", node).items()
+        }
+    if isinstance(node, list):
+        return [_tree_content(value) for value in cast("list[object]", node)]
+    return node
+
+
 def _check_instance_capabilities(
     instance: object,
     spec: ModelSpec,
@@ -1311,7 +1340,9 @@ def _check_instance_capabilities(
         )
     declared = getattr(instance, "declared_capabilities", None)
     class_declared = _class_declared_capabilities(spec)
-    if declared_snapshot is not None and class_declared != declared_snapshot:
+    if declared_snapshot is not None and (
+        class_declared is None or _tree_content(class_declared) != _tree_content(declared_snapshot)
+    ):
         issues.append(
             ComplianceIssue(
                 level="error",
@@ -1337,8 +1368,11 @@ def _check_instance_capabilities(
                 model=name,
             )
         )
-        return
-    if class_declared is not None and declared is not class_declared and declared != class_declared:
+    elif (
+        class_declared is not None
+        and declared is not class_declared
+        and _tree_content(declared) != _tree_content(class_declared)
+    ):
         issues.append(
             ComplianceIssue(
                 level="error",
@@ -1356,13 +1390,20 @@ def _check_instance_capabilities(
         )
     # Measure against what applications read before any engine existed: the
     # class declaration as the snapshot recorded it. Without a snapshot the
-    # class could not be loaded, and the instance is the only declaration.
-    baseline = declared_snapshot if declared_snapshot is not None else declared
+    # class could not be loaded, and the instance is the only declaration;
+    # without either, there is nothing to measure against.
+    baseline = declared_snapshot
+    if baseline is None and isinstance(declared, Capabilities):
+        baseline = declared
     if isinstance(effective, Capabilities):
-        violations = list(
-            itertools.islice(
-                _narrowing_violations(baseline, effective), _MAX_REPORTED_VIOLATIONS + 1
+        violations = (
+            list(
+                itertools.islice(
+                    _narrowing_violations(baseline, effective), _MAX_REPORTED_VIOLATIONS + 1
+                )
             )
+            if baseline is not None
+            else []
         )
         if violations:
             shown = "; ".join(v.describe() for v in violations[:_MAX_REPORTED_VIOLATIONS])
