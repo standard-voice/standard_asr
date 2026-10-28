@@ -420,21 +420,22 @@ def test_supported_paths_are_the_queryable_paths_that_supports_accepts(
     }
 
 
-def test_covers_rejects_a_dropped_or_malformed_mode() -> None:
-    # A supported enum/mode node that stops stating its mode, or states one
-    # that is not a token, proves no narrowing of the declared mode.
+def test_covers_rejects_a_dropped_mode_and_reads_a_malformed_one_as_off() -> None:
+    # A supported vendor node that stops stating its mode proves no narrowing
+    # of the declared mode.
     declared = _x_caps({"x_m": {"mode": "alpha"}})
     assert declared.covers(_x_caps({"x_m": {"mode": "alpha"}})) is True
     assert declared.covers(_x_caps({"x_m": {"supported": True}})) is False
-    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": None}})) is False
-    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": 1}})) is False
-    # Disabling the node stays a narrowing.
+    # A mode that is not a token switches the node off (spec R4), even next to
+    # `supported: true`; switching a node off is a narrowing.
+    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": None}})) is True
+    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": 1}})) is True
     assert declared.covers(_x_caps({"x_m": {"supported": False}})) is True
     assert declared.covers(_x_caps({"x_m": {"mode": "unsupported"}})) is True
-    # A declared mode that is not a token states no mode restriction.
+    # A declared node with a malformed mode offers nothing to keep.
     malformed = _x_caps({"x_m": {"supported": True, "mode": 1}})
     assert malformed.covers(malformed) is True
-    assert malformed.covers(_x_caps({"x_m": {"mode": "alpha"}})) is True
+    assert malformed.covers(_x_caps({"x_m": {"mode": "alpha"}})) is False
 
 
 def test_covers_compares_standard_bounds_only() -> None:
@@ -850,21 +851,22 @@ def test_dict_node_supported_is_strict_boolean() -> None:
     assert cj["batch"]["x_real_true"]["supported"] is True
 
 
-def test_dict_node_mode_does_not_override_explicit_supported_false() -> None:
-    # An explicit `supported: false` is authoritative: a `mode` sub-key on the
-    # same node MUST NOT raise it back to true (fail-closed). A node
-    # carrying only `mode` (no `supported`) still derives from the mode.
+def test_dict_node_supported_and_mode_must_both_say_supported() -> None:
+    # A node carrying both keys is supported only when both say so (spec R4):
+    # a `mode` never reopens an explicit `supported: false`, and
+    # `supported: true` never overrides a `mode` that says unsupported. A
+    # node carrying only one of the keys derives from that key.
     caps = _x_caps(
         {
             "x_off_with_mode": {"supported": False, "mode": "seamless"},
             "x_on_with_mode": {"supported": True, "mode": "unsupported"},
+            "x_on_with_token": {"supported": True, "mode": "seamless"},
             "x_mode_only": {"mode": "seamless"},
         }
     )
     assert caps.supports("batch.x_off_with_mode") is False
-    # An explicit supported=True is likewise authoritative over the mode key.
-    assert caps.supports("batch.x_on_with_mode") is True
-    # No `supported` key -> mode governs.
+    assert caps.supports("batch.x_on_with_mode") is False
+    assert caps.supports("batch.x_on_with_token") is True
     assert caps.supports("batch.x_mode_only") is True
 
 
@@ -1165,13 +1167,12 @@ def test_mutable_mid_stream_covers_rejects_widening() -> None:
 
 
 def test_streaming_capabilities_accepts_plain_guidance_caps() -> None:
-    # backward tolerance: the streaming guidance field is typed as the
-    # base GuidanceCapabilities, so an engine that declares a plain GuidanceCapabilities still
-    # validates. The before-validator normalizes it to the streaming subtype, so
-    # ``mutable_mid_stream`` is a real (fail-closed) node rather than an invisible
-    # extra -- keeping the typed Python tree and the capability JSON document in
-    # agreement.
-    streaming = StreamingCapabilities(guidance=GuidanceCapabilities())
+    # A plain GuidanceCapabilities still validates at run time, although the
+    # field is typed as the streaming subtype. The before-validator re-homes
+    # it, so ``mutable_mid_stream`` is a real (fail-closed) node rather than
+    # an invisible extra -- keeping the typed Python tree and the capability
+    # JSON document in agreement.
+    streaming = StreamingCapabilities.model_validate({"guidance": GuidanceCapabilities()})
     assert type(streaming.guidance) is StreamingGuidanceCapabilities
     caps = Capabilities(streaming=streaming)
     assert caps.supports("streaming.guidance.mutable_mid_stream") is False
@@ -2006,9 +2007,10 @@ def test_value_readers_degrade_on_unexpected_shapes() -> None:
     assert summarize("x" * 41) == "a 41-character string"
     assert summarize(["word", "segment"]) == '["word", "segment"]'
     assert summarize(["a-long-token"] * 10) == "a list of 10 items"
-    assert summarize([{"nested": 1}]) == "a list of 1 items"
+    assert summarize([{"nested": 1}]) == "a list of 1 item"
     assert summarize({"a": 1, "b": 2}) == "an object with 2 keys"
-    assert summarize(b"raw") == "a bytes"
+    assert summarize(b"raw") == "a value of type bytes"
+    assert summarize({"a": 1}) == "an object with 1 key"
 
 
 def test_an_unknown_effective_mode_is_not_described_as_looser() -> None:
@@ -2030,3 +2032,89 @@ def test_an_unknown_effective_mode_is_not_described_as_looser() -> None:
         v.comparable
         for v in cap_module._narrowing_violations(declared, stronger)  # pyright: ignore[reportPrivateUsage]
     ] == [True]
+
+
+def test_streaming_guidance_survives_a_dump_round_trip() -> None:
+    # Pydantic serializes a field by its annotation. With the base class as
+    # the annotation, model_dump() dropped mutable_mid_stream, and a tree
+    # rebuilt from the dump read the flag as unsupported.
+    declared = Capabilities.model_validate(
+        {
+            "streaming": {"guidance": {"mutable_mid_stream": {"supported": True}}},
+            "streaming_input": {"supported": True},
+        }
+    )
+    rebuilt = Capabilities.model_validate(declared.model_dump())
+    assert rebuilt == declared
+    assert rebuilt.supports("streaming.guidance.mutable_mid_stream")
+    assert rebuilt.covers(declared)
+    plain = StreamingCapabilities.model_validate(
+        {"guidance": GuidanceCapabilities(prompt=PromptCapability(supported=True))}
+    )
+    assert type(plain.guidance) is StreamingGuidanceCapabilities
+    assert plain.guidance.prompt.supported
+
+
+def test_every_tree_field_is_annotated_with_the_class_it_holds() -> None:
+    # A field annotated with a base class while it holds a subclass loses the
+    # subclass's fields in model_dump(); the dump-edit-validate recipe for
+    # building an effective tree would then drop them.
+    seen: set[type[BaseModel]] = set()
+
+    def walk(model: type[BaseModel]) -> None:
+        if model in seen:
+            return
+        seen.add(model)
+        for name, field in model.model_fields.items():
+            annotations = [field.annotation, *typing.get_args(field.annotation)]
+            for annotation in annotations:
+                if not (isinstance(annotation, type) and issubclass(annotation, BaseModel)):
+                    continue
+                if field.default_factory is not None and annotation is field.annotation:
+                    default: object = field.get_default(call_default_factory=True)
+                    held = type(default)
+                    assert held is annotation, f"{model.__name__}.{name} holds {held.__name__}"
+                walk(annotation)
+
+    walk(Capabilities)
+    assert StreamingGuidanceCapabilities in seen
+
+
+@pytest.mark.parametrize(
+    ("node", "supported"),
+    [
+        ({"supported": True, "mode": 123}, False),
+        ({"supported": True, "mode": None}, False),
+        ({"supported": True, "mode": []}, False),
+        ({"supported": True, "mode": {}}, False),
+        ({"supported": True, "mode": "none"}, False),
+        ({"supported": False, "mode": "fast"}, False),
+        ({"supported": "true", "mode": "fast"}, False),
+        ({"supported": True, "mode": "fast"}, True),
+        ({"mode": "fast"}, True),
+        ({"supported": True}, True),
+    ],
+)
+def test_a_vendor_node_is_supported_only_when_every_reserved_key_says_so(
+    node: dict[str, object], supported: bool
+) -> None:
+    # Spec R4: a malformed `supported` or `mode` reads as unsupported, so
+    # `supported: true` next to a malformed or negative `mode` is not enough.
+    caps = Capabilities.model_validate(
+        {
+            "batch": {
+                "x_acme_feature": {
+                    **node,
+                    "role": "requestable",
+                    "x_acme_detail": {"supported": True},
+                }
+            }
+        }
+    )
+    assert caps.supports("batch.x_acme_feature") is supported
+    assert caps.can_request("batch.x_acme_feature") is supported
+    assert caps.supports("batch.x_acme_feature.x_acme_detail") is supported
+    assert ("batch.x_acme_feature.x_acme_detail" in set(caps.iter_supported_paths())) is supported
+    document = caps.to_protocol_dict()["batch"]["x_acme_feature"]
+    assert document["supported"] is supported
+    assert document["x_acme_detail"]["supported"] is supported

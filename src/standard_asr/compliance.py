@@ -13,7 +13,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Literal, Protocol, cast
+from typing import ClassVar, Final, Literal, Protocol, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -569,9 +569,10 @@ def _check_engine_unguarded(
     # whether plugin code changed it while the suite built the engine and
     # read its effective tree. The usual cause is an engine that edits a
     # shallow model_copy() of the declaration, whose nested nodes are the
-    # declaration's own objects.
+    # declaration's own objects. A deep copy keeps every node's class, so
+    # the copy answers exactly as the declaration did.
     class_declared = _class_declared_capabilities(spec)
-    declared_snapshot = class_declared.model_dump() if class_declared is not None else None
+    declared_snapshot = class_declared.model_copy(deep=True) if class_declared is not None else None
 
     try:
         instance = factory()
@@ -1265,39 +1266,30 @@ def _check_instance_capabilities(
     name: str,
     issues: list[ComplianceIssue],
     *,
-    declared_snapshot: dict[str, Any] | None,
+    declared_snapshot: Capabilities | None,
 ) -> None:
     """Verify ``declared_capabilities`` and the ``effective ⊆ declared`` invariant.
 
-    The effective tree is compared with the declaration on the engine class
-    as it was before the factory ran, because discovery, ``show``, and
-    ``GET /v1/capabilities`` read the class. The declarations are read again
-    after the effective tree, so a getter that changes them is caught too.
-    Two more problems are reported: an instance whose own
+    The effective tree is read first, because its getter is plugin code that
+    may replace or remove either declaration; every declaration check runs
+    on what is there after it. The effective tree is compared with the
+    declaration on the engine class as it was before the factory ran,
+    because discovery, ``show``, and ``GET /v1/capabilities`` read the
+    class. Two more problems are reported: an instance whose own
     ``declared_capabilities`` attribute holds a different tree from the
     class, and a class declaration that no longer equals
-    ``declared_snapshot``, which means plugin code changed or replaced it
-    after the snapshot was taken.
+    ``declared_snapshot``, which means plugin code changed, replaced, or
+    removed it after the snapshot was taken.
 
     Args:
         instance: The instantiated engine.
         spec: The entry point's model spec (to resolve the engine class).
         name: The model key (for issue attribution).
         issues: The mutable list of issues to append to.
-        declared_snapshot: ``model_dump()`` of the class-level declaration,
-            taken before the factory ran, or ``None`` when the class could
-            not be loaded.
+        declared_snapshot: A deep copy of the class-level declaration, taken
+            before the factory ran, or ``None`` when the class could not be
+            loaded or declared no ``Capabilities`` tree.
     """
-    if not isinstance(getattr(instance, "declared_capabilities", None), Capabilities):
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="missing_declared_capabilities",
-                message=("Instance is missing a Capabilities 'declared_capabilities' attribute."),
-                model=name,
-            )
-        )
-        return
     effective: object = None
     try:
         effective = getattr(instance, "effective_capabilities", None)
@@ -1317,36 +1309,9 @@ def _check_instance_capabilities(
                 model=name,
             )
         )
-    # Read both declarations only now: the effective getter is plugin code
-    # and may have replaced either one.
     declared = getattr(instance, "declared_capabilities", None)
     class_declared = _class_declared_capabilities(spec)
-    if (
-        class_declared is not None
-        and isinstance(declared, Capabilities)
-        and declared is not class_declared
-        and declared != class_declared
-    ):
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="instance_declared_capabilities_diverge",
-                message=(
-                    "The instance's declared_capabilities differ from the class-level "
-                    "declaration. Discovery, `standard-asr show`, and "
-                    "GET /v1/capabilities read the class, so they describe another "
-                    "tree than the one this instance reports. Keep "
-                    "declared_capabilities a class variable and do not assign it on "
-                    "the instance; narrow through effective_capabilities instead."
-                ),
-                model=name,
-            )
-        )
-    if (
-        declared_snapshot is not None
-        and class_declared is not None
-        and class_declared.model_dump() != declared_snapshot
-    ):
+    if declared_snapshot is not None and class_declared != declared_snapshot:
         issues.append(
             ComplianceIssue(
                 level="error",
@@ -1363,15 +1328,36 @@ def _check_instance_capabilities(
                 model=name,
             )
         )
+    if not isinstance(declared, Capabilities):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="missing_declared_capabilities",
+                message=("Instance is missing a Capabilities 'declared_capabilities' attribute."),
+                model=name,
+            )
+        )
+        return
+    if class_declared is not None and declared is not class_declared and declared != class_declared:
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="instance_declared_capabilities_diverge",
+                message=(
+                    "The instance's declared_capabilities differ from the class-level "
+                    "declaration. Discovery, `standard-asr show`, and "
+                    "GET /v1/capabilities read the class, so they describe another "
+                    "tree than the one this instance reports. Keep "
+                    "declared_capabilities a class variable and do not assign it on "
+                    "the instance; narrow through effective_capabilities instead."
+                ),
+                model=name,
+            )
+        )
     # Measure against what applications read before any engine existed: the
     # class declaration as the snapshot recorded it. Without a snapshot the
     # class could not be loaded, and the instance is the only declaration.
-    if declared_snapshot is not None:
-        baseline = Capabilities.model_validate(declared_snapshot)
-    elif isinstance(declared, Capabilities):
-        baseline = declared
-    else:  # pragma: no cover - the getter removed the declaration it was checked for
-        return
+    baseline = declared_snapshot if declared_snapshot is not None else declared
     if isinstance(effective, Capabilities):
         violations = list(
             itertools.islice(

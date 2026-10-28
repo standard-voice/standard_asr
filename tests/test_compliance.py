@@ -49,12 +49,12 @@ from standard_asr.contract.capabilities import (
     Capabilities,
     DiarizationCapability,
     FinalityCapability,
-    GuidanceCapabilities,
     LanguageCapabilities,
     LanguageOverrideCapability,
     PromptCapability,
     PromptConstraints,
     StreamingCapabilities,
+    StreamingGuidanceCapabilities,
     StreamTimestampsCapability,
     TraitFlagCapability,
     WordTimestampsCapability,
@@ -415,6 +415,49 @@ class _LateShadowingASR(_GoodASR):
 
 def late_shadowing_factory() -> _LateShadowingASR:  # pyright: ignore[reportUnusedFunction]
     return _LateShadowingASR()
+
+
+class _StreamingGuidanceASR(_GoodASR):
+    # Declares a flag that only the streaming guidance subclass has; the
+    # effective tree is the declaration itself, so nothing is widened.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "streaming": {"guidance": {"mutable_mid_stream": {"supported": True}}},
+            "streaming_input": {"supported": True},
+        }
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def streaming_guidance_factory() -> _StreamingGuidanceASR:  # pyright: ignore[reportUnusedFunction]
+    return _StreamingGuidanceASR()
+
+
+class _DroppingDeclarationASR(_GoodASR):
+    # Removes the instance's declaration while its effective tree is read.
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        self.declared_capabilities = None  # pyright: ignore[reportAttributeAccessIssue]
+        return _CAPS
+
+
+def dropping_declaration_factory() -> _DroppingDeclarationASR:  # pyright: ignore[reportUnusedFunction]
+    return _DroppingDeclarationASR()
+
+
+class _ClassDroppingASR(_GoodASR):
+    # Replaces the class declaration with a value that is not a tree while
+    # its effective tree is read.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate({"batch": {}})
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        type(self).declared_capabilities = None  # pyright: ignore[reportAttributeAccessIssue]
+        return Capabilities.model_validate({"batch": {}})
+
+
+def class_dropping_factory() -> _ClassDroppingASR:  # pyright: ignore[reportUnusedFunction]
+    return _ClassDroppingASR()
 
 
 class _ContainerRoleASR(_GoodASR):
@@ -809,6 +852,28 @@ def test_check_entrypoints_rereads_declarations_after_the_effective_getter() -> 
         _ReassigningASR.declared_capabilities = original
     report = check_entrypoints(registry=_registry("late_shadowing_factory"))
     assert any(i.code == "instance_declared_capabilities_diverge" for i in report.issues)
+
+
+def test_check_entrypoints_keeps_streaming_guidance_flags_in_its_snapshot() -> None:
+    # The snapshot keeps every node's class, so a flag that only the
+    # streaming guidance subclass has is not lost and then read as widened.
+    report = check_entrypoints(registry=_registry("streaming_guidance_factory"))
+    codes = {i.code for i in report.issues}
+    assert "effective_widens_declared" not in codes
+    assert "declared_capabilities_mutated" not in codes
+
+
+def test_check_entrypoints_reports_a_declaration_the_effective_getter_removed() -> None:
+    report = check_entrypoints(registry=_registry("dropping_declaration_factory"))
+    assert any(i.code == "missing_declared_capabilities" for i in report.issues)
+    original = _ClassDroppingASR.declared_capabilities
+    try:
+        report = check_entrypoints(registry=_registry("class_dropping_factory"))
+        codes = {i.code for i in report.issues}
+        assert "declared_capabilities_mutated" in codes
+        assert "missing_declared_capabilities" in codes
+    finally:
+        _ClassDroppingASR.declared_capabilities = original
 
 
 def test_check_entrypoints_reports_container_roles_without_crashing() -> None:
@@ -4200,7 +4265,7 @@ class _AllSupportedStreamEngine(_GatingStreamEngine):
             word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            guidance=StreamingGuidanceCapabilities(prompt=PromptCapability(supported=True)),
             diarization=DiarizationCapability(supported=True),
         ),
         streaming_input=TraitFlagCapability(supported=True),
@@ -4220,7 +4285,7 @@ class _PromptConstrainedStreamEngine(_GatingStreamEngine):
             word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCapabilities(
+            guidance=StreamingGuidanceCapabilities(
                 prompt=PromptCapability(supported=True, constraints=PromptConstraints(max_tokens=3))
             ),
             diarization=DiarizationCapability(supported=True),
@@ -4236,7 +4301,7 @@ class _GranularityLimitedStreamEngine(_GatingStreamEngine):
     declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
             word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
-            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            guidance=StreamingGuidanceCapabilities(prompt=PromptCapability(supported=True)),
             diarization=DiarizationCapability(supported=True),
         ),
         streaming_input=TraitFlagCapability(supported=True),
@@ -4530,7 +4595,7 @@ class _DiarizationUnsupportedStreamEngine(_GatingStreamEngine):
             word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            guidance=StreamingGuidanceCapabilities(prompt=PromptCapability(supported=True)),
         ),
         streaming_input=TraitFlagCapability(supported=True),
         streaming_output=TraitFlagCapability(supported=True),
@@ -4590,7 +4655,7 @@ class _ExtremeBudgetEngine(_GatingStreamEngine):
     declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
             word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
-            guidance=GuidanceCapabilities(
+            guidance=StreamingGuidanceCapabilities(
                 prompt=PromptCapability(
                     supported=True, constraints=PromptConstraints(max_tokens=10**9)
                 )
@@ -4625,7 +4690,7 @@ def test_streaming_gating_extreme_max_tokens_without_other_probe_is_clean() -> N
                 word_timestamps=WordTimestampsCapability(
                     supported=True, granularities=["word", "segment", "char"]
                 ),
-                guidance=GuidanceCapabilities(
+                guidance=StreamingGuidanceCapabilities(
                     prompt=PromptCapability(
                         supported=True, constraints=PromptConstraints(max_tokens=10**9)
                     )

@@ -788,17 +788,14 @@ class StreamingCapabilities(_Container):
     language: LanguageCapabilities = Field(default_factory=LanguageCapabilities)
     word_timestamps: WordTimestampsCapability = Field(default_factory=WordTimestampsCapability)
     diarization: DiarizationCapability = Field(default_factory=DiarizationCapability)
-    # Typed as the base GuidanceCapabilities so an engine that declares a plain
-    # GuidanceCapabilities still validates (backward tolerance), but ``_coerce_streaming_
-    # guidance`` below normalizes every provided value to the StreamingGuidanceCapabilities
-    # subtype so the queryable ``mutable_mid_stream`` flag is a real typed node on
-    # EVERY construction path (default, typed instance, plain-base instance, and
-    # dict / model_validate / JSON input). Without that, a value supplied as a dict or a
-    # plain GuidanceCapabilities would land the flag in ``model_extra``, vanishing from
-    # supports()/covers() while still advertised by to_protocol_dict() -- a two-layer
-    # desync and a covers() declared=false -> effective=true
-    # widening bypass.
-    guidance: GuidanceCapabilities = Field(default_factory=StreamingGuidanceCapabilities)
+    # Typed as the class the field always holds. Pydantic serializes a field by
+    # its annotation, so an annotation of the base GuidanceCapabilities made
+    # model_dump() drop ``mutable_mid_stream``, and a tree rebuilt from the dump
+    # read the flag as unsupported. ``_coerce_streaming_guidance`` below still
+    # accepts a plain GuidanceCapabilities and re-homes it, so the flag is a
+    # typed node on every construction path; in ``model_extra`` it would vanish
+    # from supports() and covers() while to_protocol_dict() still advertised it.
+    guidance: StreamingGuidanceCapabilities = Field(default_factory=StreamingGuidanceCapabilities)
     emits_partials: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
     re_segments: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
     partial_stability: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
@@ -811,15 +808,15 @@ class StreamingCapabilities(_Container):
     def _coerce_streaming_guidance(cls, value: object) -> object:
         """Normalize the streaming guidance node to :class:`StreamingGuidanceCapabilities`.
 
-        The field is annotated as the base :class:`GuidanceCapabilities` for backward
-        tolerance, but the runtime node MUST be the streaming subtype on every
-        construction path so that ``mutable_mid_stream`` is a real typed field
-        rather than an invisible ``model_extra``. Without this, a value supplied
-        as a dict (the ``model_validate`` path, which JSON input takes) or as a
-        plain :class:`GuidanceCapabilities` instance would be coerced to the base type and
-        the flag would vanish from ``supports()`` / ``covers()`` while still being
-        advertised by ``to_protocol_dict()`` -- a two-layer desync
-        and a ``covers()`` ``declared=false -> effective=true`` widening bypass.
+        The node MUST be the streaming subtype on every construction path, so
+        that ``mutable_mid_stream`` is a real typed field rather than an
+        invisible ``model_extra``. A dict (the ``model_validate`` path, which
+        JSON input takes) validates as the subtype. A plain
+        :class:`GuidanceCapabilities` instance is not one, so this validator
+        re-homes it instead of rejecting it. Without that, the flag would
+        vanish from ``supports()`` / ``covers()`` while ``to_protocol_dict()``
+        still advertised it -- a two-layer desync and a ``covers()``
+        ``declared=false -> effective=true`` widening bypass.
 
         Args:
             value: The raw guidance input (subtype instance, base instance, dict,
@@ -1207,24 +1204,22 @@ def _derive_supported(node: object) -> bool:
         return False
     if isinstance(node, dict):
         mapping = cast("dict[str, object]", node)
-        # An explicit `supported` is the authoritative flag for the flag and
-        # bounded shapes and is read as a STRICT boolean: only a real ``True`` counts
-        # as supported. A non-bool (for example, the STRING "false", truthy in Python, or
-        # a number) is a malformed declaration and is fail-closed to ``False`` --
-        # never silently promoted to supported. An explicit `supported` is also
-        # checked BEFORE `mode`: a `mode` sub-key on the same node MUST NOT raise
-        # an explicit ``supported: false`` back to true (fail-closed).
-        if "supported" in mapping:
-            return mapping["supported"] is True
-        if "mode" in mapping:
-            mode = mapping["mode"]
-            # A `mode` value MUST be a string mode token. A non-string (bool,
-            # number, None, and so on) is a malformed declaration and is fail-CLOSED to
-            # ``False`` -- never silently promoted to supported --
-            # mirroring the strict-boolean reading of `supported` above. Without
-            # the ``isinstance`` guard, ``True``/``1`` would pass ``not in`` (a
-            # frozenset of strings) and be wrongly reported as supported.
-            return isinstance(mode, str) and mode not in _UNSUPPORTED_MODES
+        # Each of the two keys present must say supported (spec R4), so a
+        # malformed or negative value in either one is fail-CLOSED. `supported`
+        # is a STRICT boolean: a non-bool (for example, the STRING "false",
+        # truthy in Python, or a number) never counts as supported. `mode` must
+        # be a string token outside the unsupported set; without the
+        # ``isinstance`` guard, ``True``/``1`` would pass ``not in`` (a
+        # frozenset of strings). A `mode` therefore never reopens an explicit
+        # ``supported: false``, and ``supported: true`` never overrides a
+        # `mode` that is malformed or says unsupported.
+        if "supported" in mapping or "mode" in mapping:
+            if "supported" in mapping and mapping["supported"] is not True:
+                return False
+            mode = mapping.get("mode")
+            return "mode" not in mapping or (
+                isinstance(mode, str) and mode not in _UNSUPPORTED_MODES
+            )
         # A raw dict with neither `supported` nor `mode` is NOT a
         # capability node -- it is non-capability data (a bare `constraints` dict
         # like {"max": 5}, a structural grouping, or a malformed vendor node that
@@ -1821,10 +1816,11 @@ def _summarize(value: object) -> str:
             text = json.dumps(items)
             if len(text) <= 60:
                 return text
-        return f"a list of {len(items)} items"
+        return f"a list of {len(items)} item{'' if len(items) == 1 else 's'}"
     if isinstance(value, dict):
-        return f"an object with {len(cast('dict[str, object]', value))} keys"
-    return f"a {type(value).__name__}"
+        size = len(cast("dict[str, object]", value))
+        return f"an object with {size} key{'' if size == 1 else 's'}"
+    return f"a value of type {type(value).__name__}"
 
 
 __all__ = [
