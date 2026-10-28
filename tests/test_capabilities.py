@@ -36,6 +36,7 @@ from standard_asr.contract.capabilities import (
     StreamingGuidanceCapabilities,
     StreamTimestampsCapability,
     TraitFlagCapability,
+    WordTimestampGranularityName,
     WordTimestampsCapability,
     _children,  # pyright: ignore[reportPrivateUsage]
     _get_child,  # pyright: ignore[reportPrivateUsage]
@@ -248,13 +249,23 @@ def test_covers_empty_declared_granularities_is_unbounded() -> None:
     # narrowing from it to any concrete subset is a valid effective ⊆ declared
     # (must NOT false-fail). Only covers() reads an empty list this way:
     # runtime gating admits only the granularities a node lists, so an empty
-    # list admits none.
-    # Typed WordTimestampsCapability can't be empty+supported (the granularities-enumeration
-    # validator), so the empty-declared case is exercised via an x_* dict node
-    # carrying the field.
-    declared = _x_caps({"x_wt": {"supported": True, "granularities": []}})
-    effective = _x_caps({"x_wt": {"supported": True, "granularities": ["word"]}})
-    assert declared.covers(effective) is True
+    # list admits none. The validator rejects building a supported typed node
+    # with an empty list, but the list stays mutable, so the declared node is
+    # emptied after it is built.
+    def tree(granularities: list[WordTimestampGranularityName]) -> Capabilities:
+        return Capabilities(
+            batch=BatchCapabilities(
+                word_timestamps=WordTimestampsCapability(
+                    supported=True, granularities=granularities
+                )
+            )
+        )
+
+    declared = tree(["word"])
+    assert declared.batch is not None
+    declared.batch.word_timestamps.granularities.clear()
+    assert declared.covers(tree(["word"])) is True
+    assert declared.covers(tree(["word", "segment", "char"])) is True
     # And empty -> empty is trivially covered.
     assert declared.covers(declared) is True
 
@@ -1546,7 +1557,7 @@ def test_extension_extras_are_closed_to_the_json_value_space() -> None:
         supported=True,
         x_vendor={"supported": True, "limits": {"max": 8, "codecs": ["opus"], "note": None}},  # pyright: ignore[reportCallIssue]
     )
-    canonical = cap_module._to_canonical(cap, inject_supported=False, enabled=True)  # pyright: ignore[reportPrivateUsage]
+    canonical = cap_module._to_canonical(cap, inject_supported=False, ancestors_supported=True)  # pyright: ignore[reportPrivateUsage]
     assert canonical["x_vendor"] == {
         "supported": True,
         "limits": {"max": 8, "codecs": ["opus"], "note": None},
@@ -1954,7 +1965,7 @@ def test_narrowing_violation_descriptions_name_the_path_and_values() -> None:
     )
     assert unread.describe() == (
         "streaming.reconnect.mode is missing, which cannot be compared with the declared "
-        '"seamless", so it does not narrow it'
+        '"seamless", so nothing shows that it stays within it'
     )
     # The generator reports a role change and a looser standard mode in order.
     declared = Capabilities.model_validate(
@@ -1998,3 +2009,24 @@ def test_value_readers_degrade_on_unexpected_shapes() -> None:
     assert summarize([{"nested": 1}]) == "a list of 1 items"
     assert summarize({"a": 1, "b": 2}) == "an object with 2 keys"
     assert summarize(b"raw") == "a bytes"
+
+
+def test_an_unknown_effective_mode_is_not_described_as_looser() -> None:
+    declared = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="lossy"))
+    )
+    reconnect = ReconnectCapability(mode="lossy").model_copy(update={"mode": "adaptive"})
+    effective = Capabilities(streaming=StreamingCapabilities(reconnect=reconnect))
+    violations = list(
+        cap_module._narrowing_violations(declared, effective)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert [(v.path, v.kind, v.comparable) for v in violations] == [
+        ("streaming.reconnect", "mode", False)
+    ]
+    stronger = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="seamless"))
+    )
+    assert [
+        v.comparable
+        for v in cap_module._narrowing_violations(declared, stronger)  # pyright: ignore[reportPrivateUsage]
+    ] == [True]

@@ -385,6 +385,66 @@ def mutating_factory() -> _MutatingASR:  # pyright: ignore[reportUnusedFunction]
     return _MutatingASR()
 
 
+class _ReassigningASR(_GoodASR):
+    # Replaces the class declaration with a narrower tree while its effective
+    # tree is read: the declaration object changes, not its contents.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_extra": {"supported": True}}}
+    )
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        narrowed = Capabilities.model_validate({"batch": {}})
+        type(self).declared_capabilities = narrowed
+        return narrowed
+
+
+def reassigning_factory() -> _ReassigningASR:  # pyright: ignore[reportUnusedFunction]
+    return _ReassigningASR()
+
+
+class _LateShadowingASR(_GoodASR):
+    # Shadows the class declaration on the instance only while its effective
+    # tree is read, after the constructor ran.
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        narrowed = Capabilities.model_validate({"batch": {}})
+        self.declared_capabilities = narrowed  # pyright: ignore[reportAttributeAccessIssue]
+        return narrowed
+
+
+def late_shadowing_factory() -> _LateShadowingASR:  # pyright: ignore[reportUnusedFunction]
+    return _LateShadowingASR()
+
+
+class _ContainerRoleASR(_GoodASR):
+    # A role that is a JSON array or object must be reported, not crash the
+    # reserved-key check.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_flag": {"supported": True, "role": []}}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_flag": {"supported": True, "role": {}}}}
+    )
+
+
+def container_role_factory() -> _ContainerRoleASR:  # pyright: ignore[reportUnusedFunction]
+    return _ContainerRoleASR()
+
+
+class _GroupedGateASR(_GoodASR):
+    # The node that switches the child off is x_acme.off, not the grouping
+    # dict x_acme above it.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme": {"off": {"supported": False, "child": {"supported": True}}}}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def grouped_gate_factory() -> _GroupedGateASR:  # pyright: ignore[reportUnusedFunction]
+    return _GroupedGateASR()
+
+
 class _BatchWithUngatedFeature(BatchCapabilities):
     # A typed requestable node at a path no gate checks: a request for it
     # would reach the engine unchecked.
@@ -689,7 +749,7 @@ def test_check_entrypoints_reports_a_vendor_widening_inside_constraints() -> Non
 def test_check_entrypoints_reports_declared_support_that_never_takes_effect() -> None:
     report = check_entrypoints(registry=_registry("disabled_support_factory"))
     assert report.passed is False
-    messages = [i.message for i in report.issues if i.code == "declared_supported_but_disabled"]
+    messages = [i.message for i in report.issues if i.code == "declared_support_unreachable"]
     assert len(messages) == 3, messages
     joined = " | ".join(messages)
     assert "batch.diarization.always_on" in joined
@@ -738,6 +798,33 @@ def test_check_entrypoints_reports_a_mutated_class_declaration() -> None:
         assert batch.model_extra is not None
         beam = cast("dict[str, dict[str, int]]", batch.model_extra["x_acme_beam"])
         beam["limits"]["max"] = 10
+
+
+def test_check_entrypoints_rereads_declarations_after_the_effective_getter() -> None:
+    original = _ReassigningASR.declared_capabilities
+    try:
+        report = check_entrypoints(registry=_registry("reassigning_factory"))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        _ReassigningASR.declared_capabilities = original
+    report = check_entrypoints(registry=_registry("late_shadowing_factory"))
+    assert any(i.code == "instance_declared_capabilities_diverge" for i in report.issues)
+
+
+def test_check_entrypoints_reports_container_roles_without_crashing() -> None:
+    report = check_entrypoints(registry=_registry("container_role_factory"))
+    assert not any(i.code == "engine_check_crashed" for i in report.issues)
+    malformed = [i for i in report.issues if i.code == "extension_reserved_key_malformed"]
+    assert {("declared" in i.message, "effective" in i.message) for i in malformed} == {
+        (True, False),
+        (False, True),
+    }
+
+
+def test_check_entrypoints_names_the_capability_node_that_switches_a_child_off() -> None:
+    report = check_entrypoints(registry=_registry("grouped_gate_factory"))
+    issue = next(i for i in report.issues if i.code == "declared_support_unreachable")
+    assert "batch.x_acme.off above it is not supported" in issue.message
 
 
 def test_check_entrypoints_raising_effective_caps_is_reported_not_crash() -> None:

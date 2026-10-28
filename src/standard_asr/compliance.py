@@ -27,6 +27,7 @@ from standard_asr.contract.capabilities import (
     StreamingCapabilities,
     WordTimestampsCapability,
     _derive_supported,  # pyright: ignore[reportPrivateUsage]
+    _is_capability_node,  # pyright: ignore[reportPrivateUsage]
     _is_extension_key,  # pyright: ignore[reportPrivateUsage]
     _narrowing_violations,  # pyright: ignore[reportPrivateUsage]
     _summarize,  # pyright: ignore[reportPrivateUsage]
@@ -563,9 +564,12 @@ def _check_engine_unguarded(
         )
         return
 
-    # Snapshot the class-level declaration before any plugin code runs, so the
-    # instance check can tell whether constructing the engine or reading its
-    # effective tree changed it, for example by editing a shallow copy.
+    # Copy the class-level declaration before the factory builds the engine.
+    # The instance check compares the declaration with this copy to find out
+    # whether plugin code changed it while the suite built the engine and
+    # read its effective tree. The usual cause is an engine that edits a
+    # shallow model_copy() of the declaration, whose nested nodes are the
+    # declaration's own objects.
     class_declared = _class_declared_capabilities(spec)
     declared_snapshot = class_declared.model_dump() if class_declared is not None else None
 
@@ -1227,20 +1231,26 @@ def _check_requestable_roles(
         )
 
 
-#: How many narrowing violations an ``effective_widens_declared`` message lists.
+#: The most reasons an ``effective_widens_declared`` message lists. The message
+#: says when it leaves more out.
 _MAX_REPORTED_VIOLATIONS: Final = 5
 
 
 def _class_declared_capabilities(spec: ModelSpec) -> Capabilities | None:
-    """Return the class-level declared tree the class-level pass examined.
+    """Return ``declared_capabilities`` as defined on the engine class.
+
+    The suite checks each engine twice: first the class, without building
+    an engine, then an instance the factory builds. This helper reads the
+    class attribute without going through the instance, so the instance
+    pass sees the same tree the class pass checked.
 
     Args:
         spec: The entry point's model spec.
 
     Returns:
         The engine class's ``declared_capabilities``, or ``None`` when the
-        class cannot be resolved or does not declare a tree. The class-level
-        pass has already reported both.
+        class cannot be loaded or does not define a ``Capabilities`` tree.
+        The class pass has already reported both cases.
     """
     try:
         declared = inspect.getattr_static(spec.engine_class(), "declared_capabilities", None)
@@ -1259,11 +1269,15 @@ def _check_instance_capabilities(
 ) -> None:
     """Verify ``declared_capabilities`` and the ``effective ⊆ declared`` invariant.
 
-    The effective tree is compared with the class-level declaration, which is
-    what discovery, ``show``, and ``GET /v1/capabilities`` read. An instance
-    attribute that shadows it with a different tree is reported, and so is a
-    class-level declaration that changed while the engine was built or its
-    effective tree was read.
+    The effective tree is compared with the declaration on the engine class
+    as it was before the factory ran, because discovery, ``show``, and
+    ``GET /v1/capabilities`` read the class. The declarations are read again
+    after the effective tree, so a getter that changes them is caught too.
+    Two more problems are reported: an instance whose own
+    ``declared_capabilities`` attribute holds a different tree from the
+    class, and a class declaration that no longer equals
+    ``declared_snapshot``, which means plugin code changed or replaced it
+    after the snapshot was taken.
 
     Args:
         instance: The instantiated engine.
@@ -1272,10 +1286,9 @@ def _check_instance_capabilities(
         issues: The mutable list of issues to append to.
         declared_snapshot: ``model_dump()`` of the class-level declaration,
             taken before the factory ran, or ``None`` when the class could
-            not be resolved.
+            not be loaded.
     """
-    declared = getattr(instance, "declared_capabilities", None)
-    if not isinstance(declared, Capabilities):
+    if not isinstance(getattr(instance, "declared_capabilities", None), Capabilities):
         issues.append(
             ComplianceIssue(
                 level="error",
@@ -1285,32 +1298,13 @@ def _check_instance_capabilities(
             )
         )
         return
-    class_declared = _class_declared_capabilities(spec)
-    baseline = declared
-    if class_declared is not None:
-        baseline = class_declared
-        if declared is not class_declared and declared != class_declared:
-            issues.append(
-                ComplianceIssue(
-                    level="error",
-                    code="instance_declared_capabilities_diverge",
-                    message=(
-                        "The instance's declared_capabilities differ from the class-level "
-                        "declaration. Discovery, `standard-asr show`, and "
-                        "GET /v1/capabilities read the class, so they describe another "
-                        "tree than the one this instance reports. Keep "
-                        "declared_capabilities a class variable and do not assign it on "
-                        "the instance; narrow through effective_capabilities instead."
-                    ),
-                    model=name,
-                )
-            )
+    effective: object = None
     try:
         effective = getattr(instance, "effective_capabilities", None)
     except Exception as exc:  # noqa: BLE001
         # A buggy ``effective_capabilities`` property MUST NOT crash the whole
         # compliance run (this function promises ``Raises: None``); report the
-        # offender and keep checking the other engines.
+        # offender and keep checking the declarations.
         issues.append(
             ComplianceIssue(
                 level="error",
@@ -1323,6 +1317,60 @@ def _check_instance_capabilities(
                 model=name,
             )
         )
+    # Read both declarations only now: the effective getter is plugin code
+    # and may have replaced either one.
+    declared = getattr(instance, "declared_capabilities", None)
+    class_declared = _class_declared_capabilities(spec)
+    if (
+        class_declared is not None
+        and isinstance(declared, Capabilities)
+        and declared is not class_declared
+        and declared != class_declared
+    ):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="instance_declared_capabilities_diverge",
+                message=(
+                    "The instance's declared_capabilities differ from the class-level "
+                    "declaration. Discovery, `standard-asr show`, and "
+                    "GET /v1/capabilities read the class, so they describe another "
+                    "tree than the one this instance reports. Keep "
+                    "declared_capabilities a class variable and do not assign it on "
+                    "the instance; narrow through effective_capabilities instead."
+                ),
+                model=name,
+            )
+        )
+    if (
+        declared_snapshot is not None
+        and class_declared is not None
+        and class_declared.model_dump() != declared_snapshot
+    ):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="declared_capabilities_mutated",
+                message=(
+                    "Plugin code changed the class-level declared_capabilities while the "
+                    "suite built the engine and checked it, including reading "
+                    "effective_capabilities. Editing a shallow copy of the declared tree, "
+                    "such as one from model_copy(), edits the declaration too, because "
+                    "the copy shares its dicts and lists. Build the effective tree from "
+                    "new data, for example Capabilities.model_validate() on an edited "
+                    "declared.model_dump()."
+                ),
+                model=name,
+            )
+        )
+    # Measure against what applications read before any engine existed: the
+    # class declaration as the snapshot recorded it. Without a snapshot the
+    # class could not be loaded, and the instance is the only declaration.
+    if declared_snapshot is not None:
+        baseline = Capabilities.model_validate(declared_snapshot)
+    elif isinstance(declared, Capabilities):
+        baseline = declared
+    else:  # pragma: no cover - the getter removed the declaration it was checked for
         return
     if isinstance(effective, Capabilities):
         violations = list(
@@ -1338,9 +1386,9 @@ def _check_instance_capabilities(
                     level="error",
                     code="effective_widens_declared",
                     message=(
-                        "effective_capabilities is not a subset of "
-                        "declared_capabilities (effective MUST only narrow): "
-                        f"{shown}{more}."
+                        "effective_capabilities is not a subset of declared_capabilities "
+                        "(an engine's effective capabilities may only remove what its "
+                        f"declared capabilities offer): {shown}{more}."
                     ),
                     model=name,
                 )
@@ -1364,26 +1412,6 @@ def _check_instance_capabilities(
                 model=name,
             )
         )
-    if (
-        declared_snapshot is not None
-        and class_declared is not None
-        and class_declared.model_dump() != declared_snapshot
-    ):
-        issues.append(
-            ComplianceIssue(
-                level="error",
-                code="declared_capabilities_mutated",
-                message=(
-                    "Building the engine or reading effective_capabilities changed the "
-                    "class-level declared_capabilities. Editing a shallow copy of the "
-                    "declared tree, such as one from model_copy(), edits the declaration "
-                    "too, so discovery and the narrowing check both read the edited "
-                    "tree. Build the effective tree from new data, for example "
-                    "Capabilities.model_validate() on an edited declared.model_dump()."
-                ),
-                model=name,
-            )
-        )
 
 
 def _check_declared_support_reachable(
@@ -1391,15 +1419,18 @@ def _check_declared_support_reachable(
     name: str,
     issues: list[ComplianceIssue],
 ) -> None:
-    """Report each declared node that says supported but reads as unsupported.
+    """Report each declared node that says supported but can never take effect.
 
-    A node is supported only when every capability node above it is, and
-    ``streaming_input`` and ``streaming_output`` only when a ``streaming``
-    domain is declared. A declared node that marks itself supported where
-    the tree switches it off never takes effect: it is a misplaced vendor
-    feature, a forgotten parent flag, or a forgotten domain. An effective
-    tree may hold the same shape, because switching a feature off there
-    switches off its children, so only the declaration is checked.
+    A node is supported only when every capability node above it is
+    supported too, and ``streaming_input`` and ``streaming_output`` only
+    when a ``streaming`` domain is declared. So a declared node that marks
+    itself supported under an unsupported feature, or a streaming flag
+    without the domain, can never take effect. It is usually a vendor
+    feature placed under the wrong parent, a parent the author forgot to
+    mark supported, or a forgotten ``streaming`` domain. Only the declared
+    tree is checked. In an effective tree the same shape is normal: an
+    engine that switches a feature off there may leave its children as
+    they were, and they are switched off with it.
 
     Args:
         declared: The engine class's ``declared_capabilities``.
@@ -1411,10 +1442,19 @@ def _check_declared_support_reachable(
         if not _derive_supported(node) or declared.supports(path):
             continue
         parts = path.split(".")
+        prefixes = [".".join(parts[: index + 1]) for index in range(len(parts))]
+        # The node that switches this one off: the root flag whose domain is
+        # missing, or the first capability node above it that is not
+        # supported. A grouping dict on the way states no support, so it is
+        # never the cause.
         gate = next(
-            ".".join(parts[: index + 1])
-            for index in range(len(parts))
-            if not declared.supports(".".join(parts[: index + 1]))
+            prefix
+            for index, prefix in enumerate(prefixes[:-1] or prefixes)
+            if (index == 0 and not declared._domain_requirement_met(prefix))  # pyright: ignore[reportPrivateUsage]
+            or (
+                _is_capability_node(declared._resolve(prefix))  # pyright: ignore[reportPrivateUsage]
+                and not _derive_supported(declared._resolve(prefix))  # pyright: ignore[reportPrivateUsage]
+            )
         )
         domain = _DOMAIN_DEPENDENT_FLAGS.get(gate)
         if domain is not None and getattr(declared, domain) is None:
@@ -1423,17 +1463,18 @@ def _check_declared_support_reachable(
         else:
             reason = f"{gate} above it is not supported"
             fix = (
-                "A node under a feature refines that feature. Mark the feature above it "
-                "supported, or move a vendor feature that does not depend on it directly "
-                "under the mode domain or the root."
+                "A node under a feature adds detail to it, so it is supported only "
+                "when the feature is. Mark the feature above it supported, or move a "
+                "vendor feature that does not depend on it directly under the mode "
+                "domain or the root."
             )
         issues.append(
             ComplianceIssue(
                 level="error",
-                code="declared_supported_but_disabled",
+                code="declared_support_unreachable",
                 message=(
                     f"declared_capabilities marks {path} supported, but {reason}, so "
-                    f"supports({path!r}) answers False and the declaration never takes "
+                    f"supports({path!r}) answers False and the declaration has no "
                     f"effect. {fix}"
                 ),
                 model=name,
@@ -1441,7 +1482,8 @@ def _check_declared_support_reachable(
         )
 
 
-#: The ``role`` values a raw ``x_*`` capability node may state (spec R4).
+#: The ``role`` values a raw ``x_*`` capability node may state: the values of
+#: ``CapabilityRole`` (protocol specification, capabilities R4).
 _ROLE_VALUES: Final = frozenset({"requestable", "trait", "constraints"})
 
 
@@ -1451,19 +1493,24 @@ def _check_extension_reserved_keys(
     name: str,
     issues: list[ComplianceIssue],
 ) -> None:
-    """Check the three keys with a standard meaning on every raw ``x_*`` node.
+    """Check the three keys with a standard meaning on every raw ``x_*`` dict.
 
-    On a vendor node, only ``supported``, ``mode``, and ``role`` mean what the
-    specification says (R4). A malformed value there is read fail-closed: a
-    ``supported`` that is not a boolean, or a ``mode`` that is not a string,
-    reads as unsupported, and a ``role`` outside the three values reads as no
-    role. Those readings are silent, so a wrong type is an error here. Every
-    other key belongs to the vendor and is not checked.
+    A raw ``x_*`` dict is a vendor's capability data kept as a plain dict,
+    not as an instance of a capability class. On it, only ``supported``,
+    ``mode``, and ``role`` mean what the specification says (protocol
+    specification, capabilities R4). A value of the wrong type there is
+    read fail-closed, with no error: a ``supported`` that is not a boolean,
+    or a ``mode`` that is not a string, reads as unsupported, and a
+    ``role`` other than ``requestable``, ``trait``, or ``constraints``
+    reads as no role. Because nothing else reports these
+    readings, this check reports each one as an error. The ``role`` check
+    applies only to a capability node, one that carries ``supported`` or
+    ``mode``. Every other key belongs to the vendor and is not checked.
 
-    A grouping dict, with neither ``supported`` nor ``mode``, states nothing,
-    so its ``role`` is ignored (R4). A ``requestable`` or ``trait`` role on
-    one almost always means the author forgot ``supported``, so it gets a
-    warning.
+    A grouping dict, one with neither ``supported`` nor ``mode``, only
+    groups other dicts and states no role, so its ``role`` key is ignored.
+    A ``requestable`` or ``trait`` role on one almost always means the
+    author forgot ``supported``, so it gets a warning.
 
     Args:
         tree: A declared or effective capability tree.
@@ -1483,7 +1530,12 @@ def _check_extension_reserved_keys(
             problems.append(f"'supported' is {_summarize(mapping['supported'])}, not a boolean")
         if "mode" in mapping and not isinstance(mapping["mode"], str):
             problems.append(f"'mode' is {_summarize(mapping['mode'])}, not a string")
-        if is_capability and "role" in mapping and mapping["role"] not in _ROLE_VALUES:
+        role = mapping.get("role")
+        if (
+            is_capability
+            and "role" in mapping
+            and not (isinstance(role, str) and role in _ROLE_VALUES)
+        ):
             problems.append(
                 f"'role' is {_summarize(mapping['role'])}, not 'requestable', 'trait', "
                 "or 'constraints'"
@@ -1496,7 +1548,8 @@ def _check_extension_reserved_keys(
                     message=(
                         f"{layer} node {path}: {'; '.join(problems)}. On an x_* node, "
                         "'supported', 'mode', and 'role' keep their standard meaning, and "
-                        "a malformed value reads as unsupported or as no role. Give vendor "
+                        "a value of the wrong type is read as unsupported (for 'supported' or "
+                        "'mode') or as no role (for 'role'). Give vendor "
                         "data with another meaning a key of its own."
                     ),
                     model=name,
@@ -2056,9 +2109,11 @@ def _check_streaming_axis_declared(
     whole-input output path). So a tree that populates the ``streaming`` domain yet
     leaves both flags unsupported declares a streaming engine that EVERY
     ``start_transcription`` call rejects: shipped, discoverable as "streaming", and
-    uncallable. The inverse mistake (a flag without the domain) reads as
-    unsupported and is reported as ``declared_supported_but_disabled``; this
-    check covers the other side.
+    uncallable. The opposite mistake, a flag declared supported without the
+    domain, makes ``supports()`` answer ``False`` for the flag, and
+    :func:`_check_declared_support_reachable` reports it as
+    ``declared_support_unreachable``. This check covers the domain without
+    a flag.
 
     Unlike the ``wire_encodings`` nudge -- which a self-managing-wire engine may
     legitimately trip, so it is a *warning* -- there is NO legitimate engine with a
