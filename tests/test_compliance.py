@@ -487,7 +487,7 @@ def private_state_factory() -> _PrivateStateASR:  # pyright: ignore[reportUnused
 
 class _DroppedAndWidenedASR(_GoodASR):
     # Removes the instance's declaration and widens its effective tree while
-    # the tree is read: the snapshot still measures the widening.
+    # the tree is read: the class declaration still measures the widening.
     declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate({"batch": {}})
 
     @property
@@ -559,6 +559,32 @@ class _RetypedShadowASR(_GoodASR):
 
 def retyped_shadow_factory() -> _RetypedShadowASR:  # pyright: ignore[reportUnusedFunction]
     return _RetypedShadowASR()
+
+
+class _AcmeTupleBatch(BatchCapabilities):
+    # A typed vendor field whose tuple holds a mutable list.
+    x_acme_data: tuple[list[int], ...] = Field(default_factory=lambda: ([1],))
+
+
+class _TupleEditingASR(_GoodASR):
+    # Edits the list inside the class declaration's tuple while its
+    # effective tree is read.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(batch=_AcmeTupleBatch())
+
+    def __init__(self) -> None:
+        super().__init__()
+        batch = type(self).declared_capabilities.batch
+        assert isinstance(batch, _AcmeTupleBatch)
+        self._data = batch.x_acme_data
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        self._data[0].append(2)
+        return Capabilities(batch=BatchCapabilities())
+
+
+def tuple_editing_factory() -> _TupleEditingASR:  # pyright: ignore[reportUnusedFunction]
+    return _TupleEditingASR()
 
 
 class _ContainerRoleASR(_GoodASR):
@@ -956,8 +982,8 @@ def test_check_entrypoints_rereads_declarations_after_the_effective_getter() -> 
 
 
 def test_check_entrypoints_keeps_streaming_guidance_flags_in_its_snapshot() -> None:
-    # The snapshot keeps every node's class, so a flag that only the
-    # streaming guidance subclass has is not lost and then read as widened.
+    # Neither the record of the declaration nor the narrowing check loses a
+    # flag that only the streaming guidance subclass has.
     report = check_entrypoints(registry=_registry("streaming_guidance_factory"))
     codes = {i.code for i in report.issues}
     assert "effective_widens_declared" not in codes
@@ -1007,8 +1033,7 @@ def test_check_entrypoints_without_any_declaration_checks_the_effective_keys() -
 
 def test_check_entrypoints_tells_a_boolean_from_a_number_in_declarations() -> None:
     # `True == 1` in Python, but the tree reads `supported: 1` as unsupported,
-    # so the change is a change; the effective tree is a valid old copy, so
-    # only the declaration checks can catch it.
+    # so the change is a change, and the mutation check must report it.
     try:
         report = check_entrypoints(registry=_registry("retyping_factory"))
         assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
@@ -1018,6 +1043,25 @@ def test_check_entrypoints_tells_a_boolean_from_a_number_in_declarations() -> No
         )
     report = check_entrypoints(registry=_registry("retyped_shadow_factory"))
     assert any(i.code == "instance_declared_capabilities_diverge" for i in report.issues)
+
+
+def test_check_entrypoints_records_the_contents_of_a_tuple() -> None:
+    # The record rebuilds tuples, so an edit to a list inside one is a change.
+    try:
+        report = check_entrypoints(registry=_registry("tuple_editing_factory"))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        _TupleEditingASR.declared_capabilities = Capabilities(batch=_AcmeTupleBatch())
+
+
+def test_tree_content_rebuilds_sets_and_keeps_scalar_types() -> None:
+    record = compliance_module._tree_content  # pyright: ignore[reportPrivateUsage]
+    values = {"word"}
+    recorded = record(values)
+    values.add("segment")
+    assert recorded == record({"word"})
+    assert record({"word"}) != record(frozenset({"word"}))
+    assert record([True]) != record([1])
 
 
 def test_check_entrypoints_reports_container_roles_without_crashing() -> None:

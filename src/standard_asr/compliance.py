@@ -1262,22 +1262,22 @@ def _class_declared_capabilities(spec: ModelSpec) -> Capabilities | None:
 def _tree_content(node: object) -> object:
     """Return what a capability tree states, as new plain data.
 
-    The result holds no object from the tree, so plugin code that edits the
-    tree later cannot change it, and it never copies a node's private
-    state, which pydantic's ``==`` would also compare and which may not be
-    copyable at all. It reads the fields of each node's own class, which
+    Every dict, list, tuple, and set is rebuilt, so plugin code that edits
+    the tree later cannot change the result. A node's private state is
+    never read: pydantic's ``==`` would also compare it, and it may not be
+    copyable at all. The fields come from each node's own class, which
     ``model_dump()`` does not do for a subclass held in a field annotated
-    with its base, and the extras. Each scalar keeps its type, because
-    ``True == 1`` in Python while the capability tree reads ``supported: 1``
-    as unsupported.
+    with its base, and the extras are included. Each scalar keeps its type,
+    because ``True == 1`` in Python while the capability tree reads
+    ``supported: 1`` as unsupported.
 
     Args:
         node: A capability tree, a node in one, or a value inside a node.
 
     Returns:
-        A value that compares equal for two trees exactly when every node has
-        the same class, the same field values, and the same extras, with
-        every scalar of the same type.
+        A value that compares equal for two trees when every node has the
+        same class, the same field values, and the same extras, and each
+        scalar has the same type and an equal value.
     """
     if isinstance(node, BaseModel):
         fields = {name: _tree_content(getattr(node, name)) for name in type(node).model_fields}
@@ -1289,6 +1289,11 @@ def _tree_content(node: object) -> object:
         }
     if isinstance(node, list):
         return [_tree_content(value) for value in cast("list[object]", node)]
+    if isinstance(node, tuple):
+        return (tuple, tuple(_tree_content(value) for value in cast("tuple[object, ...]", node)))
+    if isinstance(node, (set, frozenset)):
+        items = cast("set[object] | frozenset[object]", node)
+        return (type(items), frozenset(_tree_content(value) for value in items))
     return (type(node), node)
 
 

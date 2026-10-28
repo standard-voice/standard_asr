@@ -337,7 +337,7 @@ lang: zh-Hans
 
 `--no-instantiate` 发现路径（CLI `show`、注册表查询）只读引擎类的 `declared_capabilities`。
 
-合规套件检查引擎有没有改动类上的声明。它在调用引擎的工厂函数（入口点给出、用来建立引擎实例的函数）之前，先把引擎类上的 `declared_capabilities` 存一份副本；建立实例、读取 `effective_capabilities` 之后，再拿类上的声明和副本比较。两者不同，报错 `declared_capabilities_mutated`。常见原因是引擎用浅拷贝（例如 `model_copy()`）从 declared 做出 effective，再去改拷贝里的字典或列表：浅拷贝和原对象共用这些字典和列表，改拷贝就等于改了类上的声明。effective 应从新数据建立，例如修改 `declared.model_dump()` 的结果后，再交给 `Capabilities.model_validate()`。另外，实例上若另设了一个 `declared_capabilities`，内容又与类上的不同，报错 `instance_declared_capabilities_diverge`：发现、`standard-asr show` 与 REST 读的都是类上的那一份，实例上的另一份会让它们描述的树与这个实例报告的树不一致。
+合规套件检查引擎有没有改动类上的声明。它在调用引擎的工厂函数（入口点给出、用来建立引擎实例的函数）之前，先记下引擎类上的 `declared_capabilities` 陈述了什么：每个节点的类、字段与 extras，每个值连同它的类型（`True` 与 `1` 算不同），不含私有状态；建立实例、读取 `effective_capabilities` 之后，再拿类上的声明和这份记录比较。两者不同，或者类上的声明已被换掉、删掉，报错 `declared_capabilities_mutated`。常见原因是引擎用浅拷贝（例如 `model_copy()`）从 declared 做出 effective，再去改拷贝里的字典或列表：浅拷贝和原对象共用这些字典和列表，改拷贝就等于改了类上的声明。effective 应从新数据建立，例如修改 `declared.model_dump()` 的结果后，再交给 `Capabilities.model_validate()`。另外，实例上若另设了一个 `declared_capabilities`，内容又与类上的不同，报错 `instance_declared_capabilities_diverge`：发现、`standard-asr show` 与 REST 读的都是类上的那一份，实例上的另一份会让它们描述的树与这个实例报告的树不一致。
 
 ### 3.2 层级结构与 mode 域
 
