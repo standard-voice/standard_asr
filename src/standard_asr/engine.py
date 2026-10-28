@@ -115,7 +115,6 @@ from standard_asr.contract.capabilities import (
     TraitFlagCapability,
     WordTimestampGranularityName,
     WordTimestampsCapability,
-    granularity_offers_all,
 )
 from standard_asr.contract.language import (
     AUTO,
@@ -265,7 +264,6 @@ __all__ = [
     "ensure_cache_dir",
     "ensure_wire_format_supported",
     "env_var_name",
-    "granularity_offers_all",
     "nearest_accepted_sample_rate",
     "normalize_bcp47",
     "resolve_cache_dir",

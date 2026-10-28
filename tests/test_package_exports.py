@@ -111,7 +111,6 @@ def test_mode_is_one_literal_with_one_home() -> None:
         TraitFlagCapability,
         WordTimestampGranularityName,
         WordTimestampsCapability,
-        granularity_offers_all,
     )
 
     assert TraitFlagCapability(supported=True).is_supported is True
@@ -125,7 +124,12 @@ def test_mode_is_one_literal_with_one_home() -> None:
     assert ReconnectCapability(mode="lossy").is_supported is True
     # The granularity vocabulary (declaration side) is exported and non-empty.
     assert get_args(WordTimestampGranularityName)
-    assert granularity_offers_all([]) is True
+    # The narrowing-only helper granularity_offers_all() was removed: its
+    # reading of an empty list (every granularity) is the opposite of
+    # runtime gating's (none), so it is no longer exported.
+    import standard_asr.engine as engine_module
+
+    assert not hasattr(engine_module, "granularity_offers_all")
 
 
 def test_sample_rate_helpers_are_on_the_engine_facade() -> None:
