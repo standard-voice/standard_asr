@@ -337,7 +337,7 @@ lang: zh-Hans
 
 `--no-instantiate` 发现路径（CLI `show`、注册表查询）只读引擎类的 `declared_capabilities`。
 
-**effective 依据什么（normative）。** effective 回答的问题是：照现在安装的这套代码，用这份配置，引擎能做什么。这里的配置指引擎实例拿到的 config 对象，显式值、环境变量回退和默认值都已合并进去（IC.4）。计算 effective 时，引擎 MAY 读两样东西：一是这份配置；二是只读的安装信息，即装了哪些可选组件、引擎底层调用的原生库（装好的这个版本）支持哪些设备。例如 ONNX Runtime 的 `get_available_providers()` 列出这个安装包编进了哪些执行提供者（execution provider，ONNX Runtime 在 CPU、CUDA 等某一种硬件上运行模型的组件）。读取 `effective_capabilities` 时，引擎 MUST NOT 加载权重、初始化加速器（GPU、NPU 等）、创建或修改文件、访问网络。这和 IC.9 对构造引擎实例（`__init__`）的要求相同；唯一放宽的一点是，这里可以读上面说的安装信息（IC.9 连路径探测都不允许）。所以，机器上有没有某个设备、驱动能不能用、推理工件（权重、tokenizer 这类放在磁盘上的文件）是否已经备好，都不进入 effective：这些属于观测，要真正加载或探测才知道，而且同一份配置在两台机器上会得到不同的答案（见 §3.3 讲 `observation` 的那一段）。推理工件是否备好，由 `artifact_status()` 回答（[§推理工件生命周期](#artifact-lifecycle)）。如果配置没有定死设备，而是留到加载模型时再挑（例如 `device="auto"`），effective MUST 只宣告引擎在加载时可能挑中的每一个设备都做得到的功能。到加载时，配置的设备却用不了，该怎么办，见 §4 R8。
+**effective 依据什么（normative）。** effective 回答的问题是：照现在安装的这套代码，用这份配置，引擎能做什么。这里的配置指引擎实例拿到的 config 对象，显式值、环境变量回退和默认值都已合并进去（IC.4）。计算 effective 时，引擎 MAY 读两样东西：一是这份配置；二是只读的安装信息，即装了哪些可选组件、引擎底层调用的原生库（装好的这个版本）支持哪些设备。例如 ONNX Runtime 的 `get_available_providers()` 列出这个安装包编进了哪些执行提供者（execution provider，ONNX Runtime 在 CPU、CUDA 等某一种硬件上运行模型的组件）。读取 `effective_capabilities` 时，引擎 MUST NOT 加载权重、初始化加速器（GPU、NPU 等）、创建或修改文件、访问网络。这和 IC.9 对构造引擎实例（`__init__`）的要求相同；唯一放宽的一点是，这里可以读上面说的安装信息（IC.9 连路径探测都不允许）。所以，机器上有没有某个设备、驱动能不能用、推理工件（权重、tokenizer 这类放在磁盘上的文件）是否已经备好，都不进入 effective：这些属于观测，要真正加载或探测才知道，而且同一份配置在两台机器上会得到不同的答案（见 §3.3 讲 `observation` 的那一段）。推理工件是否备好，由 `artifact_status()` 回答（[§推理工件生命周期](#artifact-lifecycle)）。如果配置没有定死设备，而是留到加载模型时再挑（例如 `device="auto"`），effective MUST 只宣告引擎在加载时可能挑中的每一个设备都做得到的功能；设备由每个请求经 `provider_params` 选择时同理。到加载时，配置的设备却用不了，该怎么办，见 §4 R8。
 
 合规套件检查引擎有没有改动类上的声明。它在调用引擎的工厂函数（入口点给出、用来建立引擎实例的函数）之前，先记下引擎类上的 `declared_capabilities` 陈述了什么：每个节点的类、字段与 extras，每个值连同它的类型（`True` 与 `1` 算不同），不含私有状态；建立实例、读取 `effective_capabilities` 之后，再拿类上的声明和这份记录比较。两者不同，或者类上的声明已被换掉、删掉，报错 `declared_capabilities_mutated`。常见原因是引擎用浅拷贝（例如 `model_copy()`）从 declared 做出 effective，再去改拷贝里的字典或列表：浅拷贝和原对象共用这些字典和列表，改拷贝就等于改了类上的声明。effective 应从新数据建立，例如修改 `declared.model_dump()` 的结果后，再交给 `Capabilities.model_validate()`。另外，实例上若另设了一个 `declared_capabilities`，内容又与类上的不同，报错 `instance_declared_capabilities_diverge`：发现、`standard-asr show` 与 REST 读的都是类上的那一份，实例上的另一份会让它们描述的树与这个实例报告的树不一致。
 
@@ -474,9 +474,9 @@ capabilities:
 
 如果原生库不改用，而是因为设备用不了直接报错，引擎 SHOULD 同样抛 `ConfigError`（`param="device"`），这样同一个原因在应用那边只对应一种异常。
 
-判断有没有发生改用，引擎 MUST 看原生库实际用的是哪个设备，不能只看自己向它要了哪个。例如 ONNX Runtime 的 `InferenceSession.get_providers()` 返回这个会话实际用上的执行提供者。原生库没有这类查询时，插件的文档 MUST 写明：这个插件发现不了改用。
+判断有没有发生改用，引擎 MUST 看原生库实际用的是哪个设备，不能只看自己向它要了哪个。例如 ONNX Runtime 的 `InferenceSession.get_providers()` 返回这个会话注册成功的执行提供者，看得出建立会话时有没有改用 CPU；它的 `run()` 在执行提供者出错时还会自己改用 CPU 重试，引擎应调用 `disable_fallback()` 让这种失败直接报错。原生库没有这类查询时，插件的文档 MUST 写明：这个插件发现不了改用。
 
-标准层看不到原生库内部用的是什么设备，所以这条规则只能靠引擎自己遵守。合规套件默认不加载模型，所以也发现不了改用。合规套件的 `--runtime` 档会真正加载模型，它尚未实现（进度见 #53 与 #33，AR.10）；实现后可以这样检查：在没有 GPU 的机器上把 `device` 配成某个 GPU 设备，转写一段音频，引擎要么抛 `ConfigError`，要么在结果上带 `device_fell_back`。
+标准层看不到原生库内部用的是什么设备，所以这条规则只能靠引擎自己遵守。默认合规只用会被标准层拒绝的输入调用转写方法（AR.10），不会刻意运行模型，所以也检查不了改用。合规套件的 `--runtime` 档会真正加载模型，它尚未实现（进度见 #53 与 #33，AR.10）；实现后可以这样检查：在没有 GPU 的机器上把 `device` 配成某个 GPU 设备，转写一段音频，引擎要么抛 `ConfigError`，要么在结果上带 `device_fell_back`。
 
 ## 5. 示例
 
@@ -618,7 +618,7 @@ Standard ASR 的解法是**双层设计**：封闭的**可移植标准集**（�
 
 **R6 — 识别行为三态 flag（当前占位）。** verbatim/disfluency/punctuation/ITN/profanity-filter 未来作标准三态（`unset | on | off`，capability 门控），不进 `guidance`。当前先走 `provider_params`。
 
-**R7 — 批量运行时失败错误契约。** `transcribe` / `transcribe_async` 在引擎执行期（模型推理、网络调用、SDK）发生失败时 MUST 抛 `TranscriptionError`，并以 `raise TranscriptionError(...) from exc` 保留原始异常为 `__cause__`——使应用得以**跨引擎**用单一类型捕获运行时失败，而非各引擎各抛其原生异常（`RuntimeError` / SDK 异常 / `requests.HTTPError`…）。这是流式 [§6.2](#streaming) `error` 事件 `engine_error` 码的批量对应物：流式把引擎逃逸异常包装为 `engine_error` 事件，批量把它包装为 `TranscriptionError`。它表示**引擎/运行时故障**，与调用方可修的错误（`ConfigError` / `UnsupportedFeatureError` / `InvalidProviderParamError` / `AudioProcessingError`）属不同故障域，server MUST 映射为 5xx（而非 4xx）。约束作用于引擎模板钩子 `_transcribe`（`EngineBase` 为批量管线提供包装位点）；合规套件无法静态核验引擎是否包装，故本契约由规范 + 模板 + 文档约束，不进运行时强制门控。
+**R7 — 批量运行时失败错误契约。** `transcribe` / `transcribe_async` 在引擎执行期（模型推理、网络调用、SDK）发生失败时 MUST 抛 `TranscriptionError`，并以 `raise TranscriptionError(...) from exc` 保留原始异常为 `__cause__`——使应用得以**跨引擎**用单一类型捕获运行时失败，而非各引擎各抛其原生异常（`RuntimeError` / SDK 异常 / `requests.HTTPError`…）。这是流式 [§6.2](#streaming) `error` 事件 `engine_error` 码的批量对应物：流式把引擎逃逸异常包装为 `engine_error` 事件，批量把它包装为 `TranscriptionError`。它表示**引擎/运行时故障**，与调用方可修的错误（`ConfigError` / `UnsupportedFeatureError` / `InvalidProviderParamError` / `AudioProcessingError`）属不同故障域，server MUST 映射为 5xx（而非 4xx）。配置的设备在加载模型时用不了、而改用的设备做不到 effective 宣告的功能时，引擎抛的是 `ConfigError`，不是 `TranscriptionError`（[§能力系统](#capabilities) R8）。约束作用于引擎模板钩子 `_transcribe`（`EngineBase` 为批量管线提供包装位点）；合规套件无法静态核验引擎是否包装，故本契约由规范 + 模板 + 文档约束，不进运行时强制门控。
 
 **工件错误豁免（normative）。** `ArtifactUnavailableError` 与 `ArtifactAcquisitionError` 是 R7 包装的**显式例外**：它们描述识别前的可用性状态（必需推理工件不可用 / 允许的隐式获取失败），即便从 `_transcribe` 内的原生加载器抛出也 MUST 原样传播、MUST NOT 包成 `TranscriptionError`——应用得以把「pull 或完成外部动作可修」与一般引擎故障区分开。其余引擎执行期失败保持 R7 映射。流式侧同构：两者映射为专用终态码 `artifact_unavailable` / `artifact_acquisition_failed`（[§流式 6.2](#streaming)）而非 `engine_error`；server 对两者映射 scrubbed 503（server-api.md §3.7）。契约细节见 [§推理工件生命周期 AR.8](#artifact-lifecycle)。
 

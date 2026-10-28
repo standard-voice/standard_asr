@@ -1704,6 +1704,56 @@ _ALWAYS_REQUIRED_METHODS: tuple[str, ...] = (
 )
 
 
+def _check_member_surface(
+    instance: object,
+    method: str,
+    name: str | None,
+    issues: list[ComplianceIssue],
+) -> None:
+    """Report a required protocol method that is missing or an ``async def``.
+
+    Args:
+        instance: The instantiated engine to inspect.
+        method: The name of the method the ``StandardASR`` protocol requires.
+        name: The model key (for issue attribution), or ``None``.
+        issues: The mutable list of issues to append to.
+    """
+    attr = getattr(instance, method, None)
+    if not callable(attr):
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="missing_required_method",
+                message=(
+                    f"Instance is missing a callable {method!r} method "
+                    "(required by the StandardASR protocol)."
+                ),
+                model=name,
+            )
+        )
+    elif method != "transcribe_async" and inspect.iscoroutinefunction(attr):
+        # Modality is part of the surface: every member except
+        # transcribe_async is SYNCHRONOUS (async behavior lives in
+        # transcribe_async and inside the returned session). An
+        # `async def` implementation hands protocol-typed callers a
+        # coroutine where a result is pinned -- and every behavioral
+        # probe would otherwise manufacture never-awaited coroutines
+        # (RuntimeWarnings under warnings-as-errors) exercising it.
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="protocol_member_not_synchronous",
+                message=(
+                    f"{method!r} is an `async def`; the StandardASR "
+                    "protocol pins it as a SYNCHRONOUS member (async "
+                    "behavior lives in transcribe_async and inside the "
+                    "returned session)."
+                ),
+                model=name,
+            )
+        )
+
+
 def _check_required_surface(
     instance: object,
     name: str,
@@ -1738,40 +1788,7 @@ def _check_required_surface(
         issues: The mutable list of issues to append to.
     """
     for method in _ALWAYS_REQUIRED_METHODS:
-        attr = getattr(instance, method, None)
-        if not callable(attr):
-            issues.append(
-                ComplianceIssue(
-                    level="error",
-                    code="missing_required_method",
-                    message=(
-                        f"Instance is missing a callable {method!r} method "
-                        "(required by the StandardASR protocol)."
-                    ),
-                    model=name,
-                )
-            )
-        elif method != "transcribe_async" and inspect.iscoroutinefunction(attr):
-            # Modality is part of the surface: every member except
-            # transcribe_async is SYNCHRONOUS (async behavior lives in
-            # transcribe_async and inside the returned session). An
-            # `async def` implementation hands protocol-typed callers a
-            # coroutine where a result is pinned -- and every behavioral
-            # probe would otherwise manufacture never-awaited coroutines
-            # (RuntimeWarnings under warnings-as-errors) exercising it.
-            issues.append(
-                ComplianceIssue(
-                    level="error",
-                    code="protocol_member_not_synchronous",
-                    message=(
-                        f"{method!r} is an `async def`; the StandardASR "
-                        "protocol pins it as a SYNCHRONOUS member (async "
-                        "behavior lives in transcribe_async and inside the "
-                        "returned session)."
-                    ),
-                    model=name,
-                )
-            )
+        _check_member_surface(instance, method, name, issues)
 
     # Presence is unconditional (checked above for every engine); what remains
     # is the streaming-declaration CONSISTENCY check. Read the declared axes
@@ -3319,11 +3336,11 @@ def check_effective_capabilities(
     """Check the effective capabilities of one configured engine.
 
     An engine's effective capabilities depend on its configuration (spec
-    capabilities §3.1), but :func:`check_entrypoints` builds each engine
-    only once, with the defaults of its factory. Call this in a test for
-    each configuration the engine supports. It runs the capability checks
-    that :func:`check_entrypoints` runs on an engine instance, and checks
-    that:
+    capabilities §3.1), but :func:`check_entrypoints` checks each engine
+    only with the default configuration of its factory. Call this in a test
+    for each configuration the engine supports. It runs the capability
+    checks that :func:`check_entrypoints` runs on an engine instance, and
+    checks that:
 
     * ``effective_capabilities`` is ``None`` or a ``Capabilities``, and
       reading it does not raise;
@@ -3334,8 +3351,14 @@ def check_effective_capabilities(
       right types;
     * the instance's ``declared_capabilities`` holds the same tree as the
       class's;
-    * ``engine.supports()`` answers ``False`` for an unknown path and
-      agrees with the effective tree at every queryable path.
+    * ``engine.supports()`` is a synchronous method, answers ``False`` for
+      an unknown path, and agrees with the effective tree at every
+      queryable path.
+
+    It does not replace :func:`check_entrypoints`, which also checks the
+    class-level declarations and the rest of the engine's surface; when the
+    engine class has no ``Capabilities`` declaration, the effective tree is
+    measured against the instance's own.
 
     Spec IC.9 forbids side effects such as device access while an engine
     is built, so a test can check a configuration for a device the machine
@@ -3368,6 +3391,7 @@ def check_effective_capabilities(
     _check_instance_capabilities(
         engine, load_class, model, issues, declared_snapshot=declared_snapshot
     )
+    _check_member_surface(engine, "supports", model, issues)
     _check_supports_contract(engine, model, issues)
     return ComplianceReport(registry=None, issues=issues)
 

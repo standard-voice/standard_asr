@@ -6846,3 +6846,29 @@ def test_check_effective_capabilities_reports_a_change_made_while_reading() -> N
         assert batch.model_extra is not None
         beam = cast("dict[str, dict[str, int]]", batch.model_extra["x_acme_beam"])
         beam["limits"]["max"] = 10
+
+
+class _SupportsMissingASR(_GoodASR):
+    supports = None  # pyright: ignore[reportAssignmentType]
+
+
+class _SupportsAsyncASR(_GoodASR):
+    async def supports(self, dot_path: str) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return True
+
+
+@pytest.mark.parametrize(
+    ("engine_type", "code"),
+    [
+        (_SupportsMissingASR, "missing_required_method"),
+        (_SupportsAsyncASR, "protocol_member_not_synchronous"),
+    ],
+)
+def test_check_effective_capabilities_reports_a_broken_supports_method(
+    engine_type: type[_GoodASR], code: str
+) -> None:
+    # The suite reports these through its surface checks; the standalone
+    # check must not pass them silently.
+    report = check_effective_capabilities(cast(StandardASR, engine_type()))
+    assert code in {i.code for i in report.issues}
+    assert not report.passed

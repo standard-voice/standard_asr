@@ -138,7 +138,7 @@ def effective_capabilities(self) -> Capabilities:
 
 Do not edit the declared tree, and do not edit a copy from `model_copy()`. That copy shares its nested dicts and lists with the declaration, so editing it changes your class declaration, and compliance reports `declared_capabilities_mutated`. Do not use `model_copy(update=...)` either, because it skips validation. When you turn a capability node off, every node under it is off too, because a child node refines the capability above it (spec capabilities §3.2).
 
-**Check every configuration.** `standard-asr compliance run` builds your engine only once, with the defaults of its factory. In your own tests, build the engine with each configuration you support and pass it to `check_effective_capabilities()`. Spec IC.9 forbids a constructor from touching a device, so a CI machine with only a CPU can check a CUDA configuration:
+**Check every configuration.** `standard-asr compliance run` checks your engine only with the default configuration of its factory. In your own tests, build the engine with each configuration you support and pass it to `check_effective_capabilities()`. Spec IC.9 forbids a constructor from touching a device, so a CI machine with only a CPU can check a CUDA configuration:
 
 ```python
 import pytest
@@ -157,25 +157,30 @@ def test_effective_capabilities(device: str) -> None:
 Your engine runs the model on the device the configuration names, and the effective tree describes that configuration. Whether the device works is known only when the model loads, in `prepare()`, the first `transcribe()`, or the first streaming session. Many native libraries then move to another device by themselves, often the CPU, and some only write a log line. A user who configured `cuda` then waits much longer and never learns why. Spec capabilities R8 says what to do, depending on what the other device can do:
 
 - **The other device cannot do something the effective tree promises.** Raise `ConfigError` with `param="device"`. The message says which device was configured, why it is unavailable, and what the other device would lose. Never serve on that device. The request already passed parameter gating against the effective tree, so a result without the feature would be wrong, and nothing would tell the application.
-- **The other device can do everything the effective tree promises.** You may continue, but attach a warning diagnostic to every result you produce from then on, and write a log line. Use the code `DIAG_DEVICE_FELL_BACK` (`"device_fell_back"`), `param="device"`, the configured device as `provided`, and the device in use as `effective`. In a streaming session, record it once per session by calling `emit_diagnostic()` from your session's `_produce`. Attach it to every result, not only the first: results are independent, and each client of the reference server sees only the results of its own requests.
+- **The other device can do everything the effective tree promises.** You may continue, but attach a warning diagnostic to every result you produce from then on, and write a log line. Use the code `DIAG_DEVICE_FELL_BACK` (`"device_fell_back"`), `param="device"`, the configured device as `provided`, and the device in use as `effective`. In a streaming session, record it once per session by calling `emit_diagnostic()` early in your session's `_produce`, because a session keeps a bounded number of diagnostics. Attach it to every result, not only the first: results are independent, and each client of the reference server sees only the results of its own requests.
 
-When the native library itself raises because the device is unavailable, raise `ConfigError` with `param="device"` as well, so an application handles one cause with one exception.
+When the native library itself raises because the device is unavailable, raise `ConfigError` with `param="device"` as well, so an application handles one cause with one exception. For a streaming session, check the device before the session produces events, for example in `_start_transcription`, so that the `ConfigError` reaches the caller of `start_transcription()`. An exception raised later, inside `_produce`, ends the session with an `engine_error` event instead.
 
-Check the device the library actually uses, not the one you asked for. ONNX Runtime, for example, reports the providers a session really uses through `InferenceSession.get_providers()`. To decide between the two cases, build the effective tree for the device the library actually uses; call it `fallback_tree`. `fallback_tree.covers(self.effective_capabilities)` returns `True` when your effective tree is a valid narrowing of `fallback_tree`, which means that device keeps every promise.
+Check the device the library actually uses, not the one you asked for. With ONNX Runtime, `InferenceSession.get_providers()` lists the execution providers the session registered, so it shows whether ONNX Runtime moved to the CPU while it created the session. ONNX Runtime can also move later: when a run fails inside an execution provider, `run()` recreates the session with the CPU provider and tries again. Call `session.disable_fallback()` after you create the session, so that such a failure raises instead. ONNX Runtime may still run single operations on the CPU while CUDA is registered; that changes speed, not what the engine can do. To decide between the two cases, build the effective tree for the device the library actually uses; call it `fallback_tree`. `fallback_tree.covers(self.effective_capabilities)` returns `True` when your effective tree is a valid narrowing of `fallback_tree`, which means that device keeps every promise.
 
 ```python
 providers = {"cuda": "CUDAExecutionProvider", "cpu": "CPUExecutionProvider"}
-session = onnxruntime.InferenceSession(
-    model_path, providers=[providers[self.config.device], providers["cpu"]]
-)
+requested = list(dict.fromkeys([providers[self.config.device], providers["cpu"]]))
+session = onnxruntime.InferenceSession(model_path, providers=requested)
+session.disable_fallback()  # a failed run raises instead of moving to the CPU
 used = next(device for device, name in providers.items() if name == session.get_providers()[0])
 if used != self.config.device:
-    if not self._effective_capabilities_for(used).covers(self.effective_capabilities):
+    fallback_tree = self._effective_capabilities_for(used)
+    if not fallback_tree.covers(self.effective_capabilities):
+        lost = set(self.effective_capabilities.iter_supported_paths()) - set(
+            fallback_tree.iter_supported_paths()
+        )
         raise ConfigError(
-            f"{self.config.device} is unavailable, and {used} cannot serve every "
-            "capability this configuration promises.",
+            f"ONNX Runtime did not register {providers[self.config.device]}, so the "
+            f"configured device {self.config.device!r} is unavailable, and {used} would "
+            f"lose {', '.join(sorted(lost)) or 'some of the promised limits'}.",
             param="device",
-            hint="Configure a device this machine provides.",
+            hint="Configure a device this machine provides, or repair its driver.",
         )
     self._device_fallback_diagnostic = Diagnostic(
         level="warning",
@@ -189,7 +194,7 @@ if used != self.config.device:
 
 In this example, `self._effective_capabilities_for()` stands for your own function that builds the effective tree for a device. Your `_transcribe` then adds `self._device_fallback_diagnostic` to every result it returns. When the library gives you no way to learn which device it uses, your plugin's documentation MUST say that the engine cannot detect such a move.
 
-The standard layer cannot see which device a library uses, so only your engine can follow this rule. The default compliance run never loads a model, so it cannot detect a move to another device either. A `--runtime` option of `standard-asr compliance run` is planned to check it, and is not implemented yet. The plan is for that option to configure a GPU device on a machine without one, transcribe a short clip, and expect either the `ConfigError` or the diagnostic.
+The standard layer cannot see which device a library uses, so only your engine can follow this rule. The default compliance run calls your transcription methods only with inputs that the standard layer rejects, so it never checks which device a model runs on. A `--runtime` option of `standard-asr compliance run` is planned to check it, and is not implemented yet. The plan is for that option to configure a GPU device on a machine without one, transcribe a short clip, and expect either the `ConfigError` or the diagnostic.
 
 ## Audio you receive
 
