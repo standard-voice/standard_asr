@@ -318,7 +318,7 @@ lang: zh-Hans
 | Capabilities（能力） | 引擎支持的功能集合。以层级化树结构表达，按 mode 域分组，树的类是 `Capabilities`。树中陈述一项功能的节点叫能力节点，每个能力节点带 `supported` 或 `mode`，告知应用该功能是否可用。挂在一个能力节点下面的节点，是对这项功能的细化，例如 `diarization.always_on` 挂在 `diarization` 下面；只要上层有一个能力节点不被支持，下面的节点就一律不被支持，不论它自己怎么声明（§3.2、§4 R5）。只给节点分组的键（如 `language`）叫容器（详见 §3.3）。 |
 | mode 域 (mode domain) | 能力树的顶层分区。当前标准定义两个封闭的 mode 域：`batch`（对应 `transcribe`）和 `streaming`（对应 `start_transcription`）。`job` 保留待 major 版本扩展。引擎不支持某 mode 时，省略该域。 |
 | declared_capabilities（声明能力） | 引擎在**类级别 (ClassVar)** 静态声明的能力全集，是引擎类上的一个 `Capabilities` 实例。无需实例化引擎、无需鉴权即可发现。`standard-asr show`、注册表、UI 生成、REST `GET .../capabilities` 均读取此值。 |
-| effective_capabilities（生效能力） | 引擎**实例化后**，根据实际配置可能**收窄**的能力子集，同样是一个 `Capabilities` 实例。例如，引擎声明支持 `word_timestamps`，但用户未配 `forced_aligner`，则运行时不可用。**不变量 `effective ⊆ declared`**（只能关、不能凭空开）。合规测试强制校验此子集关系。校验时，effective 拿去和引擎**类**上的 `declared_capabilities` 比较，因为发现与 REST 读的是这一份；实例上若另有一个同名属性，不拿来比较（见 §3.1）。校验失败时，合规报告列出出问题的路径，说明比较的是哪一项（是否支持、`role`、`mode`、`granularities` 或某个上限），并区分两种情况：effective 的值确实比 declared 宽；或者 effective 的值缺失、类型不对，没法比较，所以证明不了收窄。两种情况都算违反。这项检查只在合规套件里运行，转写请求不会因为它失败。 |
+| effective_capabilities（生效能力） | 引擎**实例化后**，根据实际配置可能**收窄**的能力子集，同样是一个 `Capabilities` 实例。例如，引擎声明支持 `word_timestamps`，但用户未配 `forced_aligner`，则运行时不可用。effective 只看配置和只读的安装信息（例如装了哪些可选组件），不看在这台机器上实际探测到的硬件情况（§3.1）。**不变量 `effective ⊆ declared`**（只能关、不能凭空开）。合规测试强制校验此子集关系。校验时，effective 拿去和引擎**类**上的 `declared_capabilities` 比较，因为发现与 REST 读的是这一份；实例上若另有一个同名属性，不拿来比较（见 §3.1）。校验失败时，合规报告列出出问题的路径，说明比较的是哪一项（是否支持、`role`、`mode`、`granularities` 或某个上限），并区分两种情况：effective 的值确实比 declared 宽；或者 effective 的值缺失、类型不对，没法比较，所以证明不了收窄。两种情况都算违反。这项检查只在合规套件里运行，转写请求不会因为它失败。 |
 | 引擎全局能力 | 不绑定在任何 mode 域内的正交能力。放在能力树顶层，如 `streaming_input`、`streaming_output`。 |
 | 节点形态 | 能力节点的结构，固定为三种之一：flag、bounded、enum/mode（详见 §3.3）。形态和用途是给节点分类的两个独立维度：形态说明节点由哪些字段组成、`supported` 怎么得出；用途（下一行）说明节点陈述的是哪一类事实。同为 flag 形态，`language.runtime_override` 的用途是 `requestable`，`streaming.emits_partials` 的用途是 `trait`。 |
 | 节点用途 (role) | 一个节点陈述的是哪一类事实，写在节点的 `role` 字段里，取三个值之一。`requestable`（可请求）：应用可以在请求里要求的功能；标准节点通过 `RuntimeParams`（一次转写请求携带的标准参数，[§Runtime 参数 3.1](#runtime-parameters)）的一个字段要求，如 `diarization`、`word_timestamps`。`trait`（特性）：引擎的一项特性、行为或承诺，任何标准 `RuntimeParams` 字段都不请求它，如 `streaming_input`（接受增量音频）、`emits_partials`（会发中途结果）、`finality_level`（对 `final` 事件的承诺）、`diarization.always_on`（每个请求都做说话人分离）。`constraints`（约束）：一个可请求功能的约束。约束是放在功能节点的 `constraints` 对象里、机器可以检查的上限，标准定义的约束字段是 `language.candidate_languages.constraints.max`（一次请求最多列几个候选语言）、`guidance.prompt.constraints.max_tokens`（prompt 最多几个 token，按估算）、`guidance.phrase_hints.constraints` 的 `max_terms`、`max_chars_per_term`、`max_words_per_term`（词条数、每条字符数、每条词数的上限），以及 `diarization.constraints.max_speakers`（最多几个说话人）。每个标准能力节点和每个 `constraints` 子模型都带 `role` 字段，容器不带；`x_*` 节点只在声明写了 `role` 时才带（详见 §3.3、§4 R4）。 |
@@ -336,6 +336,8 @@ lang: zh-Hans
 | effective：实例的 `effective_capabilities` | `Capabilities` 实例，实例属性（可选） | `__init__(config)` 后产生 | 运行时门控 | `effective ⊆ declared`（只能关闭已声明的能力）|
 
 `--no-instantiate` 发现路径（CLI `show`、注册表查询）只读引擎类的 `declared_capabilities`。
+
+**effective 依据什么（normative）。** effective 回答的问题是：照现在安装的这套代码，用这份配置，引擎能做什么。这里的配置指引擎实例拿到的 config 对象，显式值、环境变量回退和默认值都已合并进去（IC.4）。计算 effective 时，引擎 MAY 读两样东西：一是这份配置；二是只读的安装信息，即装了哪些可选组件、引擎底层调用的原生库（装好的这个版本）支持哪些设备。例如 ONNX Runtime 的 `get_available_providers()` 列出这个安装包编进了哪些执行提供者（execution provider，ONNX Runtime 在 CPU、CUDA 等某一种硬件上运行模型的组件）。读取 `effective_capabilities` 时，引擎 MUST NOT 加载权重、初始化加速器（GPU、NPU 等）、创建或修改文件、访问网络。这和 IC.9 对构造引擎实例（`__init__`）的要求相同；唯一放宽的一点是，这里可以读上面说的安装信息（IC.9 连路径探测都不允许）。所以，机器上有没有某个设备、驱动能不能用、推理工件（权重、tokenizer 这类放在磁盘上的文件）是否已经备好，都不进入 effective：这些属于观测，要真正加载或探测才知道，而且同一份配置在两台机器上会得到不同的答案（见 §3.3 讲 `observation` 的那一段）。推理工件是否备好，由 `artifact_status()` 回答（[§推理工件生命周期](#artifact-lifecycle)）。如果配置没有定死设备，而是留到加载模型时再挑（例如 `device="auto"`），effective MUST 只宣告引擎在加载时可能挑中的每一个设备都做得到的功能。到加载时，配置的设备却用不了，该怎么办，见 §4 R8。
 
 合规套件检查引擎有没有改动类上的声明。它在调用引擎的工厂函数（入口点给出、用来建立引擎实例的函数）之前，先记下引擎类上的 `declared_capabilities` 陈述了什么：每个节点的类、字段与 extras，每个值连同它的类型（`True` 与 `1` 算不同），不含私有状态；建立实例、读取 `effective_capabilities` 之后，再拿类上的声明和这份记录比较。两者不同，或者类上的声明已被换掉、删掉，报错 `declared_capabilities_mutated`。常见原因是引擎用浅拷贝（例如 `model_copy()`）从 declared 做出 effective，再去改拷贝里的字典或列表：浅拷贝和原对象共用这些字典和列表，改拷贝就等于改了类上的声明。effective 应从新数据建立，例如修改 `declared.model_dump()` 的结果后，再交给 `Capabilities.model_validate()`。另外，实例上若另设了一个 `declared_capabilities`，内容又与类上的不同，报错 `instance_declared_capabilities_diverge`：发现、`standard-asr show` 与 REST 读的都是类上的那一份，实例上的另一份会让它们描述的树与这个实例报告的树不一致。
 
@@ -464,6 +466,17 @@ capabilities:
 据此 **`max_candidate_languages` 已从 Properties 移入** `capabilities.<mode>.language.candidate_languages.constraints.max`。
 
 第三行的裁决标准是**消费场景**而非「是否被 gate」——能力树本就含仅信息性的 `trait` 节点（`self_resamples` 等）。工件声明被排除出能力树，是因为它描述转写请求之外的**管理操作**：放入能力树会让 `supports()` 覆盖非推理操作（决策记录：`engine-metadata-surface`，docs/internal/feat_plan/）。
+
+**R8 — 配置的设备用不了时（normative）。** 引擎在配置指定的设备上运行模型（设备由 `DeviceConfigMixin` 的 `device` 字段配置，IC.5），effective 也是按这份配置算出来的（§3.1）。这个设备能不能用，要到加载模型时才知道：IC.9 不允许构造引擎实例时碰设备，所以模型在 `prepare()`、第一次 `transcribe()` 或建立流式会话时才加载。配置写了 `cuda`，机器上却可能没有可用的 CUDA；很多原生库这时会自己换到 CPU 或别的设备上运行（下文称改用），有的只记一行日志，不告诉调用方。引擎 MUST 看改用后的设备能做什么，分两种情况处理：
+
+- **改用后的设备做不到 effective 宣告支持的某项功能。** 引擎 MUST 抛 `ConfigError`，`param` 为 `"device"`，消息说明配置的是哪个设备、它为什么用不了、换到别的设备会失去哪项功能。引擎 MUST NOT 在那个设备上继续处理请求。标准层是按 effective 检查请求并放行的；在缺这项功能的设备上交出的结果，就是一个悄悄出错的结果。这时做不了任何有帮助的事，所以只能报错。
+- **改用后的设备做得到 effective 宣告支持的全部功能。** 引擎 MAY 在那个设备上继续处理请求，但 MUST 让应用看得到这次改用：之后产生的每个结果都带一条 `warning` 级 diagnostic，`code` 为 `device_fell_back`（常量 `DIAG_DEVICE_FELL_BACK`），`param` 为 `"device"`，`provided` 是配置的设备，`effective` 是实际使用的设备；流式会话则把它放进会话的 diagnostics（`session.diagnostics()`）。引擎还 SHOULD 写一行日志。这时转写结果是对的，只是可能慢很多，所以不必失败，但不能瞒着应用。之所以每个结果都要带，是因为看结果的一方可能只看到其中一个：例如参考服务器上，每个客户端只拿到自己那次请求的结果。
+
+如果原生库不改用，而是因为设备用不了直接报错，引擎 SHOULD 同样抛 `ConfigError`（`param="device"`），这样同一个原因在应用那边只对应一种异常。
+
+判断有没有发生改用，引擎 MUST 看原生库实际用的是哪个设备，不能只看自己向它要了哪个。例如 ONNX Runtime 的 `InferenceSession.get_providers()` 返回这个会话实际用上的执行提供者。原生库没有这类查询时，插件的文档 MUST 写明：这个插件发现不了改用。
+
+标准层看不到原生库内部用的是什么设备，所以这条规则只能靠引擎自己遵守。合规套件默认不加载模型，所以也发现不了改用。合规套件的 `--runtime` 档会真正加载模型，它尚未实现（进度见 #53 与 #33，AR.10）；实现后可以这样检查：在没有 GPU 的机器上把 `device` 配成某个 GPU 设备，转写一段音频，引擎要么抛 `ConfigError`，要么在结果上带 `device_fell_back`。
 
 ## 5. 示例
 

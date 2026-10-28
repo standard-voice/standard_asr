@@ -41,7 +41,7 @@ StandardASRError
 
 | Exception | When | Typical cause |
 | --------- | ---- | ------------- |
-| `ConfigError` | `create()`, `transcribe()`, or `start_transcription()` | Invalid config value — bad pydantic validation, or a `default_language` that is malformed / not selectable. Fixable by whoever supplies the config. |
+| `ConfigError` | `create()`, `transcribe()`, `start_transcription()`, or `prepare()` | Invalid config value — bad pydantic validation, or a `default_language` that is malformed / not selectable. Also raised when the configured `device` is unavailable when the model loads, and the device the engine would move to lacks a capability the engine's effective capabilities promise; `.param` is then `"device"`. When the other device has every promised capability, the engine may continue on it instead, and each result carries a `device_fell_back` warning diagnostic. Fixable by whoever supplies the config. |
 | `ConfigurationRequiredError` | `create()` / `from_env()`, or lazily at the first `transcribe()` / session when the engine defers its credential check | A required field (for example, an API key) is absent from both explicit config and the environment — set it and retry; compliance treats this as a skip, not a failure. |
 | `TranscriptionError` | `transcribe()` / `start_transcription()` | Engine crashed or returned an invalid result. |
 | `ArtifactStatusError` | `artifact_status()` or acquisition finalization | Side-effect-free inference-artifact inspection failed. |

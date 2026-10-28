@@ -149,6 +149,7 @@ from standard_asr.contract.results import (
     to_json_value,
 )
 from standard_asr.runtime.config import (
+    DIAG_DEVICE_FELL_BACK,
     BaseConfig,
     CredentialsConfigMixin,
     DeviceConfigMixin,
@@ -217,6 +218,7 @@ __all__ = [
     "CapabilityRole",
     "ChannelResult",
     "CredentialsConfigMixin",
+    "DIAG_DEVICE_FELL_BACK",
     "DIARIZE",
     "Capabilities",
     "DeclaredEngineMetadata",

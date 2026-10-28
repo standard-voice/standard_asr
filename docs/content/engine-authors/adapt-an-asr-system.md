@@ -21,7 +21,7 @@ Subclass `EngineBase` and provide:
 7. (Streaming) override `_start_transcription(*, gated_params, audio_format, prepared_audio)` returning a `TranscriptionSession` subclass.
 8. `config_type: ClassVar[type[BaseConfig]]` — your config class. It is read from the class, so a settings UI can render the schema without constructing the engine. Without it, `registry.config_schema()` returns `None`, `GET /v1/config-schema/{model}` returns an empty schema, `standard-asr show` reports no init config, and compliance warns (`missing_config_type`).
 9. If your `properties` declare `selectable_languages`, your config MUST carry a usable `default_language` (spec IC.6). Inherit `LanguageConfigMixin` to get the field. Without it, every `transcribe()` raises `EngineContractError` and compliance reports the error `language_config_invalid`.
-10. If you set `effective_capabilities`, it MUST narrow `declared_capabilities`, never widen it. Compliance reports a widening as the error `effective_widens_declared`.
+10. If you override `effective_capabilities`, it MUST only narrow `declared_capabilities`: it may turn a capability off or restrict it, for example to fewer granularities, a weaker mode, or a lower limit, but it never turns one on, loosens a restriction, or changes a node's `role`. It may depend only on your configuration and on what is installed. Compliance reports a widening as the error `effective_widens_declared`. See [Effective capabilities](#effective-capabilities), which also covers a configured device that turns out to be unavailable.
 11. If `declared_metadata.artifacts.applicable` is `True`, implement `_artifact_requirements()`; if `supports_explicit_acquisition` is also `True`, implement `_acquire_artifacts()`. Compliance reports a missing hook as the error `artifact_requirements_hook_missing` or `artifact_acquisition_hook_missing`. Keep this work separate from `prepare()`, which remains an optional process-local warm-up hook. See [Inference artifacts](../reference/artifacts.md).
 
 ## Minimal batch engine
@@ -118,6 +118,78 @@ The quotation marks below show the exact strings your engine sends:
 - Engine-specific parameters → a `ProviderParams` subclass set as `provider_params_type`. Wrong-engine params raise `InvalidProviderParamError`.
 - The base resolves the language axis for you on both paths: the `params.language` your `_transcribe` receives is already the effective value. Only a structural engine that bypasses `EngineBase` calls `standard_asr.contract.language.effective_language(...)` itself.
 - **`word_timestamps.granularities` declares what you can honestly *deliver*, not which native API switch exists.** Declare every granularity your engine can serve — including ones that come for free. If your model emits per-segment start/end on every run (most do), declare `"segment"` even when there is no separate "segment mode" switch. Otherwise the standard layer rejects the cheapest, always-satisfiable request as a false incompatibility. Then map each granularity precisely (for example, only `"word"` enables your forced-alignment pass; a `"segment"` request MUST NOT back-fill word-level data — `words=None` means "not requested").
+
+## Effective capabilities
+
+`declared_capabilities` says what your engine class can do in at least one configuration. An instance reports what it can do in the configuration it was built with, through `effective_capabilities`. `EngineBase` returns the declared tree by default. Override the property when a configuration turns something off, such as word timestamps that need a forced aligner the user did not configure. Before a request reaches your engine, the standard layer checks its parameters against this tree (parameter gating), so the tree must be true for this instance.
+
+**What it may depend on** (spec capabilities §3.1). Compute the effective tree from two things only: the resolved configuration, and read-only information about what is installed. Installed information means which optional packages are present, or what the installed native library was built to support. An execution provider is the ONNX Runtime component that runs a model on one kind of hardware, such as CPU or CUDA. For example, `onnxruntime.get_available_providers()` lists the execution providers built into the installed ONNX Runtime package. Reading `effective_capabilities` MUST NOT load weights, initialize an accelerator, create or change files, or use the network. Three facts stay out of the tree: whether a device is present, whether its driver works, and whether inference artifacts are ready. You learn them only by loading the model or probing the machine, and the same configuration can get different answers on two machines. When the configuration leaves the device choice to load time, as `device="auto"` does, advertise only what every candidate device can do.
+
+**Build it from new data.** Turn the declaration into plain data with `model_dump()`, edit that data, and validate it into a new `Capabilities`:
+
+```python
+@property
+def effective_capabilities(self) -> Capabilities:
+    data = type(self).declared_capabilities.model_dump()
+    if self.config.forced_aligner is None:
+        data["batch"]["word_timestamps"]["supported"] = False
+    return Capabilities.model_validate(data)
+```
+
+Do not edit the declared tree, and do not edit a copy from `model_copy()`. That copy shares its nested dicts and lists with the declaration, so editing it changes your class declaration, and compliance reports `declared_capabilities_mutated`. Do not use `model_copy(update=...)` either, because it skips validation. When you turn a capability node off, every node under it is off too, because a child node refines the capability above it (spec capabilities §3.2).
+
+**Check every configuration.** `standard-asr compliance run` builds your engine only once, with the defaults of its factory. In your own tests, build the engine with each configuration you support and pass it to `check_effective_capabilities()`. Spec IC.9 forbids a constructor from touching a device, so a CI machine with only a CPU can check a CUDA configuration:
+
+```python
+import pytest
+
+from standard_asr.compliance import check_effective_capabilities
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_effective_capabilities(device: str) -> None:
+    report = check_effective_capabilities(MyEngine(MyConfig(device=device)))
+    assert report.passed, report.issues
+```
+
+### When the configured device is unavailable
+
+Your engine runs the model on the device the configuration names, and the effective tree describes that configuration. Whether the device works is known only when the model loads, in `prepare()`, the first `transcribe()`, or the first streaming session. Many native libraries then move to another device by themselves, often the CPU, and some only write a log line. A user who configured `cuda` then waits much longer and never learns why. Spec capabilities R8 says what to do, depending on what the other device can do:
+
+- **The other device cannot do something the effective tree promises.** Raise `ConfigError` with `param="device"`. The message says which device was configured, why it is unavailable, and what the other device would lose. Never serve on that device. The request already passed parameter gating against the effective tree, so a result without the feature would be wrong, and nothing would tell the application.
+- **The other device can do everything the effective tree promises.** You may continue, but attach a warning diagnostic to every result you produce from then on, and write a log line. Use the code `DIAG_DEVICE_FELL_BACK` (`"device_fell_back"`), `param="device"`, the configured device as `provided`, and the device in use as `effective`. In a streaming session, record it once per session by calling `emit_diagnostic()` from your session's `_produce`. Attach it to every result, not only the first: results are independent, and each client of the reference server sees only the results of its own requests.
+
+When the native library itself raises because the device is unavailable, raise `ConfigError` with `param="device"` as well, so an application handles one cause with one exception.
+
+Check the device the library actually uses, not the one you asked for. ONNX Runtime, for example, reports the providers a session really uses through `InferenceSession.get_providers()`. To decide between the two cases, build the effective tree for the device the library actually uses; call it `fallback_tree`. `fallback_tree.covers(self.effective_capabilities)` returns `True` when your effective tree is a valid narrowing of `fallback_tree`, which means that device keeps every promise.
+
+```python
+providers = {"cuda": "CUDAExecutionProvider", "cpu": "CPUExecutionProvider"}
+session = onnxruntime.InferenceSession(
+    model_path, providers=[providers[self.config.device], providers["cpu"]]
+)
+used = next(device for device, name in providers.items() if name == session.get_providers()[0])
+if used != self.config.device:
+    if not self._effective_capabilities_for(used).covers(self.effective_capabilities):
+        raise ConfigError(
+            f"{self.config.device} is unavailable, and {used} cannot serve every "
+            "capability this configuration promises.",
+            param="device",
+            hint="Configure a device this machine provides.",
+        )
+    self._device_fallback_diagnostic = Diagnostic(
+        level="warning",
+        code=DIAG_DEVICE_FELL_BACK,
+        message=f"{self.config.device} is unavailable; transcribing on {used}.",
+        param="device",
+        provided=self.config.device,
+        effective=used,
+    )
+```
+
+In this example, `self._effective_capabilities_for()` stands for your own function that builds the effective tree for a device. Your `_transcribe` then adds `self._device_fallback_diagnostic` to every result it returns. When the library gives you no way to learn which device it uses, your plugin's documentation MUST say that the engine cannot detect such a move.
+
+The standard layer cannot see which device a library uses, so only your engine can follow this rule. The default compliance run never loads a model, so it cannot detect a move to another device either. A `--runtime` option of `standard-asr compliance run` is planned to check it, and is not implemented yet. The plan is for that option to configure a GPU device on a machine without one, transcribe a short clip, and expect either the `ConfigError` or the diagnostic.
 
 ## Audio you receive
 

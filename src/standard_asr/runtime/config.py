@@ -1969,8 +1969,27 @@ class BaseConfig(BaseModel, Generic[EngineNameT]):
         return overrides
 
 
+#: Diagnostic code, at level ``"warning"``, for an engine that runs on a
+#: device other than the configured ``device`` (spec capabilities R8). The
+#: engine attaches it to every result after the configured device turned
+#: out to be unavailable and the engine moved to a device that can do
+#: everything its effective capabilities promise. ``param`` is
+#: ``"device"``, ``provided`` is the configured device, and ``effective`` is
+#: the device in use. When the other device cannot keep a promised
+#: capability, the engine raises
+#: :class:`~standard_asr.contract.exceptions.ConfigError` instead.
+DIAG_DEVICE_FELL_BACK = "device_fell_back"
+
+
 class DeviceConfigMixin(BaseModel):
     """Applicability mixin: compute-device selection.
+
+    When the configured device turns out to be unavailable, the engine
+    follows spec capabilities R8. It raises
+    :class:`~standard_asr.contract.exceptions.ConfigError` when the device
+    it would move to lacks a capability its effective capabilities promise.
+    Otherwise it may continue on that device, and then attaches a
+    :data:`DIAG_DEVICE_FELL_BACK` diagnostic to every result.
 
     Attributes:
         device: Compute device (for example, ``"cpu"``, ``"cuda"``, ``"mps"``).
@@ -2029,6 +2048,7 @@ class CredentialsConfigMixin(BaseModel):
 
 
 __all__ = [
+    "DIAG_DEVICE_FELL_BACK",
     "ENV_PREFIX",
     "SECRET_MASK",
     "BaseConfig",

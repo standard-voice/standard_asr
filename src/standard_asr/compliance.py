@@ -3321,29 +3321,32 @@ def check_effective_capabilities(
     An engine's effective capabilities depend on its configuration (spec
     capabilities §3.1), but :func:`check_entrypoints` builds each engine
     only once, with the defaults of its factory. Call this in a test for
-    each configuration the engine supports. It runs the same instance
-    checks as :func:`check_entrypoints`:
+    each configuration the engine supports. It runs the capability checks
+    that :func:`check_entrypoints` runs on an engine instance, and checks
+    that:
 
     * ``effective_capabilities`` is ``None`` or a ``Capabilities``, and
       reading it does not raise;
     * the effective tree only removes what the declaration on the engine
-      class offers (``effective_widens_declared``, with the reasons);
-    * the reserved keys on its ``x_*`` nodes have the right types;
-    * the instance carries the class's ``declared_capabilities``, and no
-      other tree under that name;
+      class offers (``effective_widens_declared``, which lists the
+      reasons);
+    * the reserved keys on the effective tree's ``x_*`` nodes have the
+      right types;
+    * the instance's ``declared_capabilities`` holds the same tree as the
+      class's;
     * ``engine.supports()`` answers ``False`` for an unknown path and
       agrees with the effective tree at every queryable path.
 
-    Building an engine is pure (spec IC.9), so a test can check a
-    configuration for a device the machine does not have: the effective
-    tree comes from the configuration, not from the hardware.
+    Spec IC.9 forbids side effects such as device access while an engine
+    is built, so a test can check a configuration for a device the machine
+    does not have: the effective tree comes from the configuration, not
+    from the hardware.
 
-    The class declaration is copied when this function starts, so
-    ``declared_capabilities_mutated`` reports only a change made while the
-    function reads ``effective_capabilities``. A change made earlier, for
-    example in the engine's constructor, is reported by
-    :func:`check_entrypoints`, which copies the declaration before the
-    factory runs.
+    This function copies the class declaration when it starts, so
+    ``declared_capabilities_mutated`` reports only a change made while it
+    reads ``effective_capabilities``. A change made earlier, for example in
+    the engine's constructor, is reported by :func:`check_entrypoints`,
+    which copies the declaration before the factory runs.
 
     Args:
         engine: A configured engine instance.

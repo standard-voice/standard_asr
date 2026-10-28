@@ -260,7 +260,7 @@ The Standard ASR compliance suite imports this helper to keep the ecosystem pred
 | Check | What it asserts | How to run |
 | --- | --- | --- |
 | `check_entrypoints` | Entry-point metadata, capability and declared-metadata declarations, the artifact methods, and the optional `prepare()` contract | `standard-asr compliance entrypoints` / `compliance run` |
-| `check_effective_capabilities(engine)` | The checks `check_entrypoints` runs on an engine instance, for an engine you built with one configuration: its effective capabilities only narrow the class declaration, and `supports()` agrees with them | library API only — call it in your tests for each configuration you support |
+| `check_effective_capabilities(engine)` | The capability checks that `check_entrypoints` runs on an engine instance, applied to an engine you built with one configuration: its effective capabilities only narrow the class declaration, and `supports()` agrees with them | library API only — call it in your tests for each configuration you support |
 | `check_provider_params_swap_safety(engine)` | An engine rejects another engine's `provider_params` rather than silently misreading them (spec Runtime R3 / §5.4) | `standard-asr compliance run` (per zero-arg engine) |
 | `check_streaming_param_gating(engine)` | A streaming engine gates an unsupported standard parameter per its strict/best_effort policy | `standard-asr compliance run` (per zero-arg streaming engine) |
 | `check_recommended_wire_format(engine)` | `recommended_wire_format()` returns `AudioFormat \| None` and any returned format passes the engine's own session-establishment rule — the member is unconditional (spec §3.1: Properties-pure, capability-blind), so this holds for **every** engine, batch-only included | `standard-asr compliance run` (per zero-arg engine, inside the entrypoint instance checks) |
@@ -268,7 +268,7 @@ The Standard ASR compliance suite imports this helper to keep the ecosystem pred
 | `check_event_sequence(events)` | A recorded streaming event stream obeys the segment/event-order contract | library API only — drive it from your own tests with recorded events |
 | `check_transcription_result(result, capabilities=...)` | A recorded batch result's `text` equals its segment texts concatenated wherever `segments` is a list, at the top level and in each channel (code `result_invariant:text_segments_mismatch`); the top level and each channel set their own `words` whenever one of their segments carries `words`, and the result carries no `flat_words_missing` diagnostic (code `result_invariant:flat_words_missing`); and the result carries no speaker labels beyond the declared `batch.diarization` capability (code `result_exceeds_diarization`) | library API only — drive it from your own tests with a recorded result |
 
-`standard-asr compliance run` orchestrates every check except `check_effective_capabilities`, `check_event_sequence`, and `check_transcription_result` for you. It runs the entrypoint instance checks (including the wire-format round-trip) and `check_provider_params_swap_safety` for each zero-arg engine, then `check_streaming_param_gating` for each streaming engine. These probes are designed to fail at the standard gate, but a noncompliant engine can enter its real pipeline, load artifacts, connect to a service, or incur a charge. Use staging credentials or `--no-instantiate` when that risk matters. The command also runs `check_sync_bridge` when you opt in via `--include-bridge` (it opens a session). `check_effective_capabilities` needs the configurations you support, `check_event_sequence` an author-recorded event stream, and `check_transcription_result` an author-recorded batch result. The CLI cannot synthesize these, so wire them into your test suite:
+`standard-asr compliance run` orchestrates every check except `check_effective_capabilities`, `check_event_sequence`, and `check_transcription_result` for you. It runs the entrypoint instance checks (including the wire-format round-trip) and `check_provider_params_swap_safety` for each zero-arg engine, then `check_streaming_param_gating` for each streaming engine. These probes are designed to fail at the standard gate, but a noncompliant engine can enter its real pipeline, load artifacts, connect to a service, or incur a charge. Use staging credentials or `--no-instantiate` when that risk matters. The command also runs `check_sync_bridge` when you opt in via `--include-bridge` (it opens a session). `check_effective_capabilities` needs an engine built with each configuration you support, `check_event_sequence` an author-recorded event stream, and `check_transcription_result` an author-recorded batch result. The CLI cannot synthesize these, so wire them into your test suite:
 
 ```python
 import pytest
@@ -293,7 +293,7 @@ def test_entrypoints_compliant() -> None:
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_effective_capabilities(device: str) -> None:
-    # Building an engine touches no device, so this runs on any machine.
+    # Spec IC.9 forbids device access in a constructor, so this runs without a GPU.
     report = check_effective_capabilities(MyEngine(MyConfig(device=device)))
     assert report.passed, [i.message for i in report.issues]
 
