@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 from standard_asr.contract import capabilities as cap_module
 from standard_asr.contract.capabilities import (
     _MAX_CONSTRAINT_FIELDS,  # pyright: ignore[reportPrivateUsage]
+    _MISSING,  # pyright: ignore[reportPrivateUsage]
     _MODE_REDUCTIONS,  # pyright: ignore[reportPrivateUsage]
     BatchCapabilities,
     CandidateLanguagesCapability,
@@ -26,6 +27,7 @@ from standard_asr.contract.capabilities import (
     GuidanceCapabilities,
     LanguageCapabilities,
     LanguageOverrideCapability,
+    PhraseHintsCapability,
     PhraseHintsConstraints,
     PromptCapability,
     PromptConstraints,
@@ -34,11 +36,11 @@ from standard_asr.contract.capabilities import (
     StreamingGuidanceCapabilities,
     StreamTimestampsCapability,
     TraitFlagCapability,
+    WordTimestampGranularityName,
     WordTimestampsCapability,
     _children,  # pyright: ignore[reportPrivateUsage]
     _get_child,  # pyright: ignore[reportPrivateUsage]
-    _read_attr,  # pyright: ignore[reportPrivateUsage]
-    granularity_offers_all,
+    _read_field,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -245,17 +247,269 @@ def test_covers_rejects_granularity_widening() -> None:
 def test_covers_empty_declared_granularities_is_unbounded() -> None:
     # An empty declared granularities list means "unbounded (all)", so a
     # narrowing from it to any concrete subset is a valid effective ⊆ declared
-    # (must NOT false-fail). Mirrors param_gating's empty="offers all" semantics.
-    # Typed WordTimestampsCapability can't be empty+supported (the granularities-enumeration
-    # validator), so the empty-declared case is exercised via an x_* dict node
-    # carrying the field.
-    assert granularity_offers_all([]) is True
-    assert granularity_offers_all(["word"]) is False
-    declared = _x_caps({"x_wt": {"supported": True, "granularities": []}})
-    effective = _x_caps({"x_wt": {"supported": True, "granularities": ["word"]}})
-    assert declared.covers(effective) is True
+    # (must NOT false-fail). Only covers() reads an empty list this way:
+    # runtime gating admits only the granularities a node lists, so an empty
+    # list admits none. The validator rejects building a supported typed node
+    # with an empty list, but the list stays mutable, so the declared node is
+    # emptied after it is built.
+    def tree(granularities: list[WordTimestampGranularityName]) -> Capabilities:
+        return Capabilities(
+            batch=BatchCapabilities(
+                word_timestamps=WordTimestampsCapability(
+                    supported=True, granularities=granularities
+                )
+            )
+        )
+
+    declared = tree(["word"])
+    assert declared.batch is not None
+    declared.batch.word_timestamps.granularities.clear()
+    assert declared.covers(tree(["word"])) is True
+    assert declared.covers(tree(["word", "segment", "char"])) is True
     # And empty -> empty is trivially covered.
     assert declared.covers(declared) is True
+
+
+def test_covers_does_not_compare_vendor_granularities() -> None:
+    # On an x_* node only supported, mode, and role have a standard meaning.
+    # A vendor's granularities key is the vendor's data, so covers() reads
+    # nothing in it, whatever its shape, and never raises on it.
+    finite = _x_caps({"x_wt": {"supported": True, "granularities": ["word"]}})
+    empty: list[str] = []
+    odd: list[object] = ["word", dict[str, int]()]
+    values: tuple[object, ...] = (empty, None, "word", ["word", "segment"], odd, [1])
+    for value in values:
+        other = _x_caps({"x_wt": {"supported": True, "granularities": value}})
+        assert finite.covers(other) is True
+        assert other.covers(finite) is True
+    assert finite.covers(_x_caps({"x_wt": {"supported": True}})) is True
+
+
+def test_an_unsupported_feature_switches_off_its_subtree() -> None:
+    # Nesting means refinement: a node under an unsupported capability node
+    # cannot be used, whatever it says itself. supports(), can_request(), the
+    # supported-path walk, and the capability JSON document agree on that.
+    def tree(supported: bool) -> Capabilities:
+        return Capabilities.model_validate(
+            {
+                "batch": {
+                    "diarization": {
+                        "supported": False,
+                        "x_acme_extra": {"supported": supported, "role": "requestable"},
+                    }
+                }
+            }
+        )
+
+    path = "batch.diarization.x_acme_extra"
+    assert tree(True).supports(path) is False
+    assert tree(True).can_request(path) is False
+    assert path not in set(tree(True).iter_supported_paths())
+    assert tree(True).to_protocol_dict()["batch"]["diarization"]["x_acme_extra"] == {
+        "supported": False,
+        "role": "requestable",
+    }
+    # The node still exists and keeps its role.
+    assert tree(True).role_at(path) == "requestable"
+    assert path in set(tree(True).iter_queryable_paths())
+    # Neither tree supports the node, so neither direction widens.
+    assert tree(False).covers(tree(True)) is True
+    assert tree(True).covers(tree(False)) is True
+    # A grouping dict under the unsupported feature is switched off with it.
+    nested = Capabilities.model_validate(
+        {"batch": {"diarization": {"supported": False, "x_acme": {"deep": {"supported": True}}}}}
+    )
+    assert nested.supports("batch.diarization.x_acme.deep") is False
+    # So is a vendor node inside the unsupported feature's constraints.
+    inside = Capabilities.model_validate(
+        {
+            "batch": {
+                "diarization": {
+                    "supported": False,
+                    "constraints": {"x_acme_extra": {"supported": True}},
+                }
+            }
+        }
+    )
+    assert inside.supports("batch.diarization.constraints.x_acme_extra") is False
+    # An unsupported vendor node switches off its own children too.
+    vendor = Capabilities.model_validate(
+        {"batch": {"x_acme_off": {"supported": False, "child": {"supported": True}}}}
+    )
+    assert vendor.supports("batch.x_acme_off.child") is False
+    assert vendor.to_protocol_dict()["batch"]["x_acme_off"]["child"]["supported"] is False
+
+
+def test_containers_constraints_and_grouping_dicts_switch_nothing_off() -> None:
+    # Only a capability node, one that states supported or mode, gates its
+    # subtree. A grouping dict and a constraints submodel state no support.
+    def deeper(supported: bool) -> Capabilities:
+        return Capabilities.model_validate(
+            {
+                "batch": {
+                    "diarization": {
+                        "supported": True,
+                        "constraints": {"x_acme_extra": {"supported": supported}},
+                    },
+                    "x_acme_group": {"inner": {"supported": supported}},
+                }
+            }
+        )
+
+    deep = "batch.diarization.constraints.x_acme_extra"
+    assert deeper(True).supports(deep) is True
+    assert deep in set(deeper(True).iter_supported_paths())
+    assert deeper(True).supports("batch.x_acme_group.inner") is True
+    assert deeper(False).covers(deeper(True)) is False
+    assert deeper(True).covers(deeper(False)) is True
+
+
+def test_always_on_reads_as_unsupported_under_unsupported_diarization() -> None:
+    # Building the pair is not an error, so an engine that switches
+    # diarization off in its effective tree switches always_on off with it.
+    diarization = DiarizationCapability(
+        supported=False, always_on=TraitFlagCapability(supported=True)
+    )
+    caps = Capabilities(batch=BatchCapabilities(diarization=diarization))
+    assert caps.supports("batch.diarization.always_on") is False
+    # The node's own flag is unchanged; supports() reads the nodes above it.
+    node = caps.node_at("batch.diarization.always_on")
+    assert node is not None
+    assert node.is_supported is True
+    assert caps.to_protocol_dict()["batch"]["diarization"]["always_on"]["supported"] is False
+    on = Capabilities(
+        batch=BatchCapabilities(
+            diarization=DiarizationCapability(
+                supported=True, always_on=TraitFlagCapability(supported=True)
+            )
+        )
+    )
+    assert on.supports("batch.diarization.always_on") is True
+
+
+@pytest.mark.parametrize(
+    "tree",
+    [
+        Capabilities(batch=BatchCapabilities(), streaming=StreamingCapabilities()),
+        Capabilities.model_validate(
+            {
+                "batch": {
+                    "diarization": {
+                        "supported": False,
+                        "x_acme_extra": {"supported": True},
+                        "constraints": {"x_acme_bound": {"supported": True}},
+                    },
+                    "x_vendor_group": {"inner": {"supported": True}, "x_other": {"mode": "fast"}},
+                    "unknown_key": {"supported": True},
+                },
+                "streaming": {
+                    "word_timestamps": {"supported": True, "granularities": ["word"]},
+                    "x_vendor_off": {"supported": False, "x_child": {"supported": True}},
+                },
+            }
+        ),
+    ],
+)
+def test_supported_paths_are_the_queryable_paths_that_supports_accepts(
+    tree: Capabilities,
+) -> None:
+    # iter_supported_paths() and supports() are two readings of one fact, so
+    # they must agree at every queryable path, wherever the node hangs.
+    assert set(tree.iter_supported_paths()) == {
+        path for path in tree.iter_queryable_paths() if tree.supports(path)
+    }
+
+
+def test_covers_rejects_a_dropped_mode_and_reads_a_malformed_one_as_off() -> None:
+    # A supported vendor node that stops stating its mode proves no narrowing
+    # of the declared mode.
+    declared = _x_caps({"x_m": {"mode": "alpha"}})
+    assert declared.covers(_x_caps({"x_m": {"mode": "alpha"}})) is True
+    assert declared.covers(_x_caps({"x_m": {"supported": True}})) is False
+    # A mode that is not a token switches the node off (spec R4), even next to
+    # `supported: true`; switching a node off is a narrowing.
+    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": None}})) is True
+    assert declared.covers(_x_caps({"x_m": {"supported": True, "mode": 1}})) is True
+    assert declared.covers(_x_caps({"x_m": {"supported": False}})) is True
+    assert declared.covers(_x_caps({"x_m": {"mode": "unsupported"}})) is True
+    # A declared node with a malformed mode offers nothing to keep.
+    malformed = _x_caps({"x_m": {"supported": True, "mode": 1}})
+    assert malformed.covers(malformed) is True
+    assert malformed.covers(_x_caps({"x_m": {"mode": "alpha"}})) is False
+
+
+def test_covers_compares_standard_bounds_only() -> None:
+    # A declared finite bound on a standard node is met only by an effective
+    # bound no larger than it; an effective bound of None states no bound.
+    def tree(max_speakers: int | None) -> Capabilities:
+        return Capabilities(
+            batch=BatchCapabilities(
+                diarization=DiarizationCapability(
+                    supported=True, constraints=DiarizationConstraints(max_speakers=max_speakers)
+                )
+            )
+        )
+
+    declared = tree(5)
+    assert declared.covers(tree(5)) is True
+    assert declared.covers(tree(4)) is True
+    assert declared.covers(tree(7)) is False
+    assert declared.covers(tree(None)) is False
+    assert tree(None).covers(tree(7)) is True
+
+    # A vendor bound is the vendor's data: nothing compares it.
+    def vendor(max_value: object) -> Capabilities:
+        return _x_caps({"x_b": {"supported": True, "constraints": {"max": max_value}}})
+
+    for value in (7, 6.5, "4", True, None):
+        assert vendor(5).covers(vendor(value)) is True
+
+
+def test_covers_ignores_an_unknown_extra_on_a_typed_node() -> None:
+    # An unknown key tolerated on parse is not a protocol field: `mode` or
+    # `granularities` as an extra of a container carries no meaning, so it
+    # must not make covers() compare anything.
+    assert _x_caps({"mode": "alpha"}).covers(_x_caps({"mode": "beta"})) is True
+    assert _x_caps({"granularities": ["word"]}).covers(_x_caps({"granularities": []})) is True
+
+
+def test_covers_treats_a_corrupted_typed_enumeration_as_no_narrowing() -> None:
+    # A typed granularities list is validated when the node is built but
+    # stays mutable afterwards. A value that is no longer a list of strings
+    # is not an enumeration, so it proves no narrowing; covers() never raises.
+    finite = Capabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
+        )
+    )
+    corrupted = Capabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
+        )
+    )
+    assert corrupted.batch is not None
+    corrupted.batch.word_timestamps.granularities.append({})  # pyright: ignore[reportArgumentType]
+    assert finite.covers(corrupted) is False
+    assert corrupted.covers(finite) is True
+
+
+def test_covers_rejects_a_typed_enumeration_emptied_after_construction() -> None:
+    # The validator rejects a supported WordTimestampsCapability with an empty
+    # list when it is built, but the list itself is mutable afterwards. An
+    # effective tree emptied that way offers "all" and must not pass.
+    declared = Capabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
+        )
+    )
+    effective = Capabilities(
+        batch=BatchCapabilities(
+            word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"])
+        )
+    )
+    assert effective.batch is not None
+    effective.batch.word_timestamps.granularities.clear()
+    assert declared.covers(effective) is False
 
 
 def test_word_timestamps_supported_requires_granularities() -> None:
@@ -339,19 +593,19 @@ def test_covers_unknown_mode_change_is_fail_closed() -> None:
     assert declared.covers(unchanged) is True
 
 
-def test_streaming_flags_require_streaming_domain() -> None:
-    # A supported streaming axis flag with an omitted streaming
-    # domain is self-contradictory (an omitted domain means streaming is
-    # unsupported, fail-closed) -> rejected at construction.
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError, match="streaming_output"):
-        Capabilities(streaming_output=TraitFlagCapability(supported=True))
-    with pytest.raises(ValidationError, match="streaming_input"):
-        Capabilities(
-            streaming_input=TraitFlagCapability(supported=True),
-            streaming_output=TraitFlagCapability(supported=True),
-        )
+def test_streaming_flags_read_as_unsupported_without_streaming_domain() -> None:
+    # A supported streaming axis flag with no streaming domain is not an
+    # error to build; it reads as unsupported everywhere, so an engine that
+    # drops the domain in its effective tree drops the flags with it.
+    caps = Capabilities(
+        batch=BatchCapabilities(),
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
+    )
+    for flag in ("streaming_input", "streaming_output"):
+        assert caps.supports(flag) is False
+        assert flag not in set(caps.iter_supported_paths())
+        assert caps.to_protocol_dict()[flag]["supported"] is False
     # Flags + domain is the legitimate streaming declaration.
     ok = Capabilities(
         streaming=StreamingCapabilities(),
@@ -359,6 +613,14 @@ def test_streaming_flags_require_streaming_domain() -> None:
         streaming_output=TraitFlagCapability(supported=True),
     )
     assert ok.supports("streaming_input") is True
+    assert ok.to_protocol_dict()["streaming_input"]["supported"] is True
+    # Dropping the domain is a narrowing of both flags.
+    dropped = Capabilities(
+        streaming_input=TraitFlagCapability(supported=True),
+        streaming_output=TraitFlagCapability(supported=True),
+    )
+    assert ok.covers(dropped) is True
+    assert dropped.covers(ok) is False
     # No flags + no domain (batch-only) stays valid.
     batch_only = Capabilities(batch=BatchCapabilities())
     assert batch_only.supports("streaming") is False
@@ -589,21 +851,22 @@ def test_dict_node_supported_is_strict_boolean() -> None:
     assert cj["batch"]["x_real_true"]["supported"] is True
 
 
-def test_dict_node_mode_does_not_override_explicit_supported_false() -> None:
-    # An explicit `supported: false` is authoritative: a `mode` sub-key on the
-    # same node MUST NOT raise it back to true (fail-closed). A node
-    # carrying only `mode` (no `supported`) still derives from the mode.
+def test_dict_node_supported_and_mode_must_both_say_supported() -> None:
+    # A node carrying both keys is supported only when both say so (spec R4):
+    # a `mode` never reopens an explicit `supported: false`, and
+    # `supported: true` never overrides a `mode` that says unsupported. A
+    # node carrying only one of the keys derives from that key.
     caps = _x_caps(
         {
             "x_off_with_mode": {"supported": False, "mode": "seamless"},
             "x_on_with_mode": {"supported": True, "mode": "unsupported"},
+            "x_on_with_token": {"supported": True, "mode": "seamless"},
             "x_mode_only": {"mode": "seamless"},
         }
     )
     assert caps.supports("batch.x_off_with_mode") is False
-    # An explicit supported=True is likewise authoritative over the mode key.
-    assert caps.supports("batch.x_on_with_mode") is True
-    # No `supported` key -> mode governs.
+    assert caps.supports("batch.x_on_with_mode") is False
+    assert caps.supports("batch.x_on_with_token") is True
     assert caps.supports("batch.x_mode_only") is True
 
 
@@ -632,23 +895,41 @@ def test_dict_node_mode_is_strict_string() -> None:
     assert cj["batch"]["x_mode_str"]["supported"] is True
 
 
-def test_covers_with_dict_nodes_constraint_narrowing() -> None:
-    # Both declared and effective carry an x_* dict node with a numeric upper
-    # bound; widening it must be rejected, narrowing/equal accepted (the dict
-    # branch of the constraint comparison).
-    declared = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 5}}})
-    narrowed = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 2}}})
-    widened = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 9}}})
-    assert declared.covers(narrowed) is True
-    assert declared.covers(declared) is True
-    assert declared.covers(widened) is False
+def test_covers_with_typed_constraint_narrowing() -> None:
+    # A standard bound may shrink or stay, never grow.
+    def tree(max_terms: int) -> Capabilities:
+        return Capabilities(
+            batch=BatchCapabilities(
+                guidance=GuidanceCapabilities(
+                    phrase_hints=PhraseHintsCapability(
+                        supported=True, constraints=PhraseHintsConstraints(max_terms=max_terms)
+                    )
+                )
+            )
+        )
+
+    assert tree(5).covers(tree(2)) is True
+    assert tree(5).covers(tree(5)) is True
+    assert tree(5).covers(tree(9)) is False
 
 
-def test_covers_rejects_dict_node_unbounding() -> None:
+def test_covers_rejects_typed_unbounding() -> None:
     # Declared has a finite bound; effective drops it to None (unbounded) -> a
     # widening of an open bound, which must be rejected.
-    declared = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 5}}})
-    unbounded = _x_caps({"x_feat": {"supported": True, "constraints": {"max": None}}})
+    declared = Capabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCapabilities(
+                prompt=PromptCapability(
+                    supported=True, constraints=PromptConstraints(max_tokens=50)
+                )
+            )
+        )
+    )
+    unbounded = Capabilities(
+        batch=BatchCapabilities(
+            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True))
+        )
+    )
     assert declared.covers(unbounded) is False
 
 
@@ -683,18 +964,25 @@ def test_covers_rejects_dropping_whole_constraints_typed() -> None:
     assert effective.covers(effective) is True
 
 
-def test_covers_rejects_dropping_whole_constraints_dict() -> None:
-    # (raw x_*/dict form): declared dict node carries constraints with a
-    # finite bound; effective OMITS the constraints key entirely (not {"max":
-    # None}, but no key at all). That is the same unbounding widening and MUST be
-    # rejected, mirroring the typed-submodel case.
-    declared = _x_caps({"x_feat": {"supported": True, "constraints": {"max": 5}}})
-    dropped = _x_caps({"x_feat": {"supported": True}})
+def test_covers_rejects_dropping_a_bounded_constraints_submodel() -> None:
+    # CandidateLanguagesCapability is the one typed node whose constraints may
+    # be None, meaning no maximum. Dropping a submodel that carries a finite
+    # bound claims "unbounded" and MUST be rejected.
+    def tree(constraints: CandidateLanguagesConstraints | None) -> Capabilities:
+        return Capabilities(
+            batch=BatchCapabilities(
+                language=LanguageCapabilities(
+                    candidate_languages=CandidateLanguagesCapability(
+                        supported=True, constraints=constraints
+                    )
+                )
+            )
+        )
+
+    declared = tree(CandidateLanguagesConstraints(max=3))
+    dropped = tree(None)
     assert declared.covers(dropped) is False
-    # A declared constraints dict with NO finite bound (empty {}) is genuinely
-    # unbounded, so omitting it on the effective side widens nothing.
-    unbounded_decl = _x_caps({"x_feat": {"supported": True, "constraints": {}}})
-    assert unbounded_decl.covers(dropped) is True
+    assert dropped.covers(declared) is True
 
 
 def test_traversal_helpers_handle_non_container_nodes() -> None:
@@ -703,8 +991,8 @@ def test_traversal_helpers_handle_non_container_nodes() -> None:
     # empty/None result rather than raise.
     assert _get_child(42, "anything") is None
     assert _get_child("a string", "x") is None
-    assert _read_attr(42, "max") is None
-    assert _read_attr(True, "mode") is None
+    assert _read_field(42, "max") is _MISSING
+    assert _read_field(True, "mode") is _MISSING
     assert _children(42) == []
     assert _children("scalar") == []
 
@@ -879,13 +1167,12 @@ def test_mutable_mid_stream_covers_rejects_widening() -> None:
 
 
 def test_streaming_capabilities_accepts_plain_guidance_caps() -> None:
-    # backward tolerance: the streaming guidance field is typed as the
-    # base GuidanceCapabilities, so an engine that declares a plain GuidanceCapabilities still
-    # validates. The before-validator normalizes it to the streaming subtype, so
-    # ``mutable_mid_stream`` is a real (fail-closed) node rather than an invisible
-    # extra -- keeping the typed Python tree and the capability JSON document in
-    # agreement.
-    streaming = StreamingCapabilities(guidance=GuidanceCapabilities())
+    # A plain GuidanceCapabilities still validates at run time, although the
+    # field is typed as the streaming subtype. The before-validator re-homes
+    # it, so ``mutable_mid_stream`` is a real (fail-closed) node rather than
+    # an invisible extra -- keeping the typed Python tree and the capability
+    # JSON document in agreement.
+    streaming = StreamingCapabilities.model_validate({"guidance": GuidanceCapabilities()})
     assert type(streaming.guidance) is StreamingGuidanceCapabilities
     caps = Capabilities(streaming=streaming)
     assert caps.supports("streaming.guidance.mutable_mid_stream") is False
@@ -1100,17 +1387,16 @@ def test_streaming_diarization_supported_path_and_node_at() -> None:
     assert node.always_on.is_supported is False
 
 
-def test_always_on_requires_supported() -> None:
-    # always_on supported + supported=False is self-contradictory (an engine
-    # that cannot disable diarization necessarily supports it) and is made
-    # unrepresentable by the model validator. The constructive shapes pass.
+def test_always_on_pair_is_buildable() -> None:
+    # The pair is no longer rejected when the node is built: hierarchical
+    # support reads always_on as unsupported under unsupported diarization,
+    # and compliance reports the pair in a declared tree.
     assert DiarizationCapability(
         supported=True, always_on=TraitFlagCapability(supported=True)
     ).always_on.is_supported
     assert DiarizationCapability(supported=True).always_on.is_supported is False
     assert DiarizationCapability().always_on.is_supported is False
-    with pytest.raises(ValueError, match="declared supported while supported=False"):
-        DiarizationCapability(supported=False, always_on=TraitFlagCapability(supported=True))
+    DiarizationCapability(supported=False, always_on=TraitFlagCapability(supported=True))
 
 
 def test_always_on_is_a_queryable_flag_node() -> None:
@@ -1272,7 +1558,7 @@ def test_extension_extras_are_closed_to_the_json_value_space() -> None:
         supported=True,
         x_vendor={"supported": True, "limits": {"max": 8, "codecs": ["opus"], "note": None}},  # pyright: ignore[reportCallIssue]
     )
-    canonical = cap_module._to_canonical(cap, inject_supported=False)  # pyright: ignore[reportPrivateUsage]
+    canonical = cap_module._to_canonical(cap, inject_supported=False, ancestors_supported=True)  # pyright: ignore[reportPrivateUsage]
     assert canonical["x_vendor"] == {
         "supported": True,
         "limits": {"max": 8, "codecs": ["opus"], "note": None},
@@ -1631,3 +1917,208 @@ def test_serialization_schema_requires_role_with_the_pinned_value() -> None:
         assert definition["properties"]["role"]["const"] == _DECIDED_ROLES[cls.__name__], cls
     assert "role" not in defs["BatchCapabilities"]["properties"]
     assert "role" not in defs["LanguageCapabilities"]["properties"]
+
+
+def test_the_json_document_adds_supported_only_to_queryable_nodes() -> None:
+    # A list is a field's internals and an unknown key outside the x_*
+    # namespace is not queryable, so the document copies both as declared,
+    # with no `supported` added. A root-level x_* node is queryable.
+    caps = Capabilities.model_validate(
+        {
+            "batch": {
+                "future_field": {"mode": "x", "nested": {"supported": True}},
+                "x_acme_list": {"supported": True, "items": [{"supported": "yes"}, 3]},
+            },
+            "x_acme_root": {"supported": True},
+            "future_root": {"supported": True},
+        }
+    )
+    doc = caps.to_protocol_dict()
+    assert doc["batch"]["future_field"] == {"mode": "x", "nested": {"supported": True}}
+    assert caps.supports("batch.future_field") is False
+    assert doc["batch"]["x_acme_list"]["items"] == [{"supported": "yes"}, 3]
+    assert doc["batch"]["x_acme_list"]["supported"] is True
+    assert doc["x_acme_root"] == {"supported": True}
+    assert caps.supports("x_acme_root") is True
+    assert doc["future_root"] == {"supported": True}
+    assert caps.supports("future_root") is False
+
+
+def test_narrowing_violation_descriptions_name_the_path_and_values() -> None:
+    support = cap_module._NarrowingViolation(  # pyright: ignore[reportPrivateUsage]
+        "batch.x_new", "support", None, True, "unsupported", "supported"
+    )
+    assert support.describe() == (
+        "batch.x_new is supported, but the declared tree does not support it"
+    )
+    role = cap_module._NarrowingViolation(  # pyright: ignore[reportPrivateUsage]
+        "batch.x_acme", "role", None, True, "trait", "requestable"
+    )
+    assert role.describe() == "batch.x_acme has role requestable, but its declared role is trait"
+    bound = cap_module._NarrowingViolation(  # pyright: ignore[reportPrivateUsage]
+        "batch.diarization", "bound", "max_speakers", True, "4", "9"
+    )
+    assert bound.describe() == (
+        "batch.diarization.constraints.max_speakers is 9, looser than the declared 4"
+    )
+    unread = cap_module._NarrowingViolation(  # pyright: ignore[reportPrivateUsage]
+        "streaming.reconnect", "mode", None, False, '"seamless"', "missing"
+    )
+    assert unread.describe() == (
+        "streaming.reconnect.mode is missing, which cannot be compared with the declared "
+        '"seamless", so nothing shows that it stays within it'
+    )
+    # The generator reports a role change and a looser standard mode in order.
+    declared = Capabilities.model_validate(
+        {
+            "streaming": {"reconnect": {"mode": "lossy"}},
+            "x_acme_flag": {"supported": True, "role": "trait"},
+        }
+    )
+    effective = Capabilities.model_validate(
+        {
+            "streaming": {"reconnect": {"mode": "seamless"}},
+            "x_acme_flag": {"supported": True, "role": "requestable"},
+        }
+    )
+    kinds = [
+        (v.path, v.kind, v.comparable)
+        for v in cap_module._narrowing_violations(declared, effective)  # pyright: ignore[reportPrivateUsage]
+    ]
+    assert kinds == [("x_acme_flag", "role", True), ("streaming.reconnect", "mode", True)]
+
+
+def test_value_readers_degrade_on_unexpected_shapes() -> None:
+    enumeration = cap_module._enumeration  # pyright: ignore[reportPrivateUsage]
+    assert enumeration(None) == frozenset()
+    assert enumeration(_MISSING) == frozenset()
+    assert enumeration("word") is None
+    assert enumeration(["word", 1]) is None
+    assert enumeration(["word"]) == frozenset({"word"})
+    bound = cap_module._bound  # pyright: ignore[reportPrivateUsage]
+    assert bound(True) is None
+    assert bound(6.5) is None
+    assert bound(_MISSING) is None
+    assert bound(3) == 3
+    summarize = cap_module._summarize  # pyright: ignore[reportPrivateUsage]
+    assert summarize(_MISSING) == "missing"
+    assert summarize(None) == "null"
+    assert summarize(True) == "true"
+    assert summarize("x" * 41) == "a 41-character string"
+    assert summarize(["word", "segment"]) == '["word", "segment"]'
+    assert summarize(["a-long-token"] * 10) == "a list of 10 items"
+    assert summarize([{"nested": 1}]) == "a list of 1 item"
+    assert summarize({"a": 1, "b": 2}) == "an object with 2 keys"
+    assert summarize(b"raw") == "a value of type bytes"
+    assert summarize({"a": 1}) == "an object with 1 key"
+
+
+def test_an_unknown_effective_mode_is_not_described_as_looser() -> None:
+    declared = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="lossy"))
+    )
+    reconnect = ReconnectCapability(mode="lossy").model_copy(update={"mode": "adaptive"})
+    effective = Capabilities(streaming=StreamingCapabilities(reconnect=reconnect))
+    violations = list(
+        cap_module._narrowing_violations(declared, effective)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert [(v.path, v.kind, v.comparable) for v in violations] == [
+        ("streaming.reconnect", "mode", False)
+    ]
+    stronger = Capabilities(
+        streaming=StreamingCapabilities(reconnect=ReconnectCapability(mode="seamless"))
+    )
+    assert [
+        v.comparable
+        for v in cap_module._narrowing_violations(declared, stronger)  # pyright: ignore[reportPrivateUsage]
+    ] == [True]
+
+
+def test_streaming_guidance_survives_a_dump_round_trip() -> None:
+    # Pydantic serializes a field by its annotation. With the base class as
+    # the annotation, model_dump() dropped mutable_mid_stream, and a tree
+    # rebuilt from the dump read the flag as unsupported.
+    declared = Capabilities.model_validate(
+        {
+            "streaming": {"guidance": {"mutable_mid_stream": {"supported": True}}},
+            "streaming_input": {"supported": True},
+        }
+    )
+    rebuilt = Capabilities.model_validate(declared.model_dump())
+    assert rebuilt == declared
+    assert rebuilt.supports("streaming.guidance.mutable_mid_stream")
+    assert rebuilt.covers(declared)
+    plain = StreamingCapabilities.model_validate(
+        {"guidance": GuidanceCapabilities(prompt=PromptCapability(supported=True))}
+    )
+    assert type(plain.guidance) is StreamingGuidanceCapabilities
+    assert plain.guidance.prompt.supported
+
+
+def test_every_tree_field_is_annotated_with_the_class_it_holds() -> None:
+    # A field annotated with a base class while it holds a subclass loses the
+    # subclass's fields in model_dump(); the dump-edit-validate recipe for
+    # building an effective tree would then drop them.
+    seen: set[type[BaseModel]] = set()
+
+    def walk(model: type[BaseModel]) -> None:
+        if model in seen:
+            return
+        seen.add(model)
+        for name, field in model.model_fields.items():
+            annotations = [field.annotation, *typing.get_args(field.annotation)]
+            for annotation in annotations:
+                # On Python 3.10, isinstance(list[str], type) is True, so a
+                # parameterized generic is ruled out first.
+                if typing.get_origin(annotation) is not None or not (
+                    isinstance(annotation, type) and issubclass(annotation, BaseModel)
+                ):
+                    continue
+                if field.default_factory is not None and annotation is field.annotation:
+                    default: object = field.get_default(call_default_factory=True)
+                    held = type(default)
+                    assert held is annotation, f"{model.__name__}.{name} holds {held.__name__}"
+                walk(annotation)
+
+    walk(Capabilities)
+    assert StreamingGuidanceCapabilities in seen
+
+
+@pytest.mark.parametrize(
+    ("node", "supported"),
+    [
+        ({"supported": True, "mode": 123}, False),
+        ({"supported": True, "mode": None}, False),
+        ({"supported": True, "mode": []}, False),
+        ({"supported": True, "mode": {}}, False),
+        ({"supported": True, "mode": "none"}, False),
+        ({"supported": False, "mode": "fast"}, False),
+        ({"supported": "true", "mode": "fast"}, False),
+        ({"supported": True, "mode": "fast"}, True),
+        ({"mode": "fast"}, True),
+        ({"supported": True}, True),
+    ],
+)
+def test_a_vendor_node_is_supported_only_when_every_reserved_key_says_so(
+    node: dict[str, object], supported: bool
+) -> None:
+    # Spec R4: a malformed `supported` or `mode` reads as unsupported, so
+    # `supported: true` next to a malformed or negative `mode` is not enough.
+    caps = Capabilities.model_validate(
+        {
+            "batch": {
+                "x_acme_feature": {
+                    **node,
+                    "role": "requestable",
+                    "x_acme_detail": {"supported": True},
+                }
+            }
+        }
+    )
+    assert caps.supports("batch.x_acme_feature") is supported
+    assert caps.can_request("batch.x_acme_feature") is supported
+    assert caps.supports("batch.x_acme_feature.x_acme_detail") is supported
+    assert ("batch.x_acme_feature.x_acme_detail" in set(caps.iter_supported_paths())) is supported
+    document = caps.to_protocol_dict()["batch"]["x_acme_feature"]
+    assert document["supported"] is supported
+    assert document["x_acme_detail"]["supported"] is supported

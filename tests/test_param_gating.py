@@ -23,6 +23,7 @@ from standard_asr.contract.capabilities import (
     PromptCapability,
     PromptConstraints,
     StreamingCapabilities,
+    StreamingGuidanceCapabilities,
     WordTimestampsCapability,
 )
 from standard_asr.contract.exceptions import InvalidProviderParamError, UnsupportedFeatureError
@@ -950,7 +951,7 @@ def test_guidance_limits_enforced_in_streaming_mode() -> None:
     # mode="streaming" (the streaming path wires gate_params(mode="streaming")).
     caps = Capabilities(
         streaming=StreamingCapabilities(
-            guidance=GuidanceCapabilities(
+            guidance=StreamingGuidanceCapabilities(
                 prompt=PromptCapability(
                     supported=True, constraints=PromptConstraints(max_tokens=2)
                 ),

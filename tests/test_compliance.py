@@ -16,7 +16,7 @@ from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import pytest
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from standard_asr import TranscriptionResult, finalize_result
 from standard_asr import compliance as compliance_module
@@ -49,12 +49,12 @@ from standard_asr.contract.capabilities import (
     Capabilities,
     DiarizationCapability,
     FinalityCapability,
-    GuidanceCapabilities,
     LanguageCapabilities,
     LanguageOverrideCapability,
     PromptCapability,
     PromptConstraints,
     StreamingCapabilities,
+    StreamingGuidanceCapabilities,
     StreamTimestampsCapability,
     TraitFlagCapability,
     WordTimestampsCapability,
@@ -272,6 +272,347 @@ class _WidenedASR(_GoodASR):
 
 def widened_factory() -> _WidenedASR:  # pyright: ignore[reportUnusedFunction]
     return _WidenedASR()
+
+
+class _VendorWidenedASR(_GoodASR):
+    # The only widening is a vendor node inside the constraints submodel of a
+    # supported feature: the effective tree supports
+    # batch.diarization.constraints.x_acme_extra, the declared tree does not.
+    # A constraints submodel states no support of its own, so it switches
+    # nothing off, and the supported-path walk must reach the node.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "batch": {
+                "diarization": {
+                    "supported": True,
+                    "constraints": {"x_acme_extra": {"supported": False}},
+                }
+            }
+        }
+    )
+    effective_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "batch": {
+                "diarization": {
+                    "supported": True,
+                    "constraints": {"x_acme_extra": {"supported": True}},
+                }
+            }
+        }
+    )
+
+
+def vendor_widened_factory() -> _VendorWidenedASR:  # pyright: ignore[reportUnusedFunction]
+    return _VendorWidenedASR()
+
+
+class _DisabledSupportASR(_GoodASR):
+    # Three declared nodes say supported where the tree reads them as
+    # unsupported: a vendor node under an unsupported feature, always_on under
+    # unsupported diarization, and streaming_input without a streaming domain.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "batch": {
+                "diarization": {
+                    "supported": False,
+                    "always_on": {"supported": True},
+                    "x_acme_extra": {"supported": True},
+                },
+            },
+            "streaming_input": {"supported": True},
+        }
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def disabled_support_factory() -> _DisabledSupportASR:  # pyright: ignore[reportUnusedFunction]
+    return _DisabledSupportASR()
+
+
+class _MalformedVendorKeysASR(_GoodASR):
+    # Each reserved key on a vendor node holds the wrong type; a grouping
+    # dict states a feature role without `supported`.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "batch": {
+                "x_acme_flag": {"supported": "true"},
+                "x_acme_level": {"mode": 1},
+                "x_acme_role": {"supported": True, "role": "requestible"},
+                "x_acme_group": {"role": "trait"},
+                "x_acme_bounds": {"role": "constraints"},
+            }
+        }
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def malformed_vendor_keys_factory() -> _MalformedVendorKeysASR:  # pyright: ignore[reportUnusedFunction]
+    return _MalformedVendorKeysASR()
+
+
+class _ShadowingASR(_GoodASR):
+    # The instance replaces the class declaration with a wider tree, so the
+    # class says one thing to discovery and the instance another.
+    def __init__(self) -> None:
+        super().__init__()
+        self.declared_capabilities = Capabilities.model_validate(  # pyright: ignore[reportAttributeAccessIssue]
+            {"batch": {"x_acme_extra": {"supported": True}}}
+        )
+        self.effective_capabilities = self.declared_capabilities  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def shadowing_factory() -> _ShadowingASR:  # pyright: ignore[reportUnusedFunction]
+    return _ShadowingASR()
+
+
+class _MutatingASR(_GoodASR):
+    # Builds its effective tree by editing a shallow copy of the declaration:
+    # the nested vendor dict is shared, so the class declaration changes too.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_beam": {"supported": True, "limits": {"max": 10}}}}
+    )
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        effective = type(self).declared_capabilities.model_copy()
+        assert effective.batch is not None
+        assert effective.batch.model_extra is not None
+        effective.batch.model_extra["x_acme_beam"]["limits"]["max"] = 999
+        return effective
+
+
+def mutating_factory() -> _MutatingASR:  # pyright: ignore[reportUnusedFunction]
+    return _MutatingASR()
+
+
+class _ReassigningASR(_GoodASR):
+    # Replaces the class declaration with a narrower tree while its effective
+    # tree is read: the declaration object changes, not its contents.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_extra": {"supported": True}}}
+    )
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        narrowed = Capabilities.model_validate({"batch": {}})
+        type(self).declared_capabilities = narrowed
+        return narrowed
+
+
+def reassigning_factory() -> _ReassigningASR:  # pyright: ignore[reportUnusedFunction]
+    return _ReassigningASR()
+
+
+class _LateShadowingASR(_GoodASR):
+    # Shadows the class declaration on the instance only while its effective
+    # tree is read, after the constructor ran.
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        narrowed = Capabilities.model_validate({"batch": {}})
+        self.declared_capabilities = narrowed  # pyright: ignore[reportAttributeAccessIssue]
+        return narrowed
+
+
+def late_shadowing_factory() -> _LateShadowingASR:  # pyright: ignore[reportUnusedFunction]
+    return _LateShadowingASR()
+
+
+class _StreamingGuidanceASR(_GoodASR):
+    # Declares a flag that only the streaming guidance subclass has; the
+    # effective tree is the declaration itself, so nothing is widened.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {
+            "streaming": {"guidance": {"mutable_mid_stream": {"supported": True}}},
+            "streaming_input": {"supported": True},
+        }
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def streaming_guidance_factory() -> _StreamingGuidanceASR:  # pyright: ignore[reportUnusedFunction]
+    return _StreamingGuidanceASR()
+
+
+class _DroppingDeclarationASR(_GoodASR):
+    # Removes the instance's declaration while its effective tree is read.
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        self.declared_capabilities = None  # pyright: ignore[reportAttributeAccessIssue]
+        return _CAPS
+
+
+def dropping_declaration_factory() -> _DroppingDeclarationASR:  # pyright: ignore[reportUnusedFunction]
+    return _DroppingDeclarationASR()
+
+
+class _ClassDroppingASR(_GoodASR):
+    # Replaces the class declaration with a value that is not a tree while
+    # its effective tree is read.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate({"batch": {}})
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        type(self).declared_capabilities = None  # pyright: ignore[reportAttributeAccessIssue]
+        return Capabilities.model_validate({"batch": {}})
+
+
+def class_dropping_factory() -> _ClassDroppingASR:  # pyright: ignore[reportUnusedFunction]
+    return _ClassDroppingASR()
+
+
+class _TaggedCapabilities(Capabilities):
+    # Private state that cannot be copied at all: the suite must neither copy
+    # it nor compare it.
+    _lock: object = PrivateAttr(default_factory=threading.Lock)
+
+
+class _AcmeBatch(BatchCapabilities):
+    # A typed field only this subclass has; `Capabilities.batch` is
+    # annotated with the base class, so model_dump() leaves the field out.
+    x_acme_flag: TraitFlagCapability = Field(
+        default_factory=lambda: TraitFlagCapability(supported=True)
+    )
+
+
+class _PrivateStateASR(_GoodASR):
+    declared_capabilities: ClassVar[Capabilities] = _TaggedCapabilities.model_validate(
+        {"batch": _AcmeBatch(), "x_acme_langs": {"supported": True, "codes": ["en", "fr"]}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def private_state_factory() -> _PrivateStateASR:  # pyright: ignore[reportUnusedFunction]
+    return _PrivateStateASR()
+
+
+class _DroppedAndWidenedASR(_GoodASR):
+    # Removes the instance's declaration and widens its effective tree while
+    # the tree is read: the class declaration still measures the widening.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate({"batch": {}})
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        self.declared_capabilities = None  # pyright: ignore[reportAttributeAccessIssue]
+        return Capabilities.model_validate(
+            {
+                "batch": {
+                    "x_acme_feature": {"supported": True, "mode": 123},
+                    "diarization": {"supported": True},
+                }
+            }
+        )
+
+
+def dropped_and_widened_factory() -> _DroppedAndWidenedASR:  # pyright: ignore[reportUnusedFunction]
+    return _DroppedAndWidenedASR()
+
+
+class _UndeclaredASR(_GoodASR):
+    # Neither the class nor the instance carries a declaration, so there is
+    # nothing to measure the effective tree against.
+    declared_capabilities: ClassVar[Any] = None
+    effective_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_level": {"mode": 1}}}
+    )
+
+
+def undeclared_factory() -> _UndeclaredASR:  # pyright: ignore[reportUnusedFunction]
+    return _UndeclaredASR()
+
+
+class _RetypingASR(_GoodASR):
+    # While its effective tree is read, it rewrites `supported: true` in the
+    # class declaration to `1`, which the tree reads as unsupported, and
+    # returns an independent tree made before the change.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_feature": {"supported": True}}}
+    )
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        declared = type(self).declared_capabilities
+        before = Capabilities.model_validate(declared.model_dump())
+        assert declared.batch is not None
+        assert declared.batch.model_extra is not None
+        declared.batch.model_extra["x_acme_feature"]["supported"] = 1
+        return before
+
+
+def retyping_factory() -> _RetypingASR:  # pyright: ignore[reportUnusedFunction]
+    return _RetypingASR()
+
+
+class _RetypedShadowASR(_GoodASR):
+    # Shadows the class declaration with a tree that differs only in
+    # `supported: 1` instead of `true`.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_feature": {"supported": True}}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.declared_capabilities = Capabilities.model_validate(  # pyright: ignore[reportAttributeAccessIssue]
+            {"batch": {"x_acme_feature": {"supported": 1}}}
+        )
+
+
+def retyped_shadow_factory() -> _RetypedShadowASR:  # pyright: ignore[reportUnusedFunction]
+    return _RetypedShadowASR()
+
+
+class _AcmeTupleBatch(BatchCapabilities):
+    # A typed vendor field whose tuple holds a mutable list.
+    x_acme_data: tuple[list[int], ...] = Field(default_factory=lambda: ([1],))
+
+
+class _TupleEditingASR(_GoodASR):
+    # Edits the list inside the class declaration's tuple while its
+    # effective tree is read.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities(batch=_AcmeTupleBatch())
+
+    def __init__(self) -> None:
+        super().__init__()
+        batch = type(self).declared_capabilities.batch
+        assert isinstance(batch, _AcmeTupleBatch)
+        self._data = batch.x_acme_data
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        self._data[0].append(2)
+        return Capabilities(batch=BatchCapabilities())
+
+
+def tuple_editing_factory() -> _TupleEditingASR:  # pyright: ignore[reportUnusedFunction]
+    return _TupleEditingASR()
+
+
+class _ContainerRoleASR(_GoodASR):
+    # A role that is a JSON array or object must be reported, not crash the
+    # reserved-key check.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_flag": {"supported": True, "role": []}}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme_flag": {"supported": True, "role": {}}}}
+    )
+
+
+def container_role_factory() -> _ContainerRoleASR:  # pyright: ignore[reportUnusedFunction]
+    return _ContainerRoleASR()
+
+
+class _GroupedGateASR(_GoodASR):
+    # The node that switches the child off is x_acme.off, not the grouping
+    # dict x_acme above it.
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate(
+        {"batch": {"x_acme": {"off": {"supported": False, "child": {"supported": True}}}}}
+    )
+    effective_capabilities: ClassVar[Capabilities] = declared_capabilities
+
+
+def grouped_gate_factory() -> _GroupedGateASR:  # pyright: ignore[reportUnusedFunction]
+    return _GroupedGateASR()
 
 
 class _BatchWithUngatedFeature(BatchCapabilities):
@@ -562,6 +903,181 @@ def test_check_entrypoints_effective_widens_declared() -> None:
     report = check_entrypoints(registry=_registry("widened_factory"))
     assert report.passed is False
     assert any("not a subset" in i.message for i in report.issues)
+
+
+def test_check_entrypoints_reports_a_vendor_widening_inside_constraints() -> None:
+    # A supported x_* node inside the constraints submodel of a supported
+    # feature used to escape the supported-path walk, so this widening passed
+    # compliance although supports() and the capability JSON document both
+    # showed the node as supported. The message names the path and the rule.
+    report = check_entrypoints(registry=_registry("vendor_widened_factory"))
+    assert report.passed is False
+    issue = next(i for i in report.issues if i.code == "effective_widens_declared")
+    assert "batch.diarization.constraints.x_acme_extra is supported" in issue.message
+
+
+def test_check_entrypoints_reports_declared_support_that_never_takes_effect() -> None:
+    report = check_entrypoints(registry=_registry("disabled_support_factory"))
+    assert report.passed is False
+    messages = [i.message for i in report.issues if i.code == "declared_support_unreachable"]
+    assert len(messages) == 3, messages
+    joined = " | ".join(messages)
+    assert "batch.diarization.always_on" in joined
+    assert "batch.diarization.x_acme_extra" in joined
+    assert "batch.diarization above it is not supported" in joined
+    assert "no 'streaming' domain is declared" in joined
+
+
+def test_check_entrypoints_reports_malformed_vendor_reserved_keys() -> None:
+    report = check_entrypoints(registry=_registry("malformed_vendor_keys_factory"))
+    assert report.passed is False
+    errors = [
+        i.message
+        for i in report.issues
+        if i.code == "extension_reserved_key_malformed" and "declared_capabilities" in i.message
+    ]
+    joined = " | ".join(errors)
+    assert len(errors) == 3, errors
+    assert "batch.x_acme_flag: 'supported' is \"true\", not a boolean" in joined
+    assert "batch.x_acme_level: 'mode' is 1, not a string" in joined
+    assert "batch.x_acme_role: 'role' is \"requestible\"" in joined
+    warnings = [i for i in report.issues if i.code == "extension_role_on_grouping_dict"]
+    # The constraints role on a grouping dict mirrors the standard document
+    # shape and is not reported; only a feature role is. Both trees are checked.
+    assert {w.level for w in warnings} == {"warning"}
+    assert all("batch.x_acme_group" in w.message for w in warnings)
+    assert len(warnings) == 2
+
+
+def test_check_entrypoints_compares_against_the_class_declaration() -> None:
+    report = check_entrypoints(registry=_registry("shadowing_factory"))
+    codes = {i.code for i in report.issues}
+    assert "instance_declared_capabilities_diverge" in codes
+    # The effective tree is measured against the class declaration, which
+    # does not support the vendor node the instance added.
+    assert "effective_widens_declared" in codes
+
+
+def test_check_entrypoints_reports_a_mutated_class_declaration() -> None:
+    try:
+        report = check_entrypoints(registry=_registry("mutating_factory"))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        batch = _MutatingASR.declared_capabilities.batch
+        assert batch is not None
+        assert batch.model_extra is not None
+        beam = cast("dict[str, dict[str, int]]", batch.model_extra["x_acme_beam"])
+        beam["limits"]["max"] = 10
+
+
+def test_check_entrypoints_rereads_declarations_after_the_effective_getter() -> None:
+    original = _ReassigningASR.declared_capabilities
+    try:
+        report = check_entrypoints(registry=_registry("reassigning_factory"))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        _ReassigningASR.declared_capabilities = original
+    report = check_entrypoints(registry=_registry("late_shadowing_factory"))
+    assert any(i.code == "instance_declared_capabilities_diverge" for i in report.issues)
+
+
+def test_check_entrypoints_keeps_streaming_guidance_flags_in_its_snapshot() -> None:
+    # Neither the record of the declaration nor the narrowing check loses a
+    # flag that only the streaming guidance subclass has.
+    report = check_entrypoints(registry=_registry("streaming_guidance_factory"))
+    codes = {i.code for i in report.issues}
+    assert "effective_widens_declared" not in codes
+    assert "declared_capabilities_mutated" not in codes
+
+
+def test_check_entrypoints_reports_a_declaration_the_effective_getter_removed() -> None:
+    report = check_entrypoints(registry=_registry("dropping_declaration_factory"))
+    assert any(i.code == "missing_declared_capabilities" for i in report.issues)
+    original = _ClassDroppingASR.declared_capabilities
+    try:
+        report = check_entrypoints(registry=_registry("class_dropping_factory"))
+        codes = {i.code for i in report.issues}
+        assert "declared_capabilities_mutated" in codes
+        assert "missing_declared_capabilities" in codes
+    finally:
+        _ClassDroppingASR.declared_capabilities = original
+
+
+def test_check_entrypoints_compares_what_the_tree_states_not_private_state() -> None:
+    # A Capabilities subclass with private state, and a container subclass
+    # with its own typed field: nothing changes, so nothing is reported.
+    report = check_entrypoints(registry=_registry("private_state_factory"))
+    codes = {i.code for i in report.issues}
+    assert "engine_check_crashed" not in codes
+    assert "declared_capabilities_mutated" not in codes
+    assert "effective_widens_declared" not in codes
+
+
+def test_check_entrypoints_keeps_checking_after_the_declaration_is_removed() -> None:
+    report = check_entrypoints(registry=_registry("dropped_and_widened_factory"))
+    codes = {i.code for i in report.issues}
+    assert {
+        "missing_declared_capabilities",
+        "effective_widens_declared",
+        "extension_reserved_key_malformed",
+    } <= codes
+
+
+def test_check_entrypoints_without_any_declaration_checks_the_effective_keys() -> None:
+    report = check_entrypoints(registry=_registry("undeclared_factory"))
+    codes = {i.code for i in report.issues}
+    assert "missing_declared_capabilities" in codes
+    assert "extension_reserved_key_malformed" in codes
+    assert "effective_widens_declared" not in codes
+
+
+def test_check_entrypoints_tells_a_boolean_from_a_number_in_declarations() -> None:
+    # `True == 1` in Python, but the tree reads `supported: 1` as unsupported,
+    # so the change is a change, and the mutation check must report it.
+    try:
+        report = check_entrypoints(registry=_registry("retyping_factory"))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        _RetypingASR.declared_capabilities = Capabilities.model_validate(
+            {"batch": {"x_acme_feature": {"supported": True}}}
+        )
+    report = check_entrypoints(registry=_registry("retyped_shadow_factory"))
+    assert any(i.code == "instance_declared_capabilities_diverge" for i in report.issues)
+
+
+def test_check_entrypoints_records_the_contents_of_a_tuple() -> None:
+    # The record rebuilds tuples, so an edit to a list inside one is a change.
+    try:
+        report = check_entrypoints(registry=_registry("tuple_editing_factory"))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        _TupleEditingASR.declared_capabilities = Capabilities(batch=_AcmeTupleBatch())
+
+
+def test_tree_content_rebuilds_sets_and_keeps_scalar_types() -> None:
+    record = compliance_module._tree_content  # pyright: ignore[reportPrivateUsage]
+    values = {"word"}
+    recorded = record(values)
+    values.add("segment")
+    assert recorded == record({"word"})
+    assert record({"word"}) != record(frozenset({"word"}))
+    assert record([True]) != record([1])
+
+
+def test_check_entrypoints_reports_container_roles_without_crashing() -> None:
+    report = check_entrypoints(registry=_registry("container_role_factory"))
+    assert not any(i.code == "engine_check_crashed" for i in report.issues)
+    malformed = [i for i in report.issues if i.code == "extension_reserved_key_malformed"]
+    assert {("declared" in i.message, "effective" in i.message) for i in malformed} == {
+        (True, False),
+        (False, True),
+    }
+
+
+def test_check_entrypoints_names_the_capability_node_that_switches_a_child_off() -> None:
+    report = check_entrypoints(registry=_registry("grouped_gate_factory"))
+    issue = next(i for i in report.issues if i.code == "declared_support_unreachable")
+    assert "batch.x_acme.off above it is not supported" in issue.message
 
 
 def test_check_entrypoints_raising_effective_caps_is_reported_not_crash() -> None:
@@ -3937,7 +4453,7 @@ class _AllSupportedStreamEngine(_GatingStreamEngine):
             word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            guidance=StreamingGuidanceCapabilities(prompt=PromptCapability(supported=True)),
             diarization=DiarizationCapability(supported=True),
         ),
         streaming_input=TraitFlagCapability(supported=True),
@@ -3957,7 +4473,7 @@ class _PromptConstrainedStreamEngine(_GatingStreamEngine):
             word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCapabilities(
+            guidance=StreamingGuidanceCapabilities(
                 prompt=PromptCapability(supported=True, constraints=PromptConstraints(max_tokens=3))
             ),
             diarization=DiarizationCapability(supported=True),
@@ -3973,7 +4489,7 @@ class _GranularityLimitedStreamEngine(_GatingStreamEngine):
     declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
             word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
-            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            guidance=StreamingGuidanceCapabilities(prompt=PromptCapability(supported=True)),
             diarization=DiarizationCapability(supported=True),
         ),
         streaming_input=TraitFlagCapability(supported=True),
@@ -4267,7 +4783,7 @@ class _DiarizationUnsupportedStreamEngine(_GatingStreamEngine):
             word_timestamps=WordTimestampsCapability(
                 supported=True, granularities=["word", "segment", "char"]
             ),
-            guidance=GuidanceCapabilities(prompt=PromptCapability(supported=True)),
+            guidance=StreamingGuidanceCapabilities(prompt=PromptCapability(supported=True)),
         ),
         streaming_input=TraitFlagCapability(supported=True),
         streaming_output=TraitFlagCapability(supported=True),
@@ -4327,7 +4843,7 @@ class _ExtremeBudgetEngine(_GatingStreamEngine):
     declared_capabilities: ClassVar[Capabilities] = Capabilities(
         streaming=StreamingCapabilities(
             word_timestamps=WordTimestampsCapability(supported=True, granularities=["word"]),
-            guidance=GuidanceCapabilities(
+            guidance=StreamingGuidanceCapabilities(
                 prompt=PromptCapability(
                     supported=True, constraints=PromptConstraints(max_tokens=10**9)
                 )
@@ -4362,7 +4878,7 @@ def test_streaming_gating_extreme_max_tokens_without_other_probe_is_clean() -> N
                 word_timestamps=WordTimestampsCapability(
                     supported=True, granularities=["word", "segment", "char"]
                 ),
-                guidance=GuidanceCapabilities(
+                guidance=StreamingGuidanceCapabilities(
                     prompt=PromptCapability(
                         supported=True, constraints=PromptConstraints(max_tokens=10**9)
                     )

@@ -103,7 +103,7 @@ if engine.supports("batch.word_timestamps"):
     ...
 ```
 
-Missing capabilities are **fail-closed** (`supports(...)` returns `False`).
+Missing capabilities are **fail-closed** (`supports(...)` returns `False`). A node nested under a feature adds detail to that feature, so it is supported only when every feature above it is supported too. Under an unsupported feature, `supports()` and `can_request()` answer `False` for every node below it, a vendor's `x_*` node included, whatever that node says about itself. The capability JSON document gives the same answer in each node's `supported` field.
 
 `supports()` tells you the engine has a feature, not that you can ask for it. For example, `supports("streaming.re_segments")` is `True` for an engine that may replace segments it already sent, and no parameter asks for that. The capability tree tells the cases apart: each standard capability node, and each `constraints` submodel, states a role, which says what it is for.
 

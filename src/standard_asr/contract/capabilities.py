@@ -63,12 +63,29 @@ engine has a feature. :meth:`Capabilities.can_request` answers
 whether a request can ask for it, which is ``True`` only for a supported
 ``requestable`` node. :meth:`Capabilities.role_at` returns a node's
 role.
+
+A node nested under a capability node adds detail to that one feature, so
+a node is supported only when it says so and every capability node above
+it is supported too. Under an unsupported feature, every node answers
+``False``. So an engine that switches a feature off in its effective
+capabilities switches off everything below it as well. Containers,
+``constraints`` submodels, and grouping dicts (raw ``x_*`` dicts with
+neither ``supported`` nor ``mode``, which only group other dicts) state no
+support, so they never switch off what lies below them. A vendor feature
+that does not depend on a standard feature belongs directly under a mode
+domain or at the root, not under that feature.
+
+On a raw ``x_*`` node, only ``supported``, ``mode``, and ``role`` have a
+standard meaning. Every other key belongs to the vendor; the library keeps
+it as plain data and never compares it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Literal, cast
+import json
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -109,6 +126,16 @@ CapabilityRole = Literal["requestable", "trait", "constraints"]
 #: (``x_<vendor>_<feature>``). An *extra* (non-field) key on a typed standard node
 #: is a recognized capability only when it carries this prefix.
 _EXTENSION_PREFIX = "x_"
+
+#: Root-level flags that are supported only when a mode domain is present,
+#: mapped to the name of that domain (spec, capabilities section 3.2). When the
+#: domain is absent, ``supports()`` answers ``False`` for the flag, whatever its
+#: own ``supported`` says. The compliance suite reports a declared tree that
+#: marks such a flag supported without its domain.
+_DOMAIN_DEPENDENT_FLAGS: dict[str, str] = {
+    "streaming_input": "streaming",
+    "streaming_output": "streaming",
+}
 
 
 def _is_extension_key(key: object) -> bool:
@@ -179,35 +206,6 @@ def _reject_separator_keys_on_node_surface(extras: Mapping[str, object]) -> None
             )
         if isinstance(value, dict):
             stack.extend(cast("dict[str, object]", value).items())
-
-
-def granularity_offers_all(granularities: Sequence[str]) -> bool:
-    """Return whether a declared ``granularities`` list means "unbounded (all)".
-
-    An empty enumeration on a bounded node is the "engine did not enumerate" /
-    unbounded case, not "offers nothing" (on a node of the bounded shape an
-    empty enumeration list does not constrain). The **only** consumer is the
-    capability-narrowing comparison :func:`_node_narrows` /
-    :meth:`Capabilities.covers`, and there only on the **raw dict /
-    ``x_*`` path**: a typed :class:`WordTimestampsCapability` cannot reach this case
-    because its validator makes ``supported=True`` with an empty
-    ``granularities`` unrepresentable, so "empty == all" survives solely for
-    untyped JSON-sourced nodes.
-
-    This is deliberately NOT shared with runtime parameter gating:
-    ``runtime.gating._gate_granularity`` does not call this function and takes the
-    opposite stance (a supported ``WordTimestampsCapability`` *always* enumerates its
-    granularities, so a requested value MUST be one of them -- no "empty => honor
-    anything"). The two modules agree because that typed-validator invariant
-    closes the empty case, not because they share this helper.
-
-    Args:
-        granularities: The declared granularity list (possibly empty).
-
-    Returns:
-        ``True`` if the list is empty (unbounded -- every granularity offered).
-    """
-    return not granularities
 
 
 class _JsonExtraModel(JsonExtraModel):
@@ -425,10 +423,10 @@ class WordTimestampsCapability(_FlagLikeNode):
     granularity: an engine that declares ``supported=True`` but lists no
     granularities is ambiguous -- gating could not tell whether a
     requested granularity is offered, and silently honoring an unlisted one is
-    the cardinal sin. Requiring explicit enumeration makes the "supported but
-    unenumerated" state unrepresentable, so gating always validates against a
-    real set. When ``supported=False`` the list is ignored (it defaults to
-    empty and carries no meaning).
+    the cardinal sin. The validator therefore rejects building a node in the
+    "supported but unenumerated" state, so gating validates a requested
+    granularity against the listed set. When ``supported=False`` the list is
+    ignored (it defaults to empty and carries no meaning).
 
     Attributes:
         supported: Whether word timestamps are supported.
@@ -514,6 +512,18 @@ class DiarizationCapability(_FlagLikeNode):
     a declared-unsupported -> effective-supported change as a rejected widening
     (declaration drift) by plain set containment.
 
+    ``always_on`` is a child of ``diarization``, so it can be supported only
+    when ``diarization`` is. With ``supported=False``,
+    ``supports("<mode>.diarization.always_on")`` answers ``False`` whatever
+    ``always_on`` says, because an unsupported capability node switches off
+    every node below it. So an engine cannot claim that it always applies a
+    feature it does not support. The class does not refuse to build
+    ``supported=False`` with a supported ``always_on``. An engine that
+    switches diarization off in its effective capabilities therefore does
+    not have to clear ``always_on`` too. In a declared tree the pair can
+    never take effect, and the compliance suite reports it as
+    ``declared_support_unreachable``.
+
     It is NOT placed inside ``constraints`` (constraints are machine-checkable
     request bounds, and ``always_on`` is a trait, not a bound). It is
     reserved for architecturally non-disableable engines: an engine that CAN
@@ -524,8 +534,9 @@ class DiarizationCapability(_FlagLikeNode):
     Attributes:
         supported: Whether diarization is supported.
         always_on: Whether diarization is architecturally non-disableable
-            (labels may appear unrequested). May only be supported when
-            ``supported`` is ``True``.
+            (labels may appear unrequested). ``supports()`` answers
+            ``False`` for it when ``supported`` is ``False``, whatever it
+            says itself.
         constraints: Limits when supported.
     """
 
@@ -542,29 +553,7 @@ class DiarizationCapability(_FlagLikeNode):
 
     # As a TraitFlagCapability child, ``always_on`` participates in covers() by standard set
     # containment: a declared=false -> effective=true change is auto-rejected as
-    # a widening, so no special _node_narrows branch is needed.
-
-    @model_validator(mode="after")
-    def _always_on_requires_supported(self) -> DiarizationCapability:
-        """Reject the contradictory ``always_on`` supported + ``supported=False`` shape.
-
-        An engine that cannot disable diarization necessarily supports it;
-        declaring the pair is a declaration bug, made unrepresentable here so
-        the two signals can never disagree.
-
-        Returns:
-            The validated capability.
-
-        Raises:
-            ValueError: If ``always_on`` is supported while ``supported`` is
-                ``False``.
-        """
-        if self.always_on.is_supported and not self.supported:
-            raise ValueError(
-                "DiarizationCapability.always_on is declared supported while supported=False "
-                "(an engine that cannot disable diarization necessarily supports it)."
-            )
-        return self
+    # a widening, so no special narrowing branch is needed.
 
 
 class ReconnectCapability(_CapabilityNode):
@@ -799,17 +788,14 @@ class StreamingCapabilities(_Container):
     language: LanguageCapabilities = Field(default_factory=LanguageCapabilities)
     word_timestamps: WordTimestampsCapability = Field(default_factory=WordTimestampsCapability)
     diarization: DiarizationCapability = Field(default_factory=DiarizationCapability)
-    # Typed as the base GuidanceCapabilities so an engine that declares a plain
-    # GuidanceCapabilities still validates (backward tolerance), but ``_coerce_streaming_
-    # guidance`` below normalizes every provided value to the StreamingGuidanceCapabilities
-    # subtype so the queryable ``mutable_mid_stream`` flag is a real typed node on
-    # EVERY construction path (default, typed instance, plain-base instance, and
-    # dict / model_validate / JSON input). Without that, a value supplied as a dict or a
-    # plain GuidanceCapabilities would land the flag in ``model_extra``, vanishing from
-    # supports()/covers() while still advertised by to_protocol_dict() -- a two-layer
-    # desync and a covers() declared=false -> effective=true
-    # widening bypass.
-    guidance: GuidanceCapabilities = Field(default_factory=StreamingGuidanceCapabilities)
+    # Typed as the class the field always holds. Pydantic serializes a field by
+    # its annotation, so an annotation of the base GuidanceCapabilities made
+    # model_dump() drop ``mutable_mid_stream``, and a tree rebuilt from the dump
+    # read the flag as unsupported. ``_coerce_streaming_guidance`` below still
+    # accepts a plain GuidanceCapabilities and re-homes it, so the flag is a
+    # typed node on every construction path; in ``model_extra`` it would vanish
+    # from supports() and covers() while to_protocol_dict() still advertised it.
+    guidance: StreamingGuidanceCapabilities = Field(default_factory=StreamingGuidanceCapabilities)
     emits_partials: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
     re_segments: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
     partial_stability: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
@@ -822,15 +808,15 @@ class StreamingCapabilities(_Container):
     def _coerce_streaming_guidance(cls, value: object) -> object:
         """Normalize the streaming guidance node to :class:`StreamingGuidanceCapabilities`.
 
-        The field is annotated as the base :class:`GuidanceCapabilities` for backward
-        tolerance, but the runtime node MUST be the streaming subtype on every
-        construction path so that ``mutable_mid_stream`` is a real typed field
-        rather than an invisible ``model_extra``. Without this, a value supplied
-        as a dict (the ``model_validate`` path, which JSON input takes) or as a
-        plain :class:`GuidanceCapabilities` instance would be coerced to the base type and
-        the flag would vanish from ``supports()`` / ``covers()`` while still being
-        advertised by ``to_protocol_dict()`` -- a two-layer desync
-        and a ``covers()`` ``declared=false -> effective=true`` widening bypass.
+        The node MUST be the streaming subtype on every construction path, so
+        that ``mutable_mid_stream`` is a real typed field rather than an
+        invisible ``model_extra``. A dict (the ``model_validate`` path, which
+        JSON input takes) validates as the subtype. A plain
+        :class:`GuidanceCapabilities` instance is not one, so this validator
+        re-homes it instead of rejecting it. Without that, the flag would
+        vanish from ``supports()`` / ``covers()`` while ``to_protocol_dict()``
+        still advertised it -- a two-layer desync and a ``covers()``
+        ``declared=false -> effective=true`` widening bypass.
 
         Args:
             value: The raw guidance input (subtype instance, base instance, dict,
@@ -861,10 +847,12 @@ class Capabilities(_Container):
     Attributes:
         batch: Batch-mode capabilities, or ``None`` if batch is unsupported.
         streaming: Streaming-mode capabilities, or ``None`` if unsupported.
-        streaming_input: Whether the engine accepts incremental audio. May only
-            be supported when a ``streaming`` domain is declared.
-        streaming_output: Whether the engine returns results incrementally. May
-            only be supported when a ``streaming`` domain is declared.
+        streaming_input: Whether the engine accepts incremental audio.
+            ``supports()`` answers ``False`` for it when no ``streaming``
+            domain is declared, whatever the flag itself says.
+        streaming_output: Whether the engine returns results incrementally.
+            ``supports()`` answers ``False`` for it when no ``streaming``
+            domain is declared, whatever the flag itself says.
         self_resamples: Whether the engine resamples audio internally. This is
             one of the traits (``role`` ``trait``) the spec declares in
             Capabilities rather than Properties -- alongside the per-mode
@@ -888,43 +876,6 @@ class Capabilities(_Container):
     streaming_output: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
     self_resamples: TraitFlagCapability = Field(default_factory=TraitFlagCapability)
 
-    @model_validator(mode="after")
-    def _require_streaming_domain_for_streaming_flags(self) -> Capabilities:
-        """Reject a supported streaming axis flag without a ``streaming`` domain.
-
-        An omitted ``streaming`` domain means streaming is unsupported
-        (fail-closed), so declaring ``streaming_input`` / ``streaming_output``
-        as supported alongside it is self-contradictory: the flags advertise a
-        transport axis for a mode the tree says does not exist (streaming input
-        without a streaming-events domain is equally meaningless). Making the
-        combination unrepresentable keeps the two signals from disagreeing.
-
-        Returns:
-            The validated capability tree.
-
-        Raises:
-            ValueError: If ``streaming_input`` or ``streaming_output`` is
-                supported while ``streaming`` is ``None``.
-        """
-        if self.streaming is None:
-            contradictory = [
-                name
-                for name, flag in (
-                    ("streaming_input", self.streaming_input),
-                    ("streaming_output", self.streaming_output),
-                )
-                if flag.is_supported
-            ]
-            if contradictory:
-                raise ValueError(
-                    f"{' and '.join(contradictory)} declared supported, but the "
-                    "'streaming' capabilities domain is omitted -- an omitted domain "
-                    "means streaming is unsupported (fail-closed), so the declaration "
-                    "is self-contradictory. Declare streaming=StreamingCapabilities(...) "
-                    "or drop the flag(s)."
-                )
-        return self
-
     def supports(self, dot_path: str) -> bool:
         """Return whether the capability at ``dot_path`` is supported.
 
@@ -934,6 +885,17 @@ class Capabilities(_Container):
         (fail-closed). Resolving a present mode-domain or container also
         returns ``True``.
 
+        A node is supported only when it says so and every capability node
+        above it on the path is supported too. A capability node is one that
+        states ``supported`` or ``mode``: an instance of a capability class,
+        or a raw dict that carries one of those keys. A nested node adds
+        detail to the feature above it, so under an unsupported feature it
+        cannot be used and answers ``False``. Containers, ``constraints``
+        submodels, and grouping dicts (raw dicts with neither key) state no
+        support, so they never switch off what lies below them. The flags
+        ``streaming_input`` and ``streaming_output`` answer ``False`` when
+        the tree declares no ``streaming`` domain.
+
         Args:
             dot_path: Dotted capability path without the ``capabilities.``
                 prefix (for example, ``"batch.word_timestamps"``,
@@ -942,10 +904,15 @@ class Capabilities(_Container):
         Returns:
             ``True`` if supported, otherwise ``False``.
         """
+        parts = dot_path.split(".")
         node: object = self
-        for part in dot_path.split("."):
+        for index, part in enumerate(parts):
             node = _get_child(node, part)
             if node is None:
+                return False
+            if index == 0 and not self._domain_requirement_met(part):
+                return False
+            if index < len(parts) - 1 and _is_capability_node(node) and not _derive_supported(node):
                 return False
         return _derive_supported(node)
 
@@ -987,8 +954,7 @@ class Capabilities(_Container):
         Returns:
             ``True`` if a request can ask for the feature, otherwise ``False``.
         """
-        node = self._resolve(dot_path)
-        return _derive_supported(node) and _derive_role(node) == "requestable"
+        return self.supports(dot_path) and _derive_role(self._resolve(dot_path)) == "requestable"
 
     def node_at(self, dot_path: str) -> _CapabilityNode | None:
         """Return the typed capability *node* at ``dot_path``, or ``None``.
@@ -998,6 +964,10 @@ class Capabilities(_Container):
         a ``WordTimestampsCapability`` to validate a requested granularity against
         :attr:`WordTimestampsCapability.granularities`). Returns ``None`` if the path
         is absent or does not resolve to a capability node.
+
+        The node's own ``is_supported`` reads only that node. Whether the
+        feature is supported also depends on the nodes above it, so ask
+        :meth:`supports` for that.
 
         Args:
             dot_path: Dotted capability path without the ``capabilities.``
@@ -1010,19 +980,25 @@ class Capabilities(_Container):
         return node if isinstance(node, _CapabilityNode) else None
 
     def iter_supported_paths(self) -> Iterator[str]:
-        """Yield every dot-path in the tree whose node is supported.
+        """Yield the dot-path of every supported node in the tree.
 
-        Only the children of a *supported* typed node are descended into, so an
-        unsupported feature's constraint sub-containers (which are always
-        present, never ``None``) do not appear. A raw ``x_*`` dict subtree is
-        walked unconditionally (see :meth:`_iter_paths`) so nested explicit
-        vendor capabilities stay discoverable. Used to verify the
-        ``effective ⊆ declared`` invariant.
+        The paths are exactly the paths of :meth:`iter_queryable_paths` at
+        which :meth:`supports` answers ``True``. An unsupported capability
+        node switches off everything below it, so nothing below it is
+        yielded. A supported ``x_*`` node inside the ``constraints`` submodel
+        of a supported feature is yielded, because a ``constraints`` submodel
+        states no support of its own. A typed ``constraints`` submodel is
+        never yielded, because it is not a capability, and neither is a raw
+        dict that carries neither ``supported`` nor ``mode``. :meth:`covers`
+        compares these paths to check that an effective tree only narrows a
+        declared one.
 
         Yields:
             Dot-paths of supported capability nodes and present containers.
         """
-        yield from _iter_paths(self, prefix="")
+        for name, child in _children(self):
+            if child is not None and self._domain_requirement_met(name):
+                yield from _iter_paths(child, name)
 
     def iter_queryable_paths(self) -> Iterator[str]:
         """Yield the dot-path of every NODE in the tree -- supported or not.
@@ -1058,8 +1034,11 @@ class Capabilities(_Container):
         the effective set may only *close* declared capabilities, never widen
         them. This checks three things:
 
-        * **Set containment** -- every supported path in ``other`` is also
-          supported here (no feature is enabled that this tree did not declare).
+        * **Set containment** -- every path that :meth:`iter_supported_paths`
+          yields for ``other`` is also supported here (no feature is enabled
+          that this tree did not declare). Both trees read support the same
+          way :meth:`supports` does, so a node under an unsupported feature
+          counts as unsupported.
         * **Same role** -- at every path both trees hold, :meth:`role_at`
           gives the same answer, whether or not the node is supported there.
           A path that ``other`` omits is a narrowing.
@@ -1069,42 +1048,30 @@ class Capabilities(_Container):
           ``mode`` that is the same or a reduction). A widening (declared
           ``max=2`` -> effective ``max=999``) is rejected.
 
+        On a standard node, this tree states a restriction with its
+        ``mode``, with a nonempty ``granularities`` list, or with an upper
+        bound in ``constraints``: ``max``, ``max_tokens``, ``max_terms``,
+        ``max_chars_per_term``, ``max_words_per_term``, or ``max_speakers``.
+        Where it states one, a node that ``other`` still supports must give
+        a value of the right type that is the same or stricter. A value that
+        is looser widens this tree. So does a value that is missing or of a
+        type the comparison cannot read, because nothing then shows that it
+        is stricter. An empty ``granularities`` list in ``other`` means
+        every granularity, so it is looser than a nonempty list here.
+
+        On an ``x_*`` node, only ``supported``, ``mode``, and ``role`` have
+        a standard meaning. A vendor ``mode`` has no standard order from
+        strongest to weakest, so a node that ``other`` still supports must
+        keep exactly the same ``mode`` string. Every other vendor field means
+        what the vendor says, and nothing compares it.
+
         Args:
             other: A (typically narrowed, effective) capability tree.
 
         Returns:
             ``True`` if ``other`` is a subset narrowing of this tree.
         """
-        mine = set(self.iter_supported_paths())
-        for path in other.iter_supported_paths():
-            if path not in mine:
-                return False
-        # A node's role is data (design D3 in
-        # docs/internal/feat_plan/capability-kinds.md), and it does not depend on
-        # support, so the role of every node both trees hold must agree,
-        # supported or not: a change in either direction changes what
-        # role_at() and can_request() answer, and neither direction narrows.
-        # A path the effective tree omits is a narrowing the loop above
-        # already allowed, so only shared paths are compared.
-        for path in other.iter_queryable_paths():
-            effective_node = other._resolve(path)
-            declared_node = self._resolve(path)
-            if declared_node is None:
-                continue
-            if _derive_role(declared_node) != _derive_role(effective_node):
-                return False
-        # Where both support a node, the effective node must not be looser.
-        for path in other.iter_supported_paths():
-            declared_node = self._resolve(path)
-            effective_node = other._resolve(path)
-            if declared_node is None or effective_node is None:  # pragma: no cover
-                # Defensive: set-containment above guarantees every `other` path
-                # also resolves here, so neither side resolves to None in
-                # practice. Kept as a guard against a future traversal change.
-                continue
-            if not _node_narrows(declared_node, effective_node):
-                return False
-        return True
+        return next(_narrowing_violations(self, other), None) is None
 
     def to_protocol_dict(self) -> dict[str, Any]:
         """Return the capability JSON document: the tree as a JSON-ready dict.
@@ -1125,12 +1092,34 @@ class Capabilities(_Container):
         carries its ``role`` field. A container carries none, and a raw ``x_*``
         node carries one only when its declaration does.
 
+        Each ``supported`` the document writes is the answer :meth:`supports`
+        gives for that path, so a node under an unsupported feature carries
+        ``supported: false`` whatever its own declaration says. The document
+        answers capability queries. Do not edit it and feed it back as a
+        declaration, because it no longer shows what each node declared.
+        Data that no query reads, such as a list or the value of an unknown
+        key outside the ``x_*`` namespace, is copied unchanged, with no
+        ``supported`` added.
+
         Returns:
             The capability JSON document: ``supported`` on every capability
             node and present container below the root, none on the root or on
             a ``constraints`` submodel, and ``null`` for an absent mode domain.
         """
-        return cast("dict[str, Any]", _to_canonical(self, inject_supported=False))
+        out: dict[str, Any] = {}
+        for name in type(self).model_fields:
+            out[name] = _to_canonical(
+                getattr(self, name),
+                inject_supported=True,
+                ancestors_supported=self._domain_requirement_met(name),
+            )
+        for key, value in (self.model_extra or {}).items():
+            out[key] = (
+                _to_canonical(value, inject_supported=True, ancestors_supported=True)
+                if _is_extension_key(key)
+                else _plain_json(value)
+            )
+        return out
 
     def _resolve(self, dot_path: str) -> object:
         """Resolve a dot-path to its node object (not its ``supported`` bool).
@@ -1147,6 +1136,23 @@ class Capabilities(_Container):
             if node is None:
                 return None
         return node
+
+    def _domain_requirement_met(self, name: str) -> bool:
+        """Return ``False`` when ``name`` is a root-level flag whose mode domain is absent.
+
+        Only the keys in ``_DOMAIN_DEPENDENT_FLAGS`` depend on a domain. For
+        every other root-level key, the answer is ``True``.
+
+        Args:
+            name: A root-level key.
+
+        Returns:
+            ``False`` when ``name`` is ``streaming_input`` or
+            ``streaming_output`` and the tree has no ``streaming`` domain;
+            ``True`` otherwise.
+        """
+        domain = _DOMAIN_DEPENDENT_FLAGS.get(name)
+        return domain is None or getattr(self, domain) is not None
 
 
 def _get_child(node: object, part: str) -> object:
@@ -1198,24 +1204,22 @@ def _derive_supported(node: object) -> bool:
         return False
     if isinstance(node, dict):
         mapping = cast("dict[str, object]", node)
-        # An explicit `supported` is the authoritative flag for the flag and
-        # bounded shapes and is read as a STRICT boolean: only a real ``True`` counts
-        # as supported. A non-bool (for example, the STRING "false", truthy in Python, or
-        # a number) is a malformed declaration and is fail-closed to ``False`` --
-        # never silently promoted to supported. An explicit `supported` is also
-        # checked BEFORE `mode`: a `mode` sub-key on the same node MUST NOT raise
-        # an explicit ``supported: false`` back to true (fail-closed).
-        if "supported" in mapping:
-            return mapping["supported"] is True
-        if "mode" in mapping:
-            mode = mapping["mode"]
-            # A `mode` value MUST be a string mode token. A non-string (bool,
-            # number, None, and so on) is a malformed declaration and is fail-CLOSED to
-            # ``False`` -- never silently promoted to supported --
-            # mirroring the strict-boolean reading of `supported` above. Without
-            # the ``isinstance`` guard, ``True``/``1`` would pass ``not in`` (a
-            # frozenset of strings) and be wrongly reported as supported.
-            return isinstance(mode, str) and mode not in _UNSUPPORTED_MODES
+        # Each of the two keys present must say supported (spec R4), so a
+        # malformed or negative value in either one is fail-CLOSED. `supported`
+        # is a STRICT boolean: a non-bool (for example, the STRING "false",
+        # truthy in Python, or a number) never counts as supported. `mode` must
+        # be a string token outside the unsupported set; without the
+        # ``isinstance`` guard, ``True``/``1`` would pass ``not in`` (a
+        # frozenset of strings). A `mode` therefore never reopens an explicit
+        # ``supported: false``, and ``supported: true`` never overrides a
+        # `mode` that is malformed or says unsupported.
+        if "supported" in mapping or "mode" in mapping:
+            if "supported" in mapping and mapping["supported"] is not True:
+                return False
+            mode = mapping.get("mode")
+            return "mode" not in mapping or (
+                isinstance(mode, str) and mode not in _UNSUPPORTED_MODES
+            )
         # A raw dict with neither `supported` nor `mode` is NOT a
         # capability node -- it is non-capability data (a bare `constraints` dict
         # like {"max": 5}, a structural grouping, or a malformed vendor node that
@@ -1265,92 +1269,146 @@ def _derive_role(node: object) -> CapabilityRole | None:
     return None
 
 
-def _to_canonical(node: object, *, inject_supported: bool) -> Any:
-    """Recursively convert a capability tree, or part of one, to its JSON-ready form.
+def _is_capability_node(node: object) -> bool:
+    """Return whether ``node`` states whether it is supported.
 
-    Mirrors ``model_dump(mode="json")`` but injects a derived ``supported``
-    boolean at every capability node (``_CapabilityNode``) and present container
-    (``_Container``). Constraint submodels are not capabilities and get no
-    ``supported`` key. See :meth:`Capabilities.to_protocol_dict`.
+    An instance of a capability class always does. A raw dict does when it
+    carries ``supported`` or ``mode``, the same test :func:`_derive_supported`
+    and :func:`_derive_role` use. Containers, ``constraints`` submodels, and
+    grouping dicts do not, so they never switch off what lies below them.
 
     Args:
-        node: A model, container, list, dict, or scalar to convert.
+        node: A resolved node or value.
+
+    Returns:
+        ``True`` if ``node`` is a capability node.
+    """
+    if isinstance(node, _CapabilityNode):
+        return True
+    if isinstance(node, dict):
+        mapping = cast("dict[str, object]", node)
+        return "supported" in mapping or "mode" in mapping
+    return False
+
+
+def _to_canonical(node: object, *, inject_supported: bool, ancestors_supported: bool) -> Any:
+    """Recursively convert a queryable node to its JSON-ready form.
+
+    Mirrors ``model_dump(mode="json")`` but injects a derived ``supported``
+    boolean at every capability node (``_CapabilityNode``, or a raw dict that
+    carries ``supported`` or ``mode``) and present container (``_Container``).
+    The injected value is the answer :meth:`Capabilities.supports` gives, so
+    it is ``False`` under an unsupported capability node. Constraint
+    submodels are not capabilities and get no ``supported`` key. Values that
+    no query reads, such as lists and the values of unknown keys outside the
+    ``x_*`` namespace, are copied by :func:`_plain_json` with nothing
+    injected. See :meth:`Capabilities.to_protocol_dict`.
+
+    Args:
+        node: A node that queries can reach, or a scalar or list field
+            value, to convert.
         inject_supported: Whether to add ``supported`` to this node if it is a
-            capability node or container (``False`` only for the root).
+            capability node or container.
+        ancestors_supported: Whether every capability node above ``node``
+            is supported.
+            When ``False``, every ``supported`` written at or below
+            ``node`` is ``False``.
 
     Returns:
         A JSON-serializable representation of ``node``.
     """
     if isinstance(node, BaseModel):
+        children_supported = ancestors_supported and (
+            not _is_capability_node(node) or _derive_supported(node)
+        )
         out: dict[str, Any] = {}
         for name in type(node).model_fields:
-            out[name] = _to_canonical(getattr(node, name), inject_supported=True)
+            out[name] = _to_canonical(
+                getattr(node, name), inject_supported=True, ancestors_supported=children_supported
+            )
         for key, value in (node.model_extra or {}).items():
-            out[key] = _to_canonical(value, inject_supported=True)
+            out[key] = (
+                _to_canonical(value, inject_supported=True, ancestors_supported=children_supported)
+                if _is_extension_key(key)
+                else _plain_json(value)
+            )
         if inject_supported and isinstance(node, (_CapabilityNode, _Container)):
-            out["supported"] = _derive_supported(node)
+            out["supported"] = ancestors_supported and _derive_supported(node)
         return out
-    if isinstance(node, list):
-        return [_to_canonical(item, inject_supported=True) for item in cast("list[object]", node)]
     if isinstance(node, dict):
+        # An x_* subtree read from JSON arrives here as plain dicts, and
+        # queries can reach every dict in it. A capability node among them
+        # gets the derived `supported`, so a client in another language
+        # reads the same answer a typed node gives. A bare grouping or
+        # `constraints` dict (for example, {"max": 5}) states no support and
+        # gets none.
         mapping = cast("dict[str, object]", node)
+        children_supported = ancestors_supported and (
+            not _is_capability_node(mapping) or _derive_supported(mapping)
+        )
         out_dict: dict[str, Any] = {
-            key: _to_canonical(value, inject_supported=True) for key, value in mapping.items()
+            key: _to_canonical(value, inject_supported=True, ancestors_supported=children_supported)
+            for key, value in mapping.items()
         }
-        # A JSON-sourced x_* capability lands here as a raw dict (not a
-        # typed _CapabilityNode). Inject the derived `supported` so cross-language
-        # clients get the same uniform probe the typed path provides.
-        # A dict is a capability node iff it carries `mode` or `supported`; a bare
-        # `constraints` dict (for example, {"max": 5}) has neither and is left untouched.
-        if inject_supported and ("mode" in mapping or "supported" in mapping):
-            out_dict["supported"] = _derive_supported(mapping)
+        if inject_supported and _is_capability_node(mapping):
+            out_dict["supported"] = ancestors_supported and _derive_supported(mapping)
         return out_dict
-    return node
+    return _plain_json(node)
 
 
-def _iter_paths(node: object, prefix: str) -> Iterator[str]:
-    """Recursively yield supported dot-paths under ``node``.
+def _plain_json(value: object) -> Any:
+    """Copy a JSON value that no query reads, adding nothing to it.
 
-    A *typed* node's children are only descended into when the node itself is
-    supported, so nothing under an *unsupported* feature, such as an ``x_*``
-    extra on it, joins the set used for the ``effective ⊆ declared``
-    comparison. Its ``constraints`` submodel would add no path either way:
-    :func:`_derive_supported` answers ``False`` for it.
-
-    A *raw dict* child is descended into unconditionally: a
-    JSON-sourced ``x_*`` subtree has no always-present inert submodels, and
-    :meth:`to_protocol_dict` likewise recurses into every dict child, so matching
-    that descent keeps the in-process query and the capability JSON document
-    isomorphic -- a nested explicit capability (``{"supported": true}``) under
-    a bare grouping dict (which itself is *not* a capability, so its own path
-    is not yielded) stays discoverable on both layers. A bare ``constraints``
-    dict is reached this way too, but contributes no path because every key
-    under it is non-capability data (``_derive_supported`` is fail-closed for
-    it).
+    A list is part of a field's value, never a node, and no query reads
+    the value of an unknown key outside the ``x_*`` namespace. So neither
+    gets a derived ``supported``: the document keeps such data exactly as
+    declared.
 
     Args:
-        node: A pydantic model or dict to walk.
-        prefix: The accumulated dot-path prefix.
+        value: A JSON value.
+
+    Returns:
+        A copy of ``value`` with fresh dicts and lists.
+    """
+    if isinstance(value, dict):
+        return {key: _plain_json(item) for key, item in cast("dict[str, object]", value).items()}
+    if isinstance(value, list):
+        return [_plain_json(item) for item in cast("list[object]", value)]
+    return value
+
+
+def _iter_paths(node: object, path: str) -> Iterator[str]:
+    """Yield ``path`` when its node is supported, then the supported paths below it.
+
+    The caller passes ``node`` only when every capability node above it is
+    supported, and this function recurses under the same condition. So it
+    yields a path exactly when :meth:`Capabilities.supports` answers
+    ``True`` for it. At an unsupported capability node, the recursion
+    stops: an ``x_*`` node on an unsupported feature, and the feature's
+    ``always_on`` child, add no path.
+
+    A ``constraints`` submodel and a bare grouping dict, with neither
+    ``supported`` nor ``mode``, are not capabilities, so their own paths are
+    not yielded. They switch nothing off either, so a nested explicit
+    capability (``{"supported": true}``) under them is yielded. A bare
+    ``constraints`` dict such as ``{"max": 5}`` adds no path: its values are
+    not nodes.
+
+    Args:
+        node: A child value of the tree: a model, a dict, or a field value.
+        path: The node's dot-path.
 
     Yields:
         Supported dot-paths.
     """
+    supported = _derive_supported(node)
+    if supported:
+        yield path
+    if _is_capability_node(node) and not supported:
+        return
     for name, child in _children(node):
-        if child is None:
-            continue
-        path = f"{prefix}.{name}" if prefix else name
-        supported = _derive_supported(child)
-        if supported:
-            yield path
-        # Descend into a supported typed node, OR into any dict child (whose own
-        # support is irrelevant to whether it *contains* supported capabilities --
-        # mirroring to_protocol_dict's unconditional dict recursion). An unsupported
-        # typed node is not descended, so nothing under it counts as supported.
-        descend = supported or isinstance(child, dict)
-        if descend:
-            # `child` stays a plain object here (the dict-narrowing above is only a
-            # descent predicate); _iter_paths re-dispatches on its runtime type.
-            yield from _iter_paths(cast("object", child), path)
+        if child is not None:
+            yield from _iter_paths(child, f"{path}.{name}")
 
 
 def _iter_node_paths(node: object, prefix: str) -> Iterator[str]:
@@ -1406,7 +1464,7 @@ def _children(node: object) -> list[tuple[str, object]]:
 #: REGISTRY-DRIFT INVARIANT: this hand-maintained set MUST list every
 #: upper-bound (``gt``-constrained ``int``) field across all ``*Constraints``
 #: submodels. A new ``max_*`` field that is added but not registered here would
-#: make :func:`_node_narrows` SILENTLY stop rejecting a widening of it -- a
+#: make :func:`_node_violations` SILENTLY stop rejecting a widening of it -- a
 #: fail-open the compliance suite would then miss (adding new constraint fields
 #: is an expected evolution path). The guard
 #: ``test_max_constraint_fields_registry_covers_every_bounded_field`` walks the
@@ -1427,8 +1485,10 @@ _MAX_CONSTRAINT_FIELDS = frozenset(
 #: NOT reuse an existing token with a different order; the guard
 #: ``test_mode_reduction_tokens_are_globally_unique_per_enum_family`` enforces
 #: token disjointness and that this map stays in lockstep with the declared enum
-#: tokens. (``x_*`` experimental enum nodes that reuse a token are vendor risk and
-#: are out of scope; an unknown token is fail-closed in :func:`_node_narrows`.)
+#: tokens. :func:`_node_violations` rejects any change from or to a token this map
+#: does not list. ``x_*`` nodes never use this map: a vendor ``mode`` has no
+#: standard strength order, even when it happens to match a standard token such
+#: as ``"closed"``, so a supported vendor node must keep exactly the same token.
 _MODE_REDUCTIONS: dict[str, frozenset[str]] = {
     # reconnect: seamless is strongest; lossy is weaker; unsupported is off.
     "seamless": frozenset({"seamless", "lossy", "unsupported"}),
@@ -1444,102 +1504,323 @@ _MODE_REDUCTIONS: dict[str, frozenset[str]] = {
 }
 
 
-def _node_narrows(declared: object, effective: object) -> bool:
-    """Return whether ``effective`` is no looser than ``declared`` for one node.
+_MISSING: Final = object()
+"""Sentinel for a field a node does not carry, kept apart from an explicit ``None``."""
 
-    Implements the per-node half of the ``effective ⊆ declared`` invariant for
-    bounded (``constraints``) and enum/mode nodes. Flag-only nodes always pass
-    (set containment already covered them).
 
-    Args:
-        declared: The declared node (or sub-value).
-        effective: The corresponding effective node (or sub-value).
+@dataclass(frozen=True)
+class _NarrowingViolation:
+    """One way an effective tree fails to narrow a declared tree.
 
-    Returns:
-        ``True`` if ``effective`` does not widen ``declared``.
+    :func:`_narrowing_violations` yields these. :meth:`Capabilities.covers`
+    stops at the first one, and the compliance suite prints the first few so
+    an engine author can see where and why the check failed.
+
+    Attributes:
+        path: The dot-path of the node where the trees disagree.
+        kind: What was compared: ``"support"``, ``"role"``, ``"mode"``,
+            ``"granularities"``, or ``"bound"``.
+        field: The upper-bound field for a ``"bound"`` violation, else ``None``.
+        comparable: ``True`` when the effective value was read and is looser
+            than the declared one; always ``True`` for ``"support"`` and
+            ``"role"``. ``False`` when nothing shows the effective value is
+            stricter: it is missing or of the wrong type, or it is a
+            ``mode`` that differs from the declared one and has no known
+            strength order to compare by.
+        declared: A short description of the declared value.
+        effective: A short description of the effective value.
     """
-    # enum/mode nodes: the effective mode must be a reduction of the declared.
-    declared_mode = _read_attr(declared, "mode")
-    effective_mode = _read_attr(effective, "mode")
-    if (
-        isinstance(declared_mode, str)
-        and isinstance(effective_mode, str)
-        and declared_mode != effective_mode
-    ):
-        # An identical mode is trivially a non-widening; a CHANGE must be a
-        # provably weaker mode. Tokens outside _MODE_REDUCTIONS (an x_*
-        # experimental enum node, or an unknown future token) have no known
-        # strength order, so a change between them is fail-CLOSED: it MUST NOT
-        # silently pass as a legal narrowing.
-        allowed = _MODE_REDUCTIONS.get(declared_mode)
-        if allowed is None or effective_mode not in allowed:
-            return False
 
-    # granularities: effective set MUST be a subset of declared set. An empty
-    # declared list means "unbounded (all)" (see granularity_offers_all), so any
-    # effective list is a valid narrowing of it -- skip the subset check then.
-    declared_grans = _read_attr(declared, "granularities")
-    effective_grans = _read_attr(effective, "granularities")
-    if isinstance(declared_grans, list) and isinstance(effective_grans, list):
-        if not granularity_offers_all(cast("list[str]", declared_grans)) and not set(
-            cast("list[object]", effective_grans)
-        ).issubset(set(cast("list[object]", declared_grans))):
-            return False
+    path: str
+    kind: Literal["support", "role", "mode", "granularities", "bound"]
+    field: str | None
+    comparable: bool
+    declared: str
+    effective: str
 
-    # bounded constraints: each numeric upper-bound MUST NOT increase.
-    declared_c = _read_attr(declared, "constraints")
-    effective_c = _read_attr(effective, "constraints")
-    if declared_c is not None and effective_c is not None:
-        for field in _MAX_CONSTRAINT_FIELDS:
-            d_val = _read_attr(declared_c, field)
-            e_val = _read_attr(effective_c, field)
-            # A declared finite bound must not be loosened. An effective bound
-            # may not appear where the declared one was unbounded (None) and
-            # then claim a value -- that is also a widening of an open bound.
-            if isinstance(d_val, int) and isinstance(e_val, int):
-                if e_val > d_val:
-                    return False
-            elif d_val is not None and e_val is None:
-                # Declared bounded, effective claims unbounded -> widening.
-                return False
-    elif declared_c is not None and effective_c is None:
-        # Dropping the WHOLE constraints submodel is semantically
-        # identical to nulling each bounded field (the `d_val is not None and
-        # e_val is None` case above): it claims "unbounded" where the declared
-        # set was bounded. The only typed node whose `constraints` may be None is
-        # CandidateLanguagesCapability (None == no max); raw x_*/dict nodes may likewise
-        # omit the key. For both, a declared finite upper bound that vanishes is a
-        # widening and MUST be rejected, otherwise `effective ⊆ declared` is
-        # bypassable through compliance (which
-        # enforces the invariant via covers()). A declared constraints submodel
-        # that carries no finite bound (for example, an all-None PromptConstraints) is
-        # genuinely unbounded, so losing it widens nothing -- fall through to True.
-        if any(isinstance(_read_attr(declared_c, field), int) for field in _MAX_CONSTRAINT_FIELDS):
-            return False
-    # The remaining case -- declared_c is None -- means the declared bound was
-    # already unbounded, so any effective constraints (present or absent) is a
-    # valid narrowing; nothing to reject.
-    return True
+    def describe(self) -> str:
+        """Return a one-line description for a compliance message.
+
+        Returns:
+            The path, what differs, and both values.
+        """
+        if self.kind == "support":
+            return f"{self.path} is supported, but the declared tree does not support it"
+        if self.kind == "role":
+            return (
+                f"{self.path} has role {self.effective}, but its declared role is {self.declared}"
+            )
+        target = (
+            f"{self.path}.constraints.{self.field}"
+            if self.kind == "bound"
+            else f"{self.path}.{self.kind}"
+        )
+        if self.comparable:
+            return f"{target} is {self.effective}, looser than the declared {self.declared}"
+        return (
+            f"{target} is {self.effective}, which cannot be compared with the declared "
+            f"{self.declared}, so nothing shows that it stays within it"
+        )
 
 
-def _read_attr(node: object, name: str) -> object:
-    """Read ``name`` from a model (field or extra) or dict, else ``None``.
+def _narrowing_violations(
+    declared: Capabilities, effective: Capabilities
+) -> Iterator[_NarrowingViolation]:
+    """Yield every way ``effective`` is looser than ``declared``.
+
+    The order is fixed, so a compliance message is stable: first each path
+    that ``effective`` supports and ``declared`` does not, then each path
+    whose role differs, then each restriction that ``effective`` loosens or
+    gives in an unreadable form, path by path in the order the tree is
+    walked. Upper bounds on one node come in alphabetical order of their
+    names.
 
     Args:
-        node: A pydantic model, dict, or other value.
-        name: The attribute / key name.
+        declared: The declared capability tree.
+        effective: The effective capability tree.
+
+    Yields:
+        One record per violation.
+    """
+    declared_paths = set(declared.iter_supported_paths())
+    effective_paths = list(effective.iter_supported_paths())
+    for path in effective_paths:
+        if path not in declared_paths:
+            yield _NarrowingViolation(path, "support", None, True, "unsupported", "supported")
+    # A node's role is data (design D3 in
+    # docs/internal/feat_plan/capability-kinds.md), and it does not depend on
+    # support, so the role of every node both trees hold must agree,
+    # supported or not: a change in either direction changes what
+    # role_at() and can_request() answer, and neither direction narrows.
+    # A path the effective tree omits is a narrowing, so only shared paths
+    # are compared.
+    for path in effective.iter_queryable_paths():
+        declared_node = declared._resolve(path)  # pyright: ignore[reportPrivateUsage]
+        if declared_node is None:
+            continue
+        declared_role = _derive_role(declared_node)
+        effective_role = _derive_role(effective._resolve(path))  # pyright: ignore[reportPrivateUsage]
+        if declared_role != effective_role:
+            yield _NarrowingViolation(
+                path, "role", None, True, declared_role or "none", effective_role or "none"
+            )
+    # Where both trees support a node, the effective node must not be looser.
+    for path in effective_paths:
+        if path in declared_paths:
+            yield from _node_violations(
+                path,
+                declared._resolve(path),  # pyright: ignore[reportPrivateUsage]
+                effective._resolve(path),  # pyright: ignore[reportPrivateUsage]
+            )
+
+
+def _node_violations(
+    path: str, declared: object, effective: object
+) -> Iterator[_NarrowingViolation]:
+    """Yield the restrictions of one declared node that ``effective`` does not meet.
+
+    This is the per-node half of the ``effective ⊆ declared`` invariant, and
+    it runs only at paths that both trees support. For each restriction the
+    declared node states, the effective node must give a value of the right
+    type that is the same or stricter. A value that is missing or of the
+    wrong type shows nothing, so it counts as a violation too. A restriction
+    the declared node does not state, or states with a value of a type this
+    function does not read, restricts nothing.
+
+    On a standard node, the restrictions are its ``mode``, its
+    ``granularities`` enumeration, and the upper bounds in its
+    ``constraints``. On an ``x_*`` node, only ``mode`` has a standard
+    meaning, and it has no standard strength order there, so a supported
+    vendor node must keep exactly the same ``mode`` string.
+
+    Args:
+        path: The node's dot-path.
+        declared: The declared node.
+        effective: The effective node at the same path.
+
+    Yields:
+        One record per violated restriction.
+    """
+    standard = isinstance(declared, _CapabilityNode)
+
+    # enum/mode: the effective mode must be the declared mode or, on a
+    # standard node, a reduction of it. A token outside _MODE_REDUCTIONS,
+    # such as a token from a later version, has no known strength order, so
+    # a change from or to such a token fails rather than passing as a
+    # narrowing. A dropped, None, or non-string mode proves no narrowing.
+    declared_mode = _read_field(declared, "mode")
+    effective_mode = _read_field(effective, "mode")
+    if isinstance(declared_mode, str):
+        if not isinstance(effective_mode, str):
+            yield _NarrowingViolation(
+                path, "mode", None, False, _summarize(declared_mode), _summarize(effective_mode)
+            )
+        elif declared_mode != effective_mode:
+            allowed = _MODE_REDUCTIONS.get(declared_mode) if standard else None
+            if allowed is None or effective_mode not in allowed:
+                # The effective token is shown to be looser only when the
+                # strength order knows it and places the declared token below
+                # it. An unknown token, or one from another family, shows
+                # nothing either way.
+                looser = standard and declared_mode in _MODE_REDUCTIONS.get(
+                    effective_mode, frozenset()
+                )
+                yield _NarrowingViolation(
+                    path,
+                    "mode",
+                    None,
+                    looser,
+                    _summarize(declared_mode),
+                    _summarize(effective_mode),
+                )
+
+    if not standard:
+        # A vendor's other fields mean what the vendor says.
+        return
+
+    # granularities: the effective enumeration must be a nonempty subset of a
+    # finite declared one. An emptied list means "not enumerated, so every
+    # granularity", by the specification's rule on empty enumerations, so it
+    # widens a finite declared list. A value that is not a list of strings is
+    # not an enumeration and proves no narrowing.
+    declared_grans = _enumeration(_read_field(declared, "granularities"))
+    if declared_grans:
+        effective_value = _read_field(effective, "granularities")
+        effective_grans = _enumeration(effective_value)
+        if not effective_grans or not effective_grans <= declared_grans:
+            yield _NarrowingViolation(
+                path,
+                "granularities",
+                None,
+                effective_grans is not None,
+                _summarize(sorted(declared_grans)),
+                _summarize(effective_value),
+            )
+
+    # constraints: no upper bound may grow. A declared finite bound must be
+    # met by an effective finite bound no larger than it. An effective bound
+    # that is missing or None states no bound where the declared node had
+    # one. Dropping the whole constraints submodel makes the same claim for
+    # every bound at once. The only typed node whose `constraints` may be
+    # None is CandidateLanguagesCapability, where None means no maximum. A
+    # declared constraints submodel with no finite bound, such as an all-None
+    # PromptConstraints, restricts nothing, so losing it widens nothing.
+    declared_c = _read_field(declared, "constraints")
+    effective_c = _read_field(effective, "constraints")
+    for name in sorted(_MAX_CONSTRAINT_FIELDS):
+        declared_bound = _bound(_read_field(declared_c, name))
+        if declared_bound is None:
+            continue
+        effective_value = _read_field(effective_c, name)
+        effective_bound = _bound(effective_value)
+        if effective_bound is None or effective_bound > declared_bound:
+            yield _NarrowingViolation(
+                path,
+                "bound",
+                name,
+                effective_bound is not None,
+                _summarize(declared_bound),
+                _summarize(effective_value),
+            )
+
+
+def _enumeration(value: object) -> frozenset[str] | None:
+    """Read an enumeration field's value as the set of tokens it offers.
+
+    Args:
+        value: The field's value on a node, or :data:`_MISSING` when the
+            node does not carry it.
 
     Returns:
-        The value, or ``None`` if absent.
+        The tokens as a set. The set is empty when the node did not
+        enumerate, which means every token: an empty list, an absent field,
+        and ``None`` all read this way. ``None`` when the value is not a list
+        of strings, because such a value is not an enumeration at all.
+    """
+    if value is None or value is _MISSING:
+        return frozenset()
+    if not isinstance(value, list):
+        return None
+    tokens = cast("list[object]", value)
+    if not all(isinstance(token, str) for token in tokens):
+        return None
+    return frozenset(cast("list[str]", tokens))
+
+
+def _bound(value: object) -> int | None:
+    """Read a constraint field's value as a finite upper bound.
+
+    Args:
+        value: The field's value on a ``constraints`` submodel or dict, or
+            :data:`_MISSING` when it is absent.
+
+    Returns:
+        The bound when the value is an ``int``. A ``bool`` does not count,
+        although Python treats it as an ``int``. ``None`` for any other
+        value, because an absent, ``None``, or malformed value states no
+        bound.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _read_field(node: object, name: str) -> object:
+    """Read the protocol field ``name`` of a typed node or a dict.
+
+    On a typed node, only a declared field counts. An extra key with that
+    name is either an ``x_*`` node, which is never a field, or an unknown key
+    that parsing tolerates (spec R2). Neither carries the field's meaning, so
+    the narrowing comparison must not read it. On a raw dict, every key is
+    the vendor's field.
+
+    Args:
+        node: A pydantic model, dict, or other value (including
+            :data:`_MISSING`).
+        name: The field or key name.
+
+    Returns:
+        The value, or :data:`_MISSING` if the node does not carry the field.
     """
     if isinstance(node, BaseModel):
         if name in type(node).model_fields:
             return getattr(node, name)
-        extra: dict[str, Any] = node.model_extra or {}
-        return extra.get(name)
+        return _MISSING
     if isinstance(node, dict):
-        return cast("dict[str, object]", node).get(name)
-    return None
+        return cast("dict[str, object]", node).get(name, _MISSING)
+    return _MISSING
+
+
+def _summarize(value: object) -> str:
+    """Describe a compared value briefly, for a compliance message.
+
+    JSON scalars and short lists of them are written as JSON. Anything
+    longer or nested is described by its type and size, so a message stays
+    one line and never copies a misplaced value whole.
+
+    Args:
+        value: The value, or :data:`_MISSING`.
+
+    Returns:
+        A short description.
+    """
+    if value is _MISSING:
+        return "missing"
+    if value is None or isinstance(value, (bool, int, float)):
+        return json.dumps(value)
+    if isinstance(value, str):
+        return json.dumps(value) if len(value) <= 40 else f"a {len(value)}-character string"
+    if isinstance(value, list):
+        items = cast("list[object]", value)
+        if all(item is None or isinstance(item, (str, bool, int, float)) for item in items):
+            text = json.dumps(items)
+            if len(text) <= 60:
+                return text
+        return f"a list of {len(items)} item{'' if len(items) == 1 else 's'}"
+    if isinstance(value, dict):
+        size = len(cast("dict[str, object]", value))
+        return f"an object with {size} key{'' if size == 1 else 's'}"
+    return f"a value of type {type(value).__name__}"
 
 
 __all__ = [
@@ -1553,7 +1834,6 @@ __all__ = [
     "FinalityCapability",
     "TraitFlagCapability",
     "GuidanceCapabilities",
-    "granularity_offers_all",
     "LanguageCapabilities",
     "ModeName",
     "PhraseHintsCapability",
