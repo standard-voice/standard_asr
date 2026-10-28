@@ -12,6 +12,7 @@ releases may include breaking changes.
 
 ### Added
 
+- **`check_effective_capabilities(engine)` checks one configured engine.** An engine's effective capabilities depend on its configuration, but `standard-asr compliance run` builds each engine once, with the defaults of its factory. This function in `standard_asr.compliance` runs the suite's instance checks on an engine you built yourself: the effective tree only narrows the class declaration, with the reasons when it does not; its `x_*` reserved keys have the right types; the instance carries the class declaration; and `supports()` agrees with the tree. Building an engine touches no device, so a CPU-only machine can check a CUDA configuration.
 - **`standard-asr list --json` prints the model list as JSON.** It prints the list of `ModelInfo` objects that the reference server's `GET /v1/models` returns, sorted by model key, so an application that discovers models through the CLI does not parse text. A default preset has the `model_name` `""`. Like the text view, the command imports no plugin.
 - **Inference-artifact lifecycle protocol.** Protocol 0.2 adds typed static
   declarations, configured-instance status reports, explicit acquisition with

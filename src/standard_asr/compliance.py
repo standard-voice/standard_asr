@@ -108,6 +108,7 @@ __all__ = [
     "SupportsCapabilities",
     "SupportsWireRecommendation",
     "assert_stable_text_invariant",
+    "check_effective_capabilities",
     "check_entrypoints",
     "check_event_sequence",
     "check_provider_params_swap_safety",
@@ -570,7 +571,7 @@ def _check_engine_unguarded(
     # built the engine and read its effective tree. The usual cause is an
     # engine that edits a shallow model_copy() of the declaration, whose
     # nested nodes are the declaration's own objects.
-    class_declared = _class_declared_capabilities(spec)
+    class_declared = _class_declared_capabilities(spec.engine_class)
     declared_snapshot = _tree_content(class_declared) if class_declared is not None else None
 
     try:
@@ -735,7 +736,9 @@ def _check_engine_unguarded(
     _check_prepare_hook(instance, name, issues)
     _check_instance_properties(instance, instance_properties, spec, name, issues)
     _check_instance_config(instance, name, issues)
-    _check_instance_capabilities(instance, spec, name, issues, declared_snapshot=declared_snapshot)
+    _check_instance_capabilities(
+        instance, spec.engine_class, name, issues, declared_snapshot=declared_snapshot
+    )
     _check_supports_contract(instance, name, issues)
     _check_instance_wire_format(instance, name, issues)
 
@@ -780,7 +783,7 @@ def _check_instance_wire_format(
 
 def _check_supports_contract(
     instance: object,
-    name: str,
+    name: str | None,
     issues: list[ComplianceIssue],
 ) -> None:
     """Verify ``supports()`` semantics: shape, fail-closed unknowns, tree agreement.
@@ -816,7 +819,7 @@ def _check_supports_contract(
 
     Args:
         instance: The instantiated engine to probe.
-        name: The model key (for issue attribution).
+        name: The model key (for issue attribution), or ``None``.
         issues: The mutable list of issues to append to.
     """
     supports = getattr(instance, "supports", None)
@@ -862,7 +865,7 @@ _SUPPORTS_MISMATCH_DISPLAY_LIMIT = 10
 
 def _check_supports_unknown_path(
     supports: Callable[[str], object],
-    name: str,
+    name: str | None,
     issues: list[ComplianceIssue],
 ) -> None:
     """Probe an unknown capability path: the answer MUST be literal ``False``.
@@ -874,7 +877,7 @@ def _check_supports_unknown_path(
 
     Args:
         supports: The engine's (shape-verified) ``supports`` callable.
-        name: The model key (for issue attribution).
+        name: The model key (for issue attribution), or ``None``.
         issues: The mutable list of issues to append to.
     """
     try:
@@ -916,7 +919,7 @@ def _check_supports_unknown_path(
 def _check_supports_tree_agreement(
     instance: object,
     supports: Callable[[str], object],
-    name: str,
+    name: str | None,
     issues: list[ComplianceIssue],
 ) -> None:
     """Sweep every queryable path: ``supports()`` MUST agree with the tree.
@@ -924,7 +927,7 @@ def _check_supports_tree_agreement(
     Args:
         instance: The instantiated engine (for the baseline trees).
         supports: The engine's (shape-verified) ``supports`` callable.
-        name: The model key (for issue attribution).
+        name: The model key (for issue attribution), or ``None``.
         issues: The mutable list of issues to append to.
     """
     baseline = _supports_baseline_tree(instance)
@@ -1236,7 +1239,7 @@ def _check_requestable_roles(
 _MAX_REPORTED_VIOLATIONS: Final = 5
 
 
-def _class_declared_capabilities(spec: ModelSpec) -> Capabilities | None:
+def _class_declared_capabilities(load_class: Callable[[], object]) -> Capabilities | None:
     """Return ``declared_capabilities`` as defined on the engine class.
 
     The suite checks each engine twice: first the class, without building
@@ -1245,15 +1248,17 @@ def _class_declared_capabilities(spec: ModelSpec) -> Capabilities | None:
     pass sees the same tree the class pass checked.
 
     Args:
-        spec: The entry point's model spec.
+        load_class: Returns the engine class: the entry point's
+            ``ModelSpec.engine_class``, or the type of an engine that
+            :func:`check_effective_capabilities` received.
 
     Returns:
         The engine class's ``declared_capabilities``, or ``None`` when the
         class cannot be loaded or does not define a ``Capabilities`` tree.
-        The class pass has already reported both cases.
+        The suite's class pass has already reported both cases.
     """
     try:
-        declared = inspect.getattr_static(spec.engine_class(), "declared_capabilities", None)
+        declared = inspect.getattr_static(load_class(), "declared_capabilities", None)
     except Exception:  # noqa: BLE001 - the class-level pass already reported this
         return None
     return declared if isinstance(declared, Capabilities) else None
@@ -1299,8 +1304,8 @@ def _tree_content(node: object) -> object:
 
 def _check_instance_capabilities(
     instance: object,
-    spec: ModelSpec,
-    name: str,
+    load_class: Callable[[], object],
+    name: str | None,
     issues: list[ComplianceIssue],
     *,
     declared_snapshot: object | None,
@@ -1321,8 +1326,9 @@ def _check_instance_capabilities(
 
     Args:
         instance: The instantiated engine.
-        spec: The entry point's model spec (to resolve the engine class).
-        name: The model key (for issue attribution).
+        load_class: Returns the engine class (see
+            :func:`_class_declared_capabilities`).
+        name: The model key (for issue attribution), or ``None``.
         issues: The mutable list of issues to append to.
         declared_snapshot: :func:`_tree_content` of the class-level
             declaration, taken before the factory ran, or ``None`` when the
@@ -1348,7 +1354,7 @@ def _check_instance_capabilities(
             )
         )
     declared = getattr(instance, "declared_capabilities", None)
-    class_declared = _class_declared_capabilities(spec)
+    class_declared = _class_declared_capabilities(load_class)
     if declared_snapshot is not None and (
         class_declared is None or _tree_content(class_declared) != declared_snapshot
     ):
@@ -1526,7 +1532,7 @@ _ROLE_VALUES: Final = frozenset({"requestable", "trait", "constraints"})
 def _check_extension_reserved_keys(
     tree: Capabilities,
     layer: str,
-    name: str,
+    name: str | None,
     issues: list[ComplianceIssue],
 ) -> None:
     """Check the three keys with a standard meaning on every raw ``x_*`` dict.
@@ -1552,7 +1558,7 @@ def _check_extension_reserved_keys(
         tree: A declared or effective capability tree.
         layer: ``"declared_capabilities"`` or ``"effective_capabilities"``,
             for the message.
-        name: The model key (for issue attribution).
+        name: The model key (for issue attribution), or ``None``.
         issues: The mutable list of issues to append to.
     """
     for path in tree.iter_queryable_paths():
@@ -3305,6 +3311,61 @@ def _safe_engine_id(engine: object) -> str | None:
         return getattr(getattr(engine, "properties", None), "engine_id", None)
     except Exception:  # noqa: BLE001 - attribution must never raise
         return None
+
+
+def check_effective_capabilities(
+    engine: StandardASR, *, model: str | None = None
+) -> ComplianceReport:
+    """Check the effective capabilities of one configured engine.
+
+    An engine's effective capabilities depend on its configuration (spec
+    capabilities §3.1), but :func:`check_entrypoints` builds each engine
+    only once, with the defaults of its factory. Call this in a test for
+    each configuration the engine supports. It runs the same instance
+    checks as :func:`check_entrypoints`:
+
+    * ``effective_capabilities`` is ``None`` or a ``Capabilities``, and
+      reading it does not raise;
+    * the effective tree only removes what the declaration on the engine
+      class offers (``effective_widens_declared``, with the reasons);
+    * the reserved keys on its ``x_*`` nodes have the right types;
+    * the instance carries the class's ``declared_capabilities``, and no
+      other tree under that name;
+    * ``engine.supports()`` answers ``False`` for an unknown path and
+      agrees with the effective tree at every queryable path.
+
+    Building an engine is pure (spec IC.9), so a test can check a
+    configuration for a device the machine does not have: the effective
+    tree comes from the configuration, not from the hardware.
+
+    The class declaration is copied when this function starts, so
+    ``declared_capabilities_mutated`` reports only a change made while the
+    function reads ``effective_capabilities``. A change made earlier, for
+    example in the engine's constructor, is reported by
+    :func:`check_entrypoints`, which copies the declaration before the
+    factory runs.
+
+    Args:
+        engine: A configured engine instance.
+        model: The model key (``engine/model``) to attribute issues to, or
+            ``None`` for a single-engine run.
+
+    Returns:
+        A :class:`ComplianceReport` whose ``registry`` is ``None``.
+        ``passed`` is ``True`` when no check found an error.
+    """
+    issues: list[ComplianceIssue] = []
+
+    def load_class() -> object:
+        return type(engine)
+
+    class_declared = _class_declared_capabilities(load_class)
+    declared_snapshot = _tree_content(class_declared) if class_declared is not None else None
+    _check_instance_capabilities(
+        engine, load_class, model, issues, declared_snapshot=declared_snapshot
+    )
+    _check_supports_contract(engine, model, issues)
+    return ComplianceReport(registry=None, issues=issues)
 
 
 def check_streaming_param_gating(engine: StandardASR) -> ComplianceReport:

@@ -28,6 +28,7 @@ from standard_asr.compliance import (
     ComplianceIssue,
     ComplianceReport,
     assert_stable_text_invariant,
+    check_effective_capabilities,
     check_entrypoints,
     check_event_sequence,
     check_provider_params_swap_safety,
@@ -6782,3 +6783,66 @@ def test_requestable_roles_check_flags_a_requestable_node_no_gate_checks(
     )
     assert [issue.code for issue in issues] == ["requestable_node_ungated"]
     assert "batch.diarization" in issues[0].message
+
+
+class _DeviceConfiguredASR(_GoodASR):
+    # Computes its effective tree from its configuration, by editing a dump of
+    # the declaration: one of its two devices has no language override.
+    def __init__(self, device: str) -> None:
+        super().__init__()
+        self.device = device
+
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        data = type(self).declared_capabilities.model_dump()
+        if self.device == "npu":
+            data["batch"]["language"]["runtime_override"]["supported"] = False
+        return Capabilities.model_validate(data)
+
+
+class _WideningConfiguredASR(_GoodASR):
+    @property
+    def effective_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        return Capabilities.model_validate({"batch": {"x_acme_extra": {"supported": True}}})
+
+
+class _AlwaysSupportsASR(_GoodASR):
+    def supports(self, dot_path: str) -> bool:
+        return True
+
+
+@pytest.mark.parametrize("device", ["cpu", "npu"])
+def test_check_effective_capabilities_passes_each_narrowing_configuration(device: str) -> None:
+    engine = _DeviceConfiguredASR(device)
+    report = check_effective_capabilities(cast(StandardASR, engine))
+    assert report.passed, report.issues
+    assert report.registry is None
+    assert engine.supports("batch.language.runtime_override") is (device == "cpu")
+
+
+def test_check_effective_capabilities_reports_a_widening_with_its_reason() -> None:
+    report = check_effective_capabilities(
+        cast(StandardASR, _WideningConfiguredASR()), model="dummy/demo"
+    )
+    issue = next(i for i in report.issues if i.code == "effective_widens_declared")
+    assert "batch.x_acme_extra is supported" in issue.message
+    assert issue.model == "dummy/demo"
+    assert not report.passed
+
+
+def test_check_effective_capabilities_checks_supports_against_the_tree() -> None:
+    report = check_effective_capabilities(cast(StandardASR, _AlwaysSupportsASR()))
+    codes = {i.code for i in report.issues}
+    assert {"supports_not_fail_closed", "supports_disagrees_with_capabilities"} <= codes
+
+
+def test_check_effective_capabilities_reports_a_change_made_while_reading() -> None:
+    try:
+        report = check_effective_capabilities(cast(StandardASR, _MutatingASR()))
+        assert any(i.code == "declared_capabilities_mutated" for i in report.issues)
+    finally:
+        batch = _MutatingASR.declared_capabilities.batch
+        assert batch is not None
+        assert batch.model_extra is not None
+        beam = cast("dict[str, dict[str, int]]", batch.model_extra["x_acme_beam"])
+        beam["limits"]["max"] = 10
