@@ -3379,20 +3379,37 @@ def check_effective_capabilities(
 
     Returns:
         A :class:`ComplianceReport` whose ``registry`` is ``None``.
-        ``passed`` is ``True`` when no check found an error.
+        ``passed`` is ``True`` when no check found an error. An exception
+        that the engine raises while it is checked is reported as
+        ``engine_check_crashed``, after the issues found until then.
     """
     issues: list[ComplianceIssue] = []
 
     def load_class() -> object:
         return type(engine)
 
-    class_declared = _class_declared_capabilities(load_class)
-    declared_snapshot = _tree_content(class_declared) if class_declared is not None else None
-    _check_instance_capabilities(
-        engine, load_class, model, issues, declared_snapshot=declared_snapshot
-    )
-    _check_member_surface(engine, "supports", model, issues)
-    _check_supports_contract(engine, model, issues)
+    try:
+        class_declared = _class_declared_capabilities(load_class)
+        declared_snapshot = _tree_content(class_declared) if class_declared is not None else None
+        _check_instance_capabilities(
+            engine, load_class, model, issues, declared_snapshot=declared_snapshot
+        )
+        _check_member_surface(engine, "supports", model, issues)
+        _check_supports_contract(engine, model, issues)
+    except Exception as exc:  # noqa: BLE001 - a broken engine is a verdict, not a crash
+        issues.append(
+            ComplianceIssue(
+                level="error",
+                code="engine_check_crashed",
+                message=(
+                    f"Checking the engine's effective capabilities raised "
+                    f"{safe_exception_summary(exc)}; an engine's public surface "
+                    "(capabilities and supports()) MUST be readable without raising "
+                    "during a compliance check."
+                ),
+                model=model,
+            )
+        )
     return ComplianceReport(registry=None, issues=issues)
 
 

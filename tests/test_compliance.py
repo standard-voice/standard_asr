@@ -6872,3 +6872,28 @@ def test_check_effective_capabilities_reports_a_broken_supports_method(
     report = check_effective_capabilities(cast(StandardASR, engine_type()))
     assert code in {i.code for i in report.issues}
     assert not report.passed
+
+
+class _RaisingSupportsASR(_GoodASR):
+    @property
+    def supports(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        raise RuntimeError("broken supports descriptor")
+
+
+class _RaisingDeclarationASR(_GoodASR):
+    @property
+    def declared_capabilities(self) -> Capabilities:  # pyright: ignore[reportIncompatibleVariableOverride]
+        raise RuntimeError("broken declaration descriptor")
+
+
+@pytest.mark.parametrize("engine_type", [_RaisingSupportsASR, _RaisingDeclarationASR])
+def test_check_effective_capabilities_reports_a_raising_surface(
+    engine_type: type[_GoodASR],
+) -> None:
+    # A broken engine is a failed check, not a crashed one.
+    report = check_effective_capabilities(cast(StandardASR, engine_type()), model="dummy/demo")
+    crashed = [i for i in report.issues if i.code == "engine_check_crashed"]
+    assert len(crashed) == 1
+    assert crashed[0].model == "dummy/demo"
+    assert "broken" in crashed[0].message
+    assert not report.passed
