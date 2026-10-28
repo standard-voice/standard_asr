@@ -2068,7 +2068,11 @@ def test_every_tree_field_is_annotated_with_the_class_it_holds() -> None:
         for name, field in model.model_fields.items():
             annotations = [field.annotation, *typing.get_args(field.annotation)]
             for annotation in annotations:
-                if not (isinstance(annotation, type) and issubclass(annotation, BaseModel)):
+                # On Python 3.10, isinstance(list[str], type) is True, so a
+                # parameterized generic is ruled out first.
+                if typing.get_origin(annotation) is not None or not (
+                    isinstance(annotation, type) and issubclass(annotation, BaseModel)
+                ):
                     continue
                 if field.default_factory is not None and annotation is field.annotation:
                     default: object = field.get_default(call_default_factory=True)
