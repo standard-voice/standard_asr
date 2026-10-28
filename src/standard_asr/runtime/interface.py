@@ -53,6 +53,7 @@ from standard_asr.contract.capabilities import Capabilities, StreamingCapabiliti
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
+    ArtifactReportContradictionError,
     ArtifactStatusError,
     ConfigError,
     EngineContractError,
@@ -1292,6 +1293,11 @@ class EngineBase(ABC):
     ) -> None:
         """Enforce that dynamic status only narrows static artifact metadata.
 
+        Every claim the report makes beyond the declaration is collected
+        before anything is raised, so one error names them all: a report
+        that contradicts both acquisition fields never hides the
+        inference-acquisition claim behind the explicit one.
+
         Args:
             report: Validated dynamic report.
             declaration: Static artifact declaration.
@@ -1300,26 +1306,42 @@ class EngineBase(ABC):
             None.
 
         Raises:
-            EngineContractError: If the report widens a static fact.
+            ArtifactReportContradictionError: If the report widens one or
+                more static facts.
         """
+        contradictions: list[
+            Literal["applicable", "supports_explicit_acquisition", "may_acquire_during_inference"]
+        ] = []
+        problems: list[str] = []
         if report.applicable and not declaration.applicable:
-            raise EngineContractError(
-                "Artifact status reports applicability that declared metadata does not allow."
+            contradictions.append("applicable")
+            problems.append(
+                "applicability: the report lists local artifacts, but the declaration says "
+                "the engine has none"
             )
         if any(requirement.can_acquire_now for requirement in report.requirements) and not (
             declaration.supports_explicit_acquisition
         ):
-            raise EngineContractError(
-                "Artifact status reports explicit acquisition that declared metadata "
-                "does not allow."
+            contradictions.append("supports_explicit_acquisition")
+            problems.append(
+                "explicit acquisition: an artifact can be acquired now, but the declaration "
+                "rules out explicit acquisition"
             )
         if (
             any(requirement.may_acquire_during_inference for requirement in report.requirements)
             and not declaration.may_acquire_during_inference
         ):
-            raise EngineContractError(
-                "Artifact status reports inference acquisition that declared metadata "
-                "does not allow."
+            contradictions.append("may_acquire_during_inference")
+            problems.append(
+                "inference acquisition: inference may acquire an artifact, but the declaration "
+                "says it never does"
+            )
+        if contradictions:
+            raise ArtifactReportContradictionError(
+                "Artifact status reports what the declared metadata does not allow -- "
+                + "; ".join(problems)
+                + ".",
+                contradictions=tuple(contradictions),
             )
 
     @final

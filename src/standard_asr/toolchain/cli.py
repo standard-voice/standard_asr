@@ -44,6 +44,7 @@ from standard_asr.contract.artifacts import (
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
+    ArtifactReportContradictionError,
     ArtifactStatusError,
     ArtifactUnavailableError,
     AudioProcessingError,
@@ -61,7 +62,7 @@ from standard_asr.contract.metadata import DeclaredEngineMetadata
 from standard_asr.contract.params import RuntimeParams, WireRuntimeParams
 from standard_asr.contract.results import Diagnostic, TranscriptionResult
 from standard_asr.plugins.discovery import ModelInfo, ModelRegistry, ModelSpec, discover_models
-from standard_asr.runtime.downloads import ensure_cache_dir, resolve_cache_dir
+from standard_asr.runtime.downloads import allow_downloads, ensure_cache_dir, resolve_cache_dir
 from standard_asr.runtime.interface import (
     EngineBase,
     StandardASR,
@@ -2064,8 +2065,14 @@ def _transcribe_artifact_preflight(
     transcribe (AR.1 makes its semantics unknowable), so the typed
     compatibility error ends the command at usage exit 2 rather than being
     downgraded. A typed status-inspection failure is downgraded to a
-    scrubbed warning; caller-input, configuration, and contract failures remain
-    loud.
+    scrubbed warning. So is a report that contradicts the engine's artifact
+    declaration (``ArtifactReportContradictionError``): it is a plugin
+    defect, but the transcription does not depend on the report, so the
+    warning names each contradicted claim and the command continues. When
+    the report claims that inference may acquire artifacts while downloads
+    are allowed, a second warning says the transcription may download and
+    how to block it. Caller-input, configuration, and other contract
+    failures remain loud.
 
     Args:
         asr: Configured engine instance.
@@ -2089,6 +2096,20 @@ def _transcribe_artifact_preflight(
             f"{_WARN} Artifact status inspection failed; transcription will "
             f"continue. {safe_exception_summary(exc)}"
         )
+        return
+    except ArtifactReportContradictionError as exc:
+        # The core builds this message from the declaration's field names; it
+        # carries no engine text, so it is printed as it is.
+        _print_error(
+            f"{_WARN} {exc} The plugin is at fault; report it to its authors. "
+            "Transcription continues."
+        )
+        if "may_acquire_during_inference" in exc.contradictions and allow_downloads():
+            _print_error(
+                f"{_WARN} This transcription may download inference artifacts although "
+                "the engine declares that inference never does. Set "
+                "STANDARD_ASR_ALLOW_DOWNLOAD=0 to block downloads."
+            )
         return
 
     required_nonready = tuple(

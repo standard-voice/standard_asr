@@ -54,11 +54,13 @@ from standard_asr.contract.capabilities import (
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
+    ArtifactReportContradictionError,
     ArtifactStatusError,
     ArtifactUnavailableError,
     AudioProcessingError,
     ConfigError,
     ConfigurationRequiredError,
+    EngineContractError,
     EntrypointValidationError,
     FactoryLoadError,
     TranscriptionError,
@@ -1824,6 +1826,58 @@ def test_cli_transcribe_artifact_status_error_warns_and_continues(
     assert "[WARN] Artifact status inspection failed" in captured.err
     assert "Native status probe failed." in captured.err
     assert engine.transcribe_calls == 1
+
+
+@pytest.mark.parametrize("downloads", ["1", "0"])
+def test_cli_transcribe_artifact_contradiction_warns_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    downloads: str,
+) -> None:
+    # A report that contradicts the artifact declaration is a plugin defect,
+    # but the transcription does not depend on the report: the advisory step
+    # names each contradicted claim and the command transcribes anyway. The
+    # download warning appears only while downloads are allowed.
+    monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", downloads)
+    engine = _ArtifactCliEngine(
+        _artifact_report(_artifact_requirement()),
+        status_error=ArtifactReportContradictionError(
+            "Artifact status reports what the declared metadata does not allow -- "
+            "inference acquisition: inference may acquire an artifact, but the "
+            "declaration says it never does.",
+            contradictions=("may_acquire_during_inference",),
+        ),
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "artifact transcript\n"
+    assert "[WARN] Artifact status reports what the declared metadata does not allow" in (
+        captured.err
+    )
+    assert "The plugin is at fault" in captured.err
+    assert ("may download inference artifacts" in captured.err) is (downloads == "1")
+    assert engine.transcribe_calls == 1
+
+
+def test_cli_transcribe_other_contract_errors_still_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _ArtifactCliEngine(
+        _artifact_report(_artifact_requirement()),
+        status_error=EngineContractError("artifact status returned an awaitable"),
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav"])
+    capsys.readouterr()
+
+    assert exit_code == 1
+    assert engine.transcribe_calls == 0
 
 
 def test_cli_transcribe_outside_line_engine_exits_usage_2(

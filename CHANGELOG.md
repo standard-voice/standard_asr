@@ -12,6 +12,7 @@ releases may include breaking changes.
 
 ### Added
 
+- **`ArtifactReportContradictionError` names every way an artifact report contradicts the artifact declaration.** `artifact_status()` checks that the report for a configured engine only narrows its `declared_metadata.artifacts` (protocol specification, AR.2). It raised a plain `EngineContractError` at the first contradiction, so a report that broke both acquisition promises named only the explicit one and hid that inference may download. It now collects every contradiction and raises this subclass of `EngineContractError`, whose `contradictions` attribute lists the contradicted declaration fields: `applicable`, `supports_explicit_acquisition`, and `may_acquire_during_inference`.
 - **`standard-asr list --json` prints the model list as JSON.** It prints the list of `ModelInfo` objects that the reference server's `GET /v1/models` returns, sorted by model key, so an application that discovers models through the CLI does not parse text. A default preset has the `model_name` `""`. Like the text view, the command imports no plugin.
 - **Inference-artifact lifecycle protocol.** Protocol 0.2 adds typed static
   declarations, configured-instance status reports, explicit acquisition with
@@ -367,6 +368,7 @@ releases may include breaking changes.
 
 ### Changed (non-breaking)
 
+- **`standard-asr transcribe` warns and continues when an artifact report contradicts its declaration.** The advisory status check before transcribing stopped the command with exit 1 on such a report, although the library's `transcribe()` and the reference server never run that check, and one of the three contradictions concerns `pull`, not transcription. The CLI now prints a warning that names each contradicted claim and says the plugin is at fault, then transcribes. When a claim is that inference may acquire artifacts and downloads are allowed, a second warning says the transcription may download and that `STANDARD_ASR_ALLOW_DOWNLOAD=0` blocks downloads. `standard-asr status` and `standard-asr pull` still stop, and every other contract error stays fatal.
 - **Documentation site rebuilt on Fumadocs (Next.js, static export).** The
   site now lives in `docs/site`, renders the published Markdown content in
   `docs/content/`, generates the API reference from the source with Griffe,

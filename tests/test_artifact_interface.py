@@ -40,6 +40,7 @@ from standard_asr.contract.capabilities import (
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
+    ArtifactReportContradictionError,
     ArtifactStatusError,
     ConfigError,
     EngineContractError,
@@ -530,7 +531,7 @@ def test_status_enforces_declaration_values_that_skipped_validation() -> None:
         }
     }
     engine = _CoercibleDeclarationEngine((_requirement(),))
-    with pytest.raises(EngineContractError, match="explicit acquisition that declared metadata"):
+    with pytest.raises(ArtifactReportContradictionError, match="explicit acquisition"):
         engine.artifact_status()
 
 
@@ -632,8 +633,10 @@ def test_status_preserves_typed_hook_failure(error: Exception) -> None:
 
 def test_status_rejects_dynamic_explicit_acquisition_widening() -> None:
     engine = _NoExplicitArtifactEngine((_requirement(),))
-    with pytest.raises(EngineContractError, match="explicit acquisition"):
+    with pytest.raises(ArtifactReportContradictionError, match="explicit acquisition") as caught:
         engine.artifact_status()
+    assert caught.value.contradictions == ("supports_explicit_acquisition",)
+    assert isinstance(caught.value, EngineContractError)
 
 
 def test_status_rejects_dynamic_inference_acquisition_widening() -> None:
@@ -647,16 +650,41 @@ def test_status_rejects_dynamic_inference_acquisition_widening() -> None:
         )
 
     requirement = _requirement(inference_acquisition=True)
-    with pytest.raises(EngineContractError, match="inference acquisition"):
+    with pytest.raises(ArtifactReportContradictionError, match="inference acquisition") as caught:
         _NoImplicitArtifactEngine((requirement,)).artifact_status()
+    assert caught.value.contradictions == ("may_acquire_during_inference",)
+
+
+def test_status_names_every_contradiction_at_once() -> None:
+    # A report that breaks both acquisition promises must not hide the
+    # inference claim behind the explicit one.
+    class _NoAcquisitionArtifactEngine(_ArtifactEngine):
+        declared_metadata = DeclaredEngineMetadata(
+            artifacts=ArtifactDeclaration(
+                applicable=True,
+                supports_explicit_acquisition=False,
+                may_acquire_during_inference=False,
+            )
+        )
+
+    requirement = _requirement(inference_acquisition=True)
+    with pytest.raises(ArtifactReportContradictionError) as caught:
+        _NoAcquisitionArtifactEngine((requirement,)).artifact_status()
+    assert caught.value.contradictions == (
+        "supports_explicit_acquisition",
+        "may_acquire_during_inference",
+    )
+    assert "explicit acquisition" in str(caught.value)
+    assert "inference acquisition" in str(caught.value)
 
 
 def test_status_rejects_dynamic_applicability_widening() -> None:
     report = ArtifactReport.from_requirements(mode="batch", applicable=True)
-    with pytest.raises(EngineContractError, match="reports applicability"):
+    with pytest.raises(ArtifactReportContradictionError, match="applicability") as caught:
         EngineBase._artifact_report_matches_declaration(  # pyright: ignore[reportPrivateUsage]
             report, NO_ARTIFACT_LIFECYCLE
         )
+    assert caught.value.contradictions == ("applicable",)
 
 
 def test_status_hook_requires_an_exact_tuple() -> None:

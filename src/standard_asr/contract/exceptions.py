@@ -554,6 +554,65 @@ class EngineContractError(StandardASRError):
     pass
 
 
+#: The fields of ``declared_metadata.artifacts`` that an artifact report can
+#: contradict (spec AR.2), in the order the check reports them.
+_ARTIFACT_CONTRADICTIONS: Final = (
+    "applicable",
+    "supports_explicit_acquisition",
+    "may_acquire_during_inference",
+)
+
+
+class ArtifactReportContradictionError(EngineContractError):
+    """Raised when an engine's artifact report claims what its declaration rules out.
+
+    The static artifact declaration, ``declared_metadata.artifacts``, is an
+    upper bound: the report that ``artifact_status()`` returns for a
+    configured engine may only narrow it (spec AR.2). This error lists every
+    claim the report makes beyond it, by the declaration field the claim
+    contradicts:
+
+    * ``"applicable"``: the report says the engine has local artifacts, but
+      the declaration says it has none.
+    * ``"supports_explicit_acquisition"``: an artifact can be acquired now,
+      but the declaration rules out explicit acquisition.
+    * ``"may_acquire_during_inference"``: inference may acquire an artifact,
+      but the declaration says inference never does.
+
+    Like every :class:`EngineContractError`, it is an engine defect.
+    ``acquire_artifacts()``, ``standard-asr status``, and ``standard-asr
+    pull`` stop on it. The advisory check that ``standard-asr transcribe``
+    runs before transcribing reports it as a warning and continues, because
+    the transcription does not depend on the report.
+
+    Args:
+        message: Human-readable description naming each contradiction.
+        contradictions: The contradicted fields, in the order listed above.
+
+    Raises:
+        ValueError: If ``contradictions`` is empty, repeats a field, names a
+            field outside the three, or breaks their order.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        contradictions: tuple[
+            Literal["applicable", "supports_explicit_acquisition", "may_acquire_during_inference"],
+            ...,
+        ],
+    ) -> None:
+        ordered = tuple(field for field in _ARTIFACT_CONTRADICTIONS if field in contradictions)
+        if not contradictions or tuple(contradictions) != ordered:
+            raise ValueError(
+                "contradictions must name one or more of "
+                f"{', '.join(_ARTIFACT_CONTRADICTIONS)}, each once and in that order."
+            )
+        self.contradictions = ordered
+        super().__init__(message)
+
+
 class SubtitleRenderingError(StandardASRError, ValueError):
     """Raised by ``to_srt`` / ``to_vtt`` when segments cannot render as visible cues.
 
@@ -666,6 +725,7 @@ __all__ = [
     "AudioProcessingError",
     "ArtifactAcquisitionError",
     "ArtifactProgressCallbackError",
+    "ArtifactReportContradictionError",
     "ArtifactStatusError",
     "ArtifactUnavailableError",
     "ConfigError",
