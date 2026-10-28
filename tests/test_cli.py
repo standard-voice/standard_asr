@@ -1997,6 +1997,91 @@ def test_cli_transcribe_contradiction_warning_scrubs_plugin_text(
     assert engine.transcribe_calls == 1
 
 
+def test_cli_transcribe_json_keeps_contradiction_warnings_off_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The CLI's output is its interface: with --json, stdout holds only the
+    # result document, and every warning stays on stderr.
+    monkeypatch.setenv("STANDARD_ASR_ALLOW_DOWNLOAD", "1")
+    engine = _ArtifactCliEngine(
+        _artifact_report(_artifact_requirement()),
+        status_error=ArtifactReportContradictionError(
+            "Artifact status reports what the declared metadata does not allow.",
+            contradictions=("supports_explicit_acquisition", "may_acquire_during_inference"),
+        ),
+    )
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main(["transcribe", "artifact-cli/demo", "audio.wav", "--json"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert json.loads(captured.out)["text"] == "artifact transcript"
+    assert "[WARN]" not in captured.out
+    assert "(supports_explicit_acquisition, may_acquire_during_inference)" in captured.err
+    assert "may download inference artifacts" in captured.err
+
+
+class _ContradictingArtifactEngine(_BatchOnlyEngine):
+    """EngineBase engine whose report claims inference acquisition it rules out."""
+
+    declared_capabilities: ClassVar[Capabilities] = Capabilities.model_validate({"batch": {}})
+    declared_metadata: ClassVar[DeclaredEngineMetadata] = DeclaredEngineMetadata(
+        artifacts=ArtifactDeclaration(
+            applicable=True,
+            supports_explicit_acquisition=True,
+            may_acquire_during_inference=False,
+        )
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.acquire_calls = 0
+
+    def _artifact_requirements(
+        self,
+        context: ArtifactContext,
+    ) -> tuple[bool, tuple[ArtifactRequirement, ...], tuple[()]]:
+        del context
+        requirement = _artifact_requirement(
+            state=ARTIFACT_MISSING,
+            can_acquire_now=True,
+            may_acquire_during_inference=True,
+        )
+        return True, (requirement,), ()
+
+    def _acquire_artifacts(
+        self,
+        context: ArtifactContext,
+        requirements: tuple[ArtifactRequirement, ...],
+        refresh: bool,
+        progress: ArtifactProgressCallback | None,
+    ) -> None:
+        del context, requirements, refresh, progress
+        self.acquire_calls += 1
+
+
+@pytest.mark.parametrize("command", ["status", "pull"])
+def test_cli_status_and_pull_stop_on_an_artifact_contradiction(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    # Only the advisory check before `transcribe` continues past a
+    # contradicting report. `status` and `pull` act on the report itself, so
+    # they stop, and `pull` never reaches the acquisition hook.
+    engine = _ContradictingArtifactEngine()
+    _patch_artifact_engine(monkeypatch, engine)
+
+    exit_code = cli.main([command, "artifact-cli/demo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "inference acquisition: inference may acquire an artifact" in captured.err
+    assert engine.acquire_calls == 0
+
+
 def test_cli_transcribe_other_contract_errors_still_stop(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
