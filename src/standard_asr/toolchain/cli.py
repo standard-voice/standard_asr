@@ -2069,11 +2069,11 @@ def _transcribe_artifact_preflight(
     declaration (``ArtifactReportContradictionError``): it is a plugin
     defect, but the transcription does not depend on the report, so the
     warning names each contradicted claim and the command continues. When
-    the report claims that inference may acquire artifacts while downloads
-    are allowed, a second warning says the transcription may download and
-    how to block it. Otherwise, when the declaration allows inference to
-    acquire artifacts, the notice for an unknown readiness follows, without
-    the pointer to ``pull``, which stops on the same report. Caller-input,
+    ``may_acquire_during_inference`` is among the contradicted fields and
+    downloads are allowed, a second warning says the transcription may download
+    and how to block it. Otherwise, when the declaration allows inference to
+    acquire artifacts, the notice for an unknown readiness follows, without the
+    pointer to ``pull``, which stops on the same report. Caller-input,
     configuration, and other contract failures remain loud.
 
     Args:
