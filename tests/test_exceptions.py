@@ -12,8 +12,12 @@ attribute values were otherwise unasserted).
 
 from __future__ import annotations
 
+import pytest
+
 from standard_asr.contract.exceptions import (
+    ArtifactReportContradictionError,
     ConfigError,
+    EngineContractError,
     InvalidProviderParamError,
     StandardASRError,
     StructuredError,
@@ -96,3 +100,28 @@ def test_structured_error_exposes_exactly_the_documented_attributes() -> None:
         "batch",
         "drop it",
     )
+
+
+@pytest.mark.parametrize(
+    "contradictions",
+    [
+        (),
+        ("applicable", "applicable"),
+        ("may_acquire_during_inference", "applicable"),
+        ("explicit",),
+    ],
+)
+def test_artifact_report_contradiction_error_rejects_a_malformed_list(
+    contradictions: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="each once and in that order"):
+        ArtifactReportContradictionError("x", contradictions=contradictions)  # pyright: ignore[reportArgumentType]
+
+
+def test_artifact_report_contradiction_error_keeps_its_fields() -> None:
+    error = ArtifactReportContradictionError(
+        "message", contradictions=("applicable", "may_acquire_during_inference")
+    )
+    assert isinstance(error, EngineContractError)
+    assert error.contradictions == ("applicable", "may_acquire_during_inference")
+    assert str(error) == "message"
