@@ -655,9 +655,11 @@ def test_status_rejects_dynamic_inference_acquisition_widening() -> None:
     assert caught.value.contradictions == ("may_acquire_during_inference",)
 
 
-def test_status_names_every_contradiction_at_once() -> None:
+@pytest.mark.parametrize("required", [True, False])
+def test_status_names_every_contradiction_at_once(required: bool) -> None:
     # A report that breaks both acquisition promises must not hide the
-    # inference claim behind the explicit one.
+    # inference claim behind the explicit one. Rule AR.2 bounds the claims of
+    # every requirement, optional ones included, so the test runs both kinds.
     class _NoAcquisitionArtifactEngine(_ArtifactEngine):
         declared_metadata = DeclaredEngineMetadata(
             artifacts=ArtifactDeclaration(
@@ -667,7 +669,7 @@ def test_status_names_every_contradiction_at_once() -> None:
             )
         )
 
-    requirement = _requirement(inference_acquisition=True)
+    requirement = _requirement(inference_acquisition=True, required=required)
     with pytest.raises(ArtifactReportContradictionError) as caught:
         _NoAcquisitionArtifactEngine((requirement,)).artifact_status()
     assert caught.value.contradictions == (
