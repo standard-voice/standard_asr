@@ -587,11 +587,13 @@ class ArtifactReportContradictionError(EngineContractError):
 
     Args:
         message: Human-readable description naming each contradiction.
-        contradictions: The contradicted fields, in the order listed above.
+        contradictions: The contradicted fields, in any order; a repeated
+            field counts once. The ``contradictions`` attribute keeps each
+            field once, in the order listed above.
 
     Raises:
-        ValueError: If ``contradictions`` is empty, repeats a field, names a
-            field outside the three, or breaks their order.
+        ValueError: If ``contradictions`` is empty or names a field outside
+            the three.
     """
 
     def __init__(
@@ -603,13 +605,15 @@ class ArtifactReportContradictionError(EngineContractError):
             ...,
         ],
     ) -> None:
-        ordered = tuple(field for field in _ARTIFACT_CONTRADICTIONS if field in contradictions)
-        if not contradictions or tuple(contradictions) != ordered:
+        # Neither the order nor a repeat carries meaning, so the attribute
+        # keeps each field once, in the fixed order.
+        given = tuple(contradictions)
+        if not given or any(field not in _ARTIFACT_CONTRADICTIONS for field in given):
             raise ValueError(
-                "contradictions must name one or more of "
-                f"{', '.join(_ARTIFACT_CONTRADICTIONS)}, each once and in that order."
+                "contradictions must name at least one field, and only these: "
+                f"{', '.join(_ARTIFACT_CONTRADICTIONS)}."
             )
-        self.contradictions = ordered
+        self.contradictions = tuple(field for field in _ARTIFACT_CONTRADICTIONS if field in given)
         super().__init__(message)
 
 

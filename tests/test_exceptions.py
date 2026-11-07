@@ -12,6 +12,8 @@ attribute values were otherwise unasserted).
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from standard_asr.contract.exceptions import (
@@ -102,20 +104,49 @@ def test_structured_error_exposes_exactly_the_documented_attributes() -> None:
     )
 
 
+#: The order in which the ``contradictions`` attribute keeps the fields.
+_FIXED_ORDER = (
+    "applicable",
+    "supports_explicit_acquisition",
+    "may_acquire_during_inference",
+)
+
+
 @pytest.mark.parametrize(
     "contradictions",
     [
         (),
-        ("applicable", "applicable"),
-        ("may_acquire_during_inference", "applicable"),
         ("explicit",),
+        ("applicable", "explicit"),
     ],
 )
 def test_artifact_report_contradiction_error_rejects_a_malformed_list(
     contradictions: tuple[str, ...],
 ) -> None:
-    with pytest.raises(ValueError, match="each once and in that order"):
+    with pytest.raises(ValueError) as caught:
         ArtifactReportContradictionError("x", contradictions=contradictions)  # pyright: ignore[reportArgumentType]
+    assert str(caught.value) == (
+        "contradictions must name at least one field, and only these: "
+        "applicable, supports_explicit_acquisition, may_acquire_during_inference."
+    )
+
+
+@pytest.mark.parametrize(
+    "contradictions",
+    [
+        *(order for size in (1, 2, 3) for order in itertools.permutations(_FIXED_ORDER, size)),
+        ("applicable", "applicable"),
+        ("may_acquire_during_inference", "applicable", "may_acquire_during_inference"),
+        (*_FIXED_ORDER, *reversed(_FIXED_ORDER)),
+    ],
+)
+def test_artifact_report_contradiction_error_accepts_any_order_and_repeats(
+    contradictions: tuple[str, ...],
+) -> None:
+    # Readers of the attribute rely on seeing each field once, in one fixed
+    # order; neither the order nor a repeat in the input carries meaning.
+    error = ArtifactReportContradictionError("x", contradictions=contradictions)  # pyright: ignore[reportArgumentType]
+    assert error.contradictions == tuple(sorted(set(contradictions), key=_FIXED_ORDER.index))
 
 
 def test_artifact_report_contradiction_error_keeps_its_fields() -> None:
@@ -125,3 +156,11 @@ def test_artifact_report_contradiction_error_keeps_its_fields() -> None:
     assert isinstance(error, EngineContractError)
     assert error.contradictions == ("applicable", "may_acquire_during_inference")
     assert str(error) == "message"
+
+
+def test_artifact_report_contradiction_error_reads_its_input_once() -> None:
+    # The constructor checks the fields and then sorts them, so it copies the
+    # input first; an iterator would otherwise be empty by the second pass.
+    fields = iter(("may_acquire_during_inference", "applicable"))
+    error = ArtifactReportContradictionError("x", contradictions=fields)  # pyright: ignore[reportArgumentType]
+    assert error.contradictions == ("applicable", "may_acquire_during_inference")
