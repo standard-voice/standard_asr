@@ -83,6 +83,7 @@ from standard_asr.contract.capabilities import ModeName
 from standard_asr.contract.exceptions import (
     ArtifactAcquisitionError,
     ArtifactProgressCallbackError,
+    ArtifactReportContradictionError,
     ArtifactStatusError,
     ArtifactUnavailableError,
     AudioProcessingError,
@@ -173,6 +174,7 @@ __all__ = [
     "ArtifactProgressUnit",
     "ArtifactReadiness",
     "ArtifactReport",
+    "ArtifactReportContradictionError",
     "ArtifactRequirement",
     "ArtifactState",
     "ArtifactStatusError",
